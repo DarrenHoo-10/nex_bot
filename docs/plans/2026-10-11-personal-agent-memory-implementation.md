@@ -46,9 +46,9 @@ Agent 上下文自动注入 scoped recall 与明确记忆。记录实际呈现�
 
 真实 SDK 每次 HTTP 尝试从 native trace 取得 bank、operation、purpose；retain / consolidate / reflect 都记账。网关强制配置的模型和 endpoint，不转发内部身份标记，支持 OpenAI 兼容及 Anthropic，包括 reflect 的工具调用 / 返回。
 
-后台并发 1，前台优先。每日每 bank 上限 30 次 / 100,000 预留 tokens，workspace 上限 100 次 / 300,000。失败 / unknown 保留预留额，缺少 usage 不等于免费。Agent reflect 与 Pi、A2A 子任务共同消耗根任务上限。后台忙或额度耗尽时延后 native 作业，不通过重试绕过限制。
+后台并发 1，前台优先。每日后台维护每 bank 上限 30 次 / 100,000 预留 tokens，workspace 上限 100 次 / 300,000，仅统计 task_id IS NULL 的请求。失败 / unknown 保留预留额，缺少 usage 不等于免费。按照后续 [用户任务控制决定](2026-10-11-manual-task-control.md)，Agent reflect、Pi 与 A2A 子任务均无累计任务额度，仍逐次记账；停止任务会中止对应的前台记忆模型请求。后台忙或维护额度耗尽时延后 native 作业，不影响用户任务的累计用量。
 
-安全检索、普通私有写入与 A2A 自动执行。任意终端命令、文档撤回及 Agent 发起的彻底遗忘需执行方批准。遗忘批准冻结预览 revision / 数量，范围变化必须重新预览。
+安全检索、普通私有写入与 A2A 自动执行。已知只读终端观察自动执行；脚本、未知或危险命令、文档撤回及 Agent 发起的彻底遗忘需执行方批准。遗忘批准冻结预览 revision / 数量，范围变化必须重新预览。
 
 ## 撤回与彻底遗忘
 

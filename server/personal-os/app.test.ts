@@ -236,7 +236,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       old.runtime.memory.write(standard, { title: "合成旧记忆", content: "旧记忆应保留" });
     } finally { await old.close(); }
     const upgraded = await createApp({ dir, key: f.key, token: f.token }); f.owned.apps.push(upgraded);
-    expect(upgraded.store.get("SELECT MAX(version) version FROM schema_migrations")?.version).toBe(8);
+    expect(upgraded.store.get("SELECT MAX(version) version FROM schema_migrations")?.version).toBe(9);
     expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", standard!)?.policy_json)).tools).toContain("routine.save");
     expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", restricted!)?.policy_json)).tools).toEqual(["agent.directory"]);
     expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", original!)?.policy_json)).tools).toContain("routine.save");
@@ -599,29 +599,21 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.app.store.get("SELECT status FROM model_invocations")?.status).toBe("failed");
     expect(f.app.store.get("SELECT result_summary FROM tasks WHERE id=?", task)?.result_summary).toContain("[redacted]");
   }, 40_000);
-  it.each(["tokens", "calls"])("shows Core %s limits without corrupting the successful invoice or replaying effects", async (limit) => {
+  it("runs past former token, model, tool and task time limits while retaining usage receipts", async () => {
     const f = await fixture();
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "budget-note", name: "broker", args: JSON.stringify({ action: "memory.write", title: "预算前已完成", content: "合成记忆只写入一次", scope: "bot" }) }], usage: { prompt_tokens: 20_000, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 5_000 } } });
-    const task = f.app.runtime.input(f.conversation, "验证任务预算", id());
-    expect(f.app.store.get("SELECT token_budget FROM tasks WHERE id=?", task)?.token_budget).toBe(400_000);
-    f.app.store.run("UPDATE tasks SET token_budget=?,max_model_calls=? WHERE id=?", limit === "tokens" ? 35_000 : 400_000, limit === "calls" ? 1 : 24, task);
-    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "failed");
-    const summary = String(f.app.store.get("SELECT result_summary FROM tasks WHERE id=?", task)?.result_summary);
-    expect(summary).toContain(limit === "tokens" ? "Token 预算" : "模型调用次数");
-    expect(summary).not.toContain("Connection error"); expect(summary).toContain("不会自动重复操作");
-    expect(f.fake.requests).toHaveLength(1);
-    expect(f.app.store.all("SELECT status,usage_known,input_tokens,output_tokens FROM model_invocations")).toEqual([{ status: "succeeded", usage_known: 1, input_tokens: 20_000, output_tokens: 10 }]);
-    expect(f.app.store.all("SELECT status FROM tool_calls WHERE task_id=?", task)).toEqual([{ status: "succeeded" }]);
-    f.fake.scripts.push({ kind: "openai-text", text: "新任务可继续，保留前次结果" });
-    const next = f.app.runtime.input(f.conversation, "说明下一步", id());
-    const deadline = Date.now() + 25_000;
-    while (f.app.store.get("SELECT status FROM tasks WHERE id=?", next)?.status !== "succeeded") {
-      if (Date.now() > deadline) throw new Error("New task after budget rejection timed out");
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    }
-    expect(f.fake.requests).toHaveLength(2);
-    expect(f.app.store.all("SELECT id FROM memory_documents WHERE title='预算前已完成'")).toHaveLength(1);
-  }, 40_000);
+    for (let round = 0; round < 25; round++) f.fake.scripts.push({ kind: "openai-tool", calls: Array.from({ length: round === 24 ? 18 : 1 }, (_, index) => ({ id: `unlimited-${round}-${index}`, name: "broker", args: JSON.stringify({ action: "agent.directory" }) })), usage: { prompt_tokens: 20_000, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 5_000 } } });
+    f.fake.scripts.push({ kind: "openai-text", text: "任务自然完成" });
+    const task = f.app.runtime.input(f.conversation, "验证不限累计用量", id());
+    const created = Date.now() - 35 * 60_000;
+    f.app.store.run("UPDATE tasks SET created_at=?,legacy_deadline_at=? WHERE id=?", created, created + 30 * 60_000, task);
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded", 55_000);
+    expect(f.fake.requests).toHaveLength(26);
+    expect(f.app.store.all("SELECT id FROM tool_calls WHERE task_id=? AND status='succeeded'", task)).toHaveLength(42);
+    expect(Number(f.app.store.get("SELECT SUM(input_tokens+output_tokens) usage FROM model_invocations WHERE usage_known=1")?.usage)).toBeGreaterThan(400_000);
+    expect(f.app.store.get("SELECT COUNT(*) n FROM model_invocations WHERE status!='succeeded'")?.n).toBe(0);
+    expect(Number(f.app.store.get("SELECT legacy_deadline_at FROM tasks WHERE id=?", task)?.legacy_deadline_at)).toBeLessThan(Date.now());
+    expect(f.app.store.all("PRAGMA foreign_key_check")).toEqual([]);
+  }, 60_000);
   it("reports a real dropped model connection without retries or leaking request credentials", async () => {
     const f = await fixture(); f.fake.scripts.push({ kind: "disconnect" });
     const task = f.app.runtime.input(f.conversation, "验证网络中断", id());
@@ -706,6 +698,16 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const link = f.app.store.get("SELECT * FROM a2a_messages")!;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", link.child_task_id)?.status === "cancelled");
     expect(f.app.store.get("SELECT status FROM tool_calls WHERE id=?", link.call_id)?.status).toBe("cancelled");
+    expect(link.status).toBe("cancelled");
+    await wait(() => !f.app.runtime.workers.size);
+    // Simulate the persisted stop barrier before the old process observed exit.
+    f.app.store.run("UPDATE tasks SET status='cancelling',ended_at=NULL WHERE id IN (?,?)", parent, link.child_task_id);
+    const requests = f.fake.requests.length;
+    await f.app.close(); f.owned.apps.splice(0, 1);
+    const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
+    expect(reopened.store.all("SELECT status FROM tasks WHERE id IN (?,?)", parent, link.child_task_id)).toEqual([{ status: "cancelled" }, { status: "cancelled" }]);
+    expect(reopened.runtime.workers.size).toBe(0); expect(f.fake.requests).toHaveLength(requests);
+    expect(reopened.store.all("SELECT active_task_id FROM agent_inboxes WHERE active_task_id IN (?,?)", parent, link.child_task_id)).toEqual([]);
   }, 60_000);
   it("binds an outbound Device Node, reads a granted directory and rejects traversal", async () => {
     const f = await fixture(), root = path.join(f.root, "shared"); mkdirSync(root); writeFileSync(path.join(root, "paper.txt"), "设备论文文本");
@@ -758,6 +760,33 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(() => f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true)).toThrow("设备授权已变化");
     expect(nodeApp.node.journal.prepare("SELECT COUNT(*) count FROM node_calls").get()?.count).toBe(0);
     f.app.runtime.cancel(task);
+  }, 40_000);
+  it.each([false, true])("stops an owned terminal process through DCP after disconnect=%s and never resumes a cancelled task", async (disconnect) => {
+    const f = await fixture(), root = path.join(f.root, "cancel-command"); mkdirSync(root);
+    const nodeApp = await createApp({ dir: path.join(f.root, "device"), key: randomBytes(32), token: "node-owner-token" }); f.owned.apps.push(nodeApp);
+    const pair = f.app.gateway.pair("Cancellation fixture"); nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: true }); await wait(() => nodeApp.node.status === "已连接");
+    const command = process.platform === "win32" ? "Write-Output SYNTHETIC_STARTED; Start-Sleep -Seconds 10; Write-Output SHOULD_NOT_PRINT" : "echo SYNTHETIC_STARTED; sleep 10; echo SHOULD_NOT_PRINT";
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "stop-shell", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command }) }] });
+    const task = f.app.runtime.input(f.conversation, "停止隔离终端", id()); await wait(() => !!approval(f.app)); const grant = approval(f.app); f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true);
+    await wait(() => nodeApp.node.commands.size === 1);
+    const child = [...nodeApp.node.commands][0], receipt = nodeApp.node.journal.prepare("SELECT * FROM node_calls WHERE capability='device.exec'").get()!;
+    await expect(nodeApp.node.message(nodeApp.node.socket!, { type: "cancel", callId: receipt.call_id, argumentHash: "wrong-digest" })).rejects.toThrow("identity conflict");
+    expect(nodeApp.node.activeCall?.controller.signal.aborted).toBe(false);
+    if (disconnect) { nodeApp.node.socket!.terminate(); await wait(() => !f.app.gateway.sockets.has(pair.deviceId)); }
+    const stopped = Date.now(); f.app.runtime.cancel(task);
+    if (disconnect) {
+      await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "cancelled");
+      expect(nodeApp.node.activeCall?.controller.signal.aborted).toBe(false); nodeApp.node.connect();
+    }
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "cancelled" && nodeApp.node.commands.size === 0, 6000);
+    expect(Date.now() - stopped).toBeLessThan(6000); expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    await wait(() => f.app.store.get("SELECT status FROM device_calls WHERE id=?", receipt.call_id)?.status === "failed");
+    const result = JSON.parse(String(nodeApp.node.journal.prepare("SELECT result_json FROM node_calls WHERE call_id=?").get(receipt.call_id)?.result_json));
+    expect(result.cancelled).toBe(true); expect(result.stdout).not.toContain("SHOULD_NOT_PRINT"); expect(nodeApp.node.activeCall).toBeUndefined();
+    await f.app.close(); f.owned.apps.splice(0, 1);
+    const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
+    expect(reopened.store.get("SELECT status FROM tasks WHERE id=?", task)?.status).toBe("cancelled");
+    expect(f.fake.requests).toHaveLength(1); expect(reopened.runtime.workers.has(task)).toBe(false);
   }, 40_000);
   it("recovers an in-flight A2A delegation after Core restart without creating a second child", async () => {
     const f = await fixture();

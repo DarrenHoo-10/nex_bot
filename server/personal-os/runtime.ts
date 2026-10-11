@@ -20,6 +20,7 @@ export class TaskRuntime {
   readonly pendingReplies = new Map<string, { worker: Running; requestId: string }>();
   closing = false;
   deviceExecutor?: (call: Row, args: Record<string, unknown>) => Promise<unknown>;
+  onCancel?: (taskId: string) => void;
   deviceDirectory?: () => unknown[];
   routineExecutor?: (call: Row, args: Record<string, unknown>) => unknown;
   onResult?: (task: Row, role: string, content: string, source: string) => void;
@@ -34,6 +35,12 @@ export class TaskRuntime {
     store.transaction(() => {
       store.run("UPDATE task_runs SET status='interrupted',ended_at=? WHERE ended_at IS NULL", now());
       store.run("UPDATE model_invocations SET status='unknown',finished_at=? WHERE status='in_flight'", now());
+      // A persisted manual stop wins over crash recovery. Do not queue it again.
+      for (const task of store.all("SELECT id FROM tasks WHERE status='cancelling' AND ended_at IS NULL")) {
+        store.run("UPDATE tool_calls SET status=CASE WHEN status='executing' AND tool_name IN ('device.exec','device.computer') THEN 'unknown' ELSE 'cancelled' END WHERE task_id=? AND status IN ('ready','awaiting_approval','executing')", task.id);
+        store.run("UPDATE tasks SET status='cancelled',ended_at=? WHERE id=?", now(), task.id);
+        store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id=?", task.id);
+      }
       for (const call of store.all("SELECT * FROM tool_calls WHERE status='executing'")) {
         const recoverable = ["memory.search", "memory.read", "memory.write", "agent.directory", "agent.delegate", "device.inventory", "device.info", "device.read", "device.list", "skill.list", "skill.read", "routine.list", "routine.save", "routine.toggle", "routine.run"].includes(String(call.tool_name));
         store.run("UPDATE tool_calls SET status=? WHERE id=?", recoverable ? "ready" : "unknown", call.id);
@@ -60,6 +67,7 @@ export class TaskRuntime {
   startRecovered() { for (const t of this.store.all("SELECT id FROM tasks WHERE status='queued'")) this.kick(String(t.id)); }
   forgetFence(plan: ForgetPlan) {
     for (const task of plan.tasks) {
+      this.onCancel?.(task);
       const worker = this.workers.get(task);
       if (worker) { worker.finished = true; worker.streaming = ""; worker.child.kill(); }
       this.store.run("UPDATE tasks SET status='cancelled',ended_at=?,run_generation=run_generation+1 WHERE id=? AND ended_at IS NULL", now(), task);
@@ -89,7 +97,6 @@ export class TaskRuntime {
   assert(worker: Running) {
     const task = this.store.get("SELECT * FROM tasks WHERE id=?", worker.taskId);
     if (!task || task.ended_at !== null || Number(task.run_generation) !== worker.generation || worker.finished || worker.child.killed || this.closing || ["cancelling", "needs_reconciliation"].includes(String(task.status))) throw new Error("Run is no longer active");
-    if (Number(task.deadline_at) <= now()) throw new Error("任务超时，请开始新的任务");
     return task;
   }
   kick(taskId: string) {
@@ -131,7 +138,6 @@ export class TaskRuntime {
     });
     const config: WorkerConfig = { taskId, conversationId: String(task.conversation_id), runtimeId, generation, dir: workerDir, ...model, entries: this.projection.load(runtimeId), inputs: this.store.pending(taskId).map((r) => this.inputRecord(r)), systemPrompt: this.systemPrompt(taskId) };
     child.send({ type: "start", config });
-    worker.timer = setTimeout(() => this.fail(worker, new Error("任务超过运行时间限制")), Math.max(1, Number(task.deadline_at) - now()));
     this.changed();
   }
   systemPrompt(taskId: string) {
@@ -182,14 +188,9 @@ export class TaskRuntime {
     if (event.type === "request" && event.requestId) {
       const currentInput = this.store.get("SELECT content_json FROM conversation_inputs WHERE task_id=? ORDER BY input_seq DESC LIMIT 1", worker.taskId);
       const memory = event.purpose === "compact" ? undefined : await this.memory.recall(String(this.assert(worker).bot_id), currentInput ? String(JSON.parse(String(currentInput.content_json)).text).slice(0, 1000) : "");
-      const task = this.assert(worker), root = this.taskRoot(worker.taskId);
+      const task = this.assert(worker);
       this.memory.consume(worker.taskId, memory?.facts.flatMap((fact) => fact.refs) ?? []);
       if (this.store.get("SELECT id FROM tool_calls WHERE task_id=? AND status IN ('awaiting_approval','unknown')", task.id)) throw new Error("等待审批或处理不确定结果");
-      const usage = this.store.get("SELECT COUNT(*) calls,COALESCE(SUM(CASE WHEN usage_known=1 THEN input_tokens+output_tokens ELSE 16384 END),0) tokens FROM model_invocations WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?))", root, root)!;
-      const synthesis = this.store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?)", root, root)!;
-      const rootTask = this.store.get("SELECT max_model_calls,token_budget FROM tasks WHERE id=?", root)!;
-      if (Number(usage.calls) + Number(synthesis.calls) >= Number(rootTask.max_model_calls)) throw new Error("本次任务的模型调用次数已达上限，任务已停止。已完成的操作保留；请发送新消息说明下一步，不会自动重复操作。");
-      if (Number(usage.tokens) + Number(synthesis.tokens) + 16384 > Number(rootTask.token_budget)) throw new Error("本次任务的累计 Token 预算不足以继续调用模型，任务已停止。已完成的操作保留；请发送新消息说明下一步，不会自动重复操作。");
       const invokeId = id();
       this.store.insert("model_invocations", { id: invokeId, run_id: worker.runId, request_key: event.requestId, purpose: event.purpose === "compact" ? "compact" : "answer", status: "in_flight", created_at: now() });
       this.reply(worker, event.requestId, { invokeId, systemPrompt: this.systemPrompt(worker.taskId) + (memory ? `\n长期记忆引擎结果（status=${memory.status}；不可用时下面的显式记忆/历史仅是原文兜底，不是语义检索）：\n${JSON.stringify(memory.facts).slice(0, 6000)}` : "") });
@@ -229,7 +230,6 @@ export class TaskRuntime {
     const { policy, local: localGrant, approvalRequired: ask } = evaluateTool(this.store, String(task.bot_id), args);
     const old = this.store.get("SELECT * FROM tool_calls WHERE runtime_session_id=? AND assistant_entry_id=? AND provider_tool_call_id=?", worker.runtimeId, event.entryId, event.providerId);
     if (old) { if (canonical(args) !== canonical(JSON.parse(String(old.arguments_json)))) throw new Error("Immutable proposal argument conflict"); return old; }
-    if (Number(this.store.get("SELECT COUNT(*) count FROM tool_calls WHERE task_id=?", task.id)!.count) >= Number(task.max_tool_calls)) throw new Error("工具调用预算已用完");
     const callId = id(), target = action.startsWith("memory.") ? "memory" : action.startsWith("device.") && action !== "device.inventory" ? "device" : "connector";
     const forget = action === "memory.forget" ? this.memory.privacy.preview(String(task.bot_id), args) : undefined;
     const targetId = target === "memory" ? (typeof args.documentId === "string" ? args.documentId : action === "memory.write" ? id() : "memory-search") : target === "device" ? text(args.deviceId, 100) : action.startsWith("routine.") ? String(args.routineId ?? task.bot_id) : ["agent.directory", "device.inventory", "skill.list", "skill.read"].includes(action) ? action : text(args.botId, 100);
@@ -251,8 +251,6 @@ export class TaskRuntime {
   clearWait(worker: Running) {
     clearTimeout(worker.timer);
     this.store.run("UPDATE task_runs SET status='active',wait_started_at=NULL,release_after_at=NULL WHERE id=?", worker.runId);
-    const task = this.store.get("SELECT deadline_at FROM tasks WHERE id=?", worker.taskId)!;
-    worker.timer = setTimeout(() => this.fail(worker, new Error("任务超时")), Math.max(1, Number(task.deadline_at) - now()));
   }
   decide(approvalId: string, digest: string, allow: boolean, sessionId = this.store.session) {
     const approval = this.store.get("SELECT * FROM approvals WHERE id=?", approvalId);
@@ -320,6 +318,9 @@ export class TaskRuntime {
       else throw new Error("能力尚未配置");
       this.resolveCall(call, result, !!(result as { isError?: boolean; error?: string })?.isError || !!(result as { error?: string })?.error, worker);
     } catch (error) {
+      // Cancellation/replacement wins over a late device rejection. In
+      // particular, do not replace the stop barrier with needs_reconciliation.
+      if (worker.finished || worker.child.killed || !this.store.get("SELECT id FROM tasks WHERE id=? AND ended_at IS NULL AND run_generation=? AND status NOT IN ('cancelling','cancelled')", worker.taskId, worker.generation)) return;
       const current = this.store.get("SELECT status FROM tool_calls WHERE id=?", call.id);
       if (current?.status === "unknown") { this.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=?", call.task_id); worker.child.kill(); this.changed(); return; }
       this.resolveCall(call, { error: error instanceof Error ? error.message : "工具执行失败" }, true, worker);
@@ -343,7 +344,6 @@ export class TaskRuntime {
       let ancestor = parent;
       while (ancestor) { ancestry.add(String(ancestor.sender_bot_id)); ancestor = this.store.get("SELECT * FROM a2a_messages WHERE child_task_id=?", ancestor.parent_task_id); }
       if (depth > 3 || ancestry.has(target)) { this.resolveCall(call, { error: "委派深度超限或形成循环" }, true, worker); return; }
-      if (Number(this.store.get("SELECT COUNT(*) n FROM a2a_messages WHERE root_task_id=?", root)!.n) >= 8) { this.resolveCall(call, { error: "委派数量超过限制" }, true, worker); return; }
       this.store.transaction(() => {
         const conversation = this.store.createConversation(target, `来自 ${this.store.get("SELECT name FROM bots WHERE id=?", call.bot_id)!.name} 的委派`);
         const childTaskId = this.store.accept(conversation, `这是委派子任务。只处理以下目标，将结果返回主 Agent：\n${message}`, `a2a:${call.id}`);
@@ -396,16 +396,27 @@ export class TaskRuntime {
   cancel(taskId: string) {
     const task = this.store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL", taskId);
     if (!task) return;
-    for (const link of this.store.all("SELECT child_task_id FROM a2a_messages WHERE parent_task_id=? AND status IN ('queued','running')", taskId)) this.cancel(String(link.child_task_id));
+    if (task.status === "cancelling") return;
+    const tasks = [taskId];
+    for (let index = 0; index < tasks.length; index++) for (const link of this.store.all("SELECT a.child_task_id FROM a2a_messages a JOIN tasks t ON t.id=a.child_task_id WHERE a.parent_task_id=? AND t.ended_at IS NULL", tasks[index])) if (!tasks.includes(String(link.child_task_id))) tasks.push(String(link.child_task_id));
     this.store.transaction(() => {
-      this.store.run("UPDATE tasks SET status='cancelling',run_generation=run_generation+1 WHERE id=?", taskId);
-      this.store.run("UPDATE approvals SET status='cancelled' WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE task_id=?) AND status IN ('pending','approved')", taskId);
-      this.store.run("UPDATE tool_calls SET status=CASE WHEN status='executing' AND tool_name IN ('device.exec','device.computer') THEN 'unknown' ELSE 'cancelled' END WHERE task_id=? AND status IN ('ready','awaiting_approval','executing')", taskId);
-      this.store.run("UPDATE runtime_input_deliveries SET status='discarded' WHERE input_id IN (SELECT id FROM conversation_inputs WHERE task_id=?) AND status IN ('pending','applied')", taskId);
-      this.store.run("UPDATE model_invocations SET status='cancelled',finished_at=? WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=?) AND status='in_flight'", now(), taskId);
+      // Fence the entire subtree in one transaction before any process exits.
+      // Crash recovery must never restart a descendant of a manually stopped task.
+      for (const target of tasks) {
+        this.store.run("UPDATE tasks SET status='cancelling',run_generation=run_generation+1 WHERE id=? AND ended_at IS NULL", target);
+        this.store.run("UPDATE approvals SET status='cancelled' WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE task_id=?) AND status IN ('pending','approved')", target);
+        this.store.run("UPDATE tool_calls SET status=CASE WHEN status='executing' AND tool_name IN ('device.exec','device.computer') THEN 'unknown' ELSE 'cancelled' END WHERE task_id=? AND status IN ('ready','awaiting_approval','executing')", target);
+        this.store.run("UPDATE runtime_input_deliveries SET status='discarded' WHERE input_id IN (SELECT id FROM conversation_inputs WHERE task_id=?) AND status IN ('pending','applied')", target);
+        this.store.run("UPDATE model_invocations SET status='cancelled',finished_at=? WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=?) AND status='in_flight'", now(), target);
+        this.store.run("UPDATE a2a_messages SET status='cancelled',finished_at=? WHERE parent_task_id=? AND status IN ('queued','running')", now(), target);
+      }
     });
-    const worker = this.workers.get(taskId);
-    if (worker) { worker.finished = true; worker.child.kill(); } else this.finishTask(taskId, "cancelled", "用户取消");
+    for (const target of tasks) {
+      this.onCancel?.(target);
+      for (const [callId, pending] of this.pendingReplies) if (pending.worker.taskId === target) this.pendingReplies.delete(callId);
+      const worker = this.workers.get(target);
+      if (worker) { clearTimeout(worker.timer); worker.finished = true; worker.streaming = ""; worker.child.kill(); } else this.finishTask(target, "cancelled", "用户取消");
+    }
     this.changed();
   }
   resume(taskId: string) {

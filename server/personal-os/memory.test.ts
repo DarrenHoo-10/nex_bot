@@ -192,6 +192,34 @@ it("rechecks a revoked search permission while a recall is in flight", async () 
   f.store.run("UPDATE bot_policies SET policy_json='{}',version=version+1 WHERE bot_id=?", f.bot);
   release(); expect(await inflight).toEqual({ status: "disabled", facts: [] });
 });
+it("does not apply background quotas to task reflection and aborts its model request on manual stop", async () => {
+  const f = fixture(); let hang = false, received = 0, disconnected = false;
+  const model = createServer((request, response) => { void (async () => {
+    for await (const _chunk of request) { void _chunk; } received++;
+    if (hang) { response.once("close", () => { disconnected = true; }); return; }
+    response.writeHead(200, { "Content-Type": "application/json" }); response.end(JSON.stringify({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 3 } }));
+  })(); });
+  await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
+  cleanups.push(async () => { await new Promise<void>((resolve) => { model.close(() => resolve()); model.closeAllConnections(); }); });
+  f.store.saveConfig({ provider: "openai", endpoint: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`, model: "fixture", apiKey: "synthetic-key" });
+  const gateway = new MemoryModelGateway(f.store); await gateway.start(); cleanups.push(() => gateway.close());
+  const bank = f.store.get("SELECT * FROM memory_bank_bindings WHERE bot_id=?", f.bot)!;
+  const post = (taskId = "") => fetch(gateway.origin + "/v1/chat/completions", { method: "POST", headers: { Authorization: "Bearer " + gateway.token, "Content-Type": "application/json", "x-nex-bank": String(bank.provider_bank_id), "x-nex-operation": id(), "x-nex-purpose": taskId ? "reflect" : "retain", "x-nex-task-id": taskId }, body: JSON.stringify({ messages: [{ role: "user", content: "synthetic" }], max_tokens: 100 }) });
+  expect((await post()).status).toBe(200);
+  f.store.run("UPDATE memory_model_invocations SET reserved_tokens=300000");
+  expect((await post()).status).toBe(429);
+  const task = f.store.accept(f.store.createConversation(f.bot), "综合自己的记忆", id()); f.store.run("UPDATE tasks SET status='running' WHERE id=?", task);
+  expect((await post(task)).status).toBe(200);
+  f.store.run("UPDATE memory_model_invocations SET reserved_tokens=500000 WHERE task_id=?", task);
+  expect((await post(task)).status).toBe(200);
+  hang = true; const pending = post(task), deadline = Date.now() + 5000;
+  while (received < 4) { if (Date.now() > deadline) throw new Error("Memory model fixture did not start"); await new Promise((resolve) => setTimeout(resolve, 10)); }
+  f.store.run("UPDATE tasks SET status='cancelling' WHERE id=?", task); gateway.cancelTask(task);
+  expect((await pending).status).toBe(502);
+  while (!disconnected) { if (Date.now() > deadline) throw new Error("Memory model request was not aborted"); await new Promise((resolve) => setTimeout(resolve, 10)); }
+  expect(f.store.get("SELECT status FROM memory_model_invocations WHERE task_id=? ORDER BY created_at DESC LIMIT 1", task)?.status).toBe("unknown");
+  expect(received).toBe(4); expect((await post(task)).status).toBe(403);
+});
 it.each(["openai", "anthropic"])("keeps %s credentials inside Core, attributes every retry and blocks exhausted daily budgets", async (provider) => {
   const f = fixture(), received: Array<{ headers: Row; body: Record<string, unknown> }> = [];
   const model = createServer((request, response) => { void (async () => {

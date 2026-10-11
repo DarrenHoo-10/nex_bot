@@ -47,6 +47,7 @@ export async function createPersonalApp(options: AppOptions) {
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
+  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); memoryService.gateway.cancelTask(taskId); };
   runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed);
   function json(response: ServerResponse, status: number, value: unknown) {

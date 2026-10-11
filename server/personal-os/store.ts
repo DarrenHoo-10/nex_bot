@@ -169,6 +169,13 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 8, checksum: hash(JSON.stringify({ previous, added: "device.exec", preserveEdited: true })), applied_at: now() });
       });
     }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=9")) {
+      const taskControl = readFileSync(new URL("./task-control-schema.sql", import.meta.url), "utf8");
+      this.transaction(() => {
+        this.db.exec(taskControl);
+        this.insert("schema_migrations", { version: 9, checksum: hash(taskControl), applied_at: now() });
+      });
+    }
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -252,8 +259,10 @@ export class CoreStore {
       let task = this.get("SELECT * FROM tasks WHERE conversation_id=? AND ended_at IS NULL", conversationId);
       let kind = "start";
       if (!task) {
-        const taskId = id();
-        this.insert("tasks", { id: taskId, ...this.scope(), conversation_id: conversationId, bot_id: conv.bot_id, initiated_by_session_id: this.session, authorized_session_id: this.session, objective: content, status: "queued", max_model_calls: 24, max_tool_calls: 40, token_budget: 400_000, deadline_at: now() + 30 * 60_000, created_at: now() });
+        const taskId = id(), createdAt = now();
+        // Compatibility fields satisfy the frozen v1 checks only. No effective
+        // task limit, deadline or large finite substitute for infinity exists.
+        this.insert("tasks", { id: taskId, ...this.scope(), conversation_id: conversationId, bot_id: conv.bot_id, initiated_by_session_id: this.session, authorized_session_id: this.session, objective: content, status: "queued", legacy_max_model_calls: 1, legacy_max_tool_calls: 1, legacy_token_budget: 1, legacy_deadline_at: createdAt + 1, created_at: createdAt });
         task = this.get("SELECT * FROM tasks WHERE id=?", taskId)!;
       } else {
         if (task.status === "needs_reconciliation" || task.status === "cancelling") throw new Error("该任务须先处理不确定结果或取消");

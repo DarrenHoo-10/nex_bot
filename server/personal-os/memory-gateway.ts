@@ -12,7 +12,7 @@ export class MemoryModelGateway {
   origin = "";
   busy = false;
   closing = false;
-  readonly controllers = new Set<AbortController>();
+  readonly controllers = new Map<AbortController, string>();
   constructor(readonly store: CoreStore) {
     this.server = createServer((request, response) => {
       const send = (status: number, value: unknown) => { response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); response.end(JSON.stringify(value)); };
@@ -29,13 +29,11 @@ export class MemoryModelGateway {
         if (!/^[0-9a-f-]{36}$/i.test(operation) || !["retain", "consolidate", "reflect"].includes(purpose) || !Array.isArray(body.messages) || body.stream === true) throw new Error("unattributed_memory_model_request");
         const binding = store.get("SELECT * FROM memory_bank_bindings WHERE provider_bank_id=? AND state!='deleted'", bank);
         if (!binding || (binding.bot_id && store.get("SELECT status FROM bots WHERE id=?", binding.bot_id)?.status !== "active")) throw new Error("bank_not_authorized");
-        let root: string | undefined;
         if (taskId) {
           const task = store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL AND status='running'", taskId);
           if (purpose !== "reflect" || !task || (binding.bot_id && binding.bot_id !== task.bot_id) || store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", taskId)) throw new Error("task_not_authorized");
           const policy = store.get("SELECT * FROM bot_policies WHERE bot_id=?", task.bot_id)!;
           if (!policyTools(policy).includes("memory.reflect") || !policyTools(policy).includes("memory.search")) throw new Error("memory_policy_revoked");
-          root = String(store.get("SELECT root_task_id FROM a2a_messages WHERE child_task_id=?", taskId)?.root_task_id ?? taskId);
         }
         const model = store.modelConfig(), maximum = Math.min(8192, Number(body.max_completion_tokens ?? body.max_tokens ?? 4096));
         if (!Number.isSafeInteger(maximum) || maximum < 1) throw new Error("invalid_token_reservation");
@@ -43,21 +41,17 @@ export class MemoryModelGateway {
         const startOfDay = Math.floor(now() / 86_400_000) * 86_400_000;
         const invoice = id();
         store.transaction(() => {
-          const daily = store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE created_at>=?", startOfDay)!;
-          const own = store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE bank_id=? AND created_at>=?", binding.id, startOfDay)!;
+          const daily = store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE task_id IS NULL AND created_at>=?", startOfDay)!;
+          const own = store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE task_id IS NULL AND bank_id=? AND created_at>=?", binding.id, startOfDay)!;
           // Failed/unknown requests keep their reservation; usage absence is
           // never interpreted as free. Each native retry has a separate row.
-          if (Number(daily.calls) >= 100 || Number(daily.tokens) + reserved > 300_000 || Number(own.calls) >= 30 || Number(own.tokens) + reserved > 100_000) throw new Error("memory_daily_budget_exhausted");
-          if (root) {
-            const calls = store.get("SELECT COUNT(*) calls,COALESCE(SUM(CASE WHEN usage_known=1 THEN input_tokens+output_tokens ELSE 16384 END),0) tokens FROM model_invocations WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?))", root, root)!;
-            const memory = store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?)", root, root)!;
-            const limit = store.get("SELECT max_model_calls,token_budget FROM tasks WHERE id=?", root)!;
-            if (Number(calls.calls) + Number(memory.calls) >= Number(limit.max_model_calls) || Number(calls.tokens) + Number(memory.tokens) + reserved > Number(limit.token_budget)) throw new Error("task_memory_budget_exhausted");
-          }
+          // Automatic background maintenance retains its own daily allowance.
+          // User-requested task reflection has no cumulative execution quota.
+          if (!taskId && (Number(daily.calls) >= 100 || Number(daily.tokens) + reserved > 300_000 || Number(own.calls) >= 30 || Number(own.tokens) + reserved > 100_000)) throw new Error("memory_daily_budget_exhausted");
           store.insert("memory_model_invocations", { id: invoice, bank_id: binding.id, engine_operation_id: operation, purpose, task_id: taskId || null, reserved_tokens: reserved, status: "in_flight", created_at: now() });
         });
         this.busy = true;
-        const controller = new AbortController(); this.controllers.add(controller);
+        const controller = new AbortController(); this.controllers.set(controller, taskId);
         const timeout = setTimeout(() => controller.abort(), 90_000);
         try {
           // Drop attribution and caller credentials before forwarding. Only the
@@ -81,7 +75,7 @@ export class MemoryModelGateway {
           const input = Number(usage?.prompt_tokens), output = Number(usage?.completion_tokens);
           store.run("UPDATE memory_model_invocations SET status='succeeded',input_tokens=?,output_tokens=?,finished_at=? WHERE id=?", Number.isSafeInteger(input) && input >= 0 ? input : null, Number.isSafeInteger(output) && output >= 0 ? output : null, now(), invoice);
           // Retired banks cannot receive a late model answer after correction.
-          if (store.get("SELECT provider_bank_id FROM memory_bank_bindings WHERE id=?", binding.id)?.provider_bank_id !== bank || (taskId && store.get("SELECT ended_at FROM tasks WHERE id=?", taskId)?.ended_at !== null)) throw new Error("bank_visibility_changed");
+          if (store.get("SELECT provider_bank_id FROM memory_bank_bindings WHERE id=?", binding.id)?.provider_bank_id !== bank || (taskId && !store.get("SELECT id FROM tasks WHERE id=? AND ended_at IS NULL AND status='running'", taskId))) throw new Error("bank_visibility_changed");
           send(200, result);
         } catch {
           store.run("UPDATE memory_model_invocations SET status='unknown',finished_at=? WHERE id=? AND status='in_flight'", now(), invoice);
@@ -96,9 +90,10 @@ export class MemoryModelGateway {
     this.origin = `http://127.0.0.1:${address.port}`; return this.origin;
   }
   async close() {
-    this.closing = true; for (const controller of this.controllers) controller.abort();
+    this.closing = true; for (const controller of this.controllers.keys()) controller.abort();
     await new Promise<void>((resolve) => { this.server.close(() => resolve()); this.server.closeAllConnections(); });
   }
+  cancelTask(taskId: string) { for (const [controller, task] of this.controllers) if (task === taskId) controller.abort(); }
 }
 
 export function toAnthropic(body: Json): Json {

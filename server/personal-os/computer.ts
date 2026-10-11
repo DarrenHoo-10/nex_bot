@@ -26,7 +26,7 @@ export class ComputerExecutor {
       return this.driver;
     })();
   }
-  async execute(operation: string, parameters: Record<string, unknown>, timeout: number) {
+  async execute(operation: string, parameters: Record<string, unknown>, timeout: number, signal?: AbortSignal) {
     if (!computerOperations.includes(operation)) throw new Error("不支持的 computer use 操作");
     // Explicit sessions, arbitrary browser attachment and network/tool routing
     // cannot be supplied by a model through this adapter.
@@ -48,6 +48,7 @@ export class ComputerExecutor {
       if (parameters.delivery_mode === "foreground" && !this.foregroundAllowed.has(windowKey)) throw new Error("请先尝试后台输入，执行器明确拒绝后再重新观察并申请前台输入");
     }
     const driver = await this.load();
+    if (signal?.aborted) throw new Error("用户已停止电脑操作，未启动输入");
     if (operation === "tools") {
       const listed = JSON.parse(await driver.listToolsJson());
       const tools = Array.isArray(listed) ? listed : listed.tools;
@@ -56,7 +57,7 @@ export class ComputerExecutor {
     }
     const bounded = operation === "get_window_state" ? { ...parameters, max_elements: Math.min(Number(parameters.max_elements) || 200, 500), max_depth: Math.min(Number(parameters.max_depth) || 12, 20), max_dimension: Math.min(Number(parameters.max_dimension) || 1280, 1920) } : parameters;
     let result: NativeResult;
-    try { result = await driver.callTool(operation, JSON.stringify(bounded), { signal: AbortSignal.timeout(Math.max(1, timeout)) }); }
+    try { result = await driver.callTool(operation, JSON.stringify(bounded), { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, timeout))]) : AbortSignal.timeout(Math.max(1, timeout)) }); }
     catch (error) {
       if (computerReads.includes(operation)) throw error;
       this.observed.delete(windowKey);

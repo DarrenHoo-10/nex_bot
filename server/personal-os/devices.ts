@@ -52,7 +52,8 @@ export class DeviceGateway {
           this.store.run("INSERT INTO device_local_grants(device_id,local_grant_id,workspace_id,owner_user_id,policy_version,scope_json,status,reported_at) VALUES(?,'shared',?,?,?,?, 'active',?) ON CONFLICT(device_id,local_grant_id) DO UPDATE SET policy_version=excluded.policy_version,scope_json=excluded.scope_json,status='active',reported_at=excluded.reported_at", deviceId, this.store.workspace, this.store.owner, version, JSON.stringify(scope), now());
           this.store.run("UPDATE device_grants SET status='stale' WHERE device_id=? AND local_policy_version!=?", deviceId, version);
           ws.send(JSON.stringify({ type: "bound", coreId: this.store.get("SELECT core_id FROM workspaces")!.core_id, deviceId, ownerId: this.store.owner }));
-          const unresolved = this.store.all("SELECT d.id,t.argument_hash FROM device_calls d JOIN tool_calls t ON t.id=d.id WHERE d.device_id=? AND d.status='unknown'", deviceId);
+          const unresolved = this.store.all("SELECT d.id,t.argument_hash,k.status task_status FROM device_calls d JOIN tool_calls t ON t.id=d.id JOIN tasks k ON k.id=t.task_id WHERE d.device_id=? AND d.status='unknown'", deviceId);
+          for (const call of unresolved) if (["cancelling", "cancelled"].includes(String(call.task_status))) ws.send(JSON.stringify({ type: "cancel", callId: call.id, argumentHash: call.argument_hash }));
           if (unresolved.length) ws.send(JSON.stringify({ type: "reconcile", calls: unresolved }));
           this.changed();
         }
@@ -110,6 +111,15 @@ export class DeviceGateway {
       this.pending.set(String(call.id), { resolve, reject, timer, deviceId });
       ws.send(JSON.stringify({ type: "call", callId: call.id, canonicalEnvelope: call.canonical_envelope, argumentHash: call.argument_hash, localPolicyVersion: local.policy_version, leaseSeq: 1, leaseExpiresAt: deadline, deadlineAt: deadline, args }));
     });
+  }
+  cancelTask(taskId: string) {
+    for (const call of this.store.all("SELECT d.id,d.device_id,t.argument_hash FROM device_calls d JOIN tool_calls t ON t.id=d.id WHERE t.task_id=? AND d.result_json IS NULL AND d.status IN ('delivered','running','unknown')", taskId)) {
+      this.store.run("UPDATE device_calls SET status='unknown' WHERE id=? AND result_json IS NULL", call.id);
+      const ws = this.sockets.get(String(call.device_id));
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "cancel", callId: call.id, argumentHash: call.argument_hash }));
+      const pending = this.pending.get(String(call.id));
+      if (pending) { clearTimeout(pending.timer); this.pending.delete(String(call.id)); pending.reject(new Error("用户停止了设备执行，等待设备确认结果")); }
+    }
   }
   revoke(deviceId: string) {
     if (deviceId === this.hostDeviceId) throw new Error("主设备无需撤销配对；可在 Agent 工具权限中限制能力");

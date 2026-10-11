@@ -1,5 +1,7 @@
 # Personal Agent 主设备记忆与协作方案
 
+2026-10-11 后续用户决定：[任务不限累计用量与用户停止](2026-10-11-manual-task-control.md) 覆盖本文 Task / A2A / 前台 reflect 的累计预算规则。模型请求继续归属和记账；后台自动维护仍有独立每日额度。用户停止任务同时终止其前台记忆模型请求。
+
 日期：2026-10-11。状态：0.4.0 已实现生产中文资源、scoped recall / observation / reflect、来源展开与因果遗忘；安装包验收以[验证记录](../verification/personal-os.md)为准。本文是完整演进契约，三类知识页与更广的跨设备验收不能据此视为已经实现。当前能力、预算及遗忘边界详见[实现记录](2026-10-11-personal-agent-memory-implementation.md)。
 
 ## 1 主要决策

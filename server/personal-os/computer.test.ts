@@ -10,6 +10,18 @@ function fixture() {
   return { executor, calls, interrupt() { interrupt = true; }, unknown() { unknown = true; }, failObservation() { failObservation = true; } };
 }
 describe("computer use boundary", () => {
+  it("propagates a manual stop to native input and preserves unknown completion without replay", async () => {
+    const f = fixture(), target = { pid: 100111, window_id: 42, text: "synthetic" };
+    await f.executor.execute("get_window_state", target, 1000);
+    let entered!: () => void; const ready = new Promise<void>((resolve) => { entered = resolve; });
+    f.executor.load = async () => ({
+      callTool: async (_name, _args, options) => new Promise((_resolve, reject) => { entered(); options?.signal?.addEventListener("abort", () => reject(new Error("synthetic manual stop")), { once: true }); }),
+      async listToolsJson() { return '{"tools":[]}'; }, async shutdown() {},
+    });
+    const controller = new AbortController(), pending = f.executor.execute("type_text", target, 20_000, controller.signal);
+    await ready; controller.abort(); expect(await pending).toMatchObject({ unknown: true });
+    await expect(f.executor.execute("type_text", target, 1000)).rejects.toThrow("重新观察");
+  });
   it("restores a genuinely enumerated window but requires a fresh screenshot before input", async () => {
     const f = fixture(), target = { pid: 100111, window_id: 42 };
     await expect(f.executor.execute("bring_to_front", target, 1000)).rejects.toThrow("list_windows");

@@ -25,6 +25,7 @@ export class DeviceNode {
   status = "未连接";
   binding?: { coreId: string; deviceId: string; ownerId: string };
   executing = false;
+  activeCall?: { bindingId: string; callId: string; digest: string; controller: AbortController };
   readonly operations = new Set<Promise<void>>();
   readonly commands = new Set<ChildProcess>();
   readonly computer = new ComputerExecutor();
@@ -95,6 +96,19 @@ export class DeviceNode {
         }
       }
     }
+    if (event.type === "cancel") {
+      if (!this.binding || ws !== this.socket) throw new Error("Device is not bound");
+      const bindingId = this.binding.coreId + ":" + this.binding.deviceId;
+      const callId = text(event.callId, 100);
+      const row = this.journal.prepare("SELECT * FROM node_calls WHERE binding_id=? AND call_id=?").get(bindingId, callId);
+      // Reconciliation will acknowledge a command absent from the journal;
+      // cancellation itself must never create or execute a missing command.
+      if (!row) return;
+      if (row.argument_hash !== event.argumentHash) throw new Error("Cancellation identity conflict");
+      if (this.activeCall?.bindingId === bindingId && this.activeCall.callId === callId && this.activeCall.digest === event.argumentHash) this.activeCall.controller.abort();
+      else this.deliver(ws, row);
+      return;
+    }
     if (event.type !== "call") return;
     if (!this.binding || !this.config || ws !== this.socket) throw new Error("Device is not bound");
     const callId = text(event.callId, 100), envelope = text(event.canonicalEnvelope, 100_000), digest = hash(envelope), source = JSON.parse(envelope) as Record<string, unknown>;
@@ -109,6 +123,8 @@ export class DeviceNode {
     if (!["device.info", "device.list", "device.read", "device.exec", "device.computer"].includes(capability)) throw new Error("Unsupported capability");
     this.journal.prepare("INSERT INTO node_calls(binding_id,call_id,local_grant_id,local_policy_version,capability,arguments_json,canonical_envelope,argument_hash,status,lease_seq,lease_expires_at,deadline_at,received_at) VALUES(?,?,'shared',?,?,?,?,?,'received',?,?,?,?)").run(bindingId, callId, this.config.policyVersion, capability, JSON.stringify(args), envelope, digest, leaseSeq, expires, deadline, now());
     this.executing = true;
+    const controller = new AbortController();
+    this.activeCall = { bindingId, callId, digest, controller };
     this.journal.prepare("UPDATE node_calls SET status='running' WHERE binding_id=? AND call_id=?").run(bindingId, callId);
     let result: unknown, failed = false;
     try {
@@ -117,11 +133,12 @@ export class DeviceNode {
       if (capability === "device.info") result = { ...this.identity(), granted: { info: true, read: !!root, exec: this.config.exec, computer: this.config.computer === true } };
       else if (capability === "device.computer") {
         if (!this.config.computer) throw new Error("目标设备未提供屏幕控制执行器");
-        result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(20_000, expires - now()));
+        result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(20_000, expires - now()), controller.signal);
         failed = (result as { isError?: boolean }).isError === true;
       } else if (capability === "device.exec") {
         if (!this.config.exec) throw new Error("设备未授权终端");
-        result = await this.command(text(args.command, 8192), root || os.homedir(), Math.min(20_000, expires - now()));
+        result = await this.command(text(args.command, 8192), root || os.homedir(), Math.min(20_000, expires - now()), controller.signal);
+        failed = !!(result as { error?: string }).error;
       } else {
         if (!root) throw new Error("设备未授权文件目录");
         const file = confined(root, typeof args.path === "string" ? args.path : ".");
@@ -148,7 +165,7 @@ export class DeviceNode {
         }
       }
     } catch (error) { failed = true; result = { error: error instanceof Error ? error.message : "执行失败" }; }
-    finally { this.executing = false; }
+    finally { this.executing = false; this.activeCall = undefined; }
     if (capability === "device.computer" && (result as { unknown?: boolean })?.unknown) {
       this.journal.prepare("UPDATE node_calls SET status='unknown',version=version+1 WHERE binding_id=? AND call_id=?").run(bindingId, callId);
       this.deliver(ws, this.journal.prepare("SELECT * FROM node_calls WHERE binding_id=? AND call_id=?").get(bindingId, callId)!); this.changed(); return;
@@ -159,22 +176,31 @@ export class DeviceNode {
     this.changed();
   }
   deliver(ws: WebSocket, row: Record<string, unknown>) {
+    // An owned operation can finish after its transport reconnects. Deliver
+    // the durable receipt to the current socket only for the same binding.
+    if (this.socket && ws !== this.socket && this.binding && row.binding_id === this.binding.coreId + ":" + this.binding.deviceId) ws = this.socket;
     if (ws.readyState !== WebSocket.OPEN) return;
     if (row.status === "unknown") ws.send(JSON.stringify({ type: "unknown", callId: row.call_id }));
     else if (row.result_json) ws.send(JSON.stringify({ type: "result", callId: row.call_id, argumentHash: row.argument_hash, resultHash: row.result_hash, result: JSON.parse(String(row.result_json)), failed: row.status === "failed" }));
   }
-  command(command: string, root: string, timeout: number): Promise<unknown> {
+  command(command: string, root: string, timeout: number, signal?: AbortSignal): Promise<unknown> {
     // Terminal authority is explicit and covers all OS rights of this user;
     // cwd is convenience, never described as a shell security sandbox.
     return new Promise((resolve) => {
+      if (signal?.aborted) { resolve({ error: "用户停止了终端执行", cancelled: true }); return; }
       const child = process.platform === "win32" ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP } }) : spawn("/bin/sh", ["-c", command], { cwd: root, env: { PATH: process.env.PATH } });
       this.commands.add(child);
-      let stdout = "", stderr = "", timedOut = false;
+      let stdout = "", stderr = "", timedOut = false, cancelled = false;
+      const kill = () => { if (process.platform === "win32" && child.pid) spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); else child.kill("SIGKILL"); };
+      const abort = () => { cancelled = true; kill(); };
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
       child.stdout.on("data", (data: Buffer) => { stdout = (stdout + data.toString()).slice(0, 50_000); });
       child.stderr.on("data", (data: Buffer) => { stderr = (stderr + data.toString()).slice(0, 10_000); });
-      const timer = setTimeout(() => { timedOut = true; if (process.platform === "win32" && child.pid) spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); else child.kill("SIGKILL"); }, Math.max(1, timeout));
-      child.once("error", (e) => { clearTimeout(timer); this.commands.delete(child); resolve({ error: e.message }); });
-      child.once("close", (code) => { clearTimeout(timer); this.commands.delete(child); resolve({ stdout, stderr, code, timedOut }); });
+      const timer = setTimeout(() => { timedOut = true; kill(); }, Math.max(1, timeout));
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); this.commands.delete(child); };
+      child.once("error", (e) => { cleanup(); resolve({ error: e.message }); });
+      child.once("close", (code) => { cleanup(); resolve({ stdout, stderr, code, timedOut, ...(cancelled ? { cancelled: true, error: "用户停止了终端执行" } : {}) }); });
     });
   }
   reconcile(callId: string, version: number) {
@@ -188,6 +214,7 @@ export class DeviceNode {
   }
   async close() {
     this.stopping = true; clearTimeout(this.timer); this.socket?.terminate();
+    this.activeCall?.controller.abort();
     for (const child of this.commands) { if (process.platform === "win32" && child.pid) spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); else child.kill("SIGKILL"); }
     await Promise.allSettled(this.operations); await this.computer.close(); this.journal.close();
   }

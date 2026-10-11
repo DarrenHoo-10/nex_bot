@@ -1,5 +1,65 @@
 # Personal AI OS Windows delivery verification
 
+## Unlimited cumulative tasks and manual Stop (2026-10-11)
+
+The latest user decision supersedes the 400,000-token, 24-model, 40-tool and
+thirty-minute task limits below. Schema v9 renames the frozen v1 limit columns
+to legacy fields without rebuilding task relations or altering old receipts.
+New and existing tasks no longer consult cumulative token/call/time limits.
+Task reflection is accounted separately from capped automatic background
+maintenance. The Agent composer exposes a real Stop button, including while
+waiting for approval or a peer.
+
+Stop atomically fences the whole A2A subtree before killing its workers,
+aborts associated memory-model transport, and cancels owned terminal processes
+over digest-checked DCP. Interrupted native input and unconfirmed device effects
+remain unknown. Recovery cannot restart a persisted manual stop. Offline devices
+receive cancellation again at reconnect; results completing on an old socket
+are delivered through the current socket only for the same authenticated binding.
+A late device failure cannot replace cancelling with needs_reconciliation or
+queue another model request.
+
+The ten-suite regression passes **86 tests, no failures or skips**. After the
+final reconnect receipt correction, the four affected suites pass **61 tests,
+no failures or skips**, including the added disconnected-device case (87 distinct
+cases across the two runs). A real Pi SDK fixture completes **26 model requests,
+42 tools and more than 400,000 accounted tokens** with its old thirty-minute
+deadline in the past. Owned terminal stop is checked both online and after
+disconnect, with no late command output, no follow-up model call and no restart.
+Memory transport cancellation, native input unknown completion, A2A stop and
+persisted cancelling recovery also pass. Evidence is ignored
+`manual-task-control-result.json` and `manual-task-control-final-bundles-result.json`.
+
+Final installed resources are compared by hash with the qualified Core/UI build.
+Before update, **1,292 profile files** are copied to an external private backup
+and all hashes match; the closed profile still matches that backup after the
+final resource copy. All **27 Core/UI program files** match. Neither credentials
+nor messages, memories or private backup contents enter release archives or Git.
+The isolated installed desktop passes all **28 checks**, including an actual
+composer Stop click and disappearance of the processing dots. Final installed
+native Windows tests pass **nine checks** when run sequentially with other
+visible desktop fixtures. The final Client portable EXE passes all **15
+two-client checks**, including message/approval/privacy/reconnect synchronization
+and independent logout without shutting down Core. All fixture model requests
+use synthetic loopback services; this does not claim a paid-provider browser
+workflow or a two-physical-machine network test.
+
+After normal application relaunch, read-only checks confirm Schema **9**, quick
+check **ok**, zero foreign-key violations and enabled primary-device terminal/
+computer capabilities. The desktop shortcut still targets the installed NexBot
+EXE with no arguments. Server/frontend TypeScript, changed-file lint and diff
+checks pass. Detailed private backup/program evidence remains ignored.
+
+Both final packaging commands exit 0. The delivery guide and SHA256SUMS.txt
+are updated. These final hashes supersede earlier 0.5.0 artifacts below.
+The installed update copies qualified program resources; it does not repeat
+the full NSIS installation or replace the user's profile.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Core Setup | 1,614,298,188 | `67280F4122D1474334B202C636D5AB349DC77E3FC8E49F57A114E5FCBA56159B` |
+| Client Portable | 169,425,617 | `711EF6B499D384234EAF0A30F9B24C1E08B8FBBF018DFADB5643BFA23E2F6D5A` |
+
 ## Model-request boundaries and window restoration (2026-10-11)
 
 The reported browser task reached working device tools. Read-only scalar

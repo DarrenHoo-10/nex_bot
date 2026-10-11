@@ -192,9 +192,10 @@ try {
   await until(() => evaluate("!!document.querySelector('.processing-dots')&&document.querySelector('.composer textarea').value===''"));
   const cancelledTask = (await call("state")).tasks.find((task) => task.bot_id === originalBot && ["queued", "running"].includes(task.status));
   if (!cancelledTask) throw new Error("Cancellation fixture has no active Task");
-  await call("cancel", { taskId: cancelledTask.id });
+  await until(() => evaluate("!!document.querySelector('.composer-area [aria-label=\"停止任务\"]')&&!document.querySelector('.composer-area [aria-label=\"停止任务\"]').disabled"));
+  await evaluate("document.querySelector('.composer-area [aria-label=\"停止任务\"]').click()");
   await until(async () => (await call("state")).tasks.some((task) => task.id === cancelledTask.id && task.status === "cancelled"));
-  await until(() => evaluate("!document.querySelector('.processing-dots')"));
+  await until(() => evaluate("!document.querySelector('.processing-dots')&&!document.querySelector('.composer-area [aria-label=\"停止任务\"]')"));
   await evaluate("[...document.querySelectorAll('.inspector-tabs button')].find(b=>b.textContent==='详情').click()");
   const shot = await command("Page.captureScreenshot", { format: "png" });
   const screenshot = path.resolve("release/personal-os/desktop-smoke.png");

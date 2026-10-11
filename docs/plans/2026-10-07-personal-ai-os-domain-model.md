@@ -2,6 +2,8 @@
 
 创建：2026-10-07。更新：2026-10-08。状态：实施设计，尚未接入应用。
 
+2026-10-11 最新任务控制决定：[任务不限累计用量与用户停止](2026-10-11-manual-task-control.md) 优先于本文所有 Task 预算、累计调用上限、任务截止时间和 AdjustTaskBudget 规则。当前应用使用 Schema v9 增量迁移停用旧字段，保留实际用量账本与用户取消；本文其他领域边界仍适用。
+
 2026-10-11 产品修正：[Personal Agent 产品与领域修正](2026-10-11-personal-agent-product-correction.md) 优先于本文中以 Conversation 作为用户入口、一个 Bot 对应多个可见对话的设计。用户面对持久 Agent 联系人与 AgentInbox，Conversation 改为后台任务执行上下文。新增表通过版本 2 增量迁移接入，原任务和权限约束继续有效。
 
 2026-10-11 后续记忆与协作决策以 [主设备记忆与协作方案](2026-10-11-personal-agent-memory-hindsight.md) 为准：Core 仍为模块化单体，真正的 Hindsight 与其 PostgreSQL 在同一主设备运行；BotCard 是实时公开职责目录；内部 A2A 自动执行；接收方按自己的策略与用户资源授权执行，危险操作的 Approval 归属于实际执行 Bot。本文旧版“私有记忆写入逐次审批”和“全部调用提升审批”的默认策略不适用于该升级，现有 DDL 仍需增量迁移验证。
