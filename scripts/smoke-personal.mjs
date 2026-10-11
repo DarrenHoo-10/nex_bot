@@ -57,7 +57,7 @@ try {
   if ((await call("state")).bots.length !== 0 || fake.requests.length !== 0) throw new Error("Fresh Core created default Agents or model calls");
   await until(async () => (await call("state")).node.connected);
   const initialDevice = await call("state");
-  if (!initialDevice.hostDeviceId || initialDevice.node.root || initialDevice.node.exec || initialDevice.node.computer || !initialDevice.node.computerSupported) throw new Error("Primary device bootstrap/capability boundary failed");
+  if (!initialDevice.hostDeviceId || initialDevice.node.root || !initialDevice.node.exec || !initialDevice.node.computer || !initialDevice.node.computerSupported) throw new Error("Primary device bootstrap/capability boundary failed");
   await until(() => evaluate("document.querySelector('.welcome')?.innerText.includes('创建你的第一个 Agent')&&!document.querySelector('.composer')"));
   await evaluate("document.querySelector('.welcome button').click()");
   await evaluate("document.querySelector('.modal input[name=name]').value='Alpha';document.querySelector('.modal form').requestSubmit()");
@@ -66,12 +66,9 @@ try {
   await call("bots", { name: "Gamma" });
   await evaluate("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='设备网络').click()");
   await until(() => evaluate("document.body.textContent.includes('主设备已自动登记')"));
-  const deviceForm = await evaluate("(()=>{const form=[...document.querySelectorAll('.settings-info form')].find(f=>f.textContent.includes('屏幕控制'));const c=[...form.querySelectorAll('input[type=checkbox]')].find(i=>i.parentElement.textContent.includes('屏幕控制'));return {valid:form.checkValidity(),supported:!c.disabled,noPair:!form.querySelector('input[name=token]')};})()");
-  if (!deviceForm.valid || !deviceForm.supported || !deviceForm.noPair) throw new Error("Core device permissions still require a pairing token or mandatory filesystem root");
-  await evaluate("(()=>{const form=[...document.querySelectorAll('.settings-info form')].find(f=>f.textContent.includes('屏幕控制'));[...form.querySelectorAll('input[type=checkbox]')].find(i=>i.parentElement.textContent.includes('屏幕控制')).click();form.requestSubmit();})()");
-  await until(async () => (await call("state")).node.computer === true && (await call("state")).node.connected);
-  await call("node", { root: "", exec: false, computer: false });
-  await until(async () => !(await call("state")).node.computer && (await call("state")).node.connected);
+  const deviceForm = await evaluate("(()=>{const section=[...document.querySelectorAll('.settings-info')].find(f=>f.textContent.includes('本机能力'));const form=section.querySelector('form');return {valid:form.checkValidity(),noCapabilitySwitches:!form.querySelector('input[type=checkbox]'),noPair:!form.querySelector('input[name=token]'),defaults:section.textContent.includes('终端和电脑操作默认可用')};})()");
+  if (!deviceForm.valid || !deviceForm.noCapabilitySwitches || !deviceForm.noPair || !deviceForm.defaults) throw new Error("Core still gates default device capabilities behind setup authorization");
+  if (!(await call("state")).node.exec || !(await call("state")).node.computer) throw new Error("Default capabilities not actually enabled");
   await evaluate("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='设置').click()");
   const fixtureEndpoint = fake.origin + "/gateway/v1";
   await evaluate(`(()=>{const input=document.querySelector('input[name=endpoint]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(fixtureEndpoint)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -206,7 +203,7 @@ try {
   if (dom.overflow || dom.errors) throw new Error("Renderer layout/error failed: " + JSON.stringify(dom));
   await evaluate("void window.nex.quit(); true"); await until(() => exited, packageExe?.includes("Portable") ? 180_000 : 65_000);
   if (!JSON.parse(readFileSync(output + ".shutdown.json", "utf8")).graceful) throw new Error("Core required forced shutdown");
-  console.log(JSON.stringify({ passed: true, runtime: "fixed-pi", cases: ["zero-default-Agents", "primary-device-auto-registration", "metadata-only-default-grants", "local-computer-grant-UI", "explicit-Agent-creation", "automatic-A2A", "desktop-boot", "vault", "API-key-settings", "model-request-preview", "optional-Agent-identity", "silent-identity-refresh", "persistent-Agent-contact", "immediate-processing-dots", "pending-reply-dots", "processing-contact-isolation", "reduced-motion", "rejected-input-cleanup", "cancelled-work-cleanup", "SDK-chat", "private-memory", "background-routine", "tray-hide-restore", "compact-A2A-markers", "receiver-reply-collapse", "A2A-peer-navigation", "renderer", "graceful-shutdown"], dom, screenshot, a2aScreenshot, processingScreenshot }));
+  console.log(JSON.stringify({ passed: true, runtime: "fixed-pi", cases: ["zero-default-Agents", "primary-device-auto-registration", "default-terminal-computer-capabilities", "no-capability-authorization-switches", "explicit-Agent-creation", "automatic-A2A", "desktop-boot", "vault", "API-key-settings", "model-request-preview", "optional-Agent-identity", "silent-identity-refresh", "persistent-Agent-contact", "immediate-processing-dots", "pending-reply-dots", "processing-contact-isolation", "reduced-motion", "rejected-input-cleanup", "cancelled-work-cleanup", "SDK-chat", "private-memory", "background-routine", "tray-hide-restore", "compact-A2A-markers", "receiver-reply-collapse", "A2A-peer-navigation", "renderer", "graceful-shutdown"], dom, screenshot, a2aScreenshot, processingScreenshot }));
 } finally {
   ws?.close();
   if (!exited) { if (process.platform === "win32" && child.pid) { const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); await new Promise((resolve) => killer.once("close", resolve)); } else child.kill(); }

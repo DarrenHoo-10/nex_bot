@@ -183,7 +183,7 @@ export async function createPersonalApp(options: AppOptions) {
     const pair = hostPair && store.get("SELECT id FROM devices WHERE id=? AND status='bound'", hostPair.deviceId) ? hostPair : gateway.pair(os.hostname());
     gateway.hostDeviceId = pair.deviceId;
     store.run("INSERT INTO secrets VALUES('host-node-pair',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", store.encrypt(JSON.stringify(pair)));
-    node.configure({ origin, token: pair.token, root: node.config?.root ?? "", exec: node.config?.exec ?? false, computer: node.config?.computer ?? false });
+    node.configure({ origin, token: pair.token, root: node.config?.root ?? "", exec: true, computer: node.computer.available() });
   }
   if (options.hindsight) runtime.memory.ledger.client = new HindsightClient(options.hindsight.endpoint, options.hindsight.token);
   if (store.config()) memoryService.start();

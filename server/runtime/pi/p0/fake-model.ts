@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+// Fixture control-plane health is outside any model-fetch accounting hook.
+const fixtureFetch = globalThis.fetch;
 
 export type FakeScript = (
   | { kind: "openai-text"; text: string }
@@ -150,10 +152,14 @@ function write(res: ServerResponse, status: number, contentType: string, body: s
   res.end(body);
 }
 
-export function startFakeModel(): Promise<FakeModel> {
+export function startFakeModel(probeFetch: typeof fetch = fixtureFetch): Promise<FakeModel> {
   const scripts: FakeScript[] = [];
   const requests: FakeRequest[] = [];
   const server = createServer(async (req, res) => {
+    if (req.method === "GET" && req.url === "/__nex_fixture_health") {
+      write(res, 200, "application/json", JSON.stringify({ fixture: true }));
+      return;
+    }
     const body = await readBody(req);
     const url = req.url ?? "";
     requests.push({ url, body });
@@ -193,11 +199,26 @@ export function startFakeModel(): Promise<FakeModel> {
   });
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    let attempts = 0;
+    const listen = () => server.listen(0, "127.0.0.1", async () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
+      const origin = `http://127.0.0.1:${port}`;
+      try {
+        // Windows can allocate e.g. 6000/10080 when its dynamic range starts
+        // at 1024. Fetch rejects these before sending any model request.
+        // Probe only fixture health; never retry a business/model operation.
+        const response = await probeFetch(origin + "/__nex_fixture_health", { signal: AbortSignal.timeout(5000) });
+        const health = await response.json() as { fixture?: boolean };
+        if (!response.ok || health.fixture !== true) throw new Error("Invalid synthetic model fixture health");
+      } catch (error) {
+        server.closeAllConnections();
+        const badPort = error instanceof Error && error.cause instanceof Error && error.cause.message === "bad port";
+        server.close(() => { if (badPort && ++attempts < 8) listen(); else reject(error); });
+        return;
+      }
       resolve({
-        origin: `http://127.0.0.1:${port}`,
+        origin,
         port,
         scripts,
         requests,
@@ -207,5 +228,6 @@ export function startFakeModel(): Promise<FakeModel> {
         }),
       });
     });
+    listen();
   });
 }

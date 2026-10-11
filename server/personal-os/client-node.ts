@@ -22,6 +22,7 @@ export function createClientNode(dir: string, key: Buffer, changed: () => void, 
   const previous = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
   if (previous && expectedOrigin && JSON.parse(store.decrypt(String(previous.ciphertext))).origin !== expectedOrigin) store.run("DELETE FROM secrets WHERE id='node-config'");
   const node = new DeviceNode(store, changed);
+  if (node.config) node.configure({ ...node.config, exec: true, computer: node.computer.available() });
   return { node, async close() { await node.close(); db.close(); } };
 }
 export function clearClientGrant(dir: string) {

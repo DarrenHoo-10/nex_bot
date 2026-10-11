@@ -1,11 +1,12 @@
 import { canonical, hash, text, type CoreStore, type Row } from "./store.ts";
-import { computerOperations, computerReads } from "./computer.ts";
+import { computerOperations } from "./computer.ts";
+import { dangerousEffect } from "./risk.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
 export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read"] as const;
-// A capability is still fenced by the device's local grant and approval.
-export const basicActions = actions.filter((action) => action !== "device.exec");
+// Device binding, Agent policy and effect-specific approval remain independent.
+export const basicActions = [...actions];
 export function policyTools(policy: Row): string[] {
   const parsed = JSON.parse(String(policy.policy_json)) as { tools?: unknown };
   return Array.isArray(parsed.tools) ? parsed.tools.filter((value): value is string => typeof value === "string" && actions.includes(value as typeof actions[number])) : [];
@@ -22,7 +23,7 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     const scope = JSON.parse(String(local.scope_json));
     if (action === "device.info" && !scope.info) throw new Error("此设备 Node 版本尚不支持系统信息，请更新客户端");
     if (action === "device.computer") {
-      if (!scope.computer) throw new Error("该设备支持 computer use 时，可在设备网络的本机能力中启用屏幕控制");
+      if (!scope.computer) throw new Error("目标设备未提供可用的 computer use 执行器，请检查客户端运行状态");
       const operation = text(args.operation, 80);
       if (!computerOperations.includes(operation)) throw new Error("不支持的 computer use 操作");
       if (args.parameters !== undefined && (!args.parameters || typeof args.parameters !== "object" || Array.isArray(args.parameters) || JSON.stringify(args.parameters).length > 32_000)) throw new Error("电脑操作参数无效");
@@ -50,9 +51,7 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
   }
   else if (action === "memory.search" || action === "memory.reflect") text(args.query, action === "memory.reflect" ? 1000 : 200);
   else if (action === "skill.read") text(args.skillId, 80);
-  // Arbitrary shell is a dangerous effect regardless of command wording.
-  // Reads, own private memory and intra-workspace A2A have no approval flow.
-  return { policy, local, approvalRequired: action === "device.exec" || (action === "device.computer" && !computerReads.includes(String(args.operation))) || action === "memory.delete" || action === "memory.forget" };
+  return { policy, local, approvalRequired: dangerousEffect(args) };
 }
 export function directory(store: CoreStore) {
   const grantVersions = store.all("SELECT g.device_id,g.policy_version,g.status,g.scope_json,d.status device_status FROM device_local_grants g JOIN devices d ON d.id=g.device_id ORDER BY g.device_id");

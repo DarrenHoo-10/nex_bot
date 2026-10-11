@@ -112,7 +112,7 @@ export class DeviceGateway {
     });
   }
   revoke(deviceId: string) {
-    if (deviceId === this.hostDeviceId) throw new Error("主设备无需撤销配对；请在本机能力中关闭相应权限");
+    if (deviceId === this.hostDeviceId) throw new Error("主设备无需撤销配对；可在 Agent 工具权限中限制能力");
     this.store.transaction(() => {
       this.store.run("UPDATE devices SET status='revoked',revoked_at=? WHERE id=?", now(), deviceId);
       this.store.run("UPDATE device_credentials SET status='revoked' WHERE device_id=?", deviceId);

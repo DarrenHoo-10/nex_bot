@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSync, existsSync, unlinkSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -28,7 +28,7 @@ const wait = async (check: () => boolean, milliseconds = 25_000) => {
   while (!check()) {
     for (const f of fixtures) for (const app of f.apps) {
       const failed = app.store.get("SELECT result_summary FROM tasks WHERE status='failed' ORDER BY created_at DESC LIMIT 1");
-      if (failed) throw new Error("Fixture task failed: " + failed.result_summary);
+      if (failed) throw new Error("Fixture task failed: " + failed.result_summary + " " + JSON.stringify({ fixtureModelPort: f.fake.port, modelRequests: f.fake.requests.length }));
     }
     if (Date.now() > deadline) throw new Error("Fixture timeout: " + JSON.stringify(fixtures.map((f) => ({ requests: f.fake.requests.length, tasks: f.apps.map((a) => a.store.all("SELECT status,result_summary FROM tasks")), invocations: f.apps.map((a) => a.store.all("SELECT purpose,status FROM model_invocations")) })))); await new Promise((resolve) => setTimeout(resolve, 30));
   }
@@ -59,21 +59,27 @@ function pendingCleanup(app: App, botId: string) {
   return { action: "memory.delete", documentId: doc.documentId, expectedVersion: doc.version };
 }
 describe("Personal AI OS production workflows in isolated fixtures", () => {
-  it("registers the primary computer without file/shell grants, exposes actual device metadata and keeps its ID through restart", async () => {
+  it("registers the primary computer with default shell/computer capabilities and a separate shared folder, exposes actual device metadata and keeps its ID through restart", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
     await wait(() => f.app.node.status === "已连接");
     const [device] = f.app.gateway.inventory();
-    expect(device).toMatchObject({ role: "core", online: true, granted: { info: true, read: false, exec: false, computer: false }, identity: { architecture: os.arch(), os: os.type(), release: os.release() } });
+    expect(device).toMatchObject({ role: "core", online: true, granted: { info: true, read: false, exec: true, computer: f.app.node.computer.available() }, identity: { architecture: os.arch(), os: os.type(), release: os.release() } });
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "inventory", name: "broker", args: JSON.stringify({ action: "device.inventory" }) }] }, { kind: "openai-tool", calls: [{ id: "info", name: "broker", args: JSON.stringify({ action: "device.info", deviceId: device.id }) }] }, { kind: "openai-text", text: "主电脑识别完成" });
     const taskId = f.app.agents.send(botId, "识别主电脑", "inventory-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=? AND tool_name='device.info'", taskId)?.result_json)).toContain(os.release());
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "default-terminal", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: device.id, command: process.platform === "win32" ? "Convert-Path ." : "pwd" }) }] }, { kind: "openai-text", text: "终端无需共享目录" });
+    const terminal = f.app.agents.send(botId, "查看默认工作目录", "default-terminal-input").taskId;
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", terminal)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
+    const result = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=?", terminal)?.result_json));
+    expect(realpathSync.native(result.stdout.trim())).toBe(realpathSync.native(os.homedir()));
+    expect(f.app.node.config!.root).toBe("");
     expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
     const policyVersion = f.app.node.config!.policyVersion;
     await f.app.close(); f.owned.apps.splice(0, 1);
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
     await wait(() => reopened.node.status === "已连接");
-    expect(reopened.gateway.inventory()[0]).toMatchObject({ id: device.id, role: "core", granted: { read: false, exec: false, computer: false } });
+    expect(reopened.gateway.inventory()[0]).toMatchObject({ id: device.id, role: "core", granted: { read: false, exec: true, computer: reopened.node.computer.available() } });
     expect(reopened.node.config!.policyVersion).toBe(policyVersion);
     // Older Nodes can share files without implementing device.info. The
     // public directory must not invent that extra capability.
@@ -82,6 +88,77 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const state = await fetch(reopened.origin + "/api/state", { headers: { Authorization: "Bearer " + f.token } }).then((response) => response.json()) as { directory: { id: string; capabilities: string[] }[] };
     expect(state.directory.find((bot) => bot.id === botId)!.capabilities).toContain("device.read");
     expect(state.directory.find((bot) => bot.id === botId)!.capabilities).not.toContain("device.info");
+  }, 60_000);
+  it("upgrades an untouched previous default policy, preserves identical user-edited restrictions and freezes the shipped migration", async () => {
+    const f = await fixture(), untouched = String(f.bots[1].id), edited = String(f.bots[2].id);
+    const tools = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", untouched)?.policy_json)).tools.filter((tool: string) => tool !== "device.exec");
+    f.app.agents.updatePolicy({ id: edited, version: 1, tools });
+    f.app.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools }), untouched);
+    const previousHash = f.app.store.get("SELECT checksum FROM schema_migrations WHERE version=7")?.checksum;
+    f.app.node.configure({ ...f.app.node.config, exec: false, computer: false });
+    f.app.store.run("DELETE FROM schema_migrations WHERE version=8");
+    await f.app.close(); f.owned.apps.splice(0, 1);
+    const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
+    await wait(() => reopened.node.status === "已连接");
+    expect(reopened.node.config).toMatchObject({ exec: true, computer: reopened.node.computer.available(), root: "" });
+    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", untouched)?.policy_json)).tools).toContain("device.exec");
+    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", edited)?.policy_json)).tools).not.toContain("device.exec");
+    expect(reopened.store.get("SELECT checksum FROM schema_migrations WHERE version=7")?.checksum).toBe(previousHash);
+  });
+  it("releases an old pending read-only terminal approval after restart and executes its original call once", async () => {
+    const f = await fixture(), botId = String(f.bots[1].id);
+    await wait(() => f.app.node.status === "已连接");
+    // Simulate the former blanket approval at the proposal boundary without
+    // changing the immutable arguments, envelope or Pi source entry.
+    const propose = f.app.runtime.propose.bind(f.app.runtime);
+    f.app.runtime.propose = (worker, event) => {
+      const call = propose(worker, event);
+      if (call.provider_tool_call_id !== "legacy-pending-query") return call;
+      f.app.store.insert("approvals", { id: id(), tool_call_id: call.id, ...f.app.store.scope(), argument_hash: call.argument_hash, bot_policy_version: JSON.parse(String(call.authorization_snapshot_json)).policyVersion, status: "pending", created_at: Date.now(), expires_at: Date.now() + 60_000 });
+      f.app.store.run("UPDATE tool_calls SET status='awaiting_approval' WHERE id=?", call.id);
+      f.app.store.run("UPDATE tasks SET status='awaiting_approval' WHERE id=?", call.task_id);
+      return f.app.store.get("SELECT * FROM tool_calls WHERE id=?", call.id)!;
+    };
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "legacy-pending-query", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: f.app.gateway.hostDeviceId, command: process.platform === "win32" ? "Convert-Path ." : "pwd" }) }] }, { kind: "openai-text", text: "旧版终端查询已继续" });
+    const taskId = f.app.agents.send(botId, "合成旧版终端查询", "legacy-pending-query-input").taskId;
+    await wait(() => !!approval(f.app));
+    const old = approval(f.app);
+    expect(f.app.node.journal.prepare("SELECT COUNT(*) n FROM node_calls WHERE capability='device.exec'").get()?.n).toBe(0);
+    await f.app.close(); f.owned.apps.splice(0, 1);
+    const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
+    await wait(() => reopened.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    expect(reopened.store.get("SELECT status FROM approvals WHERE id=?", old.id)?.status).toBe("cancelled");
+    expect(reopened.store.get("SELECT status FROM tool_calls WHERE id=?", old.tool_call_id)?.status).toBe("succeeded");
+    expect(reopened.node.journal.prepare("SELECT COUNT(*) n FROM node_calls WHERE capability='device.exec'").get()?.n).toBe(1);
+  }, 60_000);
+  it("does not silently execute a legacy GUI input whose effect was never classified", async () => {
+    const f = await fixture(), botId = String(f.bots[1].id);
+    await wait(() => f.app.node.status === "已连接");
+    f.app.node.computer.available = () => true;
+    f.app.node.configure({ ...f.app.node.config, computer: true });
+    await wait(() => f.app.node.status === "已连接" && f.app.gateway.inventory()[0].granted.computer);
+    // Simulate the former blanket approval at the proposal boundary without
+    // changing the immutable arguments, envelope or Pi source entry.
+    const propose = f.app.runtime.propose.bind(f.app.runtime);
+    f.app.runtime.propose = (worker, event) => {
+      const call = propose(worker, event);
+      if (call.provider_tool_call_id !== "legacy-pending-gui") return call;
+      f.app.store.insert("approvals", { id: id(), tool_call_id: call.id, ...f.app.store.scope(), argument_hash: call.argument_hash, bot_policy_version: JSON.parse(String(call.authorization_snapshot_json)).policyVersion, status: "pending", created_at: Date.now(), expires_at: Date.now() + 60_000 });
+      f.app.store.run("UPDATE tool_calls SET status='awaiting_approval' WHERE id=?", call.id);
+      f.app.store.run("UPDATE tasks SET status='awaiting_approval' WHERE id=?", call.task_id);
+      return f.app.store.get("SELECT * FROM tool_calls WHERE id=?", call.id)!;
+    };
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "legacy-pending-gui", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId: f.app.gateway.hostDeviceId, operation: "press_key", parameters: { pid: 999999, window_id: 777777, key: "Enter" } }) }] }, { kind: "openai-text", text: "合成旧操作未执行" });
+    const taskId = f.app.agents.send(botId, "合成旧版未知影响输入", "legacy-pending-gui-input").taskId;
+    await wait(() => !!approval(f.app));
+    const old = approval(f.app);
+    expect(f.app.node.journal.prepare("SELECT COUNT(*) n FROM node_calls WHERE capability='device.computer'").get()?.n).toBe(0);
+    await f.app.close(); f.owned.apps.splice(0, 1);
+    const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
+    expect(reopened.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status).toBe("awaiting_approval");
+    expect(reopened.store.get("SELECT status FROM approvals WHERE id=?", old.id)?.status).toBe("pending");
+    expect(reopened.store.get("SELECT status FROM tool_calls WHERE id=?", old.tool_call_id)?.status).toBe("awaiting_approval");
+    expect(reopened.node.journal.prepare("SELECT COUNT(*) n FROM node_calls WHERE capability='device.computer'").get()?.n).toBe(0);
   }, 60_000);
   it("reads generic bundled skills without agents by profession and keeps edited restrictions during migration", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
@@ -97,7 +174,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
     expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory"]);
   }, 60_000);
-  it("fences computer input with local grants and executing-agent approval, returning screenshot images to the vision model", async () => {
+  it("runs ordinary computer input automatically and approves dangerous effects only in the executing Agent, returning screenshot images to the vision model", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
     await wait(() => f.app.node.status === "已连接");
     f.app.node.computer.available = () => true;
@@ -115,21 +192,18 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "input", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, operation: "type_text", parameters: { ...parameters, text: "合成文本" } }) }] }, { kind: "openai-text", text: "输入结果已处理" });
     const input = f.app.agents.send(botId, "输入合成文本", "computer-input").taskId;
-    await wait(() => !!approval(f.app));
-    expect(executed).toEqual(["get_window_state"]); expect(f.app.store.get("SELECT bot_id FROM tool_calls WHERE id=?", approval(f.app).tool_call_id)?.bot_id).toBe(botId);
-    const allowed = approval(f.app); f.app.runtime.decide(String(allowed.id), String(allowed.argument_hash), true);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", input)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     expect(executed).toEqual(["get_window_state", "type_text"]);
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "denied", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, operation: "press_key", parameters: { ...parameters, key: "Enter" } }) }] }, { kind: "openai-text", text: "未执行输入" });
+    expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "denied", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, risk: "dangerous", riskReason: "合成危险提交", operation: "press_key", parameters: { ...parameters, key: "Enter" } }) }] }, { kind: "openai-text", text: "未执行输入" });
     const deniedTask = f.app.agents.send(botId, "合成拒绝输入", "computer-denied").taskId;
-    await wait(() => !!approval(f.app)); const denied = approval(f.app); f.app.runtime.decide(String(denied.id), String(denied.argument_hash), false);
+    await wait(() => !!approval(f.app)); const denied = approval(f.app); expect(f.app.store.get("SELECT bot_id FROM tool_calls WHERE id=?", denied.tool_call_id)?.bot_id).toBe(botId); f.app.runtime.decide(String(denied.id), String(denied.argument_hash), false);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", deniedTask)?.status === "succeeded");
     expect(executed).toEqual(["get_window_state", "type_text"]);
     await wait(() => !f.app.runtime.workers.size);
     f.app.node.computer.execute = async () => ({ unknown: true, error: "合成 Native 输入中断", images: [] });
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "unknown-input", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, operation: "type_text", parameters: { ...parameters, text: "合成不确定输入" } }) }] });
     const unknownTask = f.app.agents.send(botId, "合成中断输入", "computer-unknown").taskId;
-    await wait(() => !!approval(f.app)); const unknown = approval(f.app); f.app.runtime.decide(String(unknown.id), String(unknown.argument_hash), true);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", unknownTask)?.status === "needs_reconciliation");
     expect(f.app.node.publicState().unknownCalls).toHaveLength(1);
     expect(f.app.store.get("SELECT status FROM tool_calls WHERE task_id=?", unknownTask)?.status).toBe("unknown");
@@ -162,7 +236,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       old.runtime.memory.write(standard, { title: "合成旧记忆", content: "旧记忆应保留" });
     } finally { await old.close(); }
     const upgraded = await createApp({ dir, key: f.key, token: f.token }); f.owned.apps.push(upgraded);
-    expect(upgraded.store.get("SELECT MAX(version) version FROM schema_migrations")?.version).toBe(7);
+    expect(upgraded.store.get("SELECT MAX(version) version FROM schema_migrations")?.version).toBe(8);
     expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", standard!)?.policy_json)).tools).toContain("routine.save");
     expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", restricted!)?.policy_json)).tools).toEqual(["agent.directory"]);
     expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", original!)?.policy_json)).tools).toContain("routine.save");
@@ -175,8 +249,9 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const startNode: typeof createClientNode = process.env.NEX_TEST_CLIENT_BUNDLE ? (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_CLIENT_BUNDLE)).href)).createClientNode : createClientNode;
     const client = startNode(dir, randomBytes(32), () => {}, f.app.origin);
     try {
-      const pair = f.app.gateway.pair("Thin fixture"); client.node.configure({ origin: f.app.origin, token: pair.token, root: shared, exec: true });
+      const pair = f.app.gateway.pair("Thin fixture"); client.node.configure({ origin: f.app.origin, token: pair.token, root: shared });
       await wait(() => client.node.status === "已连接");
+      expect(client.node.publicState()).toMatchObject({ exec: true, computer: client.node.computer.available() });
       expect(existsSync(path.join(dir, "core.db"))).toBe(false); expect(existsSync(path.join(dir, "memory"))).toBe(false);
       f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-read", name: "broker", args: JSON.stringify({ action: "device.read", deviceId: pair.deviceId, path: "client.txt" }) }] }, { kind: "openai-text", text: "合成文件已读" });
       const readTask = f.app.agents.send(String(f.bots[0].id), "读客户端文件", "thin-read-input").taskId;
@@ -305,7 +380,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const botId = empty.store.createBot("任意名字", "");
     expect(empty.agents.contacts()).toHaveLength(1);
     expect(empty.store.get("SELECT instructions FROM bots WHERE id=?", botId)?.instructions).toBe("");
-    expect(JSON.parse(String(empty.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).not.toContain("device.exec");
+    expect(JSON.parse(String(empty.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toContain("device.exec");
     empty.runtime.memory.write(botId, { title: "独立记忆", content: "沿用稳定身份" });
     empty.agents.updateProfile({ id: botId, name: "另一个任意名字", instructions: "", version: 1 });
     expect(empty.runtime.memory.prompt(botId)).toContain("沿用稳定身份");
@@ -641,7 +716,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const pair = f.app.gateway.pair("Grant node");
     expect(() => nodeApp.node.configure({ origin: "http://10.example.invalid", token: pair.token, root })).toThrow();
     nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: true }); await wait(() => nodeApp.node.status === "已连接");
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "old-grant", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: "Get-Content -LiteralPath paper.txt" }) }] });
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "old-grant", name: "broker", args: JSON.stringify({ action: "device.exec", risk: "dangerous", deviceId: pair.deviceId, command: "Get-Content -LiteralPath paper.txt" }) }] });
     const task = f.app.runtime.input(f.conversation, "等待审批时更改授权", id()); await wait(() => !!approval(f.app)); const grant = approval(f.app);
     const previousVersion = nodeApp.node.config!.policyVersion;
     nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: false });

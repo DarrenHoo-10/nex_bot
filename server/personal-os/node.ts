@@ -46,13 +46,13 @@ export class DeviceNode {
     if (origin.username || origin.password || origin.search || origin.hash || (origin.protocol !== "https:" && !(origin.protocol === "http:" && privateHost))) throw new Error("Core 地址须为 HTTPS 或私有网络 HTTP");
     const root = typeof data.root === "string" && data.root.trim() ? realpathSync(text(data.root, 4096)) : "";
     if (root && !statSync(root).isDirectory()) throw new Error("请选择一个文件夹");
-    if (data.exec === true && !root) throw new Error("终端执行需选择工作目录");
+    const exec = data.exec !== false, computer = data.computer === undefined ? this.computer.available() : data.computer === true;
     if (data.computer === true && !this.computer.available()) throw new Error("本机 computer use 运行时不可用");
     const token = typeof data.token === "string" && data.token.trim() ? text(data.token, 200) : this.config?.token;
     if (!token) throw new Error("请输入 Core 生成的设备配对令牌");
     this.socket?.close(); clearTimeout(this.timer);
-    const changedPolicy = !this.config || this.config.root !== root || this.config.token !== token || this.config.exec !== (data.exec === true) || (this.config.computer ?? false) !== (data.computer === true);
-    this.config = { origin: origin.origin, root, token, exec: data.exec === true, computer: data.computer === true, policyVersion: (this.config?.policyVersion ?? 0) + (changedPolicy ? 1 : 0) };
+    const changedPolicy = !this.config || this.config.root !== root || this.config.token !== token || this.config.exec !== exec || (this.config.computer ?? false) !== computer;
+    this.config = { origin: origin.origin, root, token, exec, computer, policyVersion: (this.config?.policyVersion ?? 0) + (changedPolicy ? 1 : 0) };
     this.store.run("INSERT INTO secrets VALUES('node-config',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", this.store.encrypt(JSON.stringify(this.config)));
     this.connect(); return this.publicState();
   }
@@ -116,12 +116,12 @@ export class DeviceNode {
       if (now() >= expires) throw new Error("执行租约已过期，未启动操作");
       if (capability === "device.info") result = { ...this.identity(), granted: { info: true, read: !!root, exec: this.config.exec, computer: this.config.computer === true } };
       else if (capability === "device.computer") {
-        if (!this.config.computer) throw new Error("请在目标设备的本机能力中启用屏幕控制");
+        if (!this.config.computer) throw new Error("目标设备未提供屏幕控制执行器");
         result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(20_000, expires - now()));
         failed = (result as { isError?: boolean }).isError === true;
       } else if (capability === "device.exec") {
         if (!this.config.exec) throw new Error("设备未授权终端");
-        result = await this.command(text(args.command, 8192), root, Math.min(20_000, expires - now()));
+        result = await this.command(text(args.command, 8192), root || os.homedir(), Math.min(20_000, expires - now()));
       } else {
         if (!root) throw new Error("设备未授权文件目录");
         const file = confined(root, typeof args.path === "string" ? args.path : ".");

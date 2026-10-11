@@ -178,12 +178,77 @@ and device registration are expected to update the live profile.
 Both EXEs are refreshed from the qualified prepackaged directories. The installer
 is rebuilt; this program-resource update does not repeat the original complete
 NSIS installation. Delivery instructions and SHA256SUMS.txt are updated alongside
-the artifacts. Current artifact sizes and SHA-256:
+the artifacts. Previous artifact sizes and SHA-256 (superseded below):
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
 | NexBot-0.5.0-x64-Setup.exe | 1,614,035,719 | `1249CE70C5E02FF8678A14ED76B77FB65442E8D1673C185A4B415C58DCBF41FF` |
 | NexBot-0.5.0-x64-Client-Portable.exe | 169,291,325 | `6161AD1CE5F620A283B9D64DBDD5063200B02AD2AB04647DC8AE21B68568DFAB` |
+
+### Default local capabilities and effect-specific approval (2026-10-11)
+
+Terminal and installed Windows computer use are available at startup on the
+primary device and after device pairing on a thin client. The two enablement
+checkboxes and native enablement dialogs are removed. The remaining save button
+only saves a shared folder / client connection; an empty folder never prevents
+terminal or computer use. With no shared folder, terminal cwd is the user home.
+No default Agents or name-dependent behavior are introduced.
+
+Ordinary window observations and inputs run automatically. Dangerous GUI effects
+must carry `risk="dangerous"` and `riskReason`, and approval remains in the executing
+Agent's contact. Static known read-only shell commands run automatically; shell
+composition, scripts and unknown effects await confirmation. A `standard` marker
+cannot override shell classification. GUI classification relies on the Agent's
+understanding of the task and observed UI, not a complete security sandbox.
+Window targeting, fresh observations, self-approval prevention, durable DCP
+receipts and uncertain-effect reconciliation remain enforced.
+
+Migration 8 adds terminal capability to untouched prior defaults, preserving
+user-edited policies and the migration 7 checksum. A legacy pending static
+terminal query resumes using the same call ID once; an unclassified legacy GUI
+input remains pending. Rejected, cancelled and possibly executed calls are not
+replayed by this default change.
+
+Final qualified results:
+
+- 77 tests pass, zero failures / pending, against the shipped Core and client
+  bundles plus real 0.3.3 / 0.4 migration fixtures. The result is
+  `default-capabilities-result.json` in the ignored release directory.
+- Installed desktop fixture: all 28 assertions pass, including actual defaults,
+  absence of enablement controls and normal shutdown, using a disposable profile.
+- Installed native computer fixture: eight assertions pass, including full
+  high-DPI screenshot, actual ordinary Unicode input with zero approvals, and an
+  explicit dangerous input withheld until approval in the executing Agent feed.
+- Refreshed portable client: all 15 two-client synchronization assertions pass.
+- Frontend/server TypeScript, changed-code lint and whitespace checks pass.
+
+During regression, two different tests initially fail with a synthetic model
+`Connection error`; individual reruns pass. This Windows host's dynamic TCP
+range is 1024–15000, including fetch-blocked ports. A controlled own-server probe
+on port 6000 reproduces `fetch failed / bad port` with zero HTTP requests. The
+fixture now probes its own unaccounted health route before returning and
+reselects only a fetch-blocked ephemeral port. Health uses the host fixture
+fetch, outside model accounting gates; it consumes no model script and adds no
+model retry. The dedicated regression and full P0 accounting tests pass. The
+original failure ports were not captured, so this identifies and fixes a
+reproduced failure mode rather than proving their exact assigned ports.
+
+Before updating installed program resources, 1,288 profile files are backed up
+and hash-verified outside the checkout. All 21 updated Core/UI resource files
+match the qualified build. Hindsight native resources and the main Electron
+program are unchanged from prior qualification. Normal user startup after
+isolated verification reaches schema version 8 with both terminal/computer
+capabilities active; read-only quick_check is `ok`, foreign-key violations zero.
+The existing shortcut still targets the installed EXE without fixture arguments.
+
+Both EXEs are rebuilt from qualified prepackaged payloads. The installed program
+resource update is verified separately; the original full NSIS installation is
+not repeated. Latest delivery files and checksums:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| NexBot-0.5.0-x64-Setup.exe | 1,614,166,693 | `02D4F0FC650721FEEF16A4B96002C4DED526C29A2CCA7786BF77F3D5D68796CA` |
+| NexBot-0.5.0-x64-Client-Portable.exe | 169,291,003 | `575E3D653A812BCB1379DEDF98E9C3C4D826AA9B62C0AF40A49699E5B607AAE7` |
 
 Historical 0.4 evidence below describes the older full-Core portable package,
 which is not the new thin-client portable distribution.

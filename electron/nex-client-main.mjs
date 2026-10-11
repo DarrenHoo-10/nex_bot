@@ -101,9 +101,7 @@ else {
     ipcMain.handle("client:node-config", async (event, settings) => {
       validate(event); if (!device || coreOrigin(settings.origin) !== origin) throw new Error("本机 Device Node 必须连接当前 Core");
       if (settings.root && settings.root !== device.node.config?.root && settings.root !== approvedRoot) throw new Error("请点击目录按钮，在本机选择允许共享的目录");
-      if (settings.exec === true && !device.node.config?.exec) { const consent = await dialog.showMessageBox(window, { type: "warning", message: "允许此 Core 在本机执行终端命令？", detail: "命令拥有你的 Windows 用户权限，不受共享目录限制。每次执行仍须在 Agent 消息中批准。", buttons: ["取消", "允许"], defaultId: 0, cancelId: 0 }); if (consent.response !== 1) throw new Error("未授予本机终端权限"); }
-      if (settings.computer === true && !device.node.config?.computer) { const consent = await dialog.showMessageBox(window, { type: "warning", message: "允许此 Core 查看和控制本机窗口？", detail: "窗口截图会发送给你在 Core 配置的模型。点击、输入等操作仍须在执行 Agent 的消息中批准。", buttons: ["取消", "允许"], defaultId: 0, cancelId: 0 }); if (consent.response !== 1) throw new Error("未授予本机屏幕控制权限"); }
-      return device.node.configure(settings);
+      return device.node.configure({ ...settings, exec: true, computer: device.node.computer.available() });
     });
     ipcMain.handle("client:node-reconcile", (event, settings) => { validate(event); device?.node.reconcile(settings.callId, settings.version); });
     ipcMain.handle("client:external", async (event, value) => { validate(event); const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid URL"); await shell.openExternal(url.href); });

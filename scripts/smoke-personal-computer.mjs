@@ -1,4 +1,4 @@
-// Genuine SDK observations and approved input against our own synthetic app.
+// Genuine SDK observations, automatic ordinary input and approved dangerous effects against our own synthetic app.
 // No user applications, live profiles, API keys or external model are touched.
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -49,12 +49,11 @@ try {
   const botId = app.store.createBot("合成操作助手");
   await until(() => app.node.status === "已连接");
   if (!app.node.computer.available()) throw new Error("Computer runtime absent from packaged resources");
-  app.node.configure({ ...app.node.config, computer: true });
   await until(() => app.node.status === "已连接" && app.gateway.inventory()[0].granted.computer);
   const deviceId = app.gateway.hostDeviceId, window = { pid: native.pid, window_id: native.windowId };
   async function tool(operation, parameters, approve = false) {
     const inputId = randomBytes(8).toString("hex");
-    fake.scripts.push({ kind: "openai-tool", calls: [{ id: inputId, name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, operation, parameters }) }] }, { kind: "openai-text", text: "合成操作结果收到" });
+    fake.scripts.push({ kind: "openai-tool", calls: [{ id: inputId, name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, operation, parameters, ...(approve ? { risk: "dangerous", riskReason: "合成危险操作审批验证" } : {}) }) }] }, { kind: "openai-text", text: "合成操作结果收到" });
     const taskId = app.agents.send(botId, "合成 computer use 验证", inputId).taskId;
     if (approve) {
       await until(() => !!app.store.get("SELECT id FROM approvals WHERE status='pending'"));
@@ -89,15 +88,26 @@ try {
   await cdp("Runtime.evaluate", { expression: "document.querySelector('#test').focus()" });
   await tool("get_window_state", { ...window, include_accessibility_tree: true });
   const text = "合成电脑输入验证";
-  let typed = await tool("type_text", { ...window, text, delivery_mode: "background" }, true);
+  let typed = await tool("type_text", { ...window, text, delivery_mode: "background" });
   if (typed.isError && JSON.stringify(typed).includes("background_unavailable")) {
     if (await value()) throw new Error("Refused background input changed the target");
     await tool("get_window_state", { ...window, include_accessibility_tree: true });
-    typed = await tool("type_text", { ...window, text, delivery_mode: "foreground" }, true);
-    cases.push("foreground escalation requires fresh observation and separate approval");
+    typed = await tool("type_text", { ...window, text, delivery_mode: "foreground" });
+    cases.push("foreground escalation requires native refusal and fresh observation");
   }
   if (typed.isError || await value() !== text) throw new Error("Native text input not verified: " + JSON.stringify(typed));
-  cases.push("approved native Unicode input, no input before approval");
+  if (app.store.get("SELECT COUNT(*) n FROM approvals").n !== 0) throw new Error("Ordinary native input requested approval");
+  cases.push("ordinary native Unicode input executes without approval");
+  await cdp("Runtime.evaluate", { expression: "document.querySelector('#test').value='';document.querySelector('#test').focus()" });
+  await tool("get_window_state", { ...window, include_accessibility_tree: true });
+  const dangerousText = "合成危险操作已批准";
+  let dangerous = await tool("type_text", { ...window, text: dangerousText, delivery_mode: "background" }, true);
+  if (dangerous.isError && JSON.stringify(dangerous).includes("background_unavailable")) {
+    await tool("get_window_state", { ...window, include_accessibility_tree: true });
+    dangerous = await tool("type_text", { ...window, text: dangerousText, delivery_mode: "foreground" }, true);
+  }
+  if (dangerous.isError || await value() !== dangerousText) throw new Error("Dangerous effect approval did not execute exact approved input");
+  cases.push("dangerous effect waits in executing Agent feed before native input");
   const count = app.node.journal.prepare("SELECT COUNT(*) n FROM node_calls WHERE capability='device.computer'").get().n;
   if (count < 5) throw new Error("DCP durable calls missing"); cases.push("durable native call receipts");
   await cdp("Page.close", {}); await until(() => targetExited, 10000);
