@@ -21,6 +21,8 @@ extraResources:
     to: icon.ico
   - from: dist-personal/core
     to: core
+  - from: dist-personal/computer-runtime
+    to: computer-runtime
   - from: dist-personal/ui
     to: ui
   - from: dist-personal/node_modules

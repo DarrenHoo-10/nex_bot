@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { isIP } from "node:net";
 import { WebSocket } from "ws";
 import { hash, now, text, type CoreStore } from "./store.ts";
+import os from "node:os";
+import { ComputerExecutor } from "./computer.ts";
 
 export function confined(root: string, relative: string) {
   if (path.isAbsolute(relative) || relative.includes("\0") || /^[a-zA-Z]:/.test(relative)) throw new Error("路径须相对授权目录");
@@ -13,7 +15,7 @@ export function confined(root: string, relative: string) {
   if (difference === ".." || difference.startsWith(".." + path.sep) || path.isAbsolute(difference)) throw new Error("路径超出授权目录（含符号链接）");
   return candidate;
 }
-interface NodeConfig { origin: string; token: string; root: string; exec: boolean; policyVersion: number }
+interface NodeConfig { origin: string; token: string; root: string; exec: boolean; computer?: boolean; policyVersion: number }
 export class DeviceNode {
   readonly journal: DatabaseSync;
   socket?: WebSocket;
@@ -25,6 +27,8 @@ export class DeviceNode {
   executing = false;
   readonly operations = new Set<Promise<void>>();
   readonly commands = new Set<ChildProcess>();
+  readonly computer = new ComputerExecutor();
+  identity() { return { hostname: os.hostname(), platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", os: os.type(), release: os.release(), architecture: os.arch(), supported: ["device.info", "device.list", "device.read", "device.exec", ...(this.computer.available() ? ["device.computer"] : [])] }; }
   constructor(readonly store: Pick<CoreStore, "dir" | "get" | "run" | "encrypt" | "decrypt">, readonly changed: () => void) {
     const dir = path.join(store.dir, "node"); mkdirSync(dir, { recursive: true });
     this.journal = new DatabaseSync(path.join(dir, "node.db"));
@@ -34,42 +38,46 @@ export class DeviceNode {
     const saved = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
     if (saved) { this.config = JSON.parse(store.decrypt(String(saved.ciphertext))); this.connect(); }
   }
-  publicState() { return { status: this.status, origin: this.config?.origin ?? "", root: this.config?.root ?? "", exec: this.config?.exec ?? false, connected: this.socket?.readyState === WebSocket.OPEN, unknownCalls: this.journal.prepare("SELECT call_id,capability,arguments_json,version FROM node_calls WHERE status='unknown'").all() }; }
+  publicState() { return { status: this.status, origin: this.config?.origin ?? "", root: this.config?.root ?? "", exec: this.config?.exec ?? false, computer: this.config?.computer ?? false, computerSupported: this.computer.available(), deviceId: this.binding?.deviceId ?? "", connected: this.socket?.readyState === WebSocket.OPEN, unknownCalls: this.journal.prepare("SELECT call_id,capability,arguments_json,version FROM node_calls WHERE status='unknown'").all() }; }
   configure(data: Record<string, unknown>) {
     if (this.executing) throw new Error("设备执行中，请等调用结束再更改授权");
     const origin = new URL(text(data.origin, 2048));
     const privateHost = (isIP(origin.hostname) === 4 && /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(origin.hostname)) || origin.hostname === "localhost";
     if (origin.username || origin.password || origin.search || origin.hash || (origin.protocol !== "https:" && !(origin.protocol === "http:" && privateHost))) throw new Error("Core 地址须为 HTTPS 或私有网络 HTTP");
-    const root = realpathSync(text(data.root, 4096));
-    if (!statSync(root).isDirectory()) throw new Error("请选择一个文件夹");
+    const root = typeof data.root === "string" && data.root.trim() ? realpathSync(text(data.root, 4096)) : "";
+    if (root && !statSync(root).isDirectory()) throw new Error("请选择一个文件夹");
+    if (data.exec === true && !root) throw new Error("终端执行需选择工作目录");
+    if (data.computer === true && !this.computer.available()) throw new Error("本机 computer use 运行时不可用");
     const token = typeof data.token === "string" && data.token.trim() ? text(data.token, 200) : this.config?.token;
     if (!token) throw new Error("请输入 Core 生成的设备配对令牌");
     this.socket?.close(); clearTimeout(this.timer);
-    this.config = { origin: origin.origin, root, token, exec: data.exec === true, policyVersion: (this.config?.policyVersion ?? 0) + 1 };
+    const changedPolicy = !this.config || this.config.root !== root || this.config.token !== token || this.config.exec !== (data.exec === true) || (this.config.computer ?? false) !== (data.computer === true);
+    this.config = { origin: origin.origin, root, token, exec: data.exec === true, computer: data.computer === true, policyVersion: (this.config?.policyVersion ?? 0) + (changedPolicy ? 1 : 0) };
     this.store.run("INSERT INTO secrets VALUES('node-config',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", this.store.encrypt(JSON.stringify(this.config)));
     this.connect(); return this.publicState();
   }
   connect() {
     if (this.stopping || !this.config) return;
     const endpoint = new URL(this.config.origin); endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:"; endpoint.pathname = "/dcp/v1/connect";
-    const ws = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${this.config.token}` }, maxPayload: 3 * 1024 * 1024, handshakeTimeout: 10_000 });
+    const ws = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${this.config.token}` }, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 10_000 });
     this.socket = ws; this.status = "连接中"; this.changed();
-    ws.on("open", () => { ws.send(JSON.stringify({ type: "hello", policyVersion: this.config!.policyVersion, exec: this.config!.exec, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux" })); });
+    ws.on("open", () => { if (this.socket !== ws || this.stopping) return; ws.send(JSON.stringify({ type: "hello", policyVersion: this.config!.policyVersion, read: !!this.config!.root, exec: this.config!.exec, computer: this.config!.computer === true && this.computer.available(), identity: this.identity(), platform: this.identity().platform })); });
     ws.on("message", (raw) => { try { const operation = this.message(ws, JSON.parse(raw.toString())).catch(() => ws.close(1008, "Invalid command")); this.operations.add(operation); void operation.finally(() => this.operations.delete(operation)); } catch { ws.close(1008, "Invalid message"); } });
-    ws.on("error", () => { this.status = "连接失败，检查 Core 地址和配对令牌"; this.changed(); });
+    ws.on("error", () => { if (this.socket !== ws || this.stopping) return; this.status = "连接失败，检查 Core 地址和配对令牌"; this.changed(); });
     ws.on("close", () => {
       if (this.socket !== ws || this.stopping) return;
       this.status = "离线，正在重连"; this.changed(); this.timer = setTimeout(() => this.connect(), 5000);
     });
   }
   async message(ws: WebSocket, event: Record<string, unknown>) {
+    if (ws !== this.socket || this.stopping) return;
     if (event.type === "bound") {
       const coreId = text(event.coreId, 100), deviceId = text(event.deviceId, 100), ownerId = text(event.ownerId, 100), bindingId = coreId + ":" + deviceId;
       this.journal.exec("BEGIN IMMEDIATE");
       try {
         this.journal.prepare("UPDATE node_bindings SET status='revoked' WHERE id!=?").run(bindingId);
         this.journal.prepare("INSERT INTO node_bindings VALUES(?,?,?,?,?,NULL,'active',?) ON CONFLICT(id) DO UPDATE SET status='active',core_origin=excluded.core_origin").run(bindingId, coreId, deviceId, ownerId, this.config!.origin, now());
-        this.journal.prepare("INSERT INTO local_grants VALUES(?,'shared',?,?,?,'active',?) ON CONFLICT(binding_id,id) DO UPDATE SET policy_version=excluded.policy_version,scope_json=excluded.scope_json,root_mapping_ref=excluded.root_mapping_ref,status='active',updated_at=excluded.updated_at").run(bindingId, this.config!.policyVersion, JSON.stringify({ read: true, exec: this.config!.exec }), this.config!.root, now());
+        this.journal.prepare("INSERT INTO local_grants VALUES(?,'shared',?,?,?,'active',?) ON CONFLICT(binding_id,id) DO UPDATE SET policy_version=excluded.policy_version,scope_json=excluded.scope_json,root_mapping_ref=excluded.root_mapping_ref,status='active',updated_at=excluded.updated_at").run(bindingId, this.config!.policyVersion, JSON.stringify({ info: true, read: !!this.config!.root, exec: this.config!.exec, computer: this.config!.computer === true }), this.config!.root, now());
         this.journal.exec("COMMIT");
       } catch (e) { this.journal.exec("ROLLBACK"); throw e; }
       this.binding = { coreId, deviceId, ownerId }; this.status = "已连接"; this.changed();
@@ -98,7 +106,7 @@ export class DeviceNode {
     const expires = Number(event.leaseExpiresAt), deadline = Number(event.deadlineAt), leaseSeq = Number(event.leaseSeq);
     if (!Number.isSafeInteger(expires) || expires <= now() || expires > now() + 30_000 || deadline < expires || !Number.isSafeInteger(leaseSeq) || leaseSeq < 1) throw new Error("Lease expired");
     const capability = text(source.capability, 50), args = source.arguments as Record<string, unknown>;
-    if (!["device.list", "device.read", "device.exec"].includes(capability)) throw new Error("Unsupported capability");
+    if (!["device.info", "device.list", "device.read", "device.exec", "device.computer"].includes(capability)) throw new Error("Unsupported capability");
     this.journal.prepare("INSERT INTO node_calls(binding_id,call_id,local_grant_id,local_policy_version,capability,arguments_json,canonical_envelope,argument_hash,status,lease_seq,lease_expires_at,deadline_at,received_at) VALUES(?,?,'shared',?,?,?,?,?,'received',?,?,?,?)").run(bindingId, callId, this.config.policyVersion, capability, JSON.stringify(args), envelope, digest, leaseSeq, expires, deadline, now());
     this.executing = true;
     this.journal.prepare("UPDATE node_calls SET status='running' WHERE binding_id=? AND call_id=?").run(bindingId, callId);
@@ -106,10 +114,16 @@ export class DeviceNode {
     try {
       const root = this.config.root;
       if (now() >= expires) throw new Error("执行租约已过期，未启动操作");
-      if (capability === "device.exec") {
+      if (capability === "device.info") result = { ...this.identity(), granted: { info: true, read: !!root, exec: this.config.exec, computer: this.config.computer === true } };
+      else if (capability === "device.computer") {
+        if (!this.config.computer) throw new Error("请在目标设备的本机能力中启用屏幕控制");
+        result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(20_000, expires - now()));
+        failed = (result as { isError?: boolean }).isError === true;
+      } else if (capability === "device.exec") {
         if (!this.config.exec) throw new Error("设备未授权终端");
         result = await this.command(text(args.command, 8192), root, Math.min(20_000, expires - now()));
       } else {
+        if (!root) throw new Error("设备未授权文件目录");
         const file = confined(root, typeof args.path === "string" ? args.path : ".");
         if (capability === "device.list") result = { path: args.path ?? ".", entries: readdirSync(file, { withFileTypes: true }).slice(0, 300).map((f) => ({ name: f.name, directory: f.isDirectory(), link: f.isSymbolicLink() })) };
         else {
@@ -135,6 +149,10 @@ export class DeviceNode {
       }
     } catch (error) { failed = true; result = { error: error instanceof Error ? error.message : "执行失败" }; }
     finally { this.executing = false; }
+    if (capability === "device.computer" && (result as { unknown?: boolean })?.unknown) {
+      this.journal.prepare("UPDATE node_calls SET status='unknown',version=version+1 WHERE binding_id=? AND call_id=?").run(bindingId, callId);
+      this.deliver(ws, this.journal.prepare("SELECT * FROM node_calls WHERE binding_id=? AND call_id=?").get(bindingId, callId)!); this.changed(); return;
+    }
     const json = JSON.stringify(result);
     this.journal.prepare("UPDATE node_calls SET status=?,result_json=?,result_hash=?,finished_at=?,version=version+1 WHERE binding_id=? AND call_id=?").run(failed ? "failed" : "succeeded", json, hash(json), now(), bindingId, callId);
     this.deliver(ws, this.journal.prepare("SELECT * FROM node_calls WHERE binding_id=? AND call_id=?").get(bindingId, callId)!);
@@ -171,6 +189,6 @@ export class DeviceNode {
   async close() {
     this.stopping = true; clearTimeout(this.timer); this.socket?.terminate();
     for (const child of this.commands) { if (process.platform === "win32" && child.pid) spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); else child.kill("SIGKILL"); }
-    await Promise.allSettled(this.operations); this.journal.close();
+    await Promise.allSettled(this.operations); await this.computer.close(); this.journal.close();
   }
 }

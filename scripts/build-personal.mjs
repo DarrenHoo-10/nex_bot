@@ -26,12 +26,14 @@ if (!existsSync(electronExe) || spawnSync(electronExe, ["-p", "process.versions.
   mkdirSync(electronDir, { recursive: true }); await extract(archive, { dir: electronDir });
 }
 mkdirSync(path.join(output, "core"), { recursive: true });
+if (process.platform === "win32") await import("./build-personal-computer.mjs");
 await viteBuild({ configFile: false, root, plugins: [react()], build: { outDir: path.join(output, "ui"), emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
 copyFileSync(path.join(output, "ui", "personal.html"), path.join(output, "ui", "index.html"));
 await build({ entryPoints: ["server/personal-os/index.ts", "server/personal-os/worker.ts"].map((file) => path.join(root, file)), outdir: path.join(output, "core"), bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "linked", define: { PI_BUNDLED_NODE: "true" }, external: ["pdfjs-dist/legacy/build/pdf.mjs"], banner: { js: "import { createRequire as nexCreateRequire } from 'node:module'; const require = nexCreateRequire(import.meta.url);" } });
 await build({ entryPoints: [path.join(root, "server/personal-os/client-node.ts")], outdir: path.join(output, "client-node"), bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "linked", external: ["pdfjs-dist/legacy/build/pdf.mjs"], banner: { js: "import { createRequire as nexCreateRequire } from 'node:module'; const require = nexCreateRequire(import.meta.url);" } });
 copyFileSync(path.join(root, "server/personal-os/node-schema.sql"), path.join(output, "client-node", "node-schema.sql"));
 for (const file of ["schema.sql", "node-schema.sql", "agent-schema.sql", "memory-schema.sql", "memory-lifecycle-schema.sql", "client-schema.sql"]) copyFileSync(path.join(root, "server", "personal-os", file), path.join(output, "core", file));
+cpSync(path.join(root, "server/personal-os/skills"), path.join(output, "core/skills"), { recursive: true });
 copyFileSync(path.join(root, "server", "personal-os", "hindsight-service.py"), path.join(output, "core", "hindsight-service.py"));
 const pi = JSON.parse(readFileSync(path.join(root, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));
 writeFileSync(path.join(output, "package.json"), JSON.stringify({ name: pi.name, version: pi.version, type: "module", piConfig: pi.piConfig }));

@@ -19,6 +19,8 @@ files:
 extraResources:
   - from: dist-personal/client-node
     to: client-node
+  - from: dist-personal/computer-runtime
+    to: computer-runtime
   - from: dist-personal/node_modules
     to: node_modules
   - from: dist-personal/package.json

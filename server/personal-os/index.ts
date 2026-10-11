@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { networkInterfaces } from "node:os";
+import os from "node:os";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { CoreStore, text, id } from "./store.ts";
@@ -46,6 +47,7 @@ export async function createPersonalApp(options: AppOptions) {
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
+  runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed);
   function json(response: ServerResponse, status: number, value: unknown) {
     response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); response.end(JSON.stringify(value));
@@ -106,7 +108,7 @@ export async function createPersonalApp(options: AppOptions) {
         streams.set(response, token); response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); request.once("close", () => streams.delete(response)); return;
       }
       if (url.pathname === "/api/clients" && request.method === "GET") { json(response, 200, { sessions: clients.list(), currentSessionId: session.id }); return; }
-      if (url.pathname === "/api/state") { json(response, 200, { ...store.state(), sync: sync.snapshot(), memoryEngine: { ...runtime.memory.ledger.status(), service: memoryService.state }, bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })), directory: directory(store), routines: routines.list(), occurrences: routines.occurrences(), journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100"), onlineDevices: [...gateway.sockets.keys()], node: node.publicState(), dataDir: store.dir, runtime: "Pi 1.0.4", address: requestOrigin, lanEnabled: options.host === "0.0.0.0" }); return; }
+      if (url.pathname === "/api/state") { json(response, 200, { ...store.state(), sync: sync.snapshot(), hostDeviceId: gateway.hostDeviceId, memoryEngine: { ...runtime.memory.ledger.status(), service: memoryService.state }, bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })), directory: directory(store), routines: routines.list(), occurrences: routines.occurrences(), journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100"), onlineDevices: [...gateway.sockets.keys()], node: node.publicState(), dataDir: store.dir, runtime: "Pi 1.0.4", address: requestOrigin, lanEnabled: options.host === "0.0.0.0" }); return; }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
@@ -153,7 +155,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/devices/revoke") { gateway.revoke(text(data.id, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/node" || url.pathname === "/api/node/reconcile") {
         if (session.id !== store.session || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "")) { json(response, 403, { error: "请在这台电脑本机授权设备能力；远程客户端使用自己的 Device Node" }); return; }
-        if (url.pathname === "/api/node") json(response, 200, node.configure(data));
+        if (url.pathname === "/api/node") json(response, 200, node.configure({ ...node.config, ...data }));
         else { node.reconcile(text(data.callId, 100), Number(data.version)); json(response, 200, { ok: true }); }
         return;
       }
@@ -173,6 +175,16 @@ export async function createPersonalApp(options: AppOptions) {
   }
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Server address unavailable");
   origin = `http://127.0.0.1:${address.port}`;
+  // Register metadata without granting a root, shell or screen. Stable device
+  // credentials are encrypted and independent of owner/client login tokens.
+  const savedHost = store.get("SELECT ciphertext FROM secrets WHERE id='host-node-pair'");
+  const hostPair = savedHost ? JSON.parse(store.decrypt(String(savedHost.ciphertext))) as { deviceId: string; token: string } : undefined;
+  if (!node.config || (hostPair && node.config.token === hostPair.token)) {
+    const pair = hostPair && store.get("SELECT id FROM devices WHERE id=? AND status='bound'", hostPair.deviceId) ? hostPair : gateway.pair(os.hostname());
+    gateway.hostDeviceId = pair.deviceId;
+    store.run("INSERT INTO secrets VALUES('host-node-pair',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", store.encrypt(JSON.stringify(pair)));
+    node.configure({ origin, token: pair.token, root: node.config?.root ?? "", exec: node.config?.exec ?? false, computer: node.config?.computer ?? false });
+  }
   if (options.hindsight) runtime.memory.ledger.client = new HindsightClient(options.hindsight.endpoint, options.hindsight.token);
   if (store.config()) memoryService.start();
   runtime.memory.ledger.start();

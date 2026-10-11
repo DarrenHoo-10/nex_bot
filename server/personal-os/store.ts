@@ -118,7 +118,7 @@ export class CoreStore {
         this.db.exec("CREATE TRIGGER privacy_memory_status AFTER UPDATE OF status ON memory_documents WHEN OLD.status IS NOT NEW.status BEGIN UPDATE sync_state SET privacy_epoch=privacy_epoch+1 WHERE id=1; END;");
         // Upgrade only the two former standard policies. Deliberately restricted
         // custom policies retain their exact grants.
-        const previous = basicActions.filter((a) => !a.startsWith("routine."));
+        const previous = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate"];
         for (const policy of this.all("SELECT * FROM bot_policies")) {
           const tools = (JSON.parse(String(policy.policy_json)) as { tools?: string[] }).tools ?? [];
           const normalized = [...new Set(tools)].sort().join(",");
@@ -139,6 +139,20 @@ export class CoreStore {
           this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools!, ...basicActions.filter((action) => action.startsWith("routine."))] }), policy.bot_id);
         }
         this.insert("schema_migrations", { version: 6, checksum: hash(JSON.stringify({ legacyTools, added: basicActions.filter((action) => action.startsWith("routine.")), uneditedVersion: 1 })), applied_at: now() });
+      });
+    }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=7")) {
+      const oldBasic = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "routine.list", "routine.save", "routine.toggle", "routine.run"];
+      const legacy = ["memory.search", "memory.read", "memory.write", "agent.delegate", "device.read", "device.list", "device.exec", "routine.list", "routine.save", "routine.toggle", "routine.run"];
+      const standardSets = [oldBasic, [...oldBasic, "device.list", "device.read", "device.exec"], legacy].map((tools) => [...tools].sort().join(","));
+      this.transaction(() => {
+        for (const policy of this.all("SELECT * FROM bot_policies")) {
+          if (this.get("SELECT id FROM audit_records WHERE action='agent.policy.update' AND entity_id=?", policy.bot_id)) continue;
+          const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
+          if (!standardSets.includes([...new Set(value.tools ?? [])].sort().join(","))) continue;
+          this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...new Set([...value.tools!, ...basicActions])] }), policy.bot_id);
+        }
+        this.insert("schema_migrations", { version: 7, checksum: hash(JSON.stringify({ standardSets, basicActions })), applied_at: now() });
       });
     }
     this.db.exec("PRAGMA secure_delete=ON;");

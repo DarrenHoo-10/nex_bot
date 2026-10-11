@@ -29,7 +29,8 @@ async function launch(index) {
   const child = spawn(executable ?? path.resolve("dist-personal/electron/electron.exe"), [...(executable ? [] : [path.resolve("electron/nex-client-main.mjs")]), `--profile=${profile}`, "--remote-debugging-port=0"], { windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_CLIENT_SMOKE_OUTPUT: ready }, stdio: ["ignore", "pipe", "pipe"] });
   const client = { child, profile, ready, exited: false, ws: undefined, logs: "", sequence: 0, replies: new Map() }; clients.push(client);
   child.stdout.on("data", (value) => { client.logs = (client.logs + value.toString()).slice(-5000); }); child.stderr.on("data", (value) => { client.logs = (client.logs + value.toString()).slice(-5000); }); child.once("close", () => { client.exited = true; });
-  await until(() => { if (client.exited) throw new Error("Client exited: " + client.logs); return existsSync(ready) && existsSync(path.join(profile, "DevToolsActivePort")); }, 180_000);
+  try { await until(() => { if (client.exited) throw new Error("Client exited: " + client.logs); return existsSync(ready) && existsSync(path.join(profile, "DevToolsActivePort")); }, 180_000); }
+  catch (error) { throw new Error(`${error.message}; bootstrap=${existsSync(ready)}, devtools=${existsSync(path.join(profile, "DevToolsActivePort"))}; ${client.logs}`); }
   const port = readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(), target = targets.find((t) => t.type === "page");
   client.ws = new WebSocket(target.webSocketDebuggerUrl); await new Promise((resolve) => client.ws.once("open", resolve));

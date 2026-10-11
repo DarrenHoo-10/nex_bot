@@ -6,7 +6,14 @@ import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
 export class DeviceGateway {
   readonly sockets = new Map<string, WebSocket>();
   readonly pending = new Map<string, { resolve: (result: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout; deviceId: string }>();
-  readonly wss = new WebSocketServer({ noServer: true, maxPayload: 3 * 1024 * 1024 });
+  readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
+  hostDeviceId?: string;
+  inventory() {
+    return this.store.all("SELECT d.id,d.name,d.platform,d.status,g.scope_json FROM devices d LEFT JOIN device_local_grants g ON g.device_id=d.id AND g.local_grant_id='shared' WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status!='revoked' ORDER BY d.created_at,d.id", this.store.workspace, this.store.owner).map((device) => {
+      const scope = device.scope_json ? JSON.parse(String(device.scope_json)) : {};
+      return { id: device.id, name: device.name, platform: device.platform, role: device.id === this.hostDeviceId ? "core" : "node", online: this.sockets.get(String(device.id))?.readyState === WebSocket.OPEN, identity: scope.identity ?? null, supported: scope.identity?.supported ?? [], granted: { info: scope.info === true, read: scope.read === true, exec: scope.exec === true, computer: scope.computer === true } };
+    });
+  }
   constructor(readonly store: CoreStore, server: Server, readonly changed: () => void) {
     server.on("upgrade", (request, socket, head) => {
       if (request.url !== "/dcp/v1/connect") { socket.destroy(); return; }
@@ -32,13 +39,16 @@ export class DeviceGateway {
     if (old) old.close();
     this.sockets.set(deviceId, ws);
     ws.on("message", (raw) => {
+      if (this.sockets.get(deviceId) !== ws) return;
       try {
         const event = JSON.parse(raw.toString()) as Record<string, unknown>;
         if (event.type === "hello") {
           const version = Number(event.policyVersion);
           if (!Number.isSafeInteger(version) || version < 1) throw new Error("Invalid local policy");
-          const scope = { root: "shared", read: true, exec: event.exec === true };
-          this.store.run("UPDATE devices SET capabilities_json=?,last_seen_at=?,platform=? WHERE id=?", JSON.stringify(scope.exec ? ["device.read", "device.list", "device.exec"] : ["device.read", "device.list"]), now(), ["windows", "macos", "linux"].includes(String(event.platform)) ? String(event.platform) : "windows", deviceId);
+          const supplied = event.identity && typeof event.identity === "object" ? event.identity as Record<string, unknown> : {};
+          const identity = { hostname: typeof supplied.hostname === "string" ? supplied.hostname.slice(0, 255) : "", os: typeof supplied.os === "string" ? supplied.os.slice(0, 80) : "", release: typeof supplied.release === "string" ? supplied.release.slice(0, 100) : "", architecture: typeof supplied.architecture === "string" ? supplied.architecture.slice(0, 30) : "", supported: Array.isArray(supplied.supported) ? supplied.supported.filter((action) => ["device.info", "device.read", "device.list", "device.exec", "device.computer"].includes(String(action))) : ["device.read", "device.list", "device.exec"] };
+          const scope = { root: "shared", info: identity.supported.includes("device.info"), read: event.read !== false, exec: event.exec === true, computer: event.computer === true && identity.supported.includes("device.computer"), identity };
+          this.store.run("UPDATE devices SET capabilities_json=?,last_seen_at=?,platform=? WHERE id=?", JSON.stringify([...(scope.info ? ["device.info"] : []), ...(scope.read ? ["device.read", "device.list"] : []), ...(scope.exec ? ["device.exec"] : []), ...(scope.computer ? ["device.computer"] : [])]), now(), ["windows", "macos", "linux"].includes(String(event.platform)) ? String(event.platform) : "windows", deviceId);
           this.store.run("INSERT INTO device_local_grants(device_id,local_grant_id,workspace_id,owner_user_id,policy_version,scope_json,status,reported_at) VALUES(?,'shared',?,?,?,?, 'active',?) ON CONFLICT(device_id,local_grant_id) DO UPDATE SET policy_version=excluded.policy_version,scope_json=excluded.scope_json,status='active',reported_at=excluded.reported_at", deviceId, this.store.workspace, this.store.owner, version, JSON.stringify(scope), now());
           this.store.run("UPDATE device_grants SET status='stale' WHERE device_id=? AND local_policy_version!=?", deviceId, version);
           ws.send(JSON.stringify({ type: "bound", coreId: this.store.get("SELECT core_id FROM workspaces")!.core_id, deviceId, ownerId: this.store.owner }));
@@ -80,6 +90,7 @@ export class DeviceGateway {
     if (!ws || ws.readyState !== WebSocket.OPEN || !local) throw new Error("设备离线或没有本地授权");
     if (local.policy_version !== JSON.parse(String(call.authorization_snapshot_json)).localPolicyVersion) throw new Error("设备本地权限版本已变化，旧批准无效");
     if (call.tool_name === "device.exec" && !JSON.parse(String(local.scope_json)).exec) throw new Error("设备未启用终端能力");
+    if (call.tool_name === "device.computer" && !JSON.parse(String(local.scope_json)).computer) throw new Error("设备未启用屏幕控制");
     const old = this.store.get("SELECT * FROM device_calls WHERE id=?", call.id);
     if (old?.result_json) return JSON.parse(String(old.result_json));
     if (old?.status === "unknown") { this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=?", call.id); throw new Error("设备执行结果未知，禁止重放"); }
@@ -101,6 +112,7 @@ export class DeviceGateway {
     });
   }
   revoke(deviceId: string) {
+    if (deviceId === this.hostDeviceId) throw new Error("主设备无需撤销配对；请在本机能力中关闭相应权限");
     this.store.transaction(() => {
       this.store.run("UPDATE devices SET status='revoked',revoked_at=? WHERE id=?", now(), deviceId);
       this.store.run("UPDATE device_credentials SET status='revoked' WHERE device_id=?", deviceId);

@@ -63,7 +63,7 @@ An initial memory smoke run alongside the full resource inventory exceeds its
 180-second startup bound. A separate rerun passes with the same bound and no
 runtime or test changes. The retained failed fixture is outside release resources.
 
-Initial 0.5.0 artifact sizes and SHA-256 (superseded installer below):
+Initial 0.5.0 artifact sizes and SHA-256 (both superseded below):
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -101,10 +101,89 @@ refreshed installer is built from that qualified prepackaged directory; the
 original NSIS installation was qualified above, and the UI update avoids
 reinstalling the unchanged native runtime.
 
-Current Setup is 1,604,688,823 bytes, SHA-256
+The processing-indicator Setup was 1,604,688,823 bytes, SHA-256
 `BF14497FD8EB6EAA874B27727258624959FA8E829A1384BC3FF539819875FF63`.
 It replaces the same delivery filename; SHA256SUMS.txt is updated. The thin
-client executable is unchanged because it loads the UI from Core.
+client executable was unchanged for that UI update because it loads the UI from Core.
+
+### Device awareness, Windows computer use and built-in skills (2026-10-11)
+
+The primary Core now registers its own stable device identity automatically.
+Initial registration grants only system metadata; filesystem, terminal and
+screen permissions stay disabled. Agents receive a current device directory
+with separate online, supported and granted fields, and can retrieve actual OS
+information through DCP. Older file-only Nodes are not advertised as supporting
+system information. Existing external Node configuration is preserved.
+
+Five first-party generic skills ship with Core: devices, computer, memory,
+collaboration and routines. The broker reads fixed allowlisted files, filters
+the catalog by the Agent's policy and grants no authority through skill text.
+Unedited known default policies migrate; user-edited restrictions remain intact.
+No Agent is created or given special logic according to its name.
+
+Windows Core and client packages include the pinned CUA Driver SDK 0.28.2 and
+native libraries. Screen access requires a local grant; each native input action
+requires approval in the executing Agent's contact. Exact window observations
+expire after two minutes and are consumed by input, including interrupted or
+unknown completion. Background refusal permits a separately approved foreground
+attempt only after a fresh observation. Unknown input is durably reconciled,
+not replayed. Screenshots reach Pi as image content rather than base64 JSON text.
+
+The packaged Core/Node/Pi suite passes 70 tests, none skipped, including native
+boundary checks, legacy migrations and unknown-call recovery across seven
+workflow suites. A real native fixture discovers its own Electron window,
+captures a window image through DCP/Pi to a synthetic vision API, and verifies
+Unicode input only after approval. Its seven cases also check foreground escalation
+and durable receipts. Native interaction never targets the user's applications.
+
+Native qualification runs in the pinned Electron executable's Node mode, matching
+the shipped Core's Windows manifest. A standalone node.exe fixture virtualizes
+coordinates at 150% scaling and produces a clipped 640x400 capture. The product
+host captures the full 940x589 surface of the 942x591 DWM window, including its
+input field; the remaining two pixels are the window border. The fixture now
+checks actual PNG dimensions against bounded physical window dimensions. The
+target retains its BrowserWindow explicitly to prevent garbage collection from
+closing it between observations. Process DPI contexts are described by
+[Microsoft's Windows documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext).
+
+The real unpacked and installed desktop fixtures pass 28 cases, including primary
+device registration, metadata-only grants, optional directory selection and the
+screen toggle, plus prior animated-dots/A2A/memory/routine/shutdown checks. The
+refreshed portable client EXE passes the 15-case two-instance synchronization
+fixture with independent profiles and an isolated Core. Physical two-machine
+networking and macOS/Linux native computer control are not qualified here.
+Two portable bootstrap attempts time out at the unchanged 180-second bound
+during overlapping desktop work. The unpacked client and a separate portable
+rerun both pass; startup failure reports now include fixture bootstrap, DevTools
+readiness and child diagnostics. This record does not infer a specific cause
+from a timeout or silently increase the portable acceptance bound.
+
+Reproduce the additional gates after the normal build and setting the bundle
+environment variables above:
+
+```powershell
+node node_modules/vitest/vitest.mjs run server/personal-os/computer.test.ts server/personal-os/app.test.ts server/personal-os/client-transport.test.ts server/personal-os/memory.test.ts server/runtime/pi/p0/recovery-store.test.ts server/runtime/pi/p0/p0.test.ts server/runtime/pi/p0/guards.test.ts
+node scripts/smoke-personal-computer.mjs --resources=release/personal-os/win-unpacked/resources
+node scripts/smoke-personal.mjs --exe=release/personal-os/win-unpacked/NexBot.exe
+```
+
+Before the program update, all 1,283 profile files are backed up and hash-checked
+outside the checkout. The installed application receives the qualified Core,
+UI and computer runtime, with 29 program resource hashes compared. The native
+memory runtime is unchanged from its earlier complete resource qualification.
+Installed desktop and native computer fixtures use disposable profiles. Normal
+user startup occurs separately after verification; its normal schema migration
+and device registration are expected to update the live profile.
+
+Both EXEs are refreshed from the qualified prepackaged directories. The installer
+is rebuilt; this program-resource update does not repeat the original complete
+NSIS installation. Delivery instructions and SHA256SUMS.txt are updated alongside
+the artifacts. Current artifact sizes and SHA-256:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| NexBot-0.5.0-x64-Setup.exe | 1,614,035,719 | `1249CE70C5E02FF8678A14ED76B77FB65442E8D1673C185A4B415C58DCBF41FF` |
+| NexBot-0.5.0-x64-Client-Portable.exe | 169,291,325 | `6161AD1CE5F620A283B9D64DBDD5063200B02AD2AB04647DC8AE21B68568DFAB` |
 
 Historical 0.4 evidence below describes the older full-Core portable package,
 which is not the new thin-client portable distribution.
