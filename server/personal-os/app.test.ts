@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSync, existsSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -18,7 +18,8 @@ function pdfFixture(content: string) {
 }
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
-const createApp: typeof createPersonalApp = process.env.NEX_TEST_BUNDLE ? (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_BUNDLE)).href)).createPersonalApp : createPersonalApp;
+const startApp: typeof createPersonalApp = process.env.NEX_TEST_BUNDLE ? (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_BUNDLE)).href)).createPersonalApp : createPersonalApp;
+const createApp: typeof createPersonalApp = (options) => startApp({ ...options, memoryRuntime: false });
 const fixtures: Array<{ root: string; apps: App[]; fake: FakeModel }> = [];
 const wait = async (check: () => boolean, milliseconds = 25_000) => {
   const deadline = Date.now() + milliseconds;
@@ -56,6 +57,36 @@ function pendingCleanup(app: App, botId: string) {
   return { action: "memory.delete", documentId: doc.documentId, expectedVersion: doc.version };
 }
 describe("Personal AI OS production workflows in isolated fixtures", () => {
+  it("forgets causal A2A copies and Pi context, then reapplies tombstones to an older restored Core database", async () => {
+    const f = await fixture(), sender = String(f.bots[0].id), peer = String(f.bots[1].id);
+    const memory = f.app.runtime.memory;
+    const note = memory.write(sender, { title: "合成计划", content: "雪鹭计划在周二举行会议" });
+    const retained = memory.write(peer, { title: "无关记忆", content: "同伴喜欢盆栽" });
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "forget-a2a", name: "broker", args: JSON.stringify({ action: "agent.delegate", botId: peer, message: "请整理雪鹭会议计划" }) }] }, { kind: "openai-text", text: "雪鹭计划是周二开会" }, { kind: "openai-text", text: "同伴确认雪鹭计划周二开会" });
+    const task = f.app.agents.send(sender, "请同伴确认会议安排", "forget-source-owner").taskId;
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
+    const link = f.app.store.get("SELECT * FROM a2a_messages")!;
+    const old = path.join(f.root, "before-forget.db"); f.app.store.db.exec(`VACUUM INTO '${old.replace(/'/g, "''")}'`);
+    const selector = { documentId: note.documentId }, plan = memory.privacy.preview(sender, selector);
+    expect(plan.tasks).toContain(link.child_task_id); expect(plan.bots).toContain(peer);
+    memory.forget(sender, selector, plan.revision);
+    expect(f.app.agents.search(peer, "雪鹭")).toEqual([]);
+    expect(f.app.store.all("SELECT * FROM transcript WHERE content LIKE '%雪鹭%' OR content LIKE '%周二%'")).toHaveLength(0);
+    expect(f.app.store.all("SELECT payload,result FROM a2a_messages").every((row) => !JSON.stringify(row).includes("雪鹭"))).toBe(true);
+    expect(f.app.runtime.projection.db.prepare("SELECT COUNT(*) n FROM projections").get()?.n).toBe(0);
+    expect(memory.read(peer, String(retained.documentId)).content).toBe("同伴喜欢盆栽");
+    expect(() => f.app.store.run("UPDATE conversation_inputs SET content_json='{}' WHERE task_id=?", task)).toThrow("immutable");
+    await f.app.close(); f.owned.apps.splice(f.owned.apps.indexOf(f.app), 1);
+    const core = path.join(f.root, "core", "core.db");
+    for (const file of [core + "-wal", core + "-shm"]) if (existsSync(file)) unlinkSync(file);
+    copyFileSync(old, core);
+    const restored = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(restored);
+    expect(restored.agents.search(sender, "雪鹭")).toEqual([]); expect(restored.agents.search(peer, "雪鹭")).toEqual([]);
+    expect(restored.runtime.memory.list(sender).some((row) => row.id === note.documentId)).toBe(false);
+    expect(restored.store.all("SELECT * FROM memory_forgotten_tasks").length).toBeGreaterThan(1);
+    expect(restored.store.all("PRAGMA foreign_key_check")).toEqual([]);
+    expect(f.fake.requests).toHaveLength(3);
+  }, 60_000);
   it("starts empty, creates arbitrary Agent instances explicitly and never reseeds after archiving the last one", async () => {
     const f = await fixture();
     // The fixture helper creates its synthetic contacts explicitly. A second

@@ -12,14 +12,14 @@ import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ManagedMemoryService, bundledMemoryRuntime, type MemoryRuntimeOptions } from "./memory-service.ts";
 
-export interface AppOptions { dir: string; key: Buffer; token: string; port?: number; host?: string; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: MemoryRuntimeOptions }
+export interface AppOptions { dir: string; key: Buffer; token: string; port?: number; host?: string; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: MemoryRuntimeOptions | false }
 export async function createPersonalApp(options: AppOptions) {
   const store = new CoreStore(options.dir, options.key, options.token);
   const streams = new Set<ServerResponse>();
   let closing = false;
   const changed = () => { if (closing) return; for (const response of streams) response.write("event: change\ndata: {}\n\n"); };
   const runtime = new TaskRuntime(store, changed);
-  const memoryService = new ManagedMemoryService(store, runtime.memory.ledger, options.hindsight ? undefined : options.memoryRuntime ?? bundledMemoryRuntime());
+  const memoryService = new ManagedMemoryService(store, runtime.memory.ledger, options.hindsight || options.memoryRuntime === false ? undefined : options.memoryRuntime ?? bundledMemoryRuntime());
   const agents = new AgentModule(store, runtime);
   const routines = new RoutineModule(store, agents);
   agents.onPublished = (botId) => {
@@ -102,6 +102,12 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/approvals") { runtime.decide(text(data.id, 100), text(data.hash, 100), data.allow === true); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/memory") { const result = runtime.memory.write(text(data.botId, 100), data); changed(); json(response, 200, result); return; }
       if (url.pathname === "/api/memory/delete") { runtime.memory.remove(text(data.id, 100), Number(data.version)); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/memory/reflect") { const result = await runtime.memory.reflect(text(data.botId, 100), text(data.query, 1000)); json(response, 200, result); return; }
+      if (url.pathname === "/api/memory/recall") { json(response, 200, await runtime.memory.recall(text(data.botId, 100), text(data.query, 200))); return; }
+      if (url.pathname === "/api/memory/expand") { json(response, 200, runtime.memory.expand(text(data.botId, 100), text(data.ref, 100))); return; }
+      if (url.pathname === "/api/memory/publish") { json(response, 200, runtime.memory.publish(text(data.botId, 100), text(data.ref, 100), text(data.sourceHash, 100), text(data.intent, 200))); changed(); return; }
+      if (url.pathname === "/api/memory/forget-preview") { json(response, 200, runtime.memory.privacy.preview(text(data.botId, 100), data)); return; }
+      if (url.pathname === "/api/memory/forget") { json(response, 200, runtime.memory.forget(text(data.botId, 100), data, text(data.revision, 100))); changed(); return; }
       if (url.pathname === "/api/devices") { json(response, 200, gateway.pair(text(data.name, 80))); return; }
       if (url.pathname === "/api/devices/revoke") { gateway.revoke(text(data.id, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/node") { json(response, 200, node.configure(data)); return; }

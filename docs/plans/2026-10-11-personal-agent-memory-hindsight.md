@@ -1,6 +1,6 @@
 # Personal Agent 主设备记忆与协作方案
 
-日期：2026-10-11。状态：首批实现完成，生产记忆发行门槛尚未通过。本文采用用户确定的主设备 Hindsight、Bot 公开职责目录、A2A 自动通信与危险操作审批规则，作为完整实现的契约。checkout 已落实统一 Agent、自动 A2A、记忆来源/outbox、真实引擎接入与隔离验证，详见[实现记录](2026-10-11-personal-agent-memory-implementation.md)。本机已安装的 0.3.3 尚未升级，仍使用原文记忆和旧审批行为。
+日期：2026-10-11。状态：0.4.0 已实现生产中文资源、scoped recall / observation / reflect、来源展开与因果遗忘；安装包验收以[验证记录](../verification/personal-os.md)为准。本文是完整演进契约，三类知识页与更广的跨设备验收不能据此视为已经实现。当前能力、预算及遗忘边界详见[实现记录](2026-10-11-personal-agent-memory-implementation.md)。
 
 ## 1 主要决策
 

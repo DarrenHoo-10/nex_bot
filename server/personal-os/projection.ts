@@ -16,5 +16,6 @@ export class ProjectionStore {
     if (entries[0]?.type !== "session") throw new Error("Invalid Pi projection header");
     this.db.prepare("INSERT INTO projections VALUES(?,?) ON CONFLICT(id) DO UPDATE SET entries=excluded.entries").run(runtimeId, JSON.stringify(entries));
   }
+  clear(runtimeId: string) { this.db.prepare("DELETE FROM projections WHERE id=?").run(runtimeId); }
   close() { this.db.close(); }
 }

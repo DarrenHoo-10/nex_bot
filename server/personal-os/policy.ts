@@ -2,7 +2,7 @@ import { canonical, hash, text, type CoreStore, type Row } from "./store.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.read", "memory.write", "memory.delete", "agent.directory", "agent.delegate", "device.list", "device.read", "device.exec"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "device.list", "device.read", "device.exec"] as const;
 export const basicActions = actions.filter((action) => !action.startsWith("device."));
 export function policyTools(policy: Row): string[] {
   const parsed = JSON.parse(String(policy.policy_json)) as { tools?: unknown };
@@ -28,15 +28,15 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     text(args.title, 200); text(args.content, 20_000);
     if (args.scope !== undefined && args.scope !== "bot") throw new Error("自动记忆写入仅限自身私有范围；共享内容请由用户在记忆面板明确发布");
   } else if (action === "memory.read") text(args.documentId, 100);
-  else if (action === "memory.delete") {
+  else if (action === "memory.delete" || action === "memory.forget") {
     const doc = store.get("SELECT * FROM memory_documents WHERE id=? AND status='active' AND scope='bot' AND bot_id=? AND workspace_id=? AND owner_user_id=?", text(args.documentId, 100), botId, store.workspace, store.owner);
     if (!doc) throw new Error("不能清理不属于自己的私有记忆");
     if (!Number.isSafeInteger(args.expectedVersion) || doc.version !== args.expectedVersion) throw new Error("记忆版本已变化");
   }
-  else if (action === "memory.search") text(args.query, 200);
+  else if (action === "memory.search" || action === "memory.reflect") text(args.query, action === "memory.reflect" ? 1000 : 200);
   // Arbitrary shell is a dangerous effect regardless of command wording.
   // Reads, own private memory and intra-workspace A2A have no approval flow.
-  return { policy, local, approvalRequired: action === "device.exec" || action === "memory.delete" };
+  return { policy, local, approvalRequired: action === "device.exec" || action === "memory.delete" || action === "memory.forget" };
 }
 export function directory(store: CoreStore) {
   const grantVersions = store.all("SELECT g.device_id,g.policy_version,g.status,g.scope_json,d.status device_status FROM device_local_grants g JOIN devices d ON d.id=g.device_id ORDER BY g.device_id");

@@ -13,7 +13,7 @@ const packageExe = process.argv.find((arg) => arg.startsWith("--exe="))?.slice(6
 const executable = packageExe || path.resolve("dist-personal/electron/electron.exe");
 const fake = await startFakeModel();
 const childEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_SMOKE_OUTPUT: output };
-const child = spawn(executable, [...(packageExe ? [] : [path.resolve("electron/nex-main.mjs")]), `--profile=${profile}`, "--port=0", "--background-fixture", "--remote-debugging-port=0"], { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+const child = spawn(executable, [...(packageExe ? [] : [path.resolve("electron/nex-main.mjs")]), `--profile=${profile}`, "--port=0", "--background-fixture", "--memory-fixture-disabled", "--remote-debugging-port=0"], { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
 let logs = "", exited = false;
 child.stdout.on("data", (data) => { logs = (logs + data.toString()).slice(-7000); });
 child.stderr.on("data", (data) => { logs = (logs + data.toString()).slice(-7000); });
@@ -27,7 +27,7 @@ async function until(check, timeout = 30_000) {
 async function command(method, params = {}) {
   const id = ++sequence;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { replies.delete(id); reject(new Error("Desktop command timed out: " + method + " " + logs)); }, 10_000);
+    const timer = setTimeout(() => { replies.delete(id); reject(new Error("Desktop command timed out: " + method + " " + String(params.expression ?? "").slice(0, 200) + " " + logs)); }, 30_000);
     replies.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
     ws.send(JSON.stringify({ id, method, params }));
   });
@@ -38,7 +38,7 @@ async function evaluate(expression) {
   return result.result.value;
 }
 try {
-  await until(() => existsSync(output) && existsSync(path.join(profile, "DevToolsActivePort")));
+  await until(() => existsSync(output) && existsSync(path.join(profile, "DevToolsActivePort")), packageExe?.includes("Portable") ? 900_000 : 60_000);
   const ready = JSON.parse(readFileSync(output, "utf8"));
   const port = readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -149,7 +149,7 @@ try {
   writeFileSync(screenshot, Buffer.from(shot.data, "base64"));
   const dom = await evaluate("({width:innerWidth,height:innerHeight,overflow:document.documentElement.scrollWidth>innerWidth,title:document.title,errors:document.querySelector('[role=alert]')?.textContent})");
   if (dom.overflow || dom.errors) throw new Error("Renderer layout/error failed: " + JSON.stringify(dom));
-  await evaluate("void window.nex.quit(); true"); await until(() => exited, 10_000);
+  await evaluate("void window.nex.quit(); true"); await until(() => exited, packageExe?.includes("Portable") ? 180_000 : 40_000);
   console.log(JSON.stringify({ passed: true, runtime: "fixed-pi", cases: ["zero-default-Agents", "explicit-Agent-creation", "automatic-A2A", "desktop-boot", "vault", "API-key-settings", "model-request-preview", "optional-Agent-identity", "silent-identity-refresh", "persistent-Agent-contact", "SDK-chat", "private-memory", "background-routine", "tray-hide-restore", "compact-A2A-markers", "receiver-reply-collapse", "A2A-peer-navigation", "renderer", "graceful-shutdown"], dom, screenshot, a2aScreenshot }));
 } finally {
   ws?.close();

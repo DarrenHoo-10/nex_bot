@@ -3,7 +3,7 @@ export interface State {
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
   memories: RecordRow[]; delegations: RecordRow[]; devices: RecordRow[]; tasks: RecordRow[]; onlineDevices: string[];
   routines: RecordRow[]; occurrences: RecordRow[]; journal: RecordRow[];
-  memoryEngine?: { provider: string; release: string; status: string; service: string; pending: number; failed: number; quarantined: number; error: string | null };
+  memoryEngine?: { provider: string; release: string; status: string; service: string; pending: number; failed: number; quarantined: number; forgetting: number; revision: string; error: string | null };
   node: { status: string; origin: string; root: string; exec: boolean; connected: boolean; unknownCalls: RecordRow[] };
   dataDir: string; address: string; lanEnabled: boolean;
 }

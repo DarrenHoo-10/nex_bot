@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { timingSafeEqual, randomBytes } from "node:crypto";
 import { CoreStore, id, now } from "./store.ts";
+import { policyTools } from "./policy.ts";
 
 type Json = Record<string, unknown>;
 // Hindsight receives only this ephemeral service credential. The paid provider
@@ -23,10 +24,19 @@ export class MemoryModelGateway {
         for await (const chunk of request) { bytes += chunk.length; if (bytes > 256_000) throw new Error("request_too_large"); chunks.push(Buffer.from(chunk)); }
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Json;
         const bank = String(request.headers["x-nex-bank"] ?? ""), operation = String(request.headers["x-nex-operation"] ?? ""), purpose = String(request.headers["x-nex-purpose"] ?? "");
-        if (this.closing || this.busy || store.get("SELECT id FROM tasks WHERE status='running' AND ended_at IS NULL")) { send(429, { error: { message: "foreground_or_background_busy" } }); return; }
-        if (!/^[0-9a-f-]{36}$/i.test(operation) || !["retain", "consolidate"].includes(purpose) || !Array.isArray(body.messages) || body.stream === true) throw new Error("unattributed_memory_model_request");
+        const taskId = String(request.headers["x-nex-task-id"] ?? "");
+        if (this.closing || this.busy || (!taskId && store.get("SELECT id FROM tasks WHERE status='running' AND ended_at IS NULL"))) { send(429, { error: { message: "foreground_or_background_busy" } }); return; }
+        if (!/^[0-9a-f-]{36}$/i.test(operation) || !["retain", "consolidate", "reflect"].includes(purpose) || !Array.isArray(body.messages) || body.stream === true) throw new Error("unattributed_memory_model_request");
         const binding = store.get("SELECT * FROM memory_bank_bindings WHERE provider_bank_id=? AND state!='deleted'", bank);
         if (!binding || (binding.bot_id && store.get("SELECT status FROM bots WHERE id=?", binding.bot_id)?.status !== "active")) throw new Error("bank_not_authorized");
+        let root: string | undefined;
+        if (taskId) {
+          const task = store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL AND status='running'", taskId);
+          if (purpose !== "reflect" || !task || (binding.bot_id && binding.bot_id !== task.bot_id) || store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", taskId)) throw new Error("task_not_authorized");
+          const policy = store.get("SELECT * FROM bot_policies WHERE bot_id=?", task.bot_id)!;
+          if (!policyTools(policy).includes("memory.reflect") || !policyTools(policy).includes("memory.search")) throw new Error("memory_policy_revoked");
+          root = String(store.get("SELECT root_task_id FROM a2a_messages WHERE child_task_id=?", taskId)?.root_task_id ?? taskId);
+        }
         const model = store.modelConfig(), maximum = Math.min(8192, Number(body.max_completion_tokens ?? body.max_tokens ?? 4096));
         if (!Number.isSafeInteger(maximum) || maximum < 1) throw new Error("invalid_token_reservation");
         const reserved = Buffer.byteLength(JSON.stringify(body), "utf8") + maximum;
@@ -38,7 +48,13 @@ export class MemoryModelGateway {
           // Failed/unknown requests keep their reservation; usage absence is
           // never interpreted as free. Each native retry has a separate row.
           if (Number(daily.calls) >= 100 || Number(daily.tokens) + reserved > 300_000 || Number(own.calls) >= 30 || Number(own.tokens) + reserved > 100_000) throw new Error("memory_daily_budget_exhausted");
-          store.insert("memory_model_invocations", { id: invoice, bank_id: binding.id, engine_operation_id: operation, purpose, reserved_tokens: reserved, status: "in_flight", created_at: now() });
+          if (root) {
+            const calls = store.get("SELECT COUNT(*) calls,COALESCE(SUM(CASE WHEN usage_known=1 THEN input_tokens+output_tokens ELSE 16384 END),0) tokens FROM model_invocations WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?))", root, root)!;
+            const memory = store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?)", root, root)!;
+            const limit = store.get("SELECT max_model_calls,token_budget FROM tasks WHERE id=?", root)!;
+            if (Number(calls.calls) + Number(memory.calls) >= Number(limit.max_model_calls) || Number(calls.tokens) + Number(memory.tokens) + reserved > Number(limit.token_budget)) throw new Error("task_memory_budget_exhausted");
+          }
+          store.insert("memory_model_invocations", { id: invoice, bank_id: binding.id, engine_operation_id: operation, purpose, task_id: taskId || null, reserved_tokens: reserved, status: "in_flight", created_at: now() });
         });
         this.busy = true;
         const controller = new AbortController(); this.controllers.add(controller);
@@ -65,13 +81,13 @@ export class MemoryModelGateway {
           const input = Number(usage?.prompt_tokens), output = Number(usage?.completion_tokens);
           store.run("UPDATE memory_model_invocations SET status='succeeded',input_tokens=?,output_tokens=?,finished_at=? WHERE id=?", Number.isSafeInteger(input) && input >= 0 ? input : null, Number.isSafeInteger(output) && output >= 0 ? output : null, now(), invoice);
           // Retired banks cannot receive a late model answer after correction.
-          if (store.get("SELECT provider_bank_id FROM memory_bank_bindings WHERE id=?", binding.id)?.provider_bank_id !== bank) throw new Error("bank_visibility_changed");
+          if (store.get("SELECT provider_bank_id FROM memory_bank_bindings WHERE id=?", binding.id)?.provider_bank_id !== bank || (taskId && store.get("SELECT ended_at FROM tasks WHERE id=?", taskId)?.ended_at !== null)) throw new Error("bank_visibility_changed");
           send(200, result);
         } catch {
           store.run("UPDATE memory_model_invocations SET status='unknown',finished_at=? WHERE id=? AND status='in_flight'", now(), invoice);
           send(502, { error: { message: "memory_provider_request_failed" } });
         } finally { clearTimeout(timeout); this.controllers.delete(controller); this.busy = false; }
-      })().catch(() => send(403, { error: { message: "memory_request_denied" } }));
+      })().catch((error: unknown) => { const quota = error instanceof Error && error.message === "memory_daily_budget_exhausted"; send(quota ? 429 : 403, { error: { message: quota ? "memory_daily_budget_exhausted" : "memory_request_denied" } }); });
     });
   }
   async start() {
@@ -89,11 +105,15 @@ export function toAnthropic(body: Json): Json {
   const system: string[] = [], messages: Json[] = [];
   for (const item of body.messages as Json[]) {
     if (item.role === "system") { system.push(String(item.content ?? "")); continue; }
-    if (!["user", "assistant"].includes(String(item.role)) || typeof item.content !== "string") throw new Error("Unsupported background message");
-    messages.push({ role: item.role, content: item.content });
+    if (item.role === "tool") { messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: item.tool_call_id, content: typeof item.content === "string" ? item.content : JSON.stringify(item.content) }] }); continue; }
+    if (!["user", "assistant"].includes(String(item.role))) throw new Error("Unsupported background message");
+    const content: Json[] = item.content ? [{ type: "text", text: String(item.content) }] : [];
+    if (Array.isArray(item.tool_calls)) for (const call of item.tool_calls as Json[]) { const fn = call.function as Json; content.push({ type: "tool_use", id: call.id, name: fn.name, input: JSON.parse(String(fn.arguments)) }); }
+    messages.push({ role: item.role, content: content.length ? content : [{ type: "text", text: " " }] });
   }
   const payload: Json = { model: body.model, system: system.join("\n\n"), messages, max_tokens: body.max_tokens };
   if (body.temperature !== undefined) payload.temperature = body.temperature;
+  if (Array.isArray(body.tools)) payload.tools = (body.tools as Json[]).map((tool) => { const fn = tool.function as Json; return { name: fn.name, description: fn.description, input_schema: fn.parameters }; });
   const format = body.response_format as Json | undefined;
   const schema = format?.json_schema as Json | undefined;
   if (schema?.schema) {
@@ -107,5 +127,6 @@ export function fromAnthropic(response: Json, request: Json): Json {
   const structured = Boolean((request.response_format as Json | undefined)?.json_schema);
   const content = (response.content as Json[]).filter((p) => structured ? p.type === "tool_use" && p.name === "memory_result" : p.type === "text").map((p) => structured ? JSON.stringify(p.input) : String(p.text)).join("");
   const usage = response.usage as Json | undefined;
-  return { id: response.id, model: response.model, object: "chat.completion", created: Math.floor(now() / 1000), choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: response.stop_reason === "max_tokens" ? "length" : "stop" }], usage: { prompt_tokens: usage?.input_tokens, completion_tokens: usage?.output_tokens } };
+  const tools = structured ? [] : (response.content as Json[]).filter((p) => p.type === "tool_use").map((p) => ({ id: p.id, type: "function", function: { name: p.name, arguments: JSON.stringify(p.input) } }));
+  return { id: response.id, model: response.model, object: "chat.completion", created: Math.floor(now() / 1000), choices: [{ index: 0, message: { role: "assistant", content, ...(tools.length ? { tool_calls: tools } : {}) }, finish_reason: tools.length ? "tool_calls" : response.stop_reason === "max_tokens" ? "length" : "stop" }], usage: { prompt_tokens: usage?.input_tokens, completion_tokens: usage?.output_tokens } };
 }

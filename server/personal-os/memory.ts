@@ -1,10 +1,20 @@
 import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
 import { MemoryLedger } from "./memory-ledger.ts";
 import { policyTools } from "./policy.ts";
+import { MemoryPrivacy, type ForgetPlan } from "./memory-privacy.ts";
 
 export class MemoryModule {
   readonly ledger: MemoryLedger;
-  constructor(readonly store: CoreStore, changed: () => void = () => {}) { this.ledger = new MemoryLedger(store, undefined, changed); }
+  readonly privacy: MemoryPrivacy;
+  constructor(readonly store: CoreStore, changed: () => void = () => {}, readonly fence: (plan: ForgetPlan) => void = () => {}) {
+    this.privacy = new MemoryPrivacy(store);
+    // Replay before capture/backfill or opening history to the renderer.
+    const replayed: ForgetPlan[] = [];
+    this.privacy.replay((plan) => { fence(plan); replayed.push(plan); });
+    this.ledger = new MemoryLedger(store, undefined, changed);
+    for (const plan of replayed) for (const bank of plan.banks) if (store.get("SELECT id FROM memory_bank_bindings WHERE id=?", bank)) this.ledger.invalidate(bank);
+    for (const rule of store.all("SELECT plan_json FROM memory_forget_rules WHERE status='cleaning'")) for (const bank of (JSON.parse(String(rule.plan_json)) as ForgetPlan).banks) if (store.get("SELECT state FROM memory_bank_bindings WHERE id=?", bank)?.state === "ready") this.ledger.invalidate(bank);
+  }
   list(botId: string): Row[] {
     return this.store.all("SELECT d.id,d.title,d.scope,d.bot_id,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status='active' AND (d.scope='workspace' OR d.bot_id=?) ORDER BY d.updated_at DESC LIMIT 50", this.store.workspace, this.store.owner, botId);
   }
@@ -62,5 +72,75 @@ export class MemoryModule {
       this.store.audit("memory.delete", "memory", documentId, { expectedVersion });
     });
   }
+  forget(botId: string, selector: Record<string, unknown>, revision: string) {
+    const plan = this.privacy.preview(botId, selector);
+    if (revision !== plan.revision) throw new Error("清理范围已变化，请重新预览");
+    const record = this.privacy.persist(plan);
+    this.store.transaction(() => {
+      this.store.insert("memory_forget_rules", { id: record.id, selector_hash: plan.selectorHash, plan_json: JSON.stringify(plan), status: "pending", created_at: now() });
+      for (const bank of plan.banks) this.store.run("UPDATE memory_bank_bindings SET state='quarantined' WHERE id=?", bank);
+    });
+    this.fence(plan);
+    this.store.transaction(() => { this.privacy.redact(plan, record.id); for (const bank of plan.banks) this.ledger.invalidate(bank); });
+    this.ledger.changed(); void this.ledger.flush();
+    return { id: record.id, status: plan.banks.length ? "cleaning" : "completed", documents: plan.documents.length, messages: plan.messages.length };
+  }
+  consume(taskId: string, references: string[] = [], documents: string[] = []) {
+    const bot = this.store.get("SELECT bot_id FROM tasks WHERE id=?", taskId)?.bot_id;
+    if (!bot) return;
+    const notes = new Set([...documents, ...this.list(String(bot)).slice(0, 15).map((doc) => String(doc.id))]);
+    const history = this.store.all("SELECT id,task_id FROM agent_messages WHERE bot_id=? AND (task_id IS NULL OR task_id!=?) ORDER BY seq DESC LIMIT 12", bot, taskId);
+    const rawMessages = new Set(history.map((message) => String(message.id)));
+    const refs = new Set(references);
+    for (const source of this.store.all("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.status='active' AND (b.bot_id=? OR b.scope='workspace')", bot)) if (refs.has(String(source.id)) || (source.source_kind === "document" ? notes.has(String(source.original_id)) : rawMessages.has(String(source.original_id)))) this.store.run("INSERT OR IGNORE INTO memory_task_sources VALUES(?,?)", taskId, source.id);
+    for (const row of [...history, ...this.store.all("SELECT task_id FROM agent_journal WHERE bot_id=? AND task_id!=? ORDER BY created_at DESC LIMIT 3", bot, taskId)]) if (row.task_id && row.task_id !== taskId) this.store.run("INSERT OR IGNORE INTO memory_task_dependencies VALUES(?,?)", taskId, row.task_id);
+    const parent = this.store.get("SELECT parent_task_id FROM a2a_messages WHERE child_task_id=?", taskId);
+    if (parent) this.store.run("INSERT OR IGNORE INTO memory_task_sources SELECT ?,source_id FROM memory_task_sources WHERE task_id=?", taskId, parent.parent_task_id);
+  }
+  expand(botId: string, ref: string) {
+    const source = this.store.get("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.id=? AND s.status='active' AND (b.bot_id=? OR b.scope='workspace')", ref, botId);
+    if (!source) throw new Error("来源已撤回或不可见");
+    const payload = this.ledger.source(source); if (!payload) throw new Error("来源已变化");
+    return { ref, sourceClass: source.source_class, content: payload.content, contentHash: source.content_hash };
+  }
+  publish(botId: string, ref: string, sourceHash: string, intent: string) {
+    const source = this.store.get("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.id=? AND s.status='active' AND b.bot_id=?", ref, botId);
+    if (!source || source.content_hash !== sourceHash) throw new Error("来源已变化，请重新查看");
+    const content = this.expand(botId, ref).content;
+    const result = this.write(botId, { title: "用户共享的记忆", content, scope: "workspace" });
+    this.store.insert("memory_publications", { id: id(), source_id: ref, document_id: result.documentId, source_hash: sourceHash, intent_hash: hash(text(intent, 200)), created_at: now() });
+    const copy = this.store.get("SELECT id FROM memory_source_registry WHERE source_kind='document' AND original_id=?", result.documentId)!;
+    this.store.run("INSERT OR IGNORE INTO memory_source_edges VALUES(?,?)", copy.id, ref);
+    return result;
+  }
   async recall(botId: string, query: string) { return this.ledger.recall(botId, query); }
+  async reflect(botId: string, query: string, taskId?: string) {
+    query = text(query, 1000);
+    const policy = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", botId);
+    if (!policy || !policyTools(policy).includes("memory.search") || (taskId && this.store.get("SELECT bot_id FROM tasks WHERE id=? AND ended_at IS NULL", taskId)?.bot_id !== botId)) throw new Error("该 Agent 无权综合记忆");
+    const client = this.ledger.client; if (!client) throw new Error("语义记忆服务尚未就绪");
+    const banks = this.store.all("SELECT * FROM memory_bank_bindings WHERE (bot_id=? OR scope='workspace') AND state='ready'", botId);
+    const answers: Array<{ scope: Row[string]; text: string; refs: string[] }> = [];
+    for (const bank of banks) {
+      const result = await client.reflect(String(bank.provider_bank_id), query, taskId);
+      const current = this.store.get("SELECT * FROM memory_bank_bindings WHERE id=?", bank.id);
+      if (current?.state !== "ready" || current.provider_bank_id !== bank.provider_bank_id || current.visibility_generation !== bank.visibility_generation || current.content_generation !== bank.content_generation || this.store.get("SELECT version FROM bot_policies WHERE bot_id=?", botId)?.version !== policy.version || this.store.get("SELECT status FROM bots WHERE id=?", botId)?.status !== "active" || (taskId && this.store.get("SELECT ended_at FROM tasks WHERE id=?", taskId)?.ended_at !== null)) throw new Error("记忆或权限已变化，请重新检索");
+      const evidence = (result.based_on as { memories?: Array<{ document_id?: string }> } | undefined)?.memories ?? [];
+      const refs = evidence.map((fact) => this.store.get("SELECT s.id FROM memory_source_registry s JOIN memory_provider_documents d ON d.source_id=s.id WHERE s.bank_id=? AND d.provider_document_id=? AND s.status='active'", bank.id, fact.document_id ?? "")?.id);
+      if (!evidence.length) continue;
+      if (refs.some((ref) => !ref)) throw new Error("综合结果缺少有效来源");
+      answers.push({ scope: bank.scope, text: text(result.text, 20_000), refs: [...new Set(refs.map(String))] });
+      if (taskId) this.consume(taskId, refs.map(String));
+    }
+    // A previously checked private bank may change while the shared-bank
+    // reflection is awaiting its model. Check the entire read snapshot again
+    // before caching or returning either answer.
+    if (banks.some((bank) => {
+      const current = this.store.get("SELECT * FROM memory_bank_bindings WHERE id=?", bank.id);
+      return current?.state !== "ready" || current.provider_bank_id !== bank.provider_bank_id || current.visibility_generation !== bank.visibility_generation || current.content_generation !== bank.content_generation;
+    }) || this.store.get("SELECT version FROM bot_policies WHERE bot_id=?", botId)?.version !== policy.version || this.store.get("SELECT status FROM bots WHERE id=?", botId)?.status !== "active" || (taskId && this.store.get("SELECT ended_at FROM tasks WHERE id=?", taskId)?.ended_at !== null)) throw new Error("记忆或权限已变化，请重新检索");
+    const result = { answers, status: answers.length ? "available" : "no_evidence" };
+    this.store.insert("memory_syntheses", { id: id(), bot_id: botId, query, result_json: JSON.stringify(result), generations_json: JSON.stringify(banks.map((b) => ({ id: b.id, physical: b.provider_bank_id, content: b.content_generation, visibility: b.visibility_generation }))), created_at: now() });
+    return result;
+  }
 }

@@ -87,6 +87,22 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 3, checksum: hash(memorySql), applied_at: now() });
       });
     }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=4")) {
+      const lifecycle = readFileSync(new URL("./memory-lifecycle-schema.sql", import.meta.url), "utf8");
+      this.transaction(() => {
+        this.db.exec(lifecycle);
+        // A reviewed privacy purge may redact payloads while retaining stable
+        // identities and original hashes. Ordinary writes remain immutable.
+        for (const name of ["tool_call_input_immutable", "conversation_input_immutable", "audit_no_update", "reconciliation_no_update"]) {
+          const trigger = this.get("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", name);
+          if (!trigger) continue;
+          this.db.exec(`DROP TRIGGER ${name}`);
+          this.db.exec(String(trigger.sql).replace(/SELECT RAISE\((ABORT, '[^']*')\);/g, "SELECT CASE WHEN (SELECT active FROM memory_privacy_maintenance WHERE id=1)=0 THEN RAISE($1) END;"));
+        }
+        this.insert("schema_migrations", { version: 4, checksum: hash(lifecycle), applied_at: now() });
+      });
+    }
+    this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
   get(sql: string, ...args: SQLInputValue[]): Row | undefined { return this.db.prepare(sql).get(...args) as Row | undefined; }
@@ -197,7 +213,7 @@ export class CoreStore {
     this.insert("audit_records", { id: id(), workspace_id: this.workspace, actor_user_id: this.owner, action, entity_type: entityType, entity_id: entityId, details_json: JSON.stringify(details), created_at: now() });
   }
   state() {
-    return { config: this.config(), bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"), conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"), approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"), delegations: this.all("SELECT * FROM a2a_messages ORDER BY created_at DESC LIMIT 100"), memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' ORDER BY d.updated_at DESC"), devices: this.all("SELECT id,name,status,capabilities_json FROM devices"), tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200") };
+    return { config: this.config(), bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"), conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"), approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"), delegations: this.all("SELECT * FROM a2a_messages ORDER BY created_at DESC LIMIT 100"), memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' ORDER BY d.updated_at DESC"), devices: this.all("SELECT id,name,status,capabilities_json FROM devices"), tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200") };
   }
   close() { this.db.close(); }
 }

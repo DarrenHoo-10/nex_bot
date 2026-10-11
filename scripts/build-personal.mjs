@@ -10,6 +10,10 @@ import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(root, "dist-personal");
+if (process.argv.includes("--release")) {
+  const gate = spawnSync(process.execPath, [path.join(root, "scripts/verify-personal-resources.mjs")], { stdio: "inherit", windowsHide: true });
+  if (gate.status !== 0) throw new Error("Production memory resource release gate failed");
+}
 const config = parse(readFileSync(path.join(root, "electron-builder.personal.yml"), "utf8"));
 const electronDir = path.join(root, config.electronDist), electronExe = path.join(electronDir, "electron.exe");
 if (!existsSync(electronExe) || spawnSync(electronExe, ["-p", "process.versions.electron"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8", windowsHide: true }).stdout?.trim() !== config.electronVersion) {
@@ -25,7 +29,7 @@ mkdirSync(path.join(output, "core"), { recursive: true });
 await viteBuild({ configFile: false, root, plugins: [react()], build: { outDir: path.join(output, "ui"), emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
 copyFileSync(path.join(output, "ui", "personal.html"), path.join(output, "ui", "index.html"));
 await build({ entryPoints: ["server/personal-os/index.ts", "server/personal-os/worker.ts"].map((file) => path.join(root, file)), outdir: path.join(output, "core"), bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "linked", define: { PI_BUNDLED_NODE: "true" }, external: ["pdfjs-dist/legacy/build/pdf.mjs"], banner: { js: "import { createRequire as nexCreateRequire } from 'node:module'; const require = nexCreateRequire(import.meta.url);" } });
-for (const file of ["schema.sql", "node-schema.sql", "agent-schema.sql", "memory-schema.sql"]) copyFileSync(path.join(root, "server", "personal-os", file), path.join(output, "core", file));
+for (const file of ["schema.sql", "node-schema.sql", "agent-schema.sql", "memory-schema.sql", "memory-lifecycle-schema.sql"]) copyFileSync(path.join(root, "server", "personal-os", file), path.join(output, "core", file));
 copyFileSync(path.join(root, "server", "personal-os", "hindsight-service.py"), path.join(output, "core", "hindsight-service.py"));
 const pi = JSON.parse(readFileSync(path.join(root, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));
 writeFileSync(path.join(output, "package.json"), JSON.stringify({ name: pi.name, version: pi.version, type: "module", piConfig: pi.piConfig }));

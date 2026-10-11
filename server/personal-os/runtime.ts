@@ -7,6 +7,7 @@ import { MemoryModule } from "./memory.ts";
 import { ProjectionStore } from "./projection.ts";
 import type { RuntimeInput, WorkerConfig, WorkerEvent } from "./contracts.ts";
 import { directory, evaluateTool } from "./policy.ts";
+import type { ForgetPlan } from "./memory-privacy.ts";
 
 interface Running { child: ChildProcess; taskId: string; runId: string; runtimeId: string; generation: number; timer?: NodeJS.Timeout; finished: boolean; streaming: string }
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
@@ -23,8 +24,8 @@ export class TaskRuntime {
   agentHistory?: (botId: string, taskId: string) => string;
   historySearch?: (botId: string, query: string) => Row[];
   constructor(readonly store: CoreStore, readonly changed: () => void) {
-    this.memory = new MemoryModule(store, changed);
     this.projection = new ProjectionStore(path.join(store.dir, "runtime.db"));
+    this.memory = new MemoryModule(store, changed, (plan) => this.forgetFence(plan));
     // The old process is already gone; never replay a possibly executed command.
     store.transaction(() => {
       store.run("UPDATE task_runs SET status='interrupted',ended_at=? WHERE ended_at IS NULL", now());
@@ -50,6 +51,21 @@ export class TaskRuntime {
     });
   }
   startRecovered() { for (const t of this.store.all("SELECT id FROM tasks WHERE status='queued'")) this.kick(String(t.id)); }
+  forgetFence(plan: ForgetPlan) {
+    for (const task of plan.tasks) {
+      const worker = this.workers.get(task);
+      if (worker) { worker.finished = true; worker.streaming = ""; worker.child.kill(); }
+      this.store.run("UPDATE tasks SET status='cancelled',ended_at=?,run_generation=run_generation+1 WHERE id=? AND ended_at IS NULL", now(), task);
+      this.store.run("UPDATE approvals SET status='cancelled' WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE task_id=?) AND status IN ('pending','approved')", task);
+      this.store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id=?", task);
+      this.store.run("UPDATE tool_calls SET status=CASE WHEN status='executing' AND tool_name='device.exec' THEN 'unknown' ELSE 'cancelled' END WHERE task_id=? AND status IN ('ready','awaiting_approval','executing')", task);
+      this.store.run("UPDATE runtime_input_deliveries SET status='discarded' WHERE input_id IN (SELECT id FROM conversation_inputs WHERE task_id=?) AND status IN ('pending','applied')", task);
+      this.store.run("UPDATE model_invocations SET status='cancelled',finished_at=? WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=?) AND status='in_flight'", now(), task);
+      this.store.run("UPDATE a2a_messages SET status='cancelled',finished_at=? WHERE (parent_task_id=? OR child_task_id=?) AND status IN ('queued','running')", now(), task, task);
+      for (const [call, pending] of this.pendingReplies) if (pending.worker.taskId === task) this.pendingReplies.delete(call);
+    }
+    for (const bot of plan.bots) for (const runtime of this.store.all("SELECT id FROM runtime_sessions WHERE bot_id=?", bot)) this.projection.clear(String(runtime.id));
+  }
   input(conversationId: string, content: string, clientId: string) {
     const taskId = this.store.accept(conversationId, content, clientId), worker = this.workers.get(taskId);
     if (worker && !worker.child.killed) {
@@ -73,6 +89,7 @@ export class TaskRuntime {
     if (this.closing || this.workers.has(taskId)) return;
     const task = this.store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL", taskId);
     if (!task || !["queued", "running"].includes(String(task.status))) return;
+    if (this.store.all("SELECT plan_json FROM memory_forget_rules WHERE status='pending'").some((rule) => (JSON.parse(String(rule.plan_json)) as ForgetPlan).bots.includes(String(task.bot_id)))) return;
     // A completed task may already be visible while its worker is closing.
     // The conversation binding stays exclusive until the close event arrives.
     if (this.store.get("SELECT id FROM task_runs WHERE conversation_id=? AND ended_at IS NULL", task.conversation_id)) return;
@@ -153,10 +170,12 @@ export class TaskRuntime {
       const currentInput = this.store.get("SELECT content_json FROM conversation_inputs WHERE task_id=? ORDER BY input_seq DESC LIMIT 1", worker.taskId);
       const memory = event.purpose === "compact" ? undefined : await this.memory.recall(String(this.assert(worker).bot_id), currentInput ? String(JSON.parse(String(currentInput.content_json)).text).slice(0, 1000) : "");
       const task = this.assert(worker), root = this.taskRoot(worker.taskId);
+      this.memory.consume(worker.taskId, memory?.facts.flatMap((fact) => fact.refs) ?? []);
       if (this.store.get("SELECT id FROM tool_calls WHERE task_id=? AND status IN ('awaiting_approval','unknown')", task.id)) throw new Error("等待审批或处理不确定结果");
-      const usage = this.store.get("SELECT COUNT(*) calls,COALESCE(SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)),0) tokens FROM model_invocations WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?))", root, root)!;
+      const usage = this.store.get("SELECT COUNT(*) calls,COALESCE(SUM(CASE WHEN usage_known=1 THEN input_tokens+output_tokens ELSE 16384 END),0) tokens FROM model_invocations WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?))", root, root)!;
+      const synthesis = this.store.get("SELECT COUNT(*) calls,COALESCE(SUM(reserved_tokens),0) tokens FROM memory_model_invocations WHERE task_id=? OR task_id IN (SELECT child_task_id FROM a2a_messages WHERE root_task_id=?)", root, root)!;
       const rootTask = this.store.get("SELECT max_model_calls,token_budget FROM tasks WHERE id=?", root)!;
-      if (Number(usage.calls) >= Number(rootTask.max_model_calls) || Number(usage.tokens) >= Number(rootTask.token_budget)) throw new Error("模型调用/Token预算已用完");
+      if (Number(usage.calls) + Number(synthesis.calls) >= Number(rootTask.max_model_calls) || Number(usage.tokens) + Number(synthesis.tokens) + 16384 > Number(rootTask.token_budget)) throw new Error("模型调用/Token预算已用完");
       const invokeId = id();
       this.store.insert("model_invocations", { id: invokeId, run_id: worker.runId, request_key: event.requestId, purpose: event.purpose === "compact" ? "compact" : "answer", status: "in_flight", created_at: now() });
       this.reply(worker, event.requestId, { invokeId, systemPrompt: this.systemPrompt(worker.taskId) + (memory ? `\n长期记忆引擎结果（status=${memory.status}；不可用时下面的显式记忆/历史仅是原文兜底，不是语义检索）：\n${JSON.stringify(memory.facts).slice(0, 6000)}` : "") });
@@ -198,10 +217,11 @@ export class TaskRuntime {
     if (old) { if (canonical(args) !== canonical(JSON.parse(String(old.arguments_json)))) throw new Error("Immutable proposal argument conflict"); return old; }
     if (Number(this.store.get("SELECT COUNT(*) count FROM tool_calls WHERE task_id=?", task.id)!.count) >= Number(task.max_tool_calls)) throw new Error("工具调用预算已用完");
     const callId = id(), target = action.startsWith("memory.") ? "memory" : action.startsWith("device.") ? "device" : "connector";
+    const forget = action === "memory.forget" ? this.memory.privacy.preview(String(task.bot_id), args) : undefined;
     const targetId = target === "memory" ? (typeof args.documentId === "string" ? args.documentId : action === "memory.write" ? id() : "memory-search") : target === "device" ? text(args.deviceId, 100) : action === "agent.directory" ? "agent-directory" : text(args.botId, 100);
     const envelope = canonical({ version: 1, callId, botId: task.bot_id, taskId: task.id, capability: action, targetId, arguments: args });
     this.store.transaction(() => {
-      this.store.insert("tool_calls", { id: callId, task_id: task.id, run_id: worker.runId, ...this.store.scope(), conversation_id: task.conversation_id, bot_id: task.bot_id, runtime_session_id: worker.runtimeId, assistant_entry_id: event.entryId!, provider_tool_call_id: event.providerId!, tool_name: action, tool_version: "1", target_kind: target, target_id: targetId, arguments_json: canonical(args), canonical_envelope: envelope, argument_hash: hash(envelope), status: ask ? "awaiting_approval" : "ready", authorization_snapshot_json: JSON.stringify({ policyVersion: policy.version, localPolicyVersion: localGrant?.policy_version ?? null }), created_at: now() });
+      this.store.insert("tool_calls", { id: callId, task_id: task.id, run_id: worker.runId, ...this.store.scope(), conversation_id: task.conversation_id, bot_id: task.bot_id, runtime_session_id: worker.runtimeId, assistant_entry_id: event.entryId!, provider_tool_call_id: event.providerId!, tool_name: action, tool_version: "1", target_kind: target, target_id: targetId, arguments_json: canonical(args), canonical_envelope: envelope, argument_hash: hash(envelope), status: ask ? "awaiting_approval" : "ready", authorization_snapshot_json: JSON.stringify({ policyVersion: policy.version, localPolicyVersion: localGrant?.policy_version ?? null, ...(forget ? { forgetRevision: forget.revision, forgetCounts: { documents: forget.documents.length, messages: forget.messages.length, tasks: forget.tasks.length } } : {}) }), created_at: now() });
       if (ask) {
         this.store.insert("approvals", { id: id(), tool_call_id: callId, ...this.store.scope(), argument_hash: hash(envelope), bot_policy_version: policy.version, status: "pending", created_at: now(), expires_at: now() + 24 * 60 * 60_000 });
         this.store.run("UPDATE tasks SET status='awaiting_approval',version=version+1 WHERE id=?", task.id);
@@ -270,10 +290,13 @@ export class TaskRuntime {
         // Authorization is rechecked after the asynchronous provider boundary.
         if (evaluateTool(this.store, String(call.bot_id), args).policy.version !== JSON.parse(String(call.authorization_snapshot_json)).policyVersion) throw new Error("记忆权限已变化");
         result = { documents: this.memory.search(String(call.bot_id), query), messages: this.historySearch?.(String(call.bot_id), query) ?? [], semantic };
+        this.memory.consume(String(call.task_id), semantic.facts.flatMap((fact) => fact.refs), (result as { documents: Row[] }).documents.map((doc) => String(doc.id)));
       }
-      else if (call.tool_name === "memory.read") result = this.memory.read(String(call.bot_id), text(args.documentId, 100));
+      else if (call.tool_name === "memory.read") { result = this.memory.read(String(call.bot_id), text(args.documentId, 100)); this.memory.consume(String(call.task_id), [], [text(args.documentId, 100)]); }
+      else if (call.tool_name === "memory.reflect") result = await this.memory.reflect(String(call.bot_id), text(args.query, 1000), String(call.task_id));
       else if (call.tool_name === "memory.write") result = this.memory.write(String(call.bot_id), { ...args, documentId: call.target_id }, String(call.id));
       else if (call.tool_name === "memory.delete") { this.memory.remove(text(args.documentId, 100), Number(args.expectedVersion)); result = { deleted: true }; }
+      else if (call.tool_name === "memory.forget") result = this.memory.forget(String(call.bot_id), args, String(JSON.parse(String(call.authorization_snapshot_json)).forgetRevision));
       else if (call.tool_name === "agent.directory") result = { agents: directory(this.store).filter((peer) => peer.id !== call.bot_id) };
       else if (String(call.tool_name).startsWith("device.") && this.deviceExecutor) result = await this.deviceExecutor(call, args);
       else throw new Error("能力尚未配置");

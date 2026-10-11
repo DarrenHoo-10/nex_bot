@@ -16,16 +16,19 @@ export class ManagedMemoryService {
   state = "not_installed";
   diagnostic = "";
   closing = false;
+  restarts = 0;
+  retry?: NodeJS.Timeout;
   constructor(readonly store: CoreStore, readonly ledger: MemoryLedger, readonly options?: MemoryRuntimeOptions) { this.gateway = new MemoryModelGateway(store); }
   start() {
     // An absent distribution is an explicit unavailable mode, not another
     // homegrown engine or an implicit download into the user's environment.
-    if (!this.options || this.startup || this.closing) return;
+    if (!this.options || this.startup || this.closing || this.state === "ready") return;
     this.state = "starting";
-    this.startup = this.boot().catch(() => { this.state = "unavailable"; this.ledger.lastError = "memory_engine_start_failed"; this.ledger.changed(); });
+    this.startup = this.boot().catch(() => { this.state = "unavailable"; this.ledger.lastError = "memory_engine_start_failed"; this.ledger.changed(); }).finally(() => { this.startup = undefined; if (this.state === "unavailable") this.scheduleRecovery(); });
   }
+  scheduleRecovery() { if (!this.closing && !this.retry && this.restarts < 3) this.retry = setTimeout(() => { this.retry = undefined; this.restarts++; this.start(); }, 5000 * 2 ** this.restarts); }
   async boot() {
-    await this.gateway.start();
+    if (!this.gateway.origin) await this.gateway.start();
     if (this.closing) return;
     const token = randomBytes(32).toString("hex");
     let pgSecret = this.store.get("SELECT ciphertext FROM secrets WHERE id='memory-pg-key'");
@@ -36,7 +39,7 @@ export class ManagedMemoryService {
     this.child = spawn(this.options!.command, [...(this.options!.args ?? []), fileURLToPath(script), ...(this.options!.fixture ? ["--fixture"] : [])], { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     const child = this.child;
     child.stderr.resume(); // deliberately no provider/content logging
-    child.once("exit", () => { this.ledger.client = undefined; if (!this.closing) { this.state = "unavailable"; this.ledger.lastError = "memory_engine_stopped"; this.ledger.changed(); } });
+    child.once("exit", () => { this.ledger.client = undefined; if (!this.closing) { this.state = "unavailable"; this.ledger.lastError = "memory_engine_stopped"; this.ledger.changed(); this.scheduleRecovery(); } });
     child.stdin.on("error", () => {});
     child.stdin.write(JSON.stringify({ dataDir: path.join(this.store.dir, "hindsight"), namespace: "nex-" + hash(this.store.dir).slice(0, 16), pgPassword: this.store.decrypt(String(pgSecret.ciphertext)), gateway: this.gateway.origin, gatewayToken: this.gateway.token, serviceToken: token, models: this.options!.models }) + "\n");
     await new Promise<void>((resolve, reject) => {
@@ -64,6 +67,7 @@ export class ManagedMemoryService {
   }
   async close() {
     this.closing = true;
+    clearTimeout(this.retry);
     this.child?.stdin.end("quit\n");
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
       const child = this.child;

@@ -25,7 +25,7 @@ else {
     if (exiting || !server) return;
     event.preventDefault(); exiting = true;
     const child = server;
-    const timer = setTimeout(() => { child.kill(); app.exit(0); }, 7000);
+    const timer = setTimeout(() => { child.kill(); app.exit(0); }, 45000);
     child.once("close", () => { clearTimeout(timer); app.exit(0); });
     if (child.connected) child.send({ type: "quit" }); else child.kill();
   });
@@ -58,7 +58,7 @@ else {
       server.once("exit", () => { if (!origin) reject(new Error("Core 启动失败")); else if (!exiting) dialog.showErrorBox("NexBot Core 已停止", "后台运行意外中断，请重启应用；持久化任务与审批会保留。"); });
     });
     const port = Number(process.argv.find((arg) => arg.startsWith("--port="))?.slice(7) ?? network.port);
-    server.send({ type: "boot", dir: dataDir, key, token, uiDir: path.join(resources, "ui"), host: process.argv.includes("--lan") || network.enabled ? "0.0.0.0" : "127.0.0.1", port });
+    server.send({ type: "boot", dir: dataDir, key, token, uiDir: path.join(resources, "ui"), host: process.argv.includes("--lan") || network.enabled ? "0.0.0.0" : "127.0.0.1", port, ...(profileArg && process.argv.includes("--memory-fixture-disabled") ? { memoryRuntime: false } : {}) });
     origin = await boot;
     server.on("message", (event) => {
       if (event.type !== "inbox" || !mainWindow || exiting) return;

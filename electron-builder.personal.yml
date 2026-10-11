@@ -5,7 +5,7 @@ directories:
   output: release/personal-os
 extraMetadata:
   name: nexbot-personal-os
-  version: 0.3.3
+  version: 0.4.0
   main: electron/nex-main.mjs
 npmRebuild: false
 electronVersion: 39.8.10
@@ -31,6 +31,13 @@ extraResources:
     to: LICENSE-OpenMausBot.txt
   - from: dist-personal/licenses
     to: licenses
+  - from: dist-personal/memory-runtime
+    to: memory-runtime
+    filter:
+      - '**/*'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
+      - '!*.zip'
 win:
   target:
     - target: nsis
@@ -38,15 +45,15 @@ win:
     - target: portable
       arch: x64
   icon: build/icon.ico
-  artifactName: NexBot-0.3.3-${arch}-${target}.${ext}
+  artifactName: NexBot-0.4.0-${arch}-${target}.${ext}
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
   shortcutName: NexBot
-  artifactName: NexBot-0.3.3-x64-Setup.${ext}
+  artifactName: NexBot-0.4.0-x64-Setup.${ext}
 portable:
   # In builder 26.15.3, true omits UNPACK_DIR_NAME and gives each launch
   # its own $PLUGINSDIR/app. A shared build directory breaks tray restore.
   unpackDirName: true
-  artifactName: NexBot-0.3.3-x64-Portable.${ext}
+  artifactName: NexBot-0.4.0-x64-Portable.${ext}

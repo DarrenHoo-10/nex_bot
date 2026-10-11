@@ -1,85 +1,72 @@
-# Personal Agent / Hindsight 首批实现记录
+# Personal Agent / Hindsight 0.4.0 实现记录
 
 日期：2026-10-11。分支：`codex/feature-personal-ai-os-design`。
 
-本轮落实统一 Agent、自动 A2A、执行方审批与真实 Hindsight 接入基础。它不是 M4 完整记忆发行版；本机已安装的 0.3.3 没有被修改。
+本轮完成生产中文记忆资源、带引用的综合记忆与主题遗忘。最终安装包和本机升级的实际结果见[验收记录](../verification/personal-os.md)。没有上传用户资料或推送 GitHub。
 
-## 已实现行为
+## Agent 与主设备
 
-- 全新工作空间没有默认 Agent；显式创建与归档最后一个实例之后都不会补建。既有实例、消息、ID 与记忆保留。
-- 任意名字的 Agent 使用相同 Pi / Broker 流程。名字与可空补充职责决定身份表达，不生成职业类型或权限。公开专长为可选实例数据；公开目录包含当前资料、有效工具能力、可用状态与版本。
-- 每次实际模型请求刷新自己与同伴的资料。更名、补充职责、专长和权限变化不会发送身份通知或引发额外模型调用。
-- `agent.delegate` 自动执行；双方消息流沿用 compact A2A 标记与接收方折叠回复。父子 ID、深度、循环检查、恢复、取消与根任务调用预算继续生效。
-- 基础工具策略显式授予记忆与联系同伴能力。设备工具由用户单独配置；设备侧 LocalGrant 是第二层约束。目录中不宣传已撤销设备的能力。
-- 已授权只读操作和普通私有记忆写入自动执行；任意终端命令与私有文档清理需要实际执行 Agent 的一次批准。发起方只显示等待与跳转，不代替接收方批准。
-- 旧 pending safe Approval 在启动恢复中正式取消并重新检查同一 ToolCall。旧拒绝/取消不复活；危险操作保留原审批约束。
+全新空间没有默认 Agent。任意名字的实例复用固定 Pi SDK、工具 Broker、公开目录与私有 bank；补充身份可空。每次模型请求刷新当前名字、职责、专长与有效工具权限，编辑不会触发通知或额外模型调用。更名不改变 ID、bank、权限或历史。
 
-## Core 与记忆引擎
+Agent 只直接读取自己的私有 bank 与 workspace 共享 bank。需要其他知识时，通过实时目录向同伴求助，同伴检索自己的记忆并回复。A2A 自动进行；危险操作只在实际执行方的联系人消息流申请批准。设备授权受 Core BotPolicy 与 Node LocalGrant 双重约束。
 
-`MemoryModule` 管理明确记忆原文，`MemoryLedger` 管理来源与投递，`HindsightClient` 隔离固定 v0.10.3 HTTP DTO。Pi 不持有 provider bank ID 或服务凭据。
+既有安装保留现存 Agent、消息、文档 ID / 版本与 vault；真实 0.3.3 隔离 fixture 已验证迁移，不按新初始化规则删除旧数据。
 
-每个 Agent 显式创建时，在同一 SQLite 事务中生成私有 bank binding。共享 bank 在第一个共享来源出现时生成。逻辑 binding ID 不因改名变化；物理 bank 在纠正/删除后的安全重建中可以替换。
+安装包内置 Python 3.12.10、Hindsight 0.10.3、原生 pg0 / PostgreSQL 依赖与两个 CPU 中文模型。用户无需安装 Python、Docker 或维护数据库，只需配置已有模型服务的 endpoint、模型与 API Key。其他设备经 Core 获取服务，不能直接连接引擎。
 
-消息、A2A 已提交的请求/结果与当前显式文档版本，和 source registry / transfer 在同一事务中登记。既有明确文档导入当前有效版本；不会自动导入整个旧消息历史或扫描设备文件。明显凭据不进入引擎投递队列。
+Hindsight 和数据库只监听 loopback。内部鉴权信息由私有 stdin 传入，不交给 renderer、Pi 或 Node；paid Key 只保存在 Core 加密 vault，通过本地网关代理。生产 Python 拒绝资源目录外的 `sys.path`，模型只读本地文件、禁止远程代码和隐式下载。启动校验完整模型文件集与 SHA-256，发行保留全部资源 inventory，避免 UV overlay 错把开发机缓存当内置依赖。
 
-来源记录定位原业务 ID 与版本、正文哈希、来源类别、根来源、时间与 Task。用户陈述、同伴转述和 Agent 推断分别标记。Core 不建立模型生成的事实、实体、向量或知识页数据库。
+| 资源 | 固定版本 / revision |
+|---|---|
+| Python Windows embeddable | 3.12.10 |
+| Hindsight | 0.10.3 |
+| Python 依赖 | `scripts/memory-runtime-requirements.txt` 中 213 项精确版本 |
+| Embeddings | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` / `e8f8c211226b894fcb81acc59f3b34ba3efd5f42` |
+| Reranker | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` / `1427fd652930e4ba29e8149678df786c240d8825` |
 
-新增 SQLite migration 3 包含 `bot_public_profiles`、bank bindings、显式文档版本快照、source registry、transfers、receipts、provider document mappings、retired banks 与 memory model invocations，采用 STRICT / FK / CHECK / 幂等约束。完整设计中的 publication、forget rules、知识页和持久缓存表尚未落地，不能据此把整个设计 DDL 宣称为已实现。
+`prepare-memory-runtime.py` 仅用于构建，用户启动不下载依赖或模型。模型卡、Python 与依赖许可证随包分发。资源及测试结果保存在被忽略的 `dist-personal/`、`release/`，不复制实际 profile。
 
-公开目录的 `directory_version` 首版使用资料、策略和设备授权的 SHA-256 指纹；它是 opaque revision，不是整数序号。资料版本沿用 Bot version，能力版本沿用 BotPolicy version。
+引擎意外退出后最多恢复三次，采用 5 / 10 / 20 秒退避。应用退出只停止自己拥有的服务及数据库。服务不可用时保留业务原文和来源 outbox，报告降级，不将失败抽取伪装成已完成。
 
-## 投递、纠正与检索
+## 来源、检索与综合
 
-来源先提交，随后由 Core 串行协调 Hindsight 的真实持久作业。每次首次交付前保存 client-supplied operation UUID，提交 native async retain；接收成功不算完成，只有 native operation `completed` 才提交一个 Core receipt。
+Core SQLite 保存用户消息、A2A、明确文档与来源账本；Hindsight PostgreSQL 保存事实、实体、向量和观察。migration 3、4 实际落地 bank、版本、source、transfer、receipt、来源依赖、publication、forget rules、tombstone 和综合缓存，Core 不复制一套向量 / 实体引擎。
 
-固定 v0.10.3 的不存在作业响应是 HTTP 200 / `status=not_found`，适配器同时处理这一形式与 HTTP 404。丢失 ACK 时先按原 UUID 核对；已存在的作业不会重复提交。无法核对的历史 unknown 保留为待处理，不重新生成一个 UUID 盲目抽取。
+首次交付前持久化 operation UUID；native async retain 完成后才记录回执。ACK 丢失核对同一个 UUID，避免重复抽取。纠正 / 撤回先隔离 bank，再替换物理 bank，以当前有效来源重建；旧 bank retirement 完成后才开放新 bank。
 
-显式文档纠正/删除先撤回旧来源、推进 visibility generation、隔离该 bank 的派生读取并切换物理 bank。旧 bank 的作业取消/清理单独跟踪，新 bank 从当前有效来源重建。迟到的 recall 和模型结果在 generation / physical ID 检查处丢弃。新 bank 完成所有有效来源及旧 bank retirement 确认后才开放。
+自动 retain 使用配置模型抽取，auto consolidation 产生 native observations。recall 返回 world / experience 及具备完整来源链的 observation；缺失 / 截断 provenance 时不返回观察。结果区分用户陈述、同伴转述、Agent 推断和综合观察，可展开所有有效原文来源。
 
-Agent 的每个实际回答请求与 `memory.search` 检索自身私有 bank + 共享 bank。语义结果只接受能映射到当前有效来源的 world / experience facts，携带 scope、sourceClass 和原文 reference；observation、reflect 和知识页暂未开放。异步边界后重新检查策略与可见性。没有服务时仍保留消息、显式记忆和待投递来源，返回明确的 raw-text fallback 状态。
+`memory.reflect` 分别综合自身私有与共享 bank，只返回具备有效原文证据的回答。完成时再次核对整次读取的 bank generation、物理 ID、Bot、策略和 Task。在等待第二个 bank 时，第一个 bank 被撤回也会使整次结果失效。综合缓存绑定 scoped generations，随纠正、撤回、遗忘失效。
 
-当前文档删除是来源撤回与引擎可见性清理。它不等于主题级彻底遗忘，也不承诺自动识别所有历史消息、A2A 转述、Pi 上下文或备份副本。完整 forget/publication 用例仍按主方案实现及验收。
+Agent 上下文自动注入 scoped recall 与明确记忆。记录实际呈现的来源、最近消息 / 工作记录和 A2A 父任务依赖，为遗忘追踪因果副本。公开目录来自当前资料，不从旧记忆猜测联系人身份。
 
-## 主设备服务与预算
+共享 publication 是 owner 显式意图，绑定原文来源及哈希、记录副本来源边。普通 Agent 私有写入不能偷偷发布到 workspace；用户也可直接创建共享文档。
 
-`ManagedMemoryService` 使用独立 loopback model gateway、私有 stdin 启动配置与专属 profile / pg0 namespace 管理真实 Python Hindsight + PostgreSQL。paid provider Key 只在 Core vault 中解密；daemon 只得到内部 service tokens 和本地数据库凭据。退出关闭自己启动的进程树，不操作用户现有 Hindsight / coding-agent 服务。
+## 预算与审批
 
-daemon 固定 `hindsight-api-slim==0.10.3`，替换该版本的 OpenAI provider transport：每次实际 SDK HTTP 尝试从 `ConfiguredLLMProvider` 的 native trace context 取得 bank、operation 和 purpose。测试证明延后的 retain 作业也携带归属；没有依赖入口 HTTP header 自动传入后台。
+真实 SDK 每次 HTTP 尝试从 native trace 取得 bank、operation、purpose；retain / consolidate / reflect 都记账。网关强制配置的模型和 endpoint，不转发内部身份标记，支持 OpenAI 兼容及 Anthropic，包括 reflect 的工具调用 / 返回。
 
-网关只接受注册 bank 的归属请求并强制配置中的模型与 endpoint。兼容配置的 OpenAI 与 Anthropic；内部归属字段不转发给上游。每次实际尝试单独记账，失败/unknown 保留预留额；日限制为每 bank 30 次 / 100,000 预留 tokens、工作空间 100 次 / 300,000，后台并发 1，运行中的前台 Task 优先。byte upper bound + 输出上限用于保守 token 预留，不展示虚构费用。
+后台并发 1，前台优先。每日每 bank 上限 30 次 / 100,000 预留 tokens，workspace 上限 100 次 / 300,000。失败 / unknown 保留预留额，缺少 usage 不等于免费。Agent reflect 与 Pi、A2A 子任务共同消耗根任务上限。后台忙或额度耗尽时延后 native 作业，不通过重试绕过限制。
 
-首版关闭 auto consolidation、reflect、页面更新与未归属的初始化模型调用。失败 transfer 保留来源与状态，不声称已入长期记忆；自动跨日恢复失败作业及按错误分类的运维入口仍待补齐。
+安全检索、普通私有写入与 A2A 自动执行。任意终端命令、文档撤回及 Agent 发起的彻底遗忘需执行方批准。遗忘批准冻结预览 revision / 数量，范围变化必须重新预览。
 
-## 构建资源状态
+## 撤回与彻底遗忘
 
-构建复制 native service 脚本。生产入口只从受管理的 `memory-runtime/runtime.json` 发现私有 runtime，不隐式下载，不复用系统 Hindsight 配置。manifest 约定：
+撤回停止将文档用于长期检索，保留业务历史。彻底遗忘是独立操作：输入主题、预览范围、确认执行。主题匹配采用规范化原文 / 标题子串；预览是实际清理清单，不声称自动理解所有别名或转述。
 
-```json
-{
-  "release": "0.10.3",
-  "python": "python/python.exe",
-  "models": {
-    "embeddings": "models/embeddings",
-    "reranker": "models/reranker",
-    "sha256": {"models/embeddings/example-file": "SHA256"}
-  }
-}
-```
+清理范围包含当前文档 / 全部版本 / 搜索项 / 消息；消耗来源的 Task、下游历史依赖、A2A 链、显式共享副本与已登记整理副本；Task 原文 / 结果、输入、transcript、journal、工具参数 / 结果、A2A payload / result、相关审计正文及综合缓存。混合多个来源的回答整条清理，无关来源保留。
 
-实际 manifest 必须覆盖两个模型目录的完整文件集；路径限定在资源目录内，启动逐文件校验 SHA-256，模型只使用本地文件并禁止 remote code。上例仅解释结构，不是可发行资源清单。
+受影响的 Pi 投影与内存 worker 清空，未完成工作、审批和输出投递停止。引擎取消并等待自己拥有的 bank 执行者，再删除原 bank 的事实、实体、观察等派生数据，以剩余有效来源重建。原文先清理，bank 未清理 / 重建未完成时状态为 `cleaning`，旧派生结果不可读取，不能显示“遗忘完成”。旧 bank ID 持久退役，迟到写入返回 410，重启不能复活。
 
-当前 checkout **尚未提供通过中文质量门槛的生产 runtime/model 资源包**，因此普通桌面运行明确显示“语义记忆服务尚未安装”，继续使用原文检索并保留 outbox。native fixture 显式使用 UV 缓存中的固定引擎与合成 embedding/reranker；这一开关不是用户界面或 Device Node 的配置项。
+加密 `forget-journal.json` 在 SQLite 修改前原子写入，只保留 ID、哈希和计划。恢复较旧 Core DB 到同一 profile 后，启动先重放日志，再开放历史与来源导入。tombstone 阻止相同正文后台重捕获。
 
-## 本轮证据
+边界：这不是 SSD 物理擦除，不删除用户文件、模型服务日志或未知外部备份。整体覆盖 profile（包括遗忘日志）的旧备份无法保留后来的遗忘决定。未登记依赖又不含匹配词的人工改写无法自动证明被清理，用户应检查预览并补充主题。三类长期知识页编辑 / 持续更新接口仍属后续功能，综合缓存不冒充该接口。
 
-- 构建产物 Core / worker 工作流、memory 与 Pi 套件：49 项通过（22 Core、7 memory、20 Pi）。Memory 测试含真实 0.3.3 隔离 fixture 的升级迁移，验证既有 Agent、记忆 ID/版本和 vault 密文保持不变。
-- 构建产物 genuine native Hindsight fixture：1 项通过。真实 Windows pg0/PostgreSQL、引擎迁移、服务鉴权、异步 retain、真实 SDK HTTP transport attribution、预算记账、完成回执及正常退出。模型是 loopback fake，ML 模型是明确 fixture；不是中文质量验收。
-- 独立 native spike 证明真实引擎两个 bank 的文档隔离与文档删除，使用 provider none / synthetic embedding，不代表完整派生遗忘。
-- development Electron 的真实 renderer smoke 通过：零默认 Agent、显式创建、optional identity、静默资料刷新、自动 A2A、折叠回复、后台例行任务、tray restore 与 graceful Quit。
-- Frontend/server TypeScript 与本轮产品代码 lint 通过。
+## 验收证据
 
-所有检查均为合成内容和隔离 profile，无用户实际模型调用、无已安装应用数据修改、无 GitHub 上传。截图保存在被忽略的本地 release 目录。
+- 真实引擎 / PostgreSQL / 随包 CPU 模型：100 条独立标注中文查询，Recall@10 = 0.96，原文 LIKE 基线 = 0。这是合成语料检索验证，不代表所有真实任务或 paid-provider 抽取质量。
+- 构建 Core、worker、memory、Pi：55 项通过，覆盖 A2A、执行方审批、0.3.3 迁移、完整引用、两 bank 并发撤回、遗忘因果副本 / Pi 上下文、旧 Core DB 恢复。
+- 生产资源 native fixture 通过：真实 deferred retain 归属、鉴权、正向检索、隔离、native reflect 引用、派生清理、迟到 410、自动重启和持久退役。
+- Frontend / server TypeScript、产品代码 lint、65 项既有 DDL contract checks 通过。
 
-## 后续发布门槛
-
-固定生产 Python/依赖/中文模型 revision 与 hash，完成 100 条中文标注查询质量验收、原生引擎崩溃/重启与资源包测试、明确共享 publication / 撤回及完整 forget 的副本处理，再开放受预算约束的综合记忆与知识页。最后生成并验证新的 Setup / Portable，才升级本机安装。
+最终 EXE 与本机升级的实测追加到[Windows 验收记录](../verification/personal-os.md)，以已测试文件的 SHA-256 为准。
