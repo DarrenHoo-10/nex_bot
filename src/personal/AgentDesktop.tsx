@@ -10,7 +10,7 @@ const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 function AgentPolicyEditor({ bot, close, save }: { bot: RecordRow; close: () => void; save: (tools: string[]) => Promise<unknown> }) {
   const [tools, setTools] = useState<string[]>(JSON.parse(str(bot.policy_json) || "{}").tools ?? []);
-  const labels: Record<string, string> = { "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆（需批准）", "memory.forget": "彻底遗忘相关原文与副本（需批准）", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令" };
+  const labels: Record<string, string> = { "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆（需批准）", "memory.forget": "彻底遗忘相关原文与副本（需批准）", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令" };
   return <><div className="modal-heading"><h2>{bot.name} 的工具权限</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(event) => { event.preventDefault(); void save(tools); }}>{Object.entries(labels).map(([action, label]) => <label className="check-field" key={action}><input type="checkbox" checked={tools.includes(action)} onChange={(event) => setTools((current) => event.target.checked ? [...current, action] : current.filter((tool) => tool !== action))}/>{label}</label>)}<p className="muted">设备还须在本机授权。终端命令由这个 Agent 逐次申请批准；联系同伴和普通记忆操作自动执行。</p><div className="actions"><button className="primary">保存</button><button type="button" onClick={close}>取消</button></div></form></>;
 }
 function Avatar({ bot, large = false }: { bot?: RecordRow; large?: boolean }) {
@@ -28,34 +28,54 @@ export function AgentDesktop() {
   const [draft, setDraft] = useState(""), [search, setSearch] = useState(""), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(true), [detail, setDetail] = useState(true), [tab, setTab] = useState("profile"), [dialog, setDialog] = useState<ReactNode>(null);
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), serial = useRef(0);
+  const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
+  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
   selected.current = botId; pageRef.current = page;
   const reload = useCallback(async () => {
     const request = ++serial.current, current = selected.current;
     const next = await api<State>("state");
     if (request !== serial.current) return;
-    setState(next); setConnected(true);
-    if (current && !next.bots.some((bot) => bot.id === current)) { setBotId(str(next.bots[0]?.id)); setMessages([]); setStreaming([]); return; }
+    if (current && !next.bots.some((bot) => bot.id === current)) { setState(next); setBotId(str(next.bots[0]?.id)); setMessages([]); setStreaming([]); return; }
     if (current) {
-      const feed = await api<{ messages: RecordRow[]; streaming: Array<{ taskId: string; text: string }> }>(`agents/messages?bot=${encodeURIComponent(current)}`);
+      const cached = loaded.current;
+      const same = cached?.botId === current && cached.sync.privacyEpoch === next.sync.privacyEpoch && cached.sync.coreId === next.sync.coreId && cached.sync.bootId === next.sync.bootId;
+      let history = same ? cached.messages : [];
+      const base = `agents/messages?bot=${encodeURIComponent(current)}`;
+      type Feed = { messages: RecordRow[]; streaming: Array<{ taskId: string; text: string }>; sync: State["sync"]; hasMore: boolean };
+      let feed = await api<Feed>(same && history.length ? `${base}&after=${history.at(-1)!.seq}` : base);
+      // Drain every page, including gaps larger than the initial 100-message
+      // window. Privacy/boot generations fence all responses and cached pages.
+      while (true) {
+        if (request !== serial.current || selected.current !== current) return;
+        if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setTimeout(() => void reload().catch(offline), 0); return; }
+        history = [...history, ...feed.messages];
+        if (!feed.hasMore) break;
+        feed = await api<Feed>(`${base}&after=${history.at(-1)!.seq}`);
+      }
       if (request !== serial.current || selected.current !== current) return;
-      setMessages((previous) => [...previous.filter((m) => Number(m.seq) < Number(feed.messages[0]?.seq ?? 0)), ...feed.messages]);
+      loaded.current = { botId: current, messages: history, sync: feed.sync };
+      setMessages(history);
       setStreaming(feed.streaming.filter((s) => s.text));
-      const through = Number(feed.messages.at(-1)?.seq ?? 0);
+      const through = Number(history.at(-1)?.seq ?? 0);
       if (pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(current) ?? 0)) {
         await api("agents/read", { botId: current, seq: through }); readPositions.current.set(current, through);
       }
     }
-  }, []);
+    if (request === serial.current) { setState(next); setConnected(true); setError(""); }
+  }, [offline]);
   useEffect(() => {
     void reload().catch((e: Error) => setError(e.message));
     const events = new EventSource("/api/events"); let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch(() => setConnected(false)); }, 150); };
-    events.addEventListener("change", refresh); events.onerror = () => setConnected(false);
+    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch(offline); }, 150); };
+    const change = (event: MessageEvent) => { const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean }; if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setDialog(null); } refresh(); };
+    const expired = () => { offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
+    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", expired); events.onerror = offline;
+    window.addEventListener("nex-session-expired", expired);
     window.addEventListener("focus", refresh);
     const interval = setInterval(refresh, 10_000);
-    return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); };
-  }, [reload]);
+    return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); window.removeEventListener("nex-session-expired", expired); };
+  }, [reload, offline]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
   useEffect(() => { setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); if (botId) { localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => setError(e.message)); } }, [botId, reload]);
   useEffect(() => { scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); }, [botId, messages.at(-1)?.id, streaming.map((s) => s.text).join("")]);
@@ -75,7 +95,16 @@ export function AgentDesktop() {
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) select(result.id); closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
   const editRoutine = (existing?: RecordRow) => setDialog(<RoutineEditor botId={botId} existing={existing} close={closeDialog} save={(data) => run(async () => { await api("routines", data); closeDialog(); })}/>);
-  if (!state) return <div className="boot"><MessageSquare size={30}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p></div>;
+  const loadOlder = async () => {
+    const snapshot = loaded.current;
+    if (!snapshot?.messages.length) return;
+    const result = await api<{ messages: RecordRow[]; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${snapshot.messages[0].seq}`);
+    const current = loaded.current;
+    if (!current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
+    const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];
+    loaded.current = { ...current, messages: merged }; setMessages(merged);
+  };
+  if (!state) return <div className="boot"><MessageSquare size={30}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接页</button> : null}</div>;
   return <div className={`app ${page === "agent" && detail && bot ? "with-detail" : ""}`}>
     <aside className="sidebar"><div className="brand"><span className="brand-mark">N</span><div><strong>NexBot</strong><small>你的个人 Agent</small></div><button aria-label="添加 Agent" title="添加 Agent" onClick={() => editBot()}><Plus size={18}/></button></div><label className="contact-search"><Search size={15}/><input aria-label="搜索 Agent" placeholder="搜索 Agent" value={search} onChange={(e) => setSearch(e.target.value)}/></label><div className="section-label">联系人 <span>{state.bots.length}</span></div>
       <div className="agents">{state.bots.filter((b) => str(b.name).toLowerCase().includes(search.toLowerCase())).map((b) => { const active = state.tasks.filter((t) => t.bot_id === b.id && !terminal.includes(str(t.status))); return <button key={str(b.id)} data-agent={b.id} className={botId === b.id && page === "agent" ? "selected" : ""} onClick={() => select(str(b.id))}><Avatar bot={b}/><div><strong>{b.name}</strong><span>{active.length ? statuses[str(active[0].status)] : str(b.last_message) || "随时可以找我"}</span></div><small>{Number(b.unread_count) > 0 ? <b className="unread">{Number(b.unread_count) > 99 ? "99+" : b.unread_count}</b> : active.length ? <i className="working-dot"/> : null}</small></button>; })}</div>
@@ -84,7 +113,7 @@ export function AgentDesktop() {
     <main><header><div className="contact-heading">{page === "agent" && bot ? <><Avatar bot={bot}/><div><strong>{bot.name}</strong><span>{tasks.length ? `${tasks.length} 项工作正在进行` : "消息、记忆和工作持续保留"}</span></div></> : <strong>{page === "devices" ? "设备网络" : page === "settings" ? "设置" : "你的 Agent"}</strong>}</div>{page === "agent" && bot ? <button aria-label="Agent 资料" title="Agent 资料" className={detail ? "selected" : ""} onClick={() => setDetail(!detail)}><Info size={19}/></button> : null}</header>
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}{!state.config && page !== "settings" ? <div className="notice">连接模型后，Agent 就能开始工作。<button onClick={() => setPage("settings")}>配置 API Key</button></div> : null}
       {page === "agent" && !bot ? <div className="welcome"><h1>创建你的第一个 Agent</h1><p>给它一个名字，身份与职责可以之后补充。消息、记忆和工作会持续保留。</p><button className="primary" onClick={() => editBot()}><Plus size={16}/>创建 Agent</button></div> : page === "agent" ? <><div className="transcript" ref={scroll}>
-        {Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(async () => { const target = botId; const result = await api<{ messages: RecordRow[] }>(`agents/messages?bot=${encodeURIComponent(target)}&before=${messages[0].seq}`); if (selected.current === target) setMessages((current) => [...result.messages, ...current.filter((m) => !result.messages.some((old) => old.id === m.id))]); })}>加载更早的消息</button> : null}
+        {Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
         {!messages.length ? <div className="welcome"><Avatar bot={bot} large/><h1>{bot?.name}</h1><p>{bot?.instructions}</p><small>直接发消息，或为我安排一项例行任务。</small></div> : messages.map((m) => <AgentMessage key={str(m.id)} message={m} bot={bot} bots={state.bots} select={select}/>)}
         {streaming.map((s) => { const link = state.delegations.find((d) => d.child_task_id === s.taskId), peer = state.bots.find((b) => b.id === link?.sender_bot_id); return <article className={`message assistant ${link ? "a2a-reply" : ""}`} key={s.taskId}><Avatar bot={bot}/><div className="message-body">{link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="bubble"><RichText value={s.text}/></div><span className="muted">正在回复…</span></>}</div></article>; })}
       </div><div className="composer-area">{state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{({ "agent.delegate": "联系其他 Agent", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>批准</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
@@ -95,7 +124,7 @@ export function AgentDesktop() {
       {tab === "profile" ? <><h2>身份与职责</h2><p>{bot.instructions}</p><button className="text-button" onClick={() => setDialog(<AgentPolicyEditor bot={bot} close={closeDialog} save={(tools) => run(async () => { await api("bots/policy", { id: bot.id, version: bot.policy_version, tools }); closeDialog(); })}/>)}>工具权限</button><button className="text-button" onClick={() => setDialog(<Confirm title="归档这个 Agent？" detail="保留消息与记忆，停用例行任务。" onClose={closeDialog} onConfirm={() => run(async () => { await api("bots/archive", { id: bot.id, version: bot.version }); closeDialog(); })}/>)}>归档 Agent</button><h2>例行任务<button aria-label="添加例行任务" onClick={() => editRoutine()}><Plus size={16}/></button></h2>{state.routines.filter((r) => r.bot_id === botId).map((r) => <section className="routine" key={str(r.id)}><div><strong>{r.name}</strong><button aria-label={`${r.enabled ? "暂停" : "启用"}${r.name}`} className={`switch ${r.enabled ? "on" : ""}`} onClick={() => void run(() => api("routines/toggle", { id: r.id, version: r.version, enabled: !r.enabled }))}><span/></button></div><small>{routineLabel(r)}</small><div className="routine-actions"><button onClick={() => editRoutine(r)}>编辑</button><button onClick={() => void run(() => api("routines/run", { id: r.id, clientId: crypto.randomUUID() }))}><Play size={12}/>现在执行</button></div>{r.enabled && r.next_due_at ? <small>下次 {formatTime(r.next_due_at)}</small> : null}</section>)}{!state.routines.some((r) => r.bot_id === botId) ? <div className="empty-small"><Clock size={20}/><p>安排一项例行任务，Agent 会按计划工作并给你汇报。</p><button onClick={() => editRoutine()}>添加例行任务</button></div> : null}<h2>可用设备</h2>{state.devices.filter((d) => d.status === "bound").map((d) => <p className="resource" key={str(d.id)}><Cpu size={15}/>{d.name}<span>{state.onlineDevices.includes(str(d.id)) ? "在线" : "离线"}</span></p>)}<button className="text-button" onClick={() => setPage("devices")}>管理设备</button></> : null}
       {tab === "memory" ? <><h2>长期记忆<button aria-label="添加记忆" onClick={() => editMemory()}><Plus size={16}/></button></h2>{state.memories.filter((m) => m.scope === "workspace" || m.bot_id === botId).map((m) => <section className="memory" key={str(m.id)}><strong>{m.title}</strong><small>{m.scope === "workspace" ? "所有 Agent 共享" : "仅当前 Agent"}</small><p>{m.content}</p><div className="actions"><button onClick={() => editMemory(m)}>编辑</button><button aria-label={`撤回${m.title}`} onClick={() => setDialog(<Confirm title="撤回这条记忆？" detail="撤回后不再用于长期记忆检索，原始消息和工作记录保留。如需一起清理，请使用下方的彻底遗忘。" onClose={closeDialog} onConfirm={() => run(async () => { await api("memory/delete", { id: m.id, version: m.version }); closeDialog(); })}/>)}><Trash2 size={13}/></button></div></section>)}<p className="muted">消息与工作记录自动保存。长期记忆可在这里维护，也可以让 Agent 帮你记住。</p><h2>已有工作记录</h2>{state.journal.filter((j) => j.bot_id === botId).slice(0, 8).map((j) => <details className="journal" key={str(j.task_id)}><summary>{str(j.objective).slice(0, 100)}</summary><p>{j.result}</p><small>{formatTime(j.created_at)}</small></details>)}</> : null}
       {tab === "work" ? <><h2>正在处理</h2>{tasks.map((t) => <section className="task" key={str(t.id)}><span className="tag">{statuses[str(t.status)]}</span><p>{t.objective || "Agent 工作"}</p><div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></section>)}{!tasks.length ? <p className="empty-small">当前没有进行中的工作。</p> : null}<h2>最近执行</h2>{state.occurrences.filter((o) => o.bot_id === botId).slice(0, 10).map((o) => <section className="task" key={str(o.id)}><strong>{o.name}</strong><small>{statuses[str(o.status)]} · {formatTime(o.scheduled_at)}</small></section>)}</> : null}
-      {tab === "memory" && state.memoryEngine ? <><MemoryWorkbench key={botId + state.memoryEngine.revision} botId={botId} bots={state.bots}/><p className="muted" role="status">{state.memoryEngine.service === "starting" ? "正在启动语义记忆服务。" : state.memoryEngine.status === "connected" ? "Hindsight 语义记忆已连接。" : state.memoryEngine.status === "not_installed" ? "语义记忆服务尚未安装，目前使用原始记录检索。" : "语义记忆暂不可用，目前使用原始记录检索。"} {state.memoryEngine.pending ? `${state.memoryEngine.pending} 项待同步。` : ""}{state.memoryEngine.quarantined ? " 部分记忆正在清理或更新，旧的派生结果已暂停读取。" : ""}</p></> : null}
+      {tab === "memory" && state.memoryEngine ? <><MemoryWorkbench key={botId + state.memoryEngine.revision + state.sync.bootId + state.sync.privacyEpoch} botId={botId} bots={state.bots}/><p className="muted" role="status">{state.memoryEngine.service === "starting" ? "正在启动语义记忆服务。" : state.memoryEngine.status === "connected" ? "Hindsight 语义记忆已连接。" : state.memoryEngine.status === "not_installed" ? "语义记忆服务尚未安装，目前使用原始记录检索。" : "语义记忆暂不可用，目前使用原始记录检索。"} {state.memoryEngine.pending ? `${state.memoryEngine.pending} 项待同步。` : ""}{state.memoryEngine.quarantined ? " 部分记忆正在清理或更新，旧的派生结果已暂停读取。" : ""}</p></> : null}
     </div></aside> : null}
     {dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}
   </div>;
@@ -121,6 +150,6 @@ function RoutineEditor({ botId, existing, close, save }: { botId: string; existi
 function DesktopPreferences({ run }: { run: (fn: () => Promise<unknown>) => Promise<void> }) {
   const [value, setValue] = useState({ openAtLogin: false, notifications: true });
   useEffect(() => { void desktop?.preferences().then(setValue); }, []);
-  if (!desktop) return null;
+  if (!desktop || desktop.mode === "client") return null;
   return <section className="desktop-preferences"><h2>常驻与消息</h2><p>关闭窗口后，Agent Core 继续在托盘运行。托盘菜单中“退出 NexBot”会停止运行。</p>{[{ key: "openAtLogin" as const, label: "登录 Windows 后启动 NexBot" }, { key: "notifications" as const, label: "Agent 有新结果时显示桌面通知" }].map((item) => <label className="check-field" key={item.key}><input type="checkbox" checked={value[item.key]} onChange={(e) => { const next = { ...value, [item.key]: e.target.checked }; void run(async () => { await desktop!.savePreferences(next); setValue(next); }); }}/>{item.label}</label>)}</section>;
 }

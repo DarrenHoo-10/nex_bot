@@ -102,6 +102,45 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 4, checksum: hash(lifecycle), applied_at: now() });
       });
     }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=5")) {
+      const clientSql = readFileSync(new URL("./client-schema.sql", import.meta.url), "utf8");
+      this.transaction(() => {
+        this.db.exec(clientSql);
+        // Body-free durable change markers; SQL triggers also cover mutations
+        // committed by recovery/privacy paths which do not call the renderer.
+        for (const table of ["bots", "bot_policies", "bot_public_profiles", "agent_messages", "agent_inboxes", "tasks", "approvals", "agent_routines", "routine_occurrences", "memory_documents", "memory_content", "memory_forget_rules", "client_sessions", "user_sessions", "devices", "device_local_grants"]) {
+          if (!this.get("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table)) continue;
+          for (const operation of ["INSERT", "UPDATE", "DELETE"]) this.db.exec(`CREATE TRIGGER sync_${table}_${operation} AFTER ${operation} ON ${table} BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
+        }
+        for (const [table, condition] of [["agent_messages", "OLD.content IS NOT NEW.content"], ["memory_content", "OLD.content IS NOT NEW.content"]]) {
+          this.db.exec(`CREATE TRIGGER privacy_${table}_update AFTER UPDATE ON ${table} WHEN ${condition} BEGIN UPDATE sync_state SET privacy_epoch=privacy_epoch+1 WHERE id=1; END; CREATE TRIGGER privacy_${table}_delete AFTER DELETE ON ${table} BEGIN UPDATE sync_state SET privacy_epoch=privacy_epoch+1 WHERE id=1; END;`);
+        }
+        this.db.exec("CREATE TRIGGER privacy_memory_status AFTER UPDATE OF status ON memory_documents WHEN OLD.status IS NOT NEW.status BEGIN UPDATE sync_state SET privacy_epoch=privacy_epoch+1 WHERE id=1; END;");
+        // Upgrade only the two former standard policies. Deliberately restricted
+        // custom policies retain their exact grants.
+        const previous = basicActions.filter((a) => !a.startsWith("routine."));
+        for (const policy of this.all("SELECT * FROM bot_policies")) {
+          const tools = (JSON.parse(String(policy.policy_json)) as { tools?: string[] }).tools ?? [];
+          const normalized = [...new Set(tools)].sort().join(",");
+          if ([previous, [...previous, "device.list", "device.read", "device.exec"]].some((p) => [...p].sort().join(",") === normalized)) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...JSON.parse(String(policy.policy_json)), tools: [...tools, ...basicActions.filter((a) => a.startsWith("routine."))] }), policy.bot_id);
+        }
+        this.insert("schema_migrations", { version: 5, checksum: hash(clientSql), applied_at: now() });
+      });
+    }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=6")) {
+      const legacyTools = ["memory.search", "memory.read", "memory.write", "agent.delegate", "device.read", "device.list", "device.exec"].sort();
+      this.transaction(() => {
+        // The original desktop seeded this exact policy at version 1. A user
+        // edit increments the policy version, so even an identical edited set
+        // is preserved. New capabilities must not depend on contact names.
+        for (const policy of this.all("SELECT * FROM bot_policies WHERE version=1")) {
+          const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
+          if ([...new Set(value.tools ?? [])].sort().join(",") !== legacyTools.join(",")) continue;
+          this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools!, ...basicActions.filter((action) => action.startsWith("routine."))] }), policy.bot_id);
+        }
+        this.insert("schema_migrations", { version: 6, checksum: hash(JSON.stringify({ legacyTools, added: basicActions.filter((action) => action.startsWith("routine.")), uneditedVersion: 1 })), applied_at: now() });
+      });
+    }
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

@@ -2,12 +2,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSy
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPersonalApp } from "./index.ts";
 import { pathToFileURL } from "node:url";
 import { startFakeModel, type FakeModel } from "../runtime/pi/p0/fake-model.ts";
 import { hash, id } from "./store.ts";
 import { nextDaily } from "./routines.ts";
+import { createClientNode } from "./client-node.ts";
 function pdfFixture(content: string) {
   const stream = `BT /F1 12 Tf 60 750 Td (${content}) Tj ET`;
   const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`];
@@ -57,6 +59,136 @@ function pendingCleanup(app: App, botId: string) {
   return { action: "memory.delete", documentId: doc.documentId, expectedVersion: doc.version };
 }
 describe("Personal AI OS production workflows in isolated fixtures", () => {
+  it("forgets a task-derived routine, its receipt and future wakeup along with the source message", async () => {
+    const f = await fixture(), botId = String(f.bots[1].id);
+    const args = { action: "routine.save", name: "合成待忘计划", prompt: "记得合成银杉会面地点", scheduleKind: "once", delaySeconds: 120 };
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "forget-routine", name: "broker", args: JSON.stringify(args) }] }, { kind: "openai-text", text: "合成银杉计划已建立" });
+    const task = f.app.agents.send(botId, "合成银杉会面，两分钟后提醒", "forget-routine-input").taskId;
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
+    const plan = f.app.runtime.memory.privacy.preview(botId, { query: "合成银杉" });
+    f.app.runtime.memory.forget(botId, { query: "合成银杉" }, plan.revision);
+    expect(f.app.routines.list()[0]).toMatchObject({ enabled: 0, prompt: "[已遗忘]", name: "[已遗忘]", next_due_at: null });
+    expect(f.app.store.get("SELECT result_json FROM routine_tool_receipts")?.result_json).toBe('{"forgotten":true}');
+    f.app.routines.tick(Date.now() + 130_000);
+    expect(f.app.store.all("SELECT * FROM routine_occurrences")).toHaveLength(0);
+  }, 60_000);
+  it.skipIf(!process.env.NEX_TEST_LEGACY_04_BUNDLE)("migrates a 0.4 Core in place, upgrading standard policies and preserving custom restrictions and memory", async () => {
+    const f = await fixture(), dir = path.join(f.root, "legacy-migration");
+    const legacy = (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_LEGACY_04_BUNDLE!)).href)).createPersonalApp;
+    const old = await legacy({ dir, key: f.key, token: f.token, memoryRuntime: false });
+    let standard: string, restricted: string, original: string, edited: string;
+    try {
+      standard = old.store.createBot("合成标准 Agent"); restricted = old.store.createBot("合成受限 Agent");
+      original = old.store.createBot("合成最早默认 Agent"); edited = old.store.createBot("合成手改旧配置 Agent");
+      const originalTools = ["memory.search", "memory.read", "memory.write", "agent.delegate", "device.read", "device.list", "device.exec"];
+      old.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: originalTools }), original);
+      old.agents.updatePolicy({ id: edited, version: 1, tools: originalTools });
+      old.agents.updatePolicy({ id: restricted, version: 1, tools: ["agent.directory"] });
+      old.runtime.memory.write(standard, { title: "合成旧记忆", content: "旧记忆应保留" });
+    } finally { await old.close(); }
+    const upgraded = await createApp({ dir, key: f.key, token: f.token }); f.owned.apps.push(upgraded);
+    expect(upgraded.store.get("SELECT MAX(version) version FROM schema_migrations")?.version).toBe(6);
+    expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", standard!)?.policy_json)).tools).toContain("routine.save");
+    expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", restricted!)?.policy_json)).tools).toEqual(["agent.directory"]);
+    expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", original!)?.policy_json)).tools).toContain("routine.save");
+    expect(JSON.parse(String(upgraded.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", edited!)?.policy_json)).tools).not.toContain("routine.save");
+    expect(upgraded.runtime.memory.list(standard!).some((m) => m.title === "合成旧记忆")).toBe(true);
+    expect(upgraded.store.all("PRAGMA foreign_key_check")).toEqual([]);
+  });
+  it("runs a thin Device Node without a Core database, grants only its own directory and requires execution approval in the Agent feed", async () => {
+    const f = await fixture(), shared = path.join(f.root, "thin-shared"), dir = path.join(f.root, "thin-client"); mkdirSync(shared); writeFileSync(path.join(shared, "client.txt"), "合成客户端文件");
+    const startNode: typeof createClientNode = process.env.NEX_TEST_CLIENT_BUNDLE ? (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_CLIENT_BUNDLE)).href)).createClientNode : createClientNode;
+    const client = startNode(dir, randomBytes(32), () => {}, f.app.origin);
+    try {
+      const pair = f.app.gateway.pair("Thin fixture"); client.node.configure({ origin: f.app.origin, token: pair.token, root: shared, exec: true });
+      await wait(() => client.node.status === "已连接");
+      expect(existsSync(path.join(dir, "core.db"))).toBe(false); expect(existsSync(path.join(dir, "memory"))).toBe(false);
+      f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-read", name: "broker", args: JSON.stringify({ action: "device.read", deviceId: pair.deviceId, path: "client.txt" }) }] }, { kind: "openai-text", text: "合成文件已读" });
+      const readTask = f.app.agents.send(String(f.bots[0].id), "读客户端文件", "thin-read-input").taskId;
+      await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", readTask)?.status === "succeeded");
+      expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=?", readTask)?.result_json)).toContain("合成客户端文件");
+      await wait(() => !f.app.runtime.workers.size);
+      f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-exec", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: "Set-Content -LiteralPath marker.txt -Value synthetic" }) }] }, { kind: "openai-text", text: "合成命令已批准执行" });
+      const taskId = f.app.agents.send(String(f.bots[0].id), "执行客户端命令", "thin-exec-input").taskId;
+      await wait(() => !!approval(f.app));
+      expect(existsSync(path.join(shared, "marker.txt"))).toBe(false);
+      const grant = approval(f.app); f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true);
+      await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+      expect(readFileSync(path.join(shared, "marker.txt"), "utf8").trim()).toBe("synthetic");
+      expect(approval(f.app)).toBeUndefined();
+    } finally { await client.close(); }
+  }, 60_000);
+  it("creates a generic chat routine with a Core-relative deadline and survives a lost acknowledgement without duplicating it", async () => {
+    const f = await fixture(), botId = String(f.bots[1].id), start = Date.now();
+    const args = { action: "routine.save", name: "合成两分钟提醒", prompt: "发送合成你好", scheduleKind: "once", delaySeconds: 120 };
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "fixture-schedule", name: "broker", args: JSON.stringify(args) }] }, { kind: "openai-text", text: "已安排两分钟后的提醒" });
+    const taskId = f.app.agents.send(botId, "两分钟后向我问好", "fixture-schedule-input").taskId;
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    const row = f.app.store.get("SELECT * FROM agent_routines WHERE bot_id=?", botId)!;
+    expect(Number(row.next_due_at)).toBeGreaterThanOrEqual(start + 120_000);
+    expect(Number(row.next_due_at)).toBeLessThan(Date.now() + 120_100);
+    expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
+    const call = f.app.store.get("SELECT * FROM tool_calls WHERE task_id=?", taskId)!;
+    expect(f.app.routines.tool(call, args)).toMatchObject({ scheduled: true });
+    expect(f.app.store.all("SELECT * FROM agent_routines")).toHaveLength(1);
+    expect(() => f.app.routines.tool({ ...call, argument_hash: "different" }, args)).toThrow("身份冲突");
+    await wait(() => !f.app.runtime.workers.size);
+    f.fake.scripts.push({ kind: "openai-text", text: "合成你好，到时间了" });
+    f.app.routines.tick(Number(row.next_due_at));
+    await wait(() => f.app.store.get("SELECT status FROM routine_occurrences")?.status === "succeeded" || f.app.store.get("SELECT status FROM tasks WHERE id=(SELECT task_id FROM routine_occurrences)")?.status === "succeeded");
+    expect(f.app.agents.messages(botId).some((m) => m.content === "合成你好，到时间了")).toBe(true);
+    expect(f.app.store.all("SELECT * FROM routine_occurrences")).toHaveLength(1);
+  }, 60_000);
+  it("issues independent client sessions, preserves them through Core restart, rejects device credentials and revokes one client only", async () => {
+    const f = await fixture();
+    const owner = { Authorization: `Bearer ${f.token}`, "Content-Type": "application/json" };
+    const invite = await (await fetch(f.app.origin + "/api/clients/invite", { method: "POST", headers: owner, body: JSON.stringify({ name: "合成设备" }) })).json() as { code: string };
+    const login = async (code: string) => await fetch(f.app.origin + "/api/client/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, name: "合成客户端" }) });
+    type Session = { token: string; sessionId: string; coreId: string };
+    const one = await (await login(invite.code)).json() as Session;
+    expect(one.sessionId).toBeTruthy(); expect((await login(invite.code)).status).toBe(400);
+    const secondInvite = await (await fetch(f.app.origin + "/api/clients/invite", { method: "POST", headers: owner, body: JSON.stringify({ name: "合成第二设备" }) })).json() as { code: string };
+    const two = await (await login(secondInvite.code)).json() as Session;
+    expect(one.sessionId).not.toBe(two.sessionId);
+    const device = f.app.gateway.pair("合成设备节点");
+    expect((await fetch(f.app.origin + "/api/state", { headers: { Authorization: `Bearer ${device.token}` } })).status).toBe(401);
+    const coreId = one.coreId;
+    await f.app.close(); f.owned.apps.splice(0, 1);
+    const restarted = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: "new-synthetic-boot-token" }); f.owned.apps.push(restarted);
+    for (const client of [one, two]) {
+      const response = await fetch(restarted.origin + "/api/state", { headers: { Authorization: `Bearer ${client.token}` } });
+      expect(response.status).toBe(200); expect((await response.json() as { sync: { coreId: string } }).sync.coreId).toBe(coreId);
+    }
+    await fetch(restarted.origin + "/api/clients/revoke", { method: "POST", headers: { ...owner, Authorization: "Bearer new-synthetic-boot-token" }, body: JSON.stringify({ sessionId: one.sessionId }) });
+    expect((await fetch(restarted.origin + "/api/state", { headers: { Authorization: `Bearer ${one.token}` } })).status).toBe(401);
+    expect((await fetch(restarted.origin + "/api/state", { headers: { Authorization: `Bearer ${two.token}` } })).status).toBe(200);
+    const wrongHost = await new Promise<number | undefined>((resolve, reject) => { const request = httpRequest(restarted.origin + "/api/state", { headers: { Authorization: `Bearer ${two.token}`, Host: "attacker.example" } }, (response) => { response.resume(); response.once("end", () => resolve(response.statusCode)); }); request.once("error", reject); request.end(); });
+    expect(wrongHost).toBe(403);
+    expect((await fetch(restarted.origin + "/api/clients/invite", { method: "POST", headers: { ...owner, Authorization: `Bearer ${two.token}`, Origin: "https://attacker.example" }, body: JSON.stringify({ name: "bad" }) })).status).toBe(403);
+  });
+  it("replays a message gap larger than one page and advances the privacy fence when an old message is redacted", async () => {
+    const f = await fixture(), botId = String(f.bots[1].id);
+    for (let i = 0; i < 450; i++) f.app.agents.publish(botId, "assistant", "message", `合成消息 ${i}`, `sync-fixture:${i}`);
+    const headers = { Authorization: `Bearer ${f.token}` };
+    type SyncState = { sync: { privacyEpoch: number; cursor: number } };
+    const state = await (await fetch(f.app.origin + "/api/state", { headers })).json() as SyncState;
+    let after = 0; const seen: string[] = [];
+    for (let page = 0; page < 3; page++) {
+      const feed = await (await fetch(f.app.origin + `/api/agents/messages?bot=${botId}&after=${after}`, { headers })).json() as { messages: Array<{ id: string; seq: number }>; hasMore: boolean };
+      seen.push(...feed.messages.map((m: { id: string }) => m.id)); after = Number(feed.messages.at(-1)?.seq);
+      if (!feed.hasMore) break;
+    }
+    expect(seen).toHaveLength(450); expect(new Set(seen).size).toBe(450);
+    const first = f.app.store.get("SELECT id FROM agent_messages WHERE bot_id=? AND seq=1", botId)!;
+    f.app.store.run("UPDATE agent_messages SET content='[已遗忘]' WHERE id=?", first.id);
+    const newer = await (await fetch(f.app.origin + "/api/state", { headers })).json() as SyncState;
+    expect(newer.sync.privacyEpoch).toBeGreaterThan(state.sync.privacyEpoch); expect(newer.sync.cursor).toBeGreaterThan(state.sync.cursor);
+    const abort = new AbortController();
+    const stream = await fetch(f.app.origin + "/api/events?after=999999999", { headers, signal: abort.signal });
+    const chunk = await stream.body!.getReader().read(); abort.abort();
+    expect(Buffer.from(chunk.value!).toString()).toContain('"reset":true');
+    expect(f.app.store.all("SELECT * FROM sync_events").every((event) => !JSON.stringify(event).includes("合成消息"))).toBe(true);
+  });
   it("forgets causal A2A copies and Pi context, then reapplies tombstones to an older restored Core database", async () => {
     const f = await fixture(), sender = String(f.bots[0].id), peer = String(f.bots[1].id);
     const memory = f.app.runtime.memory;

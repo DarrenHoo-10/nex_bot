@@ -152,7 +152,14 @@ export class AgentModule {
   }
   messages(botId: string, before?: number) {
     this.ensure(botId);
-    return this.store.all("SELECT * FROM (SELECT * FROM agent_messages WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 100) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER).map((message) => {
+    return this.projectMessages(this.store.all("SELECT * FROM (SELECT * FROM agent_messages WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 100) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER));
+  }
+  messagesAfter(botId: string, after: number) {
+    this.ensure(botId);
+    return this.projectMessages(this.store.all("SELECT * FROM agent_messages WHERE bot_id=? AND seq>? ORDER BY seq LIMIT 200", botId, after));
+  }
+  private projectMessages(messages: Row[]) {
+    return messages.map((message) => {
       const source = /^a2a-(sent|received|returned|replied):(.+)$/.exec(String(message.source_key));
       if (!source) return message;
       const link = this.store.get("SELECT * FROM a2a_messages WHERE id=?", source[2]);

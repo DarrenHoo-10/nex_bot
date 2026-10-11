@@ -28,6 +28,7 @@ export class MemoryPrivacy {
       const before = sources.size + tasks.size;
       for (const use of uses) if (sources.has(String(use.source_id))) tasks.add(String(use.task_id));
       for (const dependency of dependencies) if (tasks.has(String(dependency.parent_task_id))) tasks.add(String(dependency.task_id));
+      for (const origin of this.store.all("SELECT o.task_id parent_task_id,c.task_id FROM routine_origins o JOIN routine_occurrences c ON c.routine_id=o.routine_id WHERE c.task_id IS NOT NULL")) if (tasks.has(String(origin.parent_task_id))) tasks.add(String(origin.task_id));
       for (const edge of edges) if (sources.has(String(edge.parent_id))) sources.add(String(edge.source_id));
       const sameHashes = new Set(all.filter((s) => sources.has(String(s.id))).map((s) => s.content_hash));
       for (const source of all) if (sameHashes.has(source.content_hash)) sources.add(String(source.id));
@@ -99,6 +100,12 @@ export class MemoryPrivacy {
         this.store.run("UPDATE agent_messages SET content=? WHERE task_id=?", redacted, task);
         this.store.run("UPDATE agent_journal SET objective=?,result=? WHERE task_id=?", redacted, redacted, task);
         this.store.run("UPDATE tool_calls SET arguments_json='{}',canonical_envelope='{}',result_json=? WHERE task_id=?", JSON.stringify({ forgotten: true }), task);
+        this.store.run("UPDATE routine_tool_receipts SET result_json=? WHERE call_id IN (SELECT id FROM tool_calls WHERE task_id=?)", JSON.stringify({ forgotten: true }), task);
+        for (const origin of this.store.all("SELECT routine_id FROM routine_origins WHERE task_id=?", task)) {
+          this.store.run("UPDATE agent_routines SET name=?,prompt=?,enabled=0,next_due_at=NULL,version=version+1 WHERE id=?", redacted, redacted, origin.routine_id);
+          this.store.run("UPDATE routine_occurrences SET status='cancelled' WHERE routine_id=? AND status='pending'", origin.routine_id);
+          this.store.run("UPDATE routine_tool_receipts SET result_json=? WHERE call_id IN (SELECT id FROM tool_calls WHERE tool_name='routine.save' AND (target_id=? OR id=?))", JSON.stringify({ forgotten: true }), origin.routine_id, String(origin.routine_id).replace(/^tool:/, ""));
+        }
         this.store.run("UPDATE call_reconciliations SET evidence_json='{}' WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE task_id=?)", task);
         this.store.run("UPDATE audit_records SET details_json='{}' WHERE entity_id=? OR entity_id IN (SELECT id FROM tool_calls WHERE task_id=?)", task, task);
         this.store.run("UPDATE a2a_messages SET payload=?,result=? WHERE parent_task_id=? OR child_task_id=?", redacted, JSON.stringify({ result: redacted }), task, task);

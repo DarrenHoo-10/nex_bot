@@ -3,9 +3,10 @@
 // the normal builder's templates, output validation and size checks intact.
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
@@ -35,7 +36,14 @@ util.spawnAndWriteWithOutput = (command, args, data, options) => {
     child.stdin.end(data);
   });
 };
-const config = parse(readFileSync(path.join(repo, "electron-builder.personal.yml"), "utf8"));
+const client = process.argv.includes("--client");
+const config = parse(readFileSync(path.join(repo, client ? "electron-builder.client.yml" : "electron-builder.personal.yml"), "utf8"));
+// Delivery can be staged on the user's system volume when the checkout's
+// volume lacks space. This does not remove or move existing release files.
+if (process.argv.includes("--delivery")) {
+  const output = path.join(os.homedir(), "Downloads", "NexBot-Releases", String(config.extraMetadata.version));
+  mkdirSync(output, { recursive: true }); config.directories.output = output;
+}
 const requestedOutput = process.argv.find((arg) => arg.startsWith("--output="))?.slice(9);
 if (requestedOutput) {
   const output = path.resolve(repo, requestedOutput);
@@ -48,6 +56,6 @@ process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL ??= "1";
 const configFile = path.join(repo, "release", `personal-builder-${randomUUID()}.json`);
 writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
 try {
-  await builder.build({ projectDir: repo, ...(process.argv.includes("--prepackaged") ? { prepackaged: path.join(repo, "release/personal-os/win-unpacked") } : {}), config: configFile,
-    targets: builder.Platform.WINDOWS.createTarget(process.argv.includes("--portable") ? ["portable"] : ["nsis", "portable"], builder.Arch.x64), publish: "never" });
+  await builder.build({ projectDir: repo, ...(process.argv.includes("--prepackaged") ? { prepackaged: path.join(repo, client ? "release/personal-client/win-unpacked" : "release/personal-os/win-unpacked") } : {}), config: configFile,
+    targets: builder.Platform.WINDOWS.createTarget(client || process.argv.includes("--portable") ? ["portable"] : ["nsis"], builder.Arch.x64), publish: "never" });
 } finally { util.spawnAndWriteWithOutput = original; unlinkSync(configFile); }

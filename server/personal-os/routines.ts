@@ -1,4 +1,4 @@
-import { CoreStore, id, now, text } from "./store.ts";
+import { CoreStore, id, now, text, type Row } from "./store.ts";
 import { AgentModule } from "./agents.ts";
 
 export function nextDaily(time: string, zone: string, after: number): number {
@@ -23,6 +23,38 @@ export class RoutineModule {
   close() { clearInterval(this.timer); }
   list() { return this.store.all("SELECT * FROM agent_routines ORDER BY created_at DESC"); }
   occurrences() { return this.store.all("SELECT o.*,r.bot_id,r.name FROM routine_occurrences o JOIN agent_routines r ON r.id=o.routine_id ORDER BY o.created_at DESC LIMIT 100"); }
+  tool(call: Row, args: Record<string, unknown>) {
+    const botId = String(call.bot_id);
+    const result = this.store.transaction(() => {
+      const receipt = this.store.get("SELECT * FROM routine_tool_receipts WHERE call_id=?", call.id);
+      if (receipt) { if (receipt.argument_hash !== call.argument_hash) throw new Error("例行任务调用身份冲突"); return JSON.parse(String(receipt.result_json)); }
+      let value: unknown;
+      if (call.tool_name === "routine.list") value = { routines: this.list().filter((r) => r.bot_id === botId) };
+      else if (call.tool_name === "routine.save") {
+        let runAt = args.runAt;
+        if (args.delaySeconds !== undefined) {
+          if (!Number.isSafeInteger(args.delaySeconds) || Number(args.delaySeconds) < 1 || Number(args.delaySeconds) > 365 * 86400 || args.runAt !== undefined) throw new Error("延迟须为 1 秒至 365 天，并且不能同时指定绝对时间");
+          runAt = now() + Number(args.delaySeconds) * 1000;
+        }
+        const configured = this.save({ ...args, botId, id: args.routineId ?? `tool:${call.id}`, version: args.expectedVersion, runAt });
+        value = { routine: this.store.get("SELECT * FROM agent_routines WHERE id=?", configured.id), scheduled: true };
+      } else {
+        const routineId = text(args.routineId, 100);
+        if (!this.store.get("SELECT id FROM agent_routines WHERE id=? AND bot_id=?", routineId, botId)) throw new Error("例行任务不属于当前 Agent");
+        if (call.tool_name === "routine.toggle") {
+          if (typeof args.enabled !== "boolean") throw new Error("启用状态无效");
+          this.toggle(routineId, Number(args.expectedVersion), args.enabled);
+        } else if (call.tool_name === "routine.run") this.runNow(routineId, String(call.id));
+        else throw new Error("未知的例行任务能力");
+        value = { routine: this.store.get("SELECT * FROM agent_routines WHERE id=?", routineId) };
+      }
+      const receiptValue = value as { routine?: Row };
+      this.store.insert("routine_tool_receipts", { call_id: call.id, argument_hash: call.argument_hash, result_json: JSON.stringify(value), created_at: now() });
+      if (call.tool_name === "routine.save" && receiptValue.routine) this.store.run("INSERT OR IGNORE INTO routine_origins(routine_id,task_id) VALUES(?,?)", receiptValue.routine.id, call.task_id);
+      return value;
+    });
+    this.agents.runtime.changed(); return result;
+  }
   save(data: Record<string, unknown>) {
     const botId = text(data.botId, 100), name = text(data.name, 100), prompt = text(data.prompt, 16_000);
     this.agents.ensure(botId);

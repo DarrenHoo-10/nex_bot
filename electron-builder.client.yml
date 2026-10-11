@@ -1,0 +1,38 @@
+appId: com.nexbot.client
+productName: NexBot Client
+directories:
+  output: release/personal-client
+extraMetadata:
+  name: nexbot-client
+  version: 0.5.0
+  main: electron/nex-client-main.mjs
+npmRebuild: false
+electronVersion: 39.8.10
+electronDist: dist-personal/electron
+asar: true
+files:
+  - electron/nex-client-main.mjs
+  - electron/nex-client-preload.cjs
+  - electron/client/**
+  - package.json
+  - '!**/node_modules/**'
+extraResources:
+  - from: dist-personal/client-node
+    to: client-node
+  - from: dist-personal/node_modules
+    to: node_modules
+  - from: dist-personal/package.json
+    to: package.json
+  - from: dist-personal/licenses
+    to: licenses
+  - from: dist-personal/LICENSE-OpenMausBot.txt
+    to: LICENSE-OpenMausBot.txt
+win:
+  target:
+    - target: portable
+      arch: x64
+  icon: build/icon.ico
+portable:
+  useZip: true
+  unpackDirName: true
+  artifactName: NexBot-0.5.0-x64-Client-Portable.${ext}

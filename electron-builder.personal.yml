@@ -5,7 +5,7 @@ directories:
   output: release/personal-os
 extraMetadata:
   name: nexbot-personal-os
-  version: 0.4.0
+  version: 0.5.0
   main: electron/nex-main.mjs
 npmRebuild: false
 electronVersion: 39.8.10
@@ -42,10 +42,8 @@ win:
   target:
     - target: nsis
       arch: x64
-    - target: portable
-      arch: x64
   icon: build/icon.ico
-  artifactName: NexBot-0.4.0-${arch}-${target}.${ext}
+  artifactName: NexBot-0.5.0-${arch}-${target}.${ext}
 nsis:
   # The 7z template stages then CopyFiles thousands of runtime files. ZIP
   # extracts directly into the install directory and avoids that second copy.
@@ -55,11 +53,11 @@ nsis:
   allowToChangeInstallationDirectory: true
   perMachine: false
   shortcutName: NexBot
-  artifactName: NexBot-0.4.0-x64-Setup.${ext}
+  artifactName: NexBot-0.5.0-x64-Setup.${ext}
 portable:
   # In this builder, useZip embeds files with NSIS's direct zlib expansion.
   useZip: true
   # In builder 26.15.3, true omits UNPACK_DIR_NAME and gives each launch
   # its own $PLUGINSDIR/app. A shared build directory breaks tray restore.
   unpackDirName: true
-  artifactName: NexBot-0.4.0-x64-Portable.${ext}
+  artifactName: NexBot-0.5.0-x64-Core-Portable.${ext}

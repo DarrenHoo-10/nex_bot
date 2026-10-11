@@ -1,5 +1,49 @@
 # Personal AI OS Windows delivery verification
 
+## 0.5 Core and thin-client qualification
+
+`electron-builder.personal.yml` builds the primary Core installer.
+`electron-builder.client.yml` builds a separate portable client, without Pi
+workers, Core schema, Hindsight, Python or memory models. Client profiles only
+hold Windows-encrypted login/device grants and the DCP execution journal.
+
+```powershell
+node scripts/build-personal.mjs --release
+node scripts/package-personal.mjs
+node scripts/package-personal.mjs --client
+$env:NEX_TEST_BUNDLE = "$PWD/release/personal-os/win-unpacked/resources/core/index.js"
+$env:NEX_TEST_CLIENT_BUNDLE = "$PWD/release/personal-client/win-unpacked/resources/client-node/client-node.js"
+$env:NEX_TEST_LEGACY_BUNDLE = "$PWD/release/personal-os/legacy-0.3.3-fixture/core/index.js"
+$env:NEX_TEST_LEGACY_04_BUNDLE = "$PWD/release/personal-os/legacy-0.4.0-fixture/core/index.js"
+node node_modules/vitest/vitest.mjs run server/personal-os/app.test.ts server/personal-os/memory.test.ts server/runtime/pi/p0/recovery-store.test.ts server/runtime/pi/p0/p0.test.ts server/runtime/pi/p0/guards.test.ts
+node scripts/smoke-personal-clients.mjs --exe=release/personal-client/NexBot-0.5.0-x64-Client-Portable.exe --core=release/personal-os/win-unpacked/resources/core/index.js --ui=release/personal-os/win-unpacked/resources/ui
+node scripts/smoke-personal.mjs --exe=release/personal-os/win-unpacked/NexBot.exe
+node scripts/smoke-personal-memory.mjs --exe=release/personal-os/win-unpacked/NexBot.exe
+```
+
+The new fixtures cover generic chat scheduling, persistent call receipts,
+source-aware cancellation/redaction of task-derived routine plans, old Core
+migrations without default Agent seeding, per-client login/revocation/restart,
+separate client/device credentials, body-free event cursors, 450-message gaps,
+privacy generations, actual deciding-session attribution and the standalone
+thin Device Node reading its own directory and awaiting terminal approval.
+
+The two-client smoke launches the real client executable twice with separate
+disposable profiles. Both log into one isolated Core through the real login
+form, share SDK replies, chat-created proactive work, approvals and forgetting.
+It also checks offline private-cache clearing, history pagination, independent
+revocation and client exit preserving Core. Browser/native desktop permissions
+are not exercised against the user's applications or filesystem. Physical
+two-machine networking and external identity providers remain separate
+deployment acceptance; the implemented login adapter is local-owner mode.
+
+HTTPS reverse-proxy deployments use `--public-origin=https://core.example`
+alongside the listening interface/port. This pins allowed Host and browser
+Origin to an explicit public address; arbitrary DNS Host headers are rejected.
+
+Historical 0.4 evidence below describes the older full-Core portable package,
+which is not the new thin-client portable distribution.
+
 The Personal OS desktop is a separate product entry (`electron/nex-main.mjs`),
 with the embedded Pi SDK and Core in `server/personal-os`. The legacy desktop
 and its data remain available through the original commands. The Personal OS

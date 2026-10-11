@@ -2,7 +2,7 @@ import { canonical, hash, text, type CoreStore, type Row } from "./store.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "device.list", "device.read", "device.exec"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.list", "device.read", "device.exec"] as const;
 export const basicActions = actions.filter((action) => !action.startsWith("device."));
 export function policyTools(policy: Row): string[] {
   const parsed = JSON.parse(String(policy.policy_json)) as { tools?: unknown };
@@ -24,6 +24,12 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
   } else if (action === "agent.delegate") {
     text(args.message, 16_000);
     if (!store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", text(args.botId, 100), store.workspace, store.owner)) throw new Error("目标 Agent 不存在或已停用");
+  } else if (action.startsWith("routine.")) {
+    if (args.botId !== undefined && args.botId !== botId) throw new Error("只能管理自己的例行任务");
+    if (action !== "routine.list" && action !== "routine.save") {
+      if (!store.get("SELECT id FROM agent_routines WHERE id=? AND bot_id=?", text(args.routineId, 100), botId)) throw new Error("例行任务不属于当前 Agent");
+    }
+    if (action === "routine.save" && args.routineId !== undefined && !store.get("SELECT id FROM agent_routines WHERE id=? AND bot_id=?", text(args.routineId, 100), botId)) throw new Error("例行任务不属于当前 Agent");
   } else if (action === "memory.write") {
     text(args.title, 200); text(args.content, 20_000);
     if (args.scope !== undefined && args.scope !== "bot") throw new Error("自动记忆写入仅限自身私有范围；共享内容请由用户在记忆面板明确发布");

@@ -25,7 +25,7 @@ export class DeviceNode {
   executing = false;
   readonly operations = new Set<Promise<void>>();
   readonly commands = new Set<ChildProcess>();
-  constructor(readonly store: CoreStore, readonly changed: () => void) {
+  constructor(readonly store: Pick<CoreStore, "dir" | "get" | "run" | "encrypt" | "decrypt">, readonly changed: () => void) {
     const dir = path.join(store.dir, "node"); mkdirSync(dir, { recursive: true });
     this.journal = new DatabaseSync(path.join(dir, "node.db"));
     if (!this.journal.prepare("SELECT name FROM sqlite_master WHERE name='node_bindings'").get()) this.journal.exec(readFileSync(new URL("./node-schema.sql", import.meta.url), "utf8"));
