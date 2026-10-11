@@ -26,10 +26,11 @@ export function AgentDesktop() {
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
   const [messages, setMessages] = useState<RecordRow[]>([]), [streaming, setStreaming] = useState<Array<{ taskId: string; text: string }>>([]);
   const [draft, setDraft] = useState(""), [search, setSearch] = useState(""), [error, setError] = useState(""), [busy, setBusy] = useState(false);
+  const [sendingBotId, setSendingBotId] = useState<string>();
   const [connected, setConnected] = useState(true), [detail, setDetail] = useState(true), [tab, setTab] = useState("profile"), [dialog, setDialog] = useState<ReactNode>(null);
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), serial = useRef(0);
   const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
-  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
+  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
   selected.current = botId; pageRef.current = page;
   const reload = useCallback(async () => {
@@ -78,16 +79,18 @@ export function AgentDesktop() {
   }, [reload, offline]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
   useEffect(() => { setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); if (botId) { localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => setError(e.message)); } }, [botId, reload]);
-  useEffect(() => { scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); }, [botId, messages.at(-1)?.id, streaming.map((s) => s.text).join("")]);
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(botId, value); };
   const send = (event: FormEvent) => {
     event.preventDefault(); const content = draft.trim(), target = botId; if (!content || busy || !state?.bots.some((agent) => agent.id === target)) return;
     if (!retry.current || retry.current.botId !== target || retry.current.text !== content) retry.current = { botId: target, text: content, id: crypto.randomUUID() };
     const clientId = retry.current.id;
-    void run(async () => { await api("agents/input", { botId: target, text: content, clientId }); drafts.current.delete(target); if (selected.current === target) setDraft(""); retry.current = undefined; });
+    setSendingBotId(target);
+    void run(async () => { await api("agents/input", { botId: target, text: content, clientId }); drafts.current.delete(target); if (selected.current === target) setDraft(""); retry.current = undefined; }).finally(() => setSendingBotId(undefined));
   };
   const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && !terminal.includes(str(t.status))) ?? [];
+  const processing = connected && !streaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
+  useEffect(() => { scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); }, [botId, messages.at(-1)?.id, streaming.map((s) => s.text).join(""), processing]);
   const descendantTasks = new Set(tasks.map((task) => task.id));
   for (let depth = 0; depth < 3; depth++) for (const link of state?.delegations ?? []) if (descendantTasks.has(link.parent_task_id)) descendantTasks.add(link.child_task_id);
   const waitingPeers = state?.approvals.filter((approval) => approval.bot_id !== botId && descendantTasks.has(approval.task_id)) ?? [];
@@ -114,8 +117,9 @@ export function AgentDesktop() {
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}{!state.config && page !== "settings" ? <div className="notice">连接模型后，Agent 就能开始工作。<button onClick={() => setPage("settings")}>配置 API Key</button></div> : null}
       {page === "agent" && !bot ? <div className="welcome"><h1>创建你的第一个 Agent</h1><p>给它一个名字，身份与职责可以之后补充。消息、记忆和工作会持续保留。</p><button className="primary" onClick={() => editBot()}><Plus size={16}/>创建 Agent</button></div> : page === "agent" ? <><div className="transcript" ref={scroll}>
         {Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
-        {!messages.length ? <div className="welcome"><Avatar bot={bot} large/><h1>{bot?.name}</h1><p>{bot?.instructions}</p><small>直接发消息，或为我安排一项例行任务。</small></div> : messages.map((m) => <AgentMessage key={str(m.id)} message={m} bot={bot} bots={state.bots} select={select}/>)}
+        {!messages.length && !processing ? <div className="welcome"><Avatar bot={bot} large/><h1>{bot?.name}</h1><p>{bot?.instructions}</p><small>直接发消息，或为我安排一项例行任务。</small></div> : messages.map((m) => <AgentMessage key={str(m.id)} message={m} bot={bot} bots={state.bots} select={select}/>)}
         {streaming.map((s) => { const link = state.delegations.find((d) => d.child_task_id === s.taskId), peer = state.bots.find((b) => b.id === link?.sender_bot_id); return <article className={`message assistant ${link ? "a2a-reply" : ""}`} key={s.taskId}><Avatar bot={bot}/><div className="message-body">{link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="bubble"><RichText value={s.text}/></div><span className="muted">正在回复…</span></>}</div></article>; })}
+        {processing ? <article className="message assistant processing-message"><Avatar bot={bot}/><div className="message-body"><div className="bubble processing-dots" role="status" aria-label={`${bot?.name ?? "Agent"} 正在处理消息`}><span aria-hidden="true"/><span aria-hidden="true"/><span aria-hidden="true"/></div></div></article> : null}
       </div><div className="composer-area">{state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{({ "agent.delegate": "联系其他 Agent", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>批准</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
         {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
         <form className="composer" onSubmit={send}><textarea aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={2}/><button className="send" aria-label="发送消息" disabled={busy || !draft.trim() || !state.config || !bot}><ArrowUp size={19}/></button></form><small>Enter 发送 · Shift + Enter 换行</small></div></> : page === "devices" ? <Devices state={state} run={run} setDialog={setDialog} closeDialog={closeDialog}/> : <><SettingsPage state={state} run={run}/><DesktopPreferences run={run}/></>}

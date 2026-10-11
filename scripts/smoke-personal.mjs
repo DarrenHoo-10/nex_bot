@@ -68,6 +68,7 @@ try {
   await evaluate("document.querySelector('input[name=model]').value='fixture-model';document.querySelector('input[name=apiKey]').value='fixture-api-key';document.querySelector('form').requestSubmit()");
   await until(async () => (await call("state")).config?.configured === 1);
   if ((await call("state")).config.endpoint !== fixtureEndpoint) throw new Error("Endpoint input was not saved");
+  await until(() => evaluate("!!document.querySelector('.agents button')"));
   await evaluate("document.querySelector('.agents button').click()");
   await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='编辑身份').click()");
   const identityValidity = await evaluate("(()=>{const form=document.querySelector('.modal form');form.querySelector('input[name=name]').value='私人秘书';const field=form.querySelector('textarea[name=instructions]');field.value='';return {required:field.required,valid:form.checkValidity()};})()");
@@ -80,15 +81,38 @@ try {
   await until(async () => (await call("state")).bots.some((b) => b.name === "消息助手" && b.instructions === ""));
   if (fake.requests.length !== 0) throw new Error("Identity changes unexpectedly called a model");
   await evaluate("document.querySelector('.agents button').click()");
-  fake.scripts.push({ kind: "openai-text", text: "打包应用聊天验证成功" });
+  let releaseReply;
+  fake.scripts.push({ kind: "openai-text", text: "打包应用聊天验证成功", waitFor: new Promise((resolve) => { releaseReply = resolve; }) });
+  // Hold only the fixture's input request to verify immediate feedback before
+  // acknowledgement, then hold model output to verify the persisted-task phase.
+  await evaluate("(()=>{const original=window.fetch;let release;const gate=new Promise(resolve=>release=resolve);window.releaseInput=()=>{window.fetch=original;release();};window.fetch=async (...args)=>{if(args[0]==='/api/agents/input')await gate;return original(...args);};})()");
   await evaluate("(()=>{const t=document.querySelector('.composer textarea');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(t,'你好，验证安装应用');t.dispatchEvent(new Event('input',{bubbles:true}));})()");
   await until(() => evaluate("!document.querySelector('.send').disabled"));
   await evaluate("document.querySelector('.composer').requestSubmit()");
+  await until(() => evaluate("document.querySelector('.processing-dots')?.getAttribute('role')==='status'&&document.querySelectorAll('.processing-dots>span').length===3&&!document.querySelector('.transcript .welcome')"));
+  if (fake.requests.length) throw new Error("Fixture input gate failed");
+  const animated = await evaluate("(()=>{const dots=[...document.querySelectorAll('.processing-dots>span')];return dots.every(dot=>getComputedStyle(dot).animationName==='processing-bounce')&&new Set(dots.map(dot=>getComputedStyle(dot).animationDelay)).size===3;})()");
+  if (!animated) throw new Error("Processing dots are not animated in sequence");
+  const processingScreenshot = path.resolve("release/personal-os/desktop-processing-smoke.png");
+  writeFileSync(processingScreenshot, Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await evaluate("window.releaseInput()");
+  await until(() => fake.requests.length === 1);
+  await until(() => evaluate("!!document.querySelector('.processing-dots')&&document.querySelector('.transcript').innerText.includes('你好，验证安装应用')&&document.querySelector('.composer textarea').value===''"));
+  writeFileSync(processingScreenshot, Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await evaluate("document.querySelectorAll('.agents button')[1].click()");
+  await until(() => evaluate("document.querySelector('header')?.textContent.includes('Beta')&&!document.querySelector('.processing-dots')"));
+  await evaluate("document.querySelector('.agents button').click()");
+  await until(() => evaluate("document.querySelector('header')?.textContent.includes('私人秘书')&&!!document.querySelector('.processing-dots')"));
+  await command("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  if (!(await evaluate("[...document.querySelectorAll('.processing-dots>span')].every(dot=>getComputedStyle(dot).animationName==='none')"))) throw new Error("Processing dots ignore reduced motion");
+  await command("Emulation.setEmulatedMedia", { features: [] });
+  releaseReply();
   await until(async () => (await call("state")).tasks.some((t) => t.status === "succeeded"));
   if (fake.requests[0].url !== "/gateway/v1/chat/completions") throw new Error("Wrong model request path");
   const identityPrompt = JSON.parse(fake.requests[0].body).messages.find((m) => m.role === "system" || m.role === "developer")?.content;
   if (!identityPrompt?.includes('"name":"私人秘书"') || !identityPrompt.includes('"name":"消息助手"')) throw new Error("Current self/peer identity missing from model request");
   await until(() => evaluate("document.querySelector('.transcript')?.textContent.includes('打包应用聊天验证成功')"));
+  await until(() => evaluate("!document.querySelector('.processing-dots')"));
   await evaluate("[...document.querySelectorAll('.inspector-tabs button')].find(b=>b.textContent==='记忆').click()");
   const state = await call("state");
   await call("memory", { botId: state.bots[0].id, title: "桌面验收记忆", content: "打包后的记忆可持久化", scope: "bot" });
@@ -143,6 +167,26 @@ try {
   await evaluate("document.querySelector('[data-a2a-direction=received] .a2a-contact').click()");
   await until(() => evaluate("document.querySelector('header')?.textContent.includes('私人秘书')&&!!document.querySelector('[data-a2a-direction=returned]')"));
   if (fake.requests.length !== 5) throw new Error("Unexpected A2A model request count: " + fake.requests.length);
+  // Exercise a real rejected input without creating a Task or model request.
+  await evaluate("(()=>{const original=window.fetch;let release;const gate=new Promise(resolve=>release=resolve);window.releaseRejectedInput=()=>{window.fetch=original;release();};window.fetch=async (url,options)=>{if(url==='/api/agents/input'){await gate;options={...options,body:JSON.stringify({...JSON.parse(options.body),text:''})};}return original(url,options);};const t=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(t,'拒绝发送的隔离验证');t.dispatchEvent(new Event('input',{bubbles:true}));})()");
+  await until(() => evaluate("!document.querySelector('.send').disabled"));
+  await evaluate("document.querySelector('.composer').requestSubmit()");
+  await until(() => evaluate("!!document.querySelector('.processing-dots')"));
+  await evaluate("window.releaseRejectedInput()");
+  await until(() => evaluate("!!document.querySelector('[role=alert]')&&!document.querySelector('.processing-dots')&&!document.querySelector('.send').disabled&&document.querySelector('.composer textarea').value==='拒绝发送的隔离验证'"));
+  if (fake.requests.length !== 5) throw new Error("Rejected input called a model");
+  await evaluate("document.querySelector('[aria-label=\"关闭错误\"]').click()");
+  fake.scripts.push({ kind: "hang" });
+  await evaluate("(()=>{const t=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(t,'停止工作时清理等待提示');t.dispatchEvent(new Event('input',{bubbles:true}));})()");
+  await until(() => evaluate("!document.querySelector('.send').disabled"));
+  await evaluate("document.querySelector('.composer').requestSubmit()");
+  await until(() => fake.requests.length === 6);
+  await until(() => evaluate("!!document.querySelector('.processing-dots')&&document.querySelector('.composer textarea').value===''"));
+  const cancelledTask = (await call("state")).tasks.find((task) => task.bot_id === originalBot && ["queued", "running"].includes(task.status));
+  if (!cancelledTask) throw new Error("Cancellation fixture has no active Task");
+  await call("cancel", { taskId: cancelledTask.id });
+  await until(async () => (await call("state")).tasks.some((task) => task.id === cancelledTask.id && task.status === "cancelled"));
+  await until(() => evaluate("!document.querySelector('.processing-dots')"));
   await evaluate("[...document.querySelectorAll('.inspector-tabs button')].find(b=>b.textContent==='详情').click()");
   const shot = await command("Page.captureScreenshot", { format: "png" });
   const screenshot = path.resolve("release/personal-os/desktop-smoke.png");
@@ -151,7 +195,7 @@ try {
   if (dom.overflow || dom.errors) throw new Error("Renderer layout/error failed: " + JSON.stringify(dom));
   await evaluate("void window.nex.quit(); true"); await until(() => exited, packageExe?.includes("Portable") ? 180_000 : 65_000);
   if (!JSON.parse(readFileSync(output + ".shutdown.json", "utf8")).graceful) throw new Error("Core required forced shutdown");
-  console.log(JSON.stringify({ passed: true, runtime: "fixed-pi", cases: ["zero-default-Agents", "explicit-Agent-creation", "automatic-A2A", "desktop-boot", "vault", "API-key-settings", "model-request-preview", "optional-Agent-identity", "silent-identity-refresh", "persistent-Agent-contact", "SDK-chat", "private-memory", "background-routine", "tray-hide-restore", "compact-A2A-markers", "receiver-reply-collapse", "A2A-peer-navigation", "renderer", "graceful-shutdown"], dom, screenshot, a2aScreenshot }));
+  console.log(JSON.stringify({ passed: true, runtime: "fixed-pi", cases: ["zero-default-Agents", "explicit-Agent-creation", "automatic-A2A", "desktop-boot", "vault", "API-key-settings", "model-request-preview", "optional-Agent-identity", "silent-identity-refresh", "persistent-Agent-contact", "immediate-processing-dots", "pending-reply-dots", "processing-contact-isolation", "reduced-motion", "rejected-input-cleanup", "cancelled-work-cleanup", "SDK-chat", "private-memory", "background-routine", "tray-hide-restore", "compact-A2A-markers", "receiver-reply-collapse", "A2A-peer-navigation", "renderer", "graceful-shutdown"], dom, screenshot, a2aScreenshot, processingScreenshot }));
 } finally {
   ws?.close();
   if (!exited) { if (process.platform === "win32" && child.pid) { const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); await new Promise((resolve) => killer.once("close", resolve)); } else child.kill(); }

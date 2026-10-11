@@ -63,7 +63,7 @@ An initial memory smoke run alongside the full resource inventory exceeds its
 180-second startup bound. A separate rerun passes with the same bound and no
 runtime or test changes. The retained failed fixture is outside release resources.
 
-Final artifact sizes and SHA-256:
+Initial 0.5.0 artifact sizes and SHA-256 (superseded installer below):
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -75,6 +75,36 @@ NexBot-Releases / 0.5.0 directory. The thin client was qualified as two real
 portable EXE instances using separate disposable profiles and one Core; physical
 two-machine networking has not been exercised. No release contains user history,
 vault contents or API keys.
+
+### Processing indicator follow-up (2026-10-11)
+
+The Agent feed now shows three staggered bouncing dots immediately on submit,
+before the input acknowledgement and while queued/running with no reply text.
+Reply text replaces the placeholder; rejected inputs and cancelled work clear
+it. Another contact does not inherit the indicator. Reduced-motion preferences
+keep the three dots visible without animation. The indicator is transient UI
+state and is never written into messages or memory.
+
+The real desktop fixture passes both qualified unpacked and installed EXEs.
+It gates the input request and model reply separately, switches contacts while
+waiting, exercises a real rejected input and cancelled Task, and checks reduced
+motion. It also retains all existing chat/A2A/background-work/shutdown checks.
+The cancellation fixture selects the public Task status rather than an omitted
+`ended_at` column, and waits for contacts to render after saving configuration.
+The screenshot is `release/personal-os/desktop-processing-smoke.png` (ignored).
+
+Only built UI resources are replaced in the installed application, after a
+graceful exit and with the prior UI backed up outside the checkout. Installed UI
+hashes match the fixture build; Core/worker/memory runtime bytes are unchanged.
+The ordinary user application is reopened after isolated verification. The
+refreshed installer is built from that qualified prepackaged directory; the
+original NSIS installation was qualified above, and the UI update avoids
+reinstalling the unchanged native runtime.
+
+Current Setup is 1,604,688,823 bytes, SHA-256
+`BF14497FD8EB6EAA874B27727258624959FA8E829A1384BC3FF539819875FF63`.
+It replaces the same delivery filename; SHA256SUMS.txt is updated. The thin
+client executable is unchanged because it loads the UI from Core.
 
 Historical 0.4 evidence below describes the older full-Core portable package,
 which is not the new thin-client portable distribution.
