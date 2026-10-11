@@ -1,5 +1,60 @@
 # Personal AI OS Windows delivery verification
 
+## Model-request boundaries and window restoration (2026-10-11)
+
+The reported browser task reached working device tools. Read-only scalar
+diagnostics showed seven model completions in the Pi projection and a Core
+100,000-token task limit; accumulated usage plus the next 16,384-token
+reservation exceeded it. Core rejected the next request before transport.
+The provider SDK flattened that rejection to `Connection error.` and its
+error event reused the previous invocation ID, overwriting the successful
+invoice. Window restoration had also failed twice because enumeration was
+incorrectly required to be preceded by a screenshot of a minimized window.
+No user transcript, window title, endpoint, credential or private memory is
+copied into this verification record.
+
+New tasks have a 400,000-token cumulative budget with the original 24-model,
+40-tool and thirty-minute bounds. Existing tasks and daily background-memory
+limits are unchanged. Cache input tokens count toward task usage. Core
+rejections retain their actual cause and do not overwrite an earlier receipt.
+Actual dropped connections report bounded transport codes/address without
+request secrets or automatic retries. A genuinely enumerated window can be
+restored; input still requires a fresh successful screenshot observation.
+
+The qualified Core/client bundles pass **84 tests, zero failures or skips**
+across ten suites, including token/call rejection through the real SDK,
+unchanged successful usage, cache-input accounting, a new subsequent task
+without effect replay, dropped transport, memory, A2A, approvals and recovery.
+Evidence: `release/personal-os/model-boundary-result.json` (ignored).
+
+The unpacked and updated installed EXEs each pass all **28 desktop checks**
+and **nine native computer checks**. The native fixture now minimizes its own
+Electron window, restores it through DCP/Pi without a shell or approval, then
+verifies fresh observation, ordinary Unicode input, explicit dangerous-input
+approval and durable receipts. The newly packaged Client portable EXE passes
+all **15 two-client checks**. These are disposable profiles and synthetic
+loopback model requests, not mutations against the user's application or
+verification of a paid provider/browser search. Server TypeScript, changed-file
+lint and diff checks pass.
+
+The closed live profile is backed up outside the checkout: all **1,291 files**
+match their backup hashes. All **25 Core/UI program files** match the qualified
+unpacked resources after copying; live profile hashes are unchanged before
+normal relaunch. This is a program-resource update of the installed application,
+not another full NSIS installation. Private backup paths and detailed program
+hashes are in ignored `model-boundary-install-verification.json`.
+
+After normal relaunch, the desktop shortcut still targets the installed EXE
+with no arguments. Read-only integrity is `ok`, foreign-key violations are zero,
+and the primary device's active terminal/computer grants are both enabled.
+Both packaging commands exit 0; delivery hashes and sizes supersede previous
+0.5.0 artifacts below. `SHA256SUMS.txt` and the delivery guide are refreshed.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Core Setup | 1,614,168,207 | `E66E97E8733689FED79FE237C09F077CDB74BCAB64E932178B0FFC97811DFC31` |
+| Client Portable | 169,291,309 | `BF9E3DEC936AF33FACD165658C32FD7ECB85D8E0659ECFEEEA996D44957DF06B` |
+
 ## 0.5 Core and thin-client qualification
 
 `electron-builder.personal.yml` builds the primary Core installer.

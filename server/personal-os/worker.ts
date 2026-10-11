@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { createAgentSession, DefaultResourceLoader, defineTool, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type FileEntry } from "@earendil-works/pi-coding-agent";
 import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply } from "./contracts.ts";
+import { modelConnectionError } from "./model-errors.ts";
 
 let session: AgentSession | undefined;
 const replies = new Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
@@ -102,36 +103,50 @@ async function main(value: WorkerConfig) {
   session.subscribe((event) => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") send({ type: "delta", text: event.assistantMessageEvent.delta });
     if (event.type === "message_end" && event.message.role === "assistant") {
-      send({ type: "snapshot", invokeId: activeInvoke, inputTokens: event.message.usage.input, outputTokens: event.message.usage.output, modelStatus: event.message.stopReason === "error" ? "failed" : event.message.stopReason === "aborted" ? "cancelled" : "succeeded" });
+      send({ type: "snapshot", invokeId: activeInvoke, inputTokens: event.message.usage.input + event.message.usage.cacheRead + event.message.usage.cacheWrite, outputTokens: event.message.usage.output, modelStatus: event.message.stopReason === "error" ? "failed" : event.message.stopReason === "aborted" ? "cancelled" : "succeeded" });
     }
   });
   const originalFetch = globalThis.fetch, endpoint = new URL(config.endpoint);
   let httpFailure: { status: number; address: string } | undefined;
+  let requestFailure: Error | undefined;
   globalThis.fetch = async (input, init) => {
-    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    if (url.origin !== endpoint.origin || url.username || url.password || !url.pathname.startsWith(endpoint.pathname.replace(/\/$/, "") + "/")) throw new Error("Blocked model network destination");
-    const permit = await rpc({ type: "request", entries: snapshot(), inputs: [...projected], purpose }) as ModelPermit;
-    activeInvoke = permit.invokeId;
-    let body = init?.body;
-    if (purpose === "answer") {
-      if (typeof body !== "string") throw new Error("Unsupported model request body");
-      const payload = JSON.parse(body);
-      // Refresh at the final request boundary, including continuation after a
-      // tool/approval. Replacing old Core system messages also prevents SDK
-      // projections/compaction from restoring an obsolete contact identity.
-      if (config.provider === "anthropic") payload.system = permit.systemPrompt;
-      else {
-        if (!Array.isArray(payload.messages)) throw new Error("Invalid model messages");
-        const messages = payload.messages as Array<{ role: string }>;
-        const role = messages.find((m) => m.role === "system" || m.role === "developer")?.role ?? "system";
-        payload.messages = [{ role, content: permit.systemPrompt }, ...messages.filter((m) => m.role !== "system" && m.role !== "developer")];
-      }
-      body = JSON.stringify(payload);
-    }
+    // A rejected request has no invoice. Never let the SDK's error event
+    // overwrite the preceding successful request's receipt or usage.
+    activeInvoke = undefined;
     httpFailure = undefined;
-    const response = await originalFetch(input, { ...init, body, redirect: "error", signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000) });
-    if (!response.ok) httpFailure = { status: response.status, address: url.origin + url.pathname };
-    return response;
+    requestFailure = undefined;
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    let sending = false;
+    try {
+      if (url.origin !== endpoint.origin || url.username || url.password || !url.pathname.startsWith(endpoint.pathname.replace(/\/$/, "") + "/")) throw new Error("Blocked model network destination");
+      const permit = await rpc({ type: "request", entries: snapshot(), inputs: [...projected], purpose }) as ModelPermit;
+      activeInvoke = permit.invokeId;
+      let body = init?.body;
+      if (purpose === "answer") {
+        if (typeof body !== "string") throw new Error("Unsupported model request body");
+        const payload = JSON.parse(body);
+        // Refresh at the final request boundary, including continuation after a
+        // tool/approval. Replacing old Core system messages also prevents SDK
+        // projections/compaction from restoring an obsolete contact identity.
+        if (config.provider === "anthropic") payload.system = permit.systemPrompt;
+        else {
+          if (!Array.isArray(payload.messages)) throw new Error("Invalid model messages");
+          const messages = payload.messages as Array<{ role: string }>;
+          const role = messages.find((m) => m.role === "system" || m.role === "developer")?.role ?? "system";
+          payload.messages = [{ role, content: permit.systemPrompt }, ...messages.filter((m) => m.role !== "system" && m.role !== "developer")];
+        }
+        body = JSON.stringify(payload);
+      }
+      sending = true;
+      const response = await originalFetch(input, { ...init, body, redirect: "error", signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000) });
+      if (!response.ok) httpFailure = { status: response.status, address: url.origin + url.pathname };
+      return response;
+    } catch (error) {
+      // Provider SDKs flatten fetch exceptions (including Core's budget or
+      // policy rejection) to "Connection error." Preserve the real boundary.
+      requestFailure = sending ? modelConnectionError(error, url) : error instanceof Error ? error : new Error("Core 拒绝了模型请求");
+      throw error;
+    }
   };
   try {
     if (JSON.stringify(manager.buildSessionContext().messages).length > 160_000) {
@@ -147,7 +162,7 @@ async function main(value: WorkerConfig) {
     if (last?.role !== "assistant" || last.stopReason !== "stop") {
       const detail = last?.role === "assistant" ? last.errorMessage ?? "Model did not finish" : "Model did not finish";
       if (httpFailure?.status === 404) throw new Error(`模型服务返回 404。请求地址：${httpFailure.address}。请检查 API 基础地址（OpenAI 兼容地址通常包含 /v1）、API 协议和模型 ID。服务响应：${detail}`);
-      throw new Error(detail);
+      throw requestFailure ?? new Error(detail);
     }
     const result = last.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
     // Only entries actually consumed by the SDK are acknowledged, not the
@@ -157,7 +172,8 @@ async function main(value: WorkerConfig) {
     // Wait for Core's durable acknowledgement before closing IPC. A large
     // snapshot can otherwise still be buffered when the process disconnects.
     await rpc({ type: "done", entries: snapshot(), inputs, text: result });
-  } finally { globalThis.fetch = originalFetch; session.dispose(); }
+  } catch (error) { throw requestFailure ?? error; }
+  finally { globalThis.fetch = originalFetch; session.dispose(); }
 }
 process.on("message", (message: WorkerReply) => {
   if (message.type === "start" && message.config && !started) {

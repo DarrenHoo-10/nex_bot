@@ -4,11 +4,12 @@ const fixtureFetch = globalThis.fetch;
 
 export type FakeScript = (
   | { kind: "openai-text"; text: string }
-  | { kind: "openai-tool"; calls: Array<{ id: string; name: string; args: string }> }
+  | { kind: "openai-tool"; calls: Array<{ id: string; name: string; args: string }>; usage?: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens: number } } }
   | { kind: "openai-error"; status: number; message: string }
   | { kind: "anthropic-text"; text: string }
   | { kind: "anthropic-tool"; id: string; name: string; args: string }
   | { kind: "anthropic-error"; status: number; message: string }
+  | { kind: "disconnect" }
   | { kind: "hang" }) & { waitFor?: Promise<void> };
 
 export interface FakeRequest {
@@ -49,7 +50,7 @@ function openaiText(text: string): string {
   ]);
 }
 
-function openaiTool(calls: Array<{ id: string; name: string; args: string }>): string {
+function openaiTool(calls: Array<{ id: string; name: string; args: string }>, usage?: Extract<FakeScript, { kind: "openai-tool" }>['usage']): string {
   return sse([
     {
       id: "chatcmpl-p0-tool",
@@ -81,6 +82,7 @@ function openaiTool(calls: Array<{ id: string; name: string; args: string }>): s
       id: "chatcmpl-p0-tool",
       object: "chat.completion.chunk",
       choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      ...(usage ? { usage } : {}),
     },
   ]);
 }
@@ -169,6 +171,7 @@ export function startFakeModel(probeFetch: typeof fetch = fixtureFetch): Promise
       return;
     }
     if (script.waitFor) await script.waitFor;
+    if (script.kind === "disconnect") { req.socket.destroy(); return; }
     if (script.kind === "hang") {
       await new Promise<void>((resolve) => {
         const done = () => resolve();
@@ -188,7 +191,7 @@ export function startFakeModel(probeFetch: typeof fetch = fixtureFetch): Promise
       return;
     }
     if (script.kind === "openai-tool") {
-      write(res, 200, "text/event-stream", openaiTool(script.calls));
+      write(res, 200, "text/event-stream", openaiTool(script.calls, script.usage));
       return;
     }
     if (script.kind === "anthropic-text") {

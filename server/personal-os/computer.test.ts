@@ -1,15 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ComputerExecutor } from "./computer.ts";
 function fixture() {
   const executor = new ComputerExecutor(), calls: string[] = [];
-  let interrupt = false, unknown = false;
+  let interrupt = false, unknown = false, failObservation = false;
   executor.load = async () => ({
-    async callTool(name: string) { calls.push(name); if (interrupt) throw new Error("synthetic interrupted native transport"); return { text: "synthetic", images: [], rawJson: "{}", isError: false, ...(unknown ? { action: { completion: 2 } } : {}) }; },
+    async callTool(name: string) { calls.push(name); if (interrupt) throw new Error("synthetic interrupted native transport"); return { text: "synthetic", images: [], rawJson: "{}", isError: failObservation && name === "get_window_state", ...(name === "list_windows" ? { structuredJson: JSON.stringify({ windows: [{ pid: 100111, window_id: 42 }] }) } : {}), ...(unknown ? { action: { completion: 2 } } : {}) }; },
     async listToolsJson() { return '{"tools":[]}'; }, async shutdown() {},
   });
-  return { executor, calls, interrupt() { interrupt = true; }, unknown() { unknown = true; } };
+  return { executor, calls, interrupt() { interrupt = true; }, unknown() { unknown = true; }, failObservation() { failObservation = true; } };
 }
 describe("computer use boundary", () => {
+  it("restores a genuinely enumerated window but requires a fresh screenshot before input", async () => {
+    const f = fixture(), target = { pid: 100111, window_id: 42 };
+    await expect(f.executor.execute("bring_to_front", target, 1000)).rejects.toThrow("list_windows");
+    await f.executor.execute("list_windows", {}, 1000);
+    await expect(f.executor.execute("bring_to_front", { ...target, window_id: 99 }, 1000)).rejects.toThrow("list_windows");
+    await expect(f.executor.execute("click", target, 1000)).rejects.toThrow("get_window_state");
+    await f.executor.execute("bring_to_front", target, 1000);
+    await expect(f.executor.execute("type_text", target, 1000)).rejects.toThrow("get_window_state");
+    await f.executor.execute("get_window_state", target, 1000);
+    await f.executor.execute("type_text", target, 1000);
+    expect(f.calls).toEqual(["list_windows", "bring_to_front", "get_window_state", "type_text"]);
+  });
+  it("expires enumerated targets and invalidates a prior screenshot when a new observation fails", async () => {
+    const f = fixture(), target = { pid: 100111, window_id: 42 };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      await f.executor.execute("list_windows", {}, 1000);
+      clock.mockReturnValue(1_120_001);
+      await expect(f.executor.execute("bring_to_front", target, 1000)).rejects.toThrow("list_windows");
+      await f.executor.execute("get_window_state", target, 1000);
+      f.failObservation(); await f.executor.execute("get_window_state", target, 1000);
+      await expect(f.executor.execute("click", target, 1000)).rejects.toThrow("get_window_state");
+    } finally { clock.mockRestore(); }
+    expect(f.calls).toEqual(["list_windows", "get_window_state", "get_window_state"]);
+  });
   it("refuses arbitrary connections, file outputs and global desktop input before entering the native driver", async () => {
     const f = fixture();
     for (const parameters of [{ session: "other" }, { screenshot_out_file: "private.txt" }, { scope: "desktop" }, { target: { kind: "desktop" } }]) await expect(f.executor.execute("get_window_state", parameters, 1000)).rejects.toThrow();

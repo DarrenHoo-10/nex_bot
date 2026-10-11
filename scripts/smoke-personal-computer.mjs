@@ -19,7 +19,7 @@ if (process.platform === "win32" && !process.versions.electron) {
 const resources = path.resolve(process.argv.find((a) => a.startsWith("--resources="))?.slice(12) ?? "dist-personal");
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-computer-fixture-"));
 const profile = mkdtempSync(path.join(root, "nex-computer-target-")), output = path.join(root, "target.json");
-const target = spawn(exe, [path.resolve("scripts/fixture-personal-computer.mjs"), `--profile=${profile}`, `--output=${output}`, "--remote-debugging-port=0"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE } });
+const target = spawn(exe, [path.resolve("scripts/fixture-personal-computer.mjs"), `--profile=${profile}`, `--output=${output}`, "--remote-debugging-port=0"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE } });
 let targetLog = "";
 target.stderr.on("data", (data) => { targetLog = (targetLog + data).slice(-3000); });
 target.stdout.on("data", (data) => { targetLog = (targetLog + data).slice(-3000); });
@@ -72,6 +72,14 @@ try {
   const matched = listed.structured?.windows?.find((item) => Number(item.window_id) === native.windowId);
   if (!matched) throw new Error("Synthetic native window not found: " + JSON.stringify({ own: listed.structured?.windows?.filter((item) => item.title?.includes("Synthetic computer") || item.title?.includes("synthetic computer")), native }));
   window.pid = matched.pid; cases.push("exact native window discovery");
+  target.send({ type: "minimize" }); await until(() => existsSync(output + ".minimized.json"));
+  if (!JSON.parse(readFileSync(output + ".minimized.json", "utf8")).minimized) throw new Error("Owned fixture did not minimize");
+  const restored = await tool("bring_to_front", window);
+  if (restored.error || restored.isError || restored.unknown) throw new Error("Enumerated native window restore failed: " + JSON.stringify(restored));
+  target.send({ type: "state" }); await until(() => existsSync(output + ".restored.json"));
+  if (JSON.parse(readFileSync(output + ".restored.json", "utf8")).minimized) throw new Error("Native restore left the owned fixture minimized");
+  if (app.store.get("SELECT COUNT(*) count FROM approvals")?.count !== 0) throw new Error("Ordinary window restoration required approval");
+  cases.push("enumerated minimized window restoration without scripts or approval");
   const observed = await tool("get_window_state", { ...window, include_accessibility_tree: true });
   if (observed.isError || !observed.images?.[0]?.data) throw new Error("Native window screenshot failed: " + JSON.stringify({ ...observed, images: undefined }));
   const screenshotBytes = Buffer.from(observed.images[0].data, "base64");

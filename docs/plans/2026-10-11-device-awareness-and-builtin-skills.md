@@ -26,6 +26,8 @@ Broker `device.computer(deviceId,operation,parameters)`：
 
 仅接受观察过的明确窗口 pid/window_id；观察两分钟有效，动作后必须重新观察。优先后台输入；只有执行器明确返回 background_unavailable，才允许重新观察后使用前台输入；前台模式本身不代表危险操作。不自动重试副作用。不接受全局桌面输入、任意 session/连接、截图文件输出、剪贴板、脚本、kill_app 或浏览器凭证接管。不能操作本进程及父 NexBot 进程窗口来批准自己或修改本机权限。
 
+窗口恢复与内容输入分别约束：成功 list_windows 返回的真实 pid/window_id 可以在两分钟内用于 bring_to_front，允许恢复最小化窗口；枚举结果不能授权 click/type_text/press_key/scroll/drag。恢复后须 get_window_state，再进行输入。失败的新截图使旧截图失效。恢复同样持久记账、消耗观察、遵守危险标记与 unknown 不重放；不使用 Add-Type 或终端脚本绕过窗口执行器。
+
 结果复用 DCP 原始 canonical envelope、调用摘要、本机策略版本、租约、持久日志、ack 和恢复协议。Native 输入中断/完成未知进入 unknown；目标设备人工核对前不会重放。改变本机授权使旧批准失效；单纯 Core 端口变化/同配置保存不改变权限版本。
 
 截图以 Pi 工具 image content 发送给视觉模型，不塞进 JSON 文本，恢复投影也采用同一转换。限制窗口图像与可访问性树大小。图像只进入已有本地工具/Pi记录，不显式复制进长期记忆。
@@ -55,3 +57,11 @@ A2A 始终自动，无需批准。记忆删除/遗忘仍在执行 Agent 的联�
 `scripts/smoke-personal-computer.mjs` 启动独立合成 Electron 窗口，原生发现该 HWND，截取该窗口，经真实 DCP/Pi 传给合成视觉接口，验证普通 Unicode 输入无需批准，再验证显式危险输入批准前不执行，最后读取合成文本框验证。拒绝后台输入后的前台操作另需观察。所有数据和输入目标均为临时 fixture，不针对用户真实应用。
 
 Windows 验收使用随包 Electron 的 Node 模式，与 Core EXE 的 DPI manifest 一致；不能以普通 node.exe 的虚拟化坐标冒充桌面环境。150% 缩放下另校验 PNG 实际尺寸与窗口物理边界，确认完整窗口而非局部截图。独立 Windows Node CLI 的原生屏幕操作不在这次交付的验收范围。
+
+## 多步任务预算与错误归因（2026-10-11）
+
+新建任务的累计 Token 预算从 100,000 调整到 400,000，保留最多 24 次模型调用、40 次工具调用和 30 分钟期限。A2A 与任务内记忆模型请求仍共享根任务预算，不通过子任务或重试绕过。已有任务保持原始额度；后台记忆的每日额度保持原值。这是累计任务预算，不是模型单次上下文窗口。
+
+模型请求在 fetch 边界先取得 Core 许可，再联系供应商。Core 的预算、权限、运行状态拒绝必须按真实原因显示，不能被供应商 SDK 转成 Connection error。每次申请许可先清空旧 invocation ID；被拒绝的请求没有新 invoice，不能覆盖上一笔成功记录。Core 仅接受 in_flight invoice 的完成事件，成功 usage 包括缓存输入 Token。
+
+真实网络错误仅记录请求 origin/path 和有限的错误代码，区分 DNS、TLS、超时、拒绝连接及连接中断，不复制异常中的任意消息、请求正文、密钥或 URL 查询参数。失败任务保留已完成操作，用户新消息创建后续任务；不自动重新执行副作用。

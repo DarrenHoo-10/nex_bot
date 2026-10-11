@@ -599,6 +599,40 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.app.store.get("SELECT status FROM model_invocations")?.status).toBe("failed");
     expect(f.app.store.get("SELECT result_summary FROM tasks WHERE id=?", task)?.result_summary).toContain("[redacted]");
   }, 40_000);
+  it.each(["tokens", "calls"])("shows Core %s limits without corrupting the successful invoice or replaying effects", async (limit) => {
+    const f = await fixture();
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "budget-note", name: "broker", args: JSON.stringify({ action: "memory.write", title: "预算前已完成", content: "合成记忆只写入一次", scope: "bot" }) }], usage: { prompt_tokens: 20_000, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 5_000 } } });
+    const task = f.app.runtime.input(f.conversation, "验证任务预算", id());
+    expect(f.app.store.get("SELECT token_budget FROM tasks WHERE id=?", task)?.token_budget).toBe(400_000);
+    f.app.store.run("UPDATE tasks SET token_budget=?,max_model_calls=? WHERE id=?", limit === "tokens" ? 35_000 : 400_000, limit === "calls" ? 1 : 24, task);
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "failed");
+    const summary = String(f.app.store.get("SELECT result_summary FROM tasks WHERE id=?", task)?.result_summary);
+    expect(summary).toContain(limit === "tokens" ? "Token 预算" : "模型调用次数");
+    expect(summary).not.toContain("Connection error"); expect(summary).toContain("不会自动重复操作");
+    expect(f.fake.requests).toHaveLength(1);
+    expect(f.app.store.all("SELECT status,usage_known,input_tokens,output_tokens FROM model_invocations")).toEqual([{ status: "succeeded", usage_known: 1, input_tokens: 20_000, output_tokens: 10 }]);
+    expect(f.app.store.all("SELECT status FROM tool_calls WHERE task_id=?", task)).toEqual([{ status: "succeeded" }]);
+    f.fake.scripts.push({ kind: "openai-text", text: "新任务可继续，保留前次结果" });
+    const next = f.app.runtime.input(f.conversation, "说明下一步", id());
+    const deadline = Date.now() + 25_000;
+    while (f.app.store.get("SELECT status FROM tasks WHERE id=?", next)?.status !== "succeeded") {
+      if (Date.now() > deadline) throw new Error("New task after budget rejection timed out");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    expect(f.fake.requests).toHaveLength(2);
+    expect(f.app.store.all("SELECT id FROM memory_documents WHERE title='预算前已完成'")).toHaveLength(1);
+  }, 40_000);
+  it("reports a real dropped model connection without retries or leaking request credentials", async () => {
+    const f = await fixture(); f.fake.scripts.push({ kind: "disconnect" });
+    const task = f.app.runtime.input(f.conversation, "验证网络中断", id());
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "failed");
+    const summary = String(f.app.store.get("SELECT result_summary FROM tasks WHERE id=?", task)?.result_summary);
+    expect(summary).toContain("连接被服务端中断"); expect(summary).toContain("未自动重试");
+    expect(summary).toContain(f.fake.origin + "/v1/chat/completions");
+    expect(summary).not.toContain("synthetic-model-key");
+    expect(f.fake.requests).toHaveLength(1);
+    expect(f.app.store.all("SELECT status,usage_known FROM model_invocations")).toEqual([{ status: "failed", usage_known: 0 }]);
+  }, 40_000);
   it("uses the same fixed runtime with Anthropic API protocol", async () => {
     const f = await fixture();
     f.app.agents.updateProfile({ id: f.bots[0].id, name: "Anthropic 私人秘书", version: f.bots[0].version });

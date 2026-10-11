@@ -253,7 +253,7 @@ export class CoreStore {
       let kind = "start";
       if (!task) {
         const taskId = id();
-        this.insert("tasks", { id: taskId, ...this.scope(), conversation_id: conversationId, bot_id: conv.bot_id, initiated_by_session_id: this.session, authorized_session_id: this.session, objective: content, status: "queued", max_model_calls: 24, max_tool_calls: 40, token_budget: 100_000, deadline_at: now() + 30 * 60_000, created_at: now() });
+        this.insert("tasks", { id: taskId, ...this.scope(), conversation_id: conversationId, bot_id: conv.bot_id, initiated_by_session_id: this.session, authorized_session_id: this.session, objective: content, status: "queued", max_model_calls: 24, max_tool_calls: 40, token_budget: 400_000, deadline_at: now() + 30 * 60_000, created_at: now() });
         task = this.get("SELECT * FROM tasks WHERE id=?", taskId)!;
       } else {
         if (task.status === "needs_reconciliation" || task.status === "cancelling") throw new Error("该任务须先处理不确定结果或取消");
