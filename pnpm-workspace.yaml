@@ -16,6 +16,10 @@ allowBuilds:
   electron: true # postinstall downloads the Electron dist
   esbuild: true # postinstall validates the platform binary
   electron-winstaller: false # unused — Windows builds ship NSIS
+  core-js: false # postinstall is a banner only
+  workerd: false # Cloudflare worker runtime; not needed for local dev
+  "@google/genai": false # pulled by the Pi SDK; postinstall not needed for the P0 fixture
+  protobufjs: false # pulled by the Pi SDK; postinstall not needed for the P0 fixture
 onlyBuiltDependencies:
   - electron
   - esbuild

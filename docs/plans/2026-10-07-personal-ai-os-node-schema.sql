@@ -1,4 +1,4 @@
--- Independent Node journal; never shares a transaction/database with Core.
+-- Provisional Node journal pending P0; no shared transaction/database with Core.
 -- Core supplied IDs have no foreign keys into Core; validate authenticated binding.
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -37,7 +37,9 @@ CREATE TABLE node_calls (
   local_policy_version INTEGER NOT NULL CHECK (local_policy_version > 0),
   capability TEXT NOT NULL,
   arguments_json TEXT NOT NULL CHECK (json_valid(arguments_json)),
+  canonical_envelope TEXT NOT NULL CHECK (json_valid(canonical_envelope)),
   argument_hash TEXT NOT NULL CHECK (length(argument_hash) = 64),
+  digest_version INTEGER NOT NULL DEFAULT 1 CHECK (digest_version = 1),
   status TEXT NOT NULL CHECK (status IN ('received','running','succeeded','failed','cancelled','unknown')),
   lease_seq INTEGER NOT NULL CHECK (lease_seq > 0),
   lease_expires_at INTEGER NOT NULL,
@@ -58,8 +60,9 @@ CREATE TABLE node_calls (
 ) STRICT;
 CREATE UNIQUE INDEX node_one_inflight ON node_calls(binding_id) WHERE status IN ('received','running','unknown');
 CREATE TRIGGER node_call_input_immutable
-BEFORE UPDATE OF arguments_json, argument_hash, capability, local_grant_id, local_policy_version ON node_calls
+BEFORE UPDATE OF arguments_json, canonical_envelope, argument_hash, digest_version, capability, local_grant_id, local_policy_version ON node_calls
 WHEN NEW.arguments_json IS NOT OLD.arguments_json OR NEW.argument_hash IS NOT OLD.argument_hash
+  OR NEW.canonical_envelope IS NOT OLD.canonical_envelope OR NEW.digest_version IS NOT OLD.digest_version
   OR NEW.capability IS NOT OLD.capability OR NEW.local_grant_id IS NOT OLD.local_grant_id
   OR NEW.local_policy_version IS NOT OLD.local_policy_version
 BEGIN SELECT RAISE(ABORT, 'node call input is immutable'); END;

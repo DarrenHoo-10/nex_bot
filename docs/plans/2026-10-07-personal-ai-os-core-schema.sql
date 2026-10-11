@@ -1,4 +1,4 @@
--- Design contract only. Apply to a NEW fixture database, never a live data directory.
+-- Provisional design contract, pending P0 runtime validation. NEW fixture databases only.
 -- Normative behavior: 2026-10-07-personal-ai-os-domain-model.md
 -- All times are UTC epoch milliseconds; JSON shapes require module-level validation.
 PRAGMA foreign_keys = ON;
@@ -103,7 +103,9 @@ CREATE TABLE login_transactions (
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
   CHECK (expires_at > created_at),
   CHECK ((status = 'consumed') = (consumed_at IS NOT NULL)),
-  CHECK (protocol != 'oidc' OR (state_hash IS NOT NULL AND secret_ref IS NOT NULL))
+  CHECK (protocol != 'oidc' OR state_hash IS NOT NULL),
+  CHECK (protocol != 'oidc' OR status != 'pending' OR secret_ref IS NOT NULL),
+  CHECK (status = 'pending' OR secret_ref IS NULL)
 ) STRICT;
 CREATE INDEX login_transactions_expiry ON login_transactions(status, expires_at);
 
@@ -149,6 +151,7 @@ CREATE TABLE conversations (
   title TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('open','archived','deleted')),
   legacy_thread_id TEXT UNIQUE,
+  next_input_seq INTEGER NOT NULL DEFAULT 1 CHECK (next_input_seq > 0),
   created_at INTEGER NOT NULL,
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
   UNIQUE (id, workspace_id, owner_user_id, bot_id),
@@ -228,6 +231,8 @@ CREATE TABLE task_runs (
   model_connection_version INTEGER NOT NULL CHECK (model_connection_version > 0),
   model_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('active','waiting','ended','interrupted')),
+  wait_started_at INTEGER,
+  release_after_at INTEGER,
   started_at INTEGER NOT NULL,
   ended_at INTEGER,
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -236,7 +241,10 @@ CREATE TABLE task_runs (
   FOREIGN KEY (task_id, workspace_id, owner_user_id, conversation_id, bot_id) REFERENCES tasks(id, workspace_id, owner_user_id, conversation_id, bot_id),
   FOREIGN KEY (runtime_session_id, workspace_id, owner_user_id, conversation_id, bot_id) REFERENCES runtime_sessions(id, workspace_id, owner_user_id, conversation_id, bot_id),
   FOREIGN KEY (model_connection_id, workspace_id, owner_user_id) REFERENCES model_connections(id, workspace_id, owner_user_id),
-  CHECK ((status IN ('ended','interrupted')) = (ended_at IS NOT NULL))
+  CHECK ((status IN ('ended','interrupted')) = (ended_at IS NOT NULL)),
+  CHECK ((wait_started_at IS NULL) = (release_after_at IS NULL)),
+  CHECK (release_after_at IS NULL OR release_after_at >= wait_started_at),
+  CHECK (status != 'waiting' OR release_after_at IS NOT NULL)
 ) STRICT;
 CREATE UNIQUE INDEX runs_one_active ON task_runs(conversation_id) WHERE ended_at IS NULL;
 
@@ -244,7 +252,8 @@ CREATE TABLE model_invocations (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES task_runs(id),
   request_key TEXT NOT NULL,
-  purpose TEXT NOT NULL CHECK (purpose IN ('answer','compact','title')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('answer','compact','title','runtime_internal')),
+  purpose_detail TEXT,
   status TEXT NOT NULL CHECK (status IN ('prepared','in_flight','succeeded','failed','cancelled','unknown')),
   input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
   output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
@@ -253,7 +262,9 @@ CREATE TABLE model_invocations (
   created_at INTEGER NOT NULL,
   finished_at INTEGER,
   UNIQUE (run_id, request_key),
-  CHECK (usage_known = 0 OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL))
+  CHECK (usage_known = 0 OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL)),
+  CHECK ((purpose = 'runtime_internal' AND purpose_detail IS NOT NULL AND length(purpose_detail) BETWEEN 1 AND 64)
+    OR (purpose != 'runtime_internal' AND purpose_detail IS NULL))
 ) STRICT;
 
 CREATE TABLE artifacts (
@@ -289,6 +300,7 @@ CREATE TABLE tool_calls (
   target_kind TEXT NOT NULL CHECK (target_kind IN ('device','memory','connector')),
   target_id TEXT NOT NULL,
   arguments_json TEXT NOT NULL CHECK (json_valid(arguments_json)),
+  canonical_envelope TEXT NOT NULL CHECK (json_valid(canonical_envelope)),
   argument_hash TEXT NOT NULL CHECK (length(argument_hash) = 64),
   digest_version INTEGER NOT NULL DEFAULT 1 CHECK (digest_version = 1),
   status TEXT NOT NULL CHECK (status IN ('proposed','awaiting_approval','ready','executing','succeeded','failed','unknown','cancelled','rejected')),
@@ -309,8 +321,9 @@ CREATE TABLE tool_calls (
 ) STRICT;
 CREATE INDEX tool_calls_task ON tool_calls(task_id, status);
 CREATE TRIGGER tool_call_input_immutable
-BEFORE UPDATE OF arguments_json, argument_hash, tool_name, tool_version, target_kind, target_id ON tool_calls
+BEFORE UPDATE OF arguments_json, canonical_envelope, argument_hash, digest_version, tool_name, tool_version, target_kind, target_id ON tool_calls
 WHEN NEW.arguments_json IS NOT OLD.arguments_json OR NEW.argument_hash IS NOT OLD.argument_hash
+  OR NEW.canonical_envelope IS NOT OLD.canonical_envelope OR NEW.digest_version IS NOT OLD.digest_version
   OR NEW.tool_name IS NOT OLD.tool_name OR NEW.tool_version IS NOT OLD.tool_version
   OR NEW.target_kind IS NOT OLD.target_kind OR NEW.target_id IS NOT OLD.target_id
 BEGIN SELECT RAISE(ABORT, 'tool call input is immutable'); END;
@@ -504,11 +517,116 @@ CREATE TABLE memory_documents (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+  UNIQUE (id, workspace_id, owner_user_id),
   FOREIGN KEY (workspace_id, owner_user_id) REFERENCES memberships(workspace_id, user_id),
   FOREIGN KEY (bot_id, workspace_id, owner_user_id) REFERENCES bots(id, workspace_id, owner_user_id),
   CHECK ((scope = 'bot' AND bot_id IS NOT NULL) OR (scope = 'workspace' AND bot_id IS NULL))
 ) STRICT;
 CREATE INDEX memory_documents_scope ON memory_documents(workspace_id, scope, bot_id, status);
+
+-- Acknowledged user input is durable independently of a live SDK worker.
+CREATE TABLE conversation_inputs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  bot_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  sender_session_id TEXT NOT NULL,
+  client_message_id TEXT NOT NULL,
+  input_seq INTEGER NOT NULL CHECK (input_seq > 0),
+  input_kind TEXT NOT NULL CHECK (input_kind IN ('start','steer','supplement')),
+  content_json TEXT NOT NULL CHECK (json_valid(content_json)),
+  request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+  status TEXT NOT NULL CHECK (status IN ('accepted','discarded')),
+  discarded_reason TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE (conversation_id, owner_user_id, client_message_id),
+  UNIQUE (conversation_id, input_seq),
+  UNIQUE (id, workspace_id, owner_user_id, conversation_id, bot_id),
+  FOREIGN KEY (task_id, workspace_id, owner_user_id, conversation_id, bot_id)
+    REFERENCES tasks(id, workspace_id, owner_user_id, conversation_id, bot_id),
+  FOREIGN KEY (sender_session_id, workspace_id, owner_user_id) REFERENCES user_sessions(id, workspace_id, user_id),
+  CHECK (status != 'discarded' OR discarded_reason IS NOT NULL)
+) STRICT;
+CREATE INDEX conversation_inputs_pending ON conversation_inputs(task_id, status, input_seq);
+CREATE TRIGGER conversation_input_immutable
+BEFORE UPDATE OF content_json, request_hash, client_message_id, input_seq, task_id, input_kind ON conversation_inputs
+WHEN NEW.content_json IS NOT OLD.content_json OR NEW.request_hash IS NOT OLD.request_hash
+  OR NEW.client_message_id IS NOT OLD.client_message_id OR NEW.input_seq IS NOT OLD.input_seq
+  OR NEW.task_id IS NOT OLD.task_id OR NEW.input_kind IS NOT OLD.input_kind
+BEGIN SELECT RAISE(ABORT, 'accepted input is immutable'); END;
+
+-- First version pins an accepted input to one runtime binding; no automatic rebinding.
+CREATE TABLE runtime_input_deliveries (
+  input_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  bot_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  runtime_session_id TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('prompt','steer')),
+  status TEXT NOT NULL CHECK (status IN ('pending','applied','consumed','blocked','discarded')),
+  runtime_entry_id TEXT,
+  applied_at INTEGER,
+  consumed_at INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (input_id, workspace_id, owner_user_id, conversation_id, bot_id)
+    REFERENCES conversation_inputs(id, workspace_id, owner_user_id, conversation_id, bot_id),
+  FOREIGN KEY (runtime_session_id, workspace_id, owner_user_id, conversation_id, bot_id)
+    REFERENCES runtime_sessions(id, workspace_id, owner_user_id, conversation_id, bot_id),
+  CHECK (status NOT IN ('applied','consumed') OR (runtime_entry_id IS NOT NULL AND applied_at IS NOT NULL)),
+  CHECK ((status = 'consumed') = (consumed_at IS NOT NULL))
+) STRICT;
+
+CREATE TABLE memory_write_receipts (
+  tool_call_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  bot_id TEXT NOT NULL,
+  target_kind TEXT NOT NULL DEFAULT 'memory' CHECK (target_kind = 'memory'),
+  memory_document_id TEXT NOT NULL,
+  expected_version INTEGER NOT NULL CHECK (expected_version >= 0),
+  committed_version INTEGER NOT NULL,
+  content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+  storage_key TEXT NOT NULL,
+  result_hash TEXT NOT NULL CHECK (length(result_hash) = 64),
+  committed_at INTEGER NOT NULL,
+  FOREIGN KEY (tool_call_id, workspace_id, owner_user_id, bot_id, target_kind, memory_document_id)
+    REFERENCES tool_calls(id, workspace_id, owner_user_id, bot_id, target_kind, target_id),
+  FOREIGN KEY (memory_document_id, workspace_id, owner_user_id) REFERENCES memory_documents(id, workspace_id, owner_user_id),
+  CHECK (committed_version = expected_version + 1)
+) STRICT;
+CREATE TRIGGER memory_receipt_no_update BEFORE UPDATE ON memory_write_receipts
+BEGIN SELECT RAISE(ABORT, 'memory write receipts are immutable'); END;
+CREATE TRIGGER memory_receipt_no_delete BEFORE DELETE ON memory_write_receipts
+BEGIN SELECT RAISE(ABORT, 'memory write receipts are immutable'); END;
+
+-- Evidence is append-only. State resolution requires application guards and a CAS.
+CREATE TABLE call_reconciliations (
+  id TEXT PRIMARY KEY,
+  tool_call_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  argument_hash TEXT NOT NULL CHECK (length(argument_hash) = 64),
+  decision_key TEXT NOT NULL,
+  expected_call_version INTEGER NOT NULL CHECK (expected_call_version > 0),
+  source TEXT NOT NULL CHECK (source IN ('device_result','tool_receipt','owner_attestation')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('confirmed_succeeded','confirmed_failed','confirmed_not_executed','confirmed_stopped','inconclusive')),
+  evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json)),
+  evidence_artifact_id TEXT,
+  reviewed_by_session_id TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE (tool_call_id, decision_key),
+  FOREIGN KEY (tool_call_id, workspace_id, owner_user_id, argument_hash) REFERENCES tool_calls(id, workspace_id, owner_user_id, argument_hash),
+  FOREIGN KEY (evidence_artifact_id, workspace_id, owner_user_id) REFERENCES artifacts(id, workspace_id, owner_user_id),
+  FOREIGN KEY (reviewed_by_session_id, workspace_id, owner_user_id) REFERENCES user_sessions(id, workspace_id, user_id),
+  CHECK (source != 'owner_attestation' OR reviewed_by_session_id IS NOT NULL)
+) STRICT;
+CREATE TRIGGER reconciliation_no_update BEFORE UPDATE ON call_reconciliations
+BEGIN SELECT RAISE(ABORT, 'reconciliation evidence is append-only'); END;
+CREATE TRIGGER reconciliation_no_delete BEFORE DELETE ON call_reconciliations
+BEGIN SELECT RAISE(ABORT, 'reconciliation evidence is append-only'); END;
 
 CREATE TABLE command_receipts (
   workspace_id TEXT NOT NULL,
