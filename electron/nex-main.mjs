@@ -25,8 +25,12 @@ else {
     if (exiting || !server) return;
     event.preventDefault(); exiting = true;
     const child = server;
-    const timer = setTimeout(() => { child.kill(); app.exit(0); }, 45000);
-    child.once("close", () => { clearTimeout(timer); app.exit(0); });
+    const shutdown = (graceful) => {
+      if (profileArg && process.env.NEX_SMOKE_OUTPUT) writeFileSync(process.env.NEX_SMOKE_OUTPUT + ".shutdown.json", JSON.stringify({ graceful }));
+      app.exit(0);
+    };
+    const timer = setTimeout(() => { child.kill(); shutdown(false); }, 45000);
+    child.once("close", (code) => { clearTimeout(timer); shutdown(code === 0); });
     if (child.connected) child.send({ type: "quit" }); else child.kill();
   });
   app.on("window-all-closed", () => app.quit());
@@ -50,7 +54,9 @@ else {
       tray.on("double-click", showWindow);
     }
     const entry = path.join(resources, "core", "index.js");
-    server = fork(entry, [], { execArgv: [], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP, HOME: dataDir, USERPROFILE: app.getPath("home"), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    // Structured errors use IPC. Unread diagnostic pipes can retain handles
+    // and delay the child's close event, particularly after Windows shutdown.
+    server = fork(entry, [], { execArgv: [], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP, HOME: dataDir, USERPROFILE: app.getPath("home"), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "ignore", "ignore", "ipc"] });
     const boot = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("Core 启动超时")), 30_000);
       server.once("error", reject);

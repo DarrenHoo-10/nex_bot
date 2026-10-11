@@ -249,7 +249,7 @@ $env:NEX_HINDSIGHT_NATIVE='1'
 $env:NEX_HINDSIGHT_PRODUCTION='1'
 node node_modules/vitest/vitest.mjs run server/personal-os/memory-native.test.ts
 $env:ELECTRON_BUILDER_COMPRESSION_LEVEL='1'
-node node_modules/electron-builder/out/cli/cli.js --config electron-builder.personal.yml --win --publish never
+node scripts/package-personal.mjs
 node scripts/verify-personal-resources.mjs --resources=release/personal-os/win-unpacked/resources/memory-runtime --compare
 node scripts/smoke-personal.mjs --exe=release/personal-os/NexBot-0.4.0-x64-Portable.exe
 node scripts/smoke-personal-memory.mjs --exe=release/personal-os/NexBot-0.4.0-x64-Portable.exe
@@ -307,18 +307,66 @@ Long-lived editable knowledge pages are outside this release.
 
 ### Final packaging qualification
 
-The final unpacked `NexBot.exe` passes both desktop and production-memory
-renderer fixtures. The final portable launcher does **not** pass cold-start
-qualification on this machine: two attempts exceed five minutes, and a
-single-launch retry exceeds fifteen minutes while still extracting resources,
-before any Electron renderer or fixture profile is created. No blocking window
-is observed. This is an extraction/startup limitation, not a native-memory
-test pass. The portable artifact is excluded from the validated delivery;
-use the NSIS installer and installed executable instead. Further startup
-optimization requires a separate packaging change and another qualification.
+The initial 7z portable launcher fails cold-start qualification: two attempts
+exceed five minutes and a single-launch retry exceeds fifteen minutes while
+still copying resources, before an Electron renderer or fixture profile is
+created. No blocking window is observed. Inspection of the pinned builder's
+`extractUsing7za` template shows extraction into a staging directory followed
+by `CopyFiles` of the entire runtime. The revised installer uses ZIP direct
+extraction (`useZip: true`, `differentialPackage: false`); portable uses the
+builder's direct per-file zlib expansion while retaining per-launch directories.
+The first revised installer exits 0 after 185.73 seconds. The stalled initial
+installer is stopped by its verified PID/path/start time before that upgrade.
+
+Direct portable compilation exceeds builder-util's fixed four-minute timeout.
+`package-personal.mjs` applies a process-local fifteen-minute bound exclusively
+to the pinned builder's makensis invocation; its templates, compiler-output
+validation and artifact-size checks remain intact. It uses an explicit personal
+config file, preventing inheritance of the legacy desktop's publish/protocol
+settings. The normal package command runs the production resource gate first.
+
+An installed desktop run reaches all functional assertions but exceeds the
+original forty-second exit bound. Unconsumed Core/worker diagnostic pipes are
+removed: structured results and errors use IPC. The fixture now independently
+requires a normal Core exit, and fails if the desktop's 45-second force-exit
+fallback runs; merely extending its wait cannot turn that fallback into a pass.
+The revised unpacked desktop passes this stronger shutdown check. Final packaged
+and installed results are recorded below after qualification.
 
 Final installer SHA-256:
-`7F62A0ECE17EFAD38F45579C82EDF8D47D5DBDA675B77DFD2C239518B50583B0`.
+`DFF565F7A2521FEB7222A84801B03E54FEBBA01608C485A967F7EBE76D730901`.
 The unpacked and tested Core / worker hashes are respectively
-`4E04797D8833F4108C05F94784AAC42CF724C9D6891C032B546FE50FBB8B062B`
+`7638D98EAF4874B7EBC4F4E68B12E029127F206C54249A05F698E5E12294B11D`
 and `AE49C9D28A359FCEF0F87725F70743ACD536F4182BAD1DE4875826240DC17C93`.
+
+The final direct-expansion installer exits 0 after 606.9 seconds while the
+portable build / extraction is also active. The installed 0.4.0 desktop
+passes the regular renderer smoke and the production native-memory smoke,
+including GUI synthesis / source expansion / confirmed forgetting, normal
+Core shutdown and removal of the owned PostgreSQL `postmaster.pid`. These
+tests use disposable profiles and a synthetic loopback model transport.
+
+The installed runtime independently passes all 45,161 resource hashes and
+213 exact dependency pins. Installed Core, worker and app.asar bytes match
+the qualified unpacked build. Read-only comparison against the pre-upgrade
+backup confirms every live Core table and the encrypted vault are unchanged;
+integrity is `ok` and foreign-key violations are zero. The desktop shortcut
+targets the installed 0.4.0 EXE with no fixture flags.
+
+The final portable distribution also passes the regular renderer smoke,
+including a second launch restoring the existing hidden window, automatic
+A2A and normal Core shutdown. Each launcher expands its own temporary
+runtime, so portable start / restore / cleanup take longer than the installed
+application. Daily use is recommended through the installed shortcut.
+
+Final portable SHA-256:
+`D35C76D6907A822EBDF896AD23F8C21CF9D6F9FABCBF267CA05376A603D56EBF`.
+The final Setup / Portable sizes are 1,583,015,755 / 1,536,272,871 bytes.
+
+The portable production-memory smoke also exits 0 with all native extraction,
+observation provenance, private isolation, GUI synthesis / source expansion,
+confirmed forgetting and normal Core / owned PostgreSQL shutdown assertions
+passing. The launcher finishes removing its temporary runtime. Separate native
+memory reports are `installed-memory-result.json` and
+`portable-memory-result.json` in the ignored release directory. Neither smoke
+uses the user's live data or a paid model provider.

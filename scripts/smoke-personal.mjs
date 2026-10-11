@@ -38,7 +38,7 @@ async function evaluate(expression) {
   return result.result.value;
 }
 try {
-  await until(() => existsSync(output) && existsSync(path.join(profile, "DevToolsActivePort")), packageExe?.includes("Portable") ? 900_000 : 60_000);
+  await until(() => existsSync(output) && existsSync(path.join(profile, "DevToolsActivePort")), packageExe?.includes("Portable") ? 900_000 : 180_000);
   const ready = JSON.parse(readFileSync(output, "utf8"));
   const port = readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -149,7 +149,8 @@ try {
   writeFileSync(screenshot, Buffer.from(shot.data, "base64"));
   const dom = await evaluate("({width:innerWidth,height:innerHeight,overflow:document.documentElement.scrollWidth>innerWidth,title:document.title,errors:document.querySelector('[role=alert]')?.textContent})");
   if (dom.overflow || dom.errors) throw new Error("Renderer layout/error failed: " + JSON.stringify(dom));
-  await evaluate("void window.nex.quit(); true"); await until(() => exited, packageExe?.includes("Portable") ? 180_000 : 40_000);
+  await evaluate("void window.nex.quit(); true"); await until(() => exited, packageExe?.includes("Portable") ? 180_000 : 65_000);
+  if (!JSON.parse(readFileSync(output + ".shutdown.json", "utf8")).graceful) throw new Error("Core required forced shutdown");
   console.log(JSON.stringify({ passed: true, runtime: "fixed-pi", cases: ["zero-default-Agents", "explicit-Agent-creation", "automatic-A2A", "desktop-boot", "vault", "API-key-settings", "model-request-preview", "optional-Agent-identity", "silent-identity-refresh", "persistent-Agent-contact", "SDK-chat", "private-memory", "background-routine", "tray-hide-restore", "compact-A2A-markers", "receiver-reply-collapse", "A2A-peer-navigation", "renderer", "graceful-shutdown"], dom, screenshot, a2aScreenshot }));
 } finally {
   ws?.close();

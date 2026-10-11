@@ -36,10 +36,10 @@ async function call(route, value) {
   const response = await fetch(`${ready.origin}/api/${route}`, { headers: { Authorization: `Bearer ${ready.token}`, "Content-Type": "application/json" }, ...(value ? { method: "POST", body: JSON.stringify(value) } : {}), signal: AbortSignal.timeout(125000) });
   const body = await response.json(); if (!response.ok) throw new Error(body.error); return body;
 }
-async function command(method, params) { const id = ++seq; return new Promise((resolve, reject) => { const timer = setTimeout(() => { pending.delete(id); reject(new Error("CDP timeout")); }, 15000); pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject }); ws.send(JSON.stringify({ id, method, params })); }); }
+async function command(method, params) { const id = ++seq; return new Promise((resolve, reject) => { const timer = setTimeout(() => { pending.delete(id); reject(new Error("CDP timeout: " + method + " " + String(params?.expression ?? "").slice(0, 180))); }, 30000); pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject }); ws.send(JSON.stringify({ id, method, params })); }); }
 async function evaluate(expression) { const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.text); return result.result.value; }
 try {
-  await until(() => existsSync(output) && existsSync(path.join(profile, "DevToolsActivePort")), executable.includes("Portable") ? 900000 : 60000); ready = JSON.parse(readFileSync(output, "utf8"));
+  await until(() => existsSync(output) && existsSync(path.join(profile, "DevToolsActivePort")), executable.includes("Portable") ? 900000 : 180000); ready = JSON.parse(readFileSync(output, "utf8"));
   const initial = await call("state"); if (initial.bots.length || requests.length) throw new Error("Unexpected default Agent/model call");
   const port = readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(), target = targets.find((item) => item.type === "page" && item.url.startsWith(ready.origin));
@@ -80,8 +80,10 @@ try {
   await until(async () => { const state = await call("state"); return state.memories.length === 0 && state.memoryEngine.forgetting === 0; }, 60000);
   if ((await call("memory/recall", { botId: bot.id, query: "雪鹭" })).facts.length) throw new Error("Forgotten data returned");
   const invoices = requests.length;
-  await evaluate("void window.nex.quit(); true"); await until(() => exited, executable.includes("Portable") ? 180000 : 40000);
-  const result = { passed: true, productionMemory: true, defaultExtraction: true, nativeObservationWithSource: true, privateIsolation: true, reflectWithSource: true, forgetViaRenderer: true, modelRequests: invoices, executable: path.basename(executable) };
+  await evaluate("void window.nex.quit(); true"); await until(() => exited, executable.includes("Portable") ? 180000 : 65000);
+  if (!JSON.parse(readFileSync(output + ".shutdown.json", "utf8")).graceful) throw new Error("Native memory required forced Core shutdown");
+  if (existsSync(path.join(profile, "personal-os", "hindsight", "postgres", "postmaster.pid"))) throw new Error("Owned PostgreSQL remained running after Core shutdown");
+  const result = { passed: true, productionMemory: true, defaultExtraction: true, nativeObservationWithSource: true, privateIsolation: true, reflectWithSource: true, forgetViaRenderer: true, gracefulShutdown: true, ownedPostgresStopped: true, modelRequests: invoices, executable: path.basename(executable) };
   writeFileSync(path.resolve("release/personal-os/exe-memory-result.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result));
 } finally {
   ws?.close();

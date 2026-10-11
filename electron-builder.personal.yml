@@ -47,12 +47,18 @@ win:
   icon: build/icon.ico
   artifactName: NexBot-0.4.0-${arch}-${target}.${ext}
 nsis:
+  # The 7z template stages then CopyFiles thousands of runtime files. ZIP
+  # extracts directly into the install directory and avoids that second copy.
+  useZip: true
+  differentialPackage: false
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
   shortcutName: NexBot
   artifactName: NexBot-0.4.0-x64-Setup.${ext}
 portable:
+  # In this builder, useZip embeds files with NSIS's direct zlib expansion.
+  useZip: true
   # In builder 26.15.3, true omits UNPACK_DIR_NAME and gives each launch
   # its own $PLUGINSDIR/app. A shared build directory breaks tray restore.
   unpackDirName: true

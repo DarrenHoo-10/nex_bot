@@ -103,7 +103,8 @@ export class TaskRuntime {
     });
     const source = fileURLToPath(new URL("./worker.ts", import.meta.url));
     const entry = existsSync(source) ? source : fileURLToPath(new URL("./worker.js", import.meta.url));
-    const child = fork(entry, [], { execArgv: entry.endsWith(".ts") ? ["--experimental-strip-types"] : [], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: workerDir, TMP: workerDir, HOME: workerDir, USERPROFILE: workerDir, PI_CODING_AGENT_DIR: path.join(workerDir, "pi"), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    // Model results/errors are acknowledged over IPC, never diagnostic pipes.
+    const child = fork(entry, [], { execArgv: entry.endsWith(".ts") ? ["--experimental-strip-types"] : [], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: workerDir, TMP: workerDir, HOME: workerDir, USERPROFILE: workerDir, PI_CODING_AGENT_DIR: path.join(workerDir, "pi"), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "ignore", "ignore", "ipc"] });
     const worker: Running = { child, taskId, runId, runtimeId, generation, finished: false, streaming: "" }; this.workers.set(taskId, worker);
     child.on("message", (event: WorkerEvent) => { void this.event(worker, event).catch((error: unknown) => { if (event.requestId) this.reply(worker, event.requestId, undefined, error instanceof Error ? error.message : "Core error"); else this.fail(worker, error); }); });
     child.once("error", (error) => this.fail(worker, error));

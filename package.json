@@ -69,7 +69,7 @@
     "test:personal": "vitest run server/personal-os/app.test.ts server/personal-os/memory.test.ts",
     "test:personal:memory-native": "vitest run server/personal-os/memory-native.test.ts",
     "smoke:personal": "node scripts/smoke-personal.mjs",
-    "package:personal:win": "node scripts/build-personal.mjs && electron-builder --config electron-builder.personal.yml --win --publish never",
+    "package:personal:win": "node scripts/build-personal.mjs --release && node scripts/package-personal.mjs",
     "package:win": "pnpm package:prepare && pnpm build:cua:win && electron-builder --win --publish never",
     "package:linux": "pnpm package:prepare && pnpm build:cua:linux && electron-builder --linux --x64 --publish never",
     "package:linux:offline": "pnpm package:prepare && pnpm build:cua:linux:offline && electron-builder --linux --x64 --publish never",
