@@ -41,6 +41,41 @@ HTTPS reverse-proxy deployments use `--public-origin=https://core.example`
 alongside the listening interface/port. This pins allowed Host and browser
 Origin to an explicit public address; arbitrary DNS Host headers are rejected.
 
+### Installed 0.5.0 qualification (2026-10-11)
+
+The final Core/Node/Pi workflow suite passes 63 tests, including both transport
+tests. The transport tests also pass after the final session-cookie correction:
+client cookie lifetime follows the persisted session expiry, and the primary
+desktop credential does not inherit a remote client's thirty-day limit.
+
+The final installer exits 0. Installed Core, worker, SQL schemas, UI assets and
+app.asar match all 17 qualified program-resource files. The desktop shortcut
+targets the installed 0.5.0 EXE with no arguments. Read-only comparisons confirm
+the live Core tables and encrypted vault are unchanged; a full profile comparison
+also matches all 1,275 backed-up files. Verification never opens the live profile.
+
+The installed runtime passes all 45,161 file hashes and 213 dependency pins.
+Python is 3.12.10, Hindsight is 0.10.3, and the pinned Chinese retrieval gate is
+Recall@10 = 0.96. The installed EXE passes genuine native extraction, observation
+provenance, private-bank isolation, GUI synthesis/source expansion/forgetting,
+normal Core exit and owned PostgreSQL shutdown against a disposable profile.
+An initial memory smoke run alongside the full resource inventory exceeds its
+180-second startup bound. A separate rerun passes with the same bound and no
+runtime or test changes. The retained failed fixture is outside release resources.
+
+Final artifact sizes and SHA-256:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| NexBot-0.5.0-x64-Setup.exe | 1,604,555,098 | `27B5ACDCC19CA3BE6729D00ACF348890CFB59AA55C8908FC7AC83628A4B213F7` |
+| NexBot-0.5.0-x64-Client-Portable.exe | 160,371,832 | `97435D35F7CD0A447E68E47421C352DBA580EAB02D5E3AC66CC975EDEEC061F0` |
+
+Artifacts and SHA256SUMS.txt are delivered in the owner's local Downloads /
+NexBot-Releases / 0.5.0 directory. The thin client was qualified as two real
+portable EXE instances using separate disposable profiles and one Core; physical
+two-machine networking has not been exercised. No release contains user history,
+vault contents or API keys.
+
 Historical 0.4 evidence below describes the older full-Core portable package,
 which is not the new thin-client portable distribution.
 
