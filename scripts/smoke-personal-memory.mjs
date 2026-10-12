@@ -1,5 +1,6 @@
 // Production EXE, native Hindsight and CPU models; only synthetic data and a
 // disposable profile. No fixture ML, no memory disable flag, no paid provider.
+import { startFakeIdentity } from "../server/personal-os/testing/fake-identity.ts";
 import { createServer } from "node:http";
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -7,6 +8,7 @@ import path from "node:path";
 import os from "node:os";
 import { WebSocket } from "ws";
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-exe-memory-")), profile = path.join(root, "profile"), output = path.join(root, "ready.json");
+const identityProvider = await startFakeIdentity();
 const executable = process.argv.find((arg) => arg.startsWith("--exe="))?.slice(6);
 if (!executable) throw new Error("--exe is required");
 const requests = [], factText = "合成测试项目雪鹭，每周星期二开会，使用中文交流。";
@@ -25,7 +27,7 @@ const provider = createServer((req, res) => { void (async () => {
   res.end(JSON.stringify({ id: "synthetic-exe", model: "fixture", object: "chat.completion", choices: [{ index: 0, message: tools ? { role: "assistant", content: null, tool_calls: [{ id: "fixture-" + requests.length, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } : { role: "assistant", content: JSON.stringify(json) }, finish_reason: tools ? "tool_calls" : "stop" }], usage: { prompt_tokens: 50, completion_tokens: 25 } }));
 })().catch(() => { res.writeHead(500); res.end(); }); });
 await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_SMOKE_OUTPUT: output };
+const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_SMOKE_OUTPUT: output, NEX_IDENTITY_FIXTURE_URL: identityProvider.origin };
 const child = spawn(executable, [`--profile=${profile}`, "--port=0", "--remote-debugging-port=0"], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let exited = false, logs = "", ws, seq = 0, ready;
 const pending = new Map();
@@ -40,11 +42,15 @@ async function command(method, params) { const id = ++seq; return new Promise((r
 async function evaluate(expression) { const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.text); return result.result.value; }
 try {
   await until(() => existsSync(output) && existsSync(path.join(profile, "DevToolsActivePort")), executable.includes("Portable") ? 900000 : 180000); ready = JSON.parse(readFileSync(output, "utf8"));
-  const initial = await call("state"); if (initial.bots.length || requests.length) throw new Error("Unexpected default Agent/model call");
   const port = readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(), target = targets.find((item) => item.type === "page" && item.url.startsWith(ready.origin));
   ws = new WebSocket(target.webSocketDebuggerUrl); await new Promise((resolve) => ws.once("open", resolve));
   ws.on("message", (raw) => { const event = JSON.parse(raw.toString()); if (event.id) { const callback = pending.get(event.id); pending.delete(event.id); if (event.error) callback?.reject(new Error(event.error.message)); else callback?.resolve(event.result); } });
+  await until(() => evaluate("!!document.querySelector('.login-form')"));
+  await evaluate("document.querySelector('[name=email]').value='owner@example.test';document.querySelector('[name=password]').value=' synthetic password ';document.querySelector('.login-form').requestSubmit();true");
+  await until(() => evaluate("!!document.querySelector('.brand')"));
+  ready.token = (await command('Network.getAllCookies')).cookies.find(c=>c.name==='nex').value;
+  const initial = await call("state"); if (initial.bots.length || requests.length) throw new Error("Unexpected default Agent/model call");
   const bot = await call("bots", { name: "任意联系人" }), peer = await call("bots", { name: "隔离联系人" });
   await call("config", { provider: "openai", endpoint: `http://127.0.0.1:${provider.address().port}/v1`, model: "synthetic-model", apiKey: "synthetic-only-key" });
   await until(async () => (await call("state")).memoryEngine.service === "ready"); console.log("Packaged native service ready");
@@ -55,6 +61,11 @@ try {
   await until(async () => (await call("memory/recall", { botId: bot.id, query: "雪鹭会议交流偏好" })).facts.some((fact) => fact.sourceClass === "synthesized" && fact.refs.length > 0), 60000);
   const ref = recall.facts[0].ref; if (!(await call("memory/expand", { botId: bot.id, ref })).content.includes("雪鹭")) throw new Error("Original source missing");
   console.log("Default native extraction and bank isolation passed");
+  // Native recall can expose completed extraction before Core's next outbox
+  // sweep records its receipt. That receipt increments the content generation
+  // and intentionally clears stale renderer results. Drive source expansion
+  // only after delivery settles; privacy invalidation is covered separately.
+  await until(async () => { const state = await call("state"); return state.memoryEngine.pending === 0 && state.memoryEngine.quarantined === 0; });
   // Exercise the actual memory workbench, including source expansion and the
   // confirmation preview; paid transport is the loopback provider above.
   await until(() => evaluate("!!document.querySelector('.agents button')"));
@@ -88,6 +99,7 @@ try {
 } finally {
   ws?.close();
   if (!exited && child.pid) { const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); await new Promise((resolve) => killer.once("close", resolve)); }
+  await identityProvider.close();
   await new Promise((resolve) => { provider.close(resolve); provider.closeAllConnections(); });
   if (path.dirname(root) === os.tmpdir() && path.basename(root).startsWith("nex-exe-memory-")) {
     try { rmSync(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 }); }

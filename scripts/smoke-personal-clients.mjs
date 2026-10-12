@@ -3,9 +3,11 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from "no
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
+import { startFakeIdentity } from "../server/personal-os/testing/fake-identity.ts";
 import { startFakeModel } from "../server/runtime/pi/p0/fake-model.ts";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-two-client-fixture-"));
@@ -13,8 +15,9 @@ const coreFile = path.resolve(process.argv.find((a) => a.startsWith("--core="))?
 const ui = path.resolve(process.argv.find((a) => a.startsWith("--ui="))?.slice(5) ?? "dist-personal/ui");
 const executable = process.argv.find((a) => a.startsWith("--exe="))?.slice(6);
 const { createPersonalApp } = await import(pathToFileURL(coreFile).href);
-const fake = await startFakeModel(), token = "synthetic-two-client-owner";
-const core = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token, uiDir: ui, memoryRuntime: false });
+const fake = await startFakeModel(), identityProvider = await startFakeIdentity();
+let token = "synthetic-two-client-owner";
+const core = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token, uiDir: ui, memoryRuntime: false, identity: { fixtureOrigin: identityProvider.origin } });
 const clients = [], cases = [];
 async function until(check, timeout = 45_000) {
   const end = Date.now() + timeout;
@@ -38,8 +41,7 @@ async function launch(index) {
   client.command = (method, params = {}) => new Promise((resolve, reject) => { const id = ++client.sequence; const timer = setTimeout(() => { client.replies.delete(id); reject(new Error("Client command timeout: " + method)); }, 30_000); client.replies.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } }); client.ws.send(JSON.stringify({ id, method, params })); });
   client.evaluate = async (expression) => { const result = await client.command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text); return result.result.value; };
   if (index === 1) writeFileSync(path.resolve("release/personal-client/client-connection.png"), Buffer.from((await client.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
-  const invite = await call("clients/invite", { name: `合成客户端 ${index}` });
-  await client.evaluate(`document.getElementById('origin').value=${JSON.stringify(core.origin)};document.getElementById('name').value='合成客户端 ${index}';document.getElementById('code').value=${JSON.stringify(invite.code)};document.querySelector('form').requestSubmit();true`);
+  await client.evaluate(`document.getElementById('origin').value=${JSON.stringify(core.origin)};document.getElementById('name').value='合成客户端 ${index}';document.getElementById('email').value='owner@example.test';document.getElementById('password').value=' synthetic password ';document.querySelector('form').requestSubmit();true`);
   await until(async () => { const error = await client.evaluate("document.getElementById('error')?.textContent"); if (error) throw new Error("Client login: " + error); return client.evaluate("!!document.querySelector('.brand')"); });
   return client;
 }
@@ -49,6 +51,11 @@ async function send(client, content) {
   await client.evaluate("document.querySelector('.composer').requestSubmit();true");
 }
 try {
+  const bootstrap = await fetch(core.origin + '/api/session', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+  const cookie = bootstrap.headers.get('set-cookie').split(';',1)[0];
+  const transaction = await (await fetch(core.origin + '/api/auth/start',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify({account:'owner@example.test',name:'合成主设备'})})).json();
+  const owner = await (await fetch(core.origin + '/api/auth/respond',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify({...transaction,password:' synthetic password '})})).json();
+  if(!owner.token) throw new Error('Synthetic owner association failed'); token = owner.token;
   const a = await launch(1), b = await launch(2);
   if ((await call("state")).bots.length) throw new Error("Default Agents seeded");
   await call("config", { provider: "openai", endpoint: fake.origin + "/v1", model: "fixture", apiKey: "synthetic-client-model" });
@@ -100,6 +107,18 @@ try {
   if (!await b.evaluate("!!document.querySelector('.transcript')")) throw new Error("Revoking one client disabled the other");
   cases.push("independent-session-revocation");
   writeFileSync(path.resolve("release/personal-client/client-contact.png"), Buffer.from((await b.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  const paired = await call("devices", { name: "合成客户端本机能力" });
+  await b.evaluate(`window.nex.configureNode({origin:${JSON.stringify(core.origin)},token:${JSON.stringify(paired.token)},root:''})`);
+  await until(() => core.gateway.sockets.has(paired.deviceId));
+  await b.evaluate("[...document.querySelectorAll('nav button')].find(b=>b.textContent.includes('设置')).click();true");
+  await until(() => b.evaluate("[...document.querySelectorAll('button')].some(b=>b.textContent==='退出登录')"));
+  await b.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='退出登录').click();true");
+  await until(() => b.evaluate("!!document.getElementById('connection')&&!document.querySelector('.brand')"));
+  if(existsSync(path.join(b.profile,'connection.bin'))) throw new Error('Client logout retained login credentials');
+  const deviceDb = new DatabaseSync(path.join(b.profile,'device','device-secrets.db'),{readOnly:true});
+  try { if(deviceDb.prepare("SELECT id FROM secrets WHERE id='node-config'").get()) throw new Error('Client logout retained device grant'); } finally {deviceDb.close();}
+  await until(() => !core.gateway.sockets.has(paired.deviceId));
+  cases.push('client-account-logout','logout-clears-device-grant','logout-stops-client-node');
   for (const client of clients) {
     if (existsSync(path.join(client.profile, "personal-os", "core.db")) || existsSync(path.join(client.profile, "memory"))) throw new Error("Thin client created Core or memory database");
     await client.evaluate("void window.nex.quit();true");
@@ -115,7 +134,7 @@ try {
     client.ws?.close();
     if (!client.exited && client.child.pid) { const killer = spawn("taskkill.exe", ["/PID", String(client.child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); await new Promise((resolve) => killer.once("close", resolve)); }
   }
-  await core.close(); await fake.close();
+  await core.close(); await fake.close(); await identityProvider.close();
   if (path.dirname(root).toLowerCase() === os.tmpdir().toLowerCase() && path.basename(root).startsWith("nex-two-client-fixture-")) {
     try { rmSync(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 }); } catch { console.warn("Owned two-client fixture retained:", root); }
   }

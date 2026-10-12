@@ -44,7 +44,7 @@ try {
   socket.on("message", (raw) => { const event = JSON.parse(raw); const reply = pending.get(event.id); if (reply) { pending.delete(event.id); if (event.error) reply.reject(new Error(JSON.stringify(event.error))); else reply.resolve(event.result); } });
   const { createPersonalApp } = await import(pathToFileURL(path.join(resources, "core/index.js")));
   fake = await startFakeModel();
-  app = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token: "synthetic-computer-owner", memoryRuntime: false });
+  app = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token: "synthetic-computer-owner", memoryRuntime: false, identity: false });
   app.store.saveConfig({ provider: "openai", endpoint: fake.origin + "/v1", model: "synthetic-vision", apiKey: "synthetic-key" });
   const botId = app.store.createBot("合成操作助手");
   await until(() => app.node.status === "已连接");

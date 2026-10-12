@@ -31,7 +31,7 @@ it.skipIf(process.env.NEX_HINDSIGHT_NATIVE !== "1")("starts genuine Hindsight/Po
   await new Promise<void>((resolve) => fake.listen(0, "127.0.0.1", resolve));
   const production = process.env.NEX_HINDSIGHT_PRODUCTION === "1";
   const resources = path.resolve(process.env.NEX_TEST_MEMORY_RESOURCES ?? "dist-personal/memory-runtime"), manifest = production ? JSON.parse((await import("node:fs")).readFileSync(path.join(resources, "runtime.json"), "utf8")) : undefined;
-  const app = await createApp({ dir: root, key: randomBytes(32), token: "synthetic-owner", memoryRuntime: production ? { command: path.join(resources, manifest.python), args: ["-I", "-u"], models: { ...manifest.models, root: resources } } : { command: "uv", args: ["run", "--offline", "--no-project", "--isolated", "--with", "hindsight-all==0.10.3", "python", "-u"], fixture: true } });
+  const app = await createApp({ identity: false, dir: root, key: randomBytes(32), token: "synthetic-owner", memoryRuntime: production ? { command: path.join(resources, manifest.python), args: ["-I", "-u"], models: { ...manifest.models, root: resources } } : { command: "uv", args: ["run", "--offline", "--no-project", "--isolated", "--with", "hindsight-all==0.10.3", "python", "-u"], fixture: true } });
   const { store, memoryService: service } = app, memory = app.runtime.memory;
   store.saveConfig({ provider: "openai", endpoint: `http://127.0.0.1:${(fake.address() as { port: number }).port}/v1`, model: "fixture", apiKey: "synthetic-paid-key" });
   try {

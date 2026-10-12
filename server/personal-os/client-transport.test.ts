@@ -18,7 +18,7 @@ function http(origin: string, host: string, route: string, token: string, data?:
 async function fixture(options: { host?: string; publicOrigin?: string }, work: (app: Awaited<ReturnType<typeof createPersonalApp>>) => Promise<void>) {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-client-transport-"));
   if (path.dirname(root).toLowerCase() !== os.tmpdir().toLowerCase() || !path.basename(root).startsWith("nex-client-transport-")) throw new Error("Unsafe transport fixture directory");
-  const app = await start({ ...options, dir: root, key: randomBytes(32), token: "synthetic-transport-owner", memoryRuntime: false });
+  const app = await start({ ...options, identity: false, dir: root, key: randomBytes(32), token: "synthetic-transport-owner", memoryRuntime: false });
   try { await work(app); } finally {
     await app.close();
     rmSync(root, { recursive: true, force: true });

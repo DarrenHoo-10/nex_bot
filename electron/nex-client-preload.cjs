@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("nex", {
   mode: "client",
+  rememberLogin: (session) => ipcRenderer.invoke("client:remember-login", session),
+  forgetLogin: () => ipcRenderer.invoke("client:forget-login"),
   connect: (settings) => ipcRenderer.invoke("client:connect", settings),
   connection: () => ipcRenderer.invoke("client:connection"),
   disconnect: () => ipcRenderer.invoke("client:disconnect"),

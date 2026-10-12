@@ -6,6 +6,7 @@
 
 ## 当前能力
 
+- 内置 NexorAI 用户中心，在应用内登录后使用。主设备首次登录关联现有数据；其他设备用同一账号连接同一 Core，跨设备账号登录须通过 HTTPS。
 - 用户自行创建 Agent，初始化不提供默认角色，也不按名字设置特殊逻辑。补充身份说明可选，修改后同伴目录自动更新。
 - 固定嵌入 Pi 运行时，用户配置模型 API Key、协议、地址与模型。
 - Agent 通过 A2A 自动求助；危险操作在实际执行 Agent 的消息中申请批准。
@@ -39,7 +40,7 @@ Core 是模块化单体；Pi worker 是运行时隔离进程，Device Node 是�
 | `electron-builder.personal.yml` | 主设备安装器 |
 | `electron-builder.client.yml` | 轻量客户端 / Device Node |
 
-技术设计：[模块化单体与领域模型](docs/plans/2026-10-07-personal-ai-os-domain-model.md)、[主设备记忆与协作](docs/plans/2026-10-11-personal-agent-memory-hindsight.md)、[任务控制](docs/plans/2026-10-11-manual-task-control.md)。旧方案的被替代约束，以文档顶部的后续决定为准。
+技术设计：[模块化单体与领域模型](docs/plans/2026-10-07-personal-ai-os-domain-model.md)、[主设备记忆与协作](docs/plans/2026-10-11-personal-agent-memory-hindsight.md)、[任务控制](docs/plans/2026-10-11-manual-task-control.md)、[账号登录](docs/plans/2026-10-11-personal-os-login.md)。旧方案的被替代约束，以后续决定为准。
 
 ## 开发与 Windows 构建
 

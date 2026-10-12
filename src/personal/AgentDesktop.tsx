@@ -71,7 +71,7 @@ export function AgentDesktop() {
     const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch(offline); }, 150); };
     const change = (event: MessageEvent) => { const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean }; if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setDialog(null); } refresh(); };
     const expired = () => { offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
-    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", expired); events.onerror = offline;
+    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired"))); events.onerror = offline;
     window.addEventListener("nex-session-expired", expired);
     window.addEventListener("focus", refresh);
     const interval = setInterval(refresh, 10_000);

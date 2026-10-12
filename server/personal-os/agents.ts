@@ -89,7 +89,7 @@ export class AgentModule {
     // Include legacy work so a new entry point cannot bypass an older approval.
     return this.store.get("SELECT t.* FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.bot_id=? AND t.ended_at IS NULL ORDER BY t.created_at LIMIT 1", botId);
   }
-  send(botId: string, content: string, clientId: string) {
+  send(botId: string, content: string, clientId: string, sessionId = this.store.session) {
     content = text(content); clientId = text(clientId, 200);
     const digest = hash(content);
     const accepted = this.store.transaction(() => {
@@ -97,14 +97,14 @@ export class AgentModule {
       const receipt = this.store.get("SELECT * FROM agent_input_receipts WHERE bot_id=? AND client_message_id=?", botId, clientId);
       if (receipt) { if (receipt.request_hash !== digest) throw new Error("同一消息 ID 的内容不同"); return { taskId: String(receipt.task_id), conversationId: String(receipt.conversation_id), replay: true }; }
       const active = this.active(botId), conversationId = active ? String(active.conversation_id) : this.store.createConversation(botId, "Agent 工作上下文");
-      const taskId = this.store.accept(conversationId, content, clientId);
+      const taskId = this.store.accept(conversationId, content, clientId, sessionId);
       this.store.run("INSERT OR IGNORE INTO agent_task_links VALUES(?,?,?,?)", taskId, botId, "owner", `owner-task:${taskId}`);
       this.store.insert("agent_input_receipts", { bot_id: botId, client_message_id: clientId, request_hash: digest, task_id: taskId, conversation_id: conversationId });
       this.store.run("UPDATE agent_inboxes SET active_task_id=? WHERE bot_id=?", taskId, botId);
       this.publish(botId, "user", "message", content, `agent-input:${botId}:${clientId}`, taskId);
       return { taskId, conversationId, replay: false };
     });
-    if (!accepted.replay) this.runtime.input(accepted.conversationId, content, clientId);
+    if (!accepted.replay) this.runtime.input(accepted.conversationId, content, clientId, sessionId);
     this.runtime.changed(); return { taskId: accepted.taskId };
   }
   startRoutine(botId: string, prompt: string, name: string, source: string) {

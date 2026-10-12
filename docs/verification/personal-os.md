@@ -1,5 +1,87 @@
 # Personal AI OS Windows delivery verification
 
+## Mandatory account login (2026-10-12)
+
+Production 0.6.0 uses the built-in `https://user.nexorai.com.cn` nex_user
+bridge. It requires account login in desktop, thin client, Core APIs, SSE,
+runtime requests/tools and memory model transport. A private local bootstrap
+can associate the first account; it cannot access business APIs. Invite login
+and local-owner access are confined to explicit legacy protocol test factories.
+Desktop IPC does not allow disabling the identity gate.
+
+Use disposable fixtures only:
+
+```powershell
+pnpm test:personal
+pnpm build:personal
+node scripts/smoke-personal-login.mjs
+node scripts/smoke-personal.mjs
+node scripts/smoke-personal-clients.mjs
+# Repeat with --exe=<qualified unpacked/installed EXE> for delivery.
+# Full native memory qualification:
+node scripts/smoke-personal-memory.mjs --exe=<qualified NexBot.exe>
+```
+
+The login fixture supplies a loopback-only synthetic nex_user service through
+an explicit disposable `--profile`. Normal startup always uses the built-in
+issuer. No real password, account mutation or live profile is used in tests.
+Ignored `login-result.json`, `two-client-result.json` and screenshots are
+evidence, not source-controlled user data. The login fixture covers actual
+form failure/success, native IPC gating, DPAPI persistence, restart restoration,
+logout and upstream revocation on restart. HTTP tests also cover independent
+client sessions, transaction replay, encrypted upstream credentials, the
+sixty-second status bound, fail-closed outage, delayed uploaded mutations and
+cancellation of the actual signed-in actor's task.
+
+The final 0.6.0 installed desktop passes **17 login cases**. The final thin
+client portable passes **18 two-client cases**, including logout clearing its
+DPAPI credential and Node grant, stopping its gateway connection, and keeping
+the other account session usable. The regular desktop fixture passes **28
+cases** with login enabled, covering contacts, A2A, message feedback, manual
+Stop, routines, settings and tray behavior.
+
+Memory outbox work stays queued before account authentication, without
+extraction requests or consuming retries. A configured Core also defers native
+memory startup until authentication. The final identity/memory unit run passes
+**24 tests with one explicit historical-bundle skip**; TypeScript and lint
+pass. The final four-suite protocol run passes **64 tests with two explicit
+historical-bundle skips** (66 cases total).
+
+The installed executable, app.asar, and all 23 Core/UI bundle files match the
+qualified unpacked build. After graceful shutdown and a private backup outside
+the checkout, read-only comparison confirms **1,294 unchanged profile files**
+with no additions. The desktop shortcut targets the installed 0.6.0 executable
+with no fixture arguments. Functional checks use their own disposable profiles,
+not the user's live data. This does not claim a real production account login
+has been performed.
+
+The installed native-memory fixture also passes default Chinese extraction,
+private isolation, synthesis with original-source expansion, confirmed
+forgetting, normal Core shutdown and stopping its owned PostgreSQL. It makes
+four synthetic model requests. The first installed run hit the deliberate
+renderer invalidation when native extraction finished before its Core delivery
+receipt; the fixture now waits for pending delivery to settle before driving
+source expansion. The repeated installed workflow passes without changing the
+application's privacy behavior or extending its timeouts. Its original isolated
+fixture was retained when automatic approval review rejected cleanup with
+`blocked by policy`; it is outside release resources and the live profile.
+
+The installed memory-runtime gate verifies **45,161 file hashes and 213 exact
+dependencies**, Python 3.12.10, Hindsight 0.10.3 and the previously qualified
+100-query Chinese Recall@10 = 0.96. This gate checks the actual installed bytes;
+it does not rerun the labelled retrieval experiment.
+
+Final 0.6.0 artifacts:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| NexBot-0.6.0-x64-Setup.exe | 1,641,549,268 | `28C7A3C252B97FDC7A84AFBEBEDF07876C0C56C1EB42EA7C2EE4BB01A2012960` |
+| NexBot-0.6.0-x64-Client-Portable.exe | 169,292,184 | `5E768ACC52FF0A0DAF315A416CD810C34D31A07B4809A6B25E1749B69DEED2EC` |
+
+The older local-owner and invitation instructions below are historical and
+do not describe 0.6.0 account access. Two migration tests require separately
+provided genuine older bundles and otherwise skip explicitly.
+
 ## Unlimited cumulative tasks and manual Stop (2026-10-11)
 
 The latest user decision supersedes the 400,000-token, 24-model, 40-tool and

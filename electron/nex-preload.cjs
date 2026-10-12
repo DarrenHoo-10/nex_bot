@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("nex", {
+  rememberLogin: (session) => ipcRenderer.invoke("nex:remember-login", session),
+  forgetLogin: () => ipcRenderer.invoke("nex:forget-login"),
   chooseFolder: () => ipcRenderer.invoke("nex:folder"),
   openData: () => ipcRenderer.invoke("nex:data"),
   openExternal: (url) => ipcRenderer.invoke("nex:external", url),

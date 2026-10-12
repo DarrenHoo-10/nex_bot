@@ -5,14 +5,15 @@ import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
+import { startFakeIdentity } from "../server/personal-os/testing/fake-identity.ts";
 import { startFakeModel } from "../server/runtime/pi/p0/fake-model.ts";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-desktop-fixture-"));
 const output = path.join(root, "ready.json"), profile = path.join(root, "profile");
 const packageExe = process.argv.find((arg) => arg.startsWith("--exe="))?.slice(6);
 const executable = packageExe || path.resolve("dist-personal/electron/electron.exe");
-const fake = await startFakeModel();
-const childEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_SMOKE_OUTPUT: output };
+const fake = await startFakeModel(), identityProvider = await startFakeIdentity();
+const childEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_SMOKE_OUTPUT: output, NEX_IDENTITY_FIXTURE_URL: identityProvider.origin };
 const child = spawn(executable, [...(packageExe ? [] : [path.resolve("electron/nex-main.mjs")]), `--profile=${profile}`, "--port=0", "--background-fixture", "--memory-fixture-disabled", "--remote-debugging-port=0"], { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
 let logs = "", exited = false;
 child.stdout.on("data", (data) => { logs = (logs + data.toString()).slice(-7000); });
@@ -47,7 +48,11 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl); await new Promise((resolve) => ws.once("open", resolve));
   ws.once("close", () => { for (const pending of replies.values()) pending.reject(new Error("Fixture renderer connection closed")); replies.clear(); });
   ws.on("message", (raw) => { const event = JSON.parse(raw.toString()); if (event.id) { const reply = replies.get(event.id); replies.delete(event.id); if (event.error) reply?.reject(new Error(event.error.message)); else reply?.resolve(event.result); } });
+  await until(() => evaluate("!!document.querySelector('.login-form')"));
+  if((await fetch(ready.origin+'/api/state',{headers:{Authorization:'Bearer '+ready.token}})).status!==401) throw new Error('Bootstrap accessed business data');
+  await evaluate("document.querySelector('[name=email]').value='owner@example.test';document.querySelector('[name=password]').value=' synthetic password ';document.querySelector('.login-form').requestSubmit();true");
   await until(() => evaluate("document.querySelector('.brand')?.textContent.includes('NexBot')"));
+  ready.token = (await command('Network.getAllCookies')).cookies.find(c=>c.name==='nex').value;
   if (await evaluate("document.body.textContent.includes('新对话')||document.body.textContent.includes('最近对话')")) throw new Error("Conversation navigation still visible");
   const call = async (route, value) => {
     const response = await fetch(`${ready.origin}/api/${route}`, { headers: { Authorization: `Bearer ${ready.token}`, "Content-Type": "application/json" }, ...(value ? { method: "POST", body: JSON.stringify(value) } : {}) });
@@ -208,7 +213,7 @@ try {
 } finally {
   ws?.close();
   if (!exited) { if (process.platform === "win32" && child.pid) { const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); await new Promise((resolve) => killer.once("close", resolve)); } else child.kill(); }
-  await fake.close();
+  await fake.close(); await identityProvider.close();
   if (path.dirname(root).toLowerCase() === os.tmpdir().toLowerCase() && path.basename(root).startsWith("nex-desktop-fixture-")) {
     try { rmSync(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 200 }); } catch { console.warn("Owned fixture directory retained for diagnostics:", root); }
   }

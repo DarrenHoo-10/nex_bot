@@ -17,6 +17,7 @@ export class MemoryLedger {
   pending?: Promise<void>;
   closing = false;
   lastError: string | null = null;
+  authorizeWork?: () => Promise<boolean>;
   constructor(readonly store: CoreStore, public client?: HindsightClient, readonly changed: () => void = () => {}) {
     store.transaction(() => {
       store.run("UPDATE memory_transfers SET status='unknown' WHERE status='running'");
@@ -94,6 +95,7 @@ export class MemoryLedger {
   }
   async pump() {
     const client = this.client!;
+    if (this.authorizeWork && !await this.authorizeWork().catch(() => false)) return;
     for (const retirement of this.store.all("SELECT * FROM memory_bank_retirements WHERE status!='succeeded'")) {
       const done = await client.retire(String(retirement.provider_bank_id));
       if (this.closing) return;
@@ -101,6 +103,7 @@ export class MemoryLedger {
     }
     for (const bank of this.store.all("SELECT * FROM memory_bank_bindings WHERE state!='deleted'")) {
       if (this.closing) return;
+      if (this.authorizeWork && !await this.authorizeWork().catch(() => false)) return;
       if (this.store.all("SELECT plan_json FROM memory_forget_rules WHERE status='pending'").some((rule) => (JSON.parse(String(rule.plan_json)) as { banks: string[] }).banks.includes(String(bank.id)))) continue;
       if (bank.bot_id && this.store.get("SELECT status FROM bots WHERE id=?", bank.bot_id)?.status !== "active") continue;
       await client.ensure(String(bank.provider_bank_id));

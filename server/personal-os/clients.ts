@@ -8,9 +8,12 @@ export class ClientIdentity {
   coreId() { return String(this.store.get("SELECT core_id FROM workspaces WHERE id=?", this.store.workspace)!.core_id); }
   authenticate(token: string) {
     if (!token || token.length > 200) return undefined;
-    const session = this.store.get("SELECT s.*,c.name client_name FROM user_sessions s LEFT JOIN client_sessions c ON c.session_id=s.id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at>? AND s.workspace_id=? AND s.user_id=? AND m.status='active'", hash(token), now(), this.store.workspace, this.store.owner);
+    const session = this.store.get("SELECT s.*,c.name client_name FROM user_sessions s LEFT JOIN client_sessions c ON c.session_id=s.id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at>? AND s.workspace_id=? AND s.user_id=? AND m.status='active' AND u.status='active' AND w.status='active'", hash(token), now(), this.store.workspace, this.store.owner);
     if (session?.client_name) this.store.run("UPDATE client_sessions SET last_seen_at=? WHERE session_id=? AND last_seen_at<?", now(), session.id, now() - 60_000);
     return session;
+  }
+  authenticateTokenSession(sessionId: string) {
+    return this.store.get("SELECT s.* FROM user_sessions s JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=? AND s.revoked_at IS NULL AND s.expires_at>? AND s.workspace_id=? AND s.user_id=? AND m.status='active' AND u.status='active' AND w.status='active'", sessionId, now(), this.store.workspace, this.store.owner);
   }
   invite(name: unknown) {
     const token = randomBytes(24).toString("base64url"), inviteId = randomUUID(), expiresAt = now() + 10 * 60_000;

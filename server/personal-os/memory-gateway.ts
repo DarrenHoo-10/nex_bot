@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { timingSafeEqual, randomBytes } from "node:crypto";
-import { CoreStore, id, now } from "./store.ts";
+import { CoreStore, id, now, type Row } from "./store.ts";
 import { policyTools } from "./policy.ts";
 
 type Json = Record<string, unknown>;
@@ -13,6 +13,7 @@ export class MemoryModelGateway {
   busy = false;
   closing = false;
   readonly controllers = new Map<AbortController, string>();
+  authorize?: (task?: Row) => Promise<boolean>;
   constructor(readonly store: CoreStore) {
     this.server = createServer((request, response) => {
       const send = (status: number, value: unknown) => { response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); response.end(JSON.stringify(value)); };
@@ -25,6 +26,7 @@ export class MemoryModelGateway {
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Json;
         const bank = String(request.headers["x-nex-bank"] ?? ""), operation = String(request.headers["x-nex-operation"] ?? ""), purpose = String(request.headers["x-nex-purpose"] ?? "");
         const taskId = String(request.headers["x-nex-task-id"] ?? "");
+        if (this.authorize && !await this.authorize(taskId ? store.get("SELECT * FROM tasks WHERE id=?", taskId) : undefined)) { send(401, { error: { message: "owner_login_required" } }); return; }
         if (this.closing || this.busy || (!taskId && store.get("SELECT id FROM tasks WHERE status='running' AND ended_at IS NULL"))) { send(429, { error: { message: "foreground_or_background_busy" } }); return; }
         if (!/^[0-9a-f-]{36}$/i.test(operation) || !["retain", "consolidate", "reflect"].includes(purpose) || !Array.isArray(body.messages) || body.stream === true) throw new Error("unattributed_memory_model_request");
         const binding = store.get("SELECT * FROM memory_bank_bindings WHERE provider_bank_id=? AND state!='deleted'", bank);

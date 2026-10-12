@@ -21,7 +21,7 @@ function pdfFixture(content: string) {
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
 const startApp: typeof createPersonalApp = process.env.NEX_TEST_BUNDLE ? (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_BUNDLE)).href)).createPersonalApp : createPersonalApp;
-const createApp: typeof createPersonalApp = (options) => startApp({ ...options, memoryRuntime: false });
+const createApp: typeof createPersonalApp = (options) => startApp({ ...options, memoryRuntime: false, identity: false });
 const fixtures: Array<{ root: string; apps: App[]; fake: FakeModel }> = [];
 const wait = async (check: () => boolean, milliseconds = 25_000) => {
   const deadline = Date.now() + milliseconds;

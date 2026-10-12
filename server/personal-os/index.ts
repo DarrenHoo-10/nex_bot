@@ -10,28 +10,49 @@ import { DeviceNode } from "./node.ts";
 import { AgentModule } from "./agents.ts";
 import { RoutineModule } from "./routines.ts";
 import { ClientIdentity } from "./clients.ts";
+import { CoreIdentity } from "./identity.ts";
+import { IdentityError } from "./identity-provider.ts";
 import { ClientSync } from "./sync.ts";
 import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ManagedMemoryService, bundledMemoryRuntime, type MemoryRuntimeOptions } from "./memory-service.ts";
 
-export interface AppOptions { dir: string; key: Buffer; token: string; port?: number; host?: string; publicOrigin?: string; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: MemoryRuntimeOptions | false }
+export interface AppOptions { dir: string; key: Buffer; token: string; port?: number; host?: string; publicOrigin?: string; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: MemoryRuntimeOptions | false; /** Only direct disposable test fixtures may opt out. Desktop IPC never forwards false. */ identity?: false | { fixtureOrigin: string } }
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
   const store = new CoreStore(options.dir, options.key, options.token);
   const clients = new ClientIdentity(store), sync = new ClientSync(store);
+  const identity = options.identity === false ? undefined : new CoreIdentity(store, clients, options.identity?.fixtureOrigin);
+  const authenticate = async (token: string) => {
+    const session = identity ? await identity.authenticate(token) : clients.authenticate(token);
+    if (session && identity && !closing && store.config()?.configured && memoryService.state === "not_installed") memoryService.start();
+    return session;
+  };
   const streams = new Map<ServerResponse, string>();
   let closing = false;
   const changed = () => {
     if (closing) return;
     sync.prune(); const snapshot = sync.snapshot();
     for (const [response, token] of streams) {
-      if (!clients.authenticate(token)) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
+      if (!(identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
       else response.write(`id: ${snapshot.cursor}\nevent: change\ndata: ${JSON.stringify(snapshot)}\n\n`);
     }
   };
   const runtime = new TaskRuntime(store, changed);
+  if (identity) {
+    runtime.authorizeTask = (task) => identity.authorizeTask(task);
+    identity.onSessionLost = (sessionId) => {
+      for (const task of store.all("SELECT id FROM tasks WHERE authorized_session_id=? AND ended_at IS NULL", sessionId)) runtime.cancel(String(task.id), "登录失效或无法验证，任务已停止");
+      if (!store.get("SELECT id FROM user_sessions WHERE protocol='native-v1' AND revoked_at IS NULL AND expires_at>?", Date.now())) {
+        for (const worker of runtime.workers.values()) if (store.get("SELECT authorized_session_id FROM tasks WHERE id=?", worker.taskId)?.authorized_session_id === store.session) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
+        memoryService.gateway.cancelTask("");
+      }
+      changed();
+    };
+  }
   const memoryService = new ManagedMemoryService(store, runtime.memory.ledger, options.hindsight || options.memoryRuntime === false ? undefined : options.memoryRuntime ?? bundledMemoryRuntime());
+  if (identity) memoryService.gateway.authorize = (task) => identity.authorizeTask(task ?? { authorized_session_id: store.session });
+  if (identity) runtime.memory.ledger.authorizeWork = () => identity.authorizeTask({ authorized_session_id: store.session });
   const agents = new AgentModule(store, runtime);
   const routines = new RoutineModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
@@ -43,7 +64,7 @@ export async function createPersonalApp(options: AppOptions) {
   let origin = "";
   const server = createServer((request, response) => { void route(request, response).catch((error: unknown) => {
     if (response.headersSent) { response.end(); return; }
-    json(response, 400, { error: error instanceof Error ? error.message : "请求失败" });
+    json(response, error instanceof IdentityError ? error.status : 400, { error: error instanceof Error ? error.message : "请求失败", ...(error instanceof IdentityError && error.status === 503 ? { code: "identity_unavailable" } : {}) });
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
@@ -61,7 +82,26 @@ export async function createPersonalApp(options: AppOptions) {
     return parsed as Record<string, unknown>;
   }
   const loginAttempts = new Map<string, { count: number; at: number }>();
-  const heartbeat = setInterval(changed, 15_000); heartbeat.unref();
+  let checkingSessions = false;
+  let heartbeatJob: Promise<void> | undefined;
+  const heartbeat = setInterval(() => {
+    changed(); if (!identity || checkingSessions || closing) return;
+    checkingSessions = true;
+    heartbeatJob = (async () => {
+      await identity.retryRevocations();
+      if (closing) return;
+      for (const token of new Set(streams.values())) {
+        if (closing) return;
+        try { if (await authenticate(token)) continue; } catch { /* fail closed, including upstream outage */ }
+        for (const [response, current] of streams) if (current === token) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
+      }
+      for (const worker of runtime.workers.values()) {
+        if (closing) return;
+        const task = store.get("SELECT * FROM tasks WHERE id=?", worker.taskId);
+        if (task && !await identity.authorizeTask(task).catch(() => false)) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
+      }
+    })().catch(() => {}).finally(() => { checkingSessions = false; });
+  }, 15_000); heartbeat.unref();
   function setCookie(response: ServerResponse, token: string, requestOrigin: string, expiresAt: number) {
     const maxAge = Math.max(1, Math.floor((expiresAt - Date.now()) / 1000));
     response.setHeader("Set-Cookie", `nex=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${requestOrigin.startsWith("https:") ? "; Secure" : ""}`);
@@ -81,8 +121,30 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname === "/health") { json(response, 200, { app: "NexBot", backend: "personal-os", runtime: "pi/1.0.4" }); return; }
     const mutating = request.method !== "GET" && request.method !== "HEAD";
     if (mutating && request.headers.origin && request.headers.origin !== requestOrigin) { json(response, 403, { error: "Invalid origin" }); return; }
-    if (url.pathname === "/api/client/identity" && request.method === "GET") { json(response, 200, { version: 1, coreId: clients.coreId(), mode: "local-owner", loginMethods: ["one-time-code"] }); return; }
+    const cookieValue = (name: string) => request.headers.cookie?.split(";").map((v) => v.trim()).find((v) => v.startsWith(name + "="))?.slice(name.length + 1) ?? "";
+    const token = request.headers.authorization?.replace(/^Bearer /, "") ?? cookieValue("nex");
+    const loopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "");
+    const bootstrap = loopback ? clients.authenticate(cookieValue("nex-bootstrap")) : undefined;
+    if (url.pathname.startsWith("/api/auth/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid login request" }); return; }
+    if (url.pathname === "/api/client/identity" && request.method === "GET") { json(response, 200, identity ? { ...identity.publicConfiguration(), version: 1, coreId: clients.coreId(), loginMethods: ["password"] } : { version: 1, coreId: clients.coreId(), mode: "local-owner", loginMethods: ["one-time-code"] }); return; }
+    if (identity && url.pathname === "/api/auth/status" && request.method === "GET") { json(response, 200, await identity.status(token, bootstrap)); return; }
+    if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {
+      await identity.logout(token); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return;
+    }
+    if (identity && ["/api/auth/start", "/api/auth/respond"].includes(url.pathname) && request.method === "POST") {
+      if (!loopback && !requestOrigin.startsWith("https:")) throw new IdentityError(426, "远程账号登录须使用 HTTPS Core 地址");
+      const address = request.socket.remoteAddress ?? "unknown", at = Date.now();
+      for (const [key, attempt] of loginAttempts) if (at - attempt.at > 60_000) loginAttempts.delete(key);
+      const attempt = loginAttempts.get(address) ?? { count: 0, at };
+      if (attempt.count >= 20 || (!loginAttempts.has(address) && loginAttempts.size >= 1000)) throw new IdentityError(429, "登录尝试过多，请稍后重试");
+      attempt.count++; loginAttempts.set(address, attempt);
+      const data = await body(request);
+      if (url.pathname.endsWith("/start")) { json(response, 200, identity.start(data, bootstrap)); return; }
+      const login = await identity.respond(data, bootstrap);
+      setCookie(response, login.token, requestOrigin, login.expiresAt); if (store.config()?.configured && memoryService.state === "not_installed") memoryService.start(); runtime.startRecovered(); changed(); json(response, 200, login); return;
+    }
     if (url.pathname === "/api/client/login" && request.method === "POST") {
+      if (identity) throw new IdentityError(410, "请使用 NexorAI 账号登录");
       const address = request.socket.remoteAddress ?? "unknown", at = Date.now();
       for (const [key, attempt] of loginAttempts) if (at - attempt.at > 60_000) loginAttempts.delete(key);
       const attempt = loginAttempts.get(address) ?? { count: 0, at };
@@ -93,15 +155,18 @@ export async function createPersonalApp(options: AppOptions) {
     }
     if (url.pathname === "/api/session" && request.method === "POST") {
       const data = await body(request);
-      const session = clients.authenticate(String(data.token ?? ""));
+      const local = clients.authenticate(String(data.token ?? ""));
+      if (identity && local?.id === store.session && loopback) {
+        response.setHeader("Set-Cookie", `nex-bootstrap=${String(data.token)}; HttpOnly; SameSite=Strict; Path=/api/; Max-Age=28800`);
+        json(response, 200, { authenticated: false, coreId: clients.coreId() }); return;
+      }
+      const session = await authenticate(String(data.token ?? ""));
       if (!session) { json(response, 401, { error: "Unauthorized" }); return; }
       setCookie(response, String(data.token), requestOrigin, Number(session.expires_at));
-      json(response, 200, { owner: "local", protocol: session.protocol, sessionId: session.id, coreId: clients.coreId() }); return;
+      json(response, 200, { authenticated: true, protocol: session.protocol, sessionId: session.id, coreId: clients.coreId(), expiresAt: session.expires_at }); return;
     }
     if (url.pathname.startsWith("/api/")) {
-      const bearer = request.headers.authorization?.replace(/^Bearer /, "");
-      const cookie = request.headers.cookie?.split(";").map((v) => v.trim()).find((v) => v.startsWith("nex="))?.slice(4);
-      const token = bearer ?? cookie ?? "", session = clients.authenticate(token);
+      const session = await authenticate(token);
       if (!session) { json(response, 401, { error: "Unauthorized" }); return; }
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
@@ -124,10 +189,11 @@ export async function createPersonalApp(options: AppOptions) {
       }
       if (!mutating) { json(response, 404, { error: "Not found" }); return; }
       const data = await body(request);
-      if (url.pathname === "/api/clients/invite") { json(response, 200, clients.invite(data.name)); changed(); return; }
-      if (url.pathname === "/api/clients/revoke") { clients.revoke(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
+      if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+      if (url.pathname === "/api/clients/invite") { if (identity) throw new IdentityError(410, "请在其他设备使用同一账号登录"); json(response, 200, clients.invite(data.name)); changed(); return; }
+      if (url.pathname === "/api/clients/revoke") { if (identity) await identity.revoke(text(data.sessionId, 100)); else clients.revoke(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/client/logout") { if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
-      if (url.pathname === "/api/agents/input") { json(response, 202, agents.send(text(data.botId, 100), text(data.text), text(data.clientId, 200))); return; }
+      if (url.pathname === "/api/agents/input") { json(response, 202, agents.send(text(data.botId, 100), text(data.text), text(data.clientId, 200), String(session.id))); return; }
       if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
@@ -140,7 +206,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/bots/policy") { agents.updatePolicy(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/archive") { agents.archive(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/conversations") { const conversationId = store.createConversation(text(data.botId, 100)); changed(); json(response, 200, { id: conversationId }); return; }
-      if (url.pathname === "/api/input") { const taskId = runtime.input(text(data.conversationId, 100), text(data.text), typeof data.clientId === "string" ? data.clientId : id()); json(response, 202, { taskId }); return; }
+      if (url.pathname === "/api/input") { const taskId = runtime.input(text(data.conversationId, 100), text(data.text), typeof data.clientId === "string" ? data.clientId : id(), String(session.id)); json(response, 202, { taskId }); return; }
       if (url.pathname === "/api/cancel") { runtime.cancel(text(data.taskId, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/resume") { runtime.resume(text(data.taskId, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/approvals") { runtime.decide(text(data.id, 100), text(data.hash, 100), data.allow === true, String(session.id)); json(response, 200, { ok: true }); return; }
@@ -155,7 +221,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/devices") { json(response, 200, gateway.pair(text(data.name, 80))); return; }
       if (url.pathname === "/api/devices/revoke") { gateway.revoke(text(data.id, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/node" || url.pathname === "/api/node/reconcile") {
-        if (session.id !== store.session || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "")) { json(response, 403, { error: "请在这台电脑本机授权设备能力；远程客户端使用自己的 Device Node" }); return; }
+        if (!loopback || (!identity && session.id !== store.session)) { json(response, 403, { error: "请在这台电脑本机授权设备能力；远程客户端使用自己的 Device Node" }); return; }
         if (url.pathname === "/api/node") json(response, 200, node.configure({ ...node.config, ...data }));
         else { node.reconcile(text(data.callId, 100), Number(data.version)); json(response, 200, { ok: true }); }
         return;
@@ -187,12 +253,14 @@ export async function createPersonalApp(options: AppOptions) {
     node.configure({ origin, token: pair.token, root: node.config?.root ?? "", exec: true, computer: node.computer.available() });
   }
   if (options.hindsight) runtime.memory.ledger.client = new HindsightClient(options.hindsight.endpoint, options.hindsight.token);
-  if (store.config()) memoryService.start();
+  if (!identity && store.config()) memoryService.start();
   runtime.memory.ledger.start();
   runtime.startRecovered();
   routines.start();
-  return { server, store, runtime, agents, routines, gateway, node, memoryService, origin, async close() {
+  return { server, store, runtime, agents, routines, gateway, node, memoryService, identity, origin, async close() {
     closing = true; clearInterval(heartbeat);
+    await identity?.close();
+    await heartbeatJob;
     routines.close();
     await runtime.memory.ledger.close();
     await memoryService.close();
@@ -205,7 +273,9 @@ export async function createPersonalApp(options: AppOptions) {
 if (process.send) {
   process.once("message", (message: { type: string; dir: string; key: string; token: string; uiDir: string; host?: string; port?: number }) => {
     if (message.type !== "boot") return;
-    void createPersonalApp({ ...message, key: Buffer.from(message.key, "base64") }).then((app) => {
+    // Local test factories can disable identity. A real desktop can only use
+    // mandatory login, with a loopback issuer substituted by an isolated fixture.
+    void createPersonalApp({ ...message, identity: (message as unknown as AppOptions).identity || undefined, key: Buffer.from(message.key, "base64") }).then((app) => {
       process.send?.({ type: "ready", origin: app.origin });
       let closing = false;
       const close = () => { if (closing) return; closing = true; void app.close().finally(() => process.exit(0)); };

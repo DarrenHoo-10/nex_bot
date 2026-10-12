@@ -28,6 +28,8 @@ export class TaskRuntime {
   onDelegation?: (link: Row, completed: boolean) => void;
   agentHistory?: (botId: string, taskId: string) => string;
   historySearch?: (botId: string, query: string) => Row[];
+  authorizeTask?: (task: Row) => Promise<boolean>;
+  private readonly starting = new Set<string>();
   constructor(readonly store: CoreStore, readonly changed: () => void) {
     this.projection = new ProjectionStore(path.join(store.dir, "runtime.db"));
     this.memory = new MemoryModule(store, changed, (plan) => this.forgetFence(plan));
@@ -81,8 +83,8 @@ export class TaskRuntime {
     }
     for (const bot of plan.bots) for (const runtime of this.store.all("SELECT id FROM runtime_sessions WHERE bot_id=?", bot)) this.projection.clear(String(runtime.id));
   }
-  input(conversationId: string, content: string, clientId: string) {
-    const taskId = this.store.accept(conversationId, content, clientId), worker = this.workers.get(taskId);
+  input(conversationId: string, content: string, clientId: string, sessionId = this.store.session) {
+    const taskId = this.store.accept(conversationId, content, clientId, sessionId), worker = this.workers.get(taskId);
     if (worker && !worker.child.killed) {
       for (const input of this.store.pending(taskId)) worker.child.send({ type: "steer", input: this.inputRecord(input) });
       for (const [callId, pending] of this.pendingReplies) if (pending.worker === worker) {
@@ -100,6 +102,14 @@ export class TaskRuntime {
     return task;
   }
   kick(taskId: string) {
+    if (!this.authorizeTask) { this.kickAuthorized(taskId); return; }
+    if (this.closing || this.starting.has(taskId) || this.workers.has(taskId)) return;
+    const task = this.store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL", taskId);
+    if (!task) return;
+    this.starting.add(taskId);
+    void this.authorizeTask(task).then((allowed) => { if (allowed && !this.closing) this.kickAuthorized(taskId); }).catch(() => {}).finally(() => this.starting.delete(taskId));
+  }
+  private kickAuthorized(taskId: string) {
     if (this.closing || this.workers.has(taskId)) return;
     const task = this.store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL", taskId);
     if (!task || !["queued", "running"].includes(String(task.status))) return;
@@ -129,7 +139,7 @@ export class TaskRuntime {
       this.store.run("UPDATE task_runs SET status=?,ended_at=? WHERE id=? AND ended_at IS NULL", worker.finished ? "ended" : "interrupted", now(), runId);
       const current = this.store.get("SELECT * FROM tasks WHERE id=?", taskId);
       if (!worker.finished && current?.status === "running") this.store.run("UPDATE tasks SET status='paused',result_summary='运行意外停止，请点击继续' WHERE id=?", taskId);
-      if (current?.status === "cancelling") this.finishTask(taskId, "cancelled", "用户取消");
+      if (current?.status === "cancelling") this.finishTask(taskId, "cancelled", String(current.result_summary || "用户取消"));
       if (!this.closing) {
         this.completeDelegations();
         for (const t of this.store.all("SELECT id FROM tasks WHERE status='queued' AND ended_at IS NULL ORDER BY created_at")) this.kick(String(t.id));
@@ -178,6 +188,7 @@ export class TaskRuntime {
   }
   async event(worker: Running, event: WorkerEvent) {
     this.assert(worker);
+    if (["request", "tool"].includes(event.type)) await this.requireIdentity(worker);
     if (event.type === "delta") { worker.streaming += event.text ?? ""; this.changed(); return; }
     if (event.type === "error") { this.fail(worker, new Error(event.error ?? "运行错误")); return; }
     this.persist(worker, event);
@@ -188,6 +199,7 @@ export class TaskRuntime {
     if (event.type === "request" && event.requestId) {
       const currentInput = this.store.get("SELECT content_json FROM conversation_inputs WHERE task_id=? ORDER BY input_seq DESC LIMIT 1", worker.taskId);
       const memory = event.purpose === "compact" ? undefined : await this.memory.recall(String(this.assert(worker).bot_id), currentInput ? String(JSON.parse(String(currentInput.content_json)).text).slice(0, 1000) : "");
+      await this.requireIdentity(worker);
       const task = this.assert(worker);
       this.memory.consume(worker.taskId, memory?.facts.flatMap((fact) => fact.refs) ?? []);
       if (this.store.get("SELECT id FROM tool_calls WHERE task_id=? AND status IN ('awaiting_approval','unknown')", task.id)) throw new Error("等待审批或处理不确定结果");
@@ -279,6 +291,7 @@ export class TaskRuntime {
   }
   async execute(call: Row, worker: Running) {
     this.assert(worker);
+    await this.requireIdentity(worker);
     if (call.status !== "ready") throw new Error("工具未获批准");
     const args = JSON.parse(String(call.arguments_json)) as Record<string, unknown>;
     try {
@@ -346,7 +359,7 @@ export class TaskRuntime {
       if (depth > 3 || ancestry.has(target)) { this.resolveCall(call, { error: "委派深度超限或形成循环" }, true, worker); return; }
       this.store.transaction(() => {
         const conversation = this.store.createConversation(target, `来自 ${this.store.get("SELECT name FROM bots WHERE id=?", call.bot_id)!.name} 的委派`);
-        const childTaskId = this.store.accept(conversation, `这是委派子任务。只处理以下目标，将结果返回主 Agent：\n${message}`, `a2a:${call.id}`);
+        const childTaskId = this.store.accept(conversation, `这是委派子任务。只处理以下目标，将结果返回主 Agent：\n${message}`, `a2a:${call.id}`, String(this.store.get("SELECT authorized_session_id FROM tasks WHERE id=?", call.task_id)!.authorized_session_id));
         this.store.insert("a2a_messages", { id: id(), call_id: call.id, parent_task_id: call.task_id, sender_bot_id: call.bot_id, receiver_bot_id: target, child_conversation_id: conversation, child_task_id: childTaskId, root_task_id: root, depth, status: "queued", payload: message, created_at: now() });
         this.onDelegation?.(this.store.get("SELECT * FROM a2a_messages WHERE call_id=?", call.id)!, false);
         this.store.run("UPDATE tool_calls SET status='executing' WHERE id=?", call.id);
@@ -393,7 +406,7 @@ export class TaskRuntime {
     this.store.run("UPDATE model_invocations SET status='failed',finished_at=? WHERE run_id=? AND status='in_flight'", now(), worker.runId);
     worker.finished = true; worker.child.kill(); this.changed();
   }
-  cancel(taskId: string) {
+  cancel(taskId: string, reason = "用户取消") {
     const task = this.store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL", taskId);
     if (!task) return;
     if (task.status === "cancelling") return;
@@ -403,7 +416,7 @@ export class TaskRuntime {
       // Fence the entire subtree in one transaction before any process exits.
       // Crash recovery must never restart a descendant of a manually stopped task.
       for (const target of tasks) {
-        this.store.run("UPDATE tasks SET status='cancelling',run_generation=run_generation+1 WHERE id=? AND ended_at IS NULL", target);
+        this.store.run("UPDATE tasks SET status='cancelling',result_summary=?,run_generation=run_generation+1 WHERE id=? AND ended_at IS NULL", reason, target);
         this.store.run("UPDATE approvals SET status='cancelled' WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE task_id=?) AND status IN ('pending','approved')", target);
         this.store.run("UPDATE tool_calls SET status=CASE WHEN status='executing' AND tool_name IN ('device.exec','device.computer') THEN 'unknown' ELSE 'cancelled' END WHERE task_id=? AND status IN ('ready','awaiting_approval','executing')", target);
         this.store.run("UPDATE runtime_input_deliveries SET status='discarded' WHERE input_id IN (SELECT id FROM conversation_inputs WHERE task_id=?) AND status IN ('pending','applied')", target);
@@ -415,13 +428,20 @@ export class TaskRuntime {
       this.onCancel?.(target);
       for (const [callId, pending] of this.pendingReplies) if (pending.worker.taskId === target) this.pendingReplies.delete(callId);
       const worker = this.workers.get(target);
-      if (worker) { clearTimeout(worker.timer); worker.finished = true; worker.streaming = ""; worker.child.kill(); } else this.finishTask(target, "cancelled", "用户取消");
+      if (worker) { clearTimeout(worker.timer); worker.finished = true; worker.streaming = ""; worker.child.kill(); } else this.finishTask(target, "cancelled", reason);
     }
     this.changed();
   }
   resume(taskId: string) {
     if (!this.store.get("SELECT id FROM tasks WHERE id=? AND status='paused'", taskId)) throw new Error("该任务不可继续");
     this.store.run("UPDATE tasks SET status='queued' WHERE id=?", taskId); this.kick(taskId);
+  }
+  private async requireIdentity(worker: Running) {
+    const task = this.assert(worker);
+    if (this.authorizeTask && !await this.authorizeTask(task).catch(() => false)) {
+      this.cancel(worker.taskId, "登录失效或无法验证，任务已停止"); throw new Error("登录已失效，请重新登录后发送新消息");
+    }
+    this.assert(worker);
   }
   async close() {
     this.closing = true;

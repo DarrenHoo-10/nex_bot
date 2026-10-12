@@ -15,6 +15,8 @@ type Bridge = {
   configureNode?(data: unknown): Promise<State["node"]>;
   reconcileNode?(data: unknown): Promise<void>;
   disconnect?(): Promise<void>;
+  rememberLogin?(session: { token: string; coreId: string; sessionId: string; expiresAt: number }): Promise<void>;
+  forgetLogin?(): Promise<void>;
   chooseFolder(): Promise<string | null>; openData(): Promise<void>; openExternal(url: string): Promise<void>;
   configureNetwork(settings: { enabled: boolean; port: number }): Promise<void>;
   preferences(): Promise<{ openAtLogin: boolean; notifications: boolean }>;
@@ -27,8 +29,8 @@ export async function api<T>(url: string, data?: unknown): Promise<T> {
   if (desktop?.mode === "client" && url === "node") return await desktop.configureNode!(data) as T;
   if (desktop?.mode === "client" && url === "node/reconcile") return await desktop.reconcileNode!(data) as T;
   const response = await fetch("/api/" + url, data === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-  const result = await response.json() as T & { error?: string };
-  if (!response.ok) { if (response.status === 401) window.dispatchEvent(new Event("nex-session-expired")); throw new Error(result.error ?? "连接失败"); }
+  const result = await response.json() as T & { error?: string; code?: string };
+  if (!response.ok) { if (!url.startsWith("auth/") && (response.status === 401 || result.code === "identity_unavailable")) window.dispatchEvent(new Event("nex-session-expired")); throw new Error(result.error ?? "连接失败"); }
   if (url === "state" && desktop?.mode === "client" && desktop.nodeState) (result as unknown as State).node = await desktop.nodeState();
   return result;
 }

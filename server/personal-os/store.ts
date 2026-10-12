@@ -176,6 +176,13 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 9, checksum: hash(taskControl), applied_at: now() });
       });
     }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=10")) {
+      const identitySql = readFileSync(new URL("./identity-schema.sql", import.meta.url), "utf8");
+      this.transaction(() => {
+        this.db.exec(identitySql);
+        this.insert("schema_migrations", { version: 10, checksum: hash(identitySql), applied_at: now() });
+      });
+    }
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -247,7 +254,7 @@ export class CoreStore {
     });
     return conversationId;
   }
-  accept(conversationId: string, content: string, clientId: string) {
+  accept(conversationId: string, content: string, clientId: string, sessionId = this.session) {
     content = text(content); clientId = text(clientId, 100);
     const requestHash = hash(content);
     const old = this.get("SELECT * FROM conversation_inputs WHERE conversation_id=? AND client_message_id=?", conversationId, clientId);
@@ -262,7 +269,7 @@ export class CoreStore {
         const taskId = id(), createdAt = now();
         // Compatibility fields satisfy the frozen v1 checks only. No effective
         // task limit, deadline or large finite substitute for infinity exists.
-        this.insert("tasks", { id: taskId, ...this.scope(), conversation_id: conversationId, bot_id: conv.bot_id, initiated_by_session_id: this.session, authorized_session_id: this.session, objective: content, status: "queued", legacy_max_model_calls: 1, legacy_max_tool_calls: 1, legacy_token_budget: 1, legacy_deadline_at: createdAt + 1, created_at: createdAt });
+        this.insert("tasks", { id: taskId, ...this.scope(), conversation_id: conversationId, bot_id: conv.bot_id, initiated_by_session_id: sessionId, authorized_session_id: sessionId, objective: content, status: "queued", legacy_max_model_calls: 1, legacy_max_tool_calls: 1, legacy_token_budget: 1, legacy_deadline_at: createdAt + 1, created_at: createdAt });
         task = this.get("SELECT * FROM tasks WHERE id=?", taskId)!;
       } else {
         if (task.status === "needs_reconciliation" || task.status === "cancelling") throw new Error("该任务须先处理不确定结果或取消");
@@ -272,7 +279,7 @@ export class CoreStore {
         this.run("UPDATE tasks SET status=CASE WHEN status IN ('awaiting_approval','paused') THEN 'queued' ELSE status END,version=version+1 WHERE id=?", task.id);
       }
       const inputId = id(), runtime = this.get("SELECT id FROM runtime_sessions WHERE conversation_id=? AND status='active'", conversationId)!;
-      this.insert("conversation_inputs", { id: inputId, ...this.scope(), bot_id: conv.bot_id, conversation_id: conversationId, task_id: task.id, sender_session_id: this.session, client_message_id: clientId, input_seq: conv.next_input_seq, input_kind: kind, content_json: JSON.stringify({ text: content }), request_hash: requestHash, status: "accepted", created_at: now() });
+      this.insert("conversation_inputs", { id: inputId, ...this.scope(), bot_id: conv.bot_id, conversation_id: conversationId, task_id: task.id, sender_session_id: sessionId, client_message_id: clientId, input_seq: conv.next_input_seq, input_kind: kind, content_json: JSON.stringify({ text: content }), request_hash: requestHash, status: "accepted", created_at: now() });
       this.insert("runtime_input_deliveries", { input_id: inputId, ...this.scope(), bot_id: conv.bot_id, conversation_id: conversationId, runtime_session_id: runtime.id, channel: kind === "start" ? "prompt" : "steer", status: "pending", created_at: now() });
       this.run("UPDATE conversations SET next_input_seq=next_input_seq+1,version=version+1,title=CASE WHEN next_input_seq=1 THEN ? ELSE title END WHERE id=?", content.slice(0, 60), conversationId);
       this.message(conversationId, String(task.id), "user", content, `input:${inputId}`);

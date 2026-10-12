@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, Tray, Menu, Notification } from "electron";
 import { fork } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,12 +11,18 @@ if (profileArg) app.setPath("userData", path.resolve(profileArg));
 else app.setPath("userData", path.join(app.getPath("appData"), "NexBot"));
 app.setName("NexBot");
 const ownsLock = app.requestSingleInstanceLock();
-let mainWindow, server, origin, tray, preferences, exiting = false;
+let mainWindow, server, origin, tray, preferences, activeLogin, exiting = false;
 const keepAlive = !profileArg || process.argv.includes("--background-fixture");
 function showWindow() { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } }
 const dataDir = path.join(app.getPath("userData"), "personal-os");
 function validate(event) {
-  if (!mainWindow || event.sender !== mainWindow.webContents || new URL(event.senderFrame.url).origin !== origin) throw new Error("Invalid desktop sender");
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || new URL(event.senderFrame.url).origin !== origin) throw new Error("Invalid desktop sender");
+}
+async function validateBusiness(event) {
+  validate(event);
+  if (!activeLogin) throw new Error("请先登录");
+  const response = await fetch(origin + "/api/auth/status", { headers: { Authorization: `Bearer ${activeLogin.token}` }, signal: AbortSignal.timeout(10_000) });
+  if (!response.ok || !(await response.json()).authenticated) throw new Error("登录已失效，请重新登录");
 }
 if (!ownsLock || process.argv.includes("--quit")) app.quit();
 else {
@@ -65,7 +71,13 @@ else {
     });
     const port = Number(process.argv.find((arg) => arg.startsWith("--port="))?.slice(7) ?? network.port);
     const publicOrigin = process.argv.find((arg) => arg.startsWith("--public-origin="))?.slice(16);
-    server.send({ type: "boot", dir: dataDir, key, token, uiDir: path.join(resources, "ui"), host: process.argv.includes("--lan") || network.enabled ? "0.0.0.0" : "127.0.0.1", port, ...(publicOrigin ? { publicOrigin } : {}), ...(profileArg && process.argv.includes("--memory-fixture-disabled") ? { memoryRuntime: false } : {}) });
+    let identity;
+    if (profileArg && process.env.NEX_IDENTITY_FIXTURE_URL) {
+      const fixture = new URL(process.env.NEX_IDENTITY_FIXTURE_URL);
+      if (fixture.protocol !== "http:" || fixture.hostname !== "127.0.0.1" || fixture.pathname !== "/" || fixture.username || fixture.password || fixture.search || fixture.hash) throw new Error("Invalid isolated identity fixture");
+      identity = { fixtureOrigin: fixture.origin };
+    }
+    server.send({ type: "boot", dir: dataDir, key, token, uiDir: path.join(resources, "ui"), host: process.argv.includes("--lan") || network.enabled ? "0.0.0.0" : "127.0.0.1", port, ...(publicOrigin ? { publicOrigin } : {}), ...(identity ? { identity } : {}), ...(profileArg && process.argv.includes("--memory-fixture-disabled") ? { memoryRuntime: false } : {}) });
     origin = await boot;
     server.on("message", (event) => {
       if (event.type !== "inbox" || !mainWindow || exiting) return;
@@ -79,11 +91,24 @@ else {
     mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     mainWindow.webContents.on("will-navigate", (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
     mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    ipcMain.handle("nex:folder", async (event) => { validate(event); const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] }); return result.canceled ? null : result.filePaths[0]; });
-    ipcMain.handle("nex:data", async (event) => { validate(event); await shell.openPath(dataDir); });
+    const loginFile = path.join(app.getPath("userData"), "account-session.bin");
+    async function rememberLogin(login) {
+      if (!login || typeof login.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(login.token)) throw new Error("Invalid login session");
+      const result = await fetch(origin + "/api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: login.token }), signal: AbortSignal.timeout(10_000) });
+      const verified = await result.json();
+      if (!result.ok || !verified.authenticated || verified.coreId !== login.coreId || verified.sessionId !== login.sessionId) throw new Error("登录已失效，请重新登录");
+      activeLogin = { token: login.token, coreId: verified.coreId, sessionId: verified.sessionId, expiresAt: verified.expiresAt };
+      writeFileSync(loginFile, safeStorage.encryptString(JSON.stringify(activeLogin)), { mode: 0o600 });
+      await mainWindow.webContents.session.cookies.set({ url: origin, name: "nex", value: login.token, httpOnly: true, sameSite: "strict", path: "/", expirationDate: Number(verified.expiresAt) / 1000 });
+    }
+    ipcMain.handle("nex:remember-login", async (event, login) => { validate(event); await rememberLogin(login); });
+    ipcMain.handle("nex:forget-login", async (event) => { validate(event); activeLogin = undefined; if (existsSync(loginFile)) unlinkSync(loginFile); await mainWindow.webContents.session.clearStorageData(); });
+    if (existsSync(loginFile)) try { await rememberLogin(JSON.parse(safeStorage.decryptString(readFileSync(loginFile)))); } catch { activeLogin = undefined; unlinkSync(loginFile); await mainWindow.webContents.session.clearStorageData(); }
+    ipcMain.handle("nex:folder", async (event) => { await validateBusiness(event); const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] }); return result.canceled ? null : result.filePaths[0]; });
+    ipcMain.handle("nex:data", async (event) => { await validateBusiness(event); await shell.openPath(dataDir); });
     ipcMain.handle("nex:preferences", (event) => { validate(event); return preferences; });
-    ipcMain.handle("nex:save-preferences", (event, settings) => {
-      validate(event);
+    ipcMain.handle("nex:save-preferences", async (event, settings) => {
+      await validateBusiness(event);
       if (typeof settings.openAtLogin !== "boolean" || typeof settings.notifications !== "boolean") throw new Error("无效的常驻设置");
       const next = { openAtLogin: settings.openAtLogin, notifications: settings.notifications };
       if (!profileArg) app.setLoginItemSettings({ openAtLogin: next.openAtLogin, path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: [] });
@@ -92,7 +117,7 @@ else {
     ipcMain.handle("nex:quit", (event) => { validate(event); setTimeout(() => app.quit(), 50); });
     ipcMain.handle("nex:close-window", (event) => { validate(event); setTimeout(() => mainWindow.close(), 50); });
     ipcMain.handle("nex:network", async (event, settings) => {
-      validate(event);
+      await validateBusiness(event);
       if (!Number.isSafeInteger(settings.port) || settings.port < 1024 || settings.port > 65535 || typeof settings.enabled !== "boolean") throw new Error("无效的网络配置");
       writeFileSync(networkFile, JSON.stringify({ enabled: settings.enabled, port: settings.port }), { mode: 0o600 });
       app.relaunch({ args: process.argv.slice(1).filter((arg) => arg !== "--lan" && !arg.startsWith("--port=")) });
