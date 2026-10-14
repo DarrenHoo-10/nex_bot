@@ -258,7 +258,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", readTask)?.status === "succeeded");
       expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=?", readTask)?.result_json)).toContain("合成客户端文件");
       await wait(() => !f.app.runtime.workers.size);
-      f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-exec", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: "Set-Content -LiteralPath marker.txt -Value synthetic" }) }] }, { kind: "openai-text", text: "合成命令已批准执行" });
+      f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-exec", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: process.platform === "win32" ? "Set-Content -LiteralPath marker.txt -Value synthetic" : "printf synthetic > marker.txt" }) }] }, { kind: "openai-text", text: "合成命令已批准执行" });
       const taskId = f.app.agents.send(String(f.bots[0].id), "执行客户端命令", "thin-exec-input").taskId;
       await wait(() => !!approval(f.app));
       expect(existsSync(path.join(shared, "marker.txt"))).toBe(false);
@@ -736,7 +736,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const task = f.app.runtime.input(f.conversation, "读取 PDF", id());
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
     expect(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='pdf-read'")?.result_json).toContain("PAPER_FIXTURE_STABILITY_RESULT");
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "shell-once", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: "Add-Content -LiteralPath counter.txt -Value executed; Get-Content -LiteralPath counter.txt" }) }] }, { kind: "openai-text", text: "命令完成" });
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "shell-once", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: process.platform === "win32" ? "Add-Content -LiteralPath counter.txt -Value executed; Get-Content -LiteralPath counter.txt" : "echo executed >> counter.txt; cat counter.txt" }) }] }, { kind: "openai-text", text: "命令完成" });
     const commandTask = f.app.runtime.input(f.conversation, "执行授权命令", id()); await wait(() => !!approval(f.app)); const commandGrant = approval(f.app); f.app.runtime.decide(String(commandGrant.id), String(commandGrant.argument_hash), true);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", commandTask)?.status === "succeeded");
     const receipt = nodeApp.node.journal.prepare("SELECT * FROM node_calls WHERE capability='device.exec'").get()!;

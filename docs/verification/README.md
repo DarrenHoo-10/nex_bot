@@ -1,9 +1,10 @@
 # Verifying OpenMausBot
 
-The separate NexBot Personal OS desktop uses the
-[Personal OS Windows fixture](personal-os.md). It launches disposable
-Core/Node workspaces and real Electron profiles; the legacy `control:omb`
-surface below continues to verify the original desktop entry.
+NexBot Core is now a standalone Node backend, and every desktop distribution is
+a thin shell. Use the [Core service / thin shell recipe](core-service-thin-shell.md)
+for current Personal OS verification. The [Windows desktop fixture](personal-os.md)
+records the historical embedded-desktop delivery. All current checks use
+owned temporary data, synthetic identity/model providers and isolated shells.
 
 OpenMausBot has one development control surface: `pnpm control:omb`. It is a
 thin command-line adapter over `scripts/mcp-server.ts`, so verification uses

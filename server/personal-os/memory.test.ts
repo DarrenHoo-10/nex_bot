@@ -214,10 +214,11 @@ it("does not apply background quotas to task reflection and aborts its model req
   expect((await post(task)).status).toBe(200);
   hang = true; const pending = post(task), deadline = Date.now() + 5000;
   while (received < 4) { if (Date.now() > deadline) throw new Error("Memory model fixture did not start"); await new Promise((resolve) => setTimeout(resolve, 10)); }
+  const activeInvoice = f.store.get("SELECT id FROM memory_model_invocations WHERE task_id=? AND status='in_flight'", task)!;
   f.store.run("UPDATE tasks SET status='cancelling' WHERE id=?", task); gateway.cancelTask(task);
   expect((await pending).status).toBe(502);
   while (!disconnected) { if (Date.now() > deadline) throw new Error("Memory model request was not aborted"); await new Promise((resolve) => setTimeout(resolve, 10)); }
-  expect(f.store.get("SELECT status FROM memory_model_invocations WHERE task_id=? ORDER BY created_at DESC LIMIT 1", task)?.status).toBe("unknown");
+  expect(f.store.get("SELECT status FROM memory_model_invocations WHERE id=?", activeInvoice.id)?.status).toBe("unknown");
   expect(received).toBe(4); expect((await post(task)).status).toBe(403);
 });
 it.each(["openai", "anthropic"])("keeps %s credentials inside Core, attributes every retry and blocks exhausted daily budgets", async (provider) => {

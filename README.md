@@ -4,71 +4,78 @@
 
 本项目基于 [OpenMausBot](https://github.com/milind-soni/OpenMausBot) 演进，保留上游提交历史、[Apache-2.0 授权](LICENSE)、第三方授权记录与[原版 README](docs/upstream/OpenMausBot-README.md)。仓库也保留上游功能；以下内容介绍 NexBot Personal OS。
 
-## 当前能力
+## 当前部署方式
 
-- 内置 NexorAI 用户中心，在应用内登录后使用。主设备首次登录关联现有数据；其他设备用同一账号连接同一 Core，跨设备账号登录须通过 HTTPS。
-- 用户自行创建 Agent，初始化不提供默认角色，也不按名字设置特殊逻辑。补充身份说明可选，修改后同伴目录自动更新。
-- 固定嵌入 Pi 运行时，用户配置模型 API Key、协议、地址与模型。
-- Agent 通过 A2A 自动求助；危险操作在实际执行 Agent 的消息中申请批准。
-- Hindsight 与 PostgreSQL 在主设备运行。Agent 查询自己的私有 bank 与工作空间共享 bank，同伴职责由实时目录提供。
-- 定时工作、持续消息、审批与记忆状态由同一个 Core 管理，其他客户端连接 Core 并同步。
-- Windows 主设备自动登记，提供终端与窗口操作；共享文件目录单独配置。
-- 任务不设累计 Token、模型次数、工具次数或运行时长上限。用户可在输入框旁停止任务，联动取消 A2A 子任务、模型请求和设备执行。
+- **Core 是独立后端服务**，运行在 Mac 或 Windows 主机上，统一管理 Agent、消息、任务、审批、模型配置和记忆来源。
+- **客户端只有壳子**：连接后端、使用 NexorAI 账号登录、显示后端提供的界面。客户端不带 Core、Pi、数据库、PDF 引擎或设备执行节点，关闭客户端不会停止服务。
+- 用户中心固定为 `https://user.nexorai.com.cn`。首次账号关联在后端命令行完成；其他设备使用同一账号登录，不按邮箱隐式合并身份。
+- 记忆通过外部 Hindsight 插件配置。Python、PostgreSQL、模型权重和记忆服务均不随后端或客户端分发。
+- 后端注册自己的主机设备。终端、文件访问和可用的电脑操作作用于后端或独立设备执行节点，不作用于客户端壳。
+- Agent 保持连续消息与记忆，支持 A2A、例行工作、审批和用户手动停止任务。
 
-当前交付与真实原生电脑操作验收以 **Windows x64** 为准。跨设备同步已在同机两个独立客户端进程中验证；其他物理设备及网络环境仍需专项验收。停止任务保留已完成结果，结果未知的电脑输入操作不会自动重放。
+## 构建
 
-## 架构与代码
+需要 Node 24+ 和 pnpm。依赖锁定在 `package.json` / `pnpm-lock.yaml`。
 
-Core 是模块化单体；Pi worker 是运行时隔离进程，Device Node 是设备执行端。
-
-```text
-持久 Agent 联系人 / 远程客户端
-              |
-        主设备 Agent Core
-       /        |        \
- Pi worker   Hindsight   Device Gateway
-               +              |
-          PostgreSQL     Device Node
+```sh
+pnpm install --frozen-lockfile
+pnpm package:core
 ```
+
+后端输出到 `release/core/`，按构建主机的 OS/CPU 命名；PDF 原生依赖要求使用目标平台构建。
+解压后运行：
+
+```sh
+node core/service.js init --data-dir=/your/private/nexbot-data
+node core/service.js start --data-dir=/your/private/nexbot-data
+```
+
+`init` 在终端提示输入邮箱和密码，密码不保存。Windows 使用相应的 Windows 目录路径。
+默认仅监听 `127.0.0.1:8799`；远程客户端通过 HTTPS 反向代理连接。
+服务管理、保险库、迁移与配置详见 [Core 部署说明](deploy/core/README.md)。
+
+Mac Apple Silicon 客户端 DMG：
+
+```sh
+pnpm package:client:mac
+```
+
+Windows 客户端（在 Windows 上构建）：
+
+```powershell
+pnpm package:client:win
+```
+
+客户端输出到 `release/personal-client-mac/` 或 `release/personal-client/`。
+Mac 使用 ad-hoc 签名，尚未做 Developer ID 分发签名与 Apple 公证。
+`package:personal:mac` / `package:personal:win` 仅为后端服务打包命令的兼容别名，不生成主设备应用。
+
+## 用户中心与记忆插件
+
+客户端填写后端地址并使用与该 Core 关联的 NexorAI 账号登录。各客户端会话独立，支持撤销与退出。
+登录失效或用户中心无法验证时暂停业务访问与任务执行；不会降级为匿名或本地免登录模式。
+
+登录后在「设置 → 记忆插件」填写外部 Hindsight 根地址和令牌，测试连接、启用并保存。
+令牌存于后端加密保险库；配置在后端重启后生效。支持后端可访问的本机/私有网络 HTTP 和 HTTPS。
+外部服务独立管理模型、数据库、认证、计费与备份。未连接时仍可使用本地原始记录，待同步来源保留。
+更换已有记忆的服务前先迁移 Hindsight 数据库；停用插件不会删除外部数据。
+
+## 代码与验证
 
 | 路径 | 用途 |
 | --- | --- |
-| `server/personal-os/` | Core、领域数据、A2A、记忆、任务控制、Device Node |
-| `src/personal/` | Agent 联系人桌面界面 |
-| `electron/nex-main.mjs` | NexBot 桌面与 Core/Client 启动入口 |
-| `scripts/build-personal.mjs` | 固定运行时与前后端构建 |
-| `electron-builder.personal.yml` | 主设备安装器 |
-| `electron-builder.client.yml` | 轻量客户端 / Device Node |
+| `server/personal-os/service.ts` | 后端启动、私有保险库、单实例锁和账号初始化 |
+| `server/personal-os/identity*.ts` | nex_user 适配、身份绑定、登录与会话撤销 |
+| `server/personal-os/` | Agent Core、Pi worker、A2A、记忆账本和设备协议 |
+| `server/personal-os/memory-plugin.ts` | 外部记忆插件注册与连接配置 |
+| `src/personal/` | 由后端提供的界面 |
+| `electron/nex-client-main.mjs` | 所有桌面客户端的薄壳 |
+| `scripts/build-personal.mjs` | 分开构建后端与客户端 |
+| `electron-builder.client*.yml` | 仅客户端安装包 |
 
-技术设计：[模块化单体与领域模型](docs/plans/2026-10-07-personal-ai-os-domain-model.md)、[主设备记忆与协作](docs/plans/2026-10-11-personal-agent-memory-hindsight.md)、[任务控制](docs/plans/2026-10-11-manual-task-control.md)、[账号登录](docs/plans/2026-10-11-personal-os-login.md)。旧方案的被替代约束，以后续决定为准。
+设计：[Core 服务与薄壳](docs/plans/2026-10-11-core-service-thin-shell.md)。
+发布前遵循 [隔离验证规范](docs/verification/README.md)；当前交付记录见
+[后端与客户端验收](docs/verification/core-service-thin-shell.md)。
 
-## 开发与 Windows 构建
-
-依赖版本见 `package.json`、`pnpm-lock.yaml` 和记忆运行时锁文件。
-
-```powershell
-pnpm install --frozen-lockfile
-pnpm build:personal
-pnpm test:personal
-```
-
-主设备安装包需要先准备完整记忆运行时。准备命令与固定依赖见 `scripts/prepare-memory-runtime.py` 开头；准备完成后执行：
-
-```powershell
-pnpm package:personal:win
-```
-
-轻量客户端构建与打包：
-
-```powershell
-pnpm build:personal
-node scripts/package-personal.mjs --client
-```
-
-客户端依赖已运行的主设备 Core，本地不部署第二套记忆服务。发布前执行[隔离验收流程](docs/verification/README.md)，已验证范围与安装器构建条件见 [Windows 交付记录](docs/verification/personal-os.md)。
-
-## 数据与发布文件
-
-Git 保存源码、设计与资源锁定记录。API Key、个人消息、记忆数据库、本机配置、模型权重与安装包不进入源码仓库。`node_modules/`、`dist-personal/` 和 `release/` 已忽略；EXE 通过单独的发布附件分发。
-
-本次源码推送不包含 GitHub Release 附件。应用使用用户配置的模型服务；第三方运行时及权重的授权信息在构建时保留，并随应用分发。
+API Key、账号凭据、消息、保险库密钥、数据库与安装包均不进入源码 Git。
+`dist-personal/`、`release/` 和临时构建数据已忽略。历史桌面 profile 不会自动删除或迁移。

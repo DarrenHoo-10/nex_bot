@@ -77,7 +77,7 @@ describe("mandatory built-in account login", () => {
     const upstream = JSON.parse(app.store.decrypt(String(secret.ciphertext)));
     expect(String(secret.ciphertext)).not.toContain(upstream.cookie);
     for (const file of ["core.db", "core.db-wal"]) { try { const bytes = readFileSync(path.join(root, file)); expect(bytes.includes(Buffer.from(" synthetic password "))).toBe(false); expect(bytes.includes(Buffer.from(upstream.cookie))).toBe(false); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; } }
-    app.store.run("UPDATE user_sessions SET expires_at=? WHERE id=?", Date.now() - 1, owner.body.sessionId);
+    vi.spyOn(Date, "now").mockReturnValue(owner.body.expiresAt + 1);
     expect((await request(app, "state", undefined, { Authorization: `Bearer ${owner.body.token}` })).status).toBe(401);
   });
   it("revalidates after the 60-second bound and fails closed during upstream outage", async () => {

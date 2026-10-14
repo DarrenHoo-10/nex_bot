@@ -12,7 +12,7 @@ const Account = createContext<{ status?: IdentityStatus; logout(): Promise<void>
 export function AccountControls() {
   const { status, logout } = useContext(Account);
   const [error, setError] = useState("");
-  return <section className="settings-info"><h2>当前账号</h2><p>{status?.account?.displayName}</p><p>使用 NexorAI 账号登录。消息和记忆保存在主设备，各设备的登录可分别退出或撤销。</p><button onClick={() => void logout().catch(() => setError("退出未完成，请重试"))}>退出登录</button>{error ? <p role="alert">{error}</p> : null}</section>;
+  return <section className="settings-info"><h2>当前账号</h2><p>{status?.account?.displayName}</p><p>使用 NexorAI 账号登录。消息和记忆由后端服务管理，各设备的登录可分别退出或撤销。</p><button onClick={() => void logout().catch(() => setError("退出未完成，请重试"))}>退出登录</button>{error ? <p role="alert">{error}</p> : null}</section>;
 }
 
 export function LoginGate({ children }: { children: ReactNode }) {
@@ -40,7 +40,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
     finally { loggingOut.current = false; }
   }
   if (status?.authenticated) return <Account.Provider value={{ status, logout }}>{children}</Account.Provider>;
-  return <main className="login-screen"><section className="login-card"><span className="login-mark">N</span><p className="login-eyebrow">NEXBOT · PERSONAL AI OS</p><h1>登录你的个人 Agent</h1><p>使用 NexorAI 账号登录，连接你的 Agent、消息与记忆。</p>{loading ? <p role="status">正在检查登录状态…</p> : !status?.initialized && !status?.canInitialize ? <><p>请先在主设备的 NexBot 应用内登录，完成账号关联。</p><button onClick={() => void refresh()}>重新检查</button>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接设置</button> : null}</> : <form className="login-form" onSubmit={(event) => {
+  return <main className="login-screen"><section className="login-card"><span className="login-mark">N</span><p className="login-eyebrow">NEXBOT · PERSONAL AI OS</p><h1>登录你的个人 Agent</h1><p>使用 NexorAI 账号登录，连接你的 Agent、消息与记忆。</p>{loading ? <p role="status">正在检查登录状态…</p> : !status?.initialized && !status?.canInitialize ? <><p>请先在后端服务器运行 init，完成账号关联。</p><button onClick={() => void refresh()}>重新检查</button>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接设置</button> : null}</> : <form className="login-form" onSubmit={(event) => {
     event.preventDefault(); const form = event.currentTarget, data = new FormData(form); setBusy(true); setError("");
     void (async () => {
       try {

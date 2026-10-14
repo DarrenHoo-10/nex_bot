@@ -15,9 +15,10 @@ import { IdentityError } from "./identity-provider.ts";
 import { ClientSync } from "./sync.ts";
 import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
-import { ManagedMemoryService, bundledMemoryRuntime, type MemoryRuntimeOptions } from "./memory-service.ts";
+import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 
-export interface AppOptions { dir: string; key: Buffer; token: string; port?: number; host?: string; publicOrigin?: string; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: MemoryRuntimeOptions | false; /** Only direct disposable test fixtures may opt out. Desktop IPC never forwards false. */ identity?: false | { fixtureOrigin: string } }
+export interface AppOptions { dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
+
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
   const store = new CoreStore(options.dir, options.key, options.token);
@@ -25,7 +26,6 @@ export async function createPersonalApp(options: AppOptions) {
   const identity = options.identity === false ? undefined : new CoreIdentity(store, clients, options.identity?.fixtureOrigin);
   const authenticate = async (token: string) => {
     const session = identity ? await identity.authenticate(token) : clients.authenticate(token);
-    if (session && identity && !closing && store.config()?.configured && memoryService.state === "not_installed") memoryService.start();
     return session;
   };
   const streams = new Map<ServerResponse, string>();
@@ -45,14 +45,13 @@ export async function createPersonalApp(options: AppOptions) {
       for (const task of store.all("SELECT id FROM tasks WHERE authorized_session_id=? AND ended_at IS NULL", sessionId)) runtime.cancel(String(task.id), "登录失效或无法验证，任务已停止");
       if (!store.get("SELECT id FROM user_sessions WHERE protocol='native-v1' AND revoked_at IS NULL AND expires_at>?", Date.now())) {
         for (const worker of runtime.workers.values()) if (store.get("SELECT authorized_session_id FROM tasks WHERE id=?", worker.taskId)?.authorized_session_id === store.session) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
-        memoryService.gateway.cancelTask("");
       }
       changed();
     };
   }
-  const memoryService = new ManagedMemoryService(store, runtime.memory.ledger, options.hindsight || options.memoryRuntime === false ? undefined : options.memoryRuntime ?? bundledMemoryRuntime());
-  if (identity) memoryService.gateway.authorize = (task) => identity.authorizeTask(task ?? { authorized_session_id: store.session });
   if (identity) runtime.memory.ledger.authorizeWork = () => identity.authorizeTask({ authorized_session_id: store.session });
+  const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
+
   const agents = new AgentModule(store, runtime);
   const routines = new RoutineModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
@@ -68,7 +67,7 @@ export async function createPersonalApp(options: AppOptions) {
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
-  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); memoryService.gateway.cancelTask(taskId); };
+  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
   runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed);
   function json(response: ServerResponse, status: number, value: unknown) {
@@ -141,7 +140,7 @@ export async function createPersonalApp(options: AppOptions) {
       const data = await body(request);
       if (url.pathname.endsWith("/start")) { json(response, 200, identity.start(data, bootstrap)); return; }
       const login = await identity.respond(data, bootstrap);
-      setCookie(response, login.token, requestOrigin, login.expiresAt); if (store.config()?.configured && memoryService.state === "not_installed") memoryService.start(); runtime.startRecovered(); changed(); json(response, 200, login); return;
+      setCookie(response, login.token, requestOrigin, login.expiresAt); runtime.startRecovered(); changed(); json(response, 200, login); return;
     }
     if (url.pathname === "/api/client/login" && request.method === "POST") {
       if (identity) throw new IdentityError(410, "请使用 NexorAI 账号登录");
@@ -174,7 +173,7 @@ export async function createPersonalApp(options: AppOptions) {
         streams.set(response, token); response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); request.once("close", () => streams.delete(response)); return;
       }
       if (url.pathname === "/api/clients" && request.method === "GET") { json(response, 200, { sessions: clients.list(), currentSessionId: session.id }); return; }
-      if (url.pathname === "/api/state") { json(response, 200, { ...store.state(), sync: sync.snapshot(), hostDeviceId: gateway.hostDeviceId, memoryEngine: { ...runtime.memory.ledger.status(), service: memoryService.state }, bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })), directory: directory(store), routines: routines.list(), occurrences: routines.occurrences(), journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100"), onlineDevices: [...gateway.sockets.keys()], node: node.publicState(), dataDir: store.dir, runtime: "Pi 1.0.4", address: requestOrigin, lanEnabled: options.host === "0.0.0.0" }); return; }
+      if (url.pathname === "/api/state") { json(response, 200, { ...store.state(), sync: sync.snapshot(), hostDeviceId: gateway.hostDeviceId, memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status }, memoryPlugin: memoryPlugin.status(), bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })), directory: directory(store), routines: routines.list(), occurrences: routines.occurrences(), journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100"), onlineDevices: [...gateway.sockets.keys()], node: node.publicState(), dataDir: store.dir, runtime: "Pi 1.0.4", address: requestOrigin, lanEnabled: options.host === "0.0.0.0" }); return; }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
@@ -192,13 +191,21 @@ export async function createPersonalApp(options: AppOptions) {
       if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
       if (url.pathname === "/api/clients/invite") { if (identity) throw new IdentityError(410, "请在其他设备使用同一账号登录"); json(response, 200, clients.invite(data.name)); changed(); return; }
       if (url.pathname === "/api/clients/revoke") { if (identity) await identity.revoke(text(data.sessionId, 100)); else clients.revoke(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/plugins/memory" || url.pathname === "/api/plugins/memory/test") {
+        if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有配置记忆插件的权限" }); return; }
+        json(response, 200, url.pathname.endsWith("/test") ? await memoryPlugin.test(data) : await memoryPlugin.save(data, async () => {
+          const current = await authenticate(token);
+          if (!current || current.user_id !== store.owner) throw new IdentityError(401, "登录已失效，请重新登录");
+        })); return;
+      }
+
       if (url.pathname === "/api/client/logout") { if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/agents/input") { json(response, 202, agents.send(text(data.botId, 100), text(data.text), text(data.clientId, 200), String(session.id))); return; }
       if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines/run") { routines.runNow(text(data.id, 100), text(data.clientId, 100)); json(response, 200, { ok: true }); return; }
-      if (url.pathname === "/api/config") { if (runtime.workers.size || memoryService.gateway.busy) throw new Error("请先等待模型请求结束再修改模型"); store.saveConfig(data); memoryService.start(); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/config") { if (runtime.workers.size) throw new Error("请先等待模型请求结束再修改模型"); store.saveConfig(data); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots") { const botId = store.createBot(text(data.name, 80), data.instructions); agents.ensure(botId); changed(); json(response, 200, { id: botId }); return; }
       if (url.pathname === "/api/bots/update") {
         agents.updateProfile(data); json(response, 200, { ok: true }); return;
@@ -221,7 +228,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/devices") { json(response, 200, gateway.pair(text(data.name, 80))); return; }
       if (url.pathname === "/api/devices/revoke") { gateway.revoke(text(data.id, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/node" || url.pathname === "/api/node/reconcile") {
-        if (!loopback || (!identity && session.id !== store.session)) { json(response, 403, { error: "请在这台电脑本机授权设备能力；远程客户端使用自己的 Device Node" }); return; }
+        if (!loopback || (!identity && session.id !== store.session)) { json(response, 403, { error: "此账号没有配置后端设备能力的权限" }); return; }
         if (url.pathname === "/api/node") json(response, 200, node.configure({ ...node.config, ...data }));
         else { node.reconcile(text(data.callId, 100), Number(data.version)); json(response, 200, { ok: true }); }
         return;
@@ -237,11 +244,11 @@ export async function createPersonalApp(options: AppOptions) {
   const listen = (port: number) => new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, options.host ?? "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
   try { await listen(options.port ?? 0); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EADDRINUSE" && options.host !== "0.0.0.0") await listen(0);
-    else { await runtime.close(); await node.close(); gateway.close(); store.close(); throw error; }
+    if (!options.strictPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE" && options.host !== "0.0.0.0") await listen(0);
+    else { clearInterval(heartbeat); await identity?.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); gateway.close(); store.close(); throw error; }
   }
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Server address unavailable");
-  origin = `http://127.0.0.1:${address.port}`;
+  origin = `http://${options.host === "::1" ? "[::1]" : "127.0.0.1"}:${address.port}`;
   // Register metadata without granting a root, shell or screen. Stable device
   // credentials are encrypted and independent of owner/client login tokens.
   const savedHost = store.get("SELECT ciphertext FROM secrets WHERE id='host-node-pair'");
@@ -253,33 +260,19 @@ export async function createPersonalApp(options: AppOptions) {
     node.configure({ origin, token: pair.token, root: node.config?.root ?? "", exec: true, computer: node.computer.available() });
   }
   if (options.hindsight) runtime.memory.ledger.client = new HindsightClient(options.hindsight.endpoint, options.hindsight.token);
-  if (!identity && store.config()) memoryService.start();
+  if (!options.hindsight) memoryPlugin.start();
   runtime.memory.ledger.start();
   runtime.startRecovered();
   routines.start();
-  return { server, store, runtime, agents, routines, gateway, node, memoryService, identity, origin, async close() {
+  return { server, store, runtime, agents, routines, gateway, node, memoryPlugin, identity, origin, async close() {
+
     closing = true; clearInterval(heartbeat);
     await identity?.close();
     await heartbeatJob;
     routines.close();
+    await memoryPlugin.close();
     await runtime.memory.ledger.close();
-    await memoryService.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();
     await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); store.close();
   } };
-}
-
-// Desktop owns credentials and sends them over its private child IPC, never argv.
-if (process.send) {
-  process.once("message", (message: { type: string; dir: string; key: string; token: string; uiDir: string; host?: string; port?: number }) => {
-    if (message.type !== "boot") return;
-    // Local test factories can disable identity. A real desktop can only use
-    // mandatory login, with a loopback issuer substituted by an isolated fixture.
-    void createPersonalApp({ ...message, identity: (message as unknown as AppOptions).identity || undefined, key: Buffer.from(message.key, "base64") }).then((app) => {
-      process.send?.({ type: "ready", origin: app.origin });
-      let closing = false;
-      const close = () => { if (closing) return; closing = true; void app.close().finally(() => process.exit(0)); };
-      process.once("disconnect", close); process.on("message", (m: { type?: string }) => { if (m.type === "quit") close(); });
-    }).catch((e: unknown) => { process.send?.({ type: "error", error: e instanceof Error ? e.message : "启动失败" }); process.exit(1); });
-  });
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
 import { createPersonalApp } from "./index.ts";
+import { ManagedMemoryService } from "./memory-service.ts";
 import { pathToFileURL } from "node:url";
 const createApp: typeof createPersonalApp = process.env.NEX_TEST_BUNDLE ? (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_BUNDLE)).href)).createPersonalApp : createPersonalApp;
 function cleanup(root: string) {
@@ -31,8 +32,12 @@ it.skipIf(process.env.NEX_HINDSIGHT_NATIVE !== "1")("starts genuine Hindsight/Po
   await new Promise<void>((resolve) => fake.listen(0, "127.0.0.1", resolve));
   const production = process.env.NEX_HINDSIGHT_PRODUCTION === "1";
   const resources = path.resolve(process.env.NEX_TEST_MEMORY_RESOURCES ?? "dist-personal/memory-runtime"), manifest = production ? JSON.parse((await import("node:fs")).readFileSync(path.join(resources, "runtime.json"), "utf8")) : undefined;
-  const app = await createApp({ identity: false, dir: root, key: randomBytes(32), token: "synthetic-owner", memoryRuntime: production ? { command: path.join(resources, manifest.python), args: ["-I", "-u"], models: { ...manifest.models, root: resources } } : { command: "uv", args: ["run", "--offline", "--no-project", "--isolated", "--with", "hindsight-all==0.10.3", "python", "-u"], fixture: true } });
-  const { store, memoryService: service } = app, memory = app.runtime.memory;
+  const app = await createApp({ identity: false, dir: root, key: randomBytes(32), token: "synthetic-owner" });
+  const { store } = app, memory = app.runtime.memory;
+  // The native infrastructure fixture owns this process; production Core has
+  // no process launcher and connects only through the external plugin.
+  const service = new ManagedMemoryService(store, memory.ledger, production ? { command: path.join(resources, manifest.python), args: ["-I", "-u"], models: { ...manifest.models, root: resources } } : { command: "uv", args: ["run", "--offline", "--no-project", "--isolated", "--with", "hindsight-all==0.10.3", "python", "-u"], fixture: true });
+
   store.saveConfig({ provider: "openai", endpoint: `http://127.0.0.1:${(fake.address() as { port: number }).port}/v1`, model: "fixture", apiKey: "synthetic-paid-key" });
   try {
     service.start(); await service.startup;
@@ -84,7 +89,7 @@ it.skipIf(process.env.NEX_HINDSIGHT_NATIVE !== "1")("starts genuine Hindsight/Po
       await expect(memory.ledger.client!.retain(String(binding.provider_bank_id), (await import("node:crypto")).randomUUID(), { content: "重启后雪鹭旧来源", documentId: "restart-late", timestamp: new Date().toISOString(), metadata: {}, context: "synthetic" })).rejects.toMatchObject({ status: 410 });
     }
   } finally {
-    await app.close(); expect(service.child?.exitCode).toBe(0);
+    await service.close(); await app.close(); expect(service.child?.exitCode).toBe(0);
     await new Promise<void>((resolve) => { fake.close(() => resolve()); fake.closeAllConnections(); });
     cleanup(root);
   }

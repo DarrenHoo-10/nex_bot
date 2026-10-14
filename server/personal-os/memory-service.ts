@@ -91,5 +91,5 @@ export function bundledMemoryRuntime(): MemoryRuntimeOptions | undefined {
   const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as { release: string; python: string; models: Record<string, unknown> };
   const command = path.resolve(root, manifest.python);
   if (manifest.release !== "0.10.3" || !command.startsWith(root + path.sep) || !existsSync(command)) throw new Error("Invalid memory runtime distribution");
-  return { command, models: { ...manifest.models, root: root } };
+  return { command, args: ["-I", "-u"], models: { ...manifest.models, root: root } };
 }

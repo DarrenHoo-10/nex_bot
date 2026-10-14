@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from "no
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
@@ -11,8 +10,8 @@ import { startFakeIdentity } from "../server/personal-os/testing/fake-identity.t
 import { startFakeModel } from "../server/runtime/pi/p0/fake-model.ts";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-two-client-fixture-"));
-const coreFile = path.resolve(process.argv.find((a) => a.startsWith("--core="))?.slice(7) ?? "dist-personal/core/index.js");
-const ui = path.resolve(process.argv.find((a) => a.startsWith("--ui="))?.slice(5) ?? "dist-personal/ui");
+const coreFile = path.resolve(process.argv.find((a) => a.startsWith("--core="))?.slice(7) ?? "dist-personal/server/core/index.js");
+const ui = path.resolve(process.argv.find((a) => a.startsWith("--ui="))?.slice(5) ?? "dist-personal/server/ui");
 const executable = process.argv.find((a) => a.startsWith("--exe="))?.slice(6);
 const { createPersonalApp } = await import(pathToFileURL(coreFile).href);
 const fake = await startFakeModel(), identityProvider = await startFakeIdentity();
@@ -29,7 +28,7 @@ async function call(route, data) {
 }
 async function launch(index) {
   const profile = path.join(root, `client-${index}`), ready = path.join(root, `ready-${index}.json`);
-  const child = spawn(executable ?? path.resolve("dist-personal/electron/electron.exe"), [...(executable ? [] : [path.resolve("electron/nex-client-main.mjs")]), `--profile=${profile}`, "--remote-debugging-port=0"], { windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_CLIENT_SMOKE_OUTPUT: ready }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(executable ?? path.resolve("dist-personal/electron", process.platform === "darwin" ? "Electron.app/Contents/MacOS/Electron" : "electron.exe"), [...(executable ? [] : [path.resolve("electron/nex-client-main.mjs")]), `--profile=${profile}`, "--remote-debugging-port=0"], { windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: os.tmpdir(), TMP: os.tmpdir(), APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERPROFILE: process.env.USERPROFILE, NEX_CLIENT_SMOKE_OUTPUT: ready }, stdio: ["ignore", "pipe", "pipe"] });
   const client = { child, profile, ready, exited: false, ws: undefined, logs: "", sequence: 0, replies: new Map() }; clients.push(client);
   child.stdout.on("data", (value) => { client.logs = (client.logs + value.toString()).slice(-5000); }); child.stderr.on("data", (value) => { client.logs = (client.logs + value.toString()).slice(-5000); }); child.once("close", () => { client.exited = true; });
   try { await until(() => { if (client.exited) throw new Error("Client exited: " + client.logs); return existsSync(ready) && existsSync(path.join(profile, "DevToolsActivePort")); }, 180_000); }
@@ -107,20 +106,15 @@ try {
   if (!await b.evaluate("!!document.querySelector('.transcript')")) throw new Error("Revoking one client disabled the other");
   cases.push("independent-session-revocation");
   writeFileSync(path.resolve("release/personal-client/client-contact.png"), Buffer.from((await b.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
-  const paired = await call("devices", { name: "合成客户端本机能力" });
-  await b.evaluate(`window.nex.configureNode({origin:${JSON.stringify(core.origin)},token:${JSON.stringify(paired.token)},root:''})`);
-  await until(() => core.gateway.sockets.has(paired.deviceId));
   await b.evaluate("[...document.querySelectorAll('nav button')].find(b=>b.textContent.includes('设置')).click();true");
   await until(() => b.evaluate("[...document.querySelectorAll('button')].some(b=>b.textContent==='退出登录')"));
+  if (await b.evaluate("typeof window.nex.configureNode !== 'undefined'||typeof window.nex.nodeState !== 'undefined'")) throw new Error("Shell exposes local device execution");
   await b.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='退出登录').click();true");
   await until(() => b.evaluate("!!document.getElementById('connection')&&!document.querySelector('.brand')"));
-  if(existsSync(path.join(b.profile,'connection.bin'))) throw new Error('Client logout retained login credentials');
-  const deviceDb = new DatabaseSync(path.join(b.profile,'device','device-secrets.db'),{readOnly:true});
-  try { if(deviceDb.prepare("SELECT id FROM secrets WHERE id='node-config'").get()) throw new Error('Client logout retained device grant'); } finally {deviceDb.close();}
-  await until(() => !core.gateway.sockets.has(paired.deviceId));
-  cases.push('client-account-logout','logout-clears-device-grant','logout-stops-client-node');
+  if (existsSync(path.join(b.profile,'connection.bin'))) throw new Error('Client logout retained login credentials');
+  cases.push('client-account-logout','shell-has-no-device-executor');
   for (const client of clients) {
-    if (existsSync(path.join(client.profile, "personal-os", "core.db")) || existsSync(path.join(client.profile, "memory"))) throw new Error("Thin client created Core or memory database");
+    if (existsSync(path.join(client.profile, "personal-os", "core.db")) || existsSync(path.join(client.profile, "memory")) || existsSync(path.join(client.profile, "device")) || existsSync(path.join(client.profile, "device-key.bin"))) throw new Error("Thin client created Core or memory database");
     await client.evaluate("void window.nex.quit();true");
     await until(() => client.exited, 60_000);
   }
@@ -132,7 +126,7 @@ try {
 } finally {
   for (const client of clients) {
     client.ws?.close();
-    if (!client.exited && client.child.pid) { const killer = spawn("taskkill.exe", ["/PID", String(client.child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); await new Promise((resolve) => killer.once("close", resolve)); }
+    if (!client.exited && client.child.pid) { if (process.platform === "win32") { const killer = spawn("taskkill.exe", ["/PID", String(client.child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); await new Promise((resolve) => killer.once("close", resolve)); } else client.child.kill("SIGTERM"); }
   }
   await core.close(); await fake.close(); await identityProvider.close();
   if (path.dirname(root).toLowerCase() === os.tmpdir().toLowerCase() && path.basename(root).startsWith("nex-two-client-fixture-")) {

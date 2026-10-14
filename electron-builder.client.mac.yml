@@ -1,0 +1,39 @@
+appId: com.nexbot.client
+productName: NexBot Client
+directories:
+  output: release/personal-client-mac
+extraMetadata:
+  name: nexbot-client
+  version: 0.7.0
+  main: electron/nex-client-main.mjs
+npmRebuild: false
+electronVersion: 39.8.10
+electronDist: dist-personal/electron
+asar: true
+files:
+  - electron/nex-client-main.mjs
+  - electron/nex-client-preload.cjs
+  - electron/client/**
+  - package.json
+  - '!**/node_modules/**'
+extraResources:
+  - from: LICENSE
+    to: LICENSE-OpenMausBot.txt
+  - from: NOTICE
+    to: NOTICE
+
+mac:
+  target:
+    - target: dmg
+      arch: arm64
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  notarize: false
+  artifactName: NexBot-Client-${version}-macOS-${arch}.dmg
+dmg:
+  sign: false
+  artifactName: NexBot-Client-${version}-macOS-${arch}.dmg
+publish: null

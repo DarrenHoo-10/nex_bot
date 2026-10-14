@@ -8,7 +8,7 @@ const sdkPackage = realpathSync(path.join(repo, "node_modules/@trycua/cua-driver
 const require = createRequire(sdkPackage), version = JSON.parse(readFileSync(sdkPackage, "utf8")).version;
 if (version !== "0.28.2") throw new Error("Requalify computer runtime for this CUA SDK version");
 const native = path.dirname(require.resolve("@trycua/cua-driver-win32-x64-msvc/package.json"));
-const output = path.join(repo, "dist-personal/computer-runtime");
+const output = path.join(repo, "dist-personal/server/computer-runtime");
 mkdirSync(path.join(output, "native"), { recursive: true });
 for (const name of ["cua_driver_sdk.dll", "cua_driver_node_runtime.node", "node-runtime-NOTICE.md"]) copyFileSync(path.join(native, name), path.join(output, "native", name));
 const bundle = path.join(output, "sdk.mjs");

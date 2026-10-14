@@ -1,4 +1,12 @@
+import { isIP } from "node:net";
+
 // Fixed v0.10.3 HTTP boundary. Engine DTOs never enter Agent/Device protocols.
+export function memoryEndpoint(value: string) {
+  const url = new URL(value);
+  const privateHost = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || (isIP(url.hostname) === 4 && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(url.hostname));
+  if ((url.protocol !== "https:" && !(url.protocol === "http:" && privateHost)) || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error("记忆服务须为 HTTPS 或本机/私有网络 HTTP 根地址，不能包含凭据或路径");
+  return url.origin;
+}
 export interface RetainSource {
   content: string; documentId: string; timestamp: string;
   metadata: Record<string, string>; context: string;
@@ -9,19 +17,25 @@ export class HindsightError extends Error {
 }
 export class HindsightClient {
   readonly endpoint: string;
+  private readonly requests = new Map<string, Set<AbortController>>();
   constructor(endpoint: string, readonly token: string) {
-    const url = new URL(endpoint);
-    if (url.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error("Hindsight 必须在主设备 loopback 上运行");
-    this.endpoint = url.origin;
+    this.endpoint = memoryEndpoint(endpoint);
   }
+  cancelTask(taskId: string) { for (const controller of this.requests.get(taskId) ?? []) controller.abort(); }
   async request(route: string, method = "GET", body?: unknown, taskId?: string): Promise<Record<string, unknown>> {
+    const controller = new AbortController();
+    if (taskId) { const pending = this.requests.get(taskId) ?? new Set<AbortController>(); pending.add(controller); this.requests.set(taskId, pending); }
+    try {
     let response: Response;
-    try { response = await fetch(this.endpoint + route, { method, headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", ...(taskId ? { "x-nex-task-id": taskId } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(route.endsWith("/reflect") ? 120_000 : 15_000), redirect: "error" }); }
+    try { response = await fetch(this.endpoint + route, { method, headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", ...(taskId ? { "x-nex-task-id": taskId } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(route.endsWith("/reflect") ? 120_000 : 15_000)]), redirect: "error" }); }
     catch { throw new HindsightError("engine_unavailable"); }
     if (!response.ok) { await response.body?.cancel(); throw new HindsightError(`engine_http_${response.status}`, response.status); }
     const raw = await response.text();
     if (raw.length > 2_000_000) throw new HindsightError("engine_response_too_large");
     try { return JSON.parse(raw) as Record<string, unknown>; } catch { throw new HindsightError("engine_invalid_response"); }
+    } finally {
+      if (taskId) { const pending = this.requests.get(taskId); pending?.delete(controller); if (!pending?.size) this.requests.delete(taskId); }
+    }
   }
   bank(bank: string) { return `/v1/default/banks/${encodeURIComponent(bank)}`; }
   ensure(bank: string) { return this.request(this.bank(bank), "PUT", { name: "Personal memory" }); }

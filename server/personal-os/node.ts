@@ -16,6 +16,16 @@ export function confined(root: string, relative: string) {
   return candidate;
 }
 interface NodeConfig { origin: string; token: string; root: string; exec: boolean; computer?: boolean; policyVersion: number }
+function stopOwnedCommand(child: ChildProcess) {
+  if (!child.pid) return;
+  if (process.platform === "win32") spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+  else {
+    // POSIX commands get their own group; stop shell descendants as well.
+    // Otherwise inherited output pipes stay open after the shell is killed.
+    try { process.kill(-child.pid, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL"); }
+  }
+}
 export class DeviceNode {
   readonly journal: DatabaseSync;
   socket?: WebSocket;
@@ -188,10 +198,10 @@ export class DeviceNode {
     // cwd is convenience, never described as a shell security sandbox.
     return new Promise((resolve) => {
       if (signal?.aborted) { resolve({ error: "用户停止了终端执行", cancelled: true }); return; }
-      const child = process.platform === "win32" ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP } }) : spawn("/bin/sh", ["-c", command], { cwd: root, env: { PATH: process.env.PATH } });
+      const child = process.platform === "win32" ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP } }) : spawn("/bin/sh", ["-c", command], { cwd: root, detached: true, env: { PATH: process.env.PATH } });
       this.commands.add(child);
       let stdout = "", stderr = "", timedOut = false, cancelled = false;
-      const kill = () => { if (process.platform === "win32" && child.pid) spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); else child.kill("SIGKILL"); };
+      const kill = () => stopOwnedCommand(child);
       const abort = () => { cancelled = true; kill(); };
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
@@ -215,7 +225,7 @@ export class DeviceNode {
   async close() {
     this.stopping = true; clearTimeout(this.timer); this.socket?.terminate();
     this.activeCall?.controller.abort();
-    for (const child of this.commands) { if (process.platform === "win32" && child.pid) spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); else child.kill("SIGKILL"); }
+    for (const child of this.commands) stopOwnedCommand(child);
     await Promise.allSettled(this.operations); await this.computer.close(); this.journal.close();
   }
 }
