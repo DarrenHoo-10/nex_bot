@@ -6,6 +6,10 @@ for current Personal OS verification. The [Windows desktop fixture](personal-os.
 records the historical embedded-desktop delivery. All current checks use
 owned temporary data, synthetic identity/model providers and isolated shells.
 
+The [Seoul HTTPS relay verification](seoul-relay.md) records the production
+entry-point cutover, certificate renewal, isolated message-loading measurements
+and the local DNS cache limitation.
+
 OpenMausBot has one development control surface: `pnpm control:omb`. It is a
 thin command-line adapter over `scripts/mcp-server.ts`, so verification uses
 the same URL validation, task pinning, bounded transcripts, wait states, and
@@ -242,6 +246,16 @@ The [Group and Goal Local VM recipe](group-local-vm.md) checks per-speaker
 desktop routing, cancellation, and computer authority cleanup.
 
 ## Evidence
+
+The [account workspace verification](account-workspaces.md) covers independent
+NexorAI accounts, preserved legacy ownership, client compatibility and deployment.
+
+The [NexBot 0.8.0 release record](personal-release-0.8.0.md) covers the packaged
+Windows client, isolated Linux archive verification and production rollout.
+
+The [Personal workspace and MCP fixture](personal-workspace-connectors.md) checks
+the three-column Personal UI and generic MCP discovery, grants, approvals and
+cancellation using an isolated Core and renderer.
 
 The [persistence responsiveness benchmark](persistence-performance.md) measures
 synthetic message/log bursts and history scans, with isolated chat, visibility

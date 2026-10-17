@@ -1,0 +1,71 @@
+# Install in nginx's http context after replacing TOKYO_ORIGIN_IP.
+# Issue the public certificate with the webroot before enabling the TLS server.
+# The upstream trust bundle must validate Tokyo's certificate and hostname.
+map $http_upgrade $nexbot_relay_connection {
+    default upgrade;
+    '' '';
+}
+
+log_format nexbot_relay '$time_iso8601 $request_method $uri $status '
+                        'request=$request_time upstream=$upstream_response_time';
+
+upstream nexbot_tokyo {
+    server TOKYO_ORIGIN_IP:443;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name bot.nexorai.com.cn;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/nexbot-acme;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+    location / { return 301 https://bot.nexorai.com.cn$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name bot.nexorai.com.cn;
+    ssl_certificate /etc/letsencrypt/live/bot.nexorai.com.cn/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bot.nexorai.com.cn/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:nexbot_relay_tls:10m;
+    ssl_session_timeout 1d;
+    access_log /var/log/nginx/nexbot-relay.access.log nexbot_relay;
+    error_log /var/log/nginx/nexbot-relay.error.log warn;
+    client_max_body_size 32m;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/nexbot-acme;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / {
+        proxy_pass https://nexbot_tokyo;
+        proxy_http_version 1.1;
+        proxy_set_header Host bot.nexorai.com.cn;
+        proxy_set_header X-Forwarded-Host bot.nexorai.com.cn;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        # Tokyo accepts this only from the relay's explicitly trusted IP.
+        proxy_set_header CF-Connecting-IP $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $nexbot_relay_connection;
+        proxy_ssl_server_name on;
+        proxy_ssl_name bot.nexorai.com.cn;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 3;
+        proxy_ssl_trusted_certificate /etc/nginx/ssl/nexbot/origin-trust.pem;
+        proxy_ssl_session_reuse on;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 60s;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_next_upstream off;
+    }
+}
