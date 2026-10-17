@@ -54,7 +54,9 @@ try {
   await first.quit(); if (!(await fetch(core.origin + "/health")).ok) throw new Error("Shell exit stopped backend");
   const second = await launch(); await until(() => second.evaluate("document.querySelector('.contact-groups')?.textContent.includes('独立后端联系人')"));
   cases.push("encrypted-login-storage", "shell-restart-restores-login", "client-exit-keeps-backend");
-  await second.evaluate("[...document.querySelectorAll('nav button')].find(button=>button.textContent.includes('设置')).click();true");
+  await second.evaluate("document.querySelector('.workspace-account-name').click();true");
+  await until(() => second.evaluate("!!document.querySelector('.account-menu')"));
+  await second.evaluate("[...document.querySelectorAll('.account-menu button')].find(button=>button.textContent.includes('设置')).click();true");
   await until(() => second.evaluate("!!document.querySelector('[data-memory-plugin]')"));
   if (!await second.evaluate("document.querySelector('[data-memory-plugin]').textContent.includes('后端')")) throw new Error("Plugin configuration is missing from thin shell");
   mkdirSync(path.resolve("release/personal-client-mac"), { recursive: true });
@@ -81,7 +83,9 @@ try {
     await fifth.quit();
     const sixth = await launch();
     await until(() => sixth.evaluate("document.querySelector('.contact-groups')?.textContent.includes('第二账号私有联系人')"));
-    await sixth.evaluate("[...document.querySelectorAll('nav button')].find(button=>button.textContent.includes('设置')).click();true");
+    await sixth.evaluate("document.querySelector('.workspace-account-name').click();true");
+    await until(() => sixth.evaluate("!!document.querySelector('.account-menu')"));
+    await sixth.evaluate("[...document.querySelectorAll('.account-menu button')].find(button=>button.textContent.includes('设置')).click();true");
     await until(() => sixth.evaluate("[...document.querySelectorAll('button')].some(button=>button.textContent==='退出登录')"));
     await sixth.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='退出登录').click();true");
     await until(() => sixth.evaluate("!!document.querySelector('#connection')"));

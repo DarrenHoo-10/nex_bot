@@ -4,7 +4,7 @@ directories:
   output: release/personal-client
 extraMetadata:
   name: nexbot-client
-  version: 0.9.0
+  version: 0.9.1
   main: electron/nex-client-main.mjs
 npmRebuild: false
 electronVersion: 39.8.10

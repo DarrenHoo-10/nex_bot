@@ -106,7 +106,9 @@ try {
   if (!await b.evaluate("!!document.querySelector('.transcript')")) throw new Error("Revoking one client disabled the other");
   cases.push("independent-session-revocation");
   writeFileSync(path.resolve("release/personal-client/client-contact.png"), Buffer.from((await b.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
-  await b.evaluate("[...document.querySelectorAll('nav button')].find(b=>b.textContent.includes('设置')).click();true");
+  await b.evaluate("document.querySelector('.workspace-account-name').click();true");
+  await until(() => b.evaluate("!!document.querySelector('.account-menu')"));
+  await b.evaluate("[...document.querySelectorAll('.account-menu button')].find(b=>b.textContent.includes('设置')).click();true");
   await until(() => b.evaluate("[...document.querySelectorAll('button')].some(b=>b.textContent==='退出登录')"));
   if (await b.evaluate("typeof window.nex.configureNode !== 'undefined'||typeof window.nex.nodeState !== 'undefined'")) throw new Error("Shell exposes local device execution");
   await b.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='退出登录').click();true");
