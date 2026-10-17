@@ -1,4 +1,6 @@
 import { Cpu, LogOut, Moon, PanelLeftClose, Plug, Plus, Search, Settings, Sun, X } from "lucide-react";
+import { BrandMark } from "./BrandMark";
+import { companionState } from "../avatars/appearance";
 import { AgentAvatar as Avatar } from "./AgentAvatar";
 import { str, taskPhrase, type State } from "../api";
 
@@ -21,13 +23,13 @@ export function ContactSidebar(props: Props) {
   return <>
     {props.open && <button className="sidebar-scrim" aria-label="关闭联系人列表" onClick={props.onClose}/>}
     <aside className={`contact-sidebar ${props.open ? "is-open" : ""}`} aria-label="联系人与导航">
-      <div className="workspace-brand"><span className="workspace-monogram" aria-hidden="true">n</span><strong>NexBot</strong><button className="icon-button sidebar-dismiss" aria-label="收起联系人列表" onClick={props.onClose}><PanelLeftClose size={17}/></button><button className="icon-button" aria-label="添加 Agent" title="添加 Agent" onClick={props.onCreate}><Plus size={19}/></button></div>
+      <div className="workspace-brand"><BrandMark size={30}/><strong>NexBot</strong><button className="icon-button sidebar-dismiss" aria-label="收起联系人列表" onClick={props.onClose}><PanelLeftClose size={17}/></button><button className="icon-button" aria-label="添加 Agent" title="添加 Agent" onClick={props.onCreate}><Plus size={19}/></button></div>
       <label className="sidebar-search"><Search size={15}/><input aria-label="搜索 Agent" placeholder="搜索联系人" value={search} onChange={(event) => props.onSearch(event.target.value)}/>{search && <button className="icon-button" aria-label="清空搜索" onClick={() => props.onSearch("")}><X size={13}/></button>}</label>
       <div className="contact-list-label"><span>对话</span><span>{state.bots.length}</span></div><div className="contact-groups">
         {groups.map((group) => group.items.length ? <section key={group.title}><div className={`sidebar-section-title ${group.title === "我的 Agent" ? "is-default-group" : ""}`}><span>{group.title}</span></div>{group.items.map((bot) => {
           const task = state.tasks.find((item) => item.bot_id === bot.id && !ended.has(str(item.status)));
           return <button className={`contact-item ${selectedId === bot.id && page === "agent" ? "is-selected" : ""}`} key={str(bot.id)} data-agent={bot.id} aria-current={selectedId === bot.id && page === "agent" ? "page" : undefined} onClick={() => props.onSelect(str(bot.id))}>
-            <Avatar bot={bot} allBots={state.bots} size={38} working={!!task}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong><time>{time(bot.last_message_at)}</time></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? taskPhrase(task) : str(bot.last_message) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}</span></span>
+            <Avatar bot={bot} allBots={state.bots} size={40} state={companionState(task, state.approvals.some((a) => a.bot_id === bot.id), props.connected)}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong><time>{time(bot.last_message_at)}</time></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? taskPhrase(task) : str(bot.last_message) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}</span></span>
           </button>;
         })}</section> : null)}
         {!contacts.length && <div className="sidebar-empty">{search ? "没有找到联系人" : "你的 Agent 会出现在这里"}{!search && <button className="text-button" onClick={props.onCreate}>创建第一个 Agent</button>}</div>}

@@ -259,6 +259,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/bots/update") {
         agents.updateProfile(data); json(response, 200, { ok: true }); return;
       }
+      if (url.pathname === "/api/bots/appearance") { agents.updateAppearance(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/policy") { agents.updatePolicy(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/archive") { agents.archive(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/conversations") { const conversationId = store.createConversation(text(data.botId, 100)); changed(); json(response, 200, { id: conversationId }); return; }

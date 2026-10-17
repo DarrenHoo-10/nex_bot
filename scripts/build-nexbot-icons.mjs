@@ -1,0 +1,20 @@
+// Reproducible platform icons from the original NexBot vector mark.
+import { createRequire } from "node:module";
+import { readFileSync, writeFileSync, realpathSync, copyFileSync } from "node:fs";
+const require = createRequire(realpathSync("node_modules/pdfjs-dist/package.json"));
+const { createCanvas, loadImage } = require("@napi-rs/canvas");
+const source = "src/personal/assets/nexbot-mark.svg";
+const mark = await loadImage(readFileSync(source));
+const render = (size) => { const canvas = createCanvas(size, size); canvas.getContext("2d").drawImage(mark, 0, 0, size, size); return canvas.toBuffer("image/png"); };
+const sizes = [16, 24, 32, 48, 64, 128, 256];
+const images = sizes.map(render), header = Buffer.alloc(6 + sizes.length * 16);
+header.writeUInt16LE(1, 2); header.writeUInt16LE(sizes.length, 4);
+let offset = header.length;
+images.forEach((png, i) => { const entry = 6 + i * 16; header[entry] = sizes[i] % 256; header[entry + 1] = sizes[i] % 256; header.writeUInt16LE(1, entry + 4); header.writeUInt16LE(32, entry + 6); header.writeUInt32LE(png.length, entry + 8); header.writeUInt32LE(offset, entry + 12); offset += png.length; });
+writeFileSync("build/nexbot-icon.ico", Buffer.concat([header, ...images]));
+const chunks = [["icp4", 16], ["icp5", 32], ["icp6", 64], ["ic07", 128], ["ic08", 256], ["ic09", 512], ["ic10", 1024]].map(([type, size]) => { const png = render(size), chunk = Buffer.alloc(8); chunk.write(type); chunk.writeUInt32BE(png.length + 8, 4); return Buffer.concat([chunk, png]); });
+const icns = Buffer.alloc(8); icns.write("icns"); icns.writeUInt32BE(8 + chunks.reduce((sum, chunk) => sum + chunk.length, 0), 4);
+writeFileSync("build/nexbot-icon.icns", Buffer.concat([icns, ...chunks]));
+writeFileSync("electron/client/nexbot-icon.png", render(512));
+copyFileSync(source, "electron/client/nexbot-mark.svg");
+console.log("Generated NexBot Windows, macOS and window icons.");

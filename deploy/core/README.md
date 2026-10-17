@@ -1,4 +1,4 @@
-# NexBot Core 0.8.1 — independent backend service
+# NexBot Core 0.9.0 — independent backend service
 
 
 Core runs under Node.js 24+ on the backend host. It has no Electron window,
