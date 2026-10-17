@@ -123,6 +123,10 @@ extension WorkspaceStore {
     public func saveModel(provider: String, model: String, endpoint: String, apiKey: String = "") async throws {
         try await act { try await client.saveModel(ModelSettings(provider: provider, model: model, endpoint: endpoint, apiKey: apiKey.isEmpty ? nil : apiKey)) }
     }
+    /// Lists the provider's models for the model picker; saves nothing. Empty `apiKey` reuses the saved key.
+    public func listModels(provider: String, endpoint: String, apiKey: String = "") async throws -> ModelCatalog {
+        try await act(refresh: false) { try await client.listModels(ModelCatalogQuery(provider: provider, endpoint: endpoint, apiKey: apiKey)) }
+    }
     /// Saves the memory plugin. Returns the new plugin state (check `restartRequired`).
     @discardableResult
     public func saveMemoryPlugin(enabled: Bool, endpoint: String = "", token: String = "") async throws -> MemoryPluginState {

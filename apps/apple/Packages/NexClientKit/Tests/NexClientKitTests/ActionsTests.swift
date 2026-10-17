@@ -223,6 +223,20 @@ final class ActionsTests: XCTestCase {
         XCTAssertEqual(core.recorded("/api/plugins/memory/test")[0].json["enabled"] as? Bool, true)
     }
 
+    func testModelCatalog() async throws {
+        let (core, store) = await loaded { r in
+            r.path == "/api/models/list" ? .json(["models": ["gpt-a", "gpt-b"], "hasMore": true]) : .json(["ok": true])
+        }
+        let catalog = try await store.listModels(provider: "openai", endpoint: "https://api.example/v1")
+        XCTAssertEqual(catalog.models, ["gpt-a", "gpt-b"]); XCTAssertTrue(catalog.hasMore)
+        let body = core.recorded("/api/models/list")[0].json
+        XCTAssertEqual(body["provider"] as? String, "openai"); XCTAssertEqual(body["endpoint"] as? String, "https://api.example/v1"); XCTAssertEqual(body["apiKey"] as? String, "")
+        XCTAssertTrue(core.recorded("/api/config").isEmpty, "listing must not save")
+        let (_, old) = await loaded { r in r.path == "/api/models/list" ? .json(["error": "Not found"], status: 404) : .json(["ok": true]) }
+        do { _ = try await old.listModels(provider: "openai", endpoint: "https://api.example/v1"); XCTFail() }
+        catch let e as CoreError { XCTAssertEqual(e.message, "当前服务暂不支持获取模型列表，请手动填写模型 ID") }
+    }
+
     func testMemoryCalls() async throws {
         let (core, store) = await loaded { r in
             switch r.path {

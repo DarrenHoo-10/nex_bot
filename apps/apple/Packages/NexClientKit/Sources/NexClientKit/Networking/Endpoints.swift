@@ -89,6 +89,21 @@ public struct MemoryPluginSettings: Sendable, Hashable, Encodable {
 }
 
 /// Body of `config`. A blank `apiKey` keeps the stored one.
+/// `POST /api/models/list`: query a provider's model catalog. An empty `apiKey` reuses the saved key
+/// only when provider and endpoint match the saved configuration. Listing never saves anything.
+public struct ModelCatalogQuery: Sendable, Hashable, Encodable {
+    public var provider: String, endpoint: String, apiKey: String
+    public init(provider: String, endpoint: String, apiKey: String = "") { self.provider = provider; self.endpoint = endpoint; self.apiKey = apiKey }
+}
+
+public struct ModelCatalog: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var models: [String] { row["models"]?.arrayValue?.compactMap(\.stringValue) ?? [] }
+    /// The provider returned more models than were listed (a partial catalog).
+    public var hasMore: Bool { row.bool("hasMore") ?? false }
+}
+
 public struct ModelSettings: Sendable, Hashable, Encodable {
     /// `openai` or `anthropic`.
     public var provider: String
@@ -324,6 +339,12 @@ extension CoreClient {
     // Settings
     /// `POST /api/config`. Refused while any task runs.
     public func saveModel(_ settings: ModelSettings) async throws { try await post("/api/config", body: settings) }
+    public func listModels(_ query: ModelCatalogQuery) async throws -> ModelCatalog {
+        do { return try await post("/api/models/list", query, timeout: 40) }
+        catch let error as CoreError where error.status == 404 {
+            throw CoreError(kind: .unsupported, message: "当前服务暂不支持获取模型列表，请手动填写模型 ID", status: 404)
+        }
+    }
     /// `POST /api/plugins/memory`. Owner only; takes effect after the Core restarts.
     public func saveMemoryPlugin(_ settings: MemoryPluginSettings) async throws -> MemoryPluginState {
         try await post("/api/plugins/memory", settings, timeout: 40)
