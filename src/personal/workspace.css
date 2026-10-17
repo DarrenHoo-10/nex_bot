@@ -54,20 +54,25 @@
 .contact-unread { border-radius: 12px; min-width: 17px; padding: 0 4px; background: var(--foreground); color: var(--background); text-align: center; font-size: 10px; font-weight: 500; }
 .sidebar-empty { padding: 30px 10px; color: var(--muted-foreground); font-size: 12px; text-align: center; }
 .sidebar-empty button { display: block; margin: 12px auto; }
-.workspace-nav { padding: 10px 0; }
-.rk-workspace .workspace-nav button { display: flex; align-items: center; width: 100%; gap: 10px; padding: 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted-foreground); font-size: 13px; }
-.workspace-nav button span { flex: 1; text-align: left; }
-.workspace-nav button small { font-size: 11px; }
-.rk-workspace .workspace-nav button:hover, .rk-workspace .workspace-nav button.is-selected { background: var(--sidebar-accent); color: var(--foreground); }
-.workspace-account { display: flex; gap: 2px; align-items: center; border-top: 1px solid var(--sidebar-border); padding: 14px 0 18px; }
-.rk-workspace .workspace-account-name { display: flex; flex: 1; min-width: 0; text-align: left; gap: 9px; padding: 0 4px; border: 0; background: none; }
-.workspace-account-name > span:last-child { min-width: 0; }
+.workspace-account { position: relative; flex-shrink: 0; border-top: 1px solid var(--sidebar-border); padding: 10px 0 12px; }
+.rk-workspace .workspace-account-name { display: flex; align-items: center; justify-content: flex-start; width: 100%; min-width: 0; text-align: left; gap: 10px; padding: 10px; border: 0; border-radius: 12px; background: transparent; }
+.rk-workspace .workspace-account-name:hover, .rk-workspace .workspace-account-name[aria-expanded="true"] { background: color-mix(in srgb, var(--foreground) 5%, transparent); }
+.workspace-account-copy { flex: 1; min-width: 0; text-align: left; }
+.account-menu-chevron { flex-shrink: 0; color: var(--muted-foreground); }
+.workspace-account-name[aria-expanded="true"] .account-menu-chevron { transform: rotate(180deg); }
+.account-menu { position: absolute; z-index: 65; bottom: calc(100% + 8px); left: 0; right: 0; padding: 7px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); box-shadow: 0 12px 32px #00000018, 0 2px 6px #0000000a; max-height: calc(100dvh - 160px); overflow-y: auto; }
+.rk-workspace .account-menu button { display: flex; align-items: center; justify-content: flex-start; gap: 11px; width: 100%; min-height: 42px; padding: 10px 12px; border: 0; border-radius: 9px; background: transparent; text-align: left; font-size: 13px; }
+.account-menu button svg { flex-shrink: 0; color: var(--muted-foreground); }
+.account-menu button span { flex: 1; }
+.account-menu button small { color: var(--muted-foreground); font-size: 11px; }
+.rk-workspace .account-menu button:hover, .rk-workspace .account-menu button:focus-visible, .rk-workspace .account-menu button.is-selected { background: var(--sidebar-accent); }
+.account-menu-divider { height: 1px; margin: 6px 10px; background: var(--border); }
 .workspace-account-name strong, .workspace-account-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-account-name strong { font-size: 12px; font-weight: 550; }
 .workspace-account-name small { color: var(--muted-foreground); font-size: 10px; margin-top: 4px; }
-.account-initial { position: relative; width: 31px; height: 31px; flex: 0 0 31px; border-radius: 50%; display: grid; place-items: center; background: var(--input); font-size: 12px; }
-.account-initial i { position: absolute; width: 7px; height: 7px; bottom: 0; right: 0; border-radius: 50%; border: 2px solid var(--sidebar); box-sizing: content-box; }
-.account-initial .online { background: var(--success); }.account-initial .offline { background: var(--warning); }
+.account-avatar { position: relative; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; display: grid; place-items: center; background: #3569e8; color: #eef4ff; }
+.account-avatar i { position: absolute; width: 6px; height: 6px; bottom: 0; right: 0; border-radius: 50%; border: 2px solid var(--sidebar); box-sizing: content-box; }
+.account-avatar .online { background: var(--success); }.account-avatar .offline { background: var(--warning); }
 .rk-workspace .mobile-menu, .rk-workspace .sidebar-dismiss, .sidebar-scrim { display: none; }
 
 /* Conversation */

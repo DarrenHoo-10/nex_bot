@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect x="16" y="16" width="480" height="480" rx="144" fill="#253330"/><path d="M150 346V215h57v20c18-23 41-34 69-34 55 0 87 35 87 94v51h-63v-59c0-31-14-48-39-48-26 0-48 21-48 53v54z" fill="#f5f8f4"/><circle cx="369" cy="149" r="28" fill="#75c6b2"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>NexBot</title>
+  <desc>A blue companion with two attentive eyes and an upward swept corner.</desc>
+  <defs>
+    <linearGradient id="blue" x1="150" y1="85" x2="346" y2="435" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5285FF"/>
+      <stop offset="1" stop-color="#2859DC"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#blue)" d="M64 267C64 153 138 78 249 78C291 78 330 91 360 111C382 104 402 85 419 64C430 100 427 138 413 166C438 194 450 230 448 271C444 378 367 440 257 440C143 440 64 382 64 267Z"/>
+  <g fill="#F2F6FF">
+    <rect x="174" y="212" width="43" height="82" rx="21.5"/>
+    <rect x="285" y="212" width="43" height="82" rx="21.5"/>
+  </g>
+</svg>

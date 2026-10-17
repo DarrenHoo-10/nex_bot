@@ -14,7 +14,7 @@ import { startFakeMcp } from "../server/personal-os/testing/fake-mcp.ts";
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-workspace-fixture-"));
 const output = path.resolve("release/workspace-verification-avatars"); mkdirSync(output, { recursive: true });
 const { createPersonalApp } = await import(pathToFileURL(path.resolve("dist-personal/server/core/index.js")).href);
-const identity = await startFakeIdentity(), model = await startFakeModel(), mcp = await startFakeMcp();
+const identity = await startFakeIdentity({ displayName: "演示账号" }), model = await startFakeModel(), mcp = await startFakeMcp();
 let token = "synthetic-workspace-bootstrap";
 const core = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token, uiDir: path.resolve("dist-personal/server/ui"), memoryRuntime: false, identity: { fixtureOrigin: identity.origin } });
 let child, ws, exited = false, logs = ""; const cases = [], exceptions = [];
@@ -116,7 +116,8 @@ try {
   await input(".composer textarea", "保留这段草稿"); await click(`[data-agent='${peer.id}']`); await click(`[data-agent='${bot.id}']`);
   await until(() => evaluate("document.querySelector('.composer textarea').value==='保留这段草稿'")); await input(".composer textarea", "");
   cases.push("contact-search-pin", "per-agent-draft");
-  await textButton("连接器", "document.querySelector('.workspace-nav')");
+  await click(".workspace-account-name"); await screenshot("account-menu-light");
+  await textButton("连接器", "document.querySelector('.account-menu')");
   await textButton("添加连接器");
   await input("input[name='name']", "本地知识库"); await input("input[name='url']", mcp.origin + "/mcp"); await input("input[name='token']", "synthetic-ui-secret");
   await textButton("保存连接器"); await until(() => evaluate("!!document.querySelector('.connector-detail')&&!document.querySelector('.connector-modal')"));
@@ -146,15 +147,16 @@ try {
   cases.push("real-tool-execution-motion"); await click("[aria-label='停止任务']");
   await until(() => core.store.get("SELECT status FROM tool_calls WHERE provider_tool_call_id='workspace-stop'")?.status === "unknown" && !core.runtime.workers.size);
   cases.push("stop-fences-late-connector-result");
-  await click("[aria-label='切换深色模式']"); await screenshot("workspace-dark");
+  await click(".workspace-account-name"); await textButton("切换深色模式", "document.querySelector('.account-menu')"); await screenshot("workspace-dark");
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   // Details can be explicitly opened on narrow screens; close the initial panel.
   await click("[aria-label='收起资料']"); await geometry(); await screenshot("workspace-mobile");
   await click(".mobile-menu"); await until(() => evaluate("document.querySelector('.contact-sidebar').classList.contains('is-open')"));
-  await textButton("连接器", "document.querySelector('.workspace-nav')"); await geometry(); await screenshot("connectors-mobile");
+  await click(".workspace-account-name"); await screenshot("account-menu-mobile-dark");
+  await textButton("连接器", "document.querySelector('.account-menu')"); await geometry(); await screenshot("connectors-mobile");
   cases.push("light-dark-theme", "mobile-drawer-and-no-horizontal-overflow");
   await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
-  await click("[aria-label='切换浅色模式']");
+  await click(".workspace-account-name"); await textButton("切换浅色模式", "document.querySelector('.account-menu')");
   await textButton("停用"); await until(() => evaluate("document.querySelector('.connection-status').textContent==='已停用'")); await textButton("启用");
   await textButton("移除连接器"); await until(() => evaluate("[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='确认移除'&&!button.disabled)")); await textButton("确认移除"); await until(() => evaluate("!!document.querySelector('.connector-empty')"));
   cases.push("MCP-disable-enable-remove");

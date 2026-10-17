@@ -14,7 +14,7 @@ const root = mkdtempSync(path.join(os.tmpdir(), "nex-design-preview-"));
 const { createPersonalApp } = await import(pathToFileURL(path.resolve("dist-personal/server/core/index.js")).href);
 let core, identity, model, mcp, child;
 try {
-  identity = await startFakeIdentity(); model = await startFakeModel(); mcp = await startFakeMcp();
+  identity = await startFakeIdentity({ displayName: "演示账号" }); model = await startFakeModel(); mcp = await startFakeMcp();
   core = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token: "synthetic-design-bootstrap", hostDevice: false, memoryRuntime: false, uiDir: path.resolve("dist-personal/server/ui"), identity: { fixtureOrigin: identity.origin } });
   const operator = core.store.get("SELECT * FROM user_sessions WHERE id=?", core.store.session);
   const start = core.identity.start({ account: "owner@example.test", name: "设计预览" }, operator);
