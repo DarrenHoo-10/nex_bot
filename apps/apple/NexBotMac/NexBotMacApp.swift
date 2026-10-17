@@ -51,6 +51,7 @@ struct NexBotMacApp: App {
     @State private var model = AppModel()
     @State private var ui = UIState()
     @State private var preferences = ContactPreferences()
+    @State private var device = LocalDeviceController()
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
 
     var body: some Scene {
@@ -59,6 +60,7 @@ struct NexBotMacApp: App {
                 .environment(model)
                 .environment(ui)
                 .environment(preferences)
+                .environment(device)
                 .preferredColorScheme(AppearanceOverride.scheme(appearance))
                 .task { await model.start() }
         }
@@ -86,6 +88,7 @@ struct NexBotMacApp: App {
         Window("设置", id: "settings") {
             SettingsView()
                 .environment(model)
+                .environment(device)
                 .preferredColorScheme(AppearanceOverride.scheme(appearance))
         }
         .windowResizability(.contentSize)
