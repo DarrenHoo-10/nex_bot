@@ -10,8 +10,21 @@ struct SettingsView: View {
     @State private var confirmLogout = false
     @State private var revoking: ClientSession?
     @State private var errorText: String?
+    @State private var logoutError: String?
+    @State private var technicalOpen = false
+    @State private var sessionsLoaded = false
+    @State private var sessionsFailed = false
+    @State private var modelForm: ModelForm
+    @State private var memoryForm: MemoryForm
+
+    init(model: AppModel, workspace: WorkspaceStore) {
+        self.model = model; self.workspace = workspace
+        _modelForm = State(initialValue: ModelForm(config: workspace.state?.config))
+        _memoryForm = State(initialValue: MemoryForm(plugin: workspace.state?.memoryPlugin))
+    }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -21,13 +34,18 @@ struct SettingsView: View {
                 chips
                 switch category {
                 case .account: account
-                case .model: SettingsModelView(workspace: workspace)
-                case .memory: SettingsMemoryView(workspace: workspace)
+                case .model: SettingsModelView(workspace: workspace, form: modelForm)
+                case .memory: SettingsMemoryView(workspace: workspace, form: memoryForm)
                 case .system: system
                 }
             }
             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear.frame(height: 1).id("bottom")
+        }
+        .onDebugUI { cmd, _ in
+            if cmd == "s-bottom" { proxy.scrollTo("bottom", anchor: .bottom) }
+        }
         }
         .background(Theme.background)
         .navigationTitle("设置")
@@ -37,8 +55,9 @@ struct SettingsView: View {
         .task { await load() }
         .refreshable { await load() }
         .errorAlert($errorText)
+        .onDebugUI { cmd, arg in if cmd == "s-logoutfail" { logoutError = "退出未完成，请重试" } }
         .confirmationDialog("退出登录？", isPresented: $confirmLogout, titleVisibility: .visible) {
-            Button("退出登录", role: .destructive) { Task { await model.logout() } }
+            Button("退出登录", role: .destructive) { logoutError = nil; Task { await model.logout() } }
         } message: {
             Text("将删除此设备上保存的登录信息。")
         }
@@ -46,7 +65,7 @@ struct SettingsView: View {
             Button("撤销「\(session.name)」", role: .destructive) {
                 Task {
                     do { try await workspace.revokeSession(session.sessionID) }
-                    catch { errorText = (error as? CoreError)?.message ?? error.localizedDescription }
+                    catch { errorText = coreMessage(error) }
                 }
             }
         }
@@ -76,29 +95,44 @@ struct SettingsView: View {
 
     private var account: some View {
         VStack(alignment: .leading, spacing: 20) {
-            heading("账号与登录设备", "管理 NexorAI 账号登录状态以及可访问此工作区的设备。")
+            PageHeading(title: "账号与登录设备", detail: "管理个人身份，以及可以访问这个工作区的登录设备。")
             HStack(spacing: 12) {
                 AccountAvatar(size: 44)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(accountName(workspace)).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text(workspace.account?.displayName ?? "NexorAI 用户").font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text("NexorAI 账号 · 已认证").font(.caption).foregroundStyle(Theme.muted)
                 }
                 Spacer()
                 Button("退出登录") { confirmLogout = true }.buttonStyle(PillButtonStyle())
             }
             .padding(14).cardStyle()
+            if let logoutError { InlineBanner(text: logoutError) }
             VStack(spacing: 0) {
-                row("工作区", "个人工作空间")
+                FactRow(title: "工作区", value: "个人工作空间")
                 Divider().overlay(Theme.border)
-                row("本次登录有效期", model.credential.map { Self.date(Date(timeIntervalSince1970: $0.expiresAt / 1000)) } ?? "—")
+                FactRow(title: "本次登录有效期", value: model.credential.map { Self.date(Date(timeIntervalSince1970: $0.expiresAt / 1000)) } ?? "—")
             }
             .padding(.horizontal, 14).cardStyle()
-            Text("登录设备").font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("登录设备").font(.subheadline.weight(.semibold))
+                    Spacer()
+                    if sessionsLoaded { Text("\(activeSessions.count) 个有效登录").font(.caption).foregroundStyle(Theme.muted) }
+                }
+                Text("移除不再使用的登录，即可撤销该设备对工作区的访问。").font(.caption).foregroundStyle(Theme.muted)
+            }
             VStack(spacing: 10) {
-                ForEach(workspace.sessions) { session in sessionCard(session) }
-                if workspace.sessions.isEmpty { Text("正在加载…").font(.footnote).foregroundStyle(Theme.muted) }
+                ForEach(activeSessions) { session in sessionCard(session) }
+                if sessionsFailed { Text("登录设备暂时无法加载，请稍后重新打开设置。").font(.footnote).foregroundStyle(Theme.muted) }
+                else if !sessionsLoaded { Text("正在加载登录设备…").font(.footnote).foregroundStyle(Theme.muted) }
+                else if activeSessions.filter({ $0.sessionID != workspace.currentSessionID }).isEmpty { Text("暂无其他有效登录。").font(.footnote).foregroundStyle(Theme.muted) }
             }
         }
+    }
+
+    /// Sessions that are not revoked and have not expired.
+    private var activeSessions: [ClientSession] {
+        workspace.sessions.filter { $0.row.double("revoked_at") == nil && ($0.expiresAt.map { $0 > Date() } ?? true) }
     }
 
     private func sessionCard(_ session: ClientSession) -> some View {
@@ -113,11 +147,7 @@ struct SettingsView: View {
                 }
                 Spacer()
             }
-            VStack(alignment: .leading, spacing: 2) {
-                if let seen = session.lastSeenAt { Text("最近活动 \(seen.formatted(Date.RelativeFormatStyle(presentation: .named).locale(Locale(identifier: "zh_CN"))))") }
-                if let end = session.expiresAt { Text("到期时间 \(Self.date(end))") }
-            }
-            .font(.caption).foregroundStyle(Theme.muted)
+            if let end = session.expiresAt { Text("到期时间：\(Self.date(end))").font(.caption).foregroundStyle(Theme.muted) }
             if !current {
                 Button("撤销登录") { revoking = session }.buttonStyle(PillButtonStyle(danger: true))
             }
@@ -129,43 +159,40 @@ struct SettingsView: View {
 
     private var system: some View {
         VStack(alignment: .leading, spacing: 20) {
-            heading("系统信息", "当前连接的服务与应用版本。")
+            PageHeading(title: "系统信息", detail: "查看当前连接和数据存储方式。")
+            Text("服务连接").font(.subheadline.weight(.semibold))
             VStack(spacing: 0) {
-                row("Core 地址", model.credential?.origin ?? model.origin)
+                FactRow(title: "当前访问地址", value: model.credential?.origin ?? model.origin)
                 Divider().overlay(Theme.border)
-                row("此设备名称", model.credential?.name ?? model.deviceName)
+                FactRow(title: "客户端类型", value: "iOS 客户端")
                 Divider().overlay(Theme.border)
-                row("版本", model.appVersion)
+                FactRow(title: "应用版本", value: model.appVersion)
                 Divider().overlay(Theme.border)
-                row("客户端协议", "v1")
+                FactRow(title: "客户端协议", value: "v1")
             }
             .padding(.horizontal, 14).cardStyle()
+            Text("数据与隐私").font(.subheadline.weight(.semibold))
+            Text("聊天、任务与配置保存在后端。客户端只在系统钥匙串保存登录凭据；启用记忆服务后，记忆来源会同步到该服务。")
+                .font(.footnote).foregroundStyle(Theme.muted).padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
+            DisclosureGroup(isExpanded: $technicalOpen) {
+                VStack(spacing: 0) {
+                    FactRow(title: "后端监听地址", value: workspace.state?.address ?? "—")
+                    Divider().overlay(Theme.border)
+                    FactRow(title: "后端数据目录", value: workspace.state?.dataDir ?? "—")
+                    Divider().overlay(Theme.border)
+                    FactRow(title: "运行环境", value: "Pi 1.0.4 · SQLite")
+                }
+            } label: { Text("技术详情").font(.subheadline.weight(.semibold)) }
+            .padding(14).cardStyle()
         }
     }
 
     // MARK: Pieces
 
-    private func heading(_ title: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.title3.weight(.bold))
-            Text(detail).font(.footnote).foregroundStyle(Theme.muted)
-            Divider().overlay(Theme.border).padding(.top, 8)
-        }
-    }
-
-    private func row(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title).font(.subheadline)
-            Spacer(minLength: 16)
-            Text(value).font(.subheadline).foregroundStyle(Theme.muted).multilineTextAlignment(.trailing).textSelection(.enabled)
-        }
-        .padding(.vertical, 12)
-    }
-
     private static func date(_ date: Date) -> String { date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "zh_CN"))) }
 
     private func load() async {
-        do { try await workspace.loadSessions() }
-        catch { errorText = (error as? CoreError)?.message ?? error.localizedDescription }
+        do { try await workspace.loadSessions(); sessionsLoaded = true; sessionsFailed = false }
+        catch { sessionsFailed = true }
     }
 }

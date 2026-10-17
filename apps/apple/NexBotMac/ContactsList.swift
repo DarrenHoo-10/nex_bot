@@ -6,12 +6,11 @@ struct ContactsList: View {
     let workspace: WorkspaceStore
     @Environment(UIState.self) private var ui
     @Environment(AppModel.self) private var model
+    @Environment(ContactPreferences.self) private var preferences
     @State private var query = ""
 
-    private var contacts: [Bot] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        return q.isEmpty ? workspace.bots : workspace.bots.filter { $0.name.localizedCaseInsensitiveContains(q) }
-    }
+    private var groups: (pinned: [Bot], rest: [Bot]) { preferences.groups(of: workspace.bots, query: query) }
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,12 +18,24 @@ struct ContactsList: View {
                 BrandMark(size: 26)
                 Text("NexBot").font(.system(size: 15, weight: .bold))
                 Spacer()
+                Button { AgentUI.shared.createAgent() } label: {
+                    Image(systemName: "plus").font(.system(size: 15, weight: .regular)).foregroundStyle(Theme.foreground)
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("添加 Agent").accessibilityLabel("添加 Agent")
+                .disabled(workspace.state == nil)
             }
-            .padding(.horizontal, 22).padding(.top, 38).padding(.bottom, 14)
+            .padding(.leading, 22).padding(.trailing, 14).padding(.top, 38).padding(.bottom, 14)
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                TextField("搜索联系人", text: $query).textFieldStyle(.plain).font(.system(size: 12))
+                TextField("搜索联系人", text: $query).textFieldStyle(.plain).font(.system(size: 12)).accessibilityLabel("搜索 Agent")
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.muted).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).help("清空搜索").accessibilityLabel("清空搜索")
+                }
             }
             .padding(.horizontal, 12).frame(height: 34)
             .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -44,16 +55,22 @@ struct ContactsList: View {
                     Text(workspace.notice ?? "正在连接…").font(.system(size: 12)).foregroundStyle(Theme.muted)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                let g = groups
                 ScrollView {
                     LazyVStack(spacing: 4) {
-                        ForEach(contacts) { bot in
-                            Button { workspace.select(bot.id) } label: {
-                                ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
-                                           phrase: ToolLabels.taskPhrase(workspace.state?.unfinishedTask(botID: bot.id)),
-                                           selected: workspace.selectedBotID == bot.id)
+                        section("置顶", g.pinned)
+                        section("我的 Agent", g.rest)
+                        if g.pinned.isEmpty && g.rest.isEmpty {
+                            VStack(spacing: 8) {
+                                Text(searching ? "没有找到联系人" : "你的 Agent 会出现在这里").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                                if !searching {
+                                    Button { AgentUI.shared.createAgent() } label: {
+                                        Text("创建第一个 Agent").font(.system(size: 12)).foregroundStyle(Theme.brand).contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(bot.name)
+                            .frame(maxWidth: .infinity).padding(.top, 28)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -64,6 +81,26 @@ struct ContactsList: View {
             accountCard
         }
         .background(Theme.sidebar)
+        .modifier(AgentSheetsHost(workspace: workspace))
+        #if DEBUG
+        .task { await runAgentDebugCommands(workspace: workspace, ui: ui, preferences: preferences) }
+        #endif
+    }
+
+    @ViewBuilder private func section(_ title: String, _ bots: [Bot]) -> some View {
+        if !bots.isEmpty {
+            Text(title).font(.system(size: 11)).foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
+            ForEach(bots) { bot in
+                Button { workspace.select(bot.id); ui.showAgent() } label: {
+                    ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
+                               phrase: ToolLabels.taskPhrase(workspace.state?.unfinishedTask(botID: bot.id)),
+                               selected: workspace.selectedBotID == bot.id && ui.page == .agent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(bot.name)
+            }
+        }
     }
 
     private var accountCard: some View {
@@ -98,20 +135,20 @@ struct ContactRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AgentAvatar(appearance: appearance, state: state, size: 36)
+            AgentAvatar(appearance: appearance, state: state, size: 40)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(bot.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                     Spacer(minLength: 4)
                     if let at = bot.lastMessageAt {
-                        Text(Self.format(at)).font(.system(size: 10)).foregroundStyle(Theme.muted)
+                        Text(TimeFormat.formatShortTime(at)).font(.system(size: 10)).foregroundStyle(Theme.muted)
                     }
                 }
                 HStack(spacing: 6) {
                     if !phrase.isEmpty {
                         Text(phrase).font(.system(size: 11)).foregroundStyle(Theme.brand).lineLimit(1)
                     } else {
-                        Text(Self.preview(bot.lastMessage)).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
+                        Text(Self.preview(bot)).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
                     }
                     Spacer(minLength: 4)
                     if bot.unreadCount > 0 {
@@ -135,12 +172,10 @@ struct ContactRow: View {
         .contentShape(Rectangle())
     }
 
-    static func preview(_ text: String?) -> String {
-        guard let text, !text.isEmpty else { return "暂无消息" }
-        return text.replacingOccurrences(of: "\n", with: " ")
-    }
-
-    static func format(_ date: Date) -> String {
-        Calendar.current.isDateInToday(date) ? date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute()) : date.formatted(.dateTime.month(.defaultDigits).day())
+    /// Port of the web contact preview: last message, else the instructions, else 开始一段对话.
+    static func preview(_ bot: Bot) -> String {
+        if let text = bot.lastMessage, !text.isEmpty { return text.replacingOccurrences(of: "\n", with: " ") }
+        if !bot.instructions.isEmpty { return bot.instructions.replacingOccurrences(of: "\n", with: " ") }
+        return "开始一段对话"
     }
 }

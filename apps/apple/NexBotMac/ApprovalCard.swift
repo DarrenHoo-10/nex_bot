@@ -9,6 +9,17 @@ struct ApprovalCard: View {
     @State private var error: String?
     @State private var showArguments = false
 
+    /// Pretty arguments; memory.forget also lists the 清理范围 from the authorization snapshot.
+    private var argumentsText: String {
+        guard approval.toolName == "memory.forget",
+              let raw = approval.row.string("authorization_snapshot_json"), let data = raw.data(using: .utf8),
+              let snapshot = try? JSONDecoder().decode(JSONValue.self, from: data), let counts = snapshot["forgetCounts"] else { return approval.argumentsText }
+        var object: [String: JSONValue] = [:]
+        if let args = approval.row.string("arguments_json").flatMap({ $0.data(using: .utf8) }).flatMap({ try? JSONDecoder().decode(JSONValue.self, from: $0) })?.objectValue { object = args }
+        object["清理范围"] = counts
+        return prettyJSON(.object(object)) ?? approval.argumentsText
+    }
+
     private var botName: String { workspace.bot(approval.botID)?.name ?? "Agent" }
 
     var body: some View {
@@ -25,7 +36,7 @@ struct ApprovalCard: View {
             .buttonStyle(.plain)
             if showArguments {
                 ScrollView(.horizontal) {
-                    Text(approval.argumentsText.isEmpty ? "无参数" : approval.argumentsText)
+                    Text(argumentsText.isEmpty ? "无参数" : argumentsText)
                         .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                         .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                 }

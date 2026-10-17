@@ -43,17 +43,17 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 40).padding(.vertical, 34)
         }
-        .frame(width: 900, height: 640)
+        .frame(width: 900, height: 820)
         .background(Theme.background)
     }
 }
 
 /// "10/18 05:55", as in the web UI.
-private func stamp(_ date: Date) -> String {
+func stamp(_ date: Date) -> String {
     let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: date)
 }
 
-@MainActor private func paneHeader(_ title: String, _ detail: String) -> some View {
+@MainActor func paneHeader(_ title: String, _ detail: String) -> some View {
     VStack(alignment: .leading, spacing: 8) {
         Text(title).font(.system(size: 20, weight: .bold))
         Text(detail).font(.system(size: 12)).foregroundStyle(Theme.muted)
@@ -61,7 +61,7 @@ private func stamp(_ date: Date) -> String {
     }
 }
 
-@MainActor private func infoRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
+@MainActor func infoRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 0) {
         Text(label).font(.system(size: 12)).foregroundStyle(Theme.muted).frame(width: 136, alignment: .leading)
         Text(value).font(.system(size: 12, design: mono ? .monospaced : .default)).textSelection(.enabled)
@@ -87,6 +87,7 @@ private struct OutlineButton: View {
 
 private struct AccountPane: View {
     @Environment(AppModel.self) private var model
+    @State private var logoutError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -95,13 +96,19 @@ private struct AccountPane: View {
                 Circle().fill(Color(hex: 0x3B66E8)).frame(width: 44, height: 44)
                     .overlay(Image(systemName: "person").font(.system(size: 20)).foregroundStyle(.white))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(model.workspace?.account?.displayName ?? "NexorAI 账号").font(.system(size: 15, weight: .semibold))
+                    Text(model.workspace?.account?.displayName ?? "NexorAI 用户").font(.system(size: 15, weight: .semibold))
                     Text("NexorAI 账号 · 已认证").font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }
                 Spacer()
-                OutlineButton(title: "退出登录") { Task { await model.logout() } }
+                OutlineButton(title: "退出登录") {
+                    Task {
+                        await model.logout()
+                        if model.workspace != nil { logoutError = "退出未完成，请重试" }
+                    }
+                }
             }
             .padding(.top, 20)
+            if let logoutError { Text(logoutError).font(.system(size: 11)).foregroundStyle(Theme.danger).padding(.top, 8) }
             VStack(alignment: .leading, spacing: 18) {
                 infoRow("工作区", "个人工作空间")
                 if let credential = model.credential {
@@ -118,6 +125,8 @@ private struct AccountPane: View {
 private struct SessionsSection: View {
     let workspace: WorkspaceStore
     @State private var error: String?
+    @State private var loaded = false
+    @State private var loadFailed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -152,7 +161,9 @@ private struct SessionsSection: View {
                 }
             }
             .padding(.top, 18)
-            if workspace.sessions.isEmpty { Text("正在加载…").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
+            if loadFailed { Text("登录设备暂时无法加载，请稍后重新打开设置。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
+            else if !loaded && workspace.sessions.isEmpty { Text("正在加载登录设备…").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
+            else if workspace.sessions.isEmpty { Text("暂无其他有效登录。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14) }
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).padding(.top, 10) }
         }
         .task { load() }
@@ -160,8 +171,9 @@ private struct SessionsSection: View {
 
     private func load() {
         Task {
-            do { try await workspace.loadSessions(); error = nil }
-            catch { self.error = message(of: error) }
+            do { try await workspace.loadSessions(); error = nil; loadFailed = false }
+            catch { loadFailed = true }
+            loaded = true
         }
     }
 
@@ -175,22 +187,37 @@ private struct SessionsSection: View {
 
 private struct SystemPane: View {
     @Environment(AppModel.self) private var model
+    @State private var detailsOpen = false
 
     var body: some View {
+        let state = model.workspace?.state
         VStack(alignment: .leading, spacing: 0) {
             paneHeader("系统信息", "查看当前连接和数据存储方式。")
             Text("服务连接").font(.system(size: 13, weight: .semibold)).padding(.top, 24)
             VStack(alignment: .leading, spacing: 18) {
-                infoRow("Core 地址", model.credential?.origin ?? model.origin, mono: true)
-                infoRow("此设备名称", model.credential?.name ?? model.deviceName)
+                infoRow("当前访问地址", model.credential?.origin ?? model.origin, mono: true)
+                infoRow("客户端类型", "macOS 客户端")
                 infoRow("应用版本", model.appVersion)
                 infoRow("客户端协议", "v1")
             }
             .padding(.top, 20).padding(.bottom, 26)
             Hairline()
             Text("数据与隐私").font(.system(size: 13, weight: .semibold)).padding(.top, 24)
-            Text("聊天、任务与配置保存在后端。桌面客户端只保存加密的登录资料。")
-                .font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 12)
+            Text("聊天、任务与配置保存在后端。客户端只在系统钥匙串保存登录凭据；启用记忆服务后，记忆来源会同步到该服务。")
+                .font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 12).padding(.bottom, 26)
+            Hairline()
+            MBDisclosure(title: "技术详情", open: $detailsOpen) {
+                VStack(alignment: .leading, spacing: 14) {
+                    infoRow("后端监听地址", state?.address ?? "", mono: true)
+                    infoRow("后端数据目录", state?.dataDir ?? "", mono: true)
+                    infoRow("运行环境", "\(state?.runtime.isEmpty == false ? state!.runtime : "Pi 1.0.4") · SQLite")
+                }
+            }
+            .padding(.top, 20)
         }
+        #if DEBUG
+        .task { MBDebug.start() }
+        .onReceive(NotificationCenter.default.publisher(for: .mbDebug)) { if $0.mbCommand?.prefix == "sy" { detailsOpen = true } }
+        #endif
     }
 }

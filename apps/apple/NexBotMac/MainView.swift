@@ -22,7 +22,8 @@ struct MainView: View {
                         if let id = workspace.selectedBotID, workspace.bot(id) != nil {
                             ConversationView(workspace: workspace, botID: id).id(id)
                         } else {
-                            EmptyChat(noAgents: workspace.bots.isEmpty && workspace.state != nil)
+                            if workspace.bots.isEmpty && workspace.state != nil { NoAgentsWelcome() }
+                            else { EmptyChat(noAgents: false) }
                         }
                     case .connectors: ConnectorsPage(workspace: workspace)
                     case .devices: DevicesPage(workspace: workspace)
