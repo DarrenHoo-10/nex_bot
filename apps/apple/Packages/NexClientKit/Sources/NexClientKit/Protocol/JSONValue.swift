@@ -80,3 +80,10 @@ extension KeyedDecodingContainer {
 
 /// Core timestamps are epoch milliseconds.
 public func dateFromMilliseconds(_ value: Double?) -> Date? { value.map { Date(timeIntervalSince1970: $0 / 1000) } }
+
+extension JSONValue: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, ExpressibleByFloatLiteral, ExpressibleByBooleanLiteral {
+    public init(stringLiteral value: String) { self = .string(value) }
+    public init(integerLiteral value: Int) { self = .number(Double(value)) }
+    public init(floatLiteral value: Double) { self = .number(value) }
+    public init(booleanLiteral value: Bool) { self = .bool(value) }
+}

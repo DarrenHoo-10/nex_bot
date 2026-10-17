@@ -194,3 +194,25 @@ Follow `docs/verification/README.md`. Never use the live account or Core.
 - **Acceptance**: the coordinator runs `swift test`, both `xcodebuild` builds
   and the fixture-driven macOS walkthrough, reviews the diff, then records the
   results in `docs/verification/native-clients.md`.
+
+## Web parity (phase 2)
+
+The user asked for full parity with the web UI. `2026-10-17-native-web-parity-spec.md` is
+the exact inventory of the remaining features. It lists their Chinese UI strings, API
+bodies, state fields and the version fields each request must echo.
+
+- **Wave 1 (one agent).** Kit, fixture and scaffolding:
+  - Kit: typed `NexClientKit` calls and DTO accessors for every endpoint in the spec, with tests.
+  - Fixture: `scripts/fixture-native-client.mjs` gains a fake MCP server, so connectors can be exercised.
+  - Scaffolding on both platforms: navigation to the 连接器 / 设备 pages, the account-menu entries,
+    the inspector 资料 / 设置 tabs and Settings categories, all as placeholder views. Wave 2 then
+    owns disjoint files.
+- **Wave 2 (four agents in parallel).**
+  - Mac-A and iOS-A: agent management (create, identity, avatar picker, pin, archive,
+    permissions), the inspector 资料 / 设置 tabs (memory, workbench, journal, preview, usage),
+    routines and chat extras (quote/copy, share, quick actions, @mention, file chips,
+    welcome, banners, A2A markers, resume).
+  - Mac-B and iOS-B: connectors, devices and the 模型 / 记忆服务 / 系统信息 settings.
+- **Out of scope.** `POST /api/node` and `/api/node/reconcile` only answer loopback clients.
+  Remote native clients show that host-only state read-only, exactly as the web does when
+  it is not on the host.

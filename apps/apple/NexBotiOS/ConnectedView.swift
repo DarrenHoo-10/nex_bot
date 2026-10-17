@@ -6,11 +6,16 @@ struct ConnectedView: View {
     let model: AppModel
     let workspace: WorkspaceStore
     @State private var nav = Navigation()
+    @State private var preferences = ContactPreferences()
 
     var body: some View {
         ContactsView(model: model, workspace: workspace, nav: nav)
+            .environment(nav)
+            .environment(preferences)
             .sheet(isPresented: $nav.showMenu) {
                 AccountMenu(model: model, nav: nav)
+                    .environment(nav)
+                    .environment(preferences)
             }
         #if DEBUG
             .task { await DebugHooks.runCommands(model: model, workspace: workspace, nav: nav) }

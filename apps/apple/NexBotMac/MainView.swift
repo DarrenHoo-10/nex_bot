@@ -17,15 +17,20 @@ struct MainView: View {
             VStack(spacing: 0) {
                 NoticeBanner(workspace: workspace)
                 Group {
-                    if let id = workspace.selectedBotID, workspace.bot(id) != nil {
-                        ConversationView(workspace: workspace, botID: id).id(id)
-                    } else {
-                        EmptyChat(noAgents: workspace.bots.isEmpty && workspace.state != nil)
+                    switch ui.page {
+                    case .agent:
+                        if let id = workspace.selectedBotID, workspace.bot(id) != nil {
+                            ConversationView(workspace: workspace, botID: id).id(id)
+                        } else {
+                            EmptyChat(noAgents: workspace.bots.isEmpty && workspace.state != nil)
+                        }
+                    case .connectors: ConnectorsPage(workspace: workspace)
+                    case .devices: DevicesPage(workspace: workspace)
                     }
                 }
             }
             .frame(minWidth: 380, maxWidth: .infinity)
-            if ui.inspectorVisible, let id = workspace.selectedBotID, workspace.bot(id) != nil {
+            if ui.page == .agent, ui.inspectorVisible, let id = workspace.selectedBotID, workspace.bot(id) != nil {
                 Hairline(vertical: true)
                 InspectorView(workspace: workspace, botID: id)
                     .frame(width: 310)
@@ -38,6 +43,7 @@ struct MainView: View {
         #if DEBUG
         .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif
+        .onChange(of: workspace.selectedBotID) { ui.showAgent() }
         .onChange(of: workspace.bots.first?.id, initial: true) {
             if workspace.selectedBotID == nil, let first = workspace.bots.first { workspace.select(first.id) }
         }
@@ -48,7 +54,11 @@ struct MainView: View {
         ZStack(alignment: .bottomLeading) {
             Color.clear.contentShape(Rectangle()).onTapGesture { ui.accountMenuOpen = false }
             AccountMenu(dark: scheme == .dark,
-                        openSettings: { ui.accountMenuOpen = false; ui.settingsTick += 1 },
+                        connectorCount: workspace.state?.enabledConnectorCount ?? 0,
+                        deviceCount: workspace.state?.onlineDeviceCount ?? 0,
+                        openConnectors: { ui.openConnectors() },
+                        openDevices: { ui.openDevices() },
+                        openSettings: { ui.openSettings() },
                         toggleDark: { appearance = scheme == .dark ? "light" : "dark"; ui.accountMenuOpen = false },
                         logout: { ui.accountMenuOpen = false; Task { await model.logout() } })
                 .frame(width: 236)
@@ -96,7 +106,7 @@ func message(of error: Error) -> String {
 
 #if DEBUG
 /// DEBUG-only automation: when NEXBOT_DEBUG_COMMAND_FILE is set, the file is polled and consumed line by line.
-/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector`, `accountmenu`, `settings`, `dark`, `light`, `system`.
+/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector [work|memory|settings]` (no argument toggles the column), `page agent|connectors|devices`, `accountmenu`, `settings [account|model|memory|system]`, `dark`, `light`, `system`.
 @MainActor func runDebugCommands(workspace: WorkspaceStore, ui: UIState) async {
     guard let path = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_COMMAND_FILE"] else { return }
     while !Task.isCancelled {
@@ -111,11 +121,25 @@ func message(of error: Error) -> String {
             case "send": if let id = workspace.selectedBotID { await workspace.conversation(for: id).send(text: arg) }
             case "approve", "deny": if let a = workspace.approvals.first { try? await workspace.decide(a, allow: parts.first == "approve") }
             case "stop": if let id = workspace.selectedBotID { await workspace.conversation(for: id).stop() }
-            case "inspector": ui.inspectorVisible.toggle()
+            case "inspector":
+                switch arg {
+                case "work": ui.openInspector(.work)
+                case "memory": ui.openInspector(.memory)
+                case "settings": ui.openInspector(.settings)
+                default: ui.inspectorVisible.toggle()
+                }
+            case "page":
+                switch arg {
+                case "connectors": ui.openConnectors()
+                case "devices": ui.openDevices()
+                default: ui.showAgent()
+                }
             case "accountmenu": ui.accountMenuOpen.toggle()
-            case "settings": ui.settingsTick += 1
+            case "settings":
+                let category: SettingsCategory? = ["account": .account, "model": .model, "memory": .memory, "system": .system][arg]
+                ui.openSettings(category)
             case "dark", "light", "system": UserDefaults.standard.set(parts[0], forKey: AppearanceOverride.key)
-            case "settingssystem", "settingsaccount": UserDefaults.standard.set(parts[0] == "settingssystem" ? "系统信息" : "账号与登录设备", forKey: "nexbot.settingsCategory")
+            case "settingssystem", "settingsaccount": UserDefaults.standard.set(parts[0] == "settingssystem" ? SettingsCategory.system.rawValue : SettingsCategory.account.rawValue, forKey: SettingsCategory.storageKey)
             default: break
             }
         }

@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { startFakeIdentity } from "../server/personal-os/testing/fake-identity.ts";
 import { startFakeModel } from "../server/runtime/pi/p0/fake-model.ts";
+import { startFakeMcp } from "../server/personal-os/testing/fake-mcp.ts";
 
 const coreEntry = path.resolve("dist-personal/server/core/index.js");
 if (!existsSync(coreEntry)) { console.error("dist-personal/server/core/index.js is missing. Run `pnpm build:core` first."); process.exit(2); }
@@ -22,6 +23,7 @@ const root = mkdtempSync(path.join(os.tmpdir(), "nex-native-fixture-"));
 const { createPersonalApp } = await import(pathToFileURL(coreEntry).href);
 const identity = await startFakeIdentity();
 const model = await startFakeModel();
+const mcp = await startFakeMcp();
 
 // Thin proxy in front of the fake model so `reply` can stream slowly in many deltas.
 const streamQueue = [];
@@ -51,7 +53,7 @@ let token = "synthetic-native-bootstrap", core;
 let closed = false;
 async function cleanup() {
   if (closed) return; closed = true;
-  for (const step of [() => core?.close(), () => new Promise((r) => { proxy.close(r); proxy.closeAllConnections(); }), () => model.close(), () => identity.close()]) await Promise.resolve().then(step).catch(() => {});
+  for (const step of [() => core?.close(), () => mcp.close(), () => new Promise((r) => { proxy.close(r); proxy.closeAllConnections(); }), () => model.close(), () => identity.close()]) await Promise.resolve().then(step).catch(() => {});
   if (path.dirname(root) !== os.tmpdir() || !path.basename(root).startsWith("nex-native-fixture-")) { console.error("Refusing unsafe cleanup of " + root); return; }
   rmSync(root, { recursive: true, force: true });
 }
@@ -100,9 +102,12 @@ Password    : ${JSON.stringify(PASSWORD)}   (leading and trailing spaces are int
 2nd account : other@example.test (same password). Plain createPersonalApp has no accountWorkspaces mode,
               so Core is bound to the owner identity; expect other@ to be refused at auth/respond.
 Agents      : 工作助手, 研究伙伴 (each has seeded history)
+Fake MCP    : ${mcp.origin}/mcp   (add it as a connector, test, then grant; tools: echo, private_tool. SSE transport: ${mcp.origin}/sse)
+Model       : configured (state.config present)
 Temp dir    : ${root}
 PID         : ${process.pid}
-Commands (stdin): reply <text> | approval | send <agent> <text> | history <agent> <n> | revoke-others | forget <agent> | status | quit
+Commands (stdin): reply <text> | approval | send <agent> <text> | history <agent> <n> | revoke-others | forget <agent> |
+                  memory <agent> <title> | <content> | routine <agent> <name> | peer | status | quit
 Ctrl-C or "quit" stops everything and removes only the temp dir.
 ======================================`);
 
@@ -128,6 +133,20 @@ async function command(line) {
     console.log(`OK revoked ${count} other session(s)`);
   }
   else if (cmd === "forget") { const bot = await botByName(rest[0] ?? ""); const preview = await api("memory/forget-preview", { botId: bot.id }).catch((e) => ({ error: e.message })); console.log("forget preview (no mutation): " + JSON.stringify(preview).slice(0, 400)); }
+  else if (cmd === "memory") {
+    const m = line.trim().slice(cmd.length).trim().match(/^(\S+)\s+(.+?)\s*\|\s*(.+)$/); if (!m) throw new Error("usage: memory <agent> <title> | <content>");
+    const bot = await botByName(m[1]); const r = await api("memory", { botId: bot.id, title: m[2], content: m[3], scope: "bot", expectedVersion: 0 }); console.log("OK memory " + JSON.stringify(r));
+  }
+  else if (cmd === "routine") {
+    const name = rest.slice(1).join(" "); if (!rest[0] || !name) throw new Error("usage: routine <agent> <name>");
+    const bot = await botByName(rest[0]); const r = await api("routines", { botId: bot.id, name, prompt: `请完成例行任务：${name}`, scheduleKind: "daily", localTime: "09:00", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    console.log("OK routine " + JSON.stringify(r));
+  }
+  else if (cmd === "peer") {
+    const peer = await botByName("研究伙伴");
+    model.scripts.push({ kind: "openai-tool", calls: [{ id: "fixture-" + randomBytes(4).toString("hex"), name: "broker", args: JSON.stringify({ action: "agent.delegate", botId: peer.id, message: "请简短说明你今天的研究重点。" }) }] }, { kind: "openai-text", text: "已联系研究伙伴。" });
+    console.log("OK next model turn makes 工作助手 delegate to 研究伙伴 (agent.delegate). Now `send 工作助手 <text>`.");
+  }
   else if (cmd === "status") await status();
   else if (cmd === "quit" || cmd === "exit") await die(0);
   else console.log("Unknown command: " + cmd);

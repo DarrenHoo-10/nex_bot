@@ -50,11 +50,7 @@ struct ContactsView: View {
             .background(Theme.background)
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Navigation.Route.self) { route in
-                switch route {
-                case .chat(let id): ChatView(workspace: workspace, botID: id)
-                case .approvals: ApprovalsView(workspace: workspace)
-                case .settings: SettingsView(model: model, workspace: workspace)
-                }
+                nav.destination(for: route, model: model, workspace: workspace)
             }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if workspace.state != nil, let notice = workspace.notice { NoticeBanner(text: notice) }

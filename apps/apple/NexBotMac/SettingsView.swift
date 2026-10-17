@@ -4,12 +4,7 @@ import NexClientKit
 /// Global settings, laid out like the web UI: category list on the left, one category on the right.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage("nexbot.settingsCategory") private var category = Category.account
-
-    enum Category: String, CaseIterable {  // raw values double as AppStorage values
-        case account = "账号与登录设备", system = "系统信息"
-        var icon: String { self == .account ? "person" : "globe" }
-    }
+    @AppStorage(SettingsCategory.storageKey) private var category = SettingsCategory.account
 
     var body: some View {
         ScrollView {
@@ -18,7 +13,7 @@ struct SettingsView: View {
                 Text("管理你的账号和助手偏好。").font(.system(size: 13)).foregroundStyle(Theme.muted).padding(.top, 6)
                 HStack(alignment: .top, spacing: 44) {
                     VStack(spacing: 4) {
-                        ForEach(Category.allCases, id: \.self) { item in
+                        ForEach(SettingsCategory.allCases, id: \.self) { item in
                             Button { category = item } label: {
                                 HStack(spacing: 10) {
                                     Image(systemName: item.icon).font(.system(size: 12)).frame(width: 16)
@@ -37,6 +32,8 @@ struct SettingsView: View {
                     Group {
                         switch category {
                         case .account: AccountPane()
+                        case .model: if let ws = model.workspace { SettingsModelPane(workspace: ws) }
+                        case .memory: if let ws = model.workspace { SettingsMemoryPane(workspace: ws) }
                         case .system: SystemPane()
                         }
                     }

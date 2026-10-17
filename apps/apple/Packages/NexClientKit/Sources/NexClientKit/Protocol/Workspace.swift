@@ -23,6 +23,19 @@ public struct Bot: RowBacked {
     public var unreadCount: Int { row.int("unread_count") ?? 0 }
     public var lastMessage: String? { row.string("last_message") }
     public var lastMessageAt: Date? { dateFromMilliseconds(row.double("last_message_at")) }
+    /// Optimistic-concurrency version of the name and instructions (`bots/update`, `bots/archive`).
+    public var version: Int { row.int("version") ?? 1 }
+    /// Version of the tool policy (`bots/policy`).
+    public var policyVersion: Int { row.int("policy_version") ?? 0 }
+    /// Granted action ids from `policy_json.tools`, unfiltered, in stored order.
+    public var policyTools: [String] { jsonField("policy_json")?["tools"]?.arrayValue?.compactMap(\.stringValue) ?? [] }
+    /// Expertise tags from `expertise_json`.
+    public var expertise: [String] { jsonField("expertise_json")?.arrayValue?.compactMap(\.stringValue) ?? [] }
+    /// Version echoed by `bots/appearance`; 0 while no appearance row exists.
+    public var appearanceVersion: Int { row.int("appearance_version") ?? 0 }
+    /// Raw `appearance_json` text, nil when the bot has no saved look.
+    public var appearanceJSON: String? { row.string("appearance_json") }
+    private func jsonField(_ key: String) -> JSONValue? { parseJSONText(row.string(key)) }
     /// First visible character, for avatar initials.
     public var initials: String { String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased() }
 }
@@ -62,32 +75,84 @@ public struct AgentTask: RowBacked {
     public var phrase: String { ToolLabels.taskPhrase(self) }
 }
 
-/// `GET /api/state`. Unknown fields are ignored; open collections stay as ``Row``s.
+/// `GET /api/state`. Unknown fields are ignored; collections are typed wrappers over open rows (`row` keeps every column).
 public struct WorkspaceState: Codable, Sendable {
     public var sync: SyncIdentity
     public var bots: [Bot]
     public var approvals: [Approval]
     public var tasks: [AgentTask]
     public var conversations: [Row]
-    public var routines: [Row]
-    public var devices: [Row]
-    public var delegations: [Row]
+    public var routines: [Routine]
+    public var occurrences: [RoutineOccurrence]
+    public var devices: [Device]
+    public var delegations: [Delegation]
     public var onlineDevices: [String]
+    public var connectors: [ConnectorView]
+    public var memories: [Memory]
+    public var journal: [JournalEntry]
+    public var usage: [Usage]
+    /// Nil until a model is configured.
+    public var config: ModelConfig?
+    public var node: NodeState?
+    public var memoryEngine: MemoryEngineStatus?
+    public var memoryPlugin: MemoryPluginState?
+    public var directory: [Row]
+    public var hostDeviceID: String?
+    /// The origin Core sees for this request (`address`).
+    public var address: String
+    public var dataDir: String
+    /// e.g. "Pi 1.0.4".
+    public var runtime: String
+    public var lanEnabled: Bool
 
-    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Row] = [], devices: [Row] = [], delegations: [Row] = [], onlineDevices: [String] = []) {
+    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false) {
         self.sync = sync; self.bots = bots; self.approvals = approvals; self.tasks = tasks; self.conversations = conversations
-        self.routines = routines; self.devices = devices; self.delegations = delegations; self.onlineDevices = onlineDevices
+        self.routines = routines; self.occurrences = occurrences; self.devices = devices; self.delegations = delegations; self.onlineDevices = onlineDevices
+        self.connectors = connectors; self.memories = memories; self.journal = journal; self.usage = usage; self.config = config; self.node = node
+        self.memoryEngine = memoryEngine; self.memoryPlugin = memoryPlugin; self.directory = directory; self.hostDeviceID = hostDeviceID
+        self.address = address; self.dataDir = dataDir; self.runtime = runtime; self.lanEnabled = lanEnabled
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         func rows(_ key: String) -> [Row] { c.lenient(.init(key))?.arrayValue?.compactMap(\.objectValue) ?? [] }
+        func object(_ key: String) -> Row? { c.lenient(.init(key))?.objectValue }
         sync = try c.decode(SyncIdentity.self, forKey: .init("sync"))
         bots = rows("bots").map(Bot.init); approvals = rows("approvals").map(Approval.init); tasks = rows("tasks").map(AgentTask.init)
-        conversations = rows("conversations"); routines = rows("routines"); devices = rows("devices"); delegations = rows("delegations")
+        conversations = rows("conversations"); routines = rows("routines").map(Routine.init); occurrences = rows("occurrences").map(RoutineOccurrence.init)
+        delegations = rows("delegations").map(Delegation.init)
         onlineDevices = c.lenient(.init("onlineDevices"))?.arrayValue?.compactMap(\.stringValue) ?? []
+        let online = Set(onlineDevices)
+        devices = rows("devices").map { Device(row: $0, online: online.contains($0.string("id") ?? "")) }
+        connectors = rows("connectors").map(ConnectorView.init); memories = rows("memories").map(Memory.init)
+        journal = rows("journal").map(JournalEntry.init); usage = rows("usage").map(Usage.init)
+        config = object("config").map(ModelConfig.init); node = object("node").map(NodeState.init)
+        memoryEngine = object("memoryEngine").map(MemoryEngineStatus.init); memoryPlugin = object("memoryPlugin").map(MemoryPluginState.init)
+        directory = rows("directory")
+        hostDeviceID = c.lenient(.init("hostDeviceId"))?.stringValue
+        address = c.lenient(.init("address"))?.stringValue ?? ""; dataDir = c.lenient(.init("dataDir"))?.stringValue ?? ""
+        runtime = c.lenient(.init("runtime"))?.stringValue ?? ""; lanEnabled = c.lenient(.init("lanEnabled"))?.boolValue ?? false
     }
     /// Newest unfinished task of a bot (tasks arrive unfinished-first, newest first).
     public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.isUnfinished } }
+    /// All unfinished tasks of a bot, newest first.
+    public func unfinishedTasks(botID: String) -> [AgentTask] { tasks.filter { $0.botID == botID && $0.isUnfinished } }
+    public func routines(botID: String) -> [Routine] { routines.filter { $0.botID == botID } }
+    /// Up to `limit` newest occurrences of a bot's routines (web 工作 tab: 10).
+    public func occurrences(botID: String, limit: Int = 10) -> [RoutineOccurrence] { Array(occurrences.filter { $0.botID == botID }.prefix(limit)) }
+    /// Memories shown in a bot's 资料 tab: workspace-shared plus that bot's own.
+    public func memories(botID: String) -> [Memory] { memories.filter { $0.isShared || $0.botID == botID } }
+    /// The bot's work records (web shows the first 8).
+    public func journal(botID: String, limit: Int = 8) -> [JournalEntry] { Array(journal.filter { $0.botID == botID }.prefix(limit)) }
+    public func usage(botID: String) -> Usage { usage.first { $0.botID == botID } ?? Usage(row: ["bot_id": .string(botID)]) }
+    /// Bound (not revoked) devices.
+    public var boundDevices: [Device] { devices.filter(\.isBound) }
+    public var onlineDeviceCount: Int { onlineDevices.count }
+    public var enabledConnectorCount: Int { connectors.filter(\.enabled).count }
+    /// Enabled connectors with at least one tool granted to the bot (web 工作 tab 连接器 list).
+    public func connectors(grantedTo botID: String) -> [ConnectorView] {
+        connectors.filter { $0.enabled && ($0.grant(for: botID)?.tools.isEmpty == false) }
+    }
+    public func isHost(_ device: Device) -> Bool { device.id == hostDeviceID }
 }
 
 /// One step of `tool_steps` on an assistant message.

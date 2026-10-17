@@ -5,7 +5,7 @@ import NexClientKit
 /// DEBUG-only automation for simulator fixture runs, where taps cannot be scripted.
 /// NEXBOT_FIXTURE_AUTOLOGIN_ACCOUNT / _PASSWORD submit the login form once per launch.
 /// NEXBOT_DEBUG_COMMAND_FILE is polled and consumed line by line:
-/// `tab chats|approvals|settings` (chats = pop to root), `open <agent name>`, `back`, `menu` (account menu), `dark|light|system`, `send <text>`, `approve`, `deny`, `stop`, `revoke <session id prefix>`, `logout`.
+/// `tab chats|approvals|settings` (chats = pop to root), `open <agent name>`, `back`, `menu` (account menu), `dark|light|system`, `route connectors|devices|detail|settings` (detail = the current or first agent), `detailtab work|memory|settings`, `settingscat account|model|memory|system`, `send <text>`, `approve`, `deny`, `stop`, `revoke <session id prefix>`, `logout`.
 @MainActor enum DebugHooks {
     static var autoLoginUsed = false
 
@@ -33,6 +33,16 @@ import NexClientKit
                     nav.showMenu = false
                     nav.path = arg == "approvals" ? [.approvals] : arg == "settings" ? [.settings] : []
                 case "open": if let bot = workspace.bots.first(where: { $0.name == arg }) { nav.showMenu = false; nav.path = [.chat(bot.id)] }
+                case "route":
+                    switch arg {
+                    case "connectors": nav.openConnectors()
+                    case "devices": nav.openDevices()
+                    case "settings": nav.openSettings(nav.settingsCategory)
+                    case "detail": if let id = nav.currentBotID ?? workspace.bots.first?.id { nav.openAgentDetail(id, tab: nav.detailTab) }
+                    default: break
+                    }
+                case "detailtab": if let tab = AgentDetailTab.allCases.first(where: { ["work": "工作", "memory": "资料", "settings": "设置"][arg] == $0.rawValue }) { nav.detailTab = tab }
+                case "settingscat": if let c = ["account": SettingsCategory.account, "model": .model, "memory": .memory, "system": .system][arg] { nav.settingsCategory = c }
                 case "back": nav.showMenu = false; if !nav.path.isEmpty { nav.path.removeLast() }
                 case "menu": nav.showMenu = true
                 case "dark", "light", "system": UserDefaults.standard.set(parts[0], forKey: AppearanceMode.key)

@@ -1,14 +1,12 @@
 import SwiftUI
 import NexClientKit
 
-/// Right column "助手详情" with the 工作 / 资料 / 设置 tabs; only 工作 has content in the native client.
+/// Right column "助手详情" with the 工作 / 资料 / 设置 tabs. The selected tab lives in `UIState.inspectorTab`.
 struct InspectorView: View {
     let workspace: WorkspaceStore
     let botID: String
     @Environment(UIState.self) private var ui
-    @State private var tab = Tab.work
-
-    enum Tab: String, CaseIterable { case work = "工作", memory = "资料", settings = "设置" }
+    private var tab: InspectorTab { ui.inspectorTab }
 
     private var bot: Bot? { workspace.bot(botID) }
     private var task: AgentTask? { workspace.state?.unfinishedTask(botID: botID) }
@@ -37,8 +35,10 @@ struct InspectorView: View {
             tabs
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    if tab == .work { work } else {
-                        Text("请在网页端管理资料与助手设置。").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                    switch tab {
+                    case .work: work
+                    case .memory: InspectorMemoryTab(workspace: workspace, botID: botID)
+                    case .settings: InspectorSettingsTab(workspace: workspace, botID: botID)
                     }
                 }
                 .padding(20)
@@ -50,8 +50,8 @@ struct InspectorView: View {
 
     private var tabs: some View {
         HStack(spacing: 0) {
-            ForEach(Tab.allCases, id: \.self) { item in
-                Button { tab = item } label: {
+            ForEach(InspectorTab.allCases, id: \.self) { item in
+                Button { ui.inspectorTab = item } label: {
                     Text(item.rawValue).font(.system(size: 12)).foregroundStyle(tab == item ? Theme.brand : Theme.muted)
                         .frame(maxWidth: .infinity).frame(height: 36)
                         .overlay(alignment: .bottom) { Rectangle().fill(tab == item ? Theme.brand : .clear).frame(height: 2) }
@@ -82,15 +82,15 @@ struct InspectorView: View {
             }
         }
         section("可用设备") {
-            let devices = (workspace.state?.devices ?? []).filter { $0.string("status").map { $0 == "bound" } ?? true }
+            let devices = workspace.state?.boundDevices ?? []
             if devices.isEmpty {
                 Text("还没有可用设备。").font(.system(size: 12)).foregroundStyle(Theme.muted)
             }
-            ForEach(Array(devices.enumerated()), id: \.offset) { _, device in
-                let online = workspace.state?.onlineDevices.contains(device.string("id") ?? "") ?? false
+            ForEach(devices) { device in
+                let online = device.online
                 HStack(spacing: 8) {
                     Image(systemName: "cpu").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                    Text(device.string("name") ?? "设备").font(.system(size: 12)).lineLimit(1)
+                    Text(device.name).font(.system(size: 12)).lineLimit(1)
                     Spacer()
                     Text(online ? "在线" : "离线").font(.system(size: 10))
                         .foregroundStyle(online ? Theme.success : Theme.muted)
@@ -100,14 +100,14 @@ struct InspectorView: View {
             }
         }
         section("例行任务") {
-            let routines = (workspace.state?.routines ?? []).filter { $0.string("bot_id") == botID }
+            let routines = workspace.state?.routines(botID: botID) ?? []
             if routines.isEmpty {
                 Text("安排一项例行任务，Agent 会按计划工作并给你汇报。").font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(Array(routines.enumerated()), id: \.offset) { _, routine in
-                let enabled = routine.bool("enabled") ?? ((routine.int("enabled") ?? 0) != 0)
+            ForEach(routines) { routine in
+                let enabled = routine.enabled
                 HStack(spacing: 8) {
-                    Text(routine.string("name") ?? "例行任务").font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    Text(routine.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
                     Spacer()
                     Text(enabled ? "已启用" : "已暂停").font(.system(size: 10)).foregroundStyle(enabled ? Theme.success : Theme.muted)
                 }

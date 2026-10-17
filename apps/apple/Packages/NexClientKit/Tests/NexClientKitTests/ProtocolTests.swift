@@ -59,7 +59,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(s.tasks[0].phrase, "正在检索记忆")
         XCTAssertTrue(s.tasks[0].isUnfinished); XCTAssertFalse(s.tasks[1].isUnfinished)
         XCTAssertEqual(s.unfinishedTask(botID: "b1")?.id, "t1")
-        XCTAssertEqual(s.routines[0].bool("enabled"), true)
+        XCTAssertEqual(s.routines[0].enabled, true)
         XCTAssertEqual(s.onlineDevices, ["d1"])
     }
 

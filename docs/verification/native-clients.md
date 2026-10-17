@@ -49,8 +49,15 @@ echo "status" >> /tmp/fx.in
 | `history <agent> <n>` | Adds `n` (at most 200) exchanges to one agent, for older-history paging (pages are 100 messages). |
 | `revoke-others` | Revokes every client session except the fixture's own. |
 | `forget <agent>` | Prints the memory forget preview only. It does not mutate. |
+| `memory <agent> <title> \| <content>` | Creates a private long-term memory for the agent (`POST /api/memory`). Agent is a single token (name or id). |
+| `routine <agent> <name>` | Creates a daily 09:00 routine in the machine's time zone for the agent. |
+| `peer` | The next model turn makes 工作助手 delegate to 研究伙伴 (`agent.delegate`), then replies `已联系研究伙伴。`. Follow with `send 工作助手 <text>`; `state.delegations` then holds the hand-off. |
 | `status` | Prints agents, pending approvals (id, hash), sessions and sync cursor. |
 | `quit` | Stops Core and the fake services and removes the temp dir. Ctrl-C and SIGTERM do the same. |
+
+The banner also prints `Fake MCP`, the synthetic MCP server (`server/personal-os/testing/fake-mcp.ts`, tools `echo` and
+`private_tool`). Add `<origin>/mcp` (Streamable HTTP) or `<origin>/sse` (SSE) as a connector, test it, then grant tools to an
+agent. The model is already configured, so `state.config` is present.
 
 Any model request without a scripted reply gets a default text reply, so ordinary
 sends from the app also work. Closing stdin does not stop the fixture.

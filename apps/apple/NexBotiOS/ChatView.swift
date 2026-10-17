@@ -5,6 +5,7 @@ struct ChatView: View {
     let workspace: WorkspaceStore
     let botID: String
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(Navigation.self) private var nav
     @State private var errorText: String?
     private let bottomID = "bottom"
 
@@ -59,7 +60,12 @@ struct ChatView: View {
         .toolbarRole(.editor)
         .toolbarBackground(Theme.background, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { nav.openAgentDetail(botID) } label: { Image(systemName: "info.circle") }
+                    .accessibilityLabel("Agent 资料")
+            }
             ToolbarItem(placement: .principal) {
+                Button { nav.openAgentDetail(botID) } label: {
                 HStack(spacing: 8) {
                     if let bot { workspace.avatar(of: bot, size: 28) }
                     VStack(alignment: .leading, spacing: 0) {
@@ -67,6 +73,9 @@ struct ChatView: View {
                         Text(status).font(.caption2).foregroundStyle(Theme.muted).lineLimit(1)
                     }
                 }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(bot?.name ?? "Agent") 资料")
             }
         }
         .errorAlert($errorText)

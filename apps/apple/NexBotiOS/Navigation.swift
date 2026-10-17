@@ -1,18 +1,64 @@
 import SwiftUI
 import Observation
+import NexClientKit
 
-/// Navigation of the connected app, shared so it can be driven programmatically.
-/// Root is the contacts list; chats, the approvals list and settings are pushed on top.
+/// Categories of the Settings screen (chips at the top).
+enum SettingsCategory: String, CaseIterable {
+    case account = "账号与登录设备", model = "模型", memory = "记忆服务", system = "系统信息"
+    var icon: String {
+        switch self { case .account: "person"; case .model: "cpu"; case .memory: "brain"; case .system: "globe" }
+    }
+}
+
+/// Tabs of the agent detail screen.
+enum AgentDetailTab: String, CaseIterable { case work = "工作", memory = "资料", settings = "设置" }
+
+/// Navigation of the connected app, shared (as an environment object) so any view can drive it.
+/// Root is the contacts list; chats, the approvals list, settings and the other pages are pushed on top.
 @MainActor @Observable
 final class Navigation {
-    enum Route: Hashable { case chat(String), approvals, settings }
+    enum Route: Hashable { case chat(String), approvals, settings, connectors, devices, agentDetail(String) }
     var path: [Route] = []
     /// The account menu sheet.
     var showMenu = false
+    /// The category Settings shows.
+    var settingsCategory = SettingsCategory.account
+    /// The tab AgentDetailView shows.
+    var detailTab = AgentDetailTab.work
 
-    /// The agent of the chat on top of the stack.
+    /// The agent of the chat (or its detail screen) on top of the stack.
     var currentBotID: String? {
-        if case .chat(let id)? = path.last { return id }
-        return nil
+        switch path.last {
+        case .chat(let id)?, .agentDetail(let id)?: id
+        default: nil
+        }
+    }
+
+    // MARK: Router
+
+    /// Pushes a route unless it is already on top.
+    func push(_ route: Route) { showMenu = false; if path.last != route { path.append(route) } }
+    func openChat(_ botID: String) { showMenu = false; path = [.chat(botID)] }
+    func openConnectors() { push(.connectors) }
+    func openDevices() { push(.devices) }
+    /// Pushes the agent detail screen, optionally at a tab (e.g. 资料 after tapping a memory pill).
+    func openAgentDetail(_ botID: String, tab: AgentDetailTab = .work) { detailTab = tab; push(.agentDetail(botID)) }
+    /// Pushes Settings at a category (e.g. 模型 from 配置 API Key).
+    func openSettings(_ category: SettingsCategory = .account) {
+        settingsCategory = category
+        if case .settings? = path.last { showMenu = false } else { push(.settings) }
+    }
+
+    /// The screen for a route. Kept here so the route table has one owner.
+    @ViewBuilder
+    func destination(for route: Route, model: AppModel, workspace: WorkspaceStore) -> some View {
+        switch route {
+        case .chat(let id): ChatView(workspace: workspace, botID: id)
+        case .approvals: ApprovalsView(workspace: workspace)
+        case .settings: SettingsView(model: model, workspace: workspace)
+        case .connectors: ConnectorsView(workspace: workspace)
+        case .devices: DevicesView(workspace: workspace)
+        case .agentDetail(let id): AgentDetailView(workspace: workspace, botID: id)
+        }
     }
 }

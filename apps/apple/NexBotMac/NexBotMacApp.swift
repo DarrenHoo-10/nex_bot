@@ -2,15 +2,49 @@ import SwiftUI
 import AppKit
 import NexClientKit
 
-/// UI-only state shared between the window, commands and menu bar.
+/// What the main area shows next to the sidebar. Settings is a separate window.
+enum MainPage: String, CaseIterable { case agent, connectors, devices }
+
+/// Tabs of the right "助手详情" column.
+enum InspectorTab: String, CaseIterable { case work = "工作", memory = "资料", settings = "设置" }
+
+/// Categories of the Settings window. Raw values double as the `@AppStorage("nexbot.settingsCategory")` value.
+enum SettingsCategory: String, CaseIterable {
+    case account = "账号与登录设备", model = "模型", memory = "记忆服务", system = "系统信息"
+    static let storageKey = "nexbot.settingsCategory"
+    var icon: String {
+        switch self { case .account: "person"; case .model: "cpu"; case .memory: "brain"; case .system: "globe" }
+    }
+}
+
+/// UI-only state shared between the window, commands and menu bar. It is also the navigation router: any view can
+/// call `openConnectors()`, `openDevices()`, `showAgent()`, `openSettings(_:)` or `openInspector(_:)`.
 @MainActor @Observable
 final class UIState {
     /// Incremented by ⌘N; the composer focuses itself when it changes.
     var composerFocusTick = 0
     var inspectorVisible = true
+    var inspectorTab = InspectorTab.work
     var accountMenuOpen = false
+    /// The main-area page; anything but `.agent` replaces the chat and inspector columns.
+    var page = MainPage.agent
     /// Incremented to open the settings window.
     var settingsTick = 0
+
+    /// Shows the connectors page (inspector 连接器 links, composer 管理连接器).
+    func openConnectors() { accountMenuOpen = false; page = .connectors }
+    /// Shows the devices page.
+    func openDevices() { accountMenuOpen = false; page = .devices }
+    /// Returns to the selected agent's conversation.
+    func showAgent() { page = .agent }
+    /// Opens the Settings window, optionally at a category (e.g. 模型 from the 驱动模型 pill, 配置 API Key).
+    func openSettings(_ category: SettingsCategory? = nil) {
+        accountMenuOpen = false
+        if let category { UserDefaults.standard.set(category.rawValue, forKey: SettingsCategory.storageKey) }
+        settingsTick += 1
+    }
+    /// Shows the agent page with the inspector open at a tab (e.g. 资料 after clicking a memory pill or preview).
+    func openInspector(_ tab: InspectorTab) { page = .agent; inspectorVisible = true; inspectorTab = tab }
 }
 
 /// App-wide appearance override stored in `@AppStorage("nexbot.dark")`: "system", "light" or "dark".
@@ -23,6 +57,7 @@ enum AppearanceOverride {
 struct NexBotMacApp: App {
     @State private var model = AppModel()
     @State private var ui = UIState()
+    @State private var preferences = ContactPreferences()
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
 
     var body: some Scene {
@@ -30,6 +65,7 @@ struct NexBotMacApp: App {
             RootView()
                 .environment(model)
                 .environment(ui)
+                .environment(preferences)
                 .preferredColorScheme(AppearanceOverride.scheme(appearance))
                 .task { await model.start() }
         }
@@ -37,7 +73,7 @@ struct NexBotMacApp: App {
         .defaultSize(width: 1440, height: 960)
         .commands {
             CommandGroup(replacing: .appSettings) {
-                Button("设置…") { ui.settingsTick += 1 }.keyboardShortcut(",", modifiers: .command)
+                Button("设置…") { ui.openSettings() }.keyboardShortcut(",", modifiers: .command)
             }
             CommandGroup(replacing: .newItem) {
                 Button("新消息") { ui.composerFocusTick += 1 }

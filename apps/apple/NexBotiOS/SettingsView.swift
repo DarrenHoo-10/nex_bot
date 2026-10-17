@@ -5,9 +5,8 @@ import NexClientKit
 struct SettingsView: View {
     let model: AppModel
     let workspace: WorkspaceStore
-    private enum Category: String, CaseIterable { case account = "账号与登录设备", system = "系统信息"
-        var icon: String { self == .account ? "person" : "globe" } }
-    @State private var category = Category.account
+    @Environment(Navigation.self) private var nav
+    private var category: SettingsCategory { nav.settingsCategory }
     @State private var confirmLogout = false
     @State private var revoking: ClientSession?
     @State private var errorText: String?
@@ -22,6 +21,8 @@ struct SettingsView: View {
                 chips
                 switch category {
                 case .account: account
+                case .model: SettingsModelView(workspace: workspace)
+                case .memory: SettingsMemoryView(workspace: workspace)
                 case .system: system
                 }
             }
@@ -53,9 +54,9 @@ struct SettingsView: View {
 
     private var chips: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-            ForEach(Category.allCases, id: \.self) { item in
+            ForEach(SettingsCategory.allCases, id: \.self) { item in
                 let selected = item == category
-                Button { category = item } label: {
+                Button { nav.settingsCategory = item } label: {
                     HStack(spacing: 8) {
                         Image(systemName: item.icon)
                         Text(item.rawValue).lineLimit(1).minimumScaleFactor(0.8)

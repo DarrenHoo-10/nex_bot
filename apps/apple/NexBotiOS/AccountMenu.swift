@@ -12,10 +12,9 @@ struct AccountMenu: View {
     var body: some View {
         VStack(spacing: 14) {
             VStack(spacing: 0) {
-                item("gearshape", "设置") {
-                    nav.showMenu = false
-                    nav.path.append(.settings)
-                }
+                item("puzzlepiece.extension", "连接器", trailing: count(model.workspace?.state?.enabledConnectorCount)) { nav.openConnectors() }
+                item("desktopcomputer", "设备", trailing: count(model.workspace?.state?.onlineDeviceCount)) { nav.openDevices() }
+                item("gearshape", "设置") { nav.openSettings() }
                 item(colorScheme == .dark ? "sun.max" : "moon", colorScheme == .dark ? "切换浅色模式" : "切换深色模式") {
                     mode = (colorScheme == .dark ? AppearanceMode.light : .dark).rawValue
                 }
@@ -39,7 +38,7 @@ struct AccountMenu: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.sidebar)
         .foregroundStyle(Theme.foreground)
-        .presentationDetents([.height(330)])
+        .presentationDetents([.height(420)])
         .presentationDragIndicator(.visible)
         .presentationBackground(Theme.sidebar)
         .confirmationDialog("退出当前账号？", isPresented: $confirmLogout, titleVisibility: .visible) {
@@ -52,12 +51,15 @@ struct AccountMenu: View {
         }
     }
 
-    private func item(_ icon: String, _ title: String, action: @escaping () -> Void) -> some View {
+    private func count(_ n: Int?) -> String? { (n ?? 0) > 0 ? "\(n!)" : nil }
+
+    private func item(_ icon: String, _ title: String, trailing: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: icon).frame(width: 22).foregroundStyle(Theme.muted)
                 Text(title).font(.subheadline.weight(.medium))
                 Spacer()
+                if let trailing { Text(trailing).font(.footnote).foregroundStyle(Theme.muted) }
             }
             .padding(.horizontal, 12).padding(.vertical, 12)
             .contentShape(Rectangle())
