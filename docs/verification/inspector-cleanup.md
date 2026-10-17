@@ -11,7 +11,9 @@ under global Settings. The idle card, redundant shortcuts, directory display,
 and motion preference control are removed.
 
 The avatar itself opens the appearance picker. Settings > About >
-`bot身份信息` opens the identity editor. Routine rows show title, schedule/prompt
+the saved identity is shown directly (empty placeholder: `bot身份信息`). Clicking
+opens an inline textarea with Save/Cancel, not a modal. Ctrl/Cmd+Enter saves,
+Escape cancels, and failed saves retain the draft. Routine rows show title, schedule/prompt
 summary and a separate accessible switch. Row clicks edit, the heading plus
 creates, and manual execution is available inside the editor. Empty lists
 keep only the heading and plus action.

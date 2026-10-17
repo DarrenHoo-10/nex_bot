@@ -18,6 +18,7 @@ window.showInactive();
 process.on("message", (message) => {
   if (message?.type === "minimize") { window.minimize(); writeFileSync(output + ".minimized.json", JSON.stringify({ minimized: window.isMinimized() })); }
   if (message?.type === "state") writeFileSync(output + ".restored.json", JSON.stringify({ minimized: window.isMinimized() }));
+  if (message?.type === "focus") { window.restore(); window.show(); window.focus(); window.webContents.focus(); process.send?.({ type: "focused" }); }
 });
 writeFileSync(output, JSON.stringify({ pid: process.pid, windowId: Number(hwnd.length === 8 ? hwnd.readBigUInt64LE() : hwnd.readUInt32LE()), profile, visible: window.isVisible(), title: window.getTitle() }));
 app.on("window-all-closed", () => app.quit());

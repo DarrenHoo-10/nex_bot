@@ -12,6 +12,7 @@ import { ContactSidebar } from "./components/ContactSidebar";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
+import { BotIdentity } from "./components/BotIdentity";
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -344,7 +345,7 @@ export function AgentDesktop() {
           <section className="agent-configuration"><h2>助手设置</h2><div>          <div className="ds-field-group">
             <div className="ds-field-label">关于</div>
             <div className="ds-field-card">
-              <button type="button" className="bot-identity-link" onClick={() => editBot(bot)}>bot身份信息</button>
+              <BotIdentity key={str(bot.id)} bot={bot} refresh={reload}/>
             </div>
           </div>
 

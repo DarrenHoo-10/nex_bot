@@ -20,7 +20,12 @@ export interface State {
   node: { hosted?: boolean; status: string; origin: string; root: string; exec: boolean; computer?: boolean; computerSupported?: boolean; deviceId?: string; connected: boolean; unknownCalls: RecordRow[] };
   dataDir: string; address: string; lanEnabled: boolean;
 }
+export interface LocalDeviceState { available: boolean; name?: string; status?: string; connected?: boolean; authorized?: boolean; paused?: boolean; deviceId?: string; root?: string; exec?: boolean; computer?: boolean; computerSupported?: boolean; unknownCalls?: RecordRow[] }
 type Bridge = {
+  deviceState?(): Promise<LocalDeviceState>;
+  setDevicePaused?(paused: boolean): Promise<LocalDeviceState>;
+  reconcileDevice?(id: string, version: number): Promise<LocalDeviceState>;
+  stopDevice?(): Promise<void>;
   mode?: "client";
   listModels?(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }>;
   disconnect?(): Promise<void>;

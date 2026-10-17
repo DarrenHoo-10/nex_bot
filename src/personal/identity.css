@@ -121,8 +121,11 @@
 .rk-workspace .profile-avatar-button { grid-column: 1; grid-row: 1 / 3; align-self: center; width: 64px; height: 64px; padding: 0; border: 0; border-radius: 20px; background: transparent; }
 .rk-workspace .profile-avatar-button:hover { background: var(--muted); }
 .rk-workspace .profile-avatar-button:focus-visible, .rk-workspace .routine-summary:focus-visible, .rk-workspace .routine-toggle:focus-visible, .rk-workspace .bot-identity-link:focus-visible { outline: 2px solid #3566ed; outline-offset: 3px; }
-.rk-workspace .bot-identity-link { padding: 4px 0; border: 0; background: transparent; color: var(--muted-foreground); text-align: left; font-size: 13px; }
+.rk-workspace .bot-identity-link { display: block; width: 100%; padding: 4px 0; border: 0; background: transparent; color: var(--muted-foreground); text-align: left; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rk-workspace .bot-identity-link:hover { color: var(--foreground); }
+.rk-workspace .bot-identity-editor textarea { display: block; width: 100%; box-sizing: border-box; min-height: 130px; max-height: 360px; resize: vertical; padding: 10px 12px; color: var(--foreground); background: var(--background); border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 13px; line-height: 1.7; }
+.rk-workspace .bot-identity-editor textarea:focus { outline: 2px solid #3566ed; outline-offset: 1px; }
+.rk-workspace .bot-identity-editor .actions { margin-top: 10px; }
 .rk-workspace .routine-list { border: 1px solid var(--border); border-radius: 16px; background: var(--background); padding: 6px 0; overflow: hidden; }
 .rk-workspace .routine-row { display: flex; align-items: center; gap: 14px; padding: 9px 12px; min-width: 0; }
 .rk-workspace .routine-summary { display: flex; flex: 1; flex-direction: column; gap: 5px; min-width: 0; padding: 3px 0; border: 0; border-radius: 4px; background: transparent; text-align: left; }
