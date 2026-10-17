@@ -1,5 +1,81 @@
 # Personal workspace and MCP connectors — 2026-10-17
 
+## Production release 0.9.0 — 2026-10-17
+
+The companion identity update is now deployed through the existing Seoul HTTPS
+entry to Tokyo Core, and the Windows x64 portable client is packaged:
+`release/personal-client/NexBot-0.9.0-x64-Client-Portable.exe` (136407936 bytes;
+SHA-256 `6c250254ac657c75008223e6f480ac457368d570b7af411e4dab1b48533ecf7e`).
+The client is unsigned. Its ten-entry ASAR contains only the shell, login assets,
+new icons and package metadata; packaged bytes match the frozen release source.
+
+Core archive: `release/core/NexBot-Core-0.9.0-linux-x64.tar.gz` (25417551 bytes;
+SHA-256 `97895fdfb48a80745694c8c63dabdf5000f2a97a08c2f5b30437982a51bd055c`).
+The release was built from the previous main commit plus the desktop appearance
+changes, with a source manifest retained under ignored `release/deployment-0.9.0`.
+In-progress Android summary-state and session-refresh extensions were excluded.
+
+Release checks passed: 31 integration tests across six suites; 19 actual
+renderer cases; 15 login/account-isolation checks on the portable EXE; 17
+two-client checks on that EXE; and 17 standalone service checks on the extracted
+Linux candidate in a disposable Tokyo environment. TypeScript and explicit-path
+lint passed. All account/message mutations used isolated synthetic fixtures.
+The first two-client run reached its report write but lacked the output directory;
+after creating that directory, the complete run passed.
+
+Deployment stopped Core for a private backup of all account data and service
+configuration, then selected the new release through a separate systemd override.
+Both existing workspaces retained their identity, vault, message/Agent records,
+model configuration and encrypted memory settings. Database integrity checks
+passed. Root migration 12 is applied; other account databases apply the additive
+migration when their workspace opens. The previous release and backup remain on
+the server for rollback.
+
+Public HTTPS health returned 200, unauthenticated business APIs returned 401,
+and the SVG, JS and CSS hashes matched the release bytes. No real user's account
+was used for production tests. No macOS installer was produced in this release.
+
+## Companion identity update — 2026-10-17
+
+The current workspace uses an original NexBot `n` mark and four procedural
+companion silhouettes in five colors. The existing 20 vector portraits remain
+available in the classic gallery. Shape/color selections are draft-only until
+applied; additive schema migration 12 stores versioned appearance metadata in
+the account's Core database. Existing chat, identity and permission data remain
+unchanged by that migration.
+
+The chat has an 800px reading column and an auto-growing composer. The inspector
+uses Work / Materials / Settings, with active work before tools and device links.
+Selected companions follow actual thinking, executing, approval and completion
+states. Contacts remain static, completion settles once, and both the local
+motion preference and OS reduced-motion setting suppress animations.
+
+Current verification:
+
+- `pnpm typecheck`, `pnpm lint` and `pnpm build:core` passed.
+- Appearance and account-workspace integration suites: 5 tests passed, including
+  separate sessions, stale-version rejection, invalid/foreign/unauthenticated
+  mutations and persistence through a service restart.
+- `node scripts/smoke-personal-workspace.mjs`: 19 grouped renderer cases passed,
+  including the actual delayed worker thinking/completion cycle, MCP approval
+  and execution motion, motion preferences, 2560px reading width, 390px mobile
+  layout, classic gallery, draft cancellation, server-backed appearance and the
+  existing connector lifecycle. Evidence remains ignored under
+  `release/workspace-verification-avatars/`.
+- `node scripts/build-nexbot-icons.mjs` generates ICO/ICNS/PNG from the original
+  SVG. Client packaging configurations and the window/login surfaces reference
+  the new assets. A new production installer or macOS package was not built in
+  this design pass.
+
+For a visible interactive preview, run `node scripts/preview-personal-design.mjs`
+after the Core build and client runtime preparation. This launches the real UI
+against a disposable Core with synthetic login, model and MCP services, and no
+host device. Model replies are deliberately scripted. Closing that window stops
+the fixture and removes only its own temporary profile. Production data and
+installed client profiles are not used by the preview.
+
+The older evidence below describes the previous layout and release checks.
+
 The Personal UI retains NexBot Core and NexorAI login. It now has a contact
 sidebar, conversation column and detail inspector, plus generic remote MCP
 management. Rakazo reuse and licensing are recorded in `third_party/rakazo`.

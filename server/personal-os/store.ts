@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { basicActions } from "./policy.ts";
 import { connectorSchema } from "./connector-schema.ts";
+import { appearanceSchema } from "./appearance-schema.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
@@ -189,6 +190,12 @@ export class CoreStore {
       this.transaction(() => {
         this.db.exec(connectorSchema);
         this.insert("schema_migrations", { version: 11, checksum: hash(connectorSchema), applied_at: now() });
+      });
+    }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=12")) {
+      this.transaction(() => {
+        this.db.exec(appearanceSchema);
+        this.insert("schema_migrations", { version: 12, checksum: hash(appearanceSchema), applied_at: now() });
       });
     }
     this.db.exec("PRAGMA secure_delete=ON;");

@@ -8,7 +8,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(repo, "dist-personal/server");
 if (!existsSync(path.join(source, "core/service.js"))) throw new Error("Run build:core before packaging");
 const output = path.join(repo, "release/core"); mkdirSync(output, { recursive: true });
-const filename = `NexBot-Core-0.8.1-${process.platform}-${process.arch}.tar.gz`;
+const filename = `NexBot-Core-0.9.0-${process.platform}-${process.arch}.tar.gz`;
 const file = path.join(output, filename);
 const entries = ["core", "ui", "node_modules", "package.json", "licenses", "LICENSE-OpenMausBot.txt", "NOTICE", "README.md"];
 if (existsSync(path.join(source, "computer-runtime"))) entries.push("computer-runtime");

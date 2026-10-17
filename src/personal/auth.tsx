@@ -1,3 +1,4 @@
+import { BrandMark } from "./components/BrandMark";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, desktop } from "./api";
 
@@ -60,7 +61,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
     finally { loggingOut.current = false; }
   }
   if (status?.authenticated) return <Account.Provider value={{ status, logout }}>{children}</Account.Provider>;
-  return <main className="login-screen"><section className="login-card"><span className="login-mark">N</span><p className="login-eyebrow">NEXBOT · PERSONAL AI OS</p><h1>登录你的个人 Agent</h1><p>使用 NexorAI 账号登录，连接你的 Agent、消息与记忆。</p>{loading ? <p role="status">正在检查登录状态…</p> : !status?.initialized && !status?.canInitialize ? <><p>请先在后端服务器运行 init，完成账号关联。</p><button onClick={() => void refresh()}>重新检查</button>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接设置</button> : null}</> : <form className="login-form" onSubmit={(event) => {
+  return <main className="login-screen"><section className="login-card"><BrandMark size={56}/><p className="login-eyebrow">NEXBOT · PERSONAL AI OS</p><h1>登录你的个人 Agent</h1><p>使用 NexorAI 账号登录，连接你的 Agent、消息与记忆。</p>{loading ? <p role="status">正在检查登录状态…</p> : !status?.initialized && !status?.canInitialize ? <><p>请先在后端服务器运行 init，完成账号关联。</p><button onClick={() => void refresh()}>重新检查</button>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接设置</button> : null}</> : <form className="login-form" onSubmit={(event) => {
     event.preventDefault(); const form = event.currentTarget, data = new FormData(form); setBusy(true); setError("");
     void (async () => {
       try {

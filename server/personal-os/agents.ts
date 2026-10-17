@@ -1,6 +1,7 @@
 import { CoreStore, hash, id, now, optionalText, text, type Row } from "./store.ts";
 import type { TaskRuntime } from "./runtime.ts";
 import { actions, policyTools } from "./policy.ts";
+import { parseAppearance } from "../../shared/personal-appearance.ts";
 
 // The contact and its inbox survive any number of execution contexts. Pi
 // sessions belong to work, and never define the identity visible to the owner.
@@ -49,6 +50,19 @@ export class AgentModule {
     });
     // Identity metadata does not change permissions, task IDs or inbox history.
     // Every worker obtains the latest identities at its model-request boundary.
+    this.runtime.changed();
+  }
+  updateAppearance(data: Record<string, unknown>) {
+    const botId = text(data.id, 100), appearance = parseAppearance(data.appearance), version = Number(data.version);
+    this.store.transaction(() => {
+      this.ensure(botId);
+      if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active'", botId)) throw new Error("Agent 已归档");
+      const current = this.store.get("SELECT version FROM bot_appearance WHERE bot_id=?", botId);
+      if (!Number.isSafeInteger(version) || version < 0 || Number(current?.version ?? 0) !== version) throw new Error("头像已在其他设备更新，请关闭后重新打开");
+      if (current) this.store.run("UPDATE bot_appearance SET appearance_json=?,version=version+1 WHERE bot_id=?", JSON.stringify(appearance), botId);
+      else this.store.insert("bot_appearance", { bot_id: botId, appearance_json: JSON.stringify(appearance), version: 1 });
+      this.store.audit("agent.appearance.update", "bot", botId, { version: version + 1 });
+    });
     this.runtime.changed();
   }
   updatePolicy(data: Record<string, unknown>) {
@@ -270,6 +284,6 @@ export class AgentModule {
     });
   }
   contacts() {
-    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,(SELECT COUNT(*) FROM agent_messages m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user') unread_count,(SELECT content FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
+    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM agent_messages m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user') unread_count,(SELECT content FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
   }
 }
