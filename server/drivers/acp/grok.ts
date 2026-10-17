@@ -26,6 +26,51 @@ export const STATIC_GROK_MODELS: ModelCatalog = {
 
 const SLUG = /^[a-z0-9][a-z0-9._-]*$/i;
 
+// grok 1.0.46 answers session/new before cli-chat-proxy returns the catalog.
+// That first list is the offline pair (model_count 2). session/set_model of
+// grok-4.7 is "unknown model id" until the refresh lands — observed at ~45s
+// on a cold start, after the CLI's own 5s/10s/20s retries.
+const GROK_CATALOG_WAIT_MS = 60_000;
+const GROK_CATALOG_POLL_MS = 1_000;
+const CLOUD_GROK_MODEL_IDS = new Set(STATIC_GROK_MODELS.options.map((option) => option.id));
+
+export function grokModelCatalogPending(modelId: string, error: unknown): boolean {
+  if (!CLOUD_GROK_MODEL_IDS.has(modelId)) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /unknown model id/i.test(message);
+}
+
+/** Pin a cloud slug, waiting while Grok's catalog fetch is still in flight.
+ * A local config.toml slug is not in that fetch, so an unknown id for it
+ * fails immediately. */
+export async function pinGrokSessionModel(
+  request: (method: string, params: unknown, timeoutMs?: number) => Promise<unknown>,
+  sessionId: string,
+  modelId: string,
+  wait: { now?: () => number; sleep?: (ms: number) => Promise<void>; deadlineMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const now = wait.now ?? Date.now;
+  const sleep = wait.sleep ?? delay;
+  const deadline = now() + (wait.deadlineMs ?? GROK_CATALOG_WAIT_MS);
+  const pollMs = wait.pollMs ?? GROK_CATALOG_POLL_MS;
+  let last: unknown;
+  for (;;) {
+    try {
+      await request("session/set_model", { sessionId, modelId });
+      return;
+    } catch (error) {
+      last = error;
+      if (!grokModelCatalogPending(modelId, error) || now() >= deadline) break;
+      await sleep(pollMs);
+    }
+  }
+  const detail = last instanceof Error ? last.message : String(last);
+  throw new Error(
+    `Grok rejected model "${modelId}" via session/set_model: ${detail}. ` +
+      `Check that grok is current (1.0.6+ supports it) and that this slug exists in ~/.grok/config.toml.`,
+  );
+}
+
 /** Grok's own home: `$GROK_HOME`, else `~/.grok`. Its grok.com sign-in,
  * config and catalog all live here. */
 export function grokHome(env: Record<string, string | undefined> = process.env): string {
@@ -453,14 +498,7 @@ const support: AcpSupport = {
       // rebuild the harness, or reject an otherwise valid resumed profile.
       return;
     }
-    try {
-      await request("session/set_model", { sessionId, modelId: turn.model });
-    } catch (e) {
-      throw new Error(
-        `Grok rejected model "${turn.model}" via session/set_model: ${(e as Error).message}. ` +
-          `Check that grok is current (1.0.6+ supports it) and that this slug exists in ~/.grok/config.toml.`,
-      );
-    }
+    await pinGrokSessionModel(request, sessionId, turn.model);
   },
 
   // The CLI owns its own grok.com login; a leaked API key silently flips

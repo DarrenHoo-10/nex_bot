@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { GrokAgentDriver, readGrokModelCatalog, STATIC_GROK_MODELS } from "./grok.ts";
+import { GrokAgentDriver, grokModelCatalogPending, pinGrokSessionModel, readGrokModelCatalog, STATIC_GROK_MODELS } from "./grok.ts";
 
 const scratchDirs: string[] = [];
 
@@ -109,5 +109,58 @@ describe("GrokAgentDriver catalog", () => {
     } finally {
       await instance.dispose();
     }
+  });
+});
+
+describe("pinGrokSessionModel", () => {
+  const unknown = new Error("Invalid params: unknown model id (session/set_model)");
+
+  it("treats a cloud slug's unknown id as a catalog that is still loading", () => {
+    expect(grokModelCatalogPending("grok-4.7", unknown)).toBe(true);
+    expect(grokModelCatalogPending("local-glm", unknown)).toBe(false);
+    expect(grokModelCatalogPending("grok-4.7", new Error("method not found"))).toBe(false);
+  });
+
+  it("retries a cloud slug until the catalog accepts it", async () => {
+    const calls: string[] = [];
+    let now = 0;
+    await pinGrokSessionModel(
+      async (_method, params) => {
+        calls.push((params as { modelId: string }).modelId);
+        if (calls.length < 3) throw unknown;
+      },
+      "session-1",
+      "grok-4.7",
+      { now: () => now, sleep: async (ms) => { now += ms; }, deadlineMs: 60_000, pollMs: 1_000 },
+    );
+    expect(calls).toEqual(["grok-4.7", "grok-4.7", "grok-4.7"]);
+  });
+
+  it("does not wait on a local slug or a non-catalog error", async () => {
+    const calls: string[] = [];
+    const request = async (_method: string, params: unknown) => {
+      calls.push((params as { modelId: string }).modelId);
+      throw unknown;
+    };
+    await expect(pinGrokSessionModel(request, "session-1", "local-glm", {
+      now: () => 0, sleep: async () => { throw new Error("should not wait"); },
+    })).rejects.toThrow(/local-glm/);
+    await expect(pinGrokSessionModel(async () => { throw new Error("method not found"); }, "session-1", "grok-4.7", {
+      now: () => 0, sleep: async () => { throw new Error("should not wait"); },
+    })).rejects.toThrow(/method not found/);
+    expect(calls).toEqual(["local-glm"]);
+  });
+
+  it("stops waiting once the catalog deadline passes", async () => {
+    let now = 0;
+    let calls = 0;
+    await expect(pinGrokSessionModel(async () => { calls += 1; throw unknown; }, "session-1", "grok-4.7", {
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      deadlineMs: 2_000,
+      pollMs: 1_000,
+    })).rejects.toThrow(/unknown model id/);
+    expect(calls).toBe(3);
+    expect(now).toBe(2_000);
   });
 });
