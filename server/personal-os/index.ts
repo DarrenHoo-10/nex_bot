@@ -4,6 +4,7 @@ import os from "node:os";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { CoreStore, text, id } from "./store.ts";
+import { catalogSettings, fetchModelCatalog } from "../../shared/model-catalog.mjs";
 import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
 import { DeviceNode } from "./node.ts";
@@ -254,6 +255,13 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines/run") { routines.runNow(text(data.id, 100), text(data.clientId, 100)); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/models/list") {
+        if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取模型列表的权限" }); return; }
+        const settings = catalogSettings(data, store.config() ? store.modelConfig() : undefined);
+        const result = await fetchModelCatalog(settings);
+        if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+        json(response, 200, result); return;
+      }
       if (url.pathname === "/api/config") { if (runtime.workers.size) throw new Error("请先等待模型请求结束再修改模型"); store.saveConfig(data); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots") { const botId = store.createBot(text(data.name, 80), data.instructions); agents.ensure(botId); changed(); json(response, 200, { id: botId }); return; }
       if (url.pathname === "/api/bots/update") {

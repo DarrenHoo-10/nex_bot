@@ -20,6 +20,11 @@
 .rk-workspace .preferences-description { margin: 10px 0 18px; color: var(--muted-foreground); font-size: 12px; line-height: 1.8; }
 .rk-workspace .preferences-page fieldset { min-width: 0; padding: 0; border: 0; margin: 0; }
 .preferences-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.preferences-model-controls { display: flex; align-items: stretch; gap: 10px; }
+.rk-workspace .preferences-model-controls > :is(input, select) { flex: 1; width: 0; }
+.rk-workspace .preferences-model-controls button { flex-shrink: 0; border: 1px solid var(--input); border-radius: 8px; padding: 8px 12px; background: var(--card); }
+.rk-workspace .preferences-page .model-entry-toggle { width: fit-content; padding: 0; background: transparent; border: 0; color: light-dark(#285cce, #91b3ff); }
+.rk-workspace .preferences-page .field .model-error { color: var(--destructive); }
 .rk-workspace .preferences-page .field { display: flex; flex-direction: column; gap: 9px; margin: 0 0 22px; font-size: 13px; font-weight: 500; color: var(--foreground); }
 .rk-workspace .preferences-page .field input, .rk-workspace .preferences-page .field select { width: 100%; min-width: 0; height: 42px; padding: 10px 12px; border: 1px solid var(--input); border-radius: 8px; background: var(--card); color: var(--foreground); font-size: 13px; font-weight: 400; box-shadow: none; }
 .rk-workspace .preferences-page .field small { color: var(--muted-foreground); font-size: 11px; font-weight: 400; line-height: 1.6; }
@@ -66,6 +71,22 @@
 .rk-workspace .preferences-notice { padding: 12px 14px; border-radius: 8px; font-size: 12px; line-height: 1.8; margin: 0 0 22px; }
 .rk-workspace .preferences-feedback { font-size: 12px; color: var(--muted-foreground); line-height: 1.8; margin: 14px 0 0; }
 .preferences-feedback:empty { display: none; }
+.rk-workspace .preferences-page .connectors-page, .rk-workspace .preferences-page .ds-settings-page { padding: 0; margin: 0; width: 100%; max-width: none; overflow: visible; }
+.rk-workspace .preferences-page .page-intro, .rk-workspace .preferences-page .ds-page-hero { padding: 4px 0 25px; margin: 0 0 24px; background: transparent; border: 0; border-bottom: 1px solid var(--input); border-radius: 0; box-shadow: none; align-items: flex-start; }
+.rk-workspace .preferences-page .page-intro h1, .rk-workspace .preferences-page .ds-page-hero h1 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.4px; line-height: 1.4; }
+.preferences-page .page-intro .eyebrow, .preferences-page .ds-page-eyebrow { display: none; }
+.rk-workspace .preferences-page .page-intro p, .rk-workspace .preferences-page .ds-page-hero p { font-size: 13px; line-height: 1.7; color: var(--muted-foreground); }
+.rk-workspace .preferences-page button.primary { background: #3569e8; border-color: #3569e8; color: white; }
+.rk-workspace .preferences-page .connector-layout { grid-template-columns: 190px minmax(0, 1fr); }
+.rk-workspace .preferences-page .connector-detail { padding: 20px; }
+.rk-workspace .preferences-page .connector-empty { min-height: 280px; }
+.rk-workspace .preferences-page .ds-settings-card { padding: 24px 0 !important; margin: 0 !important; border: 0 !important; border-bottom: 1px solid var(--input) !important; border-radius: 0 !important; box-shadow: none; background: transparent !important; }
+.rk-workspace .preferences-page .device-list > section { padding: 16px; border-radius: 10px; box-shadow: none; background: var(--card); }
+.rk-workspace .preferences-page .ds-card-header { flex-wrap: wrap; }
+@media (max-width: 1250px) {
+  .rk-workspace .preferences-page .connector-layout { display: flex; flex-direction: column; }
+  .rk-workspace .preferences-page .connector-list { border-right: 0; border-bottom: 1px solid var(--input); }
+}
 @media (max-width: 1000px) {
   .preferences-layout { grid-template-columns: 155px minmax(0, 1fr); gap: 25px; }
   .rk-workspace .preferences-page { padding: 28px 24px 48px; }
@@ -88,3 +109,7 @@
 @media (prefers-reduced-motion: reduce) {
   .preferences-toggle input, .preferences-toggle input::after { transition: none; }
 }
+.preferences-secret-input { position: relative; display: flex; align-items: center; }
+.rk-workspace .preferences-secret-input input { width: 100%; padding-right: 48px; }
+.rk-workspace .preferences-secret-input button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; background: transparent; color: var(--muted-foreground); }
+.rk-workspace .preferences-secret-input button:hover { color: var(--foreground); background: var(--muted); }

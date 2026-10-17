@@ -1,19 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, Cpu, FileText, Folder, Info, Palette, Pin, Play, Plus, PanelLeft, Plug, Share2, Shield, Sparkles, Square, Trash2, X, Zap } from "lucide-react";
+import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, FileText, Info, Pin, Play, Plus, PanelLeft, Plug, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
 import { api, desktop, statuses, str, taskPhrase, toolLabels, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
-import { Confirm, Devices, Editor, SettingsPage } from "./panels";
+import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { AgentAvatar as Avatar } from "./components/AgentAvatar";
 import { ContactSidebar } from "./components/ContactSidebar";
-import { ConnectorsPage } from "./ConnectorsPage";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
-import { MemoryWorkbench } from "./MemoryWorkbench";
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -45,13 +43,15 @@ function RichText({ value, onPreviewFile }: { value: string; onPreviewFile?: (pa
 export function AgentDesktop() {
   const { status: accountStatus, logout } = useAccount();
   const [state, setState] = useState<State>(), [page, setPage] = useState("agent");
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("account");
+  const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
   const [pinned, setPinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [composerMenu, setComposerMenu] = useState(false);
   const [lookRevision, setLookRevision] = useState(0);
-  const [motion, setMotion] = useState(() => localStorage.getItem("nexbot.motion") !== "0");
+  const [motion] = useState(() => localStorage.getItem("nexbot.motion") !== "0");
   const [settledState, setSettledState] = useState<CompanionState>("idle");
   const previousTask = useRef<{ botId: string; taskId: string } | undefined>(undefined);
   const [messages, setMessages] = useState<RecordRow[]>([]), [streaming, setStreaming] = useState<Array<{ taskId: string; text: string }>>([]);
@@ -59,7 +59,7 @@ export function AgentDesktop() {
   const [sendingBotId, setSendingBotId] = useState<string>();
   const [connected, setConnected] = useState(true), [detail, setDetail] = useState(() => window.innerWidth > 1040), [tab, setTab] = useState("profile"), [dialog, setDialog] = useState<ReactNode>(null);
   const [quote, setQuote] = useState<{ author: string; text: string }>(), [copiedId, setCopiedId] = useState(""), [exported, setExported] = useState(false);
-  const [showScrollPill, setShowScrollPill] = useState(false), [expandBio, setExpandBio] = useState(false), [memoryFilter, setMemoryFilter] = useState<"all" | "bot" | "workspace">("all");
+  const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
@@ -131,9 +131,9 @@ export function AgentDesktop() {
     return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); window.removeEventListener("nex-session-expired", expired); };
   }, [reload, offline]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
-  useEffect(() => { stickToBottom.current = true; setShowScrollPill(false); setQuote(undefined); setExpandBio(false); setMemoryNotice(""); setPreview(undefined); setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); if (botId) { setHistoryLoading(true); localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); }); } }, [botId, reload]);
-  const openFilePreview = (targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("memory"); setDetail(true); }).catch((e: Error) => setError(e.message)); };
-  const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("memory"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("memory"); setDetail(true); }); };
+  useEffect(() => { stickToBottom.current = true; setShowScrollPill(false); setQuote(undefined); setMemoryNotice(""); setPreview(undefined); setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); if (botId) { setHistoryLoading(true); localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); }); } }, [botId, reload]);
+  const openFilePreview = (targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); };
+  const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(botId, value); setAtDismissed(false); setAtIndex(0); };
   const togglePin = (id: string) => setPinned((current) => { const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id]; localStorage.setItem("nexbot.pinnedAgents", JSON.stringify(next)); return next; });
@@ -175,11 +175,11 @@ export function AgentDesktop() {
     const next = draft.replace(/@([^\s@]*)$/, `@${name} `);
     changeDraft(next); setAtDismissed(true); composerRef.current?.focus();
   };
-  const closeDialog = () => setDialog(null), select = (target: string) => { setBotId(target); setMemoryFilter("all"); setPage("agent"); setSidebarOpen(false); setError(""); };
+  const closeDialog = () => setDialog(null), select = (target: string) => { setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) select(result.id); closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
-  const editRoutine = (existing?: RecordRow) => setDialog(<RoutineEditor botId={botId} existing={existing} close={closeDialog} save={(data) => run(async () => { await api("routines", data); closeDialog(); })}/>);
+  const editRoutine = (existing?: RecordRow) => setDialog(<RoutineEditor botId={botId} existing={existing} close={closeDialog} runNow={existing ? () => run(async () => { await api("routines/run", { id: existing.id, clientId: crypto.randomUUID() }); closeDialog(); }) : undefined} save={(data) => run(async () => { await api("routines", data); closeDialog(); })}/>);
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
@@ -190,17 +190,13 @@ export function AgentDesktop() {
     loaded.current = { ...current, messages: merged }; setMessages(merged);
   };
   if (!state) return <div className="boot"><BrandMark size={44}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接页</button> : null}</div>;
-  const botMemories = state.memories.filter((m) => m.scope === "workspace" || m.bot_id === botId);
-  // The scope pills only exist for more than one memory, so a stale filter must not hide the list when they are gone.
-  const activeMemoryFilter = botMemories.length > 1 ? memoryFilter : "all";
-  const filteredMemories = botMemories.filter((m) => activeMemoryFilter === "all" || m.scope === activeMemoryFilter);
   const botUsage = state.usage?.find((u) => u.bot_id === botId);
   const exportTranscript = () => {
     const text = messages.map((m) => `[${formatTime(m.created_at)}] ${senderLabel(m, bot, state.bots)}: ${str(m.content)}`).join("\n\n");
     void navigator.clipboard?.writeText(text);
     setExported(true); setTimeout(() => setExported(false), 1800);
   };
-  const signOut = () => { if (window.confirm("退出当前账号？此设备的登录将被撤销。")) void logout().catch(() => setError("退出登录未完成，请重试")); };
+  const signOut = () => { void logout().catch(() => setError("退出登录未完成，请重试")); };
   const botLook = lookOf(bot, state.bots);
   const enabledTools: string[] = (() => { try { return JSON.parse(str(bot?.policy_json) || "{}").tools ?? []; } catch { return []; } })();
   const modelLabel = str(state.config?.default_model) || "未连接模型";
@@ -208,7 +204,7 @@ export function AgentDesktop() {
   void lookRevision;
 
   return <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
-    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSelect={select} onPage={(next) => { setPage(next); setSidebarOpen(false); }} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
+    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
 
     <main>
       <header>
@@ -223,17 +219,17 @@ export function AgentDesktop() {
               </div>
               <span className={tasks.length ? "active-phrase" : ""}>{tasks.length ? `${taskPhrase(tasks[0])}${tasks.length > 1 ? ` · ${tasks.length} 项工作正在进行` : ""}` : companionLabels[avatarState]}</span>
             </div>
-          </> : <strong>{page === "devices" ? "设备网络" : page === "settings" ? "设置" : page === "connectors" ? "连接器" : "你的 Agent"}</strong>}
+          </> : <strong>{page === "settings" ? "设置" : "你的 Agent"}</strong>}
         </div>
         <div className="header-actions">
-          {page === "agent" && bot && memoryNotice ? <button type="button" className="memory-pill" onClick={() => { setDetail(true); setTab("memory"); setMemoryNotice(""); }}><Sparkles size={13}/>已更新记忆：{memoryNotice}</button> : null}
+          {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
           {page === "agent" && bot && messages.length > 0 ? <button type="button" className="bt-round" title="复制对话记录" onClick={() => exportTranscript()}>{exported ? <Check size={16}/> : <Share2 size={16}/>}</button> : null}
-          {page === "agent" && bot ? <button aria-label="Agent 资料" title="Agent 资料" className={`bt-round ${detail ? "selected" : ""}`} onClick={() => setDetail(!detail)}><Info size={17}/></button> : null}
+          {page === "agent" && bot ? <button aria-label="助手详情" title="Agent 资料" className={`bt-round ${detail ? "selected" : ""}`} onClick={() => setDetail(!detail)}><Info size={17}/></button> : null}
         </div>
       </header>
 
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
-      {!state.config && page !== "settings" ? <div className="notice">连接模型后，Agent 就能开始工作。<button onClick={() => setPage("settings")}>配置 API Key</button></div> : null}
+      {!state.config && page !== "settings" ? <div className="notice">连接模型后，Agent 就能开始工作。<button onClick={() => openSettings("model")}>配置 API Key</button></div> : null}
 
       {page === "agent" && !bot ? <div className="welcome">
         <BrandMark size={64}/>
@@ -293,7 +289,7 @@ export function AgentDesktop() {
           {composerMenu && <><button className="composer-menu-dismiss" aria-label="关闭快捷操作" onClick={() => setComposerMenu(false)}/><div className="composer-menu" role="group" aria-label="快捷操作">
               <button type="button" onClick={() => { changeDraft(draft + " @"); setComposerMenu(false); composerRef.current?.focus(); }}><AtSign size={16}/>提及同伴</button>
               <button type="button" onClick={() => { editRoutine(); setComposerMenu(false); }}><Clock size={16}/>安排例行任务</button>
-              <button type="button" onClick={() => { setPage("connectors"); setComposerMenu(false); }}><Plug size={16}/>管理连接器</button>
+              <button type="button" onClick={() => { openSettings("connectors"); setComposerMenu(false); }}><Plug size={16}/>管理连接器</button>
             </div></>}
           <form className="composer conversation-input" onSubmit={send}>
             <button type="button" className="composer-add" aria-label="打开快捷操作" aria-expanded={composerMenu} onClick={() => setComposerMenu((open) => !open)}><Plus size={18}/></button>
@@ -301,64 +297,54 @@ export function AgentDesktop() {
             <button className="send" aria-label="发送消息" disabled={busy || !draft.trim() || !state.config || !bot}><ArrowUp size={19}/></button>
           </form>
         </div>
-      </> : page === "connectors" ? <ConnectorsPage state={state} refresh={reload}/> : page === "devices" ? <Devices state={state} run={run} setDialog={setDialog} closeDialog={closeDialog}/> : <><SettingsPage state={state} run={run}/></>}
+      </> : <SettingsPage state={state} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
     </main>
 
-    {page === "agent" && detail && bot ? <aside className="inspector ds-drawer"><div className="inspector-heading"><span>助手详情</span><button aria-label="收起资料" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
+    {page === "agent" && detail && bot ? <aside className="inspector ds-drawer"><div className="inspector-heading"><span>助手详情</span><button aria-label="收起助手详情" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
       <div className="profile-top">
         <div className="ds-drawer-top-actions">
-          <button type="button" className="bt-round" title="更换头像" onClick={editAvatar}><Palette size={15}/></button>
           <button type="button" className={`bt-round ${pinned.includes(str(bot.id)) ? "selected" : ""}`} title={pinned.includes(str(bot.id)) ? "取消置顶" : "置顶联系人"} onClick={() => togglePin(str(bot.id))}><Pin size={15}/></button>
 
         </div>
-        <Avatar bot={bot} allBots={state.bots} size={64} state={avatarState} animate/>
+        <button type="button" className="profile-avatar-button" title="更换头像" aria-label={`更换 ${bot.name} 的头像`} onClick={editAvatar}><Avatar bot={bot} allBots={state.bots} size={64} state={avatarState} animate/></button>
         <strong>{bot.name}</strong>
         <div className="ds-drawer-badges">
           <span className="ds-role-badge" style={{ color: botLook.ink.solid, background: botLook.ink.soft }}>个人 Agent</span>
         </div>
-        <div className="ds-drawer-quick-links">
-          <button className="text-button" onClick={() => editBot(bot)}>编辑身份</button>
-          <span>·</span>
-          <button type="button" className="text-button" onClick={editAvatar}>更换头像</button>
-        </div>
+
 
       </div>
 
       <div className="inspector-tabs">
-        {[{ id: "profile", name: "工作" }, { id: "memory", name: "资料" }, { id: "settings", name: "设置" }].map((item) => <button key={item.id} aria-pressed={tab === item.id} className={tab === item.id ? "selected" : ""} onClick={() => setTab(item.id)}>{item.name}</button>)}
+        {[{ id: "profile", name: "工作" }, { id: "settings", name: "设置" }].map((item) => <button key={item.id} aria-pressed={tab === item.id} className={tab === item.id ? "selected" : ""} onClick={() => setTab(item.id)}>{item.name}</button>)}
       </div>
 
       <div className="inspector-content">
-        {preview && tab === "memory" ? <section className="preview-card" aria-label="内容预览"><div className="preview-header"><div><strong>{preview.kind === "file" ? preview.title : toolLabels[preview.title] ?? preview.title}</strong><small>{preview.kind === "file" ? `${preview.path ?? preview.title}${preview.size !== undefined ? ` · ${preview.size} B` : ""}` : `${statuses[preview.status ?? ""] ?? preview.status ?? ""}${preview.createdAt ? ` · ${formatTime(preview.createdAt)}` : ""}`}</small></div><div className="preview-actions"><button type="button" onClick={() => copyText("preview", preview.content)}>{copiedId === "preview" ? "已复制" : "复制"}</button><button type="button" aria-label="关闭预览" onClick={() => setPreview(undefined)}><X size={14}/></button></div></div>{preview.arguments ? <details><summary>调用参数</summary><pre>{preview.arguments}</pre></details> : null}<pre>{preview.content || "暂无内容"}</pre></section> : null}
+        {preview && tab === "profile" ? <section className="preview-card" aria-label="内容预览"><div className="preview-header"><div><strong>{preview.kind === "file" ? preview.title : toolLabels[preview.title] ?? preview.title}</strong><small>{preview.kind === "file" ? `${preview.path ?? preview.title}${preview.size !== undefined ? ` · ${preview.size} B` : ""}` : `${statuses[preview.status ?? ""] ?? preview.status ?? ""}${preview.createdAt ? ` · ${formatTime(preview.createdAt)}` : ""}`}</small></div><div className="preview-actions"><button type="button" onClick={() => copyText("preview", preview.content)}>{copiedId === "preview" ? "已复制" : "复制"}</button><button type="button" aria-label="关闭预览" onClick={() => setPreview(undefined)}><X size={14}/></button></div></div>{preview.arguments ? <details><summary>调用参数</summary><pre>{preview.arguments}</pre></details> : null}<pre>{preview.content || "暂无内容"}</pre></section> : null}
 
         {tab === "profile" ? <>
-          <section className="workspace-activity"><span className={`activity-indicator ${tasks.length ? "is-active" : ""}`}/><div><strong>{tasks.length ? taskPhrase(tasks[0]) : "准备就绪"}</strong><p>{tasks.length ? str(tasks[0].objective).slice(0, 90) : "发一条消息，开始新的工作。"}</p></div></section>
+
           {tasks.length > 0 && <h2>正在处理</h2>}
           {tasks.map((t) => <section className="task ds-field-card" key={str(t.id)}><span className="tag">{taskPhrase(t)}</span><p>{t.objective || "Agent 工作"}</p><div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></section>)}
 
           {state.occurrences.some((o) => o.bot_id === botId) && <h2>最近执行</h2>}
           {state.occurrences.filter((o) => o.bot_id === botId).slice(0, 10).map((o) => <section className="task ds-field-card" key={str(o.id)}><strong>{o.name}</strong><small>{statuses[str(o.status)]} · {formatTime(o.scheduled_at)}</small></section>)}
 
-          <h2>连接器<button aria-label="管理连接器" onClick={() => setPage("connectors")}><Plus size={16}/></button></h2>
-          <div className="ds-field-card">{(state.connectors ?? []).filter((item) => item.enabled && item.grants.some((grant) => grant.botId === botId && grant.tools.length)).map((item) => <button className="inspector-connector" key={item.id} onClick={() => setPage("connectors")}><Plug size={16}/><span>{item.name}</span><small>{item.grants.find((grant) => grant.botId === botId)?.tools.length} 项工具</small></button>)}<button className="text-button" onClick={() => setPage("connectors")}>连接工具与管理授权 →</button></div>
-          <h2>可用设备</h2>
-          <div className="ds-field-card">
-            {state.devices.filter((d) => d.status === "bound").map((d) => <p className="resource" key={str(d.id)}><Cpu size={14}/>{d.name}<span className={state.onlineDevices.includes(str(d.id)) ? "status-on" : "status-off"}>{state.onlineDevices.includes(str(d.id)) ? "在线" : "离线"}</span></p>)}
-            <button className="text-button" onClick={() => setPage("devices")}>管理设备网络 →</button>
-          </div>
-
           <h2>例行任务<button aria-label="添加例行任务" onClick={() => editRoutine()}><Plus size={16}/></button></h2>
-          {state.routines.filter((r) => r.bot_id === botId).map((r) => <section className="routine ds-field-card" key={str(r.id)}><div><strong>{r.name}</strong><button aria-label={`${r.enabled ? "暂停" : "启用"}${r.name}`} className={`switch ${r.enabled ? "on" : ""}`} onClick={() => void run(() => api("routines/toggle", { id: r.id, version: r.version, enabled: !r.enabled }))}><span/></button></div><small>{routineLabel(r)}</small><div className="routine-actions"><button onClick={() => editRoutine(r)}>编辑</button><button onClick={() => void run(() => api("routines/run", { id: r.id, clientId: crypto.randomUUID() }))}><Play size={12}/>现在执行</button></div>{r.enabled && r.next_due_at ? <small>下次 {formatTime(r.next_due_at)}</small> : null}</section>)}
-          {!state.routines.some((r) => r.bot_id === botId) ? <div className="empty-small ds-field-card"><Clock size={18}/><p>安排一项例行任务，Agent 会按计划工作并给你汇报。</p><button onClick={() => editRoutine()}>添加例行任务</button></div> : null}
+          {state.routines.some((r) => r.bot_id === botId) ? <div className="routine-list" aria-label="例行任务列表">
+            {state.routines.filter((r) => r.bot_id === botId).map((r) => <div className="routine-row" key={str(r.id)}>
+              <button type="button" className="routine-summary" onClick={() => editRoutine(r)} title={`${r.name} · ${routineLabel(r)} · ${r.prompt}`}><strong>{r.name}</strong><span>{routineLabel(r)} · {r.prompt}</span></button>
+              <button type="button" role="switch" aria-checked={!!r.enabled} aria-label={`${r.name}`} disabled={busy} className={`routine-toggle ${r.enabled ? "on" : ""}`} onClick={() => void run(() => api("routines/toggle", { id: r.id, version: r.version, enabled: !r.enabled }))}><span/></button>
+            </div>)}
+          </div> : null}
 
         </> : null}
         {tab === "settings" ? <>
-          <label className="motion-preference"><input type="checkbox" checked={motion} onChange={(event) => { setMotion(event.target.checked); localStorage.setItem("nexbot.motion", event.target.checked ? "1" : "0"); }}/>轻量动效<span>仅当前助手</span></label>
+
           <section className="agent-configuration"><h2>助手设置</h2><div>          <div className="ds-field-group">
             <div className="ds-field-label">关于</div>
             <div className="ds-field-card">
-              <p className={!expandBio && str(bot.instructions).length > 140 ? "bio-clamped" : ""}>{str(bot.instructions) || "尚未补充职责说明，点击上方“编辑身份”即可设置。"}</p>
-              {str(bot.instructions).length > 140 ? <button type="button" className="text-button" onClick={() => setExpandBio((v) => !v)}>{expandBio ? "收起说明" : "展开全部"}</button> : null}
+              <button type="button" className="bot-identity-link" onClick={() => editBot(bot)}>bot身份信息</button>
             </div>
           </div>
 
@@ -367,16 +353,13 @@ export function AgentDesktop() {
             <div className="ds-field-card ds-kv-list">
               <div className="ds-kv-row">
                 <span><Zap size={13}/>驱动模型</span>
-                <button type="button" className="ds-pill-btn" onClick={() => setPage("settings")}>{modelLabel}</button>
+                <button type="button" className="ds-pill-btn" onClick={() => openSettings("model")}>{modelLabel}</button>
               </div>
               <div className="ds-kv-row">
                 <span><Shield size={13}/>工具权限</span>
                 <button type="button" className="ds-pill-btn" onClick={() => setDialog(<AgentPolicyEditor bot={bot} close={closeDialog} save={(tools) => run(async () => { await api("bots/policy", { id: bot.id, version: bot.policy_version, tools }); closeDialog(); })}/>)}>已授权 {enabledTools.length} 项 · 配置</button>
               </div>
-              <div className="ds-kv-row">
-                <span><Folder size={13}/>工作目录</span>
-                <code className="ds-folder-code" title={state.node.root || "默认沙箱目录"}>{state.node.root || "未限定主机目录"}</code>
-              </div>
+
             </div>
           </div>
 
@@ -398,16 +381,7 @@ export function AgentDesktop() {
           </div>
         </> : null}
 
-        {tab === "memory" ? <>
-          <h2>长期记忆<button aria-label="添加记忆" onClick={() => editMemory()}><Plus size={16}/></button></h2>
-          {botMemories.length > 1 ? <div className="scope-pills">{([["all", `全部 (${botMemories.length})`], ["bot", "仅当前 Agent"], ["workspace", "共享"]] as const).map(([key, label]) => <button type="button" key={key} className={activeMemoryFilter === key ? "selected" : ""} onClick={() => setMemoryFilter(key)}>{label}</button>)}</div> : null}
-          {filteredMemories.map((m) => <section className="memory ds-field-card" key={str(m.id)}><strong>{m.title}</strong><small>{m.scope === "workspace" ? "所有 Agent 共享" : "仅当前 Agent"}{m.updated_at ? ` · ${formatShortTime(m.updated_at)}` : ""}</small><p>{m.content}</p><div className="actions"><button onClick={() => editMemory(m)}>编辑</button><button aria-label={`撤回${m.title}`} onClick={() => setDialog(<Confirm title="撤回这条记忆？" detail="撤回后不再用于长期记忆检索，原始消息和工作记录保留。如需一起清理，请使用下方的彻底遗忘。" onClose={closeDialog} onConfirm={() => run(async () => { await api("memory/delete", { id: m.id, version: m.version }); closeDialog(); })}/>)}><Trash2 size={13}/></button></div></section>)}
-          <p className="muted">消息与工作记录自动保存。长期记忆可在这里维护，也可以让 Agent 帮你记住。</p>
-          <h2>已有工作记录</h2>
-          {state.journal.filter((j) => j.bot_id === botId).slice(0, 8).map((j) => <details className="journal ds-field-card" key={str(j.task_id)}><summary>{str(j.objective).slice(0, 100)}</summary><p>{j.result}</p><small>{formatTime(j.created_at)}</small></details>)}
-        </> : null}
 
-        {tab === "memory" && state.memoryEngine ? <><MemoryWorkbench key={botId + state.memoryEngine.revision + state.sync.bootId + state.sync.privacyEpoch} botId={botId} bots={state.bots}/><p className="muted" role="status">{state.memoryEngine.service === "starting" ? "正在启动语义记忆服务。" : state.memoryEngine.status === "connected" ? "Hindsight 语义记忆已连接。" : state.memoryEngine.status === "not_installed" ? "未启用记忆插件，可在主设备设置中连接外部服务；目前使用原始记录检索。" : "语义记忆暂不可用，目前使用原始记录检索。"} {state.memoryEngine.pending ? `${state.memoryEngine.pending} 项待同步。` : ""}{state.memoryEngine.quarantined ? " 部分记忆正在清理或更新，旧的派生结果已暂停读取。" : ""}</p></> : null}
       </div>
     </aside> : null}
 
@@ -444,7 +418,7 @@ function AgentMessage({ message: m, bot, bots, select, copiedId, onCopy, onQuote
   </article>;
 }
 function routineLabel(row: RecordRow) { return row.schedule_kind === "daily" ? `每天 ${row.local_time} · ${row.time_zone}` : row.schedule_kind === "interval" ? `每 ${Number(row.interval_ms) / 60_000} 分钟` : "一次性任务"; }
-function RoutineEditor({ botId, existing, close, save }: { botId: string; existing?: RecordRow; close: () => void; save: (data: Record<string, unknown>) => Promise<void> }) {
+function RoutineEditor({ botId, existing, close, save, runNow }: { botId: string; existing?: RecordRow; close: () => void; runNow?: () => Promise<void>; save: (data: Record<string, unknown>) => Promise<void> }) {
   const [kind, setKind] = useState(str(existing?.schedule_kind) || "daily"), [pending, setPending] = useState(false);
-  return <><div className="modal-heading"><h2>{existing ? "编辑例行任务" : "添加例行任务"}</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(e) => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.currentTarget)); setPending(true); void save({ ...data, botId, id: existing?.id, version: existing?.version, runAt: data.runAt ? new Date(String(data.runAt)).getTime() : undefined }).finally(() => setPending(false)); }}><label className="field">名称<input autoFocus name="name" required defaultValue={str(existing?.name)} placeholder="例如：每日工作计划"/></label><label className="field">让 Agent 做什么<textarea name="prompt" required rows={4} defaultValue={str(existing?.prompt)} placeholder="描述目标、需要参考的资料和汇报方式"/></label><label className="field">执行计划<select name="scheduleKind" value={kind} onChange={(e) => setKind(e.target.value)}><option value="daily">每天</option><option value="interval">固定间隔</option><option value="once">指定时间执行一次</option></select></label>{kind === "daily" ? <label className="field">每天的时间<input name="localTime" type="time" required defaultValue={str(existing?.local_time) || "09:00"}/></label> : kind === "interval" ? <label className="field">间隔（分钟）<input name="intervalMinutes" type="number" min="1" max="525600" required defaultValue={existing?.interval_ms ? Number(existing.interval_ms) / 60_000 : 60}/></label> : <label className="field">执行时间（本机时间）<input name="runAt" type="datetime-local" required/></label>}<label className="field">时区<input name="timeZone" required defaultValue={str(existing?.time_zone) || Intl.DateTimeFormat().resolvedOptions().timeZone}/></label><p className="muted">按计划唤醒 Agent 会调用你配置的模型。需要批准的工具操作仍会等待你处理。</p><div className="actions"><button className="primary" disabled={pending}>保存</button><button type="button" onClick={close}>取消</button></div></form></>;
+  return <><div className="modal-heading"><h2>{existing ? "编辑例行任务" : "添加例行任务"}</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(e) => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.currentTarget)); setPending(true); void save({ ...data, botId, id: existing?.id, version: existing?.version, runAt: data.runAt ? new Date(String(data.runAt)).getTime() : undefined }).finally(() => setPending(false)); }}><label className="field">名称<input autoFocus name="name" required defaultValue={str(existing?.name)} placeholder="例如：每日工作计划"/></label><label className="field">让 Agent 做什么<textarea name="prompt" required rows={4} defaultValue={str(existing?.prompt)} placeholder="描述目标、需要参考的资料和汇报方式"/></label><label className="field">执行计划<select name="scheduleKind" value={kind} onChange={(e) => setKind(e.target.value)}><option value="daily">每天</option><option value="interval">固定间隔</option><option value="once">指定时间执行一次</option></select></label>{kind === "daily" ? <label className="field">每天的时间<input name="localTime" type="time" required defaultValue={str(existing?.local_time) || "09:00"}/></label> : kind === "interval" ? <label className="field">间隔（分钟）<input name="intervalMinutes" type="number" min="1" max="525600" required defaultValue={existing?.interval_ms ? Number(existing.interval_ms) / 60_000 : 60}/></label> : <label className="field">执行时间（本机时间）<input name="runAt" type="datetime-local" required/></label>}<label className="field">时区<input name="timeZone" required defaultValue={str(existing?.time_zone) || Intl.DateTimeFormat().resolvedOptions().timeZone}/></label><p className="muted">按计划唤醒 Agent 会调用你配置的模型。需要批准的工具操作仍会等待你处理。</p><div className="actions"><button className="primary" disabled={pending}>保存</button><button type="button" onClick={close}>取消</button>{runNow ? <button type="button" disabled={pending} onClick={() => { setPending(true); void runNow().finally(() => setPending(false)); }}><Play size={12}/>现在执行</button> : null}</div></form></>;
 }

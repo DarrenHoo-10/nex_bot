@@ -29,7 +29,8 @@ Screenshots are in the ignored `release/workspace-verification-avatars/`:
 `settings-account-light.png`, `settings-model-light.png`,
 `settings-memory-dark.png`, and `settings-mobile-dark.png`.
 
-This is a local UI preview. It has not been packaged into a new release or
-deployed. The shell verification uses the existing 0.9.1 executable against
+The initial checks above used a local UI preview. Subsequent production
+deployment and local replacement are recorded in [settings-deployment.md](settings-deployment.md).
+The shell verification uses the existing 0.9.1 executable against
 the new local UI; it does not establish a new packaged release. Memory service
 connectivity was not exercised against a live Hindsight instance.
