@@ -1,87 +1,95 @@
 import SwiftUI
-import AppKit
 import NexClientKit
 
-/// Settings 设备 category: paired devices and unresolved device calls (web `Devices` inside settings).
+/// Settings 设备 category: signed-in devices (`/api/clients`) and unresolved device calls (web `Devices` inside settings).
 struct SettingsDevicesPane: View {
     let workspace: WorkspaceStore
+    @Environment(LocalDeviceController.self) private var device
 
-    @State private var showPair = false
-    @State private var pairName = ""
-    @State private var pairing: DevicePairing?
-    @State private var revokeTarget: Device?
     @State private var reconcileTarget: UnknownCall?
-    @State private var banner: String?
+    @State private var localReconcile: UnknownCall?
     @State private var busy = false
+    @State private var localPending = false
     @State private var nodeError: String?
+    @State private var listError = false
+    @State private var actionError: String?
+    @State private var loaded = false
+    @State private var clock = Date()
 
     private var state: WorkspaceState? { workspace.state }
-    private var address: String { state?.address ?? "" }
+    private var local: LocalDeviceState { device.state }
+    private var visible: [ClientSession] {
+        workspace.sessions
+            .filter { $0.row.double("revoked_at") == nil && ($0.expiresAt.map { $0 > clock } ?? true) }
+            .sorted { ($0.sessionID == workspace.currentSessionID ? 1 : 0) > ($1.sessionID == workspace.currentSessionID ? 1 : 0) }
+    }
 
     var body: some View {
         ZStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    if let banner { MBBanner(text: banner, isError: true) }
-                    if let pairing { pairingCard(pairing) }
-                    ForEach(state?.devices ?? []) { deviceRow($0) }
-                    ForEach(state?.node?.unknownCalls ?? []) { unknownCallCard($0) }
+                VStack(alignment: .leading, spacing: 0) {
+                    paneHeader("设备")
+                    VStack(spacing: 0) { ForEach(visible) { sessionRow($0) } }
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !loaded { Text("正在加载…").font(.system(size: 12)).foregroundStyle(Theme.muted) }
+                        else if !listError && visible.isEmpty { Text("暂无设备").font(.system(size: 12)).foregroundStyle(Theme.muted) }
+                        if listError { Text("设备列表加载失败").font(.system(size: 12)).foregroundStyle(Theme.danger) }
+                        if let actionError { Text(actionError).font(.system(size: 12)).foregroundStyle(Theme.danger).textSelection(.enabled) }
+                        ForEach(local.unknownCalls) { localUnknownCard($0) }
+                        ForEach(state?.node?.unknownCalls ?? []) { unknownCallCard($0) }
+                    }
+                    .padding(.top, 18)
                 }
                 .padding(.bottom, 34)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if showPair { pairDialog }
-            if let device = revokeTarget { revokeDialog(device) }
             if let call = reconcileTarget { reconcileDialog(call) }
+            if let call = localReconcile { localReconcileDialog(call) }
         }
+        .task { await poll() }
         #if DEBUG
         .task { MBDebug.start() }
         .onReceive(NotificationCenter.default.publisher(for: .mbDebug)) { handleDebug($0) }
         #endif
     }
 
-    // MARK: Cards
+    // MARK: Rows
 
-    private var header: some View {
-        paneHeader("设备网络", "管理助手可以使用的设备。") {
-            MBButton(title: "生成配对令牌", kind: .brand, icon: "plus") { pairName = ""; showPair = true }
-        }
-    }
-
-    private func pairingCard(_ pairing: DevicePairing) -> some View {
-        MBCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("在设备执行节点完成配对").font(.system(size: 14, weight: .bold))
-                Text("后端地址：\(address)").font(.system(size: 12)).foregroundStyle(Theme.muted).textSelection(.enabled)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("设备令牌（仅显示本次）").font(.system(size: 12, weight: .medium))
-                    TextField("", text: .constant(pairing.token)).textFieldStyle(.plain)
-                        .font(.system(size: 11, design: .monospaced)).padding(.horizontal, 12).frame(height: 38)
-                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .accessibilityLabel("设备令牌（仅显示本次）")
-                }
-                HStack(spacing: 8) {
-                    MBButton(title: "复制令牌", icon: "doc.on.doc") { copy(pairing.token) }
-                    MBButton(title: "已复制，关闭", kind: .primary) { copy(pairing.token); self.pairing = nil }
-                }
-            }
-        }
-    }
-
-    private func deviceRow(_ device: Device) -> some View {
-        let isHost = device.id == state?.hostDeviceID
-        return MBCard(padding: 20) {
-            HStack(spacing: 14) {
-                Image(systemName: "cpu").font(.system(size: 20, weight: .light)).frame(width: 32)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(device.name + (isHost ? " · 后端主机" : "")).font(.system(size: 12, weight: .bold))
-                    Text(device.statusText).font(.system(size: 10)).foregroundStyle(Theme.muted)
+    private func sessionRow(_ session: ClientSession) -> some View {
+        let isCurrent = session.sessionID == workspace.currentSessionID
+        let online = session.lastSeenAt.map { clock.timeIntervalSince($0) < 90 } ?? false
+        return VStack(spacing: 0) {
+            HStack(spacing: 16) {
+                Image(systemName: "laptopcomputer").font(.system(size: 18, weight: .light)).foregroundStyle(Theme.muted).frame(width: 26)
+                HStack(spacing: 10) {
+                    Text(session.name.isEmpty ? "未命名设备" : session.name).font(.system(size: 13, weight: .bold))
+                    if isCurrent {
+                        Text("本设备").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.brand)
+                            .padding(.horizontal, 7).padding(.vertical, 2).background(Theme.brandSoft, in: RoundedRectangle(cornerRadius: 5))
+                    }
                 }
                 Spacer()
-                if device.isBound && !isHost { MBButton(title: "撤销", kind: .danger) { revokeTarget = device } }
+                HStack(spacing: 7) {
+                    Circle().fill(online ? Theme.brand : Theme.muted).frame(width: 6, height: 6)
+                    Text((online ? "在线" : "离线") + (isCurrent && local.paused ? " · 已暂停" : "")).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                }
+                if isCurrent && local.available {
+                    MBButton(title: localPending ? "处理中…" : local.paused ? "恢复控制" : "暂停控制", enabled: !localPending && local.authorized) { togglePause() }
+                }
             }
+            .padding(.vertical, 20)
+            Hairline()
         }
+    }
+
+    private func localUnknownCard(_ call: UnknownCall) -> some View {
+        HStack {
+            Text("需要核实执行结果").font(.system(size: 12, weight: .bold))
+            Spacer()
+            MBButton(title: "核实并解除暂停", enabled: !localPending) { localReconcile = call }
+        }
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.approvalSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func unknownCallCard(_ call: UnknownCall) -> some View {
@@ -90,7 +98,6 @@ struct SettingsDevicesPane: View {
             Text(call.argumentsText).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.card, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            Text("上次执行中断，这个调用不会重放。请检查后端主机上的进程和操作结果，再确认已停止。").font(.system(size: 11)).foregroundStyle(Theme.muted)
             if let nodeError { Text(nodeError).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
             MBButton(title: "已核实停止") { reconcileTarget = call }
         }
@@ -99,31 +106,6 @@ struct SettingsDevicesPane: View {
     }
 
     // MARK: Dialogs
-
-    private var pairDialog: some View {
-        MBModal(title: "添加设备", closeLabel: "关闭", canClose: !busy, close: { showPair = false }) {
-            VStack(alignment: .leading, spacing: 16) {
-                MBInput(label: "设备名称", text: $pairName, placeholder: "例如：办公室电脑")
-                HStack(spacing: 8) {
-                    MBButton(title: busy ? "处理中…" : "生成配对令牌", kind: .primary, busy: busy,
-                             enabled: !pairName.trimmingCharacters(in: .whitespaces).isEmpty, action: pair)
-                    MBButton(title: "取消", enabled: !busy) { showPair = false }
-                }
-            }
-        }
-    }
-
-    private func revokeDialog(_ device: Device) -> some View {
-        MBModal(title: "确认撤销该设备？", width: 400, canClose: !busy, close: { revokeTarget = nil }) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("撤销“\(device.name)”后，它将无法再连接此工作区。").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                HStack(spacing: 8) {
-                    MBButton(title: "确认撤销", kind: .danger, busy: busy) { revoke(device) }
-                    MBButton(title: "取消", enabled: !busy) { revokeTarget = nil }
-                }
-            }
-        }
-    }
 
     private func reconcileDialog(_ call: UnknownCall) -> some View {
         MBModal(title: "确认该调用已停止？", width: 400, canClose: !busy, close: { reconcileTarget = nil }) {
@@ -137,28 +119,44 @@ struct SettingsDevicesPane: View {
         }
     }
 
-    // MARK: Actions
-
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func pair() {
-        busy = true
-        Task {
-            defer { busy = false }
-            do { pairing = try await workspace.pairDevice(name: pairName.trimmingCharacters(in: .whitespaces)); showPair = false; banner = nil }
-            catch { showPair = false; banner = mbFallbackMessage(error) }
+    private func localReconcileDialog(_ call: UnknownCall) -> some View {
+        MBModal(title: "核实执行结果", width: 400, canClose: !localPending, close: { localReconcile = nil }) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("已确认这项操作停止？").font(.system(size: 13, weight: .medium))
+                Text("确认后只清除未决状态，不会重新执行。").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                HStack(spacing: 8) {
+                    MBButton(title: "已确认停止", kind: .primary, busy: localPending) { reconcileLocal(call) }
+                    MBButton(title: "取消", enabled: !localPending) { localReconcile = nil }
+                }
+            }
         }
     }
 
-    private func revoke(_ device: Device) {
-        busy = true
+    // MARK: Actions
+
+    /// Refreshes the signed-in devices every 2 s while the pane is on screen (like the web).
+    private func poll() async {
+        while !Task.isCancelled {
+            do { try await workspace.loadSessions(); listError = false }
+            catch { listError = true }
+            loaded = true; clock = Date()
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    private func togglePause() {
+        localPending = true; actionError = nil
         Task {
-            defer { busy = false; revokeTarget = nil }
-            do { try await workspace.revokeDevice(device.id); banner = nil }
-            catch { banner = mbFallbackMessage(error); await workspace.refresh() }
+            defer { localPending = false }
+            do { try await device.setPaused(!local.paused) } catch { actionError = mbFallbackMessage(error) }
+        }
+    }
+
+    private func reconcileLocal(_ call: UnknownCall) {
+        localPending = true; actionError = nil
+        Task {
+            defer { localPending = false; localReconcile = nil }
+            do { try await device.reconcile(call) } catch { actionError = mbFallbackMessage(error) }
         }
     }
 
@@ -175,13 +173,7 @@ struct SettingsDevicesPane: View {
     private func handleDebug(_ note: Notification) {
         guard let cmd = note.mbCommand, cmd.prefix == "dv" else { return }
         switch cmd.verb {
-        case "pair": pairName = ""; showPair = true
-        case "name": pairName = cmd.arg
-        case "submit": pair()
-        case "closepair": pairing = nil
-        case "revoke": revokeTarget = state?.devices.first { $0.name == cmd.arg }
-        case "confirm": if let d = revokeTarget { revoke(d) }
-        case "cancel": revokeTarget = nil; reconcileTarget = nil; showPair = false
+        case "cancel": reconcileTarget = nil; localReconcile = nil
         case "reconcile": reconcileTarget = state?.node?.unknownCalls.first
         case "confirmreconcile": if let c = reconcileTarget { reconcile(c) }
         default: break

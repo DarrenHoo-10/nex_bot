@@ -36,7 +36,7 @@ struct SettingsMemoryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "记忆服务", detail: "让助手在后续对话中找回与你有关的信息。")
+            PageHeading(title: "记忆服务")
             if let plugin { content(plugin) }
             else { Text("当前后端未提供记忆服务配置。").font(.footnote).foregroundStyle(Theme.muted) }
         }
@@ -64,19 +64,15 @@ struct SettingsMemoryView: View {
             }
             VStack(alignment: .leading, spacing: 16) {
                 Toggle(isOn: $form.enabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("启用长期记忆").font(.subheadline.weight(.semibold))
-                        Text("将记忆来源同步到配置的服务，供后续检索使用。").font(.caption).foregroundStyle(Theme.muted)
-                    }
+                    Text("启用长期记忆").font(.subheadline.weight(.semibold))
                 }
-                FormField(title: "服务地址", hint: "填写后端能够访问的 Hindsight 服务地址。") {
+                FormField(title: "服务地址") {
                     TextField("https://memory.example.com", text: $form.endpoint)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
                 FormField(title: "访问令牌") {
                     SecureField(plugin.hasToken ? "地址不变时，留空保留已有令牌" : "输入服务访问令牌", text: $form.token).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
-                Text("模型调用与费用由该服务管理。停用不会删除外部数据。").font(.caption).foregroundStyle(Theme.muted)
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 0) {
                         FactRow(title: "服务协议", value: plugin.protocolName.isEmpty ? "—" : plugin.protocolName)

@@ -25,10 +25,7 @@ struct SettingsView: View {
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("设置").font(.largeTitle.weight(.bold))
-                    Text("管理你的账号和助手偏好。").font(.subheadline).foregroundStyle(Theme.muted)
-                }
+                Text("设置").font(.largeTitle.weight(.bold))
                 chips
                 switch category {
                 case .account: account
@@ -90,13 +87,10 @@ struct SettingsView: View {
 
     private var account: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "账号与登录设备", detail: "管理个人身份，以及可以访问这个工作区的登录设备。")
+            PageHeading(title: "账号与登录设备")
             HStack(spacing: 12) {
                 AccountAvatar(size: 44)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(workspace.account?.displayName ?? "NexorAI 用户").font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text("NexorAI 账号 · 已认证").font(.caption).foregroundStyle(Theme.muted)
-                }
+                Text(workspace.account?.displayName ?? "NexorAI 用户").font(.subheadline.weight(.semibold)).lineLimit(1)
                 Spacer()
                 Button("退出登录") { confirmLogout = true }.buttonStyle(PillButtonStyle())
             }
@@ -105,13 +99,10 @@ struct SettingsView: View {
                 FactRow(title: "本次登录有效期", value: model.credential.map { Self.date(Date(timeIntervalSince1970: $0.expiresAt / 1000)) } ?? "—")
             }
             .padding(.horizontal, 14).cardStyle()
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("登录设备").font(.subheadline.weight(.semibold))
-                    Spacer()
-                    if sessionsLoaded { Text("\(activeSessions.count) 个有效登录").font(.caption).foregroundStyle(Theme.muted) }
-                }
-                Text("移除不再使用的登录，即可撤销该设备对工作区的访问。").font(.caption).foregroundStyle(Theme.muted)
+            HStack {
+                Text("登录设备").font(.subheadline.weight(.semibold))
+                Spacer()
+                if sessionsLoaded { Text("\(activeSessions.count) 个有效登录").font(.caption).foregroundStyle(Theme.muted) }
             }
             VStack(spacing: 10) {
                 ForEach(activeSessions) { session in sessionCard(session) }

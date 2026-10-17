@@ -42,8 +42,6 @@ final class ModelForm {
     /// A key typed for one service is never sent to another.
     func clearEnteredKey() { if !apiKey.isEmpty { apiKey = "" }; showKey = false }
     func resetModels() { models = []; hasMore = false; modelNotice = nil; modelError = nil; manual = false }
-
-    var hint: String { provider == "anthropic" ? "填写服务根地址，不包含 /v1/messages。" : "通常以 /v1 结尾，不包含 /chat/completions。" }
 }
 
 /// Settings 模型 category content (embedded in SettingsView's scroll view).
@@ -62,7 +60,7 @@ struct SettingsModelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "模型", detail: "选择助手使用的模型，并连接你的服务商。")
+            PageHeading(title: "模型")
             HStack {
                 Text("模型连接").font(.subheadline.weight(.semibold))
                 Spacer()
@@ -77,11 +75,11 @@ struct SettingsModelView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                FormField(title: "API 基础地址", hint: form.hint) {
+                FormField(title: "API 基础地址") {
                     TextField(ModelForm.openAIDefault, text: $form.endpoint)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
-                FormField(title: "API Key", hint: "密钥将加密保存；眼睛按钮可查看本次填写的内容。") {
+                FormField(title: "API Key") {
                     HStack(spacing: 8) {
                         Group {
                             if form.showKey { TextField(keyPlaceholder, text: $form.apiKey) } else { SecureField(keyPlaceholder, text: $form.apiKey) }

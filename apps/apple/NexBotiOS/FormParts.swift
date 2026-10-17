@@ -96,11 +96,11 @@ struct FactRow: View {
 /// Section heading (title and optional detail) with a divider.
 struct PageHeading: View {
     let title: String
-    let detail: String
+    var detail: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.title3.weight(.bold))
-            Text(detail).font(.footnote).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            if let detail { Text(detail).font(.footnote).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
             Divider().overlay(Theme.border).padding(.top, 8)
         }
     }

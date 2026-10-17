@@ -33,7 +33,7 @@ struct SettingsModelPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            paneHeader("模型", "选择助手使用的模型，并连接你的服务商。")
+            paneHeader("模型")
             HStack {
                 Text("模型连接").font(.system(size: 13, weight: .semibold))
                 Spacer()
@@ -45,8 +45,7 @@ struct SettingsModelPane: View {
                 MBSelect(label: "API 协议", selection: Binding(get: { provider }, set: { setProvider($0) }),
                          options: [("openai", "OpenAI 兼容"), ("anthropic", "Anthropic")])
                 MBInput(label: "API 基础地址", text: Binding(get: { endpoint }, set: { endpoint = $0; apiKey = ""; showKey = false; edited(resetList: true) }),
-                        placeholder: Self.openAIDefault, mono: false,
-                        hint: provider == "anthropic" ? "填写服务根地址，不包含 /v1/messages。" : "通常以 /v1 结尾，不包含 /chat/completions。")
+                        placeholder: Self.openAIDefault, mono: false)
                 keyField
                 modelField
             }
@@ -108,7 +107,6 @@ struct SettingsModelPane: View {
             .padding(.leading, 12).padding(.trailing, 6).frame(height: 38)
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.border))
-            Text("密钥将加密保存；眼睛按钮可查看本次填写的内容。").font(.system(size: 10)).foregroundStyle(Theme.muted)
         }
     }
 

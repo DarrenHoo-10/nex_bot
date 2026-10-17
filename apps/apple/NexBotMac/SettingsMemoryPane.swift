@@ -17,7 +17,7 @@ struct SettingsMemoryPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            paneHeader("记忆服务", "让助手在后续对话中找回与你有关的信息。")
+            paneHeader("记忆服务")
             if let plugin { form(plugin) }
             else { Text("当前后端未提供记忆服务配置。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 24) }
         }
@@ -58,10 +58,7 @@ struct SettingsMemoryPane: View {
                 Text("暂时无法连接记忆服务。聊天仍可使用，请检查服务地址或查看诊断详情。").font(.system(size: 12)).foregroundStyle(Theme.danger).padding(.top, 14)
             }
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("启用长期记忆").font(.system(size: 12, weight: .medium))
-                    Text("将记忆来源同步到配置的服务，供后续检索使用。").font(.system(size: 10)).foregroundStyle(Theme.muted)
-                }
+                Text("启用长期记忆").font(.system(size: 12, weight: .medium))
                 Spacer()
                 Toggle("启用长期记忆", isOn: Binding(get: { enabled }, set: { enabled = $0; feedback = nil }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.small)
@@ -69,12 +66,12 @@ struct SettingsMemoryPane: View {
             .padding(.top, 18)
             VStack(alignment: .leading, spacing: 20) {
                 MBInput(label: "服务地址", text: Binding(get: { endpoint }, set: { endpoint = $0; feedback = nil }),
-                        placeholder: "https://memory.example.com", hint: "填写后端能够访问的 Hindsight 服务地址。")
+                        placeholder: "https://memory.example.com")
                 MBInput(label: "访问令牌", text: Binding(get: { token }, set: { token = $0; feedback = nil }),
                         placeholder: plugin.hasToken ? "地址不变时，留空保留已有令牌" : "输入服务访问令牌", secure: true)
             }
             .padding(.top, 22)
-            Text("模型调用与费用由该服务管理。停用不会删除外部数据。").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.top, 22).padding(.bottom, 22)
+            Color.clear.frame(height: 22)
             Hairline()
             MBDisclosure(title: "诊断详情", open: $diagnosticsOpen) {
                 VStack(alignment: .leading, spacing: 12) {

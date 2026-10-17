@@ -45,6 +45,8 @@ echo "status" >> /tmp/fx.in
 | --- | --- |
 | `reply <text>` (a literal `\n` becomes a line break) | The next model reply streams `<text>` in about 12 deltas, 450 ms apart, so streaming UI is observable. |
 | `approval` | The next model turn calls `device.exec` (risk `dangerous`) on the host device, which creates a pending approval; after the decision the model replies with a short text. |
+| `devices` | Prints `state.devices` with `bound`/`revoked` status and whether each is online. |
+| `device-exec <deviceName\|"device name"> <command>` | Like `approval`, but the next model turn runs `device.exec` (risk `dangerous`, needs approval) on the bound device with that name. Use harmless commands such as `echo`. |
 | `send <agent> <text>` | Posts a user message as the fixture's own session (agent by name or id). Combine with `reply` or `approval` to trigger the scripted turn. The client sees new messages via SSE. |
 | `history <agent> <n>` | Adds `n` (at most 200) exchanges to one agent, for older-history paging (pages are 100 messages). |
 | `revoke-others` | Revokes every client session except the fixture's own. |
@@ -97,6 +99,25 @@ Record a screenshot or log excerpt for each item.
 11. Disconnect: stop the fixture (`quit`) while the app is open. The app shows the resync state and clears
     private content. Restart the fixture on the same port: it is a new Core (new `coreId`), so the app must not
     resume the old record.
+
+### Mac device executor
+
+The Mac app registers itself as a device and runs the bundled executor (see `apps/apple/README.md`). Build with
+`node scripts/build-mac-executor.mjs` first, otherwise the app reports no executor. DEBUG builds read extra commands from
+`$NEXBOT_DEBUG_COMMAND_FILE.d` (results in `.d.log`): `devicestate`, `devicepause on|off`, `devicekill` (host must restart),
+`devicequit` (normal quit path), `devicelogout` (`AppModel.logout()`). Walkthrough on a fixture profile:
+
+1. After login, fixture `devices` lists the Mac as `bound`, `online: true`.
+2. `device-exec "<Mac name>" echo nexbot-mac-ok`, then app `select 工作助手` and `send <text>`, then `approve`. The
+   tool step of `/api/agents/messages` is `device.exec` `succeeded` with stdout `nexbot-mac-ok`.
+3. `devicepause on` makes it offline and `off` brings it back. `devicekill` restarts the host with the same device id.
+4. `devicequit` leaves no `Executor/node` process and the device stays `bound` but offline. Relaunch resumes the same device id.
+5. `devicelogout` leaves the device `revoked` and the Keychain login item gone.
+6. Cleanup: delete both Keychain items (`<profile>` and `executor-key:<profile>`) and `~/Library/Application Support/NexBot/<profile>`.
+
+Logout revokes the device with a request started synchronously when `AppModel.logout()` begins (it must go out before
+Core ends the session). If that request loses the race the device stays bound until revoked from another client.
+Window control is not implemented on macOS.
 
 ## 4. iOS
 

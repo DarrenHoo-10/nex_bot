@@ -6,6 +6,7 @@ struct MainView: View {
     let workspace: WorkspaceStore
     @Environment(UIState.self) private var ui
     @Environment(AppModel.self) private var model
+    @Environment(LocalDeviceController.self) private var device
     @Environment(\.colorScheme) private var scheme
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
 
@@ -36,7 +37,7 @@ struct MainView: View {
         .ignoresSafeArea(.container, edges: .top)
         .overlay { if ui.accountMenuOpen { accountMenuLayer } }
         .animation(.easeOut(duration: 0.15), value: ui.accountMenuOpen)
-        .logoutConfirmation(isPresented: Bindable(ui).logoutConfirmOpen) { await model.logout(); return model.workspace == nil }
+        .logoutConfirmation(isPresented: Bindable(ui).logoutConfirmOpen) { await device.stop(revoke: true); await model.logout(); return model.workspace == nil }
         #if DEBUG
         .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif

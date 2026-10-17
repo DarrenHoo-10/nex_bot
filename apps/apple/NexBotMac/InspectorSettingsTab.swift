@@ -18,12 +18,7 @@ struct InspectorSettingsTab: View {
             Text("助手设置").font(.system(size: 12, weight: .bold))
 
             group("关于") {
-                Button { AgentUI.shared.editIdentity(botID) } label: {
-                    Text("bot身份信息").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .fieldCard()
+                IdentityField(workspace: workspace, botID: botID)
             }
 
             group("能力") {
@@ -120,4 +115,86 @@ struct InspectorSettingsTab: View {
 
 fileprivate extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Inline bot identity (web `BotIdentity`): shows the instructions, click to edit in place. ⌘↩ saves, Esc cancels.
+private struct IdentityField: View {
+    let workspace: WorkspaceStore
+    let botID: String
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var pending = false
+    @State private var error: String?
+    @FocusState private var focused: Bool
+
+    private var bot: Bot? { workspace.bot(botID) }
+    private var text: String { bot?.instructions ?? "" }
+
+    var body: some View {
+        Group { if editing { editor } else { display } }
+        #if DEBUG
+        .task { MBDebug.start() }
+        .onReceive(NotificationCenter.default.publisher(for: .mbDebug)) { note in
+            guard let cmd = note.mbCommand, cmd.prefix == "id" else { return }
+            switch cmd.verb {
+            case "edit": draft = text; error = nil; editing = true
+            case "fill": draft = cmd.arg
+            case "save": save()
+            case "cancel": editing = false
+            default: break
+            }
+        }
+        #endif
+    }
+
+    private var display: some View {
+        Button { draft = text; error = nil; editing = true } label: {
+            Text(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "bot身份信息" : text)
+                .font(.system(size: 12)).foregroundStyle(Theme.muted).lineSpacing(3)
+                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("编辑 bot身份信息")
+        .fieldCard()
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextEditor(text: $draft)
+                .font(.system(size: 12)).lineSpacing(3).scrollContentBackground(.hidden)
+                .focused($focused).disabled(pending)
+                .frame(minHeight: 110, maxHeight: 220)
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(Theme.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    if draft.isEmpty {
+                        Text("填写身份、职责与沟通方式").font(.system(size: 12)).foregroundStyle(Theme.muted.opacity(0.7))
+                            .padding(.horizontal, 13).padding(.vertical, 7).allowsHitTesting(false)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))
+                .accessibilityLabel("bot身份信息")
+                .onKeyPress(.escape) { if !pending { editing = false }; return .handled }
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    save(); return .handled
+                }
+            if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
+            HStack(spacing: 8) {
+                MBButton(title: pending ? "保存中…" : "保存", kind: .primary, busy: pending, action: save)
+                MBButton(title: "取消", enabled: !pending) { editing = false }
+            }
+        }
+        .onAppear { focused = true }
+    }
+
+    private func save() {
+        guard !pending, let bot else { return }
+        pending = true; error = nil
+        Task {
+            defer { pending = false }
+            do { try await workspace.updateIdentity(botID: botID, name: bot.name, instructions: draft); editing = false }
+            catch { self.error = message(of: error) }
+        }
+    }
 }

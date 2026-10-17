@@ -46,12 +46,25 @@ enum AppearanceOverride {
     static func scheme(_ raw: String) -> ColorScheme? { raw == "dark" ? .dark : raw == "light" ? .light : nil }
 }
 
+/// Quitting stops the bundled executor first (without revoking the device), so no `node` child is left behind.
+final class ExecutorAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard LocalDeviceController.shared.isRunning else { return .terminateNow }
+        Task { @MainActor in
+            await LocalDeviceController.shared.shutdown()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
 @main
 struct NexBotMacApp: App {
     @State private var model = AppModel()
     @State private var ui = UIState()
     @State private var preferences = ContactPreferences()
-    @State private var device = LocalDeviceController()
+    @NSApplicationDelegateAdaptor(ExecutorAppDelegate.self) private var appDelegate
+    @State private var device = LocalDeviceController.shared
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
 
     var body: some Scene {
@@ -62,7 +75,13 @@ struct NexBotMacApp: App {
                 .environment(preferences)
                 .environment(device)
                 .preferredColorScheme(AppearanceOverride.scheme(appearance))
-                .task { await model.start() }
+                .task {
+                    device.attach(model)
+                    #if DEBUG
+                    LocalDeviceDebug.start(device: device, model: model)
+                    #endif
+                    await model.start()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1440, height: 960)

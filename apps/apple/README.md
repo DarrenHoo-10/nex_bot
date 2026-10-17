@@ -13,6 +13,7 @@ Requirements: Xcode 16.4+, `brew install xcodegen`. Deployment targets are macOS
 ## Build and test
 
 ```sh
+node scripts/build-mac-executor.mjs                             # stages apps/apple/build/Executor (bundled device executor), see below
 swift test --package-path apps/apple/Packages/NexClientKit     # unit tests (URLProtocol stubs)
 apps/apple/scripts/generate.sh                                  # writes apps/apple/NexBot.xcodeproj
 xcodebuild -project apps/apple/NexBot.xcodeproj -scheme NexBotMac -destination 'platform=macOS' \
@@ -29,6 +30,28 @@ If Xcode reports "iOS 18.5 is not installed" (no iOS platform/simulator runtime 
 
 The built Mac app is `/tmp/nexbot-dd/Build/Products/Debug/NexBot.app`. Builds are ad-hoc signed (`CODE_SIGN_IDENTITY: "-"`),
 which is enough for local runs; set your team in Xcode for distribution. The Mac app is not sandboxed in v1.
+
+## Device executor (macOS)
+
+The Mac app bundles the same device runtime as the Electron client, so a signed-in Mac becomes a Core device that can
+read files and run commands (macOS has no window control yet). `LocalDeviceController` (`NexBotMac/LocalDevice.swift`)
+spawns `Contents/Resources/Executor/node executor-host.mjs <dataDir>` and talks newline-delimited JSON over stdin/stdout
+(protocol in the header of `Executor/executor-host.mjs`). The host reuses `electron/nex-client-device.mjs` and
+`dist-personal/client-executor` unchanged.
+
+Run `node scripts/build-mac-executor.mjs` before building (needs `pnpm install` and network the first time). It builds the
+client executor (`scripts/build-client-executor.mjs`; `--reuse-executor` skips that), downloads the official Node
+binary matching the Node that runs the script, verifies it against `SHASUMS256.txt`, caches it in `apps/apple/build/cache`
+and stages `apps/apple/build/Executor` (about 160 MB; git-ignored). Xcode's "Bundle device executor" phase
+(`Executor/bundle-executor.sh`) copies it into the app and signs `node` (hardened runtime plus the JIT entitlements in
+`Executor/node.entitlements`) and every `.node` library with the target's signing identity. Without the staged directory the
+app still builds and reports the executor as unavailable. Test the host protocol with
+`node --test apps/apple/Executor/executor-host.node-test.mjs`.
+
+Data lives in `~/Library/Application Support/NexBot/<profile or default>/devices` (0700). Its 32-byte encryption key is a
+Keychain item (service `com.nexbot.client`, account `executor-key:<profile>`); remove both when deleting a fixture profile.
+The host is stopped without revoking when the app quits (or dies: stdin EOF), and revoked on logout.
+The home directory is the read boundary and default working directory of commands; it is not a sandbox.
 
 ## Launch options
 

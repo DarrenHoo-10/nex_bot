@@ -106,7 +106,7 @@ Fake MCP    : ${mcp.origin}/mcp   (add it as a connector, test, then grant; tool
 Model       : configured (state.config present)
 Temp dir    : ${root}
 PID         : ${process.pid}
-Commands (stdin): reply <text> | approval | send <agent> <text> | history <agent> <n> | revoke-others | forget <agent> |
+Commands (stdin): reply <text> | approval | devices | device-exec <deviceName|"device name"> <command> | send <agent> <text> | history <agent> <n> | revoke-others | forget <agent> |
                   memory <agent> <title> | <content> | routine <agent> <name> | peer | status | quit
 Ctrl-C or "quit" stops everything and removes only the temp dir.
 ======================================`);
@@ -124,6 +124,19 @@ async function command(line) {
     const host = (await api("state")).hostDeviceId; if (!host) throw new Error("No host device");
     model.scripts.push({ kind: "openai-tool", calls: [{ id: "fixture-" + randomBytes(4).toString("hex"), name: "broker", args: JSON.stringify({ action: "device.exec", risk: "dangerous", riskReason: "夹具审批验证", deviceId: host, command: "echo fixture-approved" }) }] }, { kind: "openai-text", text: "审批后命令已完成。" });
     console.log("OK next model turn requests an approval-gated device.exec on the host device. Now `send <agent> <text>`.");
+  }
+  else if (cmd === "devices") {
+    const s = await api("state"), online = new Set(s.onlineDevices ?? []);
+    console.log(JSON.stringify({ hostDeviceId: s.hostDeviceId ?? null, devices: (s.devices ?? []).map((d) => ({ id: d.id, name: d.name, status: d.status, online: online.has(d.id) })) }, null, 1));
+  }
+  else if (cmd === "device-exec") {
+    const parsed = line.trim().slice(cmd.length).trim().match(/^(?:"([^"]+)"|(\S+))\s+(.+)$/);
+    if (!parsed) throw new Error('usage: device-exec <deviceName | "device name"> <command>');
+    const name = parsed[1] ?? parsed[2], shell = parsed[3];
+    const s = await api("state"), matches = (s.devices ?? []).filter((d) => d.name === name && d.status === "bound");
+    if (matches.length !== 1) throw new Error(`expected one bound device named ${JSON.stringify(name)}, found ${matches.length}`);
+    model.scripts.push({ kind: "openai-tool", calls: [{ id: "fixture-" + randomBytes(4).toString("hex"), name: "broker", args: JSON.stringify({ action: "device.exec", risk: "dangerous", riskReason: "夹具审批验证", deviceId: matches[0].id, command: shell }) }] }, { kind: "openai-text", text: "审批后命令已完成。" });
+    console.log(`OK next model turn requests an approval-gated device.exec on ${name} (${matches[0].id}): ${shell}. Now \`send <agent> <text>\`.`);
   }
   else if (cmd === "send") { const name = rest[0], text = rest.slice(1).join(" "); if (!name || !text) throw new Error("usage: send <agent> <text>"); const r = await sendInput(name, text); console.log("OK sent " + JSON.stringify(r)); }
   else if (cmd === "history") { const name = rest[0], n = Number(rest[1]); if (!name || !(n > 0 && n <= 200)) throw new Error("usage: history <agent> <n<=200>"); for (let i = 1; i <= n; i++) { await sendInput(name, `历史消息 ${i}`); await settle(); } console.log(`OK ${n} turns added`); }

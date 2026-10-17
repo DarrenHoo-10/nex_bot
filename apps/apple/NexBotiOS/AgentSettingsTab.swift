@@ -7,7 +7,6 @@ struct AgentSettingsTab: View {
     let botID: String
     @Environment(Navigation.self) private var nav
     @Environment(ContactPreferences.self) private var preferences
-    @State private var showIdentity = false
     @State private var showPolicy = false
     @State private var confirmArchive = false
     @State private var copied = false
@@ -20,16 +19,7 @@ struct AgentSettingsTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             group("关于") {
-                Button { showIdentity = true } label: {
-                    HStack {
-                        Text("bot身份信息").font(.subheadline)
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.muted)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).foregroundStyle(Theme.brand)
-                .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
+                IdentityField(workspace: workspace, botID: botID)
             }
 
             group("能力") {
@@ -74,7 +64,6 @@ struct AgentSettingsTab: View {
                     .disabled(archiving)
             }
         }
-        .sheet(isPresented: $showIdentity) { AgentEditorSheet(workspace: workspace, botID: botID) }
         .sheet(isPresented: $showPolicy) { PolicyEditorSheet(workspace: workspace, botID: botID) }
         .alert("归档这个 Agent？", isPresented: $confirmArchive) {
             Button("取消", role: .cancel) {}
@@ -88,7 +77,6 @@ struct AgentSettingsTab: View {
             case "policy": showPolicy = true
             case "archive": confirmArchive = true
             case "archiveconfirm": Task { await archive() }
-            case "identity": showIdentity = true
             default: break
             }
         }
@@ -119,5 +107,68 @@ struct AgentSettingsTab: View {
             trailing()
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// Inline bot identity (web `BotIdentity`): shows the instructions, tap to edit in place with 保存 / 取消.
+private struct IdentityField: View {
+    let workspace: WorkspaceStore
+    let botID: String
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var pending = false
+    @State private var errorText: String?
+    @FocusState private var focused: Bool
+
+    private var bot: Bot? { workspace.bot(botID) }
+    private var text: String { bot?.instructions ?? "" }
+
+    var body: some View {
+        Group { if editing { editor } else { display } }
+            .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
+            .debugCommand { command, arg in
+                switch command {
+                case "identity": draft = text; errorText = nil; editing = true
+                case "identityfill": draft = arg
+                case "identitysave": Task { await save() }
+                default: break
+                }
+            }
+    }
+
+    private var display: some View {
+        Button { draft = text; errorText = nil; editing = true } label: {
+            Text(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "bot身份信息" : text)
+                .font(.subheadline).foregroundStyle(Theme.muted).multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("编辑 bot身份信息")
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("填写身份、职责与沟通方式", text: $draft, axis: .vertical)
+                .lineLimit(5...10).font(.subheadline).focused($focused).disabled(pending)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Theme.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))
+                .accessibilityLabel("bot身份信息")
+            if let errorText { Text(errorText).font(.footnote).foregroundStyle(Theme.danger) }
+            HStack(spacing: 8) {
+                Button(pending ? "保存中…" : "保存") { Task { await save() } }
+                    .buttonStyle(PillButtonStyle(primary: true)).disabled(pending)
+                Button("取消") { editing = false }.buttonStyle(PillButtonStyle()).disabled(pending)
+            }
+        }
+        .onAppear { focused = true }
+    }
+
+    private func save() async {
+        guard !pending, let bot else { return }
+        pending = true; errorText = nil
+        defer { pending = false }
+        do { try await workspace.updateIdentity(botID: botID, name: bot.name, instructions: draft); editing = false }
+        catch { errorText = message(of: error) }
     }
 }

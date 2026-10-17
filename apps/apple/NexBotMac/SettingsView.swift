@@ -5,13 +5,13 @@ import NexClientKit
 /// Every category stays mounted while hidden so unsaved drafts survive switching.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(LocalDeviceController.self) private var device
     @AppStorage(SettingsCategory.storageKey) private var category = SettingsCategory.account
     @State private var confirmingLogout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("设置").font(.system(size: 28, weight: .bold))
-            Text("管理你的账号和助手偏好。").font(.system(size: 13)).foregroundStyle(Theme.muted).padding(.top, 6)
             HStack(alignment: .top, spacing: 44) {
                 VStack(spacing: 4) {
                     ForEach(SettingsCategory.allCases, id: \.self) { item in
@@ -47,7 +47,7 @@ struct SettingsView: View {
         .padding(.horizontal, 40).padding(.top, 34)
         .frame(width: 1080, height: 860, alignment: .topLeading)
         .background(Theme.background)
-        .logoutConfirmation(isPresented: $confirmingLogout) { await model.logout(); return model.workspace == nil }
+        .logoutConfirmation(isPresented: $confirmingLogout) { await device.stop(revoke: true); await model.logout(); return model.workspace == nil }
     }
 
     private func scroll<C: View>(@ViewBuilder _ content: () -> C) -> some View {
@@ -67,16 +67,16 @@ func stamp(_ date: Date) -> String {
     let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: date)
 }
 
-@MainActor func paneHeader(_ title: String, _ detail: String) -> some View {
+@MainActor func paneHeader(_ title: String, _ detail: String? = nil) -> some View {
     paneHeader(title, detail) { EmptyView() }
 }
 
-@MainActor func paneHeader<T: View>(_ title: String, _ detail: String, @ViewBuilder trailing: () -> T) -> some View {
+@MainActor func paneHeader<T: View>(_ title: String, _ detail: String? = nil, @ViewBuilder trailing: () -> T) -> some View {
     VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(title).font(.system(size: 20, weight: .bold))
-                Text(detail).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                if let detail { Text(detail).font(.system(size: 12)).foregroundStyle(Theme.muted) }
             }
             Spacer()
             trailing()
@@ -115,14 +115,11 @@ private struct AccountPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            paneHeader("账号与登录设备", "管理个人身份，以及可以访问这个工作区的登录设备。")
+            paneHeader("账号与登录设备")
             HStack(spacing: 14) {
                 Circle().fill(Color(hex: 0x3B66E8)).frame(width: 44, height: 44)
                     .overlay(Image(systemName: "person").font(.system(size: 20)).foregroundStyle(.white))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.workspace?.account?.displayName ?? "NexorAI 用户").font(.system(size: 15, weight: .semibold))
-                    Text("NexorAI 账号 · 已认证").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                }
+                Text(model.workspace?.account?.displayName ?? "NexorAI 用户").font(.system(size: 15, weight: .semibold))
                 Spacer()
                 OutlineButton(title: "退出登录", action: requestLogout)
             }
@@ -154,7 +151,6 @@ private struct SessionsSection: View {
                     .padding(.horizontal, 8).padding(.vertical, 4).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 5))
             }
             .padding(.top, 24)
-            Text("移除不再使用的登录，即可撤销该设备对工作区的访问。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14)
             VStack(spacing: 14) {
                 ForEach(workspace.sessions) { session in
                     let current = session.sessionID == workspace.currentSessionID

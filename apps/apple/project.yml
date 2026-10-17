@@ -47,6 +47,13 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: NexBotMac/NexBotMac.entitlements
+        # The executor phase reads apps/apple/build and signs nested binaries, which the script sandbox forbids.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      - name: Bundle device executor
+        path: Executor/bundle-executor.sh
+        basedOnDependencyAnalysis: false
+        showEnvVars: false
   NexBotiOS:
     type: application
     platform: iOS
