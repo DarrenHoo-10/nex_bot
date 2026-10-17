@@ -158,6 +158,10 @@ export function startFakeModel(probeFetch: typeof fetch = fixtureFetch): Promise
   const scripts: FakeScript[] = [];
   const requests: FakeRequest[] = [];
   const server = createServer(async (req, res) => {
+    if (req.method === "GET" && req.url === "/v1/models") {
+      write(res, 200, "application/json", JSON.stringify({ data: [{ id: "fixture-model" }, { id: "fixture-reasoning" }] }));
+      return;
+    }
     if (req.method === "GET" && req.url === "/__nex_fixture_health") {
       write(res, 200, "application/json", JSON.stringify({ fixture: true }));
       return;

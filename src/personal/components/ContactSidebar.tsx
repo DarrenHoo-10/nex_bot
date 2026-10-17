@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ChevronUp, Cpu, LogOut, Moon, PanelLeftClose, Plug, Plus, Search, Settings, Sun, UserRound, X } from "lucide-react";
+import { ChevronUp, LogOut, Moon, PanelLeftClose, Plus, Search, Settings, Sun, UserRound, X } from "lucide-react";
 import { BrandMark } from "./BrandMark";
 import { companionState } from "../avatars/appearance";
 import { AgentAvatar as Avatar } from "./AgentAvatar";
@@ -43,7 +43,7 @@ export function ContactSidebar(props: Props) {
         {groups.map((group) => group.items.length ? <section key={group.title}><div className={`sidebar-section-title ${group.title === "我的 Agent" ? "is-default-group" : ""}`}><span>{group.title}</span></div>{group.items.map((bot) => {
           const task = state.tasks.find((item) => item.bot_id === bot.id && !ended.has(str(item.status)));
           return <button className={`contact-item ${selectedId === bot.id && page === "agent" ? "is-selected" : ""}`} key={str(bot.id)} data-agent={bot.id} aria-current={selectedId === bot.id && page === "agent" ? "page" : undefined} onClick={() => props.onSelect(str(bot.id))}>
-            <Avatar bot={bot} allBots={state.bots} size={40} state={companionState(task, state.approvals.some((a) => a.bot_id === bot.id), props.connected)}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong><time>{time(bot.last_message_at)}</time></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? taskPhrase(task) : str(bot.last_message) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}</span></span>
+            <Avatar bot={bot} allBots={state.bots} size={40} animate={!!task} state={companionState(task, state.approvals.some((a) => a.bot_id === bot.id), props.connected)}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong><time>{time(bot.last_message_at)}</time></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? taskPhrase(task) : str(bot.last_message) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}</span></span>
           </button>;
         })}</section> : null)}
         {!contacts.length && <div className="sidebar-empty">{search ? "没有找到联系人" : "你的 Agent 会出现在这里"}{!search && <button className="text-button" onClick={props.onCreate}>创建第一个 Agent</button>}</div>}
@@ -59,14 +59,12 @@ export function ContactSidebar(props: Props) {
           const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
           items[next]?.focus();
         }}>
-          <button type="button" role="menuitem" className={page === "connectors" ? "is-selected" : ""} onClick={() => accountAction(() => props.onPage("connectors"))}><Plug size={18}/><span>连接器</span><small>{state.connectors?.filter((item) => item.enabled).length || ""}</small></button>
-          <button type="button" role="menuitem" className={page === "devices" ? "is-selected" : ""} onClick={() => accountAction(() => props.onPage("devices"))}><Cpu size={18}/><span>设备</span><small>{state.onlineDevices.length}</small></button>
           <button type="button" role="menuitem" className={page === "settings" ? "is-selected" : ""} onClick={() => accountAction(() => props.onPage("settings"))}><Settings size={18}/><span>设置</span></button>
           <button type="button" role="menuitem" onClick={() => accountAction(props.onTheme)}>{props.dark ? <Sun size={18}/> : <Moon size={18}/>}<span>{props.dark ? "切换浅色模式" : "切换深色模式"}</span></button>
           <div className="account-menu-divider" role="separator"/>
           <button type="button" role="menuitem" onClick={() => accountAction(props.onLogout)}><LogOut size={18}/><span>退出当前账号</span></button>
         </div>}
-        <button type="button" ref={accountButton} className="workspace-account-name" aria-label={`${props.userName}，账号菜单`} aria-haspopup="menu" aria-expanded={accountOpen} aria-controls={accountOpen ? menuId : undefined} onClick={() => setAccountOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setAccountOpen(true); } }}><span className="account-avatar" aria-hidden="true"><UserRound size={19} strokeWidth={1.7}/><i className={props.connected ? "online" : "offline"}/></span><span className="workspace-account-copy"><strong>{props.userName}</strong><small>{props.connected ? "个人工作空间" : "正在重新连接…"}</small></span><ChevronUp className="account-menu-chevron" size={16}/></button>
+        <button type="button" ref={accountButton} className="workspace-account-name" aria-label={`${props.userName}，账号菜单`} aria-haspopup="menu" aria-expanded={accountOpen} aria-controls={accountOpen ? menuId : undefined} onClick={() => setAccountOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setAccountOpen(true); } }}><span className="account-avatar" aria-hidden="true"><UserRound size={19} strokeWidth={1.7}/><i className={props.connected ? "online" : "offline"}/></span><span className="workspace-account-copy"><strong>{props.userName}</strong>{!props.connected && <small>正在重新连接…</small>}</span><ChevronUp className="account-menu-chevron" size={16}/></button>
       </footer>
     </aside>
   </>;

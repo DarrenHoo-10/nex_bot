@@ -5,6 +5,8 @@ import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { installLocalUi } from "./nex-client-ui.mjs";
+import { fetchModelCatalog } from "../shared/model-catalog.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const profile = process.argv.find((a) => a.startsWith("--profile="))?.slice(10);
@@ -88,10 +90,16 @@ else {
       writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
     }
     window = new BrowserWindow({ width: 1240, height: 880, minWidth: 760, minHeight: 600, title: "NexBot Client", icon: path.join(root, "electron", "client", "nexbot-icon.png"), autoHideMenuBar: true, webPreferences: { preload: path.join(root, "electron", "nex-client-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, partition: `nex-client-${randomBytes(12).toString("hex")}` } });
+    installLocalUi(window.webContents.session, path.join(root, "ui"), () => origin);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event, url) => { if (url !== connectionPage && (!origin || new URL(url).origin !== origin)) event.preventDefault(); });
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     ipcMain.handle("client:connection", (event) => { validate(event, true); return { origin: saved?.origin ?? targetOrigin ?? defaultOrigin, name: saved?.name || os.hostname() || "我的电脑", saved: !!saved, resuming, error: connectionError }; });
+    ipcMain.handle("client:list-models", async (event, settings) => {
+      validate(event);
+      if (!saved || !origin || event.senderFrame?.url === connectionPage) throw new Error("请先登录");
+      return fetchModelCatalog(settings);
+    });
     ipcMain.handle("client:cancel-resume", (event) => { validate(event, true); loginEpoch++; resuming = false; });
     ipcMain.handle("client:connect", async (event, settings) => {
       validate(event, true); loginEpoch++; resuming = !!settings.resume;
@@ -106,7 +114,7 @@ else {
       writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
     });
     ipcMain.handle("client:forget-login", async (event) => {
-      validate(event); if (existsSync(credentials)) unlinkSync(credentials);
+      validate(event); loginEpoch++; resuming = false; connectionError = ""; if (existsSync(credentials)) unlinkSync(credentials);
       saved = undefined; origin = undefined; await window.webContents.session.clearStorageData(); await window.loadURL(connectionPage);
     });
     ipcMain.handle("client:disconnect", async (event) => {

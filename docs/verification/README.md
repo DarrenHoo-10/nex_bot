@@ -250,6 +250,13 @@ desktop routing, cancellation, and computer authority cleanup.
 The [native macOS and iOS client recipe](native-clients.md) drives the SwiftUI apps
 against an isolated Core fixture.
 
+The [current inspector and contact motion record](inspector-cleanup.md) covers
+compact routines, direct avatar/identity editing and active sidebar animation.
+See [settings and model discovery](settings-model-discovery.md),
+[login/logout](login-refresh.md), [invite registration](invite-registration.md),
+and the [Mac UI references](../../doc/ui/README.md) for related changes.
+
+
 The [account workspace verification](account-workspaces.md) covers independent
 NexorAI accounts, preserved legacy ownership, client compatibility and deployment.
 

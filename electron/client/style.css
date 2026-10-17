@@ -1,2 +1,50 @@
-*{box-sizing:border-box}body{margin:0;background:#f5f7f7;color:#243237;font:15px/1.7 system-ui,sans-serif}main{width:min(500px,calc(100% - 48px));margin:70px auto}.mark{display:grid;place-items:center;width:54px;height:54px;border-radius:15px;background:#148b80;color:white;font-weight:700;font-size:28px}.eyebrow{letter-spacing:.2em;color:#54817e;font-size:11px;margin-top:22px}h1{font-size:28px;letter-spacing:-.04em}p,small{color:#718087}form{margin:26px 0}label{display:block;margin:18px 0;font-weight:600}input{display:block;width:100%;padding:13px;margin-top:8px;border:1px solid #d8e0e3;border-radius:10px;background:white;font:inherit;color:#243237}input:focus{outline:2px solid #148b80;outline-offset:1px}button{padding:12px 24px;border:0;border-radius:10px;background:#148b80;color:white;font:inherit;cursor:pointer}button:disabled{opacity:.5}#error{color:#a63a32}#retry{background:#e0eeeb;color:#24554e}small{display:block;margin:22px 0}
-body:not(.ready){visibility:hidden}#resuming{display:none;align-items:center;gap:14px;flex-wrap:wrap;margin:26px 0}#resuming p{margin:0}#resuming #other{background:#e0eeeb;color:#24554e}.spin{width:18px;height:18px;border:3px solid #cfe3e0;border-top-color:#148b80;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}main.resuming #resuming{display:flex}main.resuming form,main.resuming #retry,main.resuming small{display:none}
+/* Shared by the standalone desktop login and the web login. */
+body.login-host { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; }
+.login-screen, .login-screen * { box-sizing: border-box; }
+.login-screen { --login-blue: #3569e8; min-height: 100dvh; display: grid; place-items: center; padding: 32px 24px; background: #f5f6f8; color: #181b21; }
+.login-screen .login-card { width: min(100%, 420px); padding: 36px; background: #fff; border: 1px solid #e3e5e9; border-radius: 24px; box-shadow: 0 12px 44px #18223608; }
+.login-screen .mark, .login-screen .brand-symbol { display: block; width: 56px; height: 56px; background: transparent; }
+.login-screen h1 { margin: 24px 0 32px; font-size: 25px; font-weight: 650; letter-spacing: -.6px; line-height: 1.3; }
+.login-screen .login-form { margin: 0; }
+.login-screen .field { display: block; margin: 0 0 22px; font-size: 13px; font-weight: 500; color: #343840; }
+.login-screen input:not([type=hidden]) { display: block; width: 100%; height: 46px; margin-top: 9px; padding: 0 14px; font: inherit; font-size: 14px; color: #181b21; background: #fff; border: 1px solid #dfe2e8; border-radius: 10px; outline: none; box-shadow: none; }
+.login-screen input::placeholder { color: #9298a3; }
+.login-screen input:focus { border-color: var(--login-blue); box-shadow: 0 0 0 3px #3569e815; }
+.login-screen button { cursor: pointer; font: inherit; transition: background .15s; }
+.login-screen .primary { display: flex; align-items: center; justify-content: center; width: 100%; height: 46px; margin: 6px 0 0; padding: 0 18px; border: 0; border-radius: 10px; background: var(--login-blue); color: white; font-size: 14px; font-weight: 600; }
+.login-screen .primary:hover { background: #285bd1; }
+.login-screen button:disabled { opacity: .55; cursor: default; }
+.login-screen button:focus-visible { outline: 2px solid var(--login-blue); outline-offset: 3px; }
+.login-screen .login-signup { display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 28px; color: #7c838e; font-size: 12px; }
+.login-screen .login-signup button, .login-screen .login-signup a { border: 0; padding: 4px 2px; background: transparent; color: var(--login-blue); font-size: 12px; text-decoration: none; }
+.login-screen .login-signup a:focus-visible { outline: 2px solid var(--login-blue); outline-offset: 3px; }
+.login-screen .login-error { color: #c33e45; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; margin: 16px 0 0; }
+.login-screen .login-error:empty { display: none; }
+.login-screen .login-registration-notice { margin: 12px 0 0; font-size: 12px; line-height: 1.7; color: #7c838e; text-align: center; }
+body.login-host:not(.ready) { visibility: hidden; }
+.login-screen [hidden] { display: none !important; }
+.login-screen #resuming { display: none; align-items: center; gap: 12px; flex-wrap: wrap; color: #7c838e; font-size: 13px; }
+.login-screen #resuming p { margin: 0; }
+.login-screen #other, .login-screen #retry { border: 1px solid #e3e5e9; border-radius: 9px; padding: 10px 14px; background: #fff; color: #3569e8; }
+.login-screen #other { margin-top: 10px; width: 100%; }
+.login-screen #retry { margin-top: 14px; }
+.login-screen .spin { width: 16px; height: 16px; border: 2px solid #dfe8fc; border-top-color: #3569e8; border-radius: 50%; animation: login-spin .8s linear infinite; }
+.login-screen.resuming #resuming { display: flex; }
+.login-screen.resuming form, .login-screen.resuming #retry, .login-screen.resuming .login-signup, .login-screen.resuming .login-registration-notice { display: none; }
+@keyframes login-spin { to { transform: rotate(360deg); } }
+.account-logout-modal { box-sizing: border-box; width: min(400px, calc(100vw - 40px)); padding: 28px; border: 1px solid #e3e5e9; border-radius: 20px; background: #fff; color: #181b21; box-shadow: 0 20px 80px #18223626; }
+.account-logout-modal::backdrop { background: #161b254d; backdrop-filter: blur(3px); }
+.account-logout-modal .logout-symbol { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 13px; background: #edf2ff; color: #3569e8; margin-bottom: 20px; }
+.account-logout-modal h2 { margin: 0 0 10px; font-size: 20px; line-height: 1.4; font-weight: 600; }
+.account-logout-modal p { margin: 0; color: #7c838e; font-size: 13px; line-height: 1.8; }
+.account-logout-modal .logout-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 28px; }
+.account-logout-modal button { padding: 10px 18px; font: inherit; font-size: 13px; border: 1px solid #e3e5e9; border-radius: 9px; background: transparent; color: inherit; cursor: pointer; }
+.account-logout-modal button.primary { background: #3569e8; border-color: #3569e8; color: white; }
+.account-logout-modal button:focus-visible { outline: 2px solid #3569e8; outline-offset: 3px; }
+.account-logout-modal button:disabled { opacity: .55; cursor: default; }
+.account-logout-modal[data-dark="1"] { background: #23252a; color: #f4f5f7; border-color: #3a3d43; }
+.account-logout-modal[data-dark="1"] .logout-symbol { background: #2b3958; color: #8facf1; }
+.account-logout-modal[data-dark="1"] button:not(.primary) { border-color: #454850; }
+.account-logout-modal[data-dark="1"] p { color: #a7acb6; }
+@media (max-width: 480px) { .login-screen { padding: 20px; } .login-screen .login-card { padding: 28px 24px; border-radius: 20px; } }
+@media (prefers-reduced-motion: reduce) { .login-screen button { transition: none; } .login-screen .spin { animation: none; } }

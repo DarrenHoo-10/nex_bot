@@ -8,6 +8,7 @@ async function connect(value) {
 form.addEventListener("submit", (event) => { event.preventDefault(); void connect({ origin: document.getElementById("origin").value, name: document.getElementById("name").value, email: document.getElementById("email").value, password: document.getElementById("password").value }); });
 retry.addEventListener("click", () => void connect({ resume: true }));
 other.addEventListener("click", () => { setResuming(false); void window.nex.cancelResume(); });
+document.getElementById("register").addEventListener("click", () => { void window.nex.openExternal("https://user.nexorai.com.cn/register/nexbot").catch(() => { error.textContent = "无法打开注册页，请稍后重试"; }); });
 void window.nex.connection().then((info) => {
   document.getElementById("origin").value = info.origin || "https://bot.nexorai.com.cn"; document.getElementById("name").value = info.name ?? "我的电脑"; retry.hidden = !info.saved; error.textContent = info.error ?? "";
   setResuming(!!info.resuming);

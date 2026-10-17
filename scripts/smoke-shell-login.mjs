@@ -7,9 +7,10 @@ import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
 import { pathToFileURL } from "node:url";
 import { startFakeIdentity } from "../server/personal-os/testing/fake-identity.ts";
+import { startFakeModel } from "../server/runtime/pi/p0/fake-model.ts";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-shell-login-fixture-")), profile = path.join(root, "profile"), readyFile = path.join(root, "ready.json");
-const provider = await startFakeIdentity(), instances = [], cases = [], key = randomBytes(32);
+const provider = await startFakeIdentity(), catalogModel = await startFakeModel(), instances = [], cases = [], key = randomBytes(32);
 const accountWorkspaces = process.argv.includes("--account-workspaces");
 const bundle = await import(pathToFileURL(path.resolve(`dist-personal/server/core/${accountWorkspaces ? "workspaces" : "index"}.js`)).href);
 const createPersonalApp = accountWorkspaces ? bundle.createWorkspaceService : bundle.createPersonalApp;
@@ -31,9 +32,12 @@ async function launch() {
   const port = readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
   const target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((item) => item.type === "page");
   instance.ws = new WebSocket(target.webSocketDebuggerUrl); await new Promise((resolve) => instance.ws.once("open", resolve));
-  instance.ws.on("message", (raw) => { const event = JSON.parse(raw.toString()), pending = instance.replies.get(event.id); if (!pending) return; instance.replies.delete(event.id); if (event.error) pending.reject(new Error(event.error.message)); else pending.resolve(event.result); });
+  instance.webLoginFrames = 0;
+  instance.ws.on("message", (raw) => { const event = JSON.parse(raw.toString()); if (event.method === "Runtime.bindingCalled" && event.params.name === "fixtureWebLoginShown") instance.webLoginFrames++; const pending = instance.replies.get(event.id); if (!pending) return; instance.replies.delete(event.id); if (event.error) pending.reject(new Error(event.error.message)); else pending.resolve(event.result); });
   instance.command = (method, params = {}) => new Promise((resolve, reject) => { const id = ++instance.sequence; const timer = setTimeout(() => { instance.replies.delete(id); reject(new Error("Shell command timed out")); }, 30_000); instance.replies.set(id, { resolve: (result) => { clearTimeout(timer); resolve(result); }, reject: (error) => { clearTimeout(timer); reject(error); } }); instance.ws.send(JSON.stringify({ id, method, params })); });
   instance.evaluate = async (expression) => { const result = await instance.command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text); return result.result.value; };
+  await instance.command("Runtime.addBinding", { name: "fixtureWebLoginShown" });
+  await instance.command("Page.addScriptToEvaluateOnNewDocument", { source: "new MutationObserver(()=>{if(document.querySelector('.login-form:not(#connection)'))window.fixtureWebLoginShown('shown')}).observe(document,{childList:true,subtree:true});" });
   instance.quit = async () => { await instance.evaluate("void window.nex.quit();true"); await until(() => instance.exited); instance.ws.close(); };
   return instance;
 }
@@ -42,11 +46,50 @@ async function login(instance, password, account = "owner@example.test") {
 }
 try {
   const first = await launch(); await until(() => first.evaluate("!!document.querySelector('#connection')"));
+  if (process.argv.includes("--expect-local-ui")) {
+    await until(() => first.evaluate("document.body.classList.contains('ready')"));
+    if (await first.evaluate("/后端|高级/.test(document.body.innerText)||document.querySelector('#origin').type!=='hidden'")) throw new Error("Login still exposes connection settings");
+    if (!await first.evaluate("document.querySelector('h1').textContent==='登录 NexBot'&&document.querySelector('#name').type==='hidden'&&document.querySelector('.login-signup').textContent==='没有账号？去注册'&&getComputedStyle(document.querySelector('#connect')).backgroundColor==='rgb(53, 105, 232)'")) throw new Error("Shell login does not match the new design");
+    mkdirSync(path.resolve("release/personal-client-mac"), { recursive: true });
+    writeFileSync(path.resolve("release/personal-client-mac/shell-login.png"), Buffer.from((await first.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  }
   if (await first.evaluate("!!document.querySelector('.workspace-brand')||typeof window.nex.configureNode!=='undefined'")) throw new Error("Shell exposes business/device state without login");
   await login(first, "wrong"); await until(() => first.evaluate("document.querySelector('#error').textContent.includes('密码')&&document.querySelector('#password').value===''"));
   if (existsSync(path.join(profile, "connection.bin"))) throw new Error("Failed login was persisted");
   cases.push("mandatory-shell-login", "no-local-device-bridge", "wrong-password-cleared");
   await login(first, " synthetic password "); await until(() => first.evaluate("!!document.querySelector('.workspace-brand')"));
+  if (process.argv.includes("--expect-local-ui")) {
+    if (!await first.evaluate("document.querySelector('meta[name=nexbot-ui-source]')?.content==='local'")) throw new Error("Client did not load its local UI");
+    const remoteHtml = await (await fetch(core.origin)).text();
+    if (remoteHtml.includes('name="nexbot-ui-source"')) throw new Error("Fixture Core unexpectedly serves local UI marker");
+    if (!await first.evaluate("fetch('/health').then(r=>r.json()).then(v=>v.app==='NexBot')")) throw new Error("Local UI did not forward backend requests");
+    cases.push("local-ui-with-remote-api");
+    await first.evaluate("document.querySelector('.workspace-account-name').click();true");
+    await first.evaluate("[...document.querySelectorAll('.account-menu button')].find(el=>el.textContent==='设置').click();true");
+    await first.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(el=>el.textContent==='模型').click();true");
+    await first.evaluate(`(()=>{for(const [name,value] of [['endpoint',${JSON.stringify(catalogModel.origin + '/v1')}],['apiKey','synthetic-catalog-key'],['model','fixture-model']]){const el=document.querySelector('input[name='+name+']');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event('input',{bubbles:true}));}})()`);
+    if (!await first.evaluate("document.querySelector('input[name=apiKey]').type==='password'")) throw new Error("Key was not masked by default");
+    await first.evaluate("document.querySelector('button[aria-label=\"显示 API Key\"]').click();true");
+    if (!await first.evaluate("document.querySelector('input[name=apiKey]').type==='text'&&document.querySelector('input[name=apiKey]').value==='synthetic-catalog-key'")) throw new Error("Key reveal failed");
+    await first.evaluate("document.querySelector('button[aria-label=\"隐藏 API Key\"]').click();true");
+    if (!await first.evaluate("document.querySelector('input[name=apiKey]').type==='password'")) throw new Error("Key hide failed");
+    await first.evaluate("document.querySelector('button[aria-label=\"显示 API Key\"]').click();document.querySelector('[data-model-settings] form').requestSubmit();true");
+    await until(() => first.evaluate("!!document.querySelector('.preferences-saved')"));
+    if (!await first.evaluate("document.querySelector('input[name=apiKey]').type==='password'&&document.querySelector('input[name=apiKey]').value==='synthetic-catalog-key'")) throw new Error("Save cleared the entered key or left it exposed");
+    // Simulate the deployed Core that does not yet offer saved-key discovery.
+    await first.evaluate("window.fixtureFetch=window.fetch;window.fetch=(url,options)=>url==='/api/models/list'?Promise.resolve(new Response('{}',{status:404})):window.fixtureFetch(url,options);true");
+    await first.evaluate("[...document.querySelectorAll('[data-model-settings] button')].find(el=>el.textContent==='获取模型列表').click();true");
+    await until(() => first.evaluate("document.querySelector('select[name=model]')?.textContent.includes('fixture-reasoning')"));
+    await first.evaluate("window.fetch=window.fixtureFetch;delete window.fixtureFetch;true");
+    await first.evaluate("document.querySelector('button[aria-label=\"显示 API Key\"]').click();[...document.querySelectorAll('.preferences-nav button')].find(el=>el.textContent==='记忆服务').click();true");
+    await first.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(el=>el.textContent==='模型').click();true");
+    if (!await first.evaluate("document.querySelector('input[name=apiKey]').type==='password'&&document.querySelector('input[name=apiKey]').value==='synthetic-catalog-key'")) throw new Error("Category navigation exposed or lost the key");
+    await first.evaluate("(()=>{const el=document.querySelector('input[name=endpoint]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'https://other.example.test/v1');el.dispatchEvent(new Event('input',{bubbles:true}));})()");
+    if (!await first.evaluate("document.querySelector('input[name=apiKey]').value===''")) throw new Error("Endpoint change retained another provider's key");
+    cases.push("key-reveal-hide", "save-then-discover-on-older-core", "key-remasked-on-navigation", "key-cleared-for-new-endpoint");
+    if (await first.evaluate("/个人工作空间|系统信息|高级设置|后端连接/.test(document.body.innerText)")) throw new Error("Removed descriptions remain visible");
+    cases.push("native-model-discovery-in-settings");
+  }
   const saved = path.join(profile, "connection.bin");
   if (!existsSync(saved) || readFileSync(saved).includes(Buffer.from(" synthetic password "))) throw new Error("Shell persisted a password");
   await first.evaluate("fetch('/api/bots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'独立后端联系人'})}).then(r=>r.json())");
@@ -65,10 +108,25 @@ try {
   writeFileSync(path.resolve("release/personal-client-mac/shell-settings.png"), Buffer.from((await second.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
   await second.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(button=>button.textContent==='账号与登录设备').click();true");
   await second.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='退出登录').click();true");
+  await until(() => second.evaluate("!!document.querySelector('.account-logout-modal[open]')"));
+  await second.evaluate("[...document.querySelectorAll('.account-logout-modal button')].find(button=>button.textContent==='取消').click();true");
+  if (!await second.evaluate("!!document.querySelector('.workspace-brand')&&!document.querySelector('.account-logout-modal')")) throw new Error("Logout cancellation changed session");
+  await second.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='退出登录').click();true");
+  await until(() => second.evaluate("!!document.querySelector('.account-logout-modal[open]')"));
+  await second.evaluate("document.querySelector('.account-logout-modal .primary').click();true");
   await until(() => second.evaluate("!!document.querySelector('#connection')&&!document.querySelector('.workspace-brand')"));
+  if (second.webLoginFrames) throw new Error("Logout flashed a second login form");
+  await new Promise(resolve => setTimeout(resolve, 31_000));
+  if (!await second.evaluate("!!document.querySelector('#connection')&&document.querySelector('h1').textContent==='登录 NexBot'")) throw new Error("Idle login changed after refresh interval");
+  cases.push("styled-logout-cancel-confirm", "no-intermediate-web-login", "idle-login-stable-after-refresh-interval");
   if (existsSync(saved) || (await fetch(core.origin + "/api/state", { headers: { Authorization: "Bearer " + cookie } })).status !== 401) throw new Error("Logout retained access");
   await second.quit(); cases.push("backend-plugin-settings-visible", "logout-clears-shell-and-Core-session");
-  const third = await launch(); await until(() => third.evaluate("!!document.querySelector('#connection')")); await login(third, " synthetic password "); await until(() => third.evaluate("document.querySelector('.contact-groups')?.textContent.includes('独立后端联系人')")); await third.quit();
+  const third = await launch(); await until(() => third.evaluate("!!document.querySelector('#connection')")); await login(third, " synthetic password "); await until(() => third.evaluate("document.querySelector('.contact-groups')?.textContent.includes('独立后端联系人')"));
+  await third.evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(()=>document.dispatchEvent(new Event('visibilitychange')))");
+  await until(() => third.evaluate("!!document.querySelector('#connection')&&document.querySelector('h1').textContent==='登录 NexBot'"));
+  if (third.webLoginFrames || existsSync(saved)) throw new Error("Expired session showed web login or kept saved login");
+  cases.push("active-session-expiry-uses-canonical-login");
+  await login(third, " synthetic password "); await until(() => third.evaluate("!!document.querySelector('.workspace-brand')")); await third.quit();
   const port = Number(new URL(core.origin).port); await core.close();
   for (const session of provider.sessions.values()) session.active = false;
   core = await createPersonalApp({ dir: path.join(root, "core"), key, port, token: "synthetic-bootstrap", uiDir: path.resolve("dist-personal/server/ui"), identity: { fixtureOrigin: provider.origin } });
@@ -91,6 +149,8 @@ try {
     await sixth.evaluate("[...document.querySelectorAll('.account-menu button')].find(button=>button.textContent.includes('设置')).click();true");
     await until(() => sixth.evaluate("[...document.querySelectorAll('button')].some(button=>button.textContent==='退出登录')"));
     await sixth.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='退出登录').click();true");
+    await until(() => sixth.evaluate("!!document.querySelector('.account-logout-modal[open]')"));
+    await sixth.evaluate("document.querySelector('.account-logout-modal .primary').click();true");
     await until(() => sixth.evaluate("!!document.querySelector('#connection')"));
     await login(sixth, " synthetic password ");
     await until(() => sixth.evaluate("document.querySelector('.contact-groups')?.textContent.includes('独立后端联系人')"));
@@ -101,5 +161,5 @@ try {
   console.log(JSON.stringify({ passed: true, cases, packaged: !!executable, accountWorkspaces }));
 } finally {
   for (const instance of instances) { instance.ws?.close(); if (!instance.exited) { instance.child.kill("SIGTERM"); await until(() => instance.exited).catch(() => instance.child.kill("SIGKILL")); } }
-  await core.close(); await provider.close(); rmSync(root, { recursive: true, force: true });
+  await core.close(); await provider.close(); await catalogModel.close(); rmSync(root, { recursive: true, force: true });
 }

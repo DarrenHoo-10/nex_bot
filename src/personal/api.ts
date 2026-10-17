@@ -22,6 +22,7 @@ export interface State {
 }
 type Bridge = {
   mode?: "client";
+  listModels?(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }>;
   disconnect?(): Promise<void>;
   rememberLogin?(session: { token: string; coreId: string; sessionId: string; expiresAt: number }): Promise<void>;
   forgetLogin?(): Promise<void>;
@@ -31,6 +32,17 @@ type Bridge = {
   closeWindow(): Promise<void>;
 };
 export const desktop = (window as unknown as { nex?: Bridge }).nex;
+export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {
+  if (desktop?.listModels && settings.apiKey.trim()) return desktop.listModels(settings);
+  const response = await fetch("/api/models/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
+  if (response.status === 404) throw new Error(desktop?.listModels ? "当前版本暂不能用已保存的 Key 查询模型。请在上方重新填写 Key 后获取，无需先保存。" : "当前服务暂不支持获取模型列表，请手动填写模型 ID");
+  const result = await response.json();
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("nex-session-expired"));
+    throw new Error(result.error || "获取模型列表失败");
+  }
+  return result;
+}
 export async function api<T>(url: string, data?: unknown): Promise<T> {
   const response = await fetch("/api/" + url, data === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
   const result = await response.json() as T & { error?: string; code?: string };
