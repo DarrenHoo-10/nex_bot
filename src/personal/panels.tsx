@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { AccountControls, useAccount } from "./auth";
-import { Check, Cpu, Globe, KeyRound, Laptop, Plus, ShieldCheck, Sparkles, X } from "lucide-react";
+import { Check, Cpu, Globe, KeyRound, Laptop, Plus, ShieldCheck, Sparkles, UserRound, X } from "lucide-react";
 import { api, desktop, str, type State } from "./api";
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
@@ -11,85 +11,85 @@ export function Confirm({ title, detail, onClose, onConfirm }: { title: string; 
   return <><h2>{title}</h2><p>{detail}</p><div className="actions"><button className="danger" onClick={() => void onConfirm()}>确认</button><button autoFocus onClick={onClose}>取消</button></div></>;
 }
 export function SettingsPage({ state, run }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void> }) {
-  const [provider, setProvider] = useState(str(state.config?.provider_id) || "openai");
-  const [endpoint, setEndpoint] = useState(str(state.config?.endpoint) || "https://api.openai.com/v1");
-  const [saved, setSaved] = useState(false);
-  let requestAddress = "请输入有效的 API 基础地址";
-  try { const url = new URL(endpoint); if (!url.username && !url.password && !url.search && !url.hash) requestAddress = url.origin + url.pathname.replace(/\/$/, "") + (provider === "openai" ? "/chat/completions" : "/v1/messages"); } catch { /* The form reports invalid addresses on save. */ }
-  return <div className="content-page settings-page ds-settings-page">
-    <div className="ds-page-hero">
-      <div>
-        <span className="ds-page-eyebrow">PERSONAL AI OS · SETTINGS</span>
-        <h1>账号、模型与系统设置</h1>
-        <p className="muted">统一管理你的个人 NexorAI 账号、登录设备、大模型接口与 Hindsight 长期记忆服务。</p>
+  const [category, setCategory] = useState("account");
+  const sectionId = useId();
+  const categories = [
+    { id: "account", label: "账号与登录设备", icon: UserRound },
+    { id: "model", label: "模型", icon: KeyRound },
+    { id: "memory", label: "记忆服务", icon: Sparkles },
+    { id: "system", label: "系统信息", icon: Globe },
+  ];
+  return <div className="preferences-page">
+    <div className="preferences-heading"><h1>设置</h1><p>管理你的账号和助手偏好。</p></div>
+    <div className="preferences-layout">
+      <nav className="preferences-nav" aria-label="设置分类">{categories.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={category === id ? "page" : undefined} aria-controls={`${sectionId}-${id}`} onClick={() => setCategory(id)}><Icon size={17}/><span>{label}</span></button>)}</nav>
+      <div className="preferences-content">
+        <section id={`${sectionId}-account`} hidden={category !== "account"} aria-label="账号与登录设备" className="preferences-panel">
+          <div className="preferences-panel-heading"><h2>账号与登录设备</h2><p>管理个人身份，以及可以访问这个工作区的登录设备。</p></div>
+          <AccountControls/>
+          <ClientSessions cursor={state.sync.cursor} run={run}/>
+        </section>
+        <section id={`${sectionId}-model`} hidden={category !== "model"} aria-label="模型" className="preferences-panel">
+          <div className="preferences-panel-heading"><h2>模型</h2><p>选择助手使用的模型，并连接你的服务商。</p></div>
+          <ModelSettings state={state} run={run}/>
+        </section>
+        <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="记忆服务" className="preferences-panel">
+          <div className="preferences-panel-heading"><h2>记忆服务</h2><p>让助手在后续对话中找回与你有关的信息。</p></div>
+          <MemoryPluginSettings state={state} run={run}/>
+        </section>
+        <section id={`${sectionId}-system`} hidden={category !== "system"} aria-label="系统信息" className="preferences-panel">
+          <div className="preferences-panel-heading"><h2>系统信息</h2><p>查看当前连接和数据存储方式。</p></div>
+          <section className="preferences-section"><h3>服务连接</h3><dl className="preferences-facts"><div><dt>当前访问地址</dt><dd><code>{location.origin}</code></dd></div><div><dt>客户端类型</dt><dd>{desktop?.mode === "client" ? "桌面客户端" : "浏览器"}</dd></div></dl></section>
+          <section className="preferences-section"><h3>数据与隐私</h3><p className="preferences-description">聊天、任务与配置保存在后端。桌面客户端只保存加密的登录资料；启用记忆服务后，记忆来源会同步到该服务。</p></section>
+          <details className="preferences-advanced"><summary>技术详情</summary><dl className="preferences-facts"><div><dt>后端监听地址</dt><dd><code>{state.address}</code></dd></div><div><dt>后端数据目录</dt><dd><code>{state.dataDir}</code></dd></div><div><dt>运行环境</dt><dd>Pi 1.0.4 · SQLite</dd></div></dl></details>
+        </section>
       </div>
     </div>
-    <AccountControls/>
-    <ClientSessions cursor={state.sync.cursor} run={run}/>
-    <section className="settings-info ds-settings-card">
-      <div className="ds-card-header">
-        <div className="ds-card-icon"><KeyRound size={18}/></div>
-        <div>
-          <h2>连接你的模型</h2>
-          <p className="muted">运行时已经内置。配置 API Key、模型和服务地址后即可使用。</p>
-        </div>
-        {state.config ? <span className="ds-badge-green">{str(state.config.default_model)}</span> : null}
-      </div>
-      <form onSubmit={(e) => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.currentTarget)); void run(async () => { await api("config", data); setSaved(true); }); }}>
-        <div className="ds-form-grid">
-          <label className="field">API 协议<select name="provider" value={provider} onChange={(e) => { const next = e.target.value; if (["https://api.openai.com/v1", "https://api.anthropic.com"].includes(endpoint)) setEndpoint(next === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com"); setProvider(next); setSaved(false); }}><option value="openai">OpenAI 兼容 API（Chat Completions）</option><option value="anthropic">Anthropic API</option></select></label>
-          <label className="field">模型 ID<input name="model" required defaultValue={str(state.config?.default_model)} placeholder={provider === "openai" ? "你的服务商提供的模型 ID" : "你的 Anthropic 模型 ID"} onChange={() => setSaved(false)}/></label>
-        </div>
-        <label className="field">API 基础地址<input name="endpoint" required value={endpoint} onChange={(e) => { setEndpoint(e.target.value); setSaved(false); }}/><small className="muted">{provider === "openai" ? "填写服务商提供的完整 API 基础地址，通常以 /v1 结尾；不要填写 /chat/completions 接口全路径。" : "填写 Anthropic 服务根地址，不要填写 /v1/messages 接口全路径。"}</small></label>
-        <p className="muted ds-url-preview">实际请求地址：<code data-model-request-url>{requestAddress}</code></p>
-        <label className="field">API Key<input name="apiKey" type="password" autoComplete="off" required={!state.config} placeholder={state.config ? "已加密保存；留空保留原 Key" : "输入 API Key"} onChange={() => setSaved(false)}/></label>
-        <div className="actions"><button className="primary">保存配置</button>{saved ? <span className="saved"><Check size={15}/>已保存</span> : null}</div>
-      </form>
-    </section>
-    <MemoryPluginSettings state={state} run={run}/>
-    <section className="settings-info ds-settings-card">
-      <div className="ds-card-header">
-        <div className="ds-card-icon"><Globe size={18}/></div>
-        <div>
-          <h2>后端服务数据</h2>
-          <p className="muted">消息、任务、记忆来源、审批和模型配置统一由后端管理。客户端只保存加密登录凭据；语义记忆由外部插件服务提供。</p>
-        </div>
-      </div>
-      <div className="ds-meta-chips">
-        <code>{state.address}</code>
-        <code>{state.dataDir}</code>
-      </div>
-      <p className="muted">固定运行时 Pi 1.0.4 · 数据库 SQLite · 工具由 Core Broker 授权</p>
-    </section>
-    {desktop?.mode === "client" ? <section className="settings-info ds-settings-card"><div className="ds-account-row"><div className="ds-account-meta"><h2>当前客户端</h2><p className="muted">退出连接会撤销当前客户端登录。后端例行任务需要有效的账号登录。</p></div><div className="ds-account-actions"><button onClick={() => void desktop?.disconnect?.()}>退出连接</button></div></div></section> : null}
   </div>;
+}
+function ModelSettings({ state, run }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void> }) {
+  const [provider, setProvider] = useState(str(state.config?.provider_id) || "openai");
+  const [endpoint, setEndpoint] = useState(str(state.config?.endpoint) || "https://api.openai.com/v1");
+  const [saved, setSaved] = useState(false), [pending, setPending] = useState(false);
+  let requestAddress = "请输入有效的 API 基础地址";
+  try { const url = new URL(endpoint); if (!url.username && !url.password && !url.search && !url.hash) requestAddress = url.origin + url.pathname.replace(/\/$/, "") + (provider === "openai" ? "/chat/completions" : "/v1/messages"); } catch { /* Show the validation result when saving. */ }
+  return <section className="preferences-section" data-model-settings>
+    <div className="preferences-section-heading"><h3>模型连接</h3><span className="preferences-status">{state.config ? "已配置" : "待配置"}</span></div>
+    <form onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; const data = Object.fromEntries(new FormData(form)); setPending(true); setSaved(false); void run(async () => { await api("config", data); const key = form.elements.namedItem("apiKey") as HTMLInputElement; key.value = ""; setSaved(true); }).finally(() => setPending(false)); }}>
+      <fieldset disabled={pending}>
+        <div className="preferences-form-grid">
+          <label className="field">API 协议<select name="provider" value={provider} onChange={(event) => { const next = event.target.value; if (["https://api.openai.com/v1", "https://api.anthropic.com"].includes(endpoint)) setEndpoint(next === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com"); setProvider(next); setSaved(false); }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></label>
+          <label className="field">模型 ID<input name="model" required defaultValue={str(state.config?.default_model)} placeholder="服务商提供的模型 ID" onChange={() => setSaved(false)}/></label>
+        </div>
+        <label className="field">API 基础地址<input name="endpoint" type="url" required value={endpoint} spellCheck={false} onChange={(event) => { setEndpoint(event.target.value); setSaved(false); }}/><small>{provider === "openai" ? "通常以 /v1 结尾，不包含 /chat/completions。" : "填写服务根地址，不包含 /v1/messages。"}</small></label>
+        <label className="field">API Key<input name="apiKey" type="password" autoComplete="off" required={!state.config} placeholder={state.config ? "留空保留已保存的 Key" : "输入 API Key"} onChange={() => setSaved(false)}/><small>密钥由后端加密保存。</small></label>
+        <details className="preferences-advanced"><summary>高级设置</summary><p>实际请求地址</p><code data-model-request-url>{requestAddress}</code><p>{provider === "openai" ? "使用 Chat Completions 协议。" : "使用 Anthropic Messages 协议。"}</p></details>
+        <div className="preferences-actions"><button className="primary" type="submit">{pending ? "保存中…" : "保存配置"}</button>{saved && <span className="preferences-saved" role="status"><Check size={15}/>已保存</span>}</div>
+      </fieldset>
+    </form>
+  </section>;
 }
 function MemoryPluginSettings({ state, run }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void> }) {
   const plugin = state.memoryPlugin;
   const [enabled, setEnabled] = useState(plugin?.enabled ?? false), [endpoint, setEndpoint] = useState(plugin?.endpoint ?? ""), [token, setToken] = useState("");
   const [feedback, setFeedback] = useState(""), [pending, setPending] = useState(false);
-  const labels: Record<string, string> = { disabled: "未启用", connecting: "正在连接", ready: "已连接", unavailable: "暂不可用" };
+  const labels: Record<string, string> = { disabled: "未启用", connecting: "连接中", ready: "已连接", unavailable: "连接异常" };
   const data = { provider: "hindsight", enabled, endpoint, token };
   const perform = (action: () => Promise<void>) => { setPending(true); setFeedback(""); void run(action).finally(() => setPending(false)); };
-  if (!plugin) return null;
-  return <section className="settings-info ds-settings-card" data-memory-plugin>
-    <div className="ds-card-header">
-      <div className="ds-card-icon"><Sparkles size={18}/></div>
-      <div>
-        <h2>记忆插件</h2>
-        <p className="muted">后端通过外部服务提供长期记忆检索与综合。未连接时仍可聊天并查阅原始记录。</p>
-      </div>
-      <span role="status" className={plugin.status === "ready" ? "ds-badge-green" : "ds-badge-muted"}>Hindsight · {labels[plugin.status] ?? plugin.status}{plugin.error ? ` · ${plugin.error}` : ""}</span>
-    </div>
+  if (!plugin) return <p className="preferences-description">当前后端未提供记忆服务配置。</p>;
+  return <section className="preferences-section" data-memory-plugin>
+    <div className="preferences-section-heading"><h3>Hindsight</h3><span role="status" className={`preferences-status ${plugin.status === "unavailable" ? "is-warning" : ""}`}>{labels[plugin.status] ?? "状态未知"}</span></div>
+    {plugin.status === "unavailable" && <p className="preferences-notice">暂时无法连接记忆服务。聊天仍可使用，请检查服务地址或查看诊断详情。</p>}
     <form onSubmit={(event) => { event.preventDefault(); perform(async () => { await api("plugins/memory", data); setToken(""); setFeedback("配置已加密保存，重启后端服务后生效。"); }); }}>
-      <div className="ds-form-grid">
-        <label className="field">插件<select name="memoryProvider" defaultValue="hindsight">{plugin.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name} · {provider.protocol}</option>)}</select></label>
-        <label className="field">服务地址<input name="memoryEndpoint" type="url" required={enabled} value={endpoint} placeholder="http://127.0.0.1:8888 或 https://memory.example.com" onChange={(event) => setEndpoint(event.target.value)}/></label>
-      </div>
-      <label className="check-field"><input name="memoryEnabled" type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)}/>启用外部记忆服务</label>
-      <label className="field">访问令牌<input name="memoryToken" type="password" autoComplete="off" value={token} required={enabled && !(plugin.hasToken && endpoint.replace(/\/$/, "") === plugin.endpoint)} placeholder={plugin.hasToken ? "已加密保存；同一地址留空保留原令牌" : "输入服务访问令牌"} onChange={(event) => setToken(event.target.value)}/><small className="muted">由后端连接本机、私有网络或 HTTPS 服务。请在外部 Hindsight 中配置模型与访问认证。</small></label>
-      <p className="muted">启用后，记忆来源会同步到配置的服务。服务产生的模型调用与费用由该服务管理；停用不会删除外部数据。</p>
-      <div className="actions"><button type="button" disabled={pending || !endpoint} onClick={() => perform(async () => { await api("plugins/memory/test", data); setFeedback("连接测试通过，尚未更改配置。"); })}>测试连接</button><button className="primary" disabled={pending}>保存插件配置</button></div><p role="status" className="muted">{feedback || (plugin.restartRequired ? "配置已变更，重启后端服务后生效。" : "")}</p>
+      <fieldset disabled={pending}>
+        <label className="preferences-toggle"><span><strong>启用长期记忆</strong><small>将记忆来源同步到配置的服务，供后续检索使用。</small></span><input name="memoryEnabled" type="checkbox" role="switch" checked={enabled} onChange={(event) => { setEnabled(event.target.checked); setFeedback(""); }} aria-label="启用长期记忆"/></label>
+        <label className="field">服务地址<input name="memoryEndpoint" type="url" required={enabled} value={endpoint} spellCheck={false} placeholder="https://memory.example.com" onChange={(event) => { setEndpoint(event.target.value); setFeedback(""); }}/><small>填写后端能够访问的 Hindsight 服务地址。</small></label>
+        <label className="field">访问令牌<input name="memoryToken" type="password" autoComplete="off" value={token} required={enabled && !(plugin.hasToken && endpoint.replace(/\/$/, "") === plugin.endpoint)} placeholder={plugin.hasToken ? "地址不变时，留空保留已有令牌" : "输入服务访问令牌"} onChange={(event) => { setToken(event.target.value); setFeedback(""); }}/></label>
+        <p className="preferences-description">模型调用与费用由该服务管理。停用不会删除外部数据。</p>
+        <details className="preferences-advanced"><summary>诊断详情</summary><dl className="preferences-facts"><div><dt>服务协议</dt><dd>{plugin.providers.find((provider) => provider.id === "hindsight")?.protocol ?? "Hindsight HTTP API"}</dd></div><div><dt>连接状态</dt><dd>{labels[plugin.status] ?? "状态未知"}</dd></div>{plugin.error && <div><dt>错误详情</dt><dd><code>{plugin.error}</code></dd></div>}</dl><p>模型与认证在外部 Hindsight 服务配置；修改本页配置后需重启后端服务。</p></details>
+        <div className="preferences-actions"><button className="primary" type="submit">{pending ? "处理中…" : "保存插件配置"}</button><button type="button" disabled={!endpoint} onClick={() => perform(async () => { await api("plugins/memory/test", data); setFeedback("连接测试通过，尚未更改配置。"); })}>测试连接</button></div>
+      </fieldset>
+      <p role="status" className="preferences-feedback">{feedback || (plugin.restartRequired ? "配置已变更，重启后端服务后生效。" : "")}</p>
     </form>
   </section>;
 }
@@ -97,25 +97,25 @@ function ClientSessions({ cursor, run }: { cursor: number; run: (fn: () => Promi
   const { status } = useAccount();
   const [sessions, setSessions] = useState<Array<{ session_id: string; name: string; last_seen_at?: number; expires_at: number; revoked_at: number | null }>>([]);
   const [currentId, setCurrentId] = useState<string>();
+  const [loadError, setLoadError] = useState(false), [loaded, setLoaded] = useState(false);
+  const [pendingId, setPendingId] = useState<string>();
   useEffect(() => {
     let current = true;
     void api<{ sessions: typeof sessions; currentSessionId?: string }>("clients").then((result) => {
       if (current) {
         setSessions(result.sessions.filter((s) => !s.revoked_at && s.expires_at > Date.now()));
         setCurrentId(result.currentSessionId ?? status?.sessionId);
+        setLoaded(true); setLoadError(false);
       }
-    });
+    }).catch(() => { if (current) { setLoaded(true); setLoadError(true); } });
     return () => { current = false; };
   }, [cursor, status?.sessionId]);
-  return <section className="settings-info ds-settings-card">
-    <div className="ds-card-header">
-      <div className="ds-card-icon"><Laptop size={18}/></div>
-      <div>
-        <h2>登录设备</h2>
-        <p className="muted">其他电脑使用同一 NexorAI 账号连接这个 Core。每台设备的登录最长八小时，到期后重新登录。</p>
-      </div>
-      <span className="ds-badge-muted">{sessions.length} 台在线</span>
-    </div>
+  return <section className="preferences-section">
+    <div className="preferences-section-heading"><h3>登录设备</h3>{loaded && !loadError && <span className="preferences-status">{sessions.length} 个有效登录</span>}</div>
+    <p className="preferences-description">移除不再使用的登录，即可撤销该设备对工作区的访问。</p>
+    {!loaded && <p className="preferences-description" role="status">正在加载登录设备…</p>}
+    {loadError && <p className="preferences-notice" role="alert">登录设备暂时无法加载，请稍后重新打开设置。</p>}
+    {loaded && !loadError && !sessions.length && <p className="preferences-description">暂无其他有效登录。</p>}
     <div className="ds-session-list">
       {sessions.map((session) => {
         const isCurrent = session.session_id === (currentId ?? status?.sessionId);
@@ -123,12 +123,12 @@ function ClientSessions({ cursor, run }: { cursor: number; run: (fn: () => Promi
           <Laptop size={16}/>
           <div className="ds-session-meta">
             <strong>
-              <span>{session.name} · 已登录</span>
+              <span>{session.name}</span>
               {isCurrent ? <i className="ds-current-pill">当前设备</i> : null}
             </strong>
             <small className="muted">到期时间：{new Date(session.expires_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
           </div>
-          {!session.revoked_at ? <button onClick={() => void run(() => api("clients/revoke", { sessionId: session.session_id }))}>撤销登录</button> : null}
+          {!session.revoked_at ? <button disabled={!!pendingId} onClick={() => { setPendingId(session.session_id); void run(() => api("clients/revoke", { sessionId: session.session_id })).finally(() => setPendingId(undefined)); }}>撤销登录</button> : null}
         </div>;
       })}
     </div>

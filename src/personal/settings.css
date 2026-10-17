@@ -1,0 +1,90 @@
+.rk-workspace .preferences-page { flex: 1; min-height: 0; overflow: auto; padding: 40px clamp(24px, 5vw, 76px) 64px; color: var(--foreground); }
+.preferences-heading, .preferences-layout { max-width: 980px; margin: 0 auto; }
+.rk-workspace .preferences-heading { margin-bottom: 36px; }
+.rk-workspace .preferences-heading h1 { margin: 0 0 8px; font-size: 27px; letter-spacing: -.7px; line-height: 1.3; }
+.rk-workspace .preferences-heading p, .rk-workspace .preferences-panel-heading p { margin: 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.7; }
+.preferences-layout { display: grid; grid-template-columns: 174px minmax(0, 1fr); gap: 46px; align-items: start; }
+.preferences-nav { display: flex; flex-direction: column; gap: 5px; position: sticky; top: 0; }
+.rk-workspace .preferences-nav button { display: flex; gap: 11px; align-items: center; justify-content: flex-start; min-height: 42px; padding: 10px 12px; border: 0; border-radius: 8px; background: transparent; color: var(--muted-foreground); font-size: 13px; text-align: left; }
+.rk-workspace .preferences-nav button:hover { background: var(--secondary); color: var(--foreground); }
+.rk-workspace .preferences-nav button[aria-current="page"] { background: color-mix(in srgb, #5086ff 12%, transparent); color: light-dark(#285cce, #91b3ff); font-weight: 600; }
+.preferences-content, .preferences-panel { min-width: 0; }
+.preferences-page [hidden] { display: none !important; }
+.rk-workspace .preferences-panel-heading { padding: 4px 0 25px; border-bottom: 1px solid var(--input); }
+.rk-workspace .preferences-panel-heading h2 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.4px; line-height: 1.4; }
+.rk-workspace .preferences-section { padding: 25px 0; margin: 0; border: 0; border-bottom: 1px solid var(--input); border-radius: 0; background: transparent; box-shadow: none; }
+.rk-workspace .preferences-section:last-child { border-bottom: 0; }
+.rk-workspace .preferences-page h3 { font-size: 14px; line-height: 1.5; margin: 0; font-weight: 600; }
+.preferences-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.rk-workspace .preferences-status { display: inline-flex; padding: 4px 8px; border-radius: 6px; background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.rk-workspace .preferences-description { margin: 10px 0 18px; color: var(--muted-foreground); font-size: 12px; line-height: 1.8; }
+.rk-workspace .preferences-page fieldset { min-width: 0; padding: 0; border: 0; margin: 0; }
+.preferences-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.rk-workspace .preferences-page .field { display: flex; flex-direction: column; gap: 9px; margin: 0 0 22px; font-size: 13px; font-weight: 500; color: var(--foreground); }
+.rk-workspace .preferences-page .field input, .rk-workspace .preferences-page .field select { width: 100%; min-width: 0; height: 42px; padding: 10px 12px; border: 1px solid var(--input); border-radius: 8px; background: var(--card); color: var(--foreground); font-size: 13px; font-weight: 400; box-shadow: none; }
+.rk-workspace .preferences-page .field small { color: var(--muted-foreground); font-size: 11px; font-weight: 400; line-height: 1.6; }
+.rk-workspace .preferences-page input::placeholder { color: var(--muted-foreground); opacity: .85; }
+.rk-workspace .preferences-page :is(button, input, select, summary):focus-visible { outline: 2px solid #5086ff; outline-offset: 3px; }
+.rk-workspace .preferences-page button { font-size: 12px; }
+.rk-workspace .preferences-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.rk-workspace .preferences-actions button, .rk-workspace .preferences-page .ds-account-actions button, .rk-workspace .preferences-page .ds-session-item button { min-height: 36px; padding: 8px 13px; border: 1px solid var(--input); border-radius: 8px; background: var(--card); color: var(--foreground); white-space: nowrap; }
+.rk-workspace .preferences-actions button:hover, .rk-workspace .preferences-page .ds-account-actions button:hover, .rk-workspace .preferences-page .ds-session-item button:hover { background: var(--secondary); }
+.rk-workspace .preferences-actions button.primary { background: #3569e8; border-color: #3569e8; color: white; }
+.rk-workspace .preferences-actions button.primary:hover { background: #2858cd; }
+.rk-workspace .preferences-page button:disabled, .rk-workspace .preferences-page fieldset:disabled { opacity: .55; cursor: wait; }
+.preferences-saved { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted-foreground); }
+.rk-workspace .preferences-advanced { padding: 14px 0; border-top: 1px solid var(--input); color: var(--muted-foreground); font-size: 12px; }
+.rk-workspace .preferences-advanced summary { cursor: pointer; width: fit-content; color: var(--foreground); font-size: 12px; }
+.rk-workspace .preferences-advanced p { margin: 16px 0 9px; font-size: 12px; line-height: 1.8; }
+.rk-workspace .preferences-page code { color: var(--foreground); background: transparent; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; white-space: normal; }
+.rk-workspace .preferences-facts { margin: 16px 0 0; font-size: 12px; }
+.preferences-facts > div { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 18px; padding: 9px 0; line-height: 1.7; }
+.preferences-facts dt { color: var(--muted-foreground); }
+.preferences-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.rk-workspace .preferences-account .ds-account-row { display: flex; align-items: center; gap: 13px; }
+.rk-workspace .preferences-account .account-avatar { width: 44px; height: 44px; flex-basis: 44px; }
+.rk-workspace .preferences-account .ds-account-meta { min-width: 0; flex: 1; }
+.rk-workspace .preferences-account .ds-account-name { margin: 0; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
+.rk-workspace .preferences-account .ds-account-meta p { margin: 3px 0 0; font-size: 12px; }
+.rk-workspace .preferences-account .ds-account-actions { margin: 0; }
+.rk-workspace .preferences-page .ds-session-list { display: flex; flex-direction: column; gap: 0; }
+.rk-workspace .preferences-page .ds-session-item { display: flex; align-items: center; gap: 12px; padding: 15px 0; border: 0; border-bottom: 1px solid var(--input); border-radius: 0; background: transparent; }
+.rk-workspace .preferences-page .ds-session-item:last-child { border-bottom: 0; }
+.rk-workspace .preferences-page .ds-session-item > svg { flex-shrink: 0; color: var(--muted-foreground); }
+.rk-workspace .preferences-page .ds-session-meta { min-width: 0; flex: 1; }
+.rk-workspace .preferences-page .ds-session-meta strong { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.rk-workspace .preferences-page .ds-session-meta small { font-size: 11px; }
+.rk-workspace .preferences-page .ds-current-pill { padding: 3px 6px; border-radius: 4px; font-size: 10px; color: light-dark(#285cce, #91b3ff); background: color-mix(in srgb, #5086ff 12%, transparent); font-style: normal; }
+.preferences-toggle { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 0 0 26px; }
+.preferences-toggle strong { display: block; font-size: 13px; font-weight: 500; }
+.preferences-toggle small { display: block; margin-top: 6px; color: var(--muted-foreground); font-size: 11px; line-height: 1.7; }
+.rk-workspace .preferences-toggle input { appearance: none; width: 38px; height: 22px; flex: 0 0 38px; padding: 0; margin: 0; border: 0; border-radius: 20px; background: #82858d; position: relative; cursor: pointer; transition: background .15s; }
+.preferences-toggle input::after { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: white; border-radius: 50%; transition: transform .15s; }
+.rk-workspace .preferences-toggle input:checked { background: #3569e8; }
+.preferences-toggle input:checked::after { transform: translateX(16px); }
+.rk-workspace .preferences-notice, .rk-workspace .preferences-status.is-warning { background: color-mix(in srgb, #dca842 12%, transparent); color: light-dark(#835a0e, #e7bf74); }
+.rk-workspace .preferences-notice { padding: 12px 14px; border-radius: 8px; font-size: 12px; line-height: 1.8; margin: 0 0 22px; }
+.rk-workspace .preferences-feedback { font-size: 12px; color: var(--muted-foreground); line-height: 1.8; margin: 14px 0 0; }
+.preferences-feedback:empty { display: none; }
+@media (max-width: 1000px) {
+  .preferences-layout { grid-template-columns: 155px minmax(0, 1fr); gap: 25px; }
+  .rk-workspace .preferences-page { padding: 28px 24px 48px; }
+}
+@media (max-width: 760px) {
+  .preferences-layout { display: block; }
+  .preferences-nav { position: static; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 28px; }
+  .rk-workspace .preferences-heading { margin-bottom: 22px; }
+  .rk-workspace .preferences-panel-heading h2 { font-size: 19px; }
+}
+@media (max-width: 480px) {
+  .rk-workspace .preferences-page { padding: 24px 20px 40px; }
+  .preferences-form-grid { grid-template-columns: 1fr; gap: 0; }
+  .preferences-facts > div { grid-template-columns: 100px minmax(0, 1fr); gap: 12px; }
+  .rk-workspace .preferences-account .ds-account-row { flex-wrap: wrap; }
+  .rk-workspace .preferences-page .ds-session-item { flex-wrap: wrap; }
+  .rk-workspace .preferences-page .ds-session-meta { flex-basis: calc(100% - 32px); }
+  .rk-workspace .preferences-page .ds-session-item button { margin-left: 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .preferences-toggle input, .preferences-toggle input::after { transition: none; }
+}
