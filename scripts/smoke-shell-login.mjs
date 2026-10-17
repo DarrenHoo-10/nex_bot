@@ -58,9 +58,12 @@ try {
   await until(() => second.evaluate("!!document.querySelector('.account-menu')"));
   await second.evaluate("[...document.querySelectorAll('.account-menu button')].find(button=>button.textContent.includes('设置')).click();true");
   await until(() => second.evaluate("!!document.querySelector('[data-memory-plugin]')"));
+  await second.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(button=>button.textContent==='记忆服务').click();true");
+  await until(() => second.evaluate("document.querySelector('[data-memory-plugin]').getBoundingClientRect().height>0"));
   if (!await second.evaluate("document.querySelector('[data-memory-plugin]').textContent.includes('后端')")) throw new Error("Plugin configuration is missing from thin shell");
   mkdirSync(path.resolve("release/personal-client-mac"), { recursive: true });
   writeFileSync(path.resolve("release/personal-client-mac/shell-settings.png"), Buffer.from((await second.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await second.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(button=>button.textContent==='账号与登录设备').click();true");
   await second.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='退出登录').click();true");
   await until(() => second.evaluate("!!document.querySelector('#connection')&&!document.querySelector('.workspace-brand')"));
   if (existsSync(saved) || (await fetch(core.origin + "/api/state", { headers: { Authorization: "Bearer " + cookie } })).status !== 401) throw new Error("Logout retained access");

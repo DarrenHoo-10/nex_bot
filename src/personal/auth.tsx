@@ -1,4 +1,5 @@
 import { BrandMark } from "./components/BrandMark";
+import { UserRound } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, desktop } from "./api";
 
@@ -15,23 +16,19 @@ export function AccountControls() {
   const { status, logout } = useContext(Account);
   const [error, setError] = useState("");
   const name = status?.account?.displayName || "NexorAI 用户";
-  const initial = name.slice(0, 1).toUpperCase();
   const expiresLabel = status?.expiresAt ? new Date(status.expiresAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-  return <section className="settings-info ds-settings-card">
+  return <section className="preferences-section preferences-account">
     <div className="ds-account-row">
-      <div className="ds-user-avatar lg">{initial}</div>
+      <span className="account-avatar" aria-hidden="true"><UserRound size={24} strokeWidth={1.7}/></span>
       <div className="ds-account-meta">
-        <div className="ds-account-title">
-          <h2>当前账号</h2>
-          <span className="ds-badge-green">已认证 · NexorAI</span>
-        </div>
         <strong className="ds-account-name">{name}</strong>
-        <p className="muted">使用 NexorAI 账号登录。消息和记忆由云端服务统一管理，各设备的登录可分别退出或撤销。{expiresLabel ? ` 当前会话有效期至 ${expiresLabel}。` : ""}</p>
+        <p className="muted">NexorAI 账号 · 已认证</p>
       </div>
       <div className="ds-account-actions">
         <button onClick={() => void logout().catch(() => setError("退出未完成，请重试"))}>退出登录</button>
       </div>
     </div>
+    <dl className="preferences-facts"><div><dt>工作区</dt><dd>个人工作空间</dd></div>{expiresLabel && <div><dt>本次登录有效期</dt><dd>{expiresLabel}</dd></div>}</dl>
     {error ? <p role="alert" className="login-error">{error}</p> : null}
   </section>;
 }
