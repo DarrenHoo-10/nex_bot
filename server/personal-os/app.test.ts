@@ -339,6 +339,30 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(Buffer.from(chunk.value!).toString()).toContain('"reset":true');
     expect(f.app.store.all("SELECT * FROM sync_events").every((event) => !JSON.stringify(event).includes("合成消息"))).toBe(true);
   });
+  it("offers a summary state without memory bodies or the finished-work journal", async () => {
+    const f = await fixture(), botId = String(f.bots[0].id), headers = { Authorization: `Bearer ${f.token}` };
+    f.app.runtime.memory.write(botId, { title: "合成摘要记忆", content: "这段正文不应出现在手机轮询里" });
+    type StateBody = { view?: string; memories: Array<{ content?: string }>; journal?: unknown[]; bots: unknown[]; tasks: unknown[]; sync: { cursor: number } };
+    const full = await (await fetch(f.app.origin + "/api/state", { headers })).json() as StateBody;
+    expect(full.view).toBeUndefined();
+    expect(full.memories.some((memory) => memory.content?.includes("这段正文不应出现在手机轮询里"))).toBe(true);
+    expect(Array.isArray(full.journal)).toBe(true);
+    const summary = await (await fetch(f.app.origin + "/api/state?view=summary", { headers })).json() as StateBody;
+    expect(summary.view).toBe("summary");
+    expect(summary.memories).toHaveLength(full.memories.length);
+    expect(summary.memories.every((memory) => memory.content === undefined)).toBe(true);
+    expect(summary.journal).toBeUndefined();
+    expect(summary.bots).toHaveLength(full.bots.length);
+    expect(summary.tasks).toHaveLength(full.tasks.length);
+    // The cursor keeps moving with background memory bookkeeping, so it is a
+    // monotonic marker rather than a constant between two reads.
+    expect(summary.sync.cursor).toBeGreaterThanOrEqual(full.sync.cursor);
+    // An unknown view is not an error: the default body is what a client that
+    // did not understand this Core would have asked for anyway.
+    const unknown = await (await fetch(f.app.origin + "/api/state?view=everything", { headers })).json() as StateBody;
+    expect(unknown.view).toBeUndefined();
+    expect(Array.isArray(unknown.journal)).toBe(true);
+  });
   it("forgets causal A2A copies and Pi context, then reapplies tombstones to an older restored Core database", async () => {
     const f = await fixture(), sender = String(f.bots[0].id), peer = String(f.bots[1].id);
     const memory = f.app.runtime.memory;

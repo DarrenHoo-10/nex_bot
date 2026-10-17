@@ -81,7 +81,45 @@ export async function createPersonalApp(options: AppOptions) {
   function json(response: ServerResponse, status: number, value: unknown) {
     response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); response.end(JSON.stringify(value));
   }
+  /** The client snapshot. `summary` drops the fields a phone never renders
+   * while polling — memory bodies and the finished-work journal — and names
+   * itself so a client can tell that its request was understood. Everything
+   * else, including the default when `view` is absent or unknown, is what
+   * every existing client already receives. */
+  function stateBody(view: "full" | "summary", requestOrigin: string) {
+    const base = store.state();
+    return {
+      ...base,
+      ...(view === "summary" ? { view: "summary", memories: base.memories.map(({ content: _content, ...memory }) => memory) } : {}),
+      connectors: connectors.list(),
+      sync: sync.snapshot(),
+      hostDeviceId: gateway.hostDeviceId,
+      memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
+      memoryPlugin: memoryPlugin.status(),
+      bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      directory: directory(store),
+      routines: routines.list(),
+      occurrences: routines.occurrences(),
+      ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100") }),
+      onlineDevices: [...gateway.sockets.keys()],
+      node: { ...node.publicState(), hosted: options.hostDevice === false },
+      dataDir: store.dir,
+      runtime: "Pi 1.0.4",
+      address: requestOrigin,
+      lanEnabled: options.host === "0.0.0.0",
+    };
+  }
   const loginAttempts = new Map<string, { count: number; at: number }>();
+  /** One budget for every credential exchange: password login and session
+   * refresh both spend from it, because both are attempts to turn a secret on
+   * the wire into a session. */
+  function throttleLogin(remoteAddress: string) {
+    const address = remoteAddress || "unknown", at = Date.now();
+    for (const [key, attempt] of loginAttempts) if (at - attempt.at > 60_000) loginAttempts.delete(key);
+    const attempt = loginAttempts.get(address) ?? { count: 0, at };
+    if (attempt.count >= 20 || (!loginAttempts.has(address) && loginAttempts.size >= 1000)) throw new IdentityError(429, "登录尝试过多，请稍后重试");
+    attempt.count++; loginAttempts.set(address, attempt);
+  }
   let checkingSessions = false;
   let heartbeatJob: Promise<void> | undefined;
   const heartbeat = setInterval(() => {
@@ -137,13 +175,18 @@ export async function createPersonalApp(options: AppOptions) {
     if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {
       await identity.logout(token); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return;
     }
+    if (identity && url.pathname === "/api/auth/refresh" && request.method === "POST") {
+      // Extending an existing bearer is not a password login: the HTTPS rule
+      // that protects a password in transit does not apply, but the shared
+      // attempt budget does. The response is shaped like /api/auth/respond so a
+      // client has one code path for "I now have a token".
+      throttleLogin(remoteAddress);
+      const login = await identity.refresh(token);
+      setCookie(response, login.token, requestOrigin, login.expiresAt); changed(); json(response, 200, login); return;
+    }
     if (identity && ["/api/auth/start", "/api/auth/respond"].includes(url.pathname) && request.method === "POST") {
       if (!privateRemote && !requestOrigin.startsWith("https:")) throw new IdentityError(426, "远程账号登录须使用 HTTPS Core 地址");
-      const address = remoteAddress || "unknown", at = Date.now();
-      for (const [key, attempt] of loginAttempts) if (at - attempt.at > 60_000) loginAttempts.delete(key);
-      const attempt = loginAttempts.get(address) ?? { count: 0, at };
-      if (attempt.count >= 20 || (!loginAttempts.has(address) && loginAttempts.size >= 1000)) throw new IdentityError(429, "登录尝试过多，请稍后重试");
-      attempt.count++; loginAttempts.set(address, attempt);
+      throttleLogin(remoteAddress);
       const data = await body(request);
       if (url.pathname.endsWith("/start")) { json(response, 200, identity.start(data, bootstrap)); return; }
       const login = await identity.respond(data, bootstrap);
@@ -180,7 +223,10 @@ export async function createPersonalApp(options: AppOptions) {
         streams.set(response, token); response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); request.once("close", () => streams.delete(response)); return;
       }
       if (url.pathname === "/api/clients" && request.method === "GET") { json(response, 200, { sessions: clients.list(), currentSessionId: session.id }); return; }
-      if (url.pathname === "/api/state") { json(response, 200, { ...store.state(), connectors: connectors.list(), sync: sync.snapshot(), hostDeviceId: gateway.hostDeviceId, memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status }, memoryPlugin: memoryPlugin.status(), bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })), directory: directory(store), routines: routines.list(), occurrences: routines.occurrences(), journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100"), onlineDevices: [...gateway.sockets.keys()], node: { ...node.publicState(), hosted: options.hostDevice === false }, dataDir: store.dir, runtime: "Pi 1.0.4", address: requestOrigin, lanEnabled: options.host === "0.0.0.0" }); return; }
+      if (url.pathname === "/api/state") {
+        const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
+        json(response, 200, stateBody(view, requestOrigin)); return;
+      }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
