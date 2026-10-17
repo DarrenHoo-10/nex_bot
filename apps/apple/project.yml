@@ -19,13 +19,18 @@ targets:
   NexBotMac:
     type: application
     platform: macOS
-    sources: [NexBotMac]
+    sources:
+      - NexBotMac
+      - path: ../../build/nexbot-icon.icns
+        buildPhase: resources
     dependencies:
       - package: NexClientKit
     info:
       path: NexBotMac/Info.plist
       properties:
         CFBundleDisplayName: NexBot
+        CFBundleIconFile: nexbot-icon
+        LSApplicationCategoryType: public.app-category.productivity
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
