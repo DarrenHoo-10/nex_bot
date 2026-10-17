@@ -8,11 +8,19 @@ final class ModelForm {
     static let openAIDefault = "https://api.openai.com/v1"
     static let anthropicDefault = "https://api.anthropic.com"
 
-    var provider: String { didSet { saved = false } }
+    var provider: String { didSet { saved = false; resetModels(); clearEnteredKey() } }
     var model: String { didSet { saved = false } }
-    var endpoint: String { didSet { saved = false } }
-    var apiKey = "" { didSet { saved = false } }
-    var advancedOpen = false
+    var endpoint: String { didSet { saved = false; resetModels(); clearEnteredKey() } }
+    var apiKey = "" { didSet { saved = false; if apiKey != oldValue { resetModels() } } }
+    /// Fetched catalog (never saved by itself).
+    var models: [String] = []
+    var hasMore = false
+    var loadingModels = false
+    var modelNotice: String?
+    var modelError: String?
+    /// Type the ID by hand even though a catalog is loaded.
+    var manual = false
+    var showKey = false
     var saving = false
     var saved = false
     var errorText: String?
@@ -31,19 +39,11 @@ final class ModelForm {
         if swap { endpoint = next == "anthropic" ? Self.anthropicDefault : Self.openAIDefault }
     }
 
-    var hint: String { provider == "anthropic" ? "填写服务根地址，不包含 /v1/messages。" : "通常以 /v1 结尾，不包含 /chat/completions。" }
+    /// A key typed for one service is never sent to another.
+    func clearEnteredKey() { if !apiKey.isEmpty { apiKey = "" }; showKey = false }
+    func resetModels() { models = []; hasMore = false; modelNotice = nil; modelError = nil; manual = false }
 
-    /// The URL Core will call, or nil for an invalid base address.
-    var requestURL: String? {
-        guard let parts = URLComponents(string: endpoint.trimmingCharacters(in: .whitespaces)),
-              let scheme = parts.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              let host = parts.host, !host.isEmpty,
-              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else { return nil }
-        var path = parts.path
-        while path.hasSuffix("/") { path.removeLast() }
-        let port = parts.port.map { ":\($0)" } ?? ""
-        return "\(scheme)://\(host)\(port)\(path)" + (provider == "anthropic" ? "/v1/messages" : "/chat/completions")
-    }
+    var hint: String { provider == "anthropic" ? "填写服务根地址，不包含 /v1/messages。" : "通常以 /v1 结尾，不包含 /chat/completions。" }
 }
 
 /// Settings 模型 category content (embedded in SettingsView's scroll view).
@@ -57,6 +57,8 @@ struct SettingsModelView: View {
         !form.model.trimmingCharacters(in: .whitespaces).isEmpty && !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty
             && (!keyRequired || !form.apiKey.isEmpty) && !form.saving
     }
+
+    private var loadable: Bool { !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty && !form.loadingModels && !form.saving }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -75,28 +77,27 @@ struct SettingsModelView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                FormField(title: "模型 ID") {
-                    TextField("服务商提供的模型 ID", text: $form.model).textInputAutocapitalization(.never).autocorrectionDisabled()
-                }
                 FormField(title: "API 基础地址", hint: form.hint) {
                     TextField(ModelForm.openAIDefault, text: $form.endpoint)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
-                FormField(title: "API Key", hint: "密钥由后端加密保存。") {
-                    SecureField(config == nil ? "输入 API Key" : "留空保留已保存的 Key", text: $form.apiKey).textInputAutocapitalization(.never).autocorrectionDisabled()
-                }
-                DisclosureGroup(isExpanded: $form.advancedOpen) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("实际请求地址").font(.footnote.weight(.semibold))
-                        Text(form.requestURL ?? "请输入有效的 API 基础地址").font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(form.requestURL == nil ? Theme.muted : Theme.foreground).textSelection(.enabled)
-                        Text(form.provider == "anthropic" ? "使用 Anthropic Messages 协议。" : "使用 Chat Completions 协议。").font(.caption).foregroundStyle(Theme.muted)
+                FormField(title: "API Key", hint: "密钥将加密保存；眼睛按钮可查看本次填写的内容。") {
+                    HStack(spacing: 8) {
+                        Group {
+                            if form.showKey { TextField(keyPlaceholder, text: $form.apiKey) } else { SecureField(keyPlaceholder, text: $form.apiKey) }
+                        }
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.oneTimeCode)
+                        Button { form.showKey.toggle() } label: {
+                            Image(systemName: form.showKey ? "eye.slash" : "eye").foregroundStyle(Theme.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(form.showKey ? "隐藏 API Key" : "显示 API Key")
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                } label: { Text("高级设置").font(.subheadline.weight(.semibold)) }
+                }
+                modelField
                 if let message = form.errorText { InlineBanner(text: message) }
                 HStack(spacing: 12) {
-                    PrimaryButton(title: form.saving ? "保存中…" : "保存配置", busy: form.saving) { Task { await save() } }.disabled(!canSave)
+                    PrimaryButton(title: form.saving ? "保存中…" : "保存配置", busy: form.saving, brand: true) { Task { await save() } }.disabled(!canSave)
                     if form.saved {
                         Label("已保存", systemImage: "checkmark").font(.subheadline.weight(.medium)).foregroundStyle(Theme.success).fixedSize()
                     }
@@ -104,17 +105,79 @@ struct SettingsModelView: View {
             }
             .padding(14).cardStyle()
         }
+        .onDisappear { form.showKey = false }
         .onDebugUI { cmd, arg in
             switch cmd {
             case "m-provider": form.changeProvider(to: arg)
             case "m-model": form.model = arg
             case "m-endpoint": form.endpoint = arg
             case "m-key": form.apiKey = arg
-            case "m-advanced": form.advancedOpen = true
+            case "m-list": Task { await loadModels() }
+            case "m-pick": if form.models.contains(arg) { form.model = arg }
+            case "m-manual": form.manual.toggle()
             case "m-save": Task { await save() }
             default: break
             }
         }
+    }
+
+    private var keyPlaceholder: String { config == nil ? "输入 API Key" : "留空保留已保存的 Key" }
+
+    private var modelField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("模型").font(.footnote.weight(.semibold))
+            if !form.models.isEmpty && !form.manual {
+                Menu {
+                    Picker("模型", selection: $form.model) {
+                        if !form.model.isEmpty && !form.models.contains(form.model) { Text("\(form.model)（当前配置）").tag(form.model) }
+                        ForEach(form.models, id: \.self) { Text($0).tag($0) }
+                    }
+                } label: {
+                    HStack {
+                        Text(form.model.isEmpty ? "选择模型" : form.model).lineLimit(1).foregroundStyle(form.model.isEmpty ? Theme.muted : Theme.foreground)
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(Theme.muted)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 11).frame(maxWidth: .infinity)
+                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .accessibilityLabel("模型")
+            } else {
+                TextField("选择或填写模型 ID", text: $form.model).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .padding(.horizontal, 12).padding(.vertical, 11)
+                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            HStack(spacing: 12) {
+                Button { Task { await loadModels() } } label: {
+                    HStack(spacing: 6) {
+                        if form.loadingModels { ProgressView().controlSize(.small) }
+                        Text(form.loadingModels ? "获取中…" : "获取模型列表")
+                    }
+                }
+                .buttonStyle(PillButtonStyle()).disabled(!loadable)
+                if !form.models.isEmpty {
+                    Button(form.manual ? "从列表选择" : "手动填写") { form.manual.toggle() }
+                        .font(.footnote.weight(.medium)).foregroundStyle(Theme.brand).buttonStyle(.plain)
+                }
+            }
+            if let notice = form.modelNotice { Text(notice).font(.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
+            if let error = form.modelError { Text(error).font(.caption).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true) }
+        }
+    }
+
+    /// Fetches the provider's catalog with the typed provider/endpoint/key (an empty key reuses the saved one). Never saves.
+    private func loadModels() async {
+        guard loadable else { return }
+        form.loadingModels = true; form.modelError = nil; form.modelNotice = nil
+        defer { form.loadingModels = false }
+        do {
+            let catalog = try await workspace.listModels(provider: form.provider, endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey)
+            form.models = catalog.models; form.hasMore = catalog.hasMore; form.manual = false
+            if form.model.trimmingCharacters(in: .whitespaces).isEmpty, let first = catalog.models.first { form.model = first }
+            form.modelNotice = catalog.models.isEmpty
+                ? "服务未返回可用模型，可手动填写模型 ID"
+                : "已获取 \(catalog.models.count) 个模型" + (catalog.hasMore ? "（服务仅返回部分结果，可手动填写其他模型）" : "")
+        } catch { form.modelError = coreMessage(error) }
     }
 
     private func save() async {
@@ -123,7 +186,7 @@ struct SettingsModelView: View {
         defer { form.saving = false }
         do {
             try await workspace.saveModel(provider: form.provider, model: form.model.trimmingCharacters(in: .whitespaces), endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey)
-            form.apiKey = ""; form.saved = true
+            form.showKey = false; form.saved = true
         } catch { form.errorText = coreMessage(error) }
     }
 }

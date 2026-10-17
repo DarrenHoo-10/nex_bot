@@ -132,7 +132,7 @@ private struct JournalRow: View {
 
 // MARK: - Preview card
 
-private struct PreviewCard: View {
+struct PreviewCard: View {
     let item: PreviewItem
     let close: () -> Void
     @State private var copied = false

@@ -4,19 +4,12 @@ import NexClientKit
 /// The account menu card (settings, dark mode, logout).
 struct AccountMenu: View {
     let dark: Bool
-    /// Trailing counts: enabled connectors and online devices (hidden when 0).
-    var connectorCount = 0
-    var deviceCount = 0
-    let openConnectors: () -> Void
-    let openDevices: () -> Void
     let openSettings: () -> Void
     let toggleDark: () -> Void
     let logout: () -> Void
 
     var body: some View {
         VStack(spacing: 2) {
-            MenuItem(icon: "puzzlepiece.extension", title: "连接器", trailing: connectorCount > 0 ? "\(connectorCount)" : nil, action: openConnectors)
-            MenuItem(icon: "desktopcomputer", title: "设备", trailing: deviceCount > 0 ? "\(deviceCount)" : nil, action: openDevices)
             item("gearshape", "设置", openSettings)
             item("moon", dark ? "切换浅色模式" : "切换深色模式", toggleDark)
             Hairline().padding(.vertical, 6).padding(.horizontal, 6)

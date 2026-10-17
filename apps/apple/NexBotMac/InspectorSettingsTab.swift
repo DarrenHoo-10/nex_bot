@@ -1,13 +1,11 @@
 import SwiftUI
 import NexClientKit
 
-/// Inspector 设置 tab: motion, about, capabilities, usage, export and archive.
+/// Inspector 设置 tab: about (bot身份信息), capabilities, usage, export and archive.
 struct InspectorSettingsTab: View {
     let workspace: WorkspaceStore
     let botID: String
     @Environment(UIState.self) private var ui
-    @Environment(ContactPreferences.self) private var preferences
-    @State private var expandBio = false
     @State private var exported = false
     @State private var confirmArchive = false
     @State private var error: String?
@@ -15,31 +13,16 @@ struct InspectorSettingsTab: View {
     private var bot: Bot? { workspace.bot(botID) }
 
     var body: some View {
-        @Bindable var prefs = preferences
         let usage = workspace.state?.usage(botID: botID)
-        let instructions = bot?.instructions ?? ""
-        let long = instructions.count > 140
         VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 8) {
-                Toggle(isOn: $prefs.motionEnabled) { Text("轻量动效").font(.system(size: 12)) }.toggleStyle(.checkbox)
-                Text("仅当前助手").font(.system(size: 10)).foregroundStyle(Theme.muted)
-                Spacer()
-            }
-
             Text("助手设置").font(.system(size: 12, weight: .bold))
 
             group("关于") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(instructions.isEmpty ? "尚未补充职责说明，点击上方“编辑身份”即可设置。" : instructions)
-                        .font(.system(size: 12)).foregroundStyle(instructions.isEmpty ? Theme.muted : Theme.foreground)
-                        .lineLimit(long && !expandBio ? 4 : nil).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                    if long {
-                        Button { expandBio.toggle() } label: {
-                            Text(expandBio ? "收起说明" : "展开全部").font(.system(size: 11)).foregroundStyle(Theme.brand).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
+                Button { AgentUI.shared.editIdentity(botID) } label: {
+                    Text("bot身份信息").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .fieldCard()
             }
 
@@ -50,13 +33,6 @@ struct InspectorSettingsTab: View {
                     }
                     row(symbol: "shield", title: "工具权限") {
                         pillButton(PolicyCatalog.summary(count: bot?.policyTools.count ?? 0)) { AgentUI.shared.editPolicy(botID) }
-                    }
-                    row(symbol: "folder", title: "工作目录") {
-                        let root = workspace.state?.node?.root ?? ""
-                        Text(root.isEmpty ? "未限定主机目录" : root).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted)
-                            .lineLimit(1).truncationMode(.middle)
-                            .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.card, in: Capsule())
-                            .help(root.isEmpty ? "默认沙箱目录" : root)
                     }
                 }
                 .fieldCard()

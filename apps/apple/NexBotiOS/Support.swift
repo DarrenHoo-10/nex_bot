@@ -9,8 +9,10 @@ extension WorkspaceStore {
         CompanionState(task: state?.unfinishedTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection != .resyncing)
     }
 
-    func avatar(of bot: Bot, size: CGFloat) -> AgentAvatar {
-        AgentAvatar(appearance: appearance(of: bot), state: companionState(of: bot.id), size: size)
+    /// `animated: nil` follows the web sidebar: move only while thinking or working. Chat header and detail pass `true`.
+    func avatar(of bot: Bot, size: CGFloat, animated: Bool? = nil) -> AgentAvatar {
+        let state = companionState(of: bot.id)
+        return AgentAvatar(appearance: appearance(of: bot), state: state, size: size, animated: animated ?? [.thinking, .working].contains(state))
     }
 }
 
@@ -52,12 +54,14 @@ extension View {
 struct PillButtonStyle: ButtonStyle {
     var primary = false
     var danger = false
+    /// With `primary`: the blue brand fill instead of the neutral primary.
+    var brand = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(primary ? Theme.primaryForeground : danger ? Theme.danger : Theme.foreground)
+            .foregroundStyle(primary ? (brand ? Color.white : Theme.primaryForeground) : danger ? Theme.danger : Theme.foreground)
             .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(primary ? Theme.primary : Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(primary ? (brand ? Theme.brand : Theme.primary) : Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
 }

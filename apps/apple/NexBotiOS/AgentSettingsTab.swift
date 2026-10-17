@@ -1,13 +1,13 @@
 import SwiftUI
 import NexClientKit
 
-/// Agent detail 设置 tab: motion, about, capabilities, usage, export and archive.
+/// Agent detail 设置 tab: about (bot身份信息), capabilities, usage, export and archive.
 struct AgentSettingsTab: View {
     let workspace: WorkspaceStore
     let botID: String
     @Environment(Navigation.self) private var nav
     @Environment(ContactPreferences.self) private var preferences
-    @State private var aboutExpanded = false
+    @State private var showIdentity = false
     @State private var showPolicy = false
     @State private var confirmArchive = false
     @State private var copied = false
@@ -16,31 +16,20 @@ struct AgentSettingsTab: View {
 
     private var bot: Bot? { workspace.bot(botID) }
     private var state: WorkspaceState? { workspace.state }
-    private var instructions: String { bot?.instructions.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
-    private let clampLimit = 140
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Toggle(isOn: Bindable(preferences).motionEnabled) {
-                HStack(spacing: 8) {
-                    Text("轻量动效").font(.subheadline)
-                    Text("仅当前助手").font(.caption).foregroundStyle(Theme.muted)
-                }
-            }
-            .tint(Theme.success)
-
             group("关于") {
-                if instructions.isEmpty {
-                    Text("尚未补充职责说明，点击上方“编辑身份”即可设置。").font(.footnote).foregroundStyle(Theme.muted)
-                } else {
-                    let long = instructions.count > clampLimit
-                    Text(long && !aboutExpanded ? String(instructions.prefix(clampLimit)) + "…" : instructions)
-                        .font(.footnote).textSelection(.enabled)
-                    if long {
-                        Button(aboutExpanded ? "收起说明" : "展开全部") { withAnimation(.easeOut(duration: 0.15)) { aboutExpanded.toggle() } }
-                            .font(.footnote).foregroundStyle(Theme.brand).buttonStyle(.plain)
+                Button { showIdentity = true } label: {
+                    HStack {
+                        Text("bot身份信息").font(.subheadline)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.muted)
                     }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain).foregroundStyle(Theme.brand)
+                .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
             }
 
             group("能力") {
@@ -56,11 +45,6 @@ struct AgentSettingsTab: View {
                 row("工具权限", icon: "shield") {
                     Button { showPolicy = true } label: { Text(PolicyCatalog.summary(count: bot?.policyTools.count ?? 0)).font(.footnote) }
                         .buttonStyle(.plain).foregroundStyle(Theme.brand)
-                }
-                row("工作目录") {
-                    let root = state?.node?.root ?? ""
-                    Text(root.isEmpty ? "未限定主机目录" : root)
-                        .font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.muted).lineLimit(2).multilineTextAlignment(.trailing)
                 }
             }
 
@@ -90,6 +74,7 @@ struct AgentSettingsTab: View {
                     .disabled(archiving)
             }
         }
+        .sheet(isPresented: $showIdentity) { AgentEditorSheet(workspace: workspace, botID: botID) }
         .sheet(isPresented: $showPolicy) { PolicyEditorSheet(workspace: workspace, botID: botID) }
         .alert("归档这个 Agent？", isPresented: $confirmArchive) {
             Button("取消", role: .cancel) {}
@@ -103,7 +88,7 @@ struct AgentSettingsTab: View {
             case "policy": showPolicy = true
             case "archive": confirmArchive = true
             case "archiveconfirm": Task { await archive() }
-            case "about": aboutExpanded.toggle()
+            case "identity": showIdentity = true
             default: break
             }
         }

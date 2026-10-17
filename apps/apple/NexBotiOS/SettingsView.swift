@@ -1,7 +1,7 @@
 import SwiftUI
 import NexClientKit
 
-/// Global settings, pushed from the account menu. Two categories, one shown at a time.
+/// Global settings, pushed from the account menu. Five categories (chips), one shown at a time.
 struct SettingsView: View {
     let model: AppModel
     let workspace: WorkspaceStore
@@ -10,8 +10,6 @@ struct SettingsView: View {
     @State private var confirmLogout = false
     @State private var revoking: ClientSession?
     @State private var errorText: String?
-    @State private var logoutError: String?
-    @State private var technicalOpen = false
     @State private var sessionsLoaded = false
     @State private var sessionsFailed = false
     @State private var modelForm: ModelForm
@@ -36,7 +34,8 @@ struct SettingsView: View {
                 case .account: account
                 case .model: SettingsModelView(workspace: workspace, form: modelForm)
                 case .memory: SettingsMemoryView(workspace: workspace, form: memoryForm)
-                case .system: system
+                case .connectors: ConnectorsView(workspace: workspace)
+                case .devices: DevicesView(workspace: workspace)
                 }
             }
             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
@@ -53,14 +52,10 @@ struct SettingsView: View {
         .toolbarRole(.editor)
         .toolbarBackground(Theme.background, for: .navigationBar)
         .task { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(); await workspace.refresh() }
         .errorAlert($errorText)
-        .onDebugUI { cmd, arg in if cmd == "s-logoutfail" { logoutError = "退出未完成，请重试" } }
-        .confirmationDialog("退出登录？", isPresented: $confirmLogout, titleVisibility: .visible) {
-            Button("退出登录", role: .destructive) { logoutError = nil; Task { await model.logout() } }
-        } message: {
-            Text("将删除此设备上保存的登录信息。")
-        }
+        .onDebugUI { cmd, _ in if cmd == "settingslogout" { confirmLogout = true } }
+        .sheet(isPresented: $confirmLogout) { LogoutConfirmationSheet(model: model, isPresented: $confirmLogout) }
         .confirmationDialog("撤销该设备的登录？", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } }), titleVisibility: .visible, presenting: revoking) { session in
             Button("撤销「\(session.name)」", role: .destructive) {
                 Task {
@@ -106,10 +101,7 @@ struct SettingsView: View {
                 Button("退出登录") { confirmLogout = true }.buttonStyle(PillButtonStyle())
             }
             .padding(14).cardStyle()
-            if let logoutError { InlineBanner(text: logoutError) }
             VStack(spacing: 0) {
-                FactRow(title: "工作区", value: "个人工作空间")
-                Divider().overlay(Theme.border)
                 FactRow(title: "本次登录有效期", value: model.credential.map { Self.date(Date(timeIntervalSince1970: $0.expiresAt / 1000)) } ?? "—")
             }
             .padding(.horizontal, 14).cardStyle()
@@ -153,38 +145,6 @@ struct SettingsView: View {
             }
         }
         .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
-    }
-
-    // MARK: System
-
-    private var system: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "系统信息", detail: "查看当前连接和数据存储方式。")
-            Text("服务连接").font(.subheadline.weight(.semibold))
-            VStack(spacing: 0) {
-                FactRow(title: "当前访问地址", value: model.credential?.origin ?? model.origin)
-                Divider().overlay(Theme.border)
-                FactRow(title: "客户端类型", value: "iOS 客户端")
-                Divider().overlay(Theme.border)
-                FactRow(title: "应用版本", value: model.appVersion)
-                Divider().overlay(Theme.border)
-                FactRow(title: "客户端协议", value: "v1")
-            }
-            .padding(.horizontal, 14).cardStyle()
-            Text("数据与隐私").font(.subheadline.weight(.semibold))
-            Text("聊天、任务与配置保存在后端。客户端只在系统钥匙串保存登录凭据；启用记忆服务后，记忆来源会同步到该服务。")
-                .font(.footnote).foregroundStyle(Theme.muted).padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
-            DisclosureGroup(isExpanded: $technicalOpen) {
-                VStack(spacing: 0) {
-                    FactRow(title: "后端监听地址", value: workspace.state?.address ?? "—")
-                    Divider().overlay(Theme.border)
-                    FactRow(title: "后端数据目录", value: workspace.state?.dataDir ?? "—")
-                    Divider().overlay(Theme.border)
-                    FactRow(title: "运行环境", value: "Pi 1.0.4 · SQLite")
-                }
-            } label: { Text("技术详情").font(.subheadline.weight(.semibold)) }
-            .padding(14).cardStyle()
-        }
     }
 
     // MARK: Pieces

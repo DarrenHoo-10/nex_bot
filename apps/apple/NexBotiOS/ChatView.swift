@@ -132,7 +132,7 @@ struct ChatView: View {
                         .accessibilityLabel("复制对话记录")
                 }
                 Button { nav.openAgentDetail(botID) } label: { Image(systemName: "info.circle") }
-                    .accessibilityLabel("Agent 资料")
+                    .accessibilityLabel("助手详情")
             }
             ToolbarItem(placement: .principal) { titleView }
         }
@@ -182,7 +182,7 @@ struct ChatView: View {
     private var titleView: some View {
         Button { nav.openAgentDetail(botID) } label: {
             HStack(spacing: 8) {
-                if let bot { workspace.avatar(of: bot, size: 28) }
+                if let bot { workspace.avatar(of: bot, size: 28, animated: true) }
                 VStack(alignment: .leading, spacing: 0) {
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 6) { nameText; modelPill }
@@ -193,7 +193,7 @@ struct ChatView: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(bot?.name ?? "Agent") 资料")
+        .accessibilityLabel("\(bot?.name ?? "Agent") 助手详情")
     }
 
     private var nameText: some View { Text(bot?.name ?? "会话").font(.subheadline.weight(.semibold)).lineLimit(1) }
@@ -217,15 +217,13 @@ struct ChatView: View {
     }
 
     private func memoryPill(_ title: String) -> some View {
-        Button {
-            memoryNotice = nil
-            nav.openAgentDetail(botID, tab: .memory)
-        } label: {
+        Button { memoryNotice = nil } label: {
             Label(title, systemImage: "sparkles").font(.footnote.weight(.medium)).lineLimit(1)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(Theme.brandSoft, in: Capsule())
         }
         .buttonStyle(.plain).foregroundStyle(Theme.brand)
+        .accessibilityHint("点按关闭")
         .frame(maxWidth: .infinity).padding(.vertical, 6).background(Theme.background)
     }
 
@@ -233,7 +231,7 @@ struct ChatView: View {
 
     private var welcome: some View {
         VStack(spacing: 10) {
-            if let bot { workspace.avatar(of: bot, size: 88) }
+            if let bot { workspace.avatar(of: bot, size: 88, animated: true) }
             Text("长期陪伴，随时开始").font(.caption2.weight(.semibold)).foregroundStyle(Theme.muted)
                 .padding(.horizontal, 10).padding(.vertical, 3).background(Theme.secondary, in: Capsule())
             Text(bot?.name ?? "").font(.title3.weight(.bold))
@@ -287,7 +285,7 @@ struct ChatView: View {
         do { try await workspace.decide(approval, allow: allow) } catch { errorText = message(of: error) }
     }
 
-    /// Opens a file chip's preview in 资料.
+    /// Opens a file chip's preview in the detail 工作 tab.
     private func openFile(_ path: String) async {
         do { show(try await workspace.previewFile(path: path)) } catch { errorText = message(of: error) }
     }
@@ -300,7 +298,7 @@ struct ChatView: View {
 
     private func show(_ item: PreviewItem) {
         PreviewCenter.shared.items[botID] = item
-        nav.openAgentDetail(botID, tab: .memory)
+        nav.openAgentDetail(botID, tab: .work)
     }
 }
 

@@ -92,10 +92,10 @@ struct ContactsList: View {
             Text(title).font(.system(size: 11)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
             ForEach(bots) { bot in
-                Button { workspace.select(bot.id); ui.showAgent() } label: {
+                Button { workspace.select(bot.id) } label: {
                     ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
                                phrase: ToolLabels.taskPhrase(workspace.state?.unfinishedTask(botID: bot.id)),
-                               selected: workspace.selectedBotID == bot.id && ui.page == .agent)
+                               selected: workspace.selectedBotID == bot.id)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(bot.name)
@@ -109,7 +109,7 @@ struct ContactsList: View {
                 PersonAvatar(size: 34)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(accountName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    Text("个人工作空间").font(.system(size: 10)).foregroundStyle(Theme.muted)
+                    if workspace.connection != .connected { Text("正在重新连接…").font(.system(size: 10)).foregroundStyle(Theme.muted) }
                 }
                 Spacer()
                 Image(systemName: ui.accountMenuOpen ? "chevron.down" : "chevron.up").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
@@ -132,10 +132,12 @@ struct ContactRow: View {
     let state: CompanionState
     let phrase: String
     let selected: Bool
+    @Environment(ContactPreferences.self) private var preferences
 
     var body: some View {
         HStack(spacing: 12) {
-            AgentAvatar(appearance: appearance, state: state, size: 40)
+            // Sidebar contacts move only while thinking or working; idle and approval stay still.
+            AgentAvatar(appearance: appearance, state: state, size: 40, animated: preferences.motionEnabled && (state == .thinking || state == .working))
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(bot.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)

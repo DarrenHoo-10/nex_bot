@@ -60,17 +60,19 @@ struct FormField<Content: View>: View {
 struct PrimaryButton: View {
     let title: String
     var busy = false
+    /// Blue brand fill (the web's `.primary` button) instead of the neutral primary.
+    var brand = false
     let action: () -> Void
     @Environment(\.isEnabled) private var enabled
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                if busy { ProgressView().tint(Theme.primaryForeground) }
+                if busy { ProgressView().tint(brand ? Color.white : Theme.primaryForeground) }
                 Text(title).font(.subheadline.weight(.semibold))
             }
-            .foregroundStyle(Theme.primaryForeground)
+            .foregroundStyle(brand ? Color.white : Theme.primaryForeground)
             .frame(maxWidth: .infinity).padding(.vertical, 13)
-            .background(Theme.primary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(brand ? Theme.brand : Theme.primary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .opacity(enabled ? 1 : 0.4)
         }
         .buttonStyle(.plain)

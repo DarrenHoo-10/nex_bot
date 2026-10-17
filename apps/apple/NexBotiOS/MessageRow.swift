@@ -241,7 +241,7 @@ struct ThinkingIndicator: View {
     }
 }
 
-/// Tool steps collapsed to "› 执行记录 · N 项操作"; tap a step to open its details in 资料.
+/// Tool steps collapsed to "› 执行记录 · N 项操作"; tap a step to open its details in the detail 工作 tab.
 struct ToolStepsRow: View {
     let steps: [ToolStep]
     var onOpen: (ToolStep) -> Void = { _ in }
@@ -278,7 +278,7 @@ struct ToolStepsRow: View {
                             .padding(.vertical, 4).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityHint("在资料中查看详情")
+                        .accessibilityHint("在助手详情中查看")
                     }
                 }
                 .font(.caption).foregroundStyle(Theme.foreground).padding(.leading, 13)

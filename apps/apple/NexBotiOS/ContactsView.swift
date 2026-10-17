@@ -103,7 +103,7 @@ struct ContactsView: View {
             }
             .contextMenu {
                 pinButton(bot)
-                Button { nav.openAgentDetail(bot.id) } label: { Label("Agent 资料", systemImage: "info.circle") }
+                Button { nav.openAgentDetail(bot.id) } label: { Label("助手详情", systemImage: "info.circle") }
             }
         }
     }

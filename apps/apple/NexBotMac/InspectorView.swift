@@ -1,7 +1,7 @@
 import SwiftUI
 import NexClientKit
 
-/// Right column "助手详情" with the 工作 / 资料 / 设置 tabs. The selected tab lives in `UIState.inspectorTab`.
+/// Right column "助手详情" with the 工作 / 设置 tabs. The selected tab lives in `UIState.inspectorTab`.
 struct InspectorView: View {
     let workspace: WorkspaceStore
     let botID: String
@@ -31,7 +31,6 @@ struct InspectorView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     switch tab {
                     case .work: InspectorWorkTab(workspace: workspace, botID: botID)
-                    case .memory: InspectorMemoryTab(workspace: workspace, botID: botID)
                     case .settings: InspectorSettingsTab(workspace: workspace, botID: botID)
                     }
                 }
@@ -44,26 +43,26 @@ struct InspectorView: View {
 
     private var profile: some View {
         let pinned = preferences.isPinned(botID)
-        return VStack(spacing: 8) {
-            HStack(spacing: 4) {
+        return VStack(spacing: 4) {
+            HStack {
                 Spacer()
-                RoundIconButton(symbol: "paintpalette", help: "更换头像", size: 28) { AgentUI.shared.pickAvatar(botID) }
                 RoundIconButton(symbol: pinned ? "pin.fill" : "pin", help: pinned ? "取消置顶" : "置顶联系人", selected: pinned, size: 28) {
                     preferences.togglePin(botID)
                 }
             }
-            if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 64) }
-            Text(bot?.name ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
-            Text("个人 Agent").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.brand)
-                .padding(.horizontal, 9).padding(.vertical, 3).background(Theme.brandSoft, in: Capsule())
-            HStack(spacing: 6) {
-                LinkButton(title: "编辑身份") { AgentUI.shared.editIdentity(botID) }
-                Text("·").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                LinkButton(title: "更换头像") { AgentUI.shared.pickAvatar(botID) }
+            HStack(spacing: 12) {
+                Button { AgentUI.shared.pickAvatar(botID) } label: {
+                    Group {
+                        if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 64, animated: preferences.motionEnabled) }
+                    }
+                    .frame(width: 64, height: 64).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("更换头像").accessibilityLabel("更换 \(bot?.name ?? "") 的头像")
+                Text(bot?.name ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2).multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
             }
         }
         .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 16)
-        .frame(maxWidth: .infinity)
     }
 
     private var tabs: some View {
@@ -107,15 +106,14 @@ struct InspectorSectionTitle: View {
 struct InspectorWorkTab: View {
     let workspace: WorkspaceStore
     let botID: String
-    @Environment(UIState.self) private var ui
     @State private var error: String?
+    @State private var submitting = false
 
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
-    private var state: CompanionState { workspace.companionState(botID) }
 
     var body: some View {
         let state = workspace.state
-        statusCard
+        if let item = AgentUI.shared.preview, AgentUI.shared.previewBotID == botID { PreviewCard(item: item) { AgentUI.shared.preview = nil } }
         if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
         if !tasks.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
@@ -136,27 +134,10 @@ struct InspectorWorkTab: View {
                 }
             }
         }
-        connectors
-        devices
         routines
     }
 
     // MARK: Cards
-
-    private var statusCard: some View {
-        let first = tasks.first
-        let dot: Color = !tasks.isEmpty ? (state == .approval ? Theme.approval : Theme.success) : Theme.offline
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Circle().fill(dot).frame(width: 7, height: 7)
-                Text(first.map { ToolLabels.taskPhrase($0) } ?? "准备就绪").font(.system(size: 12, weight: .bold))
-            }
-            Text(first.map { String($0.objective.prefix(90)) } ?? "发一条消息，开始新的工作。")
-                .font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.leading, 15)
-        }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
 
     private func activeTask(_ task: AgentTask) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -174,91 +155,41 @@ struct InspectorWorkTab: View {
         .fieldCard()
     }
 
-    private var connectors: some View {
-        let granted = workspace.state?.connectors(grantedTo: botID) ?? []
-        return VStack(alignment: .leading, spacing: 10) {
-            InspectorSectionTitle(title: "连接器", addLabel: "管理连接器") { ui.openConnectors() }
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(granted) { connector in
-                    Button { ui.openConnectors() } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "powerplug").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                            Text(connector.name).font(.system(size: 12)).lineLimit(1)
-                            Spacer()
-                            Text("\(connector.grant(for: botID)?.tools.count ?? 0) 项工具").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                Button { ui.openConnectors() } label: {
-                    Text("连接工具与管理授权 →").font(.system(size: 11)).foregroundStyle(Theme.muted).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private var devices: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            InspectorSectionTitle(title: "可用设备")
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(workspace.state?.boundDevices ?? []) { device in
-                    let online = device.online
-                    HStack(spacing: 8) {
-                        Image(systemName: "cpu").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                        Text(device.name).font(.system(size: 12)).lineLimit(1)
-                        Spacer()
-                        Text(online ? "在线" : "离线").font(.system(size: 10))
-                            .foregroundStyle(online ? Theme.success : Theme.muted)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(online ? Theme.successSoft : Theme.secondary, in: Capsule())
-                    }
-                }
-                Button { ui.openDevices() } label: {
-                    Text("管理设备网络 →").font(.system(size: 11)).foregroundStyle(Theme.muted).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
+    /// One rounded list: name and schedule on the left, a blue switch on the right. The row opens the editor.
     private var routines: some View {
         let list = workspace.state?.routines(botID: botID) ?? []
         return VStack(alignment: .leading, spacing: 10) {
             InspectorSectionTitle(title: "例行任务", addLabel: "添加例行任务") { AgentUI.shared.editRoutine(botID: botID) }
-            ForEach(list) { routine in routineCard(routine) }
-            if list.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Image(systemName: "clock").font(.system(size: 16)).foregroundStyle(Theme.muted)
-                    Text("安排一项例行任务，Agent 会按计划工作并给你汇报。").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    pill(nil, "添加例行任务") { AgentUI.shared.editRoutine(botID: botID) }
+            if !list.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(list) { routine in routineRow(routine) }
                 }
-                .fieldCard()
+                .padding(.vertical, 6)
+                .background(Theme.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border))
+                .accessibilityLabel("例行任务列表")
             }
         }
     }
 
-    private func routineCard(_ routine: Routine) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(routine.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                Spacer()
-                Toggle("", isOn: Binding(get: { routine.enabled }, set: { value in run { try await workspace.setRoutineEnabled(routine, enabled: value) } }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                    .accessibilityLabel("\(routine.enabled ? "暂停" : "启用")\(routine.name)")
+    private func routineRow(_ routine: Routine) -> some View {
+        HStack(spacing: 14) {
+            Button { AgentUI.shared.editRoutine(botID: botID, existing: routine) } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(routine.name).font(.system(size: 13)).foregroundStyle(Theme.foreground).lineLimit(1)
+                    Text("\(routine.label) · \(routine.prompt.replacingOccurrences(of: "\n", with: " "))").font(.system(size: 12))
+                        .foregroundStyle(Theme.muted).lineLimit(1)
+                }
+                .padding(.vertical, 3)
+                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
-            Text(routine.label).font(.system(size: 11)).foregroundStyle(Theme.muted)
-            HStack(spacing: 8) {
-                pill(nil, "编辑") { AgentUI.shared.editRoutine(botID: botID, existing: routine) }
-                pill("play.fill", "现在执行") { run { try await workspace.runRoutine(routine) } }
-            }
-            if routine.enabled, let next = routine.nextDueAt {
-                Text("下次 \(TimeFormat.formatTime(next))").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            .buttonStyle(.plain)
+            .help("\(routine.name) · \(routine.label) · \(routine.prompt)")
+            RoutineSwitch(on: routine.enabled, disabled: submitting, label: routine.name) {
+                run { try await workspace.setRoutineEnabled(routine, enabled: !routine.enabled) }
             }
         }
-        .fieldCard()
+        .padding(.horizontal, 12).padding(.vertical, 9)
     }
 
     private func pill(_ symbol: String?, _ title: String, action: @escaping () -> Void) -> some View {
@@ -277,9 +208,31 @@ struct InspectorWorkTab: View {
     }
 
     private func run(_ body: @escaping () async throws -> Void) {
-        error = nil
+        error = nil; submitting = true
         Task {
+            defer { submitting = false }
             do { try await body() } catch { self.error = message(of: error) }
         }
+    }
+}
+
+/// The 34 x 21 blue switch of the web routine list (`.routine-toggle`).
+private struct RoutineSwitch: View {
+    let on: Bool
+    let disabled: Bool
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Capsule().fill(on ? Color(hex: 0x3566ED) : Theme.muted)
+                .frame(width: 34, height: 21)
+                .overlay(alignment: on ? .trailing : .leading) { Circle().fill(.white).frame(width: 15, height: 15).padding(3) }
+                .animation(.easeOut(duration: 0.15), value: on)
+                .opacity(disabled ? 0.5 : 1)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain).disabled(disabled)
+        .accessibilityLabel(label).accessibilityValue(on ? "已启用" : "已暂停").accessibilityAddTraits(.isButton)
     }
 }

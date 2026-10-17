@@ -93,7 +93,7 @@ struct SettingsMemoryView: View {
                 if let error = form.error { InlineBanner(text: error) }
                 if let feedback = feedback(plugin) { InlineBanner(text: feedback, tone: .good) }
                 HStack(spacing: 10) {
-                    PrimaryButton(title: form.busy ? "处理中…" : "保存插件配置", busy: form.busy) { Task { await save() } }.disabled(!canSave)
+                    PrimaryButton(title: form.busy ? "处理中…" : "保存插件配置", busy: form.busy, brand: true) { Task { await save() } }.disabled(!canSave)
                     Button("测试连接") { Task { await test() } }.buttonStyle(PillButtonStyle()).disabled(endpointText.isEmpty || form.busy)
                 }
             }

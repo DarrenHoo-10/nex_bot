@@ -62,6 +62,9 @@ struct AgentAvatar: View {
     let appearance: AgentAppearance
     var state: CompanionState = .idle
     var size: CGFloat = 36
+    /// Plays the web companion keyframes for the current state (idle blink, thinking glance, working bob, one done hop).
+    /// Off by default; also off when the system Reduce Motion setting is on. Callers apply their own preference.
+    var animated = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -70,7 +73,7 @@ struct AgentAvatar: View {
                 Image("portrait-\(id)").resizable().scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.29, style: .continuous))
             case .companion(let shape, let color):
-                CompanionBody(shape: shape, color: Self.color(color), state: state, size: size)
+                CompanionBody(shape: shape, color: Self.color(color), state: state, size: size, animated: animated)
             }
             if state != .idle {
                 Circle().fill(badgeColor)
@@ -104,6 +107,55 @@ struct AgentAvatar: View {
 
 private struct CompanionBody: View {
     let shape: String, color: Color, state: CompanionState, size: CGFloat
+    var animated = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The `done` hop plays once, from the moment this body appears or the state becomes done.
+    @State private var doneStart = Date()
+
+    /// Port of identity.css `companion-blink 7s`, `companion-look 2.8s`, `companion-work 1.8s` and `companion-done .55s`.
+    struct Motion {
+        var eyeScaleY: CGFloat = 1
+        var eyeShiftX: CGFloat = 0   // fraction of the eyes' width
+        var bodyDY: CGFloat = 0      // fraction of the body height
+        var bodyRotation: Double = 0 // degrees
+    }
+
+    private func motion(at date: Date) -> Motion {
+        let t = date.timeIntervalSinceReferenceDate
+        func ease(_ period: Double) -> CGFloat { CGFloat((1 - cos(2 * .pi * t.truncatingRemainder(dividingBy: period) / period)) / 2) }
+        var m = Motion()
+        switch state {
+        case .idle:
+            let f = (t.truncatingRemainder(dividingBy: 7)) / 7
+            if f >= 0.43 && f < 0.45 { m.eyeScaleY = 1 - 0.88 * CGFloat((f - 0.43) / 0.02) }
+            else if f >= 0.45 && f < 0.47 { m.eyeScaleY = 0.12 + 0.88 * CGFloat((f - 0.45) / 0.02) }
+        case .thinking:
+            m.eyeShiftX = -0.10 + 0.22 * ease(2.8)
+        case .working:
+            let s = ease(1.8)
+            m.bodyDY = -0.04 * s; m.bodyRotation = -2 + 4 * Double(s)
+        case .done:
+            let p = date.timeIntervalSince(doneStart) / 0.55
+            if p >= 0 && p < 1 {
+                let k = p < 0.45 ? p / 0.45 : 1 - (p - 0.45) / 0.55
+                let eased = k * k * (3 - 2 * k)
+                m.bodyDY = -0.12 * CGFloat(eased); m.bodyRotation = 4 * eased
+            }
+        default: break
+        }
+        return m
+    }
+
+    private var playing: Bool { animated && !reduceMotion && [.idle, .thinking, .working, .done].contains(state) }
+
+    var body: some View {
+        if playing {
+            TimelineView(.animation) { context in content(motion(at: context.date)) }
+                .onChange(of: state) { doneStart = Date() }
+        } else {
+            content(Motion())
+        }
+    }
 
     /// CSS `inset` (vertical, horizontal) and `border-radius` (TL, TR, BR, BL) per shape, as fractions.
     private var geometry: (v: CGFloat, h: CGFloat, radii: [CGFloat]) {
@@ -115,7 +167,7 @@ private struct CompanionBody: View {
         }
     }
 
-    var body: some View {
+    @ViewBuilder private func content(_ m: Motion) -> some View {
         let g = geometry
         let w = size * (1 - 2 * g.h), h = size * (1 - 2 * g.v), r = min(w, h)
         let outline = UnevenRoundedRectangle(topLeadingRadius: r * g.radii[0], bottomLeadingRadius: r * g.radii[3], bottomTrailingRadius: r * g.radii[2], topTrailingRadius: r * g.radii[1], style: .continuous)
@@ -124,12 +176,13 @@ private struct CompanionBody: View {
             // Highlight: inset 7% 16%, height 34%.
             Ellipse().fill(LinearGradient(colors: [.white.opacity(0.08), .clear], startPoint: .top, endPoint: .bottom))
                 .frame(width: w * 0.68, height: h * 0.34).offset(x: w * 0.16, y: h * 0.07)
-            eyes(width: w * 0.44, height: h * 0.22).offset(x: w * 0.28, y: h * 0.40)
+            eyes(width: w * 0.44, height: h * 0.22).scaleEffect(x: 1, y: m.eyeScaleY).offset(x: w * 0.28 + w * 0.44 * m.eyeShiftX, y: h * 0.40)
             // Cheek: right 20%, top 64%.
             Ellipse().fill(.white.opacity(0.21)).frame(width: w * 0.09, height: h * 0.04).offset(x: w * 0.71, y: h * 0.64)
         }
         .frame(width: w, height: h)
-        .rotationEffect(.degrees(state == .approval ? -7 : 0), anchor: UnitPoint(x: 0.5, y: 0.8))
+        .rotationEffect(.degrees(state == .approval ? -7 : m.bodyRotation), anchor: UnitPoint(x: 0.5, y: state == .approval ? 0.8 : 0.5))
+        .offset(y: h * m.bodyDY)
         .saturation(state == .offline ? 0.3 : 1).opacity(state == .offline ? 0.65 : 1)
         .frame(width: size, height: size)
     }

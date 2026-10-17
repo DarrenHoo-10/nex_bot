@@ -14,7 +14,7 @@ struct ConnectorSelection: Hashable {
     var notice: String?
 }
 
-/// The 连接器 page pushed from the account menu: header, list with search, and a pushed detail screen.
+/// The 连接器 settings category (embedded in SettingsView's scroll view): header, list with search, and a pushed detail screen.
 struct ConnectorsView: View {
     let workspace: WorkspaceStore
     @State private var query = ""
@@ -28,20 +28,10 @@ struct ConnectorsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                if connectors.isEmpty { empty } else { list }
-            }
-            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 20) {
+            header
+            if connectors.isEmpty { empty } else { list }
         }
-        .background(Theme.background)
-        .navigationTitle("连接器")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarRole(.editor)
-        .toolbarBackground(Theme.background, for: .navigationBar)
-        .refreshable { await workspace.refresh() }
         .sheet(item: $editor) { request in
             ConnectorEditor(workspace: workspace, request: request) { id in
                 selection = ConnectorSelection(id: id, notice: "已保存。点击“测试连接”获取工具目录。")
@@ -65,12 +55,12 @@ struct ConnectorsView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("扩展 Agent 的能力").font(.caption).foregroundStyle(Theme.muted)
-            Text("连接你的工具").font(.largeTitle.weight(.bold))
+            Text("连接器").font(.title3.weight(.bold))
             Text("接入 MCP 服务，让 Agent 在对话中使用获准的工具。").font(.subheadline).foregroundStyle(Theme.muted)
             Button { editor = ConnectorEditorRequest() } label: {
                 Label("添加连接器", systemImage: "plus").font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.primaryForeground).padding(.horizontal, 16).padding(.vertical, 10)
-                    .background(Theme.primary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .foregroundStyle(Color.white).padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(Theme.brand, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain).padding(.top, 8)
         }

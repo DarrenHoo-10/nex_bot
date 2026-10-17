@@ -24,7 +24,7 @@ final class AgentUI {
     var policy: BotRef?
     var routine: RoutineRequest?
     var memory: MemoryRequest?
-    /// The 资料 tab preview card (file or tool call) and the agent it was opened for.
+    /// The 工作 tab preview card (file or tool call) and the agent it was opened for.
     var preview: PreviewItem?
     var previewBotID: String?
     /// The message each agent's composer is quoting.
@@ -39,7 +39,7 @@ final class AgentUI {
     func editRoutine(botID: String, existing: Routine? = nil) { routine = RoutineRequest(botID: botID, existing: existing) }
     func editMemory(botID: String, existing: Memory? = nil) { memory = MemoryRequest(botID: botID, existing: existing) }
 
-    /// Opens a file preview in the inspector 资料 tab.
+    /// Opens a file preview in the inspector 工作 tab.
     func previewFile(_ path: String, botID: String, workspace: WorkspaceStore, ui: UIState) {
         Task {
             let item: PreviewItem
@@ -67,7 +67,7 @@ final class AgentUI {
 
     private func show(_ item: PreviewItem, botID: String, ui: UIState) {
         preview = item; previewBotID = botID
-        ui.openInspector(.memory)
+        ui.openInspector(.work)
     }
 
     func copyToPasteboard(_ text: String) {

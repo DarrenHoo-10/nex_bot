@@ -4,20 +4,20 @@ import NexClientKit
 
 /// Categories of the Settings screen (chips at the top).
 enum SettingsCategory: String, CaseIterable {
-    case account = "账号与登录设备", model = "模型", memory = "记忆服务", system = "系统信息"
+    case account = "账号与登录设备", model = "模型", memory = "记忆服务", connectors = "连接器", devices = "设备"
     var icon: String {
-        switch self { case .account: "person"; case .model: "cpu"; case .memory: "brain"; case .system: "globe" }
+        switch self { case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .connectors: "powerplug"; case .devices: "cpu" }
     }
 }
 
 /// Tabs of the agent detail screen.
-enum AgentDetailTab: String, CaseIterable { case work = "工作", memory = "资料", settings = "设置" }
+enum AgentDetailTab: String, CaseIterable { case work = "工作", settings = "设置" }
 
 /// Navigation of the connected app, shared (as an environment object) so any view can drive it.
 /// Root is the contacts list; chats, the approvals list, settings and the other pages are pushed on top.
 @MainActor @Observable
 final class Navigation {
-    enum Route: Hashable { case chat(String), approvals, settings, connectors, devices, agentDetail(String) }
+    enum Route: Hashable { case chat(String), approvals, settings, agentDetail(String) }
     var path: [Route] = []
     /// The account menu sheet.
     var showMenu = false
@@ -39,9 +39,10 @@ final class Navigation {
     /// Pushes a route unless it is already on top.
     func push(_ route: Route) { showMenu = false; if path.last != route { path.append(route) } }
     func openChat(_ botID: String) { showMenu = false; path = [.chat(botID)] }
-    func openConnectors() { push(.connectors) }
-    func openDevices() { push(.devices) }
-    /// Pushes the agent detail screen, optionally at a tab (e.g. 资料 after tapping a memory pill).
+    /// Connectors and devices are Settings categories, not pages of their own.
+    func openConnectors() { openSettings(.connectors) }
+    func openDevices() { openSettings(.devices) }
+    /// Pushes the agent detail screen, optionally at a tab (e.g. 工作 for a file preview).
     func openAgentDetail(_ botID: String, tab: AgentDetailTab = .work) { detailTab = tab; push(.agentDetail(botID)) }
     /// Pushes Settings at a category (e.g. 模型 from 配置 API Key).
     func openSettings(_ category: SettingsCategory = .account) {
@@ -56,8 +57,6 @@ final class Navigation {
         case .chat(let id): ChatView(workspace: workspace, botID: id)
         case .approvals: ApprovalsView(workspace: workspace)
         case .settings: SettingsView(model: model, workspace: workspace)
-        case .connectors: ConnectorsView(workspace: workspace)
-        case .devices: DevicesView(workspace: workspace)
         case .agentDetail(let id): AgentDetailView(workspace: workspace, botID: id)
         }
     }

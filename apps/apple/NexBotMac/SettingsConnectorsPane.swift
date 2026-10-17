@@ -1,8 +1,8 @@
 import SwiftUI
 import NexClientKit
 
-/// Main-area 连接器 page: MCP connectors, their tool catalogs and per-agent grants (web `ConnectorsPage`).
-struct ConnectorsPage: View {
+/// Settings 连接器 category: MCP connectors, their tool catalogs and per-agent grants (web `ConnectorsPage` inside settings).
+struct SettingsConnectorsPane: View {
     let workspace: WorkspaceStore
 
     private struct Feedback { var text: String; var isError = false }
@@ -29,24 +29,20 @@ struct ConnectorsPage: View {
 
     var body: some View {
         ZStack {
-            VStack(spacing: 0) {
-                MBPageBar(title: "连接器")
-                ScrollViewReader { proxy in
+            ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
-                        if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 28) }
-                        if workspace.state != nil, connectors.isEmpty { emptyState.padding(.top, 36) }
-                        else if !connectors.isEmpty { twoPane.padding(.top, 28) }
+                        if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 24) }
+                        if workspace.state != nil, connectors.isEmpty { emptyState.padding(.top, 28) }
+                        else if !connectors.isEmpty { twoPane.padding(.top, 24) }
                     }
-                    .frame(maxWidth: 1000, alignment: .leading)
-                    .padding(.horizontal, 40).padding(.top, 40).padding(.bottom, 48)
-                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 34)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 #if DEBUG
                 .onChange(of: scrollTarget) { _, id in if let id { proxy.scrollTo(id, anchor: .top) } }
                 #endif
-                }
             }
             if let editor {
                 ConnectorEditor(existing: editor.existing, close: { self.editor = nil }) { name, url, transport, token, clear in
@@ -57,7 +53,6 @@ struct ConnectorsPage: View {
                 }
             }
         }
-        .background(Theme.background)
         .onChange(of: selected?.id) { grantBot = nil; confirmingRemove = false }
         #if DEBUG
         .task { MBDebug.start() }
@@ -68,14 +63,8 @@ struct ConnectorsPage: View {
     // MARK: Header and empty state
 
     private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("扩展 Agent 的能力").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                Text("连接你的工具").font(.system(size: 28, weight: .bold)).padding(.top, 14)
-                Text("接入 MCP 服务，让 Agent 在对话中使用获准的工具。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 10)
-            }
-            Spacer()
-            MBButton(title: "添加连接器", kind: .primary, icon: "plus") { editor = Editor(id: "new", existing: nil) }
+        paneHeader("连接器", "接入 MCP 服务，让 Agent 在对话中使用获准的工具。") {
+            MBButton(title: "添加连接器", kind: .brand, icon: "plus") { editor = Editor(id: "new", existing: nil) }
         }
     }
 
@@ -96,7 +85,7 @@ struct ConnectorsPage: View {
 
     private var twoPane: some View {
         HStack(alignment: .top, spacing: 0) {
-            list.frame(width: 262)
+            list.frame(width: 236)
             Theme.border.frame(width: 1)
             Group {
                 if let c = selected { detail(c) }

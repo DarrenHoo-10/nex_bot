@@ -110,7 +110,7 @@ struct Composer: View {
         VStack(alignment: .leading, spacing: 2) {
             menuItem("at", "提及同伴") { conversation.draft += " @"; focused = true }
             menuItem("clock", "安排例行任务") { agentUI.editRoutine(botID: botID) }
-            menuItem("powerplug", "管理连接器") { ui.openConnectors() }
+            menuItem("powerplug", "管理连接器") { ui.openSettings(.connectors) }
         }
         .padding(6).frame(width: 170)
         .accessibilityLabel("快捷操作")

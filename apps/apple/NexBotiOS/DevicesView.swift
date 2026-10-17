@@ -1,17 +1,13 @@
 import SwiftUI
 import NexClientKit
 
-/// The 设备网络 page pushed from the account menu: devices, host-device capabilities and the backend address.
+/// The 设备 settings category (embedded in SettingsView's scroll view): paired devices, pairing and unresolved execution approvals.
 struct DevicesView: View {
     let workspace: WorkspaceStore
     @State private var pairing = false
     @State private var revoking: Device?
     @State private var reconciling: UnknownCall?
-    @State private var rootText = ""
-    @State private var rootEdited = false
-    @State private var savingRoot = false
-    @State private var rootNotice: String?
-    @State private var rootError: String?
+    @State private var reconcileError: String?
     @State private var errorText: String?
 
     private var state: WorkspaceState? { workspace.state }
@@ -19,27 +15,12 @@ struct DevicesView: View {
     private var node: NodeState? { state?.node }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                if let errorText { InlineBanner(text: errorText) }
-                deviceList
-                if let node {
-                    if node.hosted { hostedCard } else { hostCard(node) }
-                }
-                connectionCard
-            }
-            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 20) {
+            header
+            if let errorText { InlineBanner(text: errorText) }
+            deviceList
+            ForEach(node?.unknownCalls ?? [], id: \.callID) { call in unknownCall(call) }
         }
-        .background(Theme.background)
-        .navigationTitle("设备网络")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarRole(.editor)
-        .toolbarBackground(Theme.background, for: .navigationBar)
-        .refreshable { await workspace.refresh() }
-        .onAppear { syncRoot() }
-        .onChange(of: node?.root) { _, _ in syncRoot() }
         .sheet(isPresented: $pairing) { PairDeviceSheet(workspace: workspace) }
         .confirmationDialog("撤销该设备的配对？", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } }), titleVisibility: .visible, presenting: revoking) { device in
             Button("撤销「\(device.name)」", role: .destructive) { Task { await revoke(device) } }
@@ -52,8 +33,6 @@ struct DevicesView: View {
         .onDebugUI { cmd, arg in
             switch cmd {
             case "d-pairopen": pairing = true
-            case "d-root": rootText = arg; rootEdited = true
-            case "d-saveroot": Task { await saveRoot() }
             case "d-revoke": if let d = devices.first(where: { $0.name == arg }) { revoking = d }
             case "d-revokeconfirm": if let d = devices.first(where: { $0.name == arg }) { Task { await revoke(d) } }
             case "d-reconcile": reconciling = node?.unknownCalls.first
@@ -64,13 +43,12 @@ struct DevicesView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("PERSONAL AI OS · DEVICES").font(.caption).foregroundStyle(Theme.muted)
-            Text("设备网络").font(.largeTitle.weight(.bold))
-            Text("设备执行节点独立连接后端。客户端只显示和管理后端已注册的设备。").font(.subheadline).foregroundStyle(Theme.muted)
+            Text("设备网络").font(.title3.weight(.bold))
+            Text("管理助手可以使用的设备。").font(.footnote).foregroundStyle(Theme.muted)
             Button { pairing = true } label: {
                 Label("生成配对令牌", systemImage: "plus").font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.primaryForeground).padding(.horizontal, 16).padding(.vertical, 10)
-                    .background(Theme.primary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .foregroundStyle(Color.white).padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(Theme.brand, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain).padding(.top, 8)
         }
@@ -97,65 +75,21 @@ struct DevicesView: View {
         }
     }
 
-    private var hostedCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("你的设备").font(.subheadline.weight(.semibold))
-            Text("此工作区只连接你配对的设备。添加设备后，Agent 可以使用该设备授权的能力。").font(.footnote).foregroundStyle(Theme.muted)
-        }
-        .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
-    }
-
-    private func hostCard(_ node: NodeState) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("后端主机能力").font(.subheadline.weight(.semibold))
-                Spacer()
-                StatusChip(text: "状态：\(node.status)", tone: node.connected ? .good : .neutral)
-            }
-            Text("这些能力作用于运行后端服务的主机。客户端不运行本地终端或设备执行节点。").font(.footnote).foregroundStyle(Theme.muted)
-            Text(node.summary).font(.footnote)
-            ForEach(node.unknownCalls, id: \.callID) { call in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("需要核对设备执行结果").font(.subheadline.weight(.semibold))
-                    Text(call.argumentsText).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    Text("上次执行中断，这个调用不会重放。请检查后端主机上的进程和操作结果，再确认已停止。").font(.footnote).foregroundStyle(Theme.muted)
-                    Button("已核实停止") { reconciling = call }.buttonStyle(PillButtonStyle())
-                }
-                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.approvalSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            FormField(title: "后端允许读取的目录（可留空）") {
-                TextField("填写后端主机上的目录路径", text: Binding(get: { rootText }, set: { rootText = $0; rootEdited = true; rootNotice = nil }))
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-            }
-            if let rootError {
-                InlineBanner(text: rootError)
-                if rootError.contains("没有配置后端设备能力的权限") {
-                    Text("后端主机能力只能由后端所在电脑上的客户端修改；这里仅显示当前状态。").font(.caption).foregroundStyle(Theme.muted)
-                }
-            }
-            if let rootNotice { InlineBanner(text: rootNotice, tone: .good) }
-            PrimaryButton(title: savingRoot ? "保存中…" : "保存后端文件目录", busy: savingRoot) { Task { await saveRoot() } }.disabled(savingRoot)
-            Text("危险操作会在执行 Agent 的消息中请求批准。").font(.caption).foregroundStyle(Theme.muted)
-        }
-        .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
-    }
-
-    private var connectionCard: some View {
+    private func unknownCall(_ call: UnknownCall) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("后端连接").font(.subheadline.weight(.semibold))
-            Text(state?.address ?? "").font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
-                .padding(8).frame(maxWidth: .infinity, alignment: .leading).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            Text("监听地址、HTTPS 与端口由后端服务的部署配置管理。").font(.footnote).foregroundStyle(Theme.muted)
+            Text("需要核对设备执行结果").font(.subheadline.weight(.semibold))
+            Text(call.argumentsText).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Text("上次执行中断，这个调用不会重放。请检查后端主机上的进程和操作结果，再确认已停止。").font(.footnote).foregroundStyle(Theme.muted)
+            if let reconcileError { InlineBanner(text: reconcileError) }
+            Button("已核实停止") { reconciling = call }.buttonStyle(PillButtonStyle())
         }
-        .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.approvalSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     // MARK: Actions
-
-    private func syncRoot() { if !rootEdited { rootText = node?.root ?? "" } }
 
     private func revoke(_ device: Device) async {
         errorText = nil
@@ -164,18 +98,9 @@ struct DevicesView: View {
     }
 
     private func reconcile(_ call: UnknownCall) async {
-        rootError = nil
+        reconcileError = nil
         do { try await workspace.reconcileNodeCall(call.callID) }
-        catch { rootError = coreMessage(error); await workspace.refresh() }
-    }
-
-    private func saveRoot() async {
-        savingRoot = true; rootError = nil; rootNotice = nil
-        defer { savingRoot = false }
-        do {
-            let next = try await workspace.configureNode(root: rootText.trimmingCharacters(in: .whitespaces))
-            rootEdited = false; rootText = next.root; rootNotice = "后端文件目录已保存。"
-        } catch { rootError = coreMessage(error) }
+        catch { reconcileError = coreMessage(error); await workspace.refresh() }
     }
 }
 

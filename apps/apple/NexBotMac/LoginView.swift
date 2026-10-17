@@ -6,7 +6,6 @@ struct LoginView: View {
     @Environment(AppModel.self) private var model
     @State private var email = ""
     @State private var password = ""
-    @State private var showAdvanced = false
     @FocusState private var focus: Field?
     private enum Field { case email, password }
 
@@ -17,12 +16,8 @@ struct LoginView: View {
         ZStack {
             Self.page.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
-                BrandMark(size: 44)
-                Text("NEXBOT · PERSONAL AI OS").font(.system(size: 10)).tracking(1.6).foregroundStyle(Theme.muted).padding(.top, 22)
-                Text("登录你的个人 Agent").font(.system(size: 24, weight: .bold)).padding(.top, 14)
-                Text("使用 NexorAI 账号登录，连接你的 Agent、消息与记忆。")
-                    .font(.system(size: 13)).foregroundStyle(Theme.muted).lineSpacing(4).padding(.top, 10)
-                    .fixedSize(horizontal: false, vertical: true)
+                BrandMark(size: 56)
+                Text("登录 NexBot").font(.system(size: 26, weight: .bold)).padding(.top, 26)
 
                 if model.phase == .resuming {
                     resuming
@@ -40,8 +35,8 @@ struct LoginView: View {
                         .buttonStyle(.link).font(.system(size: 12)).padding(.top, 10)
                 }
             }
-            .padding(34)
-            .frame(width: 420)
+            .padding(40)
+            .frame(width: 440)
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border.opacity(0.6)))
             .shadow(color: .black.opacity(0.08), radius: 24, y: 10)
@@ -52,7 +47,7 @@ struct LoginView: View {
     private var resuming: some View {
         VStack(spacing: 14) {
             ProgressView().controlSize(.regular)
-            Text("正在恢复登录，连接云端服务…").font(.system(size: 13)).foregroundStyle(Theme.muted)
+            Text("正在恢复登录…").font(.system(size: 13)).foregroundStyle(Theme.muted)
             Button("改用其他账号登录") { Task { await model.switchAccount() } }
                 .buttonStyle(.link).font(.system(size: 12))
         }
@@ -75,13 +70,13 @@ struct LoginView: View {
     private func form(model: Bindable<AppModel>) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             field("邮箱") {
-                TextField("", text: $email)
+                TextField("", text: $email, prompt: Text("输入你的邮箱").foregroundStyle(Theme.muted.opacity(0.7)))
                     .textContentType(.username)
                     .focused($focus, equals: .email)
                     .onSubmit { focus = .password }
             }
             field("密码") {
-                SecureField("", text: $password)
+                SecureField("", text: $password, prompt: Text("输入密码").foregroundStyle(Theme.muted.opacity(0.7)))
                     .textContentType(.password)
                     .focused($focus, equals: .password)
                     .onSubmit(submit)
@@ -99,24 +94,14 @@ struct LoginView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(!canSubmit)
 
-            Button { showAdvanced.toggle() } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).rotationEffect(.degrees(showAdvanced ? 90 : 0))
-                    Text("高级：后端服务地址").font(.system(size: 12))
-                }
-                .foregroundStyle(Theme.muted).contentShape(Rectangle())
+            HStack(spacing: 6) {
+                Text("没有账号？").foregroundStyle(Theme.muted)
+                Button("去注册") { NSWorkspace.shared.open(URL(string: "https://user.nexorai.com.cn/register/nexbot")!) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.brand)
             }
-            .buttonStyle(.plain)
-            if showAdvanced {
-                field("Core 地址") { TextField("https://你的后端地址", text: model.origin) }
-                field("此设备名称") { TextField("我的电脑", text: model.deviceName) }
-                Text("默认连接云端服务 bot.nexorai.com.cn；远程连接须使用 HTTPS。")
-                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
-            }
-            Button("打开 NexorAI 账号中心") { NSWorkspace.shared.open(URL(string: "https://user.nexorai.com.cn/login")!) }
-                .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.brand)
+            .font(.system(size: 13)).frame(maxWidth: .infinity).padding(.top, 8)
         }
-        .padding(.top, 24)
+        .padding(.top, 28)
         .disabled(self.model.isLoggingIn)
         .onAppear { if email.isEmpty { focus = .email } }
     }

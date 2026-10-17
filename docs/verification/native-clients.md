@@ -158,3 +158,40 @@ The iOS DEBUG-only hooks have the same environment names as the Mac ones. Values
 - Cleanup: the app was uninstalled, the Simulator keychain reset and the Simulator shut down. The fixture quit and removed its temp dir.
 - Not exercised on iOS: scroll-to-top paging, the keyboard/composer interplay on a real keyboard, and a physical device.
 - Screenshots (git-ignored): `release/native-mac-verification/` and `release/native-mac-acceptance/`.
+
+## Web parity and the 0.9.x alignment (2026-10-17)
+
+Base: `main` at `54218891` merged. The kit is at 60 unit tests. `NexBotMac` and `NexBotiOS` build
+with signing on and no warnings, and `check-ios.sh` passes. Every UI run used an isolated fixture,
+the synthetic account and the fake MCP and model, with throwaway Keychain profiles that were deleted
+afterwards.
+
+- **Mac and iOS feature areas.** These were exercised against fixtures, mostly through the DEBUG
+  command files, because UI scripting is unavailable on this machine:
+  - agent create, identity, avatar, pin, permissions and archive;
+  - routines, including create/edit, the switch and 现在执行 in the editor;
+  - memory save and forget, plus file and tool previews;
+  - quote, copy and @mention;
+  - A2A markers;
+  - connectors: add the fake MCP, test it, grant a tool, then disable and remove it;
+  - devices: pair, revoke and the node root;
+  - model save and discovery (`/api/models/list` lists fixture-model and fixture-reasoning);
+  - the memory-service test error;
+  - logout confirmation.
+- **0.9.x alignment.** It follows `doc/ui/README.md`:
+  - the inspector has only 工作 / 设置, and the 资料 implementation stays unreferenced, as on the web;
+  - routines are a compact list;
+  - clicking the avatar opens the picker, and 关于 → bot身份信息 opens the identity editor;
+  - the account menu has only 设置, the theme toggle and logout;
+  - settings have five categories, with connectors and devices moved inside;
+  - 系统信息 and the advanced request address are removed;
+  - the simplified login has the `/register/nexbot` link;
+  - logout uses an in-app confirmation;
+  - avatar motion is state-driven, and the sidebar moves only while thinking or working.
+- **Not exercised.**
+  - Real memory-engine recall facts and reflect answers, because the fixture has no Hindsight.
+  - Escape on the Mac logout dialog, because keystrokes can't be scripted here.
+  - Physical devices.
+- **Screenshots** (git-ignored):
+  - `release/native-mac-parityA`, `-parityB`, `-align`, `native-mac-acceptance2`
+  - `release/native-ios-parityA`, `-parityB`, `-align`

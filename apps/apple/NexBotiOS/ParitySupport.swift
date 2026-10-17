@@ -2,7 +2,7 @@ import SwiftUI
 import Observation
 import NexClientKit
 
-/// Previews (a file or a tool call) opened from the chat for the agent detail 资料 tab, per agent.
+/// Previews (a file or a tool call) opened from the chat for the agent detail 工作 tab, per agent.
 /// A shared holder because the chat and the detail screen are separate navigation destinations.
 @MainActor @Observable
 final class PreviewCenter {

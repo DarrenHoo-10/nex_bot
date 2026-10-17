@@ -1,7 +1,7 @@
 import SwiftUI
 import NexClientKit
 
-/// The agent's 助手详情 screen: header plus 工作 / 资料 / 设置 tabs (`Navigation.detailTab`).
+/// The agent's 助手详情 screen: header plus 工作 / 设置 tabs (`Navigation.detailTab`).
 struct AgentDetailView: View {
     let workspace: WorkspaceStore
     let botID: String
@@ -10,13 +10,13 @@ struct AgentDetailView: View {
     @State private var sheet: Sheet?
     @State private var errorText: String?
     @State private var busyTask: String?
-    @State private var ranRoutine: String?
+    /// The routine whose switch is submitting; every switch is disabled meanwhile.
+    @State private var togglingRoutine: String?
 
     enum Sheet: Identifiable {
-        case identity, avatar, routine(Routine?)
+        case avatar, routine(Routine?)
         var id: String {
             switch self {
-            case .identity: "identity"
             case .avatar: "avatar"
             case .routine(let r): "routine-\(r?.id ?? "new")"
             }
@@ -36,7 +36,6 @@ struct AgentDetailView: View {
                 .pickerStyle(.segmented)
                 switch nav.detailTab {
                 case .work: work
-                case .memory: AgentMemoryTab(workspace: workspace, botID: botID)
                 case .settings: AgentSettingsTab(workspace: workspace, botID: botID)
                 }
             }
@@ -50,7 +49,6 @@ struct AgentDetailView: View {
         .refreshable { await workspace.refresh() }
         .sheet(item: $sheet) { sheet in
             switch sheet {
-            case .identity: AgentEditorSheet(workspace: workspace, botID: botID)
             case .avatar: AvatarPickerSheet(workspace: workspace, botID: botID)
             case .routine(let routine): RoutineEditorSheet(workspace: workspace, botID: botID, existing: routine)
             }
@@ -58,14 +56,12 @@ struct AgentDetailView: View {
         .errorAlert($errorText)
         .debugCommand { command, _ in
             switch command {
-            case "identity": sheet = .identity
             case "avatarpicker": sheet = .avatar
             case "routine": sheet = .routine(nil)
             case "routineedit": if let r = workspace.state?.routines(botID: botID).first { sheet = .routine(r) }
             case "pin": preferences.togglePin(botID)
             case "workstop": if let t = tasks.first { Task { await run(t.id) { try await workspace.cancelTask(t.id) } } }
             case "resume": if let t = tasks.first(where: { $0.status == "paused" }) { Task { await run(t.id) { try await workspace.resumeTask(t.id) } } }
-            case "runroutine": if let r = workspace.state?.routines(botID: botID).first { Task { await runNow(r) } }
             case "togglefirstroutine": if let r = workspace.state?.routines(botID: botID).first { Task { await toggle(r, !r.enabled) } }
             default: break
             }
@@ -75,18 +71,16 @@ struct AgentDetailView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
-            if let bot { workspace.avatar(of: bot, size: 64) }
+        HStack(alignment: .center, spacing: 14) {
+            if let bot {
+                Button { sheet = .avatar } label: { workspace.avatar(of: bot, size: 64, animated: true) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("更换 \(bot.name) 的头像")
+            }
             VStack(alignment: .leading, spacing: 6) {
                 Text(bot?.name ?? "").font(.headline).lineLimit(2)
                 Text("个人 Agent").font(.caption2.weight(.semibold)).foregroundStyle(Theme.muted)
                     .padding(.horizontal, 8).padding(.vertical, 2).background(Theme.secondary, in: Capsule())
-                HStack(spacing: 6) {
-                    Button("编辑身份") { sheet = .identity }
-                    Text("·").foregroundStyle(Theme.muted)
-                    Button("更换头像") { sheet = .avatar }
-                }
-                .font(.footnote).foregroundStyle(Theme.brand).buttonStyle(.plain)
             }
             Spacer(minLength: 0)
             let pinned = preferences.isPinned(botID)
@@ -105,11 +99,9 @@ struct AgentDetailView: View {
 
     @ViewBuilder private var work: some View {
         let state = workspace.state
-        VStack(alignment: .leading, spacing: 6) {
-            Text(tasks.first.map(\.phrase) ?? "准备就绪").font(.subheadline.weight(.bold))
-            Text(tasks.first.map { String($0.objective.prefix(90)) } ?? "发一条消息，开始新的工作。").font(.footnote).foregroundStyle(Theme.muted)
+        if let preview = PreviewCenter.shared.items[botID] {
+            PreviewCard(item: preview) { PreviewCenter.shared.items[botID] = nil }
         }
-        .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
 
         if !tasks.isEmpty {
             section("正在处理") {
@@ -150,74 +142,36 @@ struct AgentDetailView: View {
             }
         }
 
-        let connectors = state?.connectors(grantedTo: botID) ?? []
-        section("连接器", trailing: ("plus", "管理连接器", { nav.openConnectors() })) {
-            ForEach(connectors) { connector in
-                Button { nav.openConnectors() } label: {
-                    HStack {
-                        Image(systemName: "puzzlepiece.extension").foregroundStyle(Theme.muted)
-                        Text(connector.name).font(.subheadline).lineLimit(1)
-                        Spacer()
-                        Text("\(connector.grant(for: botID)?.tools.count ?? 0) 项工具").font(.caption).foregroundStyle(Theme.muted)
+        let routines = state?.routines(botID: botID) ?? []
+        section("例行任务", trailing: ("plus", "添加例行任务", { sheet = .routine(nil) })) {
+            if !routines.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(routines.enumerated()), id: \.element.id) { index, routine in
+                        if index > 0 { Divider().overlay(Theme.border).padding(.leading, 14) }
+                        routineRow(routine)
                     }
                 }
-                .buttonStyle(.plain)
+                .cardStyle(radius: 16)
+                .accessibilityLabel("例行任务列表")
             }
-            Button { nav.openConnectors() } label: { Text("连接工具与管理授权 →").font(.footnote) }
-                .foregroundStyle(Theme.brand).buttonStyle(.plain)
-        }
-
-        section("可用设备") {
-            let devices = state?.boundDevices ?? []
-            if devices.isEmpty { Text("还没有可用设备。").font(.footnote).foregroundStyle(Theme.muted) }
-            ForEach(devices) { device in
-                HStack {
-                    Image(systemName: "cpu").foregroundStyle(Theme.muted)
-                    Text(device.name).font(.subheadline).lineLimit(1)
-                    Spacer()
-                    Text(device.online ? "在线" : "离线").font(.caption2)
-                        .foregroundStyle(device.online ? Theme.success : Theme.muted)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(device.online ? Theme.successSoft : Theme.secondary, in: Capsule())
-                }
-            }
-            Button { nav.openDevices() } label: { Text("管理设备网络 →").font(.footnote) }
-                .foregroundStyle(Theme.brand).buttonStyle(.plain)
-        }
-
-        section("例行任务", trailing: ("plus", "添加例行任务", { sheet = .routine(nil) })) {
-            let routines = state?.routines(botID: botID) ?? []
-            if routines.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("安排一项例行任务，Agent 会按计划工作并给你汇报。").font(.footnote).foregroundStyle(Theme.muted)
-                    Button("添加例行任务") { sheet = .routine(nil) }.buttonStyle(PillButtonStyle())
-                }
-            }
-            ForEach(routines) { routine in routineRow(routine) }
         }
     }
 
     private func routineRow(_ routine: Routine) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(routine.name).font(.subheadline.weight(.medium)).lineLimit(1)
-                Spacer()
-                Toggle("", isOn: Binding(get: { routine.enabled }, set: { value in Task { await toggle(routine, value) } }))
-                    .labelsHidden().tint(Theme.success)
-                    .accessibilityLabel(routine.enabled ? "暂停\(routine.name)" : "启用\(routine.name)")
-            }
-            Text(routine.label).font(.caption).foregroundStyle(Theme.muted)
-            HStack(spacing: 8) {
-                Button("编辑") { sheet = .routine(routine) }.buttonStyle(PillButtonStyle())
-                Button(ranRoutine == routine.id ? "已提交" : "现在执行") { Task { await runNow(routine) } }
-                    .buttonStyle(PillButtonStyle())
-                Spacer()
-                if routine.enabled, let next = routine.nextDueAt {
-                    Text("下次 \(TimeFormat.formatTime(next))").font(.caption2).foregroundStyle(Theme.muted)
+        HStack(spacing: 12) {
+            Button { sheet = .routine(routine) } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(routine.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text("\(routine.label) · \(routine.prompt)").font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            Toggle(routine.name, isOn: Binding(get: { routine.enabled }, set: { value in Task { await toggle(routine, value) } }))
+                .labelsHidden().tint(Theme.brand)
+                .disabled(togglingRoutine != nil)
         }
-        .padding(12).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
+        .padding(.horizontal, 14).padding(.vertical, 12)
     }
 
     // MARK: Actions
@@ -229,16 +183,10 @@ struct AgentDetailView: View {
     }
 
     private func toggle(_ routine: Routine, _ enabled: Bool) async {
+        guard togglingRoutine == nil else { return }
+        togglingRoutine = routine.id
+        defer { togglingRoutine = nil }
         do { try await workspace.setRoutineEnabled(routine, enabled: enabled) } catch { errorText = message(of: error) }
-    }
-
-    private func runNow(_ routine: Routine) async {
-        do {
-            try await workspace.runRoutine(routine)
-            ranRoutine = routine.id
-            try? await Task.sleep(for: .seconds(2))
-            if ranRoutine == routine.id { ranRoutine = nil }
-        } catch { errorText = message(of: error) }
     }
 
     private func section<C: View>(_ title: String, trailing: (icon: String, label: String, action: () -> Void)? = nil, @ViewBuilder content: () -> C) -> some View {

@@ -15,6 +15,7 @@ struct RoutineEditorSheet: View {
     @State private var runAt = Date().addingTimeInterval(3600)
     @State private var timeZone = TimeZone.current.identifier
     @State private var pending = false
+    @State private var running = false
     @State private var error: String?
 
     private var canSave: Bool {
@@ -59,6 +60,14 @@ struct RoutineEditorSheet: View {
                             .multilineTextAlignment(.trailing).foregroundStyle(Theme.muted)
                     }
                 }
+                if let existing {
+                    Section {
+                        Button { Task { await runNow(existing) } } label: {
+                            Label(running ? "正在提交…" : "现在执行", systemImage: "play")
+                        }
+                        .disabled(pending || running)
+                    }
+                }
                 Section {
                     SheetError(text: error)
                 } footer: {
@@ -81,12 +90,20 @@ struct RoutineEditorSheet: View {
                 case "routineprompt": prompt = arg
                 case "routinekind": if let k = ScheduleKind(rawValue: arg) { kind = k }
                 case "routinesave": Task { await save() }
+                case "routinerun": if let existing { Task { await runNow(existing) } }
                 default: break
                 }
             }
         }
         .presentationDetents([.large])
-        .interactiveDismissDisabled(pending)
+        .interactiveDismissDisabled(pending || running)
+    }
+
+    /// Runs the routine once without touching its schedule or switch.
+    private func runNow(_ routine: Routine) async {
+        running = true; error = nil
+        defer { running = false }
+        do { try await workspace.runRoutine(routine); dismiss() } catch { self.error = message(of: error) }
     }
 
     private func load() {

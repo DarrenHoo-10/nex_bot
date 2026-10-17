@@ -55,7 +55,7 @@ struct AgentEditorSheet: View {
                     try await workspace.updateIdentity(botID: bot.id, name: name.trimmingCharacters(in: .whitespacesAndNewlines), instructions: instructions)
                 } else {
                     let id = try await workspace.createAgent(name: name.trimmingCharacters(in: .whitespacesAndNewlines), instructions: instructions)
-                    workspace.select(id); ui.showAgent()
+                    workspace.select(id)
                 }
                 dismiss()
             } catch { self.error = message(of: error) }
@@ -178,6 +178,9 @@ struct RoutineEditorSheet: View {
             HStack(spacing: 8) {
                 DialogButton(title: "保存", kind: .primary, disabled: !valid || busy, action: save)
                 DialogButton(title: "取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                if let existing = request.existing {
+                    DialogButton(title: "现在执行", disabled: busy) { runNow(existing) }
+                }
                 if busy { ProgressView().controlSize(.small) }
             }
         }
@@ -204,6 +207,14 @@ struct RoutineEditorSheet: View {
         var c = Calendar.current.dateComponents([.year, .month, .day], from: Date())
         c.hour = parts.first ?? 9; c.minute = parts.count > 1 ? parts[1] : 0
         return Calendar.current.date(from: c) ?? Date()
+    }
+
+    private func runNow(_ routine: Routine) {
+        busy = true; error = nil
+        Task {
+            do { try await workspace.runRoutine(routine); dismiss() } catch { self.error = message(of: error) }
+            busy = false
+        }
     }
 
     private func save() {

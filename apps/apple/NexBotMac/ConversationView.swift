@@ -16,6 +16,7 @@ struct ConversationView: View {
     let workspace: WorkspaceStore
     let botID: String
     @Environment(UIState.self) private var ui
+    @Environment(ContactPreferences.self) private var preferences
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.scenePhase) private var scenePhase
     @State private var exported = false
@@ -78,7 +79,7 @@ struct ConversationView: View {
         }()
         return HStack(spacing: 12) {
             HStack(spacing: 12) {
-                if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 40) }
+                if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 40, animated: preferences.motionEnabled) }
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                         Text(bot?.name ?? "NexBot").font(.system(size: 15, weight: .semibold)).lineLimit(1)
@@ -97,15 +98,12 @@ struct ConversationView: View {
             .help("点击展开或收起 Agent 资料")
             Spacer()
             if !memoryNotice.isEmpty {
-                Button { ui.openInspector(.memory); memoryNotice = "" } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "sparkles").font(.system(size: 10))
-                        Text("已更新记忆：\(memoryNotice)").font(.system(size: 11)).lineLimit(1)
-                    }
-                    .foregroundStyle(Theme.brand).padding(.horizontal, 10).frame(height: 26)
-                    .background(Theme.brandSoft, in: Capsule()).contentShape(Capsule())
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles").font(.system(size: 10))
+                    Text("已更新记忆：\(memoryNotice)").font(.system(size: 11)).lineLimit(1)
                 }
-                .buttonStyle(.plain).frame(maxWidth: 260)
+                .foregroundStyle(Theme.brand).padding(.horizontal, 10).frame(height: 26)
+                .background(Theme.brandSoft, in: Capsule()).frame(maxWidth: 260)
             }
             if !conversation.messages.isEmpty {
                 Button(action: share) {
@@ -219,6 +217,7 @@ private struct MessageList: View {
     let conversation: ConversationStore
     let bot: Bot?
     @Environment(UIState.self) private var ui
+    @Environment(ContactPreferences.self) private var preferences
     @State private var atBottom = true
 
     private var botID: String { conversation.botID }
@@ -326,7 +325,7 @@ private struct MessageList: View {
         let peers = workspace.bots.filter { $0.id != botID }
         let instructions = bot?.instructions ?? ""
         return VStack(spacing: 12) {
-            if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: workspace.companionState(botID), size: 84) }
+            if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: workspace.companionState(botID), size: 84, animated: preferences.motionEnabled) }
             Text("长期陪伴，随时开始").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.brand)
                 .padding(.horizontal, 12).padding(.vertical, 4).background(Theme.brandSoft, in: Capsule())
             Text(bot?.name ?? "").font(.system(size: 22, weight: .bold))
