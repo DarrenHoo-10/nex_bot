@@ -1,0 +1,7 @@
+{
+  "transactionId": "fixture-id-2",
+  "bindingToken": "fixture-id-3",
+  "stepId": "fixture-id-4",
+  "challenge": "password",
+  "expiresAt": 1700000000000
+}

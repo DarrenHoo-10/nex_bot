@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NexBot</string>
+
+    <string name="connect_title">连接你的个人 Agent</string>
+    <string name="connect_subtitle">使用 NexorAI 账号登录，连接你的 Agent、消息与记忆。</string>
+    <string name="connect_checking">正在检查登录状态…</string>
+    <string name="connect_origin">服务器地址</string>
+    <string name="connect_origin_hint">https://bot.nexorai.com.cn</string>
+    <string name="connect_account">NexorAI 账号</string>
+    <string name="connect_password">密码</string>
+    <string name="connect_login">登录</string>
+    <string name="connect_switching">切换连接</string>
+    <string name="connect_expired">登录已过期，请重新登录</string>
+    <string name="connect_unreachable">无法连接 Core，请检查地址与网络</string>
+    <string name="connect_local_cleartext">当前为本地明文连接</string>
+
+    <string name="agents_title">你的 Agent</string>
+    <string name="agents_empty">还没有 Agent，请先在桌面创建一个。</string>
+    <string name="agents_refresh">刷新</string>
+
+    <string name="chat_placeholder">给 %1$s 发消息…</string>
+    <string name="chat_ready">准备就绪</string>
+    <string name="chat_empty">发一条消息，开始新的工作。</string>
+    <string name="chat_load_older">加载更早的消息</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_stop">停止任务</string>
+    <string name="chat_back">返回</string>
+    <string name="chat_offline">Core 连接中断，正在重新同步…</string>
+    <string name="chat_details">查看具体操作</string>
+
+    <string name="approval_title">%1$s 需要你的批准</string>
+    <string name="approval_allow">批准</string>
+    <string name="approval_deny">拒绝</string>
+    <string name="approval_gone">审批已失效</string>
+
+    <string name="settings_logout">退出登录</string>
+    <string name="settings_session">当前会话有效期至 %1$s</string>
+
+    <string name="notification_channel">NexBot 提醒</string>
+    <string name="notification_channel_description">新回复与待审批的操作</string>
+    <string name="notification_reply">%1$s 回复了你</string>
+    <string name="notification_approval">%1$s 需要你的批准</string>
+</resources>

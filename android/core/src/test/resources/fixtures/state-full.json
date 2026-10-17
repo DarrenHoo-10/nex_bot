@@ -1,0 +1,74 @@
+{
+  "sync": {
+    "cursor": 1,
+    "privacyEpoch": 1,
+    "coreId": "fixture-id-1",
+    "bootId": "fixture-id-7"
+  },
+  "bots": [
+    {
+      "id": "fixture-id-8",
+      "name": "摘要联系人",
+      "instructions": "",
+      "version": 1,
+      "read_seq": 0,
+      "unread_count": 1,
+      "last_message": "### 发布清单\n\n- 合并改动\n- 更新说明\n\n| 项 | 状态 |\n|---|---|\n| 构建 | 通过 |",
+      "last_message_at": 1700000000000,
+      "policy_version": 1
+    },
+    {
+      "id": "fixture-id-9",
+      "name": "第二个 Agent",
+      "instructions": "",
+      "version": 1,
+      "read_seq": 0,
+      "unread_count": 1,
+      "last_message": "有什么可以帮你？",
+      "last_message_at": 1700000000000,
+      "policy_version": 1
+    }
+  ],
+  "tasks": [],
+  "approvals": [],
+  "routines": [
+    {
+      "id": "fixture-id-10",
+      "bot_id": "fixture-id-8",
+      "name": "周一发布检查",
+      "prompt": "检查发布清单",
+      "schedule_kind": "interval",
+      "interval_ms": 3600000,
+      "local_time": null,
+      "time_zone": "Asia/Shanghai",
+      "enabled": 1,
+      "next_due_at": 1700000000000,
+      "version": 1,
+      "created_at": 1700000000000
+    }
+  ],
+  "occurrences": [],
+  "memories": [
+    {
+      "id": "fixture-id-11",
+      "scope": "bot",
+      "bot_id": "fixture-id-8",
+      "title": "发布节奏",
+      "version": 1,
+      "updated_at": 1700000000000,
+      "content": "每周一上午整理发布清单。"
+    }
+  ],
+  "devices": [
+    {
+      "id": "fixture-id-12",
+      "name": "darren-win-1",
+      "status": "bound"
+    }
+  ],
+  "onlineDevices": [
+    "fixture-id-12"
+  ],
+  "delegations": [],
+  "journal": []
+}

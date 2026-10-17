@@ -1,0 +1,8 @@
+{
+  "token": "fixture-id-5",
+  "sessionId": "fixture-id-6",
+  "expiresAt": 1700000000000,
+  "coreId": "fixture-id-1",
+  "protocol": "native-v1",
+  "version": 1
+}

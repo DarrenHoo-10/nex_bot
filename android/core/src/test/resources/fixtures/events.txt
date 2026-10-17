@@ -1,0 +1,4 @@
+id: 1
+event: change
+data: {"cursor":1,"privacyEpoch":1,"coreId":"fixture-id-1","bootId":"fixture-id-7","reset":false}
+

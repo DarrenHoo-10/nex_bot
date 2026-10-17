@@ -46,33 +46,49 @@ function run(directory: string, event: string, payload: unknown) {
 }
 
 describe("CI path scope", () => {
-  it("skips the runtime suite only for explicit documentation and metadata", () => {
+  it("skips runtime and Android checks only for explicit documentation and metadata", () => {
     expect(selectCiScope(["README.md", "AGENTS.md", "docs/guide.md", "docs/nested/guide.md", ".github/FUNDING.yml"]))
-      .toEqual({ runtime: false });
+      .toEqual({ runtime: false, android: false });
   });
 
   it("keeps runtime checks for renderer-only changes mixed with docs", () => {
     expect(selectCiScope(["src/App.tsx", "public/icon.svg", "index.html", "docs/guide.md"]))
-      .toEqual({ runtime: true });
+      .toEqual({ runtime: true, android: false });
+  });
+
+  it("runs only the Kotlin suite for an Android-only change", () => {
+    expect(selectCiScope(["android/core/src/main/kotlin/com/nexorai/nexbot/core/Wire.kt"]))
+      .toEqual({ runtime: false, android: true });
+    expect(selectCiScope(["android/README.md", "android/gradlew"]))
+      .toEqual({ runtime: false, android: true });
+  });
+
+  it("tests both sides when the selector, the fixture capture or CI itself changes", () => {
+    for (const file of ["scripts/capture-android-fixtures.mjs", "scripts/ci-scope.mjs", ".github/workflows/ci.yml"]) {
+      expect(selectCiScope([file])).toEqual({ runtime: true, android: true });
+    }
   });
 
   it("keeps filenames containing newlines as one source path", () => {
-    expect(selectCiScope(["src/first.md\nsecond.md"])).toEqual({ runtime: true });
+    expect(selectCiScope(["src/first.md\nsecond.md"])).toEqual({ runtime: true, android: false });
   });
 
   it.each([
     [], [""], ["docs/../server/file.md"],
-    [".github/workflows/ci.yml"], ["scripts/ci-scope.mjs"], [".gitattributes"],
   ])("runs everything conservatively for %j", (...files) => {
-    expect(selectCiScope(files)).toEqual({ runtime: true });
+    expect(selectCiScope(files)).toEqual({ runtime: true, android: true });
   });
 
   it.each([
     ["server/index.ts"], ["shared/types.ts"], ["electron/main.mjs"], ["companion/src/index.ts"],
-    ["package.json"], ["pnpm-lock.yaml"], ["vite.config.ts"], [".github/workflows/release.yml"],
+    ["package.json"], ["pnpm-lock.yaml"], ["vite.config.ts"],
     ["docs/fixture.json"], ["unknown/file"], ["src/App.tsx", "server/index.ts"], ["scripts/capture-companion-fixtures.mjs"],
-  ])("runs the runtime suite for %j", (...files) => {
-    expect(selectCiScope(files)).toEqual({ runtime: true });
+  ])("runs the runtime suite for %j without the Kotlin one", (...files) => {
+    expect(selectCiScope(files)).toEqual({ runtime: true, android: false });
+  });
+
+  it("does not run Kotlin for a bare repository metadata change", () => {
+    expect(selectCiScope([".gitattributes"])).toEqual({ runtime: true, android: false });
   });
 });
 
@@ -84,8 +100,19 @@ describe("CI scope CLI", () => {
     const { output, stderr } = run(directory, "pull_request", {
       pull_request: { base: { sha: base }, head: { sha: git("rev-parse", "HEAD") } },
     });
-    expect(output).toBe(`runtime=false\nvitest_os=${PR_OS}\n`);
+    expect(output).toBe(`runtime=false\nvitest_os=${PR_OS}\nandroid=false\n`);
     expect(stderr).toBe("");
+  });
+
+  it("selects only the Kotlin suite for an Android-only pull request", () => {
+    const source = "android/core/src/main/kotlin/com/nexorai/nexbot/core/Wire.kt";
+    const { directory, git, base } = fixture(source);
+    writeFileSync(join(directory, source), "// changed\n");
+    git("commit", "--quiet", "-am", "android change");
+    const { output } = run(directory, "pull_request", {
+      pull_request: { base: { sha: base }, head: { sha: git("rev-parse", "HEAD") } },
+    });
+    expect(output).toBe(`runtime=false\nvitest_os=${PR_OS}\nandroid=true\n`);
   });
 
   it("ignores base-only server changes after the pull request diverges", () => {
@@ -100,7 +127,7 @@ describe("CI scope CLI", () => {
     const { output, stderr } = run(directory, "pull_request", {
       pull_request: { base: { sha: base }, head: { sha: git("rev-parse", "HEAD") } },
     });
-    expect(output).toBe(`runtime=false\nvitest_os=${PR_OS}\n`);
+    expect(output).toBe(`runtime=false\nvitest_os=${PR_OS}\nandroid=false\n`);
     expect(stderr).toBe("");
   });
 
@@ -113,7 +140,7 @@ describe("CI scope CLI", () => {
     const { output, stderr } = run(directory, "pull_request", {
       pull_request: { base: { sha: base }, head: { sha: git("rev-parse", "HEAD") } },
     });
-    expect(output).toBe(`runtime=true\nvitest_os=${PR_OS}\n`);
+    expect(output).toBe(`runtime=true\nvitest_os=${PR_OS}\nandroid=false\n`);
     expect(stderr).toBe("");
   });
 
@@ -125,7 +152,7 @@ describe("CI scope CLI", () => {
     const { output } = run(directory, "pull_request", {
       pull_request: { base: { sha: base }, head: { sha: git("rev-parse", "HEAD") } },
     });
-    expect(output).toBe(`runtime=true\nvitest_os=${PR_OS}\n`);
+    expect(output).toBe(`runtime=true\nvitest_os=${PR_OS}\nandroid=false\n`);
   });
 
   it.each(["missing", "invalid", "unavailable", "empty"])("falls back loudly for a %s diff", (kind) => {
@@ -134,12 +161,12 @@ describe("CI scope CLI", () => {
       pull_request: { base: { sha: base }, head: { sha: kind === "invalid" ? "--help" : kind === "unavailable" ? "f".repeat(40) : base } },
     };
     const { output, stderr } = run(directory, "pull_request", payload);
-    expect(output).toBe(`runtime=true\nvitest_os=${ALL_OS}\n`);
+    expect(output).toBe(`runtime=true\nvitest_os=${ALL_OS}\nandroid=true\n`);
     expect(stderr).toContain("using all checks");
   });
 
   it.each(["push", "merge_group", "workflow_dispatch"])("runs everything for %s", (event) => {
     const { directory } = fixture();
-    expect(run(directory, event, {}).output).toBe(`runtime=true\nvitest_os=${ALL_OS}\n`);
+    expect(run(directory, event, {}).output).toBe(`runtime=true\nvitest_os=${ALL_OS}\nandroid=true\n`);
   });
 });

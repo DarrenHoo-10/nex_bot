@@ -5,8 +5,12 @@ typecheck, lint, Electron checks, the UI build, CI-selection tests and the
 verification-documentation checks. Selection never skips the entire workflow.
 
 - Root Markdown files, Markdown under `docs/`, and `.github/FUNDING.yml` alone
-  do not run the runtime jobs.
+  do not run the runtime or Android jobs.
 - Any other change runs the runtime suite.
+- A change under `android/` runs the Kotlin protocol suite and the fixture
+  drift gate instead of the runtime suite.
+- A change to the fixture capture, to CI selection itself, or to a workflow
+  runs both suites.
 - Main pushes, merge groups and manual runs always run all jobs. Empty or
   unreadable PR diffs also fall back to all jobs.
 
@@ -18,6 +22,12 @@ The single `CI` gate keeps the existing required dependencies. It accepts a
 skipped runtime job only when static validation passed and explicitly selected
 the docs-only path. Failures, cancellations, missing selection and unexpected
 skips fail the gate. Existing advisory jobs remain advisory.
+
+The Android job (`android-core`) is advisory for now: it runs only when the
+change selects it and is not one of the gate's required jobs. It installs the
+platform and build tools the Compose module needs, runs the Kotlin and app
+suites, builds the debug APK and compares the captured fixtures against a
+disposable Core.
 
 The separate shared-terminal smoke workflow is manual-only: its tests already
 run in the Windows Vitest/Electron jobs.

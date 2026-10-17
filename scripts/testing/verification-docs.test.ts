@@ -27,13 +27,15 @@ const target = (hit: string) => hit.slice(hit.indexOf(": ") + 2);
 const helpVerbs = new Set([...HELP.matchAll(/^ {2}([a-z][\w-]*)(?= |$)/gm)].map((match) => match[1]!).filter((verb) => verb !== "node"));
 helpVerbs.add("help");
 
-// Routes are registered in server/index.ts and, for anything newer, in the
-// modules under server/routes (server/routes/README.md). Tests there quote
-// paths without registering them, so they do not count.
+// Routes are registered in server/index.ts, in the modules under server/routes
+// (server/routes/README.md), and in the Personal OS core
+// (server/personal-os/index.ts). Tests there quote paths without registering
+// them, so they do not count.
 const ROUTES_DIR = join(ROOT, "server", "routes");
 const routeModules = readdirSync(ROUTES_DIR).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts")).sort();
 const serverSource = [join(ROOT, "server", "index.ts"), ...routeModules.map((name) => join(ROUTES_DIR, name))]
   .map((file) => readFileSync(file, "utf8")).join("\n");
+const personalSource = readFileSync(join(ROOT, "server", "personal-os", "index.ts"), "utf8");
 const hooksSource = readFileSync(join(ROOT, "server", "webhook-ingress.ts"), "utf8");
 const hostedSource = readFileSync(join(ROOT, "enterprise", "server", "workspace-access.ts"), "utf8");
 // Only constants named in the public handler's accepted-path guard are routes.
@@ -76,7 +78,7 @@ describe("docs/verification recipes cite things that exist", () => {
     const registered = (route: string) => {
       const path = route.replace(/[.,;:]+$/, "");
       if (hostedPublicRoutes.has(path)) return true;
-      const source = path.startsWith("/hooks/") ? hooksSource : serverSource;
+      const source = path.startsWith("/hooks/") ? hooksSource : `${serverSource}\n${personalSource}`;
       const segments = path.split("/").slice(1);
       const literal = segments.findIndex((segment) => PLACEHOLDER.test(segment));
       if (literal === -1) return source.includes(`"${path}"`) || routePatterns.some((pattern) => pattern.test(path));

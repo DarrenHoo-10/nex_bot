@@ -5,15 +5,29 @@ import { fileURLToPath } from "node:url";
 
 export function selectCiScope(files) {
   let runtime = false;
-  if (!Array.isArray(files) || files.length === 0) return { runtime: true };
+  let android = false;
+  // Anything that cannot be classified runs everything, including the phone
+  // suite: a diff we could not read is not evidence that Android is unaffected.
+  if (!Array.isArray(files) || files.length === 0) return { runtime: true, android: true };
   for (const file of files) {
     if (typeof file !== "string" || file.split("/").some((part) => !part || part === "." || part === "..")) {
-      return { runtime: true };
+      return { runtime: true, android: true };
     }
     if (/^(?:[^/]+\.md|docs\/.+\.md|\.github\/FUNDING\.yml)$/.test(file)) continue;
+    if (file.startsWith("android/")) {
+      android = true;
+      continue;
+    }
+    // These decide whether the Kotlin suite runs or what it compiles, so a
+    // change here tests both sides.
+    if (file === "scripts/capture-android-fixtures.mjs" || file.startsWith(".github/workflows/") || file.startsWith("scripts/ci-")) {
+      android = true;
+      runtime = true;
+      continue;
+    }
     runtime = true;
   }
-  return { runtime };
+  return { runtime, android };
 }
 
 // macOS runners are the scarce ones (five at a time for the whole account),
@@ -24,7 +38,7 @@ const ALL_OS = ["macos-latest", "ubuntu-latest", "windows-latest"];
 const PR_OS = ["ubuntu-latest", "windows-latest"];
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  let scope = { runtime: true };
+  let scope = { runtime: true, android: true };
   let vitestOs = ALL_OS;
   if (process.env.GITHUB_EVENT_NAME === "pull_request") {
     try {
@@ -49,6 +63,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    `runtime=${scope.runtime}\nvitest_os=${JSON.stringify(vitestOs)}\n`,
+    `runtime=${scope.runtime}\nvitest_os=${JSON.stringify(vitestOs)}\nandroid=${scope.android}\n`,
   );
 }

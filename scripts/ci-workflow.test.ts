@@ -127,6 +127,7 @@ describe("CI concurrency", () => {
     expect(workflow.jobs.static.outputs).toEqual({
       runtime: "${{ steps.scope.outputs.runtime }}",
       vitest_os: "${{ steps.scope.outputs.vitest_os }}",
+      android: "${{ steps.scope.outputs.android }}",
     });
     expect(workflow.jobs.static.steps.some((step: { run?: string }) =>
       step.run === "pnpm exec vitest run scripts/ci-scope.test.ts scripts/ci-workflow.test.ts scripts/testing/verification-docs.test.ts",
@@ -148,9 +149,29 @@ describe("CI concurrency", () => {
         for (const step of rest) expect(step.if).toBe("steps.token.outputs.present == 'true'");
         continue;
       }
+      if (name === "android-core") {
+        expect(job.needs).toBe("static");
+        expect(job.if).toBe("needs.static.outputs.android == 'true'");
+        expect(workflow.jobs.gate.needs).not.toContain(name);
+        continue;
+      }
       expect(job.needs).toBe("static");
       expect(job.if).toBe("needs.static.outputs.runtime == 'true'");
     }
+  });
+
+  it("runs the Kotlin and app suites and the fixture drift gate", () => {
+    const job = workflow.jobs["android-core"];
+    expect(job.name).toBe("Kotlin tests + Android fixtures");
+    expect(job.needs).toBe("static");
+    expect(job.if).toBe("needs.static.outputs.android == 'true'");
+    expect(job["runs-on"]).toBe("ubuntu-24.04");
+    expect(job["timeout-minutes"]).toBe(35);
+    const runs = (job.steps as { run?: string }[]).map((step) => step.run ?? "").filter(Boolean);
+    expect(runs.some((run) => run.includes(":core:test") && run.includes(":app:testDebugUnitTest"))).toBe(true);
+    expect(runs.some((run) => run.includes("sdkmanager") && run.includes("platforms;android-36"))).toBe(true);
+    expect(runs.some((run) => run.includes("capture-android-fixtures.mjs") && run.includes("--check"))).toBe(true);
+    expect(workflow.jobs.gate.needs).not.toContain("android-core");
   });
 
   it("keeps the redundant Windows workflow available only for manual debugging", () => {
