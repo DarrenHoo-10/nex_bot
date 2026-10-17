@@ -1,92 +1,104 @@
 import SwiftUI
 import NexClientKit
 
+/// "今天" style divider between days.
+struct DateDivider: View {
+    let date: Date
+    var body: some View {
+        Text(label).font(.caption2).foregroundStyle(Theme.muted)
+            .frame(maxWidth: .infinity).padding(.vertical, 6)
+    }
+    private var label: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "今天" }
+        if cal.isDateInYesterday(date) { return "昨天" }
+        return date.formatted(.dateTime.month().day())
+    }
+}
+
 struct MessageRow: View {
     let message: AgentMessage
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            if message.isFromUser { Spacer(minLength: 48) }
-            VStack(alignment: message.isFromUser ? .trailing : .leading, spacing: 4) {
-                if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps) }
-                if !message.content.isEmpty {
+        VStack(alignment: message.isFromUser ? .trailing : .leading, spacing: 4) {
+            if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps) }
+            if !message.content.isEmpty {
+                if message.isFromUser {
                     Text(Markdown.attributed(message.content))
-                        .foregroundStyle(foreground)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .foregroundStyle(Theme.foreground)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .textSelection(.enabled)
-                }
-                if let date = message.createdAt {
-                    Text(date, format: .dateTime.hour().minute()).font(.caption2).foregroundStyle(.secondary)
+                        .padding(.leading, 40)
+                } else {
+                    if message.kind == "error" {
+                        Text(message.content).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    } else {
+                        MarkdownText(source: message.content, fontSize: 16)
+                    }
                 }
             }
-            if !message.isFromUser { Spacer(minLength: 48) }
+            if let date = message.createdAt {
+                Text(date, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute()).font(.system(size: 10)).foregroundStyle(Theme.muted)
+            }
         }
-    }
-
-    private var isError: Bool { message.kind == "error" }
-    private var foreground: Color { message.isFromUser ? .white : (isError ? .red : .primary) }
-    private var background: Color {
-        message.isFromUser ? .accentColor : Color(.secondarySystemBackground)
+        .frame(maxWidth: .infinity, alignment: message.isFromUser ? .trailing : .leading)
     }
 }
 
+/// An agent reply that is still streaming: plain text with a small spinner.
 struct StreamingRow: View {
     let text: String
     var body: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            Text(Markdown.attributed(text))
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            ProgressView()
-            Spacer(minLength: 32)
+        VStack(alignment: .leading, spacing: 6) {
+            MarkdownText(source: text, fontSize: 16)
+            ProgressView().controlSize(.small)
         }
     }
 }
 
-/// Tool steps collapsed to one summary line; tap to see each step.
+/// Tool steps collapsed to "› 执行记录 · N 项操作"; tap to see each step.
 struct ToolStepsRow: View {
     let steps: [ToolStep]
     @State private var expanded = false
 
+    private var unsuccessful: [ToolStep] { steps.filter { ["failed", "rejected", "cancelled"].contains($0.status) } }
+
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(steps) { step in
-                    HStack(spacing: 6) {
-                        Image(systemName: icon(step)).foregroundStyle(color(step))
-                        Text(step.summary.isEmpty ? step.label : "\(step.label)：\(step.summary)").lineLimit(2)
+        VStack(alignment: .leading, spacing: 6) {
+            Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).rotationEffect(.degrees(expanded ? 90 : 0))
+                    Text("执行记录 · \(steps.count) 项操作")
+                    if let first = unsuccessful.first {
+                        Text("· \(ToolLabels.statusText(first.status))").foregroundStyle(Theme.danger)
                     }
                 }
+                .font(.caption).foregroundStyle(Theme.muted)
             }
-            .font(.caption).padding(.top, 4)
-        } label: {
-            Label(summary, systemImage: "wrench.and.screwdriver")
-                .font(.caption).foregroundStyle(steps.contains { ["failed", "rejected"].contains($0.status) } ? .red : .secondary)
+            .buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(steps) { step in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Circle().fill(color(step)).frame(width: 6, height: 6)
+                            Text(step.summary.isEmpty ? step.label : "\(step.label)：\(step.summary)").lineLimit(2)
+                            Text(ToolLabels.statusText(step.status)).foregroundStyle(color(step))
+                        }
+                    }
+                }
+                .font(.caption).foregroundStyle(Theme.foreground).padding(.leading, 13)
+            }
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The collapsed row still tells whether the call ran, e.g. 执行终端命令 · 已拒绝.
-    private var summary: String {
-        if steps.count == 1 { return "\(steps[0].label) · \(ToolLabels.statusText(steps[0].status))" }
-        let unsuccessful = steps.filter { ["failed", "rejected", "cancelled"].contains($0.status) }.count
-        return "\(steps[0].label) 等 \(steps.count) 步" + (unsuccessful > 0 ? " · \(unsuccessful) 步未成功" : "")
-    }
-
-    private func icon(_ step: ToolStep) -> String {
-        switch step.status {
-        case "failed", "rejected", "cancelled": "xmark.circle"
-        case "running", "pending", "queued": "clock"
-        default: "checkmark.circle"
-        }
-    }
     private func color(_ step: ToolStep) -> Color {
         switch step.status {
-        case "failed", "rejected": .red
-        case "running", "pending", "queued": .orange
-        default: .green
+        case "failed", "rejected": Theme.danger
+        case "running", "pending", "queued": Theme.approval
+        case "cancelled": Theme.muted
+        default: Theme.success
         }
     }
 }

@@ -1,34 +1,32 @@
 import SwiftUI
 import NexClientKit
 
-/// Return sends, Shift-Return inserts a newline. Stop replaces Send while a task runs.
+/// Return sends, Shift-Return inserts a newline.
 struct Composer: View {
-    let workspace: WorkspaceStore
     @Bindable var conversation: ConversationStore
     let botName: String
     @Environment(UIState.self) private var ui
     @FocusState private var focused: Bool
 
-    private var canSend: Bool { !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !conversation.isSending }
+    private var hasText: Bool { !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { hasText && !conversation.isSending }
     private var height: CGFloat {
         let lines = conversation.draft.split(separator: "\n", omittingEmptySubsequences: false).count
-        return min(120, max(24, CGFloat(lines) * 18 + 8))
+        return min(120, max(22, CGFloat(lines) * 19 + 3))
     }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextEditor(text: $conversation.draft)
-                .font(.body)
+                .font(.system(size: 14))
                 .scrollContentBackground(.hidden)
                 .focused($focused)
                 .frame(height: height)
-                .padding(.horizontal, 6).padding(.vertical, 4)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.separator))
                 .overlay(alignment: .topLeading) {
                     if conversation.draft.isEmpty {
-                        Text("发消息给 \(botName)　Return 发送，Shift-Return 换行")
-                            .foregroundStyle(.tertiary).padding(.horizontal, 11).padding(.vertical, 8).allowsHitTesting(false)
+                        Text("给 \(botName) 发消息...")
+                            .font(.system(size: 14)).foregroundStyle(Theme.muted)
+                            .padding(.leading, 5).allowsHitTesting(false)
                     }
                 }
                 .onKeyPress(.return, phases: .down) { press in
@@ -37,18 +35,19 @@ struct Composer: View {
                     return .handled
                 }
                 .accessibilityLabel("消息输入框")
-            if conversation.canStop {
-                Button { Task { await conversation.stop() } } label: { Label("停止", systemImage: "stop.circle.fill") }
-                    .controlSize(.large).help("停止当前任务 (⌘.)")
-            }
             Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 26))
+                Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(hasText ? Theme.primaryForeground : .white)
+                    .frame(width: 34, height: 34)
+                    .background(hasText ? Theme.primary : Color(hex: 0x9A9A9E), in: Circle())
             }
-            .buttonStyle(.plain).foregroundStyle(canSend ? Color.accentColor : Color.secondary)
+            .buttonStyle(.plain)
             .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送")
         }
-        .padding(12)
-        .background(.bar)
+        .padding(.leading, 18).padding(.trailing, 14).padding(.vertical, 12)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border))
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
         .onChange(of: ui.composerFocusTick) { focused = true }
         .onAppear { focused = true }
     }

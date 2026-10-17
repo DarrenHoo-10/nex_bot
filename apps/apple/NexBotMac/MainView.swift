@@ -1,36 +1,73 @@
 import SwiftUI
+import AppKit
 import NexClientKit
 
 struct MainView: View {
     let workspace: WorkspaceStore
-    @State private var columns: NavigationSplitViewVisibility = .all
+    @Environment(UIState.self) private var ui
+    @Environment(AppModel.self) private var model
+    @Environment(\.colorScheme) private var scheme
+    @AppStorage(AppearanceOverride.key) private var appearance = "system"
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columns) {
+        HStack(spacing: 0) {
             ContactsList(workspace: workspace)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 360)
-        } content: {
-            Group {
-                if let id = workspace.selectedBotID, workspace.bot(id) != nil {
-                    ConversationView(workspace: workspace, botID: id).id(id)
-                } else {
-                    ContentUnavailableView(workspace.bots.isEmpty && workspace.state != nil ? "还没有 Agent" : "选择一个 Agent",
-                                           systemImage: "bubble.left.and.bubble.right",
-                                           description: Text(workspace.bots.isEmpty && workspace.state != nil ? "请先在 Core 中创建 Agent。" : "从左侧选择会话。"))
+                .frame(width: 260)
+            Hairline(vertical: true)
+            VStack(spacing: 0) {
+                NoticeBanner(workspace: workspace)
+                Group {
+                    if let id = workspace.selectedBotID, workspace.bot(id) != nil {
+                        ConversationView(workspace: workspace, botID: id).id(id)
+                    } else {
+                        EmptyChat(noAgents: workspace.bots.isEmpty && workspace.state != nil)
+                    }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 380, ideal: 560)
-            .safeAreaInset(edge: .top, spacing: 0) { NoticeBanner(workspace: workspace) }
-        } detail: {
-            InspectorView(workspace: workspace)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
+            .frame(minWidth: 380, maxWidth: .infinity)
+            if ui.inspectorVisible, let id = workspace.selectedBotID, workspace.bot(id) != nil {
+                Hairline(vertical: true)
+                InspectorView(workspace: workspace, botID: id)
+                    .frame(width: 310)
+            }
         }
+        .background(Theme.background)
+        .ignoresSafeArea(.container, edges: .top)
+        .overlay { if ui.accountMenuOpen { accountMenuLayer } }
+        .animation(.easeOut(duration: 0.15), value: ui.accountMenuOpen)
         #if DEBUG
-        .task { await runDebugCommands(workspace: workspace) }
+        .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif
         .onChange(of: workspace.bots.first?.id, initial: true) {
             if workspace.selectedBotID == nil, let first = workspace.bots.first { workspace.select(first.id) }
         }
+    }
+
+    /// Click-away layer plus the account menu card above the account button, as in the web sidebar.
+    private var accountMenuLayer: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color.clear.contentShape(Rectangle()).onTapGesture { ui.accountMenuOpen = false }
+            AccountMenu(dark: scheme == .dark,
+                        openSettings: { ui.accountMenuOpen = false; ui.settingsTick += 1 },
+                        toggleDark: { appearance = scheme == .dark ? "light" : "dark"; ui.accountMenuOpen = false },
+                        logout: { ui.accountMenuOpen = false; Task { await model.logout() } })
+                .frame(width: 236)
+                .padding(.leading, 12).padding(.bottom, 74)
+                .transition(.opacity.combined(with: .offset(y: 6)))
+        }
+        .onExitCommand { ui.accountMenuOpen = false }
+    }
+}
+
+private struct EmptyChat: View {
+    let noAgents: Bool
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 28)).foregroundStyle(Theme.muted)
+            Text(noAgents ? "还没有 Agent" : "选择一个 Agent").font(.system(size: 15, weight: .semibold))
+            Text(noAgents ? "请先在 Core 中创建 Agent。" : "从左侧选择会话。").font(.system(size: 12)).foregroundStyle(Theme.muted)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -41,26 +78,26 @@ struct NoticeBanner: View {
         if let notice = workspace.notice {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(notice).font(.callout)
+                Text(notice).font(.system(size: 12)).foregroundStyle(Theme.muted)
                 Spacer()
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(.regularMaterial)
-            .overlay(alignment: .bottom) { Divider() }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(Theme.secondary)
+            .overlay(alignment: .bottom) { Hairline() }
             .accessibilityIdentifier("connection-notice")
         }
     }
 }
 
-/// Core's message text for an error (CoreError.wrap is internal to the kit).
+/// Core's message text for an error.
 func message(of error: Error) -> String {
     CoreError.wrap(error).message
 }
 
 #if DEBUG
 /// DEBUG-only automation: when NEXBOT_DEBUG_COMMAND_FILE is set, the file is polled and consumed line by line.
-/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`. Lets fixture runs be scripted without accessibility access.
-@MainActor func runDebugCommands(workspace: WorkspaceStore) async {
+/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector`, `accountmenu`, `settings`, `dark`, `light`, `system`.
+@MainActor func runDebugCommands(workspace: WorkspaceStore, ui: UIState) async {
     guard let path = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_COMMAND_FILE"] else { return }
     while !Task.isCancelled {
         try? await Task.sleep(for: .milliseconds(400))
@@ -74,6 +111,11 @@ func message(of error: Error) -> String {
             case "send": if let id = workspace.selectedBotID { await workspace.conversation(for: id).send(text: arg) }
             case "approve", "deny": if let a = workspace.approvals.first { try? await workspace.decide(a, allow: parts.first == "approve") }
             case "stop": if let id = workspace.selectedBotID { await workspace.conversation(for: id).stop() }
+            case "inspector": ui.inspectorVisible.toggle()
+            case "accountmenu": ui.accountMenuOpen.toggle()
+            case "settings": ui.settingsTick += 1
+            case "dark", "light", "system": UserDefaults.standard.set(parts[0], forKey: AppearanceOverride.key)
+            case "settingssystem", "settingsaccount": UserDefaults.standard.set(parts[0] == "settingssystem" ? "系统信息" : "账号与登录设备", forKey: "nexbot.settingsCategory")
             default: break
             }
         }

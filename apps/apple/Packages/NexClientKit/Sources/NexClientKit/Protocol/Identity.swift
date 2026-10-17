@@ -126,3 +126,25 @@ struct AnyKey: CodingKey {
     init?(stringValue: String) { self.stringValue = stringValue }
     init?(intValue: Int) { nil }
 }
+
+/// `GET /api/auth/status`: whether the token is signed in, and the NexorAI account it belongs to.
+public struct AccountStatus: Decodable, Sendable, Equatable {
+    public var authenticated: Bool
+    /// The account's display name from the user center, e.g. 演示账号.
+    public var displayName: String?
+    public var deviceName: String?
+    public var expiresAt: Double?
+
+    public init(authenticated: Bool, displayName: String? = nil, deviceName: String? = nil, expiresAt: Double? = nil) {
+        self.authenticated = authenticated; self.displayName = displayName; self.deviceName = deviceName; self.expiresAt = expiresAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        authenticated = c.lenient(.init("authenticated"))?.boolValue ?? false
+        expiresAt = c.lenient(.init("expiresAt"))?.doubleValue
+        let account = c.lenient(.init("account"))?.objectValue
+        displayName = account?["displayName"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        deviceName = account?["deviceName"]?.stringValue
+    }
+}

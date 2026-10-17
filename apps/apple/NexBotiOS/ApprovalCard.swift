@@ -1,32 +1,42 @@
 import SwiftUI
 import NexClientKit
 
-/// Inline approval request in a chat.
+/// Inline approval request, styled like the web UI's approval card.
 struct ApprovalCard: View {
     let approval: Approval
+    var botName = ""
     let decide: (Bool) async -> Void
     @State private var busy = false
+    @State private var showArguments = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(approval.title, systemImage: "exclamationmark.shield").font(.headline)
+            Text(botName.isEmpty ? "需要你的批准" : "\(botName) 需要你的批准").font(.subheadline.weight(.semibold))
+            Text(approval.title).font(.caption).foregroundStyle(Theme.muted)
             if !approval.argumentsText.isEmpty {
-                Text(approval.argumentsText)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(8).textSelection(.enabled)
-                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                Button { withAnimation(.easeOut(duration: 0.15)) { showArguments.toggle() } } label: {
+                    Text("\(showArguments ? "▾" : "▸") 查看具体操作").font(.caption).foregroundStyle(Theme.muted)
+                }
+                .buttonStyle(.plain)
+                if showArguments {
+                    Text(approval.argumentsText)
+                        .font(.system(.caption2, design: .monospaced))
+                        .lineLimit(12).textSelection(.enabled)
+                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
             }
-            HStack {
-                Button("拒绝", role: .destructive) { run(false) }.buttonStyle(.bordered)
-                Button("批准") { run(true) }.buttonStyle(.borderedProminent)
+            HStack(spacing: 8) {
+                Button("批准") { run(true) }.buttonStyle(PillButtonStyle(primary: true))
+                Button("拒绝") { run(false) }.buttonStyle(PillButtonStyle())
                 if busy { ProgressView() }
             }
             .disabled(busy)
+            .padding(.top, 2)
         }
-        .padding(12)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.orange.opacity(0.4)))
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardStyle(radius: 12, stroke: Theme.approval.opacity(0.7))
     }
 
     private func run(_ allow: Bool) {

@@ -18,9 +18,13 @@ packages:
 targets:
   NexBotMac:
     type: application
+    configFiles:
+      Debug: Config/Mac.xcconfig
+      Release: Config/Mac.xcconfig
     platform: macOS
     sources:
       - NexBotMac
+      - Shared
       - path: ../../build/nexbot-icon.icns
         buildPhase: resources
     dependencies:
@@ -42,13 +46,13 @@ targets:
         PRODUCT_NAME: NexBot
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_HARDENED_RUNTIME: YES
-        # Local builds: ad-hoc signing. Override with your team for distribution.
-        CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_ENTITLEMENTS: NexBotMac/NexBotMac.entitlements
   NexBotiOS:
     type: application
     platform: iOS
-    sources: [NexBotiOS]
+    sources:
+      - NexBotiOS
+      - Shared
     dependencies:
       - package: NexClientKit
     info:

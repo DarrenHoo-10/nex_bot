@@ -113,7 +113,8 @@ async function status() {
 async function command(line) {
   const [cmd, ...rest] = line.trim().split(/\s+/);
   if (!cmd) return;
-  if (cmd === "reply") { const arg = line.trim().slice(cmd.length).trim(); if (!arg) throw new Error("usage: reply <text>"); streamQueue.push(arg); console.log("OK next model reply streams: " + arg); }
+  // A literal \n in the argument becomes a line break, so Markdown lists can be scripted from one stdin line.
+  if (cmd === "reply") { const arg = line.trim().slice(cmd.length).trim().replaceAll("\\n", "\n"); if (!arg) throw new Error("usage: reply <text>"); streamQueue.push(arg); console.log("OK next model reply streams: " + arg); }
   else if (cmd === "approval") {
     const host = (await api("state")).hostDeviceId; if (!host) throw new Error("No host device");
     model.scripts.push({ kind: "openai-tool", calls: [{ id: "fixture-" + randomBytes(4).toString("hex"), name: "broker", args: JSON.stringify({ action: "device.exec", risk: "dangerous", riskReason: "夹具审批验证", deviceId: host, command: "echo fixture-approved" }) }] }, { kind: "openai-text", text: "审批后命令已完成。" });

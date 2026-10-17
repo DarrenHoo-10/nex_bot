@@ -46,3 +46,4 @@ deploy/podman/.env.*
 apps/apple/*.xcodeproj
 apps/apple/Packages/*/.build/
 apps/apple/Packages/*/.swiftpm/
+apps/apple/Config/Signing.local.xcconfig

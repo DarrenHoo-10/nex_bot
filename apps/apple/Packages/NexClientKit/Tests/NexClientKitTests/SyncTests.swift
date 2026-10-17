@@ -249,6 +249,22 @@ final class SyncTests: XCTestCase {
         XCTAssertEqual(core.recorded("/api/clients/revoke")[0].json["sessionId"] as? String, "s2")
     }
 
+    func testAccountDisplayNameFromAuthStatus() async throws {
+        let core = StubCore()
+        core.handle { r in
+            r.path == "/api/auth/status"
+                ? .json(["authenticated": true, "expiresAt": 1_760_000_000_000, "account": ["displayName": "演示账号", "protocol": "native-v1", "deviceName": "Mac"]])
+                : .json(["ok": true])
+        }
+        let store = makeStore(core)
+        await store.loadAccount()
+        XCTAssertEqual(store.account?.displayName, "演示账号"); XCTAssertEqual(store.account?.deviceName, "Mac")
+        let signedOut = StubCore()
+        signedOut.handle { _ in .json(["authenticated": false]) }
+        let other = makeStore(signedOut); await other.loadAccount()
+        XCTAssertNil(other.account)
+    }
+
     func testStartStopLifecycleSendsLastEventID() async throws {
         let core = StubCore(), fake = Fake()
         let change = #"{"cursor":7,"privacyEpoch":0,"coreId":"core-1","bootId":"boot-1","reset":false}"#

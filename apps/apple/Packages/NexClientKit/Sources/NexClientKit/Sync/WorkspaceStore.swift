@@ -43,6 +43,8 @@ public final class WorkspaceStore {
     public private(set) var selectedBotID: String?
     public private(set) var sessions: [ClientSession] = []
     public private(set) var currentSessionID: String?
+    /// The signed-in NexorAI account (display name), loaded when the store starts; nil until then or if unavailable.
+    public private(set) var account: AccountStatus?
     /// Called once when the session ends (expired, revoked, identity unavailable).
     @ObservationIgnored public var onSessionEnded: (@MainActor (SessionEnd) -> Void)?
 
@@ -98,6 +100,12 @@ public final class WorkspaceStore {
             }
         }
         scheduleRefresh(after: 0)
+        if account == nil { Task { await loadAccount() } }
+    }
+
+    /// Loads ``account`` from `/api/auth/status`. Failures leave it unchanged; session expiry is handled by sync.
+    public func loadAccount() async {
+        if let status = try? await client.authStatus(), status.authenticated { account = status }
     }
 
     /// Closes the stream and timers and discards in-flight responses. Cached content is kept.

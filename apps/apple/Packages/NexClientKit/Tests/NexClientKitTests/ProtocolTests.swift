@@ -102,3 +102,21 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(v["a"]?.stringValue, "1"); XCTAssertEqual(v["d"]?.boolValue, true); XCTAssertNil(v["e"]?.stringValue)
     }
 }
+
+final class MarkdownBlockTests: XCTestCase {
+    func testBlocks() {
+        let source = "可以。我们先整理。\n\n- 确认要完成的事项\n- 用连接器获取所需信息\n  - 子项\n1. 第一步\n2) 第二步\n\n## 小结\n> 引用一\n> 引用二\n---\n```swift\nlet a = 1\n```\n第一行\n第二行"
+        XCTAssertEqual(Markdown.blocks(source), [
+            .paragraph("可以。我们先整理。"),
+            .bullet(level: 0, text: "确认要完成的事项"), .bullet(level: 0, text: "用连接器获取所需信息"), .bullet(level: 1, text: "子项"),
+            .ordered(level: 0, number: 1, text: "第一步"), .ordered(level: 0, number: 2, text: "第二步"),
+            .heading(level: 2, text: "小结"), .quote("引用一\n引用二"), .rule,
+            .code(language: "swift", text: "let a = 1"),
+            .paragraph("第一行\n第二行"),
+        ])
+    }
+
+    func testUnterminatedFenceWhileStreaming() {
+        XCTAssertEqual(Markdown.blocks("看这里：\n```\nls -la"), [.paragraph("看这里："), .code(language: "", text: "ls -la")])
+    }
+}

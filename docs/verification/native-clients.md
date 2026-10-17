@@ -43,7 +43,7 @@ echo "status" >> /tmp/fx.in
 
 | Command | Effect |
 | --- | --- |
-| `reply <text>` | The next model reply streams `<text>` in about 12 deltas, 450 ms apart, so streaming UI is observable. |
+| `reply <text>` (a literal `\n` becomes a line break) | The next model reply streams `<text>` in about 12 deltas, 450 ms apart, so streaming UI is observable. |
 | `approval` | The next model turn calls `device.exec` (risk `dangerous`) on the host device, which creates a pending approval; after the decision the model replies with a short text. |
 | `send <agent> <text>` | Posts a user message as the fixture's own session (agent by name or id). Combine with `reply` or `approval` to trigger the scripted turn. The client sees new messages via SSE. |
 | `history <agent> <n>` | Adds `n` (at most 200) exchanges to one agent, for older-history paging (pages are 100 messages). |

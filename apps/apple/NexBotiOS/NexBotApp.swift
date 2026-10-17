@@ -4,22 +4,32 @@ import NexClientKit
 @main
 struct NexBotApp: App {
     @State private var model = AppModel()
+    @AppStorage(AppearanceMode.key) private var appearance = AppearanceMode.system.rawValue
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                .tint(Theme.foreground)
+                .preferredColorScheme(AppearanceMode(rawValue: appearance)?.scheme)
                 .task { await model.start() }
                 .onChange(of: scenePhase) { _, phase in model.setForeground(phase == .active) }
         }
     }
 }
 
-/// Switches between launch, login and the connected tabs.
+/// Switches between launch, login and the connected app.
 struct RootView: View {
     let model: AppModel
 
     var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            content
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         switch model.phase {
         case .launching:
             ProgressView().controlSize(.large).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -27,7 +37,7 @@ struct RootView: View {
             LoginView(model: model)
         case .connected:
             if let workspace = model.workspace {
-                RootTabView(model: model, workspace: workspace)
+                ConnectedView(model: model, workspace: workspace)
             }
         }
     }

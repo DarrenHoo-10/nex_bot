@@ -1,47 +1,58 @@
 import SwiftUI
 import NexClientKit
 
-/// Pending tool approval with approve / deny. Used inline in chat and in the inspector.
+/// Pending tool approval with approve / deny, shown above the composer.
 struct ApprovalCard: View {
     let workspace: WorkspaceStore
     let approval: Approval
-    var showsAgent = true
     @State private var busy = false
     @State private var error: String?
     @State private var showArguments = false
 
+    private var botName: String { workspace.bot(approval.botID)?.name ?? "Agent" }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
-                Text(approval.title).font(.headline)
+            Text("\(botName) 需要你的批准").font(.system(size: 13, weight: .semibold))
+            Text(approval.title).font(.system(size: 11)).foregroundStyle(Theme.muted)
+            Button { showArguments.toggle() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).rotationEffect(.degrees(showArguments ? 90 : 0))
+                    Text("查看具体操作").font(.system(size: 11))
+                }
+                .foregroundStyle(Theme.muted).contentShape(Rectangle())
             }
-            if showsAgent, let bot = workspace.bot(approval.botID) {
-                Text("来自 \(bot.name)").font(.caption).foregroundStyle(.secondary)
-            }
-            DisclosureGroup("调用参数", isExpanded: $showArguments) {
+            .buttonStyle(.plain)
+            if showArguments {
                 ScrollView(.horizontal) {
                     Text(approval.argumentsText.isEmpty ? "无参数" : approval.argumentsText)
-                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                         .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 160)
-                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
-            }.font(.caption)
-            HStack {
-                Button { decide(true) } label: { Label("批准", systemImage: "checkmark") }
-                    .buttonStyle(.borderedProminent)
-                Button(role: .destructive) { decide(false) } label: { Label("拒绝", systemImage: "xmark") }
-                    .buttonStyle(.bordered)
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            HStack(spacing: 8) {
+                Button { decide(true) } label: {
+                    Text("批准").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.primaryForeground)
+                        .padding(.horizontal, 14).frame(height: 28)
+                        .background(Theme.primary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                Button { decide(false) } label: {
+                    Text("拒绝").font(.system(size: 11)).foregroundStyle(Theme.foreground)
+                        .padding(.horizontal, 12).frame(height: 28)
+                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
                 if busy { ProgressView().controlSize(.small) }
             }
+            .buttonStyle(.plain)
             .disabled(busy)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.orange.opacity(0.35)))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.approval, lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("approval-card")
     }

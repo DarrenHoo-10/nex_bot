@@ -1,0 +1,7 @@
+// Mac signing. Ad-hoc by default; macOS then treats every rebuild as a new app and
+// asks for the login keychain password before it can read the saved login.
+// For a stable identity, copy Signing.local.xcconfig.example to Signing.local.xcconfig
+// (git-ignored) and set your Apple Development team.
+CODE_SIGN_IDENTITY = -
+CODE_SIGN_STYLE = Manual
+#include? "Signing.local.xcconfig"

@@ -128,5 +128,6 @@ extension CoreClient {
         try await post("/api/approvals", body: ApprovalBody(id: id, hash: hash, allow: allow))
     }
     public func clientSessions() async throws -> ClientSessionList { try await get("/api/clients") }
+    public func authStatus() async throws -> AccountStatus { try await get("/api/auth/status") }
     public func revoke(sessionID: String) async throws { try await post("/api/clients/revoke", body: RevokeBody(sessionId: sessionID)) }
 }

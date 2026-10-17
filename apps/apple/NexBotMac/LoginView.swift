@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import NexClientKit
 
 struct LoginView: View {
@@ -9,20 +10,19 @@ struct LoginView: View {
     @FocusState private var focus: Field?
     private enum Field { case email, password }
 
+    private static let page = Theme.dynamic(light: 0xF5F6F8, dark: 0x0B0C0E)
+
     var body: some View {
         @Bindable var model = model
         ZStack {
-            Rectangle().fill(.background)
-            VStack(spacing: 18) {
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.white)
-                    .frame(width: 68, height: 68)
-                    .background(Color.accentColor.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                Text("NEXBOT CLIENT").font(.caption.weight(.semibold)).foregroundStyle(.secondary).tracking(1.5)
-                Text("登录你的个人 Agent").font(.title.weight(.semibold))
-                Text("使用 NexorAI 账号登录。Agent、消息与记忆由云端服务统一管理。")
-                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Self.page.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 0) {
+                BrandMark(size: 44)
+                Text("NEXBOT · PERSONAL AI OS").font(.system(size: 10)).tracking(1.6).foregroundStyle(Theme.muted).padding(.top, 22)
+                Text("登录你的个人 Agent").font(.system(size: 24, weight: .bold)).padding(.top, 14)
+                Text("使用 NexorAI 账号登录，连接你的 Agent、消息与记忆。")
+                    .font(.system(size: 13)).foregroundStyle(Theme.muted).lineSpacing(4).padding(.top, 10)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 if model.phase == .resuming {
                     resuming
@@ -31,73 +31,98 @@ struct LoginView: View {
                 }
                 if case .loggedOut(let error?) = model.phase {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.red)
-                        .multilineTextAlignment(.leading)
-                        .textSelection(.enabled)
+                        .font(.system(size: 12)).foregroundStyle(Theme.danger)
+                        .textSelection(.enabled).padding(.top, 14)
                         .accessibilityIdentifier("login-error")
                 }
                 if model.phase != .resuming, model.hasSavedLogin {
                     Button("使用已保存的登录重新连接") { Task { await model.retryResume() } }
-                        .buttonStyle(.link)
+                        .buttonStyle(.link).font(.system(size: 12)).padding(.top, 10)
                 }
-                Text("默认连接云端服务 bot.nexorai.com.cn；使用自建后端时在“高级”中修改地址。远程连接须使用 HTTPS。")
-                    .font(.caption).foregroundStyle(.tertiary).multilineTextAlignment(.center)
             }
-            .frame(maxWidth: 380)
-            .padding(32)
+            .padding(34)
+            .frame(width: 420)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border.opacity(0.6)))
+            .shadow(color: .black.opacity(0.08), radius: 24, y: 10)
         }
         .task { await debugAutoLogin() }
     }
 
     private var resuming: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             ProgressView().controlSize(.regular)
-            Text("正在恢复登录，连接云端服务…").foregroundStyle(.secondary)
+            Text("正在恢复登录，连接云端服务…").font(.system(size: 13)).foregroundStyle(Theme.muted)
             Button("改用其他账号登录") { Task { await model.switchAccount() } }
+                .buttonStyle(.link).font(.system(size: 12))
         }
+        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
-        .padding(.vertical, 8)
+        .padding(.top, 26).padding(.bottom, 6)
+    }
+
+    private func field<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label).font(.system(size: 12, weight: .medium))
+            content()
+                .textFieldStyle(.plain).font(.system(size: 14)).autocorrectionDisabled()
+                .padding(.horizontal, 14).frame(height: 42)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.border))
+        }
     }
 
     private func form(model: Bindable<AppModel>) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            DisclosureGroup("高级", isExpanded: $showAdvanced) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Core 地址").font(.caption).foregroundStyle(.secondary)
-                    TextField("https://你的后端地址", text: model.origin)
-                        .textFieldStyle(.roundedBorder).autocorrectionDisabled()
-                }.padding(.top, 6)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("此设备名称").font(.caption).foregroundStyle(.secondary)
-                TextField("我的电脑", text: model.deviceName).textFieldStyle(.roundedBorder)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("邮箱").font(.caption).foregroundStyle(.secondary)
-                TextField("name@example.com", text: $email)
-                    .textContentType(.username).textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 16) {
+            field("邮箱") {
+                TextField("", text: $email)
+                    .textContentType(.username)
                     .focused($focus, equals: .email)
                     .onSubmit { focus = .password }
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("密码").font(.caption).foregroundStyle(.secondary)
-                SecureField("密码", text: $password)
-                    .textContentType(.password).textFieldStyle(.roundedBorder)
+            field("密码") {
+                SecureField("", text: $password)
+                    .textContentType(.password)
                     .focused($focus, equals: .password)
                     .onSubmit(submit)
             }
             Button(action: submit) {
-                HStack {
+                HStack(spacing: 8) {
                     if self.model.isLoggingIn { ProgressView().controlSize(.small) }
-                    Text(self.model.isLoggingIn ? "正在登录…" : "登录并连接").frame(maxWidth: .infinity)
+                    Text(self.model.isLoggingIn ? "正在登录…" : "登录").font(.system(size: 14, weight: .medium))
                 }
+                .foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 44)
+                .background(Theme.brand.opacity(canSubmit ? 1 : 0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent).controlSize(.large)
+            .buttonStyle(.plain)
             .keyboardShortcut(.defaultAction)
-            .disabled(self.model.isLoggingIn || email.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+            .disabled(!canSubmit)
+
+            Button { showAdvanced.toggle() } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).rotationEffect(.degrees(showAdvanced ? 90 : 0))
+                    Text("高级：后端服务地址").font(.system(size: 12))
+                }
+                .foregroundStyle(Theme.muted).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if showAdvanced {
+                field("Core 地址") { TextField("https://你的后端地址", text: model.origin) }
+                field("此设备名称") { TextField("我的电脑", text: model.deviceName) }
+                Text("默认连接云端服务 bot.nexorai.com.cn；远程连接须使用 HTTPS。")
+                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
+            }
+            Button("打开 NexorAI 账号中心") { NSWorkspace.shared.open(URL(string: "https://user.nexorai.com.cn/login")!) }
+                .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.brand)
         }
+        .padding(.top, 24)
         .disabled(self.model.isLoggingIn)
         .onAppear { if email.isEmpty { focus = .email } }
+    }
+
+    private var canSubmit: Bool {
+        !model.isLoggingIn && !email.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty
     }
 
     private func submit() {
