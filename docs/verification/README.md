@@ -247,6 +247,9 @@ desktop routing, cancellation, and computer authority cleanup.
 
 ## Evidence
 
+The [native macOS and iOS client recipe](native-clients.md) drives the SwiftUI apps
+against an isolated Core fixture.
+
 The [account workspace verification](account-workspaces.md) covers independent
 NexorAI accounts, preserved legacy ownership, client compatibility and deployment.
 

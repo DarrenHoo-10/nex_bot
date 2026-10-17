@@ -41,3 +41,8 @@ deploy/podman/.env
 deploy/podman/.env.*
 !deploy/podman/.env.example
 /.env
+
+# Native Apple clients (generated project, SwiftPM build output)
+apps/apple/*.xcodeproj
+apps/apple/Packages/*/.build/
+apps/apple/Packages/*/.swiftpm/
