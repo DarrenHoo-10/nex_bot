@@ -3,16 +3,36 @@ import { api, desktop } from "./api";
 
 interface IdentityStatus {
   authenticated: boolean; initialized: boolean; canInitialize: boolean; coreId: string;
-  sessionId?: string; expiresAt?: number; account?: { displayName: string };
+  sessionId?: string; expiresAt?: number; account?: { displayName: string; protocol?: string; deviceName?: string };
 }
 interface LoginTransaction { transactionId: string; bindingToken: string; stepId: string }
 export interface LoginSession { token: string; coreId: string; sessionId: string; expiresAt: number }
 const Account = createContext<{ status?: IdentityStatus; logout(): Promise<void> }>({ logout: async () => {} });
+export function useAccount() { return useContext(Account); }
 
 export function AccountControls() {
   const { status, logout } = useContext(Account);
   const [error, setError] = useState("");
-  return <section className="settings-info"><h2>当前账号</h2><p>{status?.account?.displayName}</p><p>使用 NexorAI 账号登录。消息和记忆由后端服务管理，各设备的登录可分别退出或撤销。</p><button onClick={() => void logout().catch(() => setError("退出未完成，请重试"))}>退出登录</button>{error ? <p role="alert">{error}</p> : null}</section>;
+  const name = status?.account?.displayName || "NexorAI 用户";
+  const initial = name.slice(0, 1).toUpperCase();
+  const expiresLabel = status?.expiresAt ? new Date(status.expiresAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+  return <section className="settings-info ds-settings-card">
+    <div className="ds-account-row">
+      <div className="ds-user-avatar lg">{initial}</div>
+      <div className="ds-account-meta">
+        <div className="ds-account-title">
+          <h2>当前账号</h2>
+          <span className="ds-badge-green">已认证 · NexorAI</span>
+        </div>
+        <strong className="ds-account-name">{name}</strong>
+        <p className="muted">使用 NexorAI 账号登录。消息和记忆由云端服务统一管理，各设备的登录可分别退出或撤销。{expiresLabel ? ` 当前会话有效期至 ${expiresLabel}。` : ""}</p>
+      </div>
+      <div className="ds-account-actions">
+        <button onClick={() => void logout().catch(() => setError("退出未完成，请重试"))}>退出登录</button>
+      </div>
+    </div>
+    {error ? <p role="alert" className="login-error">{error}</p> : null}
+  </section>;
 }
 
 export function LoginGate({ children }: { children: ReactNode }) {

@@ -40,14 +40,14 @@ export class DeviceNode {
   readonly commands = new Set<ChildProcess>();
   readonly computer = new ComputerExecutor();
   identity() { return { hostname: os.hostname(), platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", os: os.type(), release: os.release(), architecture: os.arch(), supported: ["device.info", "device.list", "device.read", "device.exec", ...(this.computer.available() ? ["device.computer"] : [])] }; }
-  constructor(readonly store: Pick<CoreStore, "dir" | "get" | "run" | "encrypt" | "decrypt">, readonly changed: () => void) {
+  constructor(readonly store: Pick<CoreStore, "dir" | "get" | "run" | "encrypt" | "decrypt">, readonly changed: () => void, enabled = true) {
     const dir = path.join(store.dir, "node"); mkdirSync(dir, { recursive: true });
     this.journal = new DatabaseSync(path.join(dir, "node.db"));
     if (!this.journal.prepare("SELECT name FROM sqlite_master WHERE name='node_bindings'").get()) this.journal.exec(readFileSync(new URL("./node-schema.sql", import.meta.url), "utf8"));
     this.journal.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     this.journal.prepare("UPDATE node_calls SET status='unknown' WHERE status IN ('running','received')").run();
     const saved = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
-    if (saved) { this.config = JSON.parse(store.decrypt(String(saved.ciphertext))); this.connect(); }
+    if (saved && enabled) { this.config = JSON.parse(store.decrypt(String(saved.ciphertext))); this.connect(); }
   }
   publicState() { return { status: this.status, origin: this.config?.origin ?? "", root: this.config?.root ?? "", exec: this.config?.exec ?? false, computer: this.config?.computer ?? false, computerSupported: this.computer.available(), deviceId: this.binding?.deviceId ?? "", connected: this.socket?.readyState === WebSocket.OPEN, unknownCalls: this.journal.prepare("SELECT call_id,capability,arguments_json,version FROM node_calls WHERE status='unknown'").all() }; }
   configure(data: Record<string, unknown>) {

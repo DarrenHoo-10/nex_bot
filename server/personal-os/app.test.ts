@@ -814,4 +814,68 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.app.store.get("SELECT status,usage_known FROM model_invocations WHERE purpose='compact'")).toMatchObject({ status: "succeeded", usage_known: 0 });
     expect(f.app.store.all("SELECT * FROM transcript WHERE role='user'")).toHaveLength(6);
   }, 60_000);
+  it("supports three-layer prompt cache ordering, routine preemption, steward agent management, tool trajectories, and preview API", async () => {
+    const f = await fixture();
+    const botId = String(f.bots[1].id);
+    // 1. Append-only memory ledger ordering + <system-reminder> dynamic tail
+    f.app.runtime.memory.write(botId, { title: "第一条记忆", content: "最早创建的记忆", scope: "bot" });
+    f.app.runtime.memory.write(botId, { title: "第二条记忆", content: "后来追加的记忆", scope: "bot" });
+    const promptText = f.app.runtime.memory.prompt(botId);
+    expect(promptText.indexOf("第一条记忆")).toBeLessThan(promptText.indexOf("第二条记忆"));
+
+    // 2. Priority delivery: user input preempts an active background routine task
+    const routine = f.app.routines.save({ botId, name: "后台巡检", prompt: "执行后台例行巡检", scheduleKind: "once", runAt: Date.now() + 60_000 });
+    f.fake.scripts.push({ kind: "hang" });
+    f.app.routines.runNow(routine.id, id());
+    await wait(() => Boolean(f.app.store.get("SELECT task_id FROM routine_occurrences WHERE routine_id=? AND task_id IS NOT NULL", routine.id)));
+    const routineTaskId = String(f.app.store.get("SELECT task_id FROM routine_occurrences WHERE routine_id=?", routine.id)!.task_id);
+    await wait(() => f.fake.requests.length === 1);
+    expect(f.app.runtime.systemPrompt(routineTaskId)).toContain("<system-reminder>");
+    f.fake.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "steward-create", name: "broker", args: JSON.stringify({ action: "agent.create", name: "数据分析师", instructions: "负责表格与统计", expertise: ["数据分析"] }) }] },
+      { kind: "openai-text", text: "已为你招募数据分析师并查看 `notes.md`。" },
+    );
+    const creatorTools = (JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)!.policy_json)).tools as string[]).filter((tool) => !["device.exec", "device.computer"].includes(tool));
+    f.app.store.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ tools: creatorTools }), botId);
+    const userTurn = f.app.agents.send(botId, "帮我招募一位数据分析师同伴", id());
+    // Creating an Agent needs the user's approval in the requesting Agent.
+    await wait(() => !!approval(f.app));
+    const createApproval = approval(f.app);
+    expect(f.app.store.get("SELECT tool_name,bot_id FROM tool_calls WHERE id=?", createApproval.tool_call_id)).toMatchObject({ tool_name: "agent.create", bot_id: botId });
+    expect(f.app.store.get("SELECT id FROM bots WHERE name='数据分析师'")).toBeUndefined();
+    f.app.runtime.decide(String(createApproval.id), String(createApproval.argument_hash), true);
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", userTurn.taskId)?.status === "succeeded");
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", routineTaskId)?.status).toBe("cancelled");
+    expect(f.app.store.get("SELECT status FROM routine_occurrences WHERE task_id=?", routineTaskId)?.status).toBe("cancelled");
+
+    // 3. Steward agent creation & update verification
+    const createdBot = f.app.store.get("SELECT * FROM bots WHERE name='数据分析师' AND status='active'");
+    expect(createdBot).toBeTruthy();
+    const createdTools = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", createdBot!.id)!.policy_json)).tools as string[];
+    expect(createdTools.sort()).toEqual([...creatorTools].sort());
+    expect(createdTools).not.toContain("device.exec");
+    f.fake.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "steward-update", name: "broker", args: JSON.stringify({ action: "agent.update", botId: createdBot!.id, instructions: "负责全量统计与图表", expertise: ["统计", "图表"] }) }] },
+      { kind: "openai-text", text: "已更新同伴资料。" },
+    );
+    const updateTurn = f.app.agents.send(botId, "更新数据分析师的职责", id());
+    await wait(() => !!approval(f.app));
+    const updateApproval = approval(f.app);
+    expect(f.app.store.get("SELECT instructions FROM bots WHERE id=?", createdBot!.id)?.instructions).toBe("负责表格与统计");
+    f.app.runtime.decide(String(updateApproval.id), String(updateApproval.argument_hash), true);
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", updateTurn.taskId)?.status === "succeeded");
+    expect(f.app.store.get("SELECT instructions FROM bots WHERE id=?", createdBot!.id)?.instructions).toBe("负责全量统计与图表");
+
+    // 4. Projected tool_steps on assistant messages & /api/preview endpoint
+    const messages = f.app.agents.messages(botId);
+    const assistantWithSteps = messages.find((m) => m.task_id === userTurn.taskId && m.role === "assistant") as Record<string, unknown> | undefined;
+    expect(Array.isArray(assistantWithSteps?.tool_steps)).toBe(true);
+    const steps = assistantWithSteps!.tool_steps as Array<{ id: string; tool_name: string; summary: string }>;
+    expect(steps[0]).toMatchObject({ tool_name: "agent.create", summary: "数据分析师" });
+    const previewRes = await fetch(`${f.app.origin}/api/preview?callId=${encodeURIComponent(steps[0].id)}`, { headers: { Authorization: `Bearer ${f.token}` } });
+    expect(previewRes.status).toBe(200);
+    const previewBody = await previewRes.json() as { kind: string; title: string; content: string };
+    expect(previewBody).toMatchObject({ kind: "tool", title: "agent.create" });
+    expect(previewBody.content).toContain("数据分析师");
+  }, 40_000);
 });

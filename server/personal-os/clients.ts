@@ -4,8 +4,8 @@ import { CoreStore, hash, now, text } from "./store.ts";
 // Client identity is separate from the DCP execution credential. Local-owner
 // mode is an adapter to the same user_sessions contract as future native login.
 export class ClientIdentity {
-  constructor(readonly store: CoreStore) {}
-  coreId() { return String(this.store.get("SELECT core_id FROM workspaces WHERE id=?", this.store.workspace)!.core_id); }
+  constructor(readonly store: CoreStore, readonly publicCoreId?: string) {}
+  coreId() { return this.publicCoreId ?? String(this.store.get("SELECT core_id FROM workspaces WHERE id=?", this.store.workspace)!.core_id); }
   authenticate(token: string) {
     if (!token || token.length > 200) return undefined;
     const session = this.store.get("SELECT s.*,c.name client_name FROM user_sessions s LEFT JOIN client_sessions c ON c.session_id=s.id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at>? AND s.workspace_id=? AND s.user_id=? AND m.status='active' AND u.status='active' AND w.status='active'", hash(token), now(), this.store.workspace, this.store.owner);
@@ -13,7 +13,7 @@ export class ClientIdentity {
     return session;
   }
   authenticateTokenSession(sessionId: string) {
-    return this.store.get("SELECT s.* FROM user_sessions s JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=? AND s.revoked_at IS NULL AND s.expires_at>? AND s.workspace_id=? AND s.user_id=? AND m.status='active' AND u.status='active' AND w.status='active'", sessionId, now(), this.store.workspace, this.store.owner);
+    return this.store.get("SELECT s.*,c.name client_name FROM user_sessions s LEFT JOIN client_sessions c ON c.session_id=s.id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=? AND s.revoked_at IS NULL AND s.expires_at>? AND s.workspace_id=? AND s.user_id=? AND m.status='active' AND u.status='active' AND w.status='active'", sessionId, now(), this.store.workspace, this.store.owner);
   }
   invite(name: unknown) {
     const token = randomBytes(24).toString("base64url"), inviteId = randomUUID(), expiresAt = now() + 10 * 60_000;
@@ -31,7 +31,7 @@ export class ClientIdentity {
     });
     return { token, sessionId, expiresAt, coreId: this.coreId(), protocol: "local", version: 1 };
   }
-  list() { return this.store.all("SELECT c.*,s.created_at,s.expires_at,s.revoked_at FROM client_sessions c JOIN user_sessions s ON s.id=c.session_id ORDER BY s.created_at DESC"); }
+  list() { return this.store.all("SELECT c.*,s.created_at,s.expires_at,s.revoked_at FROM client_sessions c JOIN user_sessions s ON s.id=c.session_id WHERE s.revoked_at IS NULL AND s.expires_at>? ORDER BY s.created_at DESC", now()); }
   revoke(sessionId: string) {
     if (!this.store.get("SELECT session_id FROM client_sessions WHERE session_id=?", sessionId)) throw new Error("客户端会话不存在");
     this.store.run("UPDATE user_sessions SET revoked_at=?,version=version+1 WHERE id=? AND revoked_at IS NULL", now(), sessionId);

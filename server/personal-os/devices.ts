@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
-import type { Server } from "node:http";
+import type { Server, IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
 
 export class DeviceGateway {
@@ -15,16 +16,17 @@ export class DeviceGateway {
     });
   }
   constructor(readonly store: CoreStore, server: Server, readonly changed: () => void) {
-    server.on("upgrade", (request, socket, head) => {
-      if (request.url !== "/dcp/v1/connect") { socket.destroy(); return; }
-      const token = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
-      const credential = store.get("SELECT * FROM device_credentials WHERE access_hash=? AND status='active' AND access_expires_at>?", hash(token), now());
-      const device = credential && store.get("SELECT id FROM devices WHERE id=? AND status='bound'", credential.device_id);
-      if (!device || !credential) { socket.destroy(); return; }
-      this.wss.handleUpgrade(request, socket, head, (ws) => this.connect(String(credential.device_id), ws));
-    });
+    server.on("upgrade", this.handleUpgrade);
     store.run("UPDATE device_calls SET status='unknown' WHERE status IN ('delivered','running')");
   }
+  readonly handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (request.url !== "/dcp/v1/connect") { socket.destroy(); return; }
+    const token = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
+    const credential = this.store.get("SELECT * FROM device_credentials WHERE access_hash=? AND status='active' AND access_expires_at>?", hash(token), now());
+    const device = credential && this.store.get("SELECT id FROM devices WHERE id=? AND status='bound'", credential.device_id);
+    if (!device || !credential) { socket.destroy(); return; }
+    this.wss.handleUpgrade(request, socket, head, (ws) => this.connect(String(credential.device_id), ws));
+  };
   pair(name: string) {
     const deviceId = id(), token = randomBytes(32).toString("base64url");
     this.store.transaction(() => {

@@ -23,9 +23,12 @@ export function commandNeedsApproval(command: string): boolean {
 }
 
 export function dangerousEffect(args: Record<string, unknown>): boolean {
+  // MCP annotations are server claims, not permission to perform external effects.
+  if (args.action === "connector.call") return true;
   if (args.risk !== undefined && args.risk !== "standard" && args.risk !== "dangerous") throw new Error("操作风险标记无效");
   if (args.riskReason !== undefined && (typeof args.riskReason !== "string" || args.riskReason.length > 500)) throw new Error("操作风险说明无效");
   if (args.risk === "dangerous" && (args.action === "device.exec" || args.action === "device.computer")) return true;
   if (args.action === "device.exec") return commandNeedsApproval(String(args.command));
-  return args.action === "memory.delete" || args.action === "memory.forget";
+  // Creating or rewriting an Agent changes who can act and what they are told, so the user confirms it.
+  return args.action === "memory.delete" || args.action === "memory.forget" || args.action === "agent.create" || args.action === "agent.update";
 }

@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync, existsSync } from
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { basicActions } from "./policy.ts";
+import { connectorSchema } from "./connector-schema.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
@@ -143,7 +144,7 @@ export class CoreStore {
     }
     if (!this.get("SELECT version FROM schema_migrations WHERE version=7")) {
       // Freeze the shipped migration; later defaults must not change its hash.
-      const version7Actions = basicActions.filter((action) => action !== "device.exec");
+      const version7Actions = basicActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action));
       const oldBasic = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "routine.list", "routine.save", "routine.toggle", "routine.run"];
       const legacy = ["memory.search", "memory.read", "memory.write", "agent.delegate", "device.read", "device.list", "device.exec", "routine.list", "routine.save", "routine.toggle", "routine.run"];
       const standardSets = [oldBasic, [...oldBasic, "device.list", "device.read", "device.exec"], legacy].map((tools) => [...tools].sort().join(","));
@@ -159,14 +160,15 @@ export class CoreStore {
     }
     if (!this.get("SELECT version FROM schema_migrations WHERE version=8")) {
       const previous = basicActions.filter((action) => action !== "device.exec").sort().join(",");
+      const legacyPrevious = basicActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action)).sort().join(",");
       this.transaction(() => {
         for (const policy of this.all("SELECT * FROM bot_policies")) {
           if (this.get("SELECT id FROM audit_records WHERE action='agent.policy.update' AND entity_id=?", policy.bot_id)) continue;
           const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
-          if ([...new Set(value.tools ?? [])].sort().join(",") !== previous) continue;
+          if (![previous, legacyPrevious].includes([...new Set(value.tools ?? [])].sort().join(","))) continue;
           this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools!, "device.exec"] }), policy.bot_id);
         }
-        this.insert("schema_migrations", { version: 8, checksum: hash(JSON.stringify({ previous, added: "device.exec", preserveEdited: true })), applied_at: now() });
+        this.insert("schema_migrations", { version: 8, checksum: hash(JSON.stringify({ previous: legacyPrevious, added: "device.exec", preserveEdited: true })), applied_at: now() });
       });
     }
     if (!this.get("SELECT version FROM schema_migrations WHERE version=9")) {
@@ -181,6 +183,12 @@ export class CoreStore {
       this.transaction(() => {
         this.db.exec(identitySql);
         this.insert("schema_migrations", { version: 10, checksum: hash(identitySql), applied_at: now() });
+      });
+    }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=11")) {
+      this.transaction(() => {
+        this.db.exec(connectorSchema);
+        this.insert("schema_migrations", { version: 11, checksum: hash(connectorSchema), applied_at: now() });
       });
     }
     this.db.exec("PRAGMA secure_delete=ON;");
@@ -296,7 +304,17 @@ export class CoreStore {
     this.insert("audit_records", { id: id(), workspace_id: this.workspace, actor_user_id: this.owner, action, entity_type: entityType, entity_id: entityId, details_json: JSON.stringify(details), created_at: now() });
   }
   state() {
-    return { config: this.config(), bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"), conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"), approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"), delegations: this.all("SELECT * FROM a2a_messages ORDER BY created_at DESC LIMIT 100"), memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' ORDER BY d.updated_at DESC"), devices: this.all("SELECT id,name,status,capabilities_json FROM devices"), tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200") };
+    return {
+      config: this.config(),
+      bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"),
+      conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"),
+      approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"),
+      delegations: this.all("SELECT * FROM a2a_messages ORDER BY created_at DESC LIMIT 100"),
+      memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,d.updated_at,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' ORDER BY d.updated_at DESC"),
+      devices: this.all("SELECT id,name,status,capabilities_json FROM devices"),
+      tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at,(SELECT tool_name FROM tool_calls WHERE task_id=tasks.id AND status IN ('proposed','awaiting_approval','ready','executing','unknown') ORDER BY created_at DESC LIMIT 1) active_tool FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200"),
+      usage: this.all("SELECT r.bot_id,COUNT(m.id) calls,COALESCE(SUM(m.input_tokens),0) input_tokens,COALESCE(SUM(m.output_tokens),0) output_tokens FROM model_invocations m JOIN task_runs r ON r.id=m.run_id WHERE m.status='succeeded' GROUP BY r.bot_id"),
+    };
   }
   close() { this.db.close(); }
 }

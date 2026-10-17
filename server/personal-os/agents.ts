@@ -1,6 +1,6 @@
 import { CoreStore, hash, id, now, optionalText, text, type Row } from "./store.ts";
 import type { TaskRuntime } from "./runtime.ts";
-import { actions } from "./policy.ts";
+import { actions, policyTools } from "./policy.ts";
 
 // The contact and its inbox survive any number of execution contexts. Pi
 // sessions belong to work, and never define the identity visible to the owner.
@@ -87,13 +87,31 @@ export class AgentModule {
   }
   active(botId: string) {
     // Include legacy work so a new entry point cannot bypass an older approval.
-    return this.store.get("SELECT t.* FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.bot_id=? AND t.ended_at IS NULL ORDER BY t.created_at LIMIT 1", botId);
+    // A routine task that has yielded/is cancelling does not block user input.
+    return this.store.get("SELECT t.* FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.bot_id=? AND t.ended_at IS NULL AND NOT (l.origin='routine' AND t.status='cancelling') ORDER BY t.created_at LIMIT 1", botId);
   }
   send(botId: string, content: string, clientId: string, sessionId = this.store.session) {
     content = text(content); clientId = text(clientId, 200);
     const digest = hash(content);
+    this.ensure(botId);
+    const existingReceipt = this.store.get("SELECT * FROM agent_input_receipts WHERE bot_id=? AND client_message_id=?", botId, clientId);
+    if (existingReceipt) {
+      if (existingReceipt.request_hash !== digest) throw new Error("同一消息 ID 的内容不同");
+      return { taskId: String(existingReceipt.task_id) };
+    }
+    // Priority delivery: direct user input preempts active background routine work
+    // (unless the routine is awaiting unknown-effect reconciliation).
+    const activeRoutine = this.store.get(
+      "SELECT t.id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.bot_id=? AND l.origin='routine' AND t.ended_at IS NULL AND t.status IN ('queued','running','paused') ORDER BY t.created_at LIMIT 1",
+      botId,
+    );
+    if (activeRoutine) {
+      this.runtime.cancel(String(activeRoutine.id), "例行任务已让路给用户新消息");
+      this.store.run("UPDATE routine_occurrences SET status='cancelled' WHERE task_id=? AND status IN ('pending','running')", activeRoutine.id);
+      this.store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE bot_id=? AND active_task_id=?", botId, activeRoutine.id);
+      this.publish(botId, "system", "activity", "例行任务已让路给用户新消息", `routine-yield:${activeRoutine.id}`, activeRoutine.id);
+    }
     const accepted = this.store.transaction(() => {
-      this.ensure(botId);
       const receipt = this.store.get("SELECT * FROM agent_input_receipts WHERE bot_id=? AND client_message_id=?", botId, clientId);
       if (receipt) { if (receipt.request_hash !== digest) throw new Error("同一消息 ID 的内容不同"); return { taskId: String(receipt.task_id), conversationId: String(receipt.conversation_id), replay: true }; }
       const active = this.active(botId), conversationId = active ? String(active.conversation_id) : this.store.createConversation(botId, "Agent 工作上下文");
@@ -106,6 +124,47 @@ export class AgentModule {
     });
     if (!accepted.replay) this.runtime.input(accepted.conversationId, content, clientId, sessionId);
     this.runtime.changed(); return { taskId: accepted.taskId };
+  }
+  tool(call: Row, args: Record<string, unknown>) {
+    const action = text(args.action, 40);
+    const prior = this.store.get("SELECT details_json FROM audit_records WHERE action=? AND entity_id=?", `steward.${action}`, String(call.id));
+    if (prior) return JSON.parse(String(prior.details_json)).result;
+    if (action === "agent.create") {
+      const name = text(args.name, 80), instructions = optionalText(args.instructions, 8000);
+      const expertise = Array.isArray(args.expertise) ? [...new Set(args.expertise.map((item) => text(item, 80)))] : [];
+      return this.store.transaction(() => {
+        const botId = this.store.createBot(name, instructions);
+        // A new Agent never receives more capabilities than the Agent that created it.
+        const creator = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", String(call.bot_id));
+        const granted = creator ? policyTools(creator) : [];
+        this.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: actions.filter((tool) => granted.includes(tool)) }), botId);
+        this.ensure(botId);
+        if (expertise.length) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify(expertise), botId);
+        const result = { created: true, botId, name, instructions, expertise };
+        this.store.audit("steward.agent.create", "tool_call", String(call.id), { byBotId: call.bot_id, botId, result });
+        this.publish(String(call.bot_id), "system", "activity", `已招募新同伴：${name}`, `steward-create:${call.id}`, call.task_id);
+        return result;
+      });
+    }
+    if (action === "agent.update") {
+      const targetId = text(args.botId, 100);
+      return this.store.transaction(() => {
+        this.ensure(targetId);
+        const current = this.store.get("SELECT * FROM bots WHERE id=? AND status='active'", targetId);
+        if (!current) throw new Error("目标 Agent 不存在或已停用");
+        if (args.expectedVersion !== undefined && Number(args.expectedVersion) !== Number(current.version)) throw new Error("Agent 资料已变化，请刷新后重试");
+        const nextName = args.name !== undefined ? text(args.name, 80) : String(current.name);
+        const nextInstructions = args.instructions !== undefined ? optionalText(args.instructions, 8000) : String(current.instructions ?? "");
+        const expertise = Array.isArray(args.expertise) ? [...new Set(args.expertise.map((item) => text(item, 80)))] : undefined;
+        this.store.run("UPDATE bots SET name=?,instructions=?,version=version+1 WHERE id=?", nextName, nextInstructions, targetId);
+        if (expertise !== undefined) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify(expertise), targetId);
+        const result = { updated: true, botId: targetId, name: nextName, instructions: nextInstructions, version: Number(current.version) + 1, ...(expertise !== undefined ? { expertise } : {}) };
+        this.store.audit("steward.agent.update", "tool_call", String(call.id), { byBotId: call.bot_id, botId: targetId, result });
+        this.publish(String(call.bot_id), "system", "activity", `已更新同伴资料：${nextName}`, `steward-update:${call.id}`, call.task_id);
+        return result;
+      });
+    }
+    throw new Error("不支持的同伴管理操作");
   }
   startRoutine(botId: string, prompt: string, name: string, source: string) {
     return this.store.transaction(() => {
@@ -160,16 +219,54 @@ export class AgentModule {
   }
   private projectMessages(messages: Row[]) {
     return messages.map((message) => {
+      let projected: Record<string, unknown> = message;
       const source = /^a2a-(sent|received|returned|replied):(.+)$/.exec(String(message.source_key));
-      if (!source) return message;
-      const link = this.store.get("SELECT * FROM a2a_messages WHERE id=?", source[2]);
-      if (!link) return message;
-      const direction = source[1], outgoing = direction === "sent" || direction === "returned";
-      if (message.bot_id !== (outgoing ? link.sender_bot_id : link.receiver_bot_id)) return message;
-      // Read projection also presents 0.3.0/0.3.1 system reply records as the
-      // receiver's own reply. Keep persisted IDs, sequence and original facts.
-      return { ...message, a2a_direction: direction, a2a_peer_id: outgoing ? link.receiver_bot_id : link.sender_bot_id,
-        ...(direction === "replied" ? { role: link.status === "succeeded" ? "assistant" : "system", kind: link.status === "succeeded" ? "result" : "error", sender_bot_id: null, content: link.result ? String(JSON.parse(String(link.result)).result ?? "任务已结束") : "任务已取消" } : {}) };
+      if (source) {
+        const link = this.store.get("SELECT * FROM a2a_messages WHERE id=?", source[2]);
+        if (link) {
+          const direction = source[1], outgoing = direction === "sent" || direction === "returned";
+          if (message.bot_id === (outgoing ? link.sender_bot_id : link.receiver_bot_id)) {
+            // Read projection also presents 0.3.0/0.3.1 system reply records as the
+            // receiver's own reply. Keep persisted IDs, sequence and original facts.
+            projected = { ...message, a2a_direction: direction, a2a_peer_id: outgoing ? link.receiver_bot_id : link.sender_bot_id,
+              ...(direction === "replied" ? { role: link.status === "succeeded" ? "assistant" : "system", kind: link.status === "succeeded" ? "result" : "error", sender_bot_id: null, content: link.result ? String(JSON.parse(String(link.result)).result ?? "任务已结束") : "任务已取消" } : {}) };
+          }
+        }
+      }
+      if (projected.role === "assistant" && projected.kind === "message" && projected.task_id && projected.content !== "[已遗忘]" && !this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", String(projected.task_id))) {
+        const calls = this.store.all("SELECT id,tool_name,target_id,arguments_json,result_json,status,created_at FROM tool_calls WHERE task_id=? ORDER BY created_at,rowid", String(projected.task_id));
+        if (calls.length) {
+          projected = {
+            ...projected,
+            tool_steps: calls.map((c) => {
+              let summary = String(c.target_id ?? "");
+              try {
+                const a = JSON.parse(String(c.arguments_json || "{}")) as Record<string, unknown>;
+                if (c.tool_name === "memory.write" || c.tool_name === "memory.search" || c.tool_name === "memory.reflect") summary = String(a.title || a.query || summary).slice(0, 80);
+                else if (c.tool_name === "device.read" || c.tool_name === "device.list") summary = String(a.path || ".").slice(0, 120);
+                else if (c.tool_name === "device.exec") summary = String(a.command || "").slice(0, 80);
+                else if (c.tool_name === "device.computer") summary = String(a.operation || "").slice(0, 60);
+                else if (c.tool_name === "agent.delegate" || c.tool_name === "agent.update") {
+                  const peerName = this.store.get("SELECT name FROM bots WHERE id=?", String(a.botId || c.target_id))?.name;
+                  summary = peerName ? `${peerName}${a.message ? ` · ${String(a.message).slice(0, 40)}` : ""}` : String(a.botId || summary);
+                } else if (c.tool_name === "agent.create") summary = String(a.name || "");
+                else if (String(c.tool_name).startsWith("routine.")) summary = String(a.name || a.routineId || "");
+                else if (c.tool_name === "skill.read") summary = String(a.skillId || "");
+              } catch { /* ignore */ }
+              let preview = "";
+              if (c.result_json) {
+                try {
+                  const parsed = JSON.parse(String(c.result_json));
+                  const { images: _images, ...rest } = (parsed && typeof parsed === "object" ? parsed : { value: parsed }) as Record<string, unknown>;
+                  preview = JSON.stringify(rest, null, 2).slice(0, 1600);
+                } catch { preview = String(c.result_json).slice(0, 1600); }
+              }
+              return { id: String(c.id), tool_name: String(c.tool_name), status: String(c.status), summary, preview, created_at: Number(c.created_at) };
+            }),
+          };
+        }
+      }
+      return projected as Row;
     });
   }
   contacts() {

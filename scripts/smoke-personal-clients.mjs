@@ -41,7 +41,7 @@ async function launch(index) {
   client.evaluate = async (expression) => { const result = await client.command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text); return result.result.value; };
   if (index === 1) writeFileSync(path.resolve("release/personal-client/client-connection.png"), Buffer.from((await client.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
   await client.evaluate(`document.getElementById('origin').value=${JSON.stringify(core.origin)};document.getElementById('name').value='合成客户端 ${index}';document.getElementById('email').value='owner@example.test';document.getElementById('password').value=' synthetic password ';document.querySelector('form').requestSubmit();true`);
-  await until(async () => { const error = await client.evaluate("document.getElementById('error')?.textContent"); if (error) throw new Error("Client login: " + error); return client.evaluate("!!document.querySelector('.brand')"); });
+  await until(async () => { const error = await client.evaluate("document.getElementById('error')?.textContent"); if (error) throw new Error("Client login: " + error); return client.evaluate("!!document.querySelector('.workspace-brand')"); });
   return client;
 }
 async function send(client, content) {
@@ -110,7 +110,7 @@ try {
   await until(() => b.evaluate("[...document.querySelectorAll('button')].some(b=>b.textContent==='退出登录')"));
   if (await b.evaluate("typeof window.nex.configureNode !== 'undefined'||typeof window.nex.nodeState !== 'undefined'")) throw new Error("Shell exposes local device execution");
   await b.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='退出登录').click();true");
-  await until(() => b.evaluate("!!document.getElementById('connection')&&!document.querySelector('.brand')"));
+  await until(() => b.evaluate("!!document.getElementById('connection')&&!document.querySelector('.workspace-brand')"));
   if (existsSync(path.join(b.profile,'connection.bin'))) throw new Error('Client logout retained login credentials');
   cases.push('client-account-logout','shell-has-no-device-executor');
   for (const client of clients) {

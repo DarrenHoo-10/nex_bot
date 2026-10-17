@@ -4,7 +4,7 @@ directories:
   output: release/personal-client
 extraMetadata:
   name: nexbot-client
-  version: 0.7.0
+  version: 0.8.0
   main: electron/nex-client-main.mjs
 npmRebuild: false
 electronVersion: 39.8.10
@@ -30,4 +30,4 @@ win:
 portable:
   useZip: true
   unpackDirName: true
-  artifactName: NexBot-0.7.0-x64-Client-Portable.${ext}
+  artifactName: NexBot-${version}-x64-Client-Portable.${ext}

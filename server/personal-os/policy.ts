@@ -1,10 +1,11 @@
-import { canonical, hash, text, type CoreStore, type Row } from "./store.ts";
+import { canonical, hash, optionalText, text, type CoreStore, type Row } from "./store.ts";
 import { computerOperations } from "./computer.ts";
 import { dangerousEffect } from "./risk.ts";
+import { connectorAccess } from "./connectors.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call"] as const;
 // Device binding, Agent policy and effect-specific approval remain independent.
 export const basicActions = [...actions];
 export function policyTools(policy: Row): string[] {
@@ -34,6 +35,16 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
   } else if (action === "agent.delegate") {
     text(args.message, 16_000);
     if (!store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", text(args.botId, 100), store.workspace, store.owner)) throw new Error("目标 Agent 不存在或已停用");
+  } else if (action === "agent.create") {
+    text(args.name, 80);
+    if (args.instructions !== undefined) optionalText(args.instructions, 8000);
+    if (args.expertise !== undefined && (!Array.isArray(args.expertise) || args.expertise.length > 20 || args.expertise.some((item) => typeof item !== "string" || !item.trim() || item.length > 80))) throw new Error("专长标签无效");
+  } else if (action === "agent.update") {
+    const targetId = text(args.botId, 100);
+    if (!store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", targetId, store.workspace, store.owner)) throw new Error("目标 Agent 不存在或已停用");
+    if (args.name !== undefined) text(args.name, 80);
+    if (args.instructions !== undefined) optionalText(args.instructions, 8000);
+    if (args.expertise !== undefined && (!Array.isArray(args.expertise) || args.expertise.length > 20 || args.expertise.some((item) => typeof item !== "string" || !item.trim() || item.length > 80))) throw new Error("专长标签无效");
   } else if (action.startsWith("routine.")) {
     if (args.botId !== undefined && args.botId !== botId) throw new Error("只能管理自己的例行任务");
     if (action !== "routine.list" && action !== "routine.save") {
@@ -51,6 +62,7 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
   }
   else if (action === "memory.search" || action === "memory.reflect") text(args.query, action === "memory.reflect" ? 1000 : 200);
   else if (action === "skill.read") text(args.skillId, 80);
+  else if (action === "connector.tools" || action === "connector.call") connectorAccess(store, botId, args);
   return { policy, local, approvalRequired: dangerousEffect(args) };
 }
 export function directory(store: CoreStore) {

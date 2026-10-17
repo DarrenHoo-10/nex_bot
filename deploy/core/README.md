@@ -1,4 +1,5 @@
-# NexBot Core 0.7.0 — independent backend service
+# NexBot Core 0.8.1 — independent backend service
+
 
 Core runs under Node.js 24+ on the backend host. It has no Electron window,
 tray, desktop login storage, bundled Hindsight/Python/PostgreSQL or ML weights.
@@ -21,7 +22,27 @@ for the NexorAI email/password with the password masked, binds the account and
 logs out its temporary initialization session. It does not save the password.
 Only this local command can perform first association. A remote client cannot
 claim an uninitialized Core. Subsequent clients sign into the same linked
-account; a different account cannot access this Core.
+account by default. Enable account workspaces below to accept other accounts
+without granting access to the original workspace.
+
+## Independent account workspaces
+
+Set `NEX_CORE_ACCOUNT_WORKSPACES=1` (or pass `--account-workspaces` to `start`).
+The original account keeps its existing data and sessions. After verified
+NexorAI login, each additional issuer/subject gets a separate database under
+`account-workspaces/` within the data directory. New accounts start empty;
+model credentials, memory plugin credentials and MCP grants are not copied.
+The public endpoint Core ID remains stable for existing thin clients, while
+each workspace has a distinct internal ID and a distinct HMAC-derived vault
+key. Back up the **entire data directory and original vault key together**.
+
+Hosted account mode disables execution on the service host for all accounts.
+Accounts may pair their own independent execution nodes; client sessions and
+node credentials never select another account's workspace. Internal workspace
+servers do not open additional listening ports. This version supports up to
+100 additional workspaces and retains their background schedulers while the
+service runs. It is not OS-container isolation for untrusted server plugins;
+Core only runs its reviewed built-in broker tools.
 
 Startup prints a ready JSON object containing the local address, PID, Core ID
 and initialization state. No credential or bootstrap token is printed. The

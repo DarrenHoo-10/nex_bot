@@ -30,7 +30,10 @@ export class MemoryModule {
   prompt(botId: string) {
     const policy = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", botId);
     if (!policy || !policyTools(policy).includes("memory.search")) return "长期记忆检索已禁用";
-    return this.list(botId).slice(0, 15).map((m) => `[${m.scope === "workspace" ? "共享" : "私有"}记忆 id=${m.id} v=${m.version}] ${m.title}\n${String(m.content).slice(0, 1200)}`).join("\n\n").slice(0, 12_000);
+    // Order the top active memory ledger oldest-first (append-only) so adding
+    // new memories extends the tail without invalidating LLM prefix KV-caches.
+    const rows = this.store.all("SELECT * FROM (SELECT d.id,d.title,d.scope,d.bot_id,d.version,d.created_at,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status='active' AND (d.scope='workspace' OR d.bot_id=?) ORDER BY d.updated_at DESC LIMIT 15) ORDER BY CASE WHEN scope='workspace' THEN 0 ELSE 1 END,created_at ASC,id ASC", this.store.workspace, this.store.owner, botId);
+    return rows.map((m) => `[${m.scope === "workspace" ? "共享" : "私有"}记忆 id=${m.id} v=${m.version}] ${m.title}\n${String(m.content).slice(0, 1200)}`).join("\n\n").slice(0, 12_000);
   }
   write(botId: string, data: Record<string, unknown>, callId?: string) {
     const scope = data.scope === "workspace" ? "workspace" : "bot";

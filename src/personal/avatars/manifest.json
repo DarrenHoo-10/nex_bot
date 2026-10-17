@@ -1,0 +1,122 @@
+[
+  {
+    "id": "fox",
+    "name": "赤狐",
+    "bg": "#F4E5D5",
+    "color": "#CD7852"
+  },
+  {
+    "id": "owl",
+    "name": "知更",
+    "bg": "#E6E6D9",
+    "color": "#888E6C"
+  },
+  {
+    "id": "cat",
+    "name": "芝麻",
+    "bg": "#ECE3E8",
+    "color": "#8D879C"
+  },
+  {
+    "id": "bear",
+    "name": "麦芽",
+    "bg": "#EFE1CD",
+    "color": "#B78C62"
+  },
+  {
+    "id": "rabbit",
+    "name": "棉朵",
+    "bg": "#EEE2DE",
+    "color": "#F8F2E8"
+  },
+  {
+    "id": "dog",
+    "name": "吐司",
+    "bg": "#E8E4D6",
+    "color": "#B38962"
+  },
+  {
+    "id": "panda",
+    "name": "竹白",
+    "bg": "#DEE8DF",
+    "color": "#687D75"
+  },
+  {
+    "id": "koala",
+    "name": "尤加",
+    "bg": "#DDE6EA",
+    "color": "#9BAEB8"
+  },
+  {
+    "id": "tiger",
+    "name": "橘山",
+    "bg": "#F1E2CF",
+    "color": "#D59B5D"
+  },
+  {
+    "id": "deer",
+    "name": "林间",
+    "bg": "#E5E6D5",
+    "color": "#BB9473"
+  },
+  {
+    "id": "penguin",
+    "name": "南极",
+    "bg": "#DFE8EB",
+    "color": "#637D8D"
+  },
+  {
+    "id": "seal",
+    "name": "海盐",
+    "bg": "#DFE9E7",
+    "color": "#B2C6C9"
+  },
+  {
+    "id": "otter",
+    "name": "栗子",
+    "bg": "#E8DECF",
+    "color": "#A97B5C"
+  },
+  {
+    "id": "octopus",
+    "name": "墨墨",
+    "bg": "#EADFE8",
+    "color": "#B990B1"
+  },
+  {
+    "id": "frog",
+    "name": "青禾",
+    "bg": "#E0E8D4",
+    "color": "#91A873"
+  },
+  {
+    "id": "robot",
+    "name": "小钛",
+    "bg": "#E0E8E6",
+    "color": "#8EAFA9"
+  },
+  {
+    "id": "astronaut",
+    "name": "阿波罗",
+    "bg": "#E1E3EE",
+    "color": "#929DBA"
+  },
+  {
+    "id": "star",
+    "name": "星芒",
+    "bg": "#F0E7D3",
+    "color": "#D8B76B"
+  },
+  {
+    "id": "cloud",
+    "name": "云团",
+    "bg": "#DFE8F0",
+    "color": "#AEC3D3"
+  },
+  {
+    "id": "sprout",
+    "name": "芽芽",
+    "bg": "#E7E8D8",
+    "color": "#86A580"
+  }
+]

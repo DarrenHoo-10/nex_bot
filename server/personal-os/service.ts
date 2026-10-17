@@ -5,7 +5,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { createPersonalApp } from "./index.ts";
 
-export interface ServiceOptions { command: "start" | "init"; dir: string; host: string; port: number; publicOrigin?: string; jsonInput: boolean; fixtureOrigin?: string }
+export interface ServiceOptions { command: "start" | "init"; dir: string; host: string; port: number; publicOrigin?: string; trustProxy?: boolean; accountWorkspaces?: boolean; jsonInput: boolean; fixtureOrigin?: string }
 export function serviceOptions(args: string[], env: NodeJS.ProcessEnv = process.env): ServiceOptions {
   const command = args[0] && !args[0].startsWith("--") ? args[0] : "start";
   if (command !== "start" && command !== "init") throw new Error("用法：service.js start|init [--data-dir=目录] [--host=127.0.0.1] [--port=8799]");
@@ -18,7 +18,7 @@ export function serviceOptions(args: string[], env: NodeJS.ProcessEnv = process.
   if (args.includes("--fixture")) {
     if (realpathSync(path.dirname(dir)) !== realpathSync(os.tmpdir()) || !path.basename(dir).startsWith("nex-service-fixture-") || !fixtureOrigin) throw new Error("测试身份只能用于明确创建的临时服务目录");
   } else if (env.NEX_IDENTITY_FIXTURE_URL) throw new Error("生产后端不能覆盖内置用户中心");
-  return { command, dir, host, port, publicOrigin: value("public-origin") ?? env.NEX_CORE_PUBLIC_ORIGIN, jsonInput: args.includes("--input-json"), ...(fixtureOrigin ? { fixtureOrigin } : {}) };
+  return { command, dir, host, port, publicOrigin: value("public-origin") ?? env.NEX_CORE_PUBLIC_ORIGIN, trustProxy: args.includes("--trust-proxy") || env.NEX_CORE_TRUST_PROXY === "1", accountWorkspaces: args.includes("--account-workspaces") || env.NEX_CORE_ACCOUNT_WORKSPACES === "1", jsonInput: args.includes("--input-json"), ...(fixtureOrigin ? { fixtureOrigin } : {}) };
 }
 export function serviceVault(dir: string, supplied = process.env.NEX_CORE_VAULT_KEY): Buffer {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -77,14 +77,17 @@ export async function runService(options: ServiceOptions) {
   let finish!: () => void;
   const stopped = new Promise<void>((resolve) => { finish = resolve; });
   const stop = () => { stopping = true; finish(); };
-  process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  const onMessage = (message: unknown) => { if (message === "stop") stop(); };
+  process.once("SIGINT", stop); process.once("SIGTERM", stop); process.on("message", onMessage);
   try {
     // Dynamic relative import keeps the CLI and Core in separate build files.
     const extension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
-    const { createPersonalApp: start } = await import(new URL("./index" + extension, import.meta.url).href) as { createPersonalApp: typeof createPersonalApp };
+    const start = options.accountWorkspaces && options.command === "start"
+      ? (await import(new URL("./workspaces" + extension, import.meta.url).href) as typeof import("./workspaces.ts")).createWorkspaceService
+      : (await import(new URL("./index" + extension, import.meta.url).href) as { createPersonalApp: typeof createPersonalApp }).createPersonalApp;
     const resources = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     app = await start({ dir: options.dir, key, token: randomBytes(32).toString("base64url"), strictPort: true, host: options.command === "init" ? "127.0.0.1" : options.host, port: options.command === "init" ? 0 : options.port,
-      publicOrigin: options.command === "init" ? undefined : options.publicOrigin, uiDir: path.join(resources, "ui"), ...(options.fixtureOrigin ? { identity: { fixtureOrigin: options.fixtureOrigin } } : {}) });
+      publicOrigin: options.command === "init" ? undefined : options.publicOrigin, trustProxy: options.command === "init" ? false : options.trustProxy, uiDir: path.join(resources, "ui"), ...(options.fixtureOrigin ? { identity: { fixtureOrigin: options.fixtureOrigin } } : {}) });
     if (stopping) return;
     if (options.command === "init") {
       if (!app.identity || app.identity.connected()) throw new Error("此后端已关联账号，客户端可直接登录");
@@ -103,7 +106,7 @@ export async function runService(options: ServiceOptions) {
     process.stdout.write(JSON.stringify(status) + "\n");
     await stopped;
   } finally {
-    process.off("SIGINT", stop); process.off("SIGTERM", stop);
+    process.off("SIGINT", stop); process.off("SIGTERM", stop); process.off("message", onMessage);
     try { if (app) await app.close(); }
     finally {
       const file = path.join(options.dir, "service.json");
@@ -112,7 +115,8 @@ export async function runService(options: ServiceOptions) {
     }
   }
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
   try { await runService(serviceOptions(process.argv.slice(2))); }
   catch (error) { process.stderr.write((error instanceof Error ? error.message : "后端服务启动失败") + "\n"); process.exitCode = 1; }
+  finally { if (process.connected) process.disconnect?.(); }
 }

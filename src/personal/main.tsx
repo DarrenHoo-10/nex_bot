@@ -3,6 +3,7 @@ import { AgentDesktop } from "./AgentDesktop";
 import { LoginGate } from "./auth";
 import { api } from "./api";
 import "./agent.css";
+import "./workspace.css";
 async function boot() {
  const token = new URLSearchParams(location.hash.slice(1)).get("token");
  if (token) { await api("session", { token }); history.replaceState(null, "", location.pathname); }

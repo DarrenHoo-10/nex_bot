@@ -15,9 +15,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
   for (const f of fixtures.splice(0)) { await f.app.close(); await f.provider.close(); if (path.dirname(f.root) === os.tmpdir() && path.basename(f.root).startsWith("nex-login-fixture-")) rmSync(f.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
-async function fixture() {
+async function fixture(extra: { trustProxy?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-login-fixture-")), provider = await startFakeIdentity(), key = randomBytes(32);
-  const app = await createPersonalApp({ dir: root, key, token: "synthetic-bootstrap", memoryRuntime: false, identity: { fixtureOrigin: provider.origin } });
+  const app = await createPersonalApp({ dir: root, key, token: "synthetic-bootstrap", memoryRuntime: false, identity: { fixtureOrigin: provider.origin }, ...extra });
   const f = { app, provider, root, key }; fixtures.push(f); return f;
 }
 async function request(app: Awaited<ReturnType<typeof createPersonalApp>>, route: string, data?: unknown, headers: Record<string, string> = {}) {
@@ -88,6 +88,25 @@ describe("mandatory built-in account login", () => {
     provider.state.status = 401;
     expect((await request(app, "state", undefined, { Authorization: `Bearer ${owner.body.token}` })).status).toBe(401);
     expect(app.store.get("SELECT revoked_at FROM user_sessions WHERE id=?", owner.body.sessionId)!.revoked_at).not.toBeNull();
+  });
+  it("keeps the device name in account status after the upstream revalidation window", async () => {
+    const { app } = await fixture(); const owner = await login(app, await bootstrap(app));
+    const headers = { Authorization: `Bearer ${owner.body.token}` };
+    expect(((await request(app, "auth/status", undefined, headers)).body as { account?: { deviceName?: string } }).account?.deviceName).toBe("合成设备");
+    staleCache();
+    expect(((await request(app, "auth/status", undefined, headers)).body as { account?: { deviceName?: string } }).account?.deviceName).toBe("合成设备");
+  });
+  it("rate-limits and applies the HTTPS rule per forwarded client only when the proxy is trusted", async () => {
+    const trusted = await fixture({ trustProxy: true });
+    const start = (app: typeof trusted.app, ip: string) => request(app, "auth/start", { account: "owner@example.test", name: "合成设备" }, { "X-Forwarded-For": `198.51.100.1, ${ip}` });
+    expect((await start(trusted.app, "203.0.113.9")).status).toBe(426);
+    for (let attempt = 0; attempt < 20; attempt++) expect((await start(trusted.app, "10.0.0.1")).status).not.toBe(429);
+    expect((await start(trusted.app, "10.0.0.1")).status).toBe(429);
+    expect((await start(trusted.app, "10.0.0.2")).status).not.toBe(429);
+    const untrusted = await fixture();
+    expect((await start(untrusted.app, "203.0.113.9")).status).not.toBe(426);
+    for (let attempt = 0; attempt < 20; attempt++) await start(untrusted.app, `10.0.1.${attempt}`);
+    expect((await start(untrusted.app, "10.0.2.1")).status).toBe(429);
   });
   it("locally revokes logout even if upstream is down, and leaves the other device logged in", async () => {
     const { app, provider } = await fixture(); const first = await login(app, await bootstrap(app)), second = await login(app);
