@@ -1,8 +1,10 @@
 # Verifying OpenMausBot
 
-NexBot Core is now a standalone Node backend, and every desktop distribution is
-a thin shell. Use the [Core service / thin shell recipe](core-service-thin-shell.md)
-for current Personal OS verification. The [Windows desktop fixture](personal-os.md)
+NexBot Core is a standalone Node backend. Desktop clients now include a local
+device executor; use the [client device executor recipe](client-device-executor.md)
+for its lifecycle, permissions and packaged verification, alongside the
+[Core service / thin shell recipe](core-service-thin-shell.md) for the separate
+backend. The [Windows desktop fixture](personal-os.md)
 records the historical embedded-desktop delivery. All current checks use
 owned temporary data, synthetic identity/model providers and isolated shells.
 

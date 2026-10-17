@@ -33,7 +33,6 @@ export function AccountControls() {
       <span className="account-avatar" aria-hidden="true"><UserRound size={24} strokeWidth={1.7}/></span>
       <div className="ds-account-meta">
         <strong className="ds-account-name">{name}</strong>
-        <p className="muted">NexorAI 账号 · 已认证</p>
       </div>
       <div className="ds-account-actions">
         <button onClick={() => void logout().catch(() => setError("退出未完成，请重试"))}>退出登录</button>
@@ -79,6 +78,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
     loggingOut.current = true;
     try {
       ++generation.current;
+      await desktop?.stopDevice?.();
       await api("auth/logout", {});
       if (desktop?.forgetLogin) { await desktop.forgetLogin(); return; }
       setConfirmLogout(false); setStatus(undefined); setError("");

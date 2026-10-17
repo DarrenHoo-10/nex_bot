@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AccountControls, useAccount } from "./auth";
-import { Check, Cpu, Eye, EyeOff, KeyRound, Laptop, Plug, Plus, Sparkles, UserRound, X } from "lucide-react";
-import { api, listModels, str, type State } from "./api";
+import { Check, Cpu, Eye, EyeOff, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
+import { api, desktop, listModels, str, type State, type LocalDeviceState } from "./api";
 import { ConnectorsPage } from "./ConnectorsPage";
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
@@ -22,21 +22,21 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
     { id: "devices", label: "设备", icon: Cpu },
   ];
   return <div className="preferences-page">
-    <div className="preferences-heading"><h1>设置</h1><p>管理你的账号和助手偏好。</p></div>
+    <div className="preferences-heading"><h1>设置</h1></div>
     <div className="preferences-layout">
       <nav className="preferences-nav" aria-label="设置分类">{categories.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={category === id ? "page" : undefined} aria-controls={`${sectionId}-${id}`} onClick={() => onCategory(id)}><Icon size={17}/><span>{label}</span></button>)}</nav>
       <div className="preferences-content">
         <section id={`${sectionId}-account`} hidden={category !== "account"} aria-label="账号与登录设备" className="preferences-panel">
-          <div className="preferences-panel-heading"><h2>账号与登录设备</h2><p>管理个人身份，以及可以访问这个工作区的登录设备。</p></div>
+          <div className="preferences-panel-heading"><h2>账号与登录设备</h2></div>
           <AccountControls/>
           <ClientSessions cursor={state.sync.cursor} run={run}/>
         </section>
         <section id={`${sectionId}-model`} hidden={category !== "model"} aria-label="模型" className="preferences-panel">
-          <div className="preferences-panel-heading"><h2>模型</h2><p>选择助手使用的模型，并连接你的服务商。</p></div>
+          <div className="preferences-panel-heading"><h2>模型</h2></div>
           <ModelSettings state={state} run={run} active={category === "model"}/>
         </section>
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="记忆服务" className="preferences-panel">
-          <div className="preferences-panel-heading"><h2>记忆服务</h2><p>让助手在后续对话中找回与你有关的信息。</p></div>
+          <div className="preferences-panel-heading"><h2>记忆服务</h2></div>
           <MemoryPluginSettings state={state} run={run}/>
         </section>
         <section id={`${sectionId}-connectors`} hidden={category !== "connectors"} aria-label="连接器" className="preferences-panel">
@@ -78,8 +78,8 @@ function ModelSettings({ state, run, active }: { state: State; run: (fn: () => P
     <form ref={modelForm} onSubmit={(event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); setPending(true); setSaved(false); setShowKey(false); setModelError(""); void run(async () => { await api("config", data); setSaved(true); }).finally(() => setPending(false)); }}>
       <fieldset disabled={pending || loadingModels}>
           <label className="field">API 协议<select name="provider" value={provider} onChange={(event) => { const next = event.target.value; if (["https://api.openai.com/v1", "https://api.anthropic.com"].includes(endpoint)) setEndpoint(next === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com"); setProvider(next); clearEnteredKey(); resetModels(); }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></label>
-        <label className="field">API 基础地址<input name="endpoint" type="url" required value={endpoint} spellCheck={false} onChange={(event) => { setEndpoint(event.target.value); clearEnteredKey(); resetModels(); }}/><small>{provider === "openai" ? "通常以 /v1 结尾，不包含 /chat/completions。" : "填写服务根地址，不包含 /v1/messages。"}</small></label>
-        <div className="field"><label htmlFor={keyId}>API Key</label><div className="preferences-secret-input"><input id={keyId} name="apiKey" type={showKey ? "text" : "password"} autoComplete="off" spellCheck={false} required={!state.config} placeholder={state.config ? "留空保留已保存的 Key" : "输入 API Key"} onChange={resetModels}/><button type="button" aria-label={showKey ? "隐藏 API Key" : "显示 API Key"} aria-pressed={showKey} onClick={() => setShowKey(value => !value)}>{showKey ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div><small>密钥将加密保存；眼睛按钮可查看本次填写的内容。</small></div>
+        <label className="field">API 基础地址<input name="endpoint" type="url" required value={endpoint} spellCheck={false} onChange={(event) => { setEndpoint(event.target.value); clearEnteredKey(); resetModels(); }}/></label>
+        <div className="field"><label htmlFor={keyId}>API Key</label><div className="preferences-secret-input"><input id={keyId} name="apiKey" type={showKey ? "text" : "password"} autoComplete="off" spellCheck={false} required={!state.config} placeholder={state.config ? "留空保留已保存的 Key" : "输入 API Key"} onChange={resetModels}/><button type="button" aria-label={showKey ? "隐藏 API Key" : "显示 API Key"} aria-pressed={showKey} onClick={() => setShowKey(value => !value)}>{showKey ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div></div>
         <div className="field"><label htmlFor={modelId}>模型</label><div className="preferences-model-controls">
           {models.length && !manual ? <select id={modelId} name="model" required value={model} onChange={(event) => { setModel(event.target.value); setSaved(false); }}>{model && !models.includes(model) && <option value={model}>{model}（当前配置）</option>}{models.map((id) => <option key={id} value={id}>{id}</option>)}</select> : <input id={modelId} name="model" required value={model} placeholder="选择或填写模型 ID" onChange={(event) => { setModel(event.target.value); setSaved(false); }}/>}
           <button type="button" disabled={!endpoint} onClick={() => void loadModels()}>{loadingModels ? "获取中…" : "获取模型列表"}</button>
@@ -103,10 +103,10 @@ function MemoryPluginSettings({ state, run }: { state: State; run: (fn: () => Pr
     {plugin.status === "unavailable" && <p className="preferences-notice">暂时无法连接记忆服务。聊天仍可使用，请检查服务地址或查看诊断详情。</p>}
     <form onSubmit={(event) => { event.preventDefault(); perform(async () => { await api("plugins/memory", data); setToken(""); setFeedback("配置已加密保存，重启后端服务后生效。"); }); }}>
       <fieldset disabled={pending}>
-        <label className="preferences-toggle"><span><strong>启用长期记忆</strong><small>将记忆来源同步到配置的服务，供后续检索使用。</small></span><input name="memoryEnabled" type="checkbox" role="switch" checked={enabled} onChange={(event) => { setEnabled(event.target.checked); setFeedback(""); }} aria-label="启用长期记忆"/></label>
-        <label className="field">服务地址<input name="memoryEndpoint" type="url" required={enabled} value={endpoint} spellCheck={false} placeholder="https://memory.example.com" onChange={(event) => { setEndpoint(event.target.value); setFeedback(""); }}/><small>填写后端能够访问的 Hindsight 服务地址。</small></label>
+        <label className="preferences-toggle"><span><strong>启用长期记忆</strong></span><input name="memoryEnabled" type="checkbox" role="switch" checked={enabled} onChange={(event) => { setEnabled(event.target.checked); setFeedback(""); }} aria-label="启用长期记忆"/></label>
+        <label className="field">服务地址<input name="memoryEndpoint" type="url" required={enabled} value={endpoint} spellCheck={false} placeholder="https://memory.example.com" onChange={(event) => { setEndpoint(event.target.value); setFeedback(""); }}/></label>
         <label className="field">访问令牌<input name="memoryToken" type="password" autoComplete="off" value={token} required={enabled && !(plugin.hasToken && endpoint.replace(/\/$/, "") === plugin.endpoint)} placeholder={plugin.hasToken ? "地址不变时，留空保留已有令牌" : "输入服务访问令牌"} onChange={(event) => { setToken(event.target.value); setFeedback(""); }}/></label>
-        <p className="preferences-description">模型调用与费用由该服务管理。停用不会删除外部数据。</p>
+
         <details className="preferences-advanced"><summary>诊断详情</summary><dl className="preferences-facts"><div><dt>服务协议</dt><dd>{plugin.providers.find((provider) => provider.id === "hindsight")?.protocol ?? "Hindsight HTTP API"}</dd></div><div><dt>连接状态</dt><dd>{labels[plugin.status] ?? "状态未知"}</dd></div>{plugin.error && <div><dt>错误详情</dt><dd><code>{plugin.error}</code></dd></div>}</dl><p>模型与认证在外部 Hindsight 服务配置；修改本页配置后需重启后端服务。</p></details>
         <div className="preferences-actions"><button className="primary" type="submit">{pending ? "处理中…" : "保存插件配置"}</button><button type="button" disabled={!endpoint} onClick={() => perform(async () => { await api("plugins/memory/test", data); setFeedback("连接测试通过，尚未更改配置。"); })}>测试连接</button></div>
       </fieldset>
@@ -133,7 +133,7 @@ function ClientSessions({ cursor, run }: { cursor: number; run: (fn: () => Promi
   }, [cursor, status?.sessionId]);
   return <section className="preferences-section">
     <div className="preferences-section-heading"><h3>登录设备</h3>{loaded && !loadError && <span className="preferences-status">{sessions.length} 个有效登录</span>}</div>
-    <p className="preferences-description">移除不再使用的登录，即可撤销该设备对工作区的访问。</p>
+
     {!loaded && <p className="preferences-description" role="status">正在加载登录设备…</p>}
     {loadError && <p className="preferences-notice" role="alert">登录设备暂时无法加载，请稍后重新打开设置。</p>}
     {loaded && !loadError && !sessions.length && <p className="preferences-description">暂无其他有效登录。</p>}
@@ -155,11 +155,54 @@ function ClientSessions({ cursor, run }: { cursor: number; run: (fn: () => Promi
     </div>
   </section>;
 }
+interface DeviceSession { session_id: string; name: string; last_seen_at?: number; expires_at: number; revoked_at: number | null }
 export function Devices({ state, run, setDialog, closeDialog }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
-  const [pair, setPair] = useState<{ token: string; deviceId: string }>();
-  return <div className="content-page ds-settings-page"><div className="page-heading ds-page-hero"><div><span className="ds-page-eyebrow">PERSONAL AI OS · DEVICES</span><h1>设备网络</h1><p className="muted">管理助手可以使用的设备。</p></div><button className="primary" onClick={() => setDialog(<Editor title="添加设备" onClose={closeDialog} fields={[{ name: "name", label: "设备名称", required: true }]} onSubmit={(data) => run(async () => { setPair(await api("devices", data)); closeDialog(); })}/>)}><Plus size={16}/>生成配对令牌</button></div>
-    {pair ? <section className="pair-card"><h2>在设备执行节点完成配对</h2><p>后端地址：<code>{state.address}</code></p><label className="field">设备令牌（仅显示本次）<input readOnly value={pair.token} onFocus={(event) => event.target.select()}/></label><button onClick={() => setPair(undefined)}>已复制，关闭</button></section> : null}
-    <div className="device-list">{state.devices.map((device) => <section key={str(device.id)}><Cpu size={25}/><div><strong>{device.name}{device.id === state.hostDeviceId ? " · 后端主机" : ""}</strong><p>{device.status === "revoked" ? "已撤销" : state.onlineDevices.includes(str(device.id)) ? "在线" : "离线"}</p></div>{device.status !== "revoked" && device.id !== state.hostDeviceId ? <button className="danger-text" onClick={() => void run(() => api("devices/revoke", { id: device.id }))}>撤销</button> : null}</section>)}</div>
-      {state.node.unknownCalls.map((call) => <section className="approval" key={str(call.call_id)}><h2>需要核对设备执行结果</h2><pre>{str(call.arguments_json)}</pre><p>上次执行中断，这个调用不会重放。请检查后端主机上的进程和操作结果，再确认已停止。</p><button onClick={() => setDialog(<Confirm title="确认该调用已停止？" detail="请先检查设备实际执行结果。确认后不会重试原操作。" onClose={closeDialog} onConfirm={() => run(async () => { await api("node/reconcile", { callId: call.call_id, version: call.version }); closeDialog(); })}/>)}>已核实停止</button></section>)}
+  const { status } = useAccount();
+  const [local, setLocal] = useState<LocalDeviceState>();
+  const [sessions, setSessions] = useState<DeviceSession[]>([]), [currentId, setCurrentId] = useState<string>();
+  const [loaded, setLoaded] = useState(false), [error, setError] = useState(""), [pending, setPending] = useState(false);
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      const results = await Promise.allSettled([
+        api<{ sessions: DeviceSession[]; currentSessionId?: string }>("clients"),
+        desktop?.deviceState?.() ?? Promise.resolve(undefined),
+      ]);
+      if (!active) return;
+      const [clients, device] = results;
+      setClock(Date.now()); setLoaded(true);
+      if (clients.status === "fulfilled") { setSessions(clients.value.sessions); setCurrentId(clients.value.currentSessionId ?? status?.sessionId); setError(""); }
+      else setError("设备列表加载失败");
+      if (device.status === "fulfilled") setLocal(device.value);
+    };
+    void refresh(); const timer = setInterval(() => void refresh(), 2000);
+    return () => { active = false; clearInterval(timer); };
+  }, [status?.sessionId]);
+  const update = async (work: () => Promise<LocalDeviceState>) => {
+    setPending(true); setError("");
+    try { setLocal(await work()); } catch (e) { setError((e instanceof Error ? e.message : "操作失败").replace(/^Error invoking remote method '[^']+': Error: /, "")); }
+    finally { setPending(false); }
+  };
+  const visible = sessions.filter(session => !session.revoked_at && session.expires_at > clock).sort((a, b) => Number(b.session_id === currentId) - Number(a.session_id === currentId));
+  return <div className="content-page ds-settings-page">
+    <div className="preferences-panel-heading"><h2>设备</h2></div>
+    <div className="signed-in-devices">
+      {visible.map(session => {
+        const isCurrent = session.session_id === currentId;
+        const online = clock - (session.last_seen_at ?? 0) < 90_000;
+        return <section className={`signed-in-device ${isCurrent ? "local-device" : ""}`} key={session.session_id}>
+          <Laptop size={22} aria-hidden="true"/>
+          <div className="signed-in-device-name"><strong>{session.name}</strong>{isCurrent && <span className="ds-current-pill">本设备</span>}</div>
+          <span className="device-presence"><i data-online={online}/>{online ? "在线" : "离线"}{isCurrent && local?.paused ? " · 已暂停" : ""}</span>
+          {isCurrent && local?.available && <button disabled={pending || !local.authorized} onClick={() => void update(() => desktop!.setDevicePaused!(!local.paused))}>{pending ? "处理中…" : local.paused ? "恢复控制" : "暂停控制"}</button>}
+        </section>;
+      })}
+    </div>
+    {!loaded && <p role="status">正在加载…</p>}
+    {loaded && !error && !visible.length && <p>暂无设备</p>}
+    {error && <p role="alert" className="model-error">{error}</p>}
+    {local?.unknownCalls?.map(call => <section className="local-device-unresolved" key={str(call.call_id)}><strong>需要核实执行结果</strong><button disabled={pending} onClick={() => void update(() => desktop!.reconcileDevice!(str(call.call_id), Number(call.version)))}>核实并解除暂停</button></section>)}
+    {state.node.unknownCalls.map((call) => <section className="approval" key={str(call.call_id)}><h2>需要核对设备执行结果</h2><pre>{str(call.arguments_json)}</pre><button onClick={() => setDialog(<Confirm title="确认该调用已停止？" detail="请先检查设备实际执行结果。确认后不会重试原操作。" onClose={closeDialog} onConfirm={() => run(async () => { await api("node/reconcile", { callId: call.call_id, version: call.version }); closeDialog(); })}/>)}>已核实停止</button></section>)}
   </div>;
 }

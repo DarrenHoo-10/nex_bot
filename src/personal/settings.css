@@ -113,3 +113,13 @@
 .rk-workspace .preferences-secret-input input { width: 100%; padding-right: 48px; }
 .rk-workspace .preferences-secret-input button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; background: transparent; color: var(--muted-foreground); }
 .rk-workspace .preferences-secret-input button:hover { color: var(--foreground); background: var(--muted); }
+
+.signed-in-devices { display: grid; }
+.signed-in-device { display: flex; align-items: center; gap: 16px; padding: 22px 0; border-bottom: 1px solid var(--input); }
+.signed-in-device > svg { flex-shrink: 0; color: var(--muted-foreground); }
+.signed-in-device-name { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; overflow-wrap: anywhere; }
+.device-presence { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
+.device-presence i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-foreground); }
+.device-presence i[data-online="true"] { background: #3569e8; }
+@media (max-width: 650px) { .signed-in-device { flex-wrap: wrap; gap: 12px; } .signed-in-device-name { flex-basis: calc(100% - 40px); } .signed-in-device > button { margin-left: auto; } }
+.local-device-unresolved { margin-top: 20px; }

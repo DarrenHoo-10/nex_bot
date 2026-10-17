@@ -3,7 +3,7 @@ name: computer
 description: 在获准的设备上观察并操作明确选定的电脑窗口。
 ---
 
-先用 device.inventory 和 device.info 检查在线、支持和实际能力。主设备及已配对客户端默认提供终端和电脑操作，不要求用户开启授权开关。
+先用 device.inventory 和 device.info 检查在线、支持和实际授权；登录后，完整桌面客户端自动提供支持的控制能力。暂停时可到“设置 → 设备”恢复控制，不需要配对令牌或单独的电脑控制开关；不可通过终端绕过关闭的权限。
 调用 broker(action=device.computer,deviceId,operation=tools) 获取内置执行器的真实参数 schema，再按 schema 传 parameters 对象。
 list_windows 选择具体窗口；get_window_state 必须传返回的 pid、window_id，观察截图/可访问性。不能自行捏造句柄、元素索引或截图坐标。
 目标窗口最小化时，先 list_windows，再用其中真实的 pid、window_id 调 bring_to_front 恢复窗口。恢复后必须 get_window_state，再进行点击、输入或按键；每次输入后重新观察。不能通过 device.exec、Add-Type 或系统脚本绕过窗口执行器、观察要求或风险判断。

@@ -7,7 +7,7 @@ import type { Row } from "./store.ts";
 
 // Thin clients store only a device execution journal and encrypted connection
 // grants. They do not create a Core database or run an Agent/memory service.
-export function createClientNode(dir: string, key: Buffer, changed: () => void, expectedOrigin?: string) {
+export function createClientNode(dir: string, key: Buffer, changed: () => void, expectedOrigin?: string, options: { autoConnect?: boolean } = {}) {
   if (key.length !== 32) throw new Error("Invalid client vault key");
   mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, "device-secrets.db"));
@@ -21,8 +21,11 @@ export function createClientNode(dir: string, key: Buffer, changed: () => void, 
   };
   const previous = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
   if (previous && expectedOrigin && JSON.parse(store.decrypt(String(previous.ciphertext))).origin !== expectedOrigin) store.run("DELETE FROM secrets WHERE id='node-config'");
-  const node = new DeviceNode(store, changed);
-  if (node.config) node.configure({ ...node.config, exec: true, computer: node.computer.available() });
+  const node = new DeviceNode(store, changed, options.autoConnect !== false);
+  if (options.autoConnect === false) {
+    const stored = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
+    if (stored) node.config = JSON.parse(store.decrypt(String(stored.ciphertext)));
+  }
   return { node, async close() { await node.close(); db.close(); } };
 }
 export function clearClientGrant(dir: string) {

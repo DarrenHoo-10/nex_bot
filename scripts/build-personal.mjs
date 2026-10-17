@@ -29,7 +29,8 @@ if (!existsSync(electronExe) || spawnSync(electronExe, ["-p", "process.versions.
   mkdirSync(electronDir, { recursive: true }); await extract(archive, { dir: electronDir });
 }
 }
-if (shellOnly) { console.log("Thin shell runtime prepared"); process.exit(0); }
+if (!coreOnly) await import("./build-client-executor.mjs");
+if (shellOnly) { console.log("Desktop client runtime prepared"); process.exit(0); }
 const serverOutput = path.join(output, "server");
 mkdirSync(path.join(serverOutput, "core"), { recursive: true });
 if (process.platform === "win32") await import("./build-personal-computer.mjs");

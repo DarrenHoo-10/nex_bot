@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ClientDevice } from "./nex-client-device.mjs";
 import { installLocalUi } from "./nex-client-ui.mjs";
 import { fetchModelCatalog } from "../shared/model-catalog.mjs";
 
@@ -13,6 +14,7 @@ const profile = process.argv.find((a) => a.startsWith("--profile="))?.slice(10);
 app.setName(process.platform === "darwin" && profile ? "NexBot Client Fixture " + createHash("sha256").update(profile).digest("hex").slice(0, 12) : "NexBot Client");
 app.setPath("userData", profile ? path.resolve(profile) : path.join(app.getPath("appData"), "NexBotClient"));
 const defaultOrigin = process.env.NEX_CLIENT_DEFAULT_ORIGIN || "https://bot.nexorai.com.cn";
+let device, shuttingDown = false;
 let window, saved, origin, connectionError = "", resuming = false, loginEpoch = 0, repointed = false;
 const cancelled = Object.assign(new Error("已取消"), { cancelled: true });
 const credentials = path.join(app.getPath("userData"), "connection.bin");
@@ -34,6 +36,7 @@ async function request(address, route, data, token) {
   return result;
 }
 async function login(settings) {
+  await device?.stop();
   const old = saved, epoch = loginEpoch;
   const address = coreOrigin(settings.resume ? (saved?.origin || defaultOrigin) : (settings.origin || defaultOrigin));
   let session, identity;
@@ -61,8 +64,9 @@ async function login(settings) {
     if (!identity.initialized) throw new Error("后端尚未关联账号，请先在服务器运行 init 完成初始化");
     const transaction = await request(address, "/api/auth/start", { account: settings.email, name: settings.name });
     session = await request(address, "/api/auth/respond", { ...transaction, password: settings.password });
+    if (epoch !== loginEpoch) throw cancelled;
     if (session.coreId !== identity.coreId) throw new Error("Core 身份在登录期间发生变化");
-    saved = { origin: address, name: String(settings.name), token: session.token, coreId: session.coreId, sessionId: session.sessionId, expiresAt: session.expiresAt };
+    saved = { origin: address, account: String(settings.email).trim().toLowerCase(), name: String(settings.name), token: session.token, coreId: session.coreId, sessionId: session.sessionId, expiresAt: session.expiresAt };
     writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
   }
   // Resuming keeps the HTTP cache and the Agent view preferences in localStorage; a new login starts clean.
@@ -72,12 +76,20 @@ async function login(settings) {
   origin = address;
   connectionError = "";
   resuming = false;
+  if (epoch !== loginEpoch) throw cancelled;
+  await device?.start(saved);
+  if (epoch !== loginEpoch) throw cancelled;
   await window.loadURL(origin + "/");
 }
 if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) app.quit();
 else {
   app.on("second-instance", (_event, args) => { if (args.includes("--quit")) app.quit(); else { window?.show(); window?.focus(); } });
   app.on("window-all-closed", () => app.quit());
+  app.on("before-quit", (event) => {
+    if (shuttingDown || !device) return;
+    event.preventDefault(); shuttingDown = true;
+    void device.stop().finally(() => app.quit());
+  });
   app.whenReady().then(async () => {
     mkdirSync(app.getPath("userData"), { recursive: true });
     if (!safeStorage.isEncryptionAvailable()) throw new Error("系统加密存储不可用");
@@ -89,8 +101,16 @@ else {
       saved = { ...saved, origin: targetOrigin }; repointed = true;
       writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
     }
-    window = new BrowserWindow({ width: 1240, height: 880, minWidth: 760, minHeight: 600, title: "NexBot Client", icon: path.join(root, "electron", "client", "nexbot-icon.png"), autoHideMenuBar: true, webPreferences: { preload: path.join(root, "electron", "nex-client-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, partition: `nex-client-${randomBytes(12).toString("hex")}` } });
-    installLocalUi(window.webContents.session, path.join(root, "ui"), () => origin);
+    window = new BrowserWindow({ width: 1240, height: 880, minWidth: 760, minHeight: 600, title: "NexBot", icon: path.join(root, "electron", "client", "nexbot-icon.png"), autoHideMenuBar: true, webPreferences: { preload: path.join(root, "electron", "nex-client-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, partition: `nex-client-${randomBytes(12).toString("hex")}` } });
+    const resourceRoot = app.isPackaged ? process.resourcesPath : path.join(root, "dist-personal");
+    const executorFile = path.join(resourceRoot, "client-executor", "client-node", "client-node.js");
+    if (existsSync(executorFile)) {
+      const { createClientNode } = await import(pathToFileURL(executorFile).href);
+      device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode,
+      });
+    }
+    const bundledUi = path.join(resourceRoot, "client-ui");
+    installLocalUi(window.webContents.session, existsSync(bundledUi) ? bundledUi : path.join(root, "ui"), () => origin);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event, url) => { if (url !== connectionPage && (!origin || new URL(url).origin !== origin)) event.preventDefault(); });
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -100,7 +120,22 @@ else {
       if (!saved || !origin || event.senderFrame?.url === connectionPage) throw new Error("请先登录");
       return fetchModelCatalog(settings);
     });
-    ipcMain.handle("client:cancel-resume", (event) => { validate(event, true); loginEpoch++; resuming = false; });
+    const requireDevice = (event) => { validate(event); if (!saved || !origin || !device) throw new Error("请先登录并安装完整客户端"); return device; };
+    ipcMain.handle("client:device-state", (event) => { validate(event); return saved && origin && device ? device.state() : { available: false }; });
+    ipcMain.handle("client:device-paused", async (event, paused) => {
+      const target = requireDevice(event);
+      if (typeof paused !== "boolean") throw new Error("无效的设备状态");
+      return target.setPaused(paused);
+    });
+    ipcMain.handle("client:device-reconcile", async (event, id, version) => {
+      const target = requireDevice(event), epoch = loginEpoch;
+      const result = await dialog.showMessageBox(window, { type: "question", title: "核实执行结果", message: "已确认这项操作停止？", detail: "确认后只清除未决状态，不会重新执行。", buttons: ["取消", "已确认停止"], defaultId: 0, cancelId: 0 });
+      if (result.response !== 1) return target.state();
+      if (epoch !== loginEpoch) throw new Error("登录已变化");
+      return target.reconcile(String(id), Number(version));
+    });
+    ipcMain.handle("client:device-stop", async (event) => { validate(event); await device?.stop({ revoke: true }); });
+    ipcMain.handle("client:cancel-resume", (event) => { validate(event, true); loginEpoch++; resuming = false; void device?.stop(); });
     ipcMain.handle("client:connect", async (event, settings) => {
       validate(event, true); loginEpoch++; resuming = !!settings.resume;
       try { await login(settings); } catch (error) { resuming = false; if (!error.cancelled) connectionError = error.message; throw error; }
@@ -108,17 +143,23 @@ else {
     ipcMain.handle("client:remember-login", async (event, loginSession) => {
       validate(event);
       if (!saved || !loginSession || loginSession.coreId !== saved.coreId || !/^[A-Za-z0-9_-]{43}$/.test(loginSession.token)) throw new Error("Invalid login session");
+      const epoch = ++loginEpoch;
       const verified = await request(origin, "/api/session", { token: loginSession.token });
+      if (epoch !== loginEpoch || !saved) throw cancelled;
       if (!verified.authenticated || verified.coreId !== saved.coreId || verified.sessionId !== loginSession.sessionId) throw new Error("登录已失效，请重新连接");
-      saved = { ...saved, token: loginSession.token, sessionId: verified.sessionId, expiresAt: verified.expiresAt };
+      await device?.stop();
+      if (epoch !== loginEpoch || !saved) throw cancelled;
+      saved = { ...saved, account: undefined, token: loginSession.token, sessionId: verified.sessionId, expiresAt: verified.expiresAt };
       writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
+      await device?.start(saved);
     });
     ipcMain.handle("client:forget-login", async (event) => {
-      validate(event); loginEpoch++; resuming = false; connectionError = ""; if (existsSync(credentials)) unlinkSync(credentials);
+      validate(event); loginEpoch++; await device?.stop({ revoke: true }); resuming = false; connectionError = ""; if (existsSync(credentials)) unlinkSync(credentials);
       saved = undefined; origin = undefined; await window.webContents.session.clearStorageData(); await window.loadURL(connectionPage);
     });
     ipcMain.handle("client:disconnect", async (event) => {
       validate(event);
+      loginEpoch++; await device?.stop({ revoke: true });
       if (saved) await request(saved.origin, "/api/auth/logout", {}, saved.token).catch(() => {});
       saved = undefined; origin = undefined;
       if (existsSync(credentials)) unlinkSync(credentials);
