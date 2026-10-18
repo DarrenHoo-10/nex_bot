@@ -5,7 +5,7 @@ import NexClientKit
 /// DEBUG-only automation for simulator fixture runs, where taps cannot be scripted.
 /// NEXBOT_FIXTURE_AUTOLOGIN_ACCOUNT / _PASSWORD submit the login form once per launch.
 /// NEXBOT_DEBUG_COMMAND_FILE is polled and consumed line by line:
-/// `tab chats|approvals|settings` (chats = pop to root), `open <agent name>`, `back`, `menu` (account menu), `dark|light|system`, `route connectors|devices|detail|settings` (connectors/devices open Settings at that category; detail = the current or first agent), `detailtab work|settings`, `settingscat account|model|memory|connectors|devices`, `send <text>` (with the pending attachments; blank text = attachment only: `send`), `attach <path>` (uploads the file through the composer), `mode full|standard`, `export <path>` (writes the Markdown export), `approve`, `deny`, `stop`, `revoke <session id prefix>`, `logout`.
+/// `tab chats|approvals|settings` (chats = pop to root), `open <agent name>`, `back`, `menu` (account menu), `dark|light|system`, `route connectors|devices|detail|settings` (connectors/devices open Settings at that category; detail = the current or first agent), `detailtab work|settings`, `settingscat account|model|memory|connectors|devices`, `model <id|-|default>` (set the current agent's model), `modelpick`/`modelmenu` etc. are UI commands (NEXBOT_DEBUG_UI_FILE): modelmenu, modelpick <id|->, closemodels, mp-search <q>, mp-state, m-open/m-close (default model picker), mm-on|off|toggle|open|close|pick <id|->|state (长期记忆), mv-all|clear|only|toggle <id>|add <id>|save|refresh|status (显示的模型), s-bottom, `send <text>` (with the pending attachments; blank text = attachment only: `send`), `attach <path>` (uploads the file through the composer), `mode full|standard`, `export <path>` (writes the Markdown export), `approve`, `deny`, `stop`, `revoke <session id prefix>`, `logout`.
 @MainActor enum DebugHooks {
     static var autoLoginUsed = false
 
@@ -51,6 +51,7 @@ import NexClientKit
                     if let id = nav.currentBotID, let data = try? Data(contentsOf: URL(fileURLWithPath: arg)) {
                         await workspace.conversation(for: id).addAttachment(name: URL(fileURLWithPath: arg).lastPathComponent, data: data)
                     }
+                case "model": if let id = nav.currentBotID { try? await workspace.setAgentModel(botID: id, model: arg == "-" || arg == "default" ? "" : arg) }
                 case "mode": if let id = nav.currentBotID, let mode = ApprovalMode(rawValue: arg) { try? await workspace.setApprovalMode(botID: id, mode: mode) }
                 case "export":
                     if let id = nav.currentBotID, let result = try? await workspace.exportMarkdown(botID: id) {

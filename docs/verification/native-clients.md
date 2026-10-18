@@ -238,3 +238,38 @@ Mac and iOS were exercised against isolated fixtures (`release/native-mac-compos
 - The real file and save panels, and drag-and-drop. Debug commands drove the same code paths instead.
 - The 联网识别 online lookup, because the fixture is offline.
 - Session refresh at a real 8-hour boundary. Unit tests cover the policy.
+
+## Mac alignment with unified memory and the searchable model picker (2026-10-18)
+
+Kit (`NexClientKit`): `Bot.selectedModel` / `modelSelectionVersion`, `WorkspaceState.modelVisibility`,
+`WorkspaceStore.setAgentModel(botID:model:)` (`""` follows the default), `saveModelVisibility(models:version:)`
+(`nil` = show all, explicit `null` on the wire), `memorySummary()`, `saveMemorySettings(enabled:model:version:)`.
+`/api/models/list` has no client paging (Core follows provider cursors), so `listModels` returns `{models, hasMore}`.
+Existing APIs are unchanged; iOS compiles without edits.
+
+Mac: one shared searchable picker (`ModelPicker.swift`) for the default model, the assistant's chat model (＋ › 模型,
+anchored to ＋) and the memory model; the composer no longer has a permission pill (＋ › 权限 opens the permission menu).
+设置 › 模型 gained 显示的模型; 设置 › 长期记忆 replaces the Hindsight page (one switch, memory model, 总 Token).
+The header and inspector show the assistant's own model.
+
+Verified against `scripts/fixture-native-client.mjs` with the debug build: setting 工作助手 to `fixture-reasoning`
+persists (`selected_model`), 研究伙伴 still follows the default; switching during a running task shows
+"请等待当前任务结束或停止任务后切换模型" inline; saving a shortlist updates `state.modelVisibility` and the picker then lists
+only the shortlist plus the current (hidden) model and the follow-default row; the memory switch and model save
+through `/api/memory/settings`. Screenshots: `release/native-mac-align3/`.
+
+## iOS alignment and conversation search (2026-10-18)
+
+iOS gets the same model and memory changes as Mac (`ModelPicker.swift`, `SettingsModelVisibility.swift`, ＋ › 模型 sheet,
+设置 › 长期记忆, the assistant's own model in the chat header) and the sidebar conversation search of the web client
+(`ConversationSearchRows.swift`). On both native clients a hit opens the window around the message (`/api/agents/messages?around=`),
+outlines it, shows 返回最新消息 and leaves that view on sending, on choosing another contact, or on the explicit return.
+Kit: `ConversationSearch`, `WorkspaceStore.openSearchResult(_:)` / `showLatest(botID:)`, `ConversationStore.focusedMessageID`.
+`select(_:)` keeps the view of the open conversation (iOS selects it when the chat appears) and leaves any other.
+
+Verified against `scripts/fixture-native-client.mjs` (synthetic history, 120+ messages) with the Debug Mac build and the iOS 18.6
+simulator (iPhone 16 Pro, throwaway profile, auto-login): searching 三国演义 lists both assistants newest first; opening the old
+hit shows messages from the start of the chat, the outlined message and 返回最新消息; returning loads the latest page scrolled to the
+bottom; the ＋ › 模型 sheet lists the default row and the shortlist; 长期记忆 shows the switch, memory model and total tokens.
+Not covered: tapping rows by hand (DEBUG commands `search`, `searchopen`, `latest` drive the same paths), literal `%`/`_` matching on
+native clients, and release/TestFlight builds. The fixtures, simulator app and profiles were removed afterwards.

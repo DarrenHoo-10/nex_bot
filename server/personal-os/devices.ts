@@ -40,10 +40,10 @@ export class DeviceGateway {
     if (!device || !credential) { socket.destroy(); return; }
     this.wss.handleUpgrade(request, socket, head, (ws) => this.connect(String(credential.device_id), ws));
   };
-  pair(name: string) {
+  pair(name: string, sessionId?: string) {
     const deviceId = id(), token = randomBytes(32).toString("base64url");
     this.store.transaction(() => {
-      this.store.insert("devices", { id: deviceId, ...this.store.scope(), name: text(name, 80), platform: "windows", protocol_version: "dcp/1", status: "bound", capabilities_json: "[]", created_at: now() });
+      this.store.insert("devices", { id: deviceId, ...this.store.scope(), name: text(name, 80), platform: "windows", protocol_version: "dcp/1", status: "bound", capabilities_json: "[]", session_id: sessionId ?? null, created_at: now() });
       this.store.insert("device_credentials", { id: id(), device_id: deviceId, family_id: id(), generation: 1, access_hash: hash(token), refresh_hash: hash(randomBytes(32).toString("hex")), status: "active", issued_at: now(), access_expires_at: now() + 365 * 86_400_000, refresh_idle_expires_at: now() + 365 * 86_400_000, family_expires_at: now() + 365 * 86_400_000 });
       this.store.audit("device.pair", "device", deviceId, { name });
     });

@@ -7,10 +7,11 @@ struct ContactsList: View {
     @Environment(UIState.self) private var ui
     @Environment(AppModel.self) private var model
     @Environment(ContactPreferences.self) private var preferences
-    @State private var query = ""
 
-    private var groups: (pinned: [Bot], rest: [Bot]) { preferences.groups(of: workspace.bots, query: query) }
-    private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var query: String { ui.contactSearch }
+    private var groups: (pinned: [Bot], rest: [Bot]) { preferences.groups(of: workspace.bots) }
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var searching: Bool { !trimmedQuery.isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,9 +30,10 @@ struct ContactsList: View {
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                TextField("搜索联系人", text: $query).textFieldStyle(.plain).font(.system(size: 12)).accessibilityLabel("搜索 Agent")
+                TextField("搜索会话记录", text: Bindable(ui).contactSearch).textFieldStyle(.plain).font(.system(size: 12)).accessibilityLabel("搜索会话记录")
+                    .onChange(of: query) { if query.count > ConversationSearch.maxLength { ui.contactSearch = String(query.prefix(ConversationSearch.maxLength)) } }
                 if !query.isEmpty {
-                    Button { query = "" } label: {
+                    Button { ui.contactSearch = "" } label: {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Theme.muted).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).help("清空搜索").accessibilityLabel("清空搜索")
@@ -54,6 +56,9 @@ struct ContactsList: View {
                     ProgressView()
                     Text(workspace.notice ?? "正在连接…").font(.system(size: 12)).foregroundStyle(Theme.muted)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if searching {
+                ConversationSearchResults(workspace: workspace, query: trimmedQuery)
+                    .id(SearchIdentity(query: trimmedQuery, sync: workspace.sync))
             } else {
                 let g = groups
                 ScrollView {
@@ -62,13 +67,11 @@ struct ContactsList: View {
                         section("我的 Agent", g.rest)
                         if g.pinned.isEmpty && g.rest.isEmpty {
                             VStack(spacing: 8) {
-                                Text(searching ? "没有找到联系人" : "你的 Agent 会出现在这里").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                                if !searching {
-                                    Button { AgentUI.shared.createAgent() } label: {
-                                        Text("创建第一个 Agent").font(.system(size: 12)).foregroundStyle(Theme.brand).contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
+                                Text("你的 Agent 会出现在这里").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                                Button { AgentUI.shared.createAgent() } label: {
+                                    Text("创建第一个 Agent").font(.system(size: 12)).foregroundStyle(Theme.brand).contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                             .frame(maxWidth: .infinity).padding(.top, 28)
                         }
@@ -92,7 +95,7 @@ struct ContactsList: View {
             Text(title).font(.system(size: 11)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
             ForEach(bots) { bot in
-                Button { workspace.select(bot.id) } label: {
+                Button { workspace.showLatest(botID: bot.id); workspace.select(bot.id) } label: {
                     ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
                                phrase: ToolLabels.taskPhrase(workspace.state?.unfinishedTask(botID: bot.id)),
                                selected: workspace.selectedBotID == bot.id)
@@ -124,6 +127,15 @@ struct ContactsList: View {
     }
 
     private var accountName: String { workspace.account?.displayName ?? "NexorAI 账号" }
+}
+
+/// A new search starts when the text changes or the account's history generation does (Core restarted, privacy reset).
+private struct SearchIdentity: Hashable {
+    let query: String
+    let coreID: String?, bootID: String?, privacyEpoch: Int?
+    init(query: String, sync: SyncIdentity?) {
+        self.query = query; coreID = sync?.coreId; bootID = sync?.bootId; privacyEpoch = sync?.privacyEpoch
+    }
 }
 
 struct ContactRow: View {

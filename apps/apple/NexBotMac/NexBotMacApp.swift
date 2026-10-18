@@ -7,7 +7,7 @@ enum InspectorTab: String, CaseIterable { case work = "工作", settings = "设�
 
 /// Categories of the Settings window. Raw values double as the `@AppStorage("nexbot.settingsCategory")` value.
 enum SettingsCategory: String, CaseIterable {
-    case account = "账号与登录设备", model = "模型", memory = "记忆服务", connectors = "连接器", devices = "设备"
+    case account = "账号与登录设备", model = "模型", memory = "长期记忆", connectors = "连接器", devices = "设备"
     static let storageKey = "nexbot.settingsCategory"
     var icon: String {
         switch self {
@@ -25,7 +25,9 @@ final class UIState {
     var inspectorVisible = true
     var inspectorTab = InspectorTab.work
     var accountMenuOpen = false
-    /// The open composer popover (＋ or permission); DEBUG commands set it for screenshots.
+    /// The sidebar search text; non-empty replaces the contact list with message hits.
+    var contactSearch = ""
+    /// The open composer popover (＋ menu, permission or model); DEBUG commands set it for screenshots.
     var composerMenu: ComposerMenuKind?
     /// The in-app 退出当前账号？ dialog of the main window.
     var logoutConfirmOpen = false

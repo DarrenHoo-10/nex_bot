@@ -142,11 +142,13 @@ extension CoreClient {
     public func state(view: StateView = .full) async throws -> WorkspaceState {
         try await get("/api/state", query: view == .summary ? [("view", "summary")] : [])
     }
-    /// Latest 100 messages, or the 100 before `before`, or the next 200 after `after`.
-    public func feed(bot: String, before: Int? = nil, after: Int? = nil) async throws -> Feed {
+    /// Latest 100 messages, or the 100 before `before`, or the next 200 after `after`, or up to 40 messages before and 60 from
+    /// the message `around` (a search hit; 400 "该消息已不存在或已遗忘" when it is gone). `around` excludes the other two.
+    public func feed(bot: String, before: Int? = nil, after: Int? = nil, around: String? = nil) async throws -> Feed {
         var q = [("bot", bot)]
         if let before { q.append(("before", String(before))) }
         if let after { q.append(("after", String(after))) }
+        if let around { q.append(("around", around)) }
         return try await get("/api/agents/messages", query: q)
     }
     /// `POST /api/agents/input`. `attachments` are ids from ``uploadAttachment(botID:name:data:)``; text may be empty

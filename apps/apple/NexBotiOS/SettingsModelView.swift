@@ -74,6 +74,7 @@ final class ModelForm {
 struct SettingsModelView: View {
     let workspace: WorkspaceStore
     @Bindable var form: ModelForm
+    @State private var pickerOpen = false
 
     private var config: ModelConfig? { workspace.state?.config }
     private var keyRequired: Bool { config == nil }
@@ -129,6 +130,9 @@ struct SettingsModelView: View {
                 }
             }
             .padding(14).cardStyle()
+            if let config {
+                ModelVisibilitySection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)")
+            }
         }
         .onDisappear { form.showKey = false }
         .task(id: form.scopeKey) { await loadLimits() }
@@ -140,7 +144,8 @@ struct SettingsModelView: View {
             case "m-key": form.apiKey = arg
             case "m-list": Task { await loadModels() }
             case "m-pick": if form.models.contains(arg) { form.model = arg }
-            case "m-manual": form.manual.toggle()
+            case "m-open": pickerOpen = true
+            case "m-close": pickerOpen = false
             case "m-save": Task { await save() }
             case "m-context": form.contextEdited = true; form.contextText = arg
             case "m-output": form.outputEdited = true; form.outputText = arg
@@ -150,32 +155,23 @@ struct SettingsModelView: View {
         }
     }
 
+    /// The saved shortlist for the saved connection, else a list fetched with 获取模型列表, else nil (the picker fetches it).
+    private var pickerModels: [String]? {
+        let current = config.map { $0.providerID == form.provider && $0.endpoint == form.endpoint.trimmingCharacters(in: .whitespaces) } ?? false
+        if current, let shortlist = workspace.state?.modelVisibility.models { return shortlist }
+        return form.models.isEmpty ? nil : form.models
+    }
+    private var pickerSource: ModelSource? {
+        let endpoint = form.endpoint.trimmingCharacters(in: .whitespaces)
+        return endpoint.isEmpty ? nil : workspace.formModelSource(provider: form.provider, endpoint: endpoint, apiKey: form.apiKey)
+    }
+
     private var keyPlaceholder: String { config == nil ? "输入 API Key" : "留空保留已保存的 Key" }
 
     private var modelField: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("模型").font(.footnote.weight(.semibold))
-            if !form.models.isEmpty && !form.manual {
-                Menu {
-                    Picker("模型", selection: $form.model) {
-                        if !form.model.isEmpty && !form.models.contains(form.model) { Text("\(form.model)（当前配置）").tag(form.model) }
-                        ForEach(form.models, id: \.self) { Text($0).tag($0) }
-                    }
-                } label: {
-                    HStack {
-                        Text(form.model.isEmpty ? "选择模型" : form.model).lineLimit(1).foregroundStyle(form.model.isEmpty ? Theme.muted : Theme.foreground)
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(Theme.muted)
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 11).frame(maxWidth: .infinity)
-                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .accessibilityLabel("模型")
-            } else {
-                TextField("选择或填写模型 ID", text: $form.model).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .padding(.horizontal, 12).padding(.vertical, 11)
-                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
+            Text("默认模型").font(.footnote.weight(.semibold))
+            ModelPickerField(label: "默认模型", value: form.model, models: pickerModels, source: pickerSource, isOpen: $pickerOpen, onChange: { form.model = $0 })
             HStack(spacing: 12) {
                 Button { Task { await loadModels() } } label: {
                     HStack(spacing: 6) {
@@ -184,10 +180,6 @@ struct SettingsModelView: View {
                     }
                 }
                 .buttonStyle(PillButtonStyle()).disabled(!loadable)
-                if !form.models.isEmpty {
-                    Button(form.manual ? "从列表选择" : "手动填写") { form.manual.toggle() }
-                        .font(.footnote.weight(.medium)).foregroundStyle(Theme.brand).buttonStyle(.plain)
-                }
             }
             if let notice = form.modelNotice { Text(notice).font(.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
             if let error = form.modelError { Text(error).font(.caption).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true) }

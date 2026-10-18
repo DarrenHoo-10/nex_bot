@@ -85,9 +85,38 @@ public final class WorkspaceStore {
 
     /// Chooses the open conversation and loads it.
     public func select(_ botID: String?) {
+        // Choosing another contact (or none) leaves a search-result view; the open conversation keeps it. Use ``showLatest(botID:)``
+        // to leave it deliberately.
+        for (id, c) in conversations where id != botID && c.focusedMessageID != nil { leaveHistory(id, reload: false) }
         guard botID != selectedBotID else { return }
         selectedBotID = botID
         if started { scheduleRefresh(after: 0) }
+    }
+
+    /// Opens the conversation around a search hit: the window from 40 messages before it to 60 from it, see
+    /// ``ConversationStore/focusedMessageID``. If the message is forgotten or archived meanwhile, the latest messages load instead.
+    public func openSearchResult(_ match: ConversationMatch) {
+        for (id, c) in conversations where id != match.botID && c.focusedMessageID != nil { leaveHistory(id, reload: false) }
+        serial += 1
+        let conv = conversation(for: match.botID)
+        conv.reset()
+        conv.focusedMessageID = match.id
+        selectedBotID = match.botID
+        if started { scheduleRefresh(after: 0) }
+    }
+
+    /// Ends the search-result view of `botID` and loads the latest messages.
+    public func showLatest(botID: String) { leaveHistory(botID) }
+
+    /// Returns true when `botID` was in a search-result view.
+    @discardableResult
+    func leaveHistory(_ botID: String, reload: Bool = true) -> Bool {
+        guard let conv = conversations[botID], conv.focusedMessageID != nil else { return false }
+        serial += 1
+        conv.focusedMessageID = nil
+        conv.reset()
+        if reload, started, selectedBotID == botID { scheduleRefresh(after: 0) }
+        return true
     }
 
     // MARK: Lifecycle
@@ -272,9 +301,10 @@ public final class WorkspaceStore {
         let request = serial, current = selectedBotID
         let conv = current.map(conversation(for:))
         // The feed request goes out together with the state; its sync identity is checked against the state afterwards.
-        let guess = (conv?.loadedSync != nil && conv?.messages.isEmpty == false) ? conv : nil
+        let target = conv?.focusedMessageID
+        let guess = (target == nil && conv?.loadedSync != nil && conv?.messages.isEmpty == false) ? conv : nil
         let afterSeq = guess?.messages.last?.seq
-        async let early = Self.capture(client, bot: current, after: afterSeq)
+        async let early = Self.capture(client, bot: current, after: afterSeq, around: target)
         let next = try await client.state(view: .summary)
         guard request == serial else { return }
         if let old = sync, !old.sameGeneration(as: next.sync) { for c in conversations.values { c.reset() } }
@@ -282,13 +312,21 @@ public final class WorkspaceStore {
 
         if let current, let conv {
             if !next.bots.contains(where: { $0.id == current }) {
-                conv.reset(); selectedBotID = next.bots.first?.id; notice = nil
+                conv.focusedMessageID = nil; conv.reset(); selectedBotID = next.bots.first?.id; notice = nil
                 if selectedBotID != nil { scheduleRefresh(after: 0) }
                 return
             }
             let same = conv.loadedSync?.sameGeneration(as: next.sync) == true && guess != nil
             var history = same ? conv.messages : []
-            var feed = try await (same || guess == nil ? early!.get() : client.feed(bot: current))
+            var feed: Feed
+            do { feed = try await (same || guess == nil ? early!.get() : client.feed(bot: current)) }
+            catch {
+                // The searched message was forgotten or its assistant archived: fall back to the latest messages.
+                guard target != nil, CoreError.wrap(error).message == messageGoneMessage else { throw error }
+                guard request == serial, selectedBotID == current else { return }
+                conv.focusedMessageID = nil
+                feed = try await client.feed(bot: current)
+            }
             let fresh = !same, firstCount = feed.messages.count
             while true {
                 guard request == serial, selectedBotID == current else { return }
@@ -300,14 +338,14 @@ public final class WorkspaceStore {
             }
             guard request == serial, selectedBotID == current else { return }
             conv.commit(history, sync: feed.sync, streaming: feed.streaming, hasOlder: fresh ? firstCount >= 100 : nil)
-            Task { await conv.markReadIfNeeded() }
+            if conv.focusedMessageID == nil { Task { await conv.markReadIfNeeded() } }
         }
         if request == serial { notice = nil }
     }
 
-    private static func capture(_ client: CoreClient, bot: String?, after: Int?) async -> Result<Feed, CoreError>? {
+    private static func capture(_ client: CoreClient, bot: String?, after: Int?, around: String?) async -> Result<Feed, CoreError>? {
         guard let bot else { return nil }
-        do { return .success(try await client.feed(bot: bot, after: after)) } catch { return .failure(CoreError.wrap(error)) }
+        do { return .success(try await client.feed(bot: bot, after: after, around: around)) } catch { return .failure(CoreError.wrap(error)) }
     }
 
     // MARK: Actions

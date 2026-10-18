@@ -379,7 +379,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/memory/publish") { json(response, 200, runtime.memory.publish(text(data.botId, 100), text(data.ref, 100), text(data.sourceHash, 100), text(data.intent, 200))); changed(); return; }
       if (url.pathname === "/api/memory/forget-preview") { json(response, 200, runtime.memory.privacy.preview(text(data.botId, 100), data)); return; }
       if (url.pathname === "/api/memory/forget") { json(response, 200, runtime.memory.forget(text(data.botId, 100), data, text(data.revision, 100))); changed(); return; }
-      if (url.pathname === "/api/devices") { json(response, 200, gateway.pair(text(data.name, 80))); return; }
+      if (url.pathname === "/api/devices") { json(response, 200, gateway.pair(text(data.name, 80), String(session.id))); return; }
       if (url.pathname === "/api/devices/revoke") { gateway.revoke(text(data.id, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/node" || url.pathname === "/api/node/reconcile") {
         if (options.hostDevice === false || !loopback || (!identity && session.id !== store.session)) { json(response, 403, { error: "此账号没有配置后端设备能力的权限" }); return; }

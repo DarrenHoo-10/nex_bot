@@ -33,10 +33,15 @@ struct ComposerView: View {
     @State private var exportFile: SharedFile?
     @State private var exporting = false
     @State private var actionError: String?
+    @State private var showModels = false
 
     private var hasModel: Bool { workspace.state?.config != nil }
     private var canSend: Bool { conversation.canSend && hasModel }
     private var bot: Bot? { workspace.bot(botID) }
+    private var config: ModelConfig? { workspace.state?.config }
+    private var defaultModel: String { config?.defaultModel ?? "" }
+    /// The assistant's own model; empty while it follows the default.
+    private var chatModel: String { bot?.selectedModel ?? "" }
     private var mode: ApprovalMode { bot?.approvalMode ?? .standard }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
     private var allCancelling: Bool { !tasks.isEmpty && tasks.allSatisfy { $0.status == "cancelling" } }
@@ -78,7 +83,6 @@ struct ComposerView: View {
                     .buttonStyle(.plain)
                     .disabled(conversation.isSending || conversation.isUploadingAttachments)
                     .accessibilityLabel("添加文件或指令")
-                    permissionButton
                     Spacer(minLength: 0)
                     Button { Task { await send() } } label: {
                         Group {
@@ -110,6 +114,11 @@ struct ComposerView: View {
             photoItems = []
             Task { await addPhotos(items) }
         }
+        .sheet(isPresented: $showModels) {
+            ModelPickerSheet(title: "选择聊天模型", value: chatModel, emptyLabel: "默认 · \(defaultModel)",
+                             models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(), onSelect: { setModel($0) })
+                .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        }
         .sheet(item: $exportFile) { file in ShareSheet(url: file.url).presentationDetents([.medium, .large]) }
         .debugCommand { command, arg in
             switch command {
@@ -118,6 +127,9 @@ struct ComposerView: View {
             case "sendquoted", "sendnow": Task { await send() }
             case "addmenu": menu = .add
             case "permmenu": menu = .permissions
+            case "modelmenu": menu = nil; showModels = true
+            case "closemodels": showModels = false
+            case "modelpick": setModel(arg == "-" ? "" : arg)
             case "closemenu": menu = nil
             case "exportui": Task { await export() }
             default: break
@@ -180,25 +192,6 @@ struct ComposerView: View {
         .accessibilityElement(children: .contain).accessibilityLabel("提及同伴 Agent")
     }
 
-    private var permissionButton: some View {
-        let full = mode == .full
-        return Button { toggle(.permissions) } label: {
-            HStack(spacing: 5) {
-                Image(systemName: full ? "exclamationmark.shield" : "checkmark.shield").font(.system(size: 14, weight: .medium))
-                Text(mode.title).font(.footnote.weight(.medium)).lineLimit(1)
-                Image(systemName: "chevron.up").font(.system(size: 10, weight: .semibold)).rotationEffect(.degrees(menu == .permissions ? 180 : 0))
-            }
-            .foregroundStyle(full ? Theme.approval : Theme.muted)
-            .padding(.horizontal, 10).frame(height: 34)
-            .background(full ? Theme.approvalSoft : Theme.secondary, in: Capsule())
-            .overlay(Capsule().stroke(full ? Theme.approval.opacity(0.5) : .clear))
-        }
-        .buttonStyle(.plain)
-        .disabled(bot == nil)
-        .accessibilityLabel("操作权限")
-        .accessibilityValue(mode.title)
-    }
-
     private func heading(_ text: String) -> some View {
         Text(text).font(.caption).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -230,7 +223,7 @@ struct ComposerView: View {
             menuRow("photo", "照片", "photo", disabled: conversation.isUploadingAttachments) { menu = nil; showPhotos = true }
             heading("指令")
             menuRow(mode == .full ? "exclamationmark.shield" : "checkmark.shield", "权限", "permission", value: mode.title, disabled: bot == nil) { menu = .permissions }
-            menuRow("slider.horizontal.3", "模型设置", "model") { menu = nil; nav.openSettings(.model) }
+            menuRow("slider.horizontal.3", "模型", "model", value: chatModel.isEmpty ? (defaultModel.isEmpty ? "未连接模型" : defaultModel) : chatModel, disabled: config == nil || bot == nil) { menu = nil; showModels = true }
             menuRow("square.and.arrow.down", "导出对话", "export", value: exporting ? "导出中…" : "Markdown", disabled: conversation.messages.isEmpty || exporting) { menu = nil; Task { await export() } }
         }
         .padding(.bottom, 4)
@@ -313,6 +306,14 @@ struct ComposerView: View {
             guard let data = try? await item.loadTransferable(type: Data.self) else { actionError = "无法读取所选照片"; continue }
             let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
             await conversation.addAttachment(name: "照片-\(Int(Date().timeIntervalSince1970))-\(index + 1).\(ext)", data: data)
+        }
+    }
+
+    private func setModel(_ next: String) {
+        guard next != chatModel else { return }
+        actionError = nil
+        Task {
+            do { try await workspace.setAgentModel(botID: botID, model: next) } catch { actionError = coreMessage(error) }
         }
     }
 

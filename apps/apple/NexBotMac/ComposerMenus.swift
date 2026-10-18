@@ -2,7 +2,7 @@ import SwiftUI
 import NexClientKit
 
 /// Which composer popover is open.
-enum ComposerMenuKind: Equatable { case add, permissions }
+enum ComposerMenuKind: Equatable { case add, permissions, models }
 
 /// One row of a composer menu.
 struct ComposerMenuRow: Identifiable {

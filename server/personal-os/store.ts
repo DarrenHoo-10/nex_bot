@@ -240,6 +240,17 @@ export class CoreStore {
       if (models.length===1) this.run('UPDATE workspace_memory_settings SET model=? WHERE id=1',models[0].model);
       this.insert('schema_migrations', { version: 17, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=18")) this.transaction(() => {
+      // A device remembers the client session that paired it, so a message's sender session identifies the sending device.
+      const schema = "ALTER TABLE devices ADD COLUMN session_id TEXT;";
+      if (!this.all("PRAGMA table_info(devices)").some((column) => column.name === "session_id")) this.db.exec(schema);
+      // Devices paired before this version: link only when exactly one live session carries the same client name.
+      for (const device of this.all("SELECT id,workspace_id,name FROM devices WHERE status='bound' AND session_id IS NULL")) {
+        const sessions = this.all("SELECT s.id FROM client_sessions c JOIN user_sessions s ON s.id=c.session_id WHERE c.name=? AND s.workspace_id=? AND s.revoked_at IS NULL AND s.expires_at>?", device.name as string, device.workspace_id as string, now());
+        if (sessions.length === 1) this.run("UPDATE devices SET session_id=? WHERE id=?", sessions[0].id as string, device.id as string);
+      }
+      this.insert("schema_migrations", { version: 18, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

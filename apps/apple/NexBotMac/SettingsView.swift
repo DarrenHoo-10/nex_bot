@@ -34,8 +34,8 @@ struct SettingsView: View {
                 ZStack(alignment: .topLeading) {
                     pane(.account) { scroll { AccountPane { confirmingLogout = true } } }
                     if let ws = model.workspace {
-                        pane(.model) { scroll { SettingsModelPane(workspace: ws) } }
-                        pane(.memory) { scroll { SettingsMemoryPane(workspace: ws) } }
+                        pane(.model) { scroll { SettingsModelPane(workspace: ws, active: category == .model) } }
+                        pane(.memory) { scroll { SettingsMemoryPane(workspace: ws, active: category == .memory) } }
                         pane(.connectors) { SettingsConnectorsPane(workspace: ws) }
                         pane(.devices) { SettingsDevicesPane(workspace: ws) }
                     }
@@ -51,7 +51,16 @@ struct SettingsView: View {
     }
 
     private func scroll<C: View>(@ViewBuilder _ content: () -> C) -> some View {
-        ScrollView { content().padding(.bottom, 34).frame(maxWidth: .infinity, alignment: .leading) }
+        let inner = content()
+        return ScrollViewReader { proxy in
+            ScrollView { VStack(spacing: 0) { inner.padding(.bottom, 34).frame(maxWidth: .infinity, alignment: .leading); Color.clear.frame(height: 1).id("pane-end") } }
+            #if DEBUG
+            .onReceive(NotificationCenter.default.publisher(for: .mbDebug)) { note in
+                guard let cmd = note.mbCommand, cmd.verb == "scroll" else { return }
+                proxy.scrollTo("pane-end", anchor: .bottom)
+            }
+            #endif
+        }
     }
 
     private func pane<C: View>(_ item: SettingsCategory, @ViewBuilder _ content: () -> C) -> some View {

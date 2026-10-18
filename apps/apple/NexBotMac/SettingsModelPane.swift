@@ -1,9 +1,11 @@
 import SwiftUI
 import NexClientKit
 
-/// Settings 模型 category: API protocol, model id, endpoint and key (web `ModelSettings`).
+/// Settings 模型 category: API protocol, endpoint, key, default model picker and limits (web `ModelSettings`), then 显示的模型.
 struct SettingsModelPane: View {
     let workspace: WorkspaceStore
+    /// The 模型 category is showing (the visible-models editor loads its directory on first show).
+    var active = true
 
     private static let openAIDefault = "https://api.openai.com/v1"
     private static let anthropicDefault = "https://api.anthropic.com"
@@ -22,7 +24,7 @@ struct SettingsModelPane: View {
     @State private var loadingModels = false
     @State private var modelNotice = ""
     @State private var modelError = ""
-    @State private var manual = false
+    @State private var pickerOpen = false
     @State private var limits = ModelLimitsModel()
 
     private var config: ModelConfig? { workspace.state?.config }
@@ -66,6 +68,11 @@ struct SettingsModelPane: View {
                 }
             }
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).padding(.top, 12) }
+            if let config {
+                Hairline().padding(.top, 28)
+                ModelVisibilitySection(workspace: workspace, active: active)
+                    .id("\(config.providerID)|\(config.endpoint)")
+            }
         }
         .onAppear { load() }
         .onChange(of: limitScope, initial: true) { limits.reset(scope: limitScope) }
@@ -83,7 +90,8 @@ struct SettingsModelPane: View {
             case "list": loadModels()
             case "pick": model = cmd.arg; dirty = true; saved = false
             case "reveal": showKey.toggle()
-            case "manual": manual.toggle()
+            case "open": pickerOpen = true
+            case "close": pickerOpen = false
             case "save": save()
             case "limits":
                 let l = limits.limits
@@ -125,29 +133,21 @@ struct SettingsModelPane: View {
         }
     }
 
+    /// Models the default-model picker lists: the saved shortlist for the saved connection, else a list fetched with 获取模型列表,
+    /// else nil (the picker fetches the catalog itself).
+    private var pickerModels: [String]? {
+        let current = config.map { $0.providerID == provider && $0.endpoint == endpoint.trimmingCharacters(in: .whitespaces) } ?? false
+        if current, let shortlist = workspace.state?.modelVisibility.models { return shortlist }
+        return models.isEmpty ? nil : models
+    }
+
     private var modelField: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("模型").font(.system(size: 12, weight: .medium))
+            Text("默认模型").font(.system(size: 12, weight: .medium))
             HStack(spacing: 10) {
-                if !models.isEmpty && !manual {
-                    Picker("模型", selection: Binding(get: { model }, set: { model = $0; dirty = true; saved = false })) {
-                        if !model.isEmpty && !models.contains(model) { Text("\(model)（当前配置）").tag(model) }
-                        ForEach(models, id: \.self) { Text($0).tag($0) }
-                    }
-                    .labelsHidden().pickerStyle(.menu)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6).frame(height: 38)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.border))
-                    .accessibilityIdentifier("模型")
-                } else {
-                    TextField("", text: edit($model), prompt: Text("选择或填写模型 ID").foregroundStyle(Theme.muted.opacity(0.7)))
-                        .textFieldStyle(.plain).font(.system(size: 12)).autocorrectionDisabled()
-                        .padding(.horizontal, 12).frame(height: 38)
-                        .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.border))
-                        .accessibilityLabel("模型").accessibilityIdentifier("模型")
-                }
+                ModelPickerField(label: "默认模型", value: model, models: pickerModels,
+                                 source: endpoint.trimmingCharacters(in: .whitespaces).isEmpty ? nil : workspace.formModelSource(provider: provider, endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: apiKey),
+                                 identifier: "模型", debugPrefix: "mp", isOpen: $pickerOpen, onChange: { model = $0; dirty = true; saved = false })
                 Button(action: loadModels) {
                     Text(loadingModels ? "获取中…" : "获取模型列表").font(.system(size: 12)).foregroundStyle(Theme.foreground)
                         .padding(.horizontal, 14).frame(height: 38)
@@ -157,12 +157,6 @@ struct SettingsModelPane: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(endpoint.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            if !models.isEmpty {
-                Button { manual.toggle() } label: {
-                    Text(manual ? "从列表选择" : "手动填写").font(.system(size: 11)).foregroundStyle(Theme.brand).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
             }
             if !modelNotice.isEmpty { Text(modelNotice).font(.system(size: 10)).foregroundStyle(Theme.muted).accessibilityIdentifier("model-notice") }
             if !modelError.isEmpty { Text(modelError).font(.system(size: 10)).foregroundStyle(Theme.danger).textSelection(.enabled).accessibilityIdentifier("model-error") }
@@ -186,7 +180,7 @@ struct SettingsModelPane: View {
             do {
                 // An empty key reuses the key saved on Core (same provider and endpoint only).
                 let result = try await workspace.listModels(provider: provider, endpoint: endpoint, apiKey: key)
-                models = result.models; manual = false
+                models = result.models
                 if model.isEmpty, let first = result.models.first { model = first }
                 modelNotice = result.models.isEmpty
                     ? "服务未返回可用模型，可手动填写模型 ID"
@@ -213,7 +207,7 @@ struct SettingsModelPane: View {
         model = config?.defaultModel ?? ""
         endpoint = config.map { $0.endpoint.isEmpty ? Self.openAIDefault : $0.endpoint } ?? Self.openAIDefault
         apiKey = ""; showKey = false; dirty = false
-        if !keepList { models = []; modelNotice = ""; modelError = ""; manual = false }
+        if !keepList { models = []; modelNotice = ""; modelError = "" }
     }
 
     private func save() {

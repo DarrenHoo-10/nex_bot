@@ -16,12 +16,17 @@ struct ChatView: View {
     @State private var memoryNotice: String?
     private let bottomID = "bottom"
 
+    /// The search hit being viewed; the window around it replaces the latest messages.
+    private var focusedID: String? { conversation.focusedMessageID }
+    /// Changes when a search-result view finishes loading, so the target is scrolled to once per opening and not on each poll.
+    private var focusKey: String { "\(focusedID ?? "")|\(conversation.isLoaded)" }
+
     private var conversation: ConversationStore { workspace.conversation(for: botID) }
     private var bot: Bot? { workspace.bot(botID) }
     private var approvals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
     private var hasModel: Bool { workspace.state?.config != nil }
-    private var modelName: String { workspace.state?.config?.defaultModel.nonEmpty ?? "未连接模型" }
+    private var modelName: String { workspace.bot(botID)?.selectedModel ?? workspace.state?.config?.defaultModel.nonEmpty ?? "未连接模型" }
     private var firstPeer: Bot? { workspace.bots.first { $0.id != botID } }
     private var memorySignature: [String: String] {
         Dictionary(uniqueKeysWithValues: (workspace.state?.memories(botID: botID) ?? []).map { ($0.id, "\($0.version):\($0.updatedAt?.timeIntervalSince1970 ?? 0)") })
@@ -32,7 +37,13 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    if conv.hasOlder {
+                    if focusedID != nil {
+                        Button { workspace.showLatest(botID: botID) } label: {
+                            Text("返回最新消息").font(.footnote.weight(.medium)).foregroundStyle(Theme.brand)
+                                .frame(maxWidth: .infinity).padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                    } else if conv.hasOlder {
                         Button { Task { await loadOlder(conv, proxy) } } label: {
                             HStack(spacing: 6) {
                                 if conv.isLoadingOlder { ProgressView().controlSize(.small) }
@@ -51,6 +62,12 @@ struct ChatView: View {
                                    onQuote: { author, text in quote = QuoteDraft(author: author, text: text) },
                                    onOpenStep: { step in Task { await openStep(step) } },
                                    onOpenPeer: { nav.openChat($0) })
+                            .overlay {
+                                if message.id == focusedID {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
+                                        .padding(-6).allowsHitTesting(false)
+                                }
+                            }
                             .id(message.id)
                     }
                     if conv.isLoaded && conv.messages.isEmpty && conv.streaming.isEmpty { welcome }
@@ -84,7 +101,7 @@ struct ChatView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if !atBottom && conv.messages.count > 3 {
+                if !atBottom && conv.messages.count > 3 && focusedID == nil {
                     Button { scrollToBottom(proxy) } label: {
                         Label("回到底部", systemImage: "arrow.down").font(.footnote.weight(.medium))
                             .padding(.horizontal, 14).padding(.vertical, 8)
@@ -95,13 +112,15 @@ struct ChatView: View {
                     .transition(.opacity)
                 }
             }
-            .onChange(of: conv.messages.last?.seq) { scrollToBottom(proxy) }
-            .onChange(of: conv.streaming) { scrollToBottom(proxy) }
-            .onChange(of: approvals.count) { scrollToBottom(proxy) }
+            .onChange(of: conv.messages.last?.seq) { if focusedID == nil { scrollToBottom(proxy) } }
+            .onChange(of: conv.streaming) { if focusedID == nil { scrollToBottom(proxy) } }
+            .onChange(of: approvals.count) { if focusedID == nil { scrollToBottom(proxy) } }
+            .task(id: focusKey) { await scrollToFocused(proxy) }
             .debugCommand { command, arg in
                 switch command {
                 case "scroll": if arg == "top", let first = conv.messages.first { proxy.scrollTo(conv.hasOlder ? "older" : first.id, anchor: .top) } else { scrollToBottom(proxy) }
                 case "loadolder": Task { await loadOlder(conv, proxy) }
+                case "latest": workspace.showLatest(botID: botID)
                 default: break
                 }
             }
@@ -173,6 +192,16 @@ struct ChatView: View {
             case "chatmemory": showMemory = true
             default: break
             }
+        }
+    }
+
+    /// Centers the searched message. Row heights are estimated until laid out, so the jump is repeated once they are known.
+    private func scrollToFocused(_ proxy: ScrollViewProxy) async {
+        guard let id = focusedID, conversation.isLoaded else { return }
+        for delay in [50, 300] {
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard !Task.isCancelled, conversation.messages.contains(where: { $0.id == id }) else { return }
+            proxy.scrollTo(id, anchor: .center)
         }
     }
 

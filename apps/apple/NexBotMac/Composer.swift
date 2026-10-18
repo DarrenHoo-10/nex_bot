@@ -12,7 +12,7 @@ struct QuoteDraft: Equatable {
     }
 }
 
-/// Return sends, Shift-Return inserts a newline. The "＋" button opens the 添加 / 指令 menu, the shield button the permission menu; typing `@` offers the other agents.
+/// Return sends, Shift-Return inserts a newline. The "＋" button opens the 添加 / 指令 menu (文件, 权限, 模型, 导出对话); permission and model pickers anchor to it; typing `@` offers the other agents.
 struct Composer: View {
     let workspace: WorkspaceStore
     @Bindable var conversation: ConversationStore
@@ -49,6 +49,7 @@ struct Composer: View {
             field
         }
         .onChange(of: ui.composerFocusTick) { focused = true }
+        .onChange(of: ui.composerMenu) { old, new in if old != nil, new == nil { focused = true } }
         .onChange(of: conversation.draft) { mentionIndex = 0; mentionDismissed = false }
         .onAppear { focused = true }
     }
@@ -94,7 +95,7 @@ struct Composer: View {
             .accessibilityLabel("发送给 Agent 的消息")
     }
 
-    /// Bottom row: 添加 (＋), 操作权限 and the round send button.
+    /// Bottom row: 添加 (＋) and the round send button. Permission and model live in the ＋ menu only.
     private var toolbar: some View {
         HStack(spacing: 8) {
             Button { toggle(.add) } label: {
@@ -103,23 +104,7 @@ struct Composer: View {
             }
             .buttonStyle(.plain).disabled(controlsDisabled)
             .help("添加文件或指令").accessibilityLabel("添加文件或指令")
-            .popover(isPresented: open(.add), arrowEdge: .top) { addMenu }
-
-            Button { toggle(.permissions) } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: full ? "exclamationmark.shield" : "checkmark.shield").font(.system(size: 14))
-                    Text(mode.title).font(.system(size: 12))
-                    Image(systemName: "chevron.up").font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(menu == .permissions ? 180 : 0))
-                }
-                .foregroundStyle(menu == .permissions ? Theme.foreground : Theme.muted)
-                .padding(.horizontal, 10).frame(height: 32)
-                .background(menu == .permissions ? Theme.border : Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).disabled(controlsDisabled)
-            .help("操作权限").accessibilityLabel("操作权限").accessibilityValue(mode.title)
-            .popover(isPresented: open(.permissions), arrowEdge: .top) { permissionMenu }
+            .popover(isPresented: anyMenuOpen, arrowEdge: .top) { menuContent }
 
             Spacer(minLength: 0)
             Button(action: send) {
@@ -140,10 +125,23 @@ struct Composer: View {
     private var menu: ComposerMenuKind? { ui.composerMenu }
     private var controlsDisabled: Bool { conversation.isSending || workspace.connection != .connected || bot == nil }
 
-    private func open(_ kind: ComposerMenuKind) -> Binding<Bool> {
-        Binding(get: { ui.composerMenu == kind }, set: { if $0 { ui.composerMenu = kind } else if ui.composerMenu == kind { ui.composerMenu = nil } })
+    /// One popover anchored to ＋ shows whichever menu is open (添加与指令, 权限, 模型).
+    private var anyMenuOpen: Binding<Bool> {
+        Binding(get: { ui.composerMenu != nil }, set: { if !$0 { ui.composerMenu = nil } })
     }
     private func toggle(_ kind: ComposerMenuKind) { ui.composerMenu = ui.composerMenu == kind ? nil : kind }
+    @ViewBuilder private var menuContent: some View {
+        switch menu {
+        case .add: addMenu
+        case .permissions: permissionMenu
+        case .models: modelMenu
+        case nil: EmptyView()
+        }
+    }
+    private var config: ModelConfig? { workspace.state?.config }
+    private var defaultModel: String { config?.defaultModel ?? "" }
+    /// The assistant's own model; empty while it follows the default.
+    private var chatModel: String { bot?.selectedModel ?? "" }
     private func close() { ui.composerMenu = nil; focused = true }
 
     private var addMenu: some View {
@@ -153,7 +151,8 @@ struct Composer: View {
             .heading("指令"),
             .row(.init(id: "permission", icon: full ? "exclamationmark.shield" : "checkmark.shield", title: "权限", key: "permission", value: mode.title,
                        action: { ui.composerMenu = .permissions })),
-            .row(.init(id: "model", icon: "slider.horizontal.3", title: "模型设置", key: "model", action: { close(); ui.openSettings(.model) })),
+            .row(.init(id: "model", icon: "slider.horizontal.3", title: "模型", key: "model", value: chatModel.isEmpty ? defaultModel : chatModel,
+                       enabled: config != nil, action: { ui.composerMenu = .models })),
             .row(.init(id: "export", icon: "arrow.down.to.line", title: "导出对话", key: "export", value: "Markdown",
                        enabled: !conversation.messages.isEmpty, action: { close(); exportConversation() })),
         ], initialID: "file", width: 340, close: close)
@@ -164,6 +163,22 @@ struct Composer: View {
             .row(.init(id: option.rawValue, icon: option == .full ? "exclamationmark.shield" : "checkmark.shield", title: option.title,
                        checked: mode == option, radio: true, action: { close(); setMode(option) }))
         }, initialID: mode.rawValue, width: 216, close: close)
+    }
+
+    private var modelMenu: some View {
+        ModelPickerPopover(label: "选择聊天模型", value: chatModel, emptyLabel: "默认 · \(defaultModel)",
+                           models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(),
+                           onSelect: { setModel($0) }, close: close)
+    }
+
+    private func setModel(_ next: String) {
+        close()
+        guard next != chatModel else { return }
+        menuError = nil
+        Task {
+            do { try await workspace.setAgentModel(botID: botID, model: next) }
+            catch { menuError = message(of: error) }
+        }
     }
 
     private func setMode(_ next: ApprovalMode) {
