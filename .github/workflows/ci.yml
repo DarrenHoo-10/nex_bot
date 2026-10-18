@@ -47,6 +47,7 @@ jobs:
     outputs:
       runtime: ${{ steps.scope.outputs.runtime }}
       vitest_os: ${{ steps.scope.outputs.vitest_os }}
+      android: ${{ steps.scope.outputs.android }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,6 +73,50 @@ jobs:
       - run: pnpm check:electron
       - name: production UI build
         run: pnpm exec vite build
+
+  android-core:
+    # `:core` is a plain Kotlin/JVM module, so its suite runs without the
+    # Android SDK (the Compose shell will need one later). The fixtures were
+    # captured from an isolated Core; --check fails when its wire contract
+    # drifts. This job is deliberately not part of the merge gate yet.
+    name: Kotlin tests + Android fixtures
+    needs: static
+    if: needs.static.outputs.android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: 17
+          # Caches ~/.gradle/caches and the wrapper distribution, plus
+          # Robolectric's android-all artifact (fetched at test time, which no
+          # Gradle cache reaches).
+          cache: gradle
+          cache-path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.m2/repository/org/robolectric
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install the Android SDK packages
+        # The runner image ships an Android SDK; :app needs platform 36 and the
+        # matching build tools. :core itself needs none of this.
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-36" "build-tools;36.1.0"
+      - name: Kotlin and app tests
+        # A checkout made on Windows does not carry the executable bit.
+        run: chmod +x android/gradlew && cd android && ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug
+      - name: Android fixtures have not drifted from Core
+        # Runs against the TypeScript source, so no platform-specific Core
+        # bundle is needed on Linux.
+        run: node --experimental-transform-types --no-warnings scripts/capture-android-fixtures.mjs --core=server/personal-os/index.ts --check
 
   vitest:
     # Admit the expensive runner fan-out only after the quick checks pass.

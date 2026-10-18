@@ -119,6 +119,42 @@ describe("mandatory built-in account login", () => {
     expect(app.store.get("SELECT session_id FROM identity_revocations WHERE session_id=?", first.body.sessionId)).toBeUndefined();
     expect(app.store.get("SELECT id FROM secrets WHERE id=?", `identity-session:${first.body.sessionId}`)).toBeUndefined();
   });
+  it("extends a session without a password, rotates its token, and audits the extension", async () => {
+    const { app } = await fixture(), owner = await login(app, await bootstrap(app));
+    const refreshed = await request(app, "auth/refresh", {}, { Authorization: `Bearer ${owner.body.token}` });
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.sessionId).toBe(owner.body.sessionId);
+    expect(refreshed.body.coreId).toBe(owner.body.coreId);
+    expect(refreshed.body.token).not.toBe(owner.body.token);
+    expect(refreshed.body.expiresAt - Date.now()).toBeLessThanOrEqual(8 * 3_600_000);
+    // The rotated token is the only live one: a copy taken before the refresh stops working.
+    expect((await request(app, "state", undefined, { Authorization: `Bearer ${owner.body.token}` })).status).toBe(401);
+    expect((await request(app, "state", undefined, { Authorization: `Bearer ${refreshed.body.token}` })).status).toBe(200);
+    expect(((await request(app, "auth/status", undefined, { Authorization: `Bearer ${refreshed.body.token}` })).body as { account?: { deviceName?: string } }).account?.deviceName).toBe("合成设备");
+    expect(app.store.get("SELECT action FROM audit_records WHERE action='identity.refresh' AND entity_id=?", owner.body.sessionId)!.action).toBe("identity.refresh");
+  });
+  it("refuses to extend a logged-out, revoked or expired session and fails closed during an outage", async () => {
+    const { app, provider } = await fixture();
+    const first = await login(app, await bootstrap(app));
+    expect((await request(app, "auth/logout", {}, { Authorization: `Bearer ${first.body.token}` })).status).toBe(200);
+    expect((await request(app, "auth/refresh", {}, { Authorization: `Bearer ${first.body.token}` })).status).toBe(401);
+
+    const second = await login(app);
+    provider.state.status = 401; staleCache();
+    expect((await request(app, "auth/refresh", {}, { Authorization: `Bearer ${second.body.token}` })).status).toBe(401);
+    expect(app.store.get("SELECT revoked_at FROM user_sessions WHERE id=?", second.body.sessionId)!.revoked_at).not.toBeNull();
+
+    vi.restoreAllMocks(); provider.state.status = 200;
+    const third = await login(app);
+    provider.state.status = 503; staleCache();
+    expect((await request(app, "auth/refresh", {}, { Authorization: `Bearer ${third.body.token}` })).status).toBe(503);
+    expect(app.store.get("SELECT revoked_at FROM user_sessions WHERE id=?", third.body.sessionId)!.revoked_at).toBeNull();
+
+    vi.restoreAllMocks(); provider.state.status = 200;
+    const fourth = await login(app);
+    vi.spyOn(Date, "now").mockReturnValue(fourth.body.expiresAt + 1);
+    expect((await request(app, "auth/refresh", {}, { Authorization: `Bearer ${fourth.body.token}` })).status).toBe(401);
+  });
   it("rechecks a partially uploaded mutation after logout before writing any data", async () => {
     const { app } = await fixture(), owner = await login(app, await bootstrap(app));
     const body = JSON.stringify({ name: "禁止晚到写入" });

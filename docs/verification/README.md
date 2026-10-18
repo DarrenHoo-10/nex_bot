@@ -5,7 +5,9 @@ device executor; use the [client device executor recipe](client-device-executor.
 for its lifecycle, permissions and packaged verification, alongside the
 [Core service / thin shell recipe](core-service-thin-shell.md) for the separate
 backend. The [Windows desktop fixture](personal-os.md)
-records the historical embedded-desktop delivery. All current checks use
+records the historical embedded-desktop delivery. The [macOS delivery
+record](personal-os-mac.md) documents the historical 0.5.0 Mac application and
+points at its successor. All current checks use
 owned temporary data, synthetic identity/model providers and isolated shells.
 
 The [Seoul HTTPS relay verification](seoul-relay.md) records the production
@@ -56,6 +58,7 @@ Use only mapped, tested commands:
 
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
+- [Per-model context and output limits](model-token-limits.md)
 - [Work summaries and engine hooks](digests.md)
 - [OpenAI-compatible structured tools](openai-tools.md)
 - [Per-bot tool selection and local-model checks](tool-selection.md)
@@ -198,6 +201,11 @@ per-thread models, simultaneous direct conversations and thread-scoped Stop.
 The [mobile generated-image checks](mobile-generated-images.md) cover native image
 attachments and message-scoped download authorization using isolated fixtures.
 
+The [Android client verification](android-client.md) covers the Kotlin and app
+suites, fixture drift against a disposable Core, rendered login/agent/chat
+screens checked against `doc/ui/`, and an emulator run that logs in, opens an
+Agent and exchanges a message with a scripted model reply.
+
 The [guarded external messages fixture](guarded-messages.md) checks atomic
 branch and approval preconditions, retry receipts, and refusal to queue or
 steer messages from external interfaces. It also verifies bounded request
@@ -251,6 +259,10 @@ desktop routing, cancellation, and computer authority cleanup.
 
 The [native macOS and iOS client recipe](native-clients.md) drives the SwiftUI apps
 against an isolated Core fixture.
+The [chat composer record](chat-composer.md) covers file uploads, per-assistant
+permission modes and execution-socket heartbeat/receipt reconciliation.
+The [composer menus record](composer-menus.md) covers the grouped plus menu,
+permission popover and Markdown conversation download.
 
 The [current inspector and contact motion record](inspector-cleanup.md) covers
 compact routines, direct avatar/identity editing and active sidebar animation.
@@ -268,6 +280,21 @@ Windows client, isolated Linux archive verification and production rollout.
 The [Personal workspace and MCP fixture](personal-workspace-connectors.md) checks
 the three-column Personal UI and generic MCP discovery, grants, approvals and
 cancellation using an isolated Core and renderer.
+
+The [categorized settings record](settings-categories.md) covers the four
+settings categories and the blue account menu in the Personal UI.
+
+The [local settings navigation record](local-settings-navigation.md) covers the
+navigation update installed on the local machine first.
+
+The [settings deployment record](settings-deployment.md) covers the hosted UI
+build and its Seoul-to-Tokyo deployment.
+
+The [connector and device settings navigation record](settings-management-navigation.md)
+covers the account menu and moving connectors and devices into settings.
+
+The [blue companion release record](blue-companion-release.md) documents the
+0.9.1 companion mark and account menu refresh.
 
 The [persistence responsiveness benchmark](persistence-performance.md) measures
 synthetic message/log bursts and history scans, with isolated chat, visibility

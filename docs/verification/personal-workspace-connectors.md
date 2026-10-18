@@ -1,5 +1,9 @@
 # Personal workspace and MCP connectors — 2026-10-17
 
+Current approval behavior (2026-10-18) is documented in
+[effect-based approvals](effect-approvals.md). Granted read-only queries no longer
+always require approval. The release and UI evidence below is historical.
+
 ## Production release 0.9.0 — 2026-10-17
 
 The companion identity update is now deployed through the existing Seoul HTTPS

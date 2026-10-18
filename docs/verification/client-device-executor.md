@@ -20,7 +20,8 @@ device runtime and the matching UI; it does not run another Agent or Core.
   loading, error, save feedback and interrupted-operation recovery remain.
 - Commands run as the current OS user. The user's home directory is the read-tool
   boundary and default command working directory, **not a command sandbox**. Commands
-  can access anything that OS user can access. Core tool approvals still apply.
+  can access anything that OS user can access. Core uses [effect-based approvals](effect-approvals.md):
+  ordinary reads and document saves are automatic; dangerous effects need approval.
 - Restarting with the same login restores the device identity. Pause stops the
   runtime and is retained across restart/login until Resume is chosen. A new
   login creates a fresh device binding while preserving that workspace's pause
@@ -86,7 +87,7 @@ Observed results:
 - Lifecycle fixture: 10 cases, including automatic login control, migration of old declined grants, control restored
   after fresh login, pause persisted across restart, real authorized file reads, packaged
   PDF worker/native canvas loading, traversal
-  rejection, an approved command that saves a document,
+  rejection, an ordinary command that saves a document without approval,
   process-tree termination on logout, no resurrection after revocation and
   account isolation/background expiry.
 - Registration race: a pairing response arriving after logout is revoked and

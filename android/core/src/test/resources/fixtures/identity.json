@@ -1,0 +1,15 @@
+{
+  "mode": "connected",
+  "loginRequired": true,
+  "initialized": true,
+  "provider": {
+    "type": "nex-user",
+    "name": "NexorAI 账号",
+    "baseUrl": "http://127.0.0.1:0"
+  },
+  "version": 1,
+  "coreId": "fixture-id-1",
+  "loginMethods": [
+    "password"
+  ]
+}

@@ -3,6 +3,7 @@ import { AccountControls, useAccount } from "./auth";
 import { Check, Cpu, Eye, EyeOff, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
 import { api, desktop, listModels, str, type State, type LocalDeviceState } from "./api";
 import { ConnectorsPage } from "./ConnectorsPage";
+import { ModelLimitsFields } from "./ModelLimitsFields";
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
   const [pending, setPending] = useState(false);
@@ -58,6 +59,8 @@ function ModelSettings({ state, run, active }: { state: State; run: (fn: () => P
   const [modelNotice, setModelNotice] = useState(""), [modelError, setModelError] = useState("");
   const [manual, setManual] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [limitsReady, setLimitsReady] = useState("");
+  const limitScope = JSON.stringify([provider, endpoint, model]);
   const modelId = useId(), keyId = useId(), modelForm = useRef<HTMLFormElement>(null);
   useEffect(() => { if (!active) setShowKey(false); }, [active]);
   const clearEnteredKey = () => { const key = modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement | null; if (key) key.value = ""; setShowKey(false); };
@@ -85,7 +88,8 @@ function ModelSettings({ state, run, active }: { state: State; run: (fn: () => P
           <button type="button" disabled={!endpoint} onClick={() => void loadModels()}>{loadingModels ? "获取中…" : "获取模型列表"}</button>
         </div>{models.length > 0 && <button className="text-button model-entry-toggle" type="button" onClick={() => setManual(value => !value)}>{manual ? "从列表选择" : "手动填写"}</button>}
         {modelNotice && <small role="status">{modelNotice}</small>}{modelError && <small className="model-error" role="alert">{modelError}</small>}</div>
-        <div className="preferences-actions"><button className="primary" type="submit">{pending ? "保存中…" : "保存配置"}</button>{saved && <span className="preferences-saved" role="status"><Check size={15}/>已保存</span>}</div>
+        <ModelLimitsFields key={limitScope} scopeKey={limitScope} provider={provider} endpoint={endpoint} model={model} active={active} onReady={setLimitsReady} onEdit={() => setSaved(false)}/>
+        <div className="preferences-actions"><button className="primary" type="submit" disabled={limitsReady !== limitScope}>{pending ? "保存中…" : "保存配置"}</button>{saved && <span className="preferences-saved" role="status"><Check size={15}/>已保存</span>}</div>
       </fieldset>
     </form>
   </section>;

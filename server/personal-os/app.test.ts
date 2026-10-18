@@ -244,7 +244,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(upgraded.runtime.memory.list(standard!).some((m) => m.title === "合成旧记忆")).toBe(true);
     expect(upgraded.store.all("PRAGMA foreign_key_check")).toEqual([]);
   });
-  it("runs a thin Device Node without a Core database, grants only its own directory and requires execution approval in the Agent feed", async () => {
+  it("runs a thin Device Node without a Core database, grants only its own directory and saves ordinary files without approval", async () => {
     const f = await fixture(), shared = path.join(f.root, "thin-shared"), dir = path.join(f.root, "thin-client"); mkdirSync(shared); writeFileSync(path.join(shared, "client.txt"), "合成客户端文件");
     const startNode: typeof createClientNode = process.env.NEX_TEST_CLIENT_BUNDLE ? (await import(pathToFileURL(path.resolve(process.env.NEX_TEST_CLIENT_BUNDLE)).href)).createClientNode : createClientNode;
     const client = startNode(dir, randomBytes(32), () => {}, f.app.origin);
@@ -260,12 +260,18 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       await wait(() => !f.app.runtime.workers.size);
       f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-exec", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: process.platform === "win32" ? "Set-Content -LiteralPath marker.txt -Value synthetic" : "printf synthetic > marker.txt" }) }] }, { kind: "openai-text", text: "合成命令已批准执行" });
       const taskId = f.app.agents.send(String(f.bots[0].id), "执行客户端命令", "thin-exec-input").taskId;
-      await wait(() => !!approval(f.app));
-      expect(existsSync(path.join(shared, "marker.txt"))).toBe(false);
-      const grant = approval(f.app); f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true);
       await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
       expect(readFileSync(path.join(shared, "marker.txt"), "utf8").trim()).toBe("synthetic");
       expect(approval(f.app)).toBeUndefined();
+      expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
+      await wait(() => !f.app.runtime.workers.size);
+      f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-delete", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, risk: "standard", command: process.platform === "win32" ? "Remove-Item -LiteralPath marker.txt" : "rm marker.txt" }) }] }, { kind: "openai-text", text: "已删除合成文件" });
+      const deleteTask = f.app.agents.send(String(f.bots[0].id), "删除合成文件", "thin-delete-input").taskId;
+      await wait(() => !!approval(f.app));
+      expect(existsSync(path.join(shared, "marker.txt"))).toBe(true);
+      const grant = approval(f.app); f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true);
+      await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", deleteTask)?.status === "succeeded");
+      expect(existsSync(path.join(shared, "marker.txt"))).toBe(false);
     } finally { await client.close(); }
   }, 60_000);
   it("creates a generic chat routine with a Core-relative deadline and survives a lost acknowledgement without duplicating it", async () => {
@@ -338,6 +344,30 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const chunk = await stream.body!.getReader().read(); abort.abort();
     expect(Buffer.from(chunk.value!).toString()).toContain('"reset":true');
     expect(f.app.store.all("SELECT * FROM sync_events").every((event) => !JSON.stringify(event).includes("合成消息"))).toBe(true);
+  });
+  it("offers a summary state without memory bodies or the finished-work journal", async () => {
+    const f = await fixture(), botId = String(f.bots[0].id), headers = { Authorization: `Bearer ${f.token}` };
+    f.app.runtime.memory.write(botId, { title: "合成摘要记忆", content: "这段正文不应出现在手机轮询里" });
+    type StateBody = { view?: string; memories: Array<{ content?: string }>; journal?: unknown[]; bots: unknown[]; tasks: unknown[]; sync: { cursor: number } };
+    const full = await (await fetch(f.app.origin + "/api/state", { headers })).json() as StateBody;
+    expect(full.view).toBeUndefined();
+    expect(full.memories.some((memory) => memory.content?.includes("这段正文不应出现在手机轮询里"))).toBe(true);
+    expect(Array.isArray(full.journal)).toBe(true);
+    const summary = await (await fetch(f.app.origin + "/api/state?view=summary", { headers })).json() as StateBody;
+    expect(summary.view).toBe("summary");
+    expect(summary.memories).toHaveLength(full.memories.length);
+    expect(summary.memories.every((memory) => memory.content === undefined)).toBe(true);
+    expect(summary.journal).toBeUndefined();
+    expect(summary.bots).toHaveLength(full.bots.length);
+    expect(summary.tasks).toHaveLength(full.tasks.length);
+    // The cursor keeps moving with background memory bookkeeping, so it is a
+    // monotonic marker rather than a constant between two reads.
+    expect(summary.sync.cursor).toBeGreaterThanOrEqual(full.sync.cursor);
+    // An unknown view is not an error: the default body is what a client that
+    // did not understand this Core would have asked for anyway.
+    const unknown = await (await fetch(f.app.origin + "/api/state?view=everything", { headers })).json() as StateBody;
+    expect(unknown.view).toBeUndefined();
+    expect(Array.isArray(unknown.journal)).toBe(true);
   });
   it("forgets causal A2A copies and Pi context, then reapplies tombstones to an older restored Core database", async () => {
     const f = await fixture(), sender = String(f.bots[0].id), peer = String(f.bots[1].id);
@@ -737,7 +767,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
     expect(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='pdf-read'")?.result_json).toContain("PAPER_FIXTURE_STABILITY_RESULT");
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "shell-once", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: process.platform === "win32" ? "Add-Content -LiteralPath counter.txt -Value executed; Get-Content -LiteralPath counter.txt" : "echo executed >> counter.txt; cat counter.txt" }) }] }, { kind: "openai-text", text: "命令完成" });
-    const commandTask = f.app.runtime.input(f.conversation, "执行授权命令", id()); await wait(() => !!approval(f.app)); const commandGrant = approval(f.app); f.app.runtime.decide(String(commandGrant.id), String(commandGrant.argument_hash), true);
+    const commandTask = f.app.runtime.input(f.conversation, "执行普通文件保存", id());
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", commandTask)?.status === "succeeded");
     const receipt = nodeApp.node.journal.prepare("SELECT * FROM node_calls WHERE capability='device.exec'").get()!;
     // Delivery retries carry exactly the same immutable source, even after expiry.
@@ -767,7 +797,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const pair = f.app.gateway.pair("Cancellation fixture"); nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: true }); await wait(() => nodeApp.node.status === "已连接");
     const command = process.platform === "win32" ? "Write-Output SYNTHETIC_STARTED; Start-Sleep -Seconds 10; Write-Output SHOULD_NOT_PRINT" : "echo SYNTHETIC_STARTED; sleep 10; echo SHOULD_NOT_PRINT";
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "stop-shell", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command }) }] });
-    const task = f.app.runtime.input(f.conversation, "停止隔离终端", id()); await wait(() => !!approval(f.app)); const grant = approval(f.app); f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true);
+    const task = f.app.runtime.input(f.conversation, "停止隔离终端", id());
     await wait(() => nodeApp.node.commands.size === 1);
     const child = [...nodeApp.node.commands][0], receipt = nodeApp.node.journal.prepare("SELECT * FROM node_calls WHERE capability='device.exec'").get()!;
     await expect(nodeApp.node.message(nodeApp.node.socket!, { type: "cancel", callId: receipt.call_id, argumentHash: "wrong-digest" })).rejects.toThrow("identity conflict");
@@ -804,6 +834,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   }, 60_000);
   it("compacts long conversation context through the SDK and retains durable inputs", async () => {
     const f = await fixture();
+    f.app.store.saveConfig({ ...f.app.store.modelConfig(), contextWindow: 32000, maxOutputTokens: 8192 });
     f.fake.scripts.push(...Array.from({ length: 24 }, () => ({ kind: "openai-text" as const, text: "保留用户目标与已完成步骤的摘要和回复" })));
     for (let turn = 0; turn < 6; turn++) {
       const task = f.app.runtime.input(f.conversation, String(turn) + "x".repeat(31_000), id());

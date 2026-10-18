@@ -28,3 +28,10 @@ third_party/opencode/LICENSE text eol=lf
 # joins and every layering, healthcheck and trust check fails for a reason
 # that has nothing to do with the image. Docker itself reads LF everywhere.
 Dockerfile text eol=lf
+# Android: Linux CI runs the wrapper through sh (a CRLF shebang is
+# "/bin/sh^M: bad interpreter"), Windows wants the .bat in CRLF, and the
+# fixtures are compared byte for byte by scripts/capture-android-fixtures.mjs
+# --check, so a CRLF checkout would read as drift that is not drift.
+android/gradlew text eol=lf
+android/gradlew.bat text eol=crlf
+android/core/src/test/resources/fixtures/** text eol=lf

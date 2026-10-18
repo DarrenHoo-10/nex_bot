@@ -38,7 +38,7 @@ export interface CatalogModel {
   attachment: boolean;
   modalities: { input: string[] };
   release_date?: string;
-  limit?: { context: number };
+  limit?: { context: number; output?: number };
   cost?: CatalogCost;
   status?: CatalogModelStatus;
 }
@@ -179,6 +179,8 @@ function trimModel(key: string, raw: unknown): CatalogModel | "skip" | "invalid"
   if (typeof raw.release_date === "string" && RELEASE_DATE.test(raw.release_date)) model.release_date = raw.release_date;
   const context = finite(isRecord(raw.limit) ? raw.limit.context : undefined);
   if (context !== undefined) model.limit = { context };
+  const output = finite(isRecord(raw.limit) ? raw.limit.output : undefined);
+  if (model.limit && output !== undefined) model.limit.output = output;
   if (isRecord(raw.cost)) {
     const cost: CatalogCost = {};
     for (const field of ["input", "output"] as const) {

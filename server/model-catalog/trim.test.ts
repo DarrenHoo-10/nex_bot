@@ -149,7 +149,7 @@ describe("trimModelsDevCatalog shape", () => {
           attachment: false,
           modalities: { input: ["text", "image"] },
           release_date: "2026-05-01",
-          limit: { context: 200_000 },
+          limit: { context: 200_000, output: 8_192 },
           cost: { input: 1, output: 4 },
           status: "alpha",
         },

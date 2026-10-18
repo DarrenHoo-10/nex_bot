@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext is permitted at the platform level because LAN and tailnet addresses
+  cannot be expressed as domain rules here (there is no CIDR syntax). The app
+  enforces the real rule in CoreOrigin: HTTPS anywhere, HTTP only on a private
+  network or a *.ts.net name, and it warns that such a connection is cleartext.
+  See docs/plans/2026-10-17-android-client.md §5.4.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

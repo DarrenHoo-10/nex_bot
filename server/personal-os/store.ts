@@ -5,6 +5,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { basicActions } from "./policy.ts";
 import { connectorSchema } from "./connector-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
+import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
@@ -50,10 +51,12 @@ export class CoreStore {
   readonly owner = "local-owner";
   readonly workspace = "personal";
   readonly session = "desktop-owner";
-  constructor(dir: string, readonly key: Buffer, token: string) {
+  readonly modelLimits: ModelLimits;
+  constructor(dir: string, readonly key: Buffer, token: string, catalog?: ModelCatalogConfig) {
     if (key.length !== 32) throw new Error("Invalid credential vault key");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.dir = realpathSync(dir);
+    this.modelLimits = new ModelLimits(this.dir, catalog);
     const legacy = process.env.OMB_DATA_DIR;
     if (legacy && existsSync(legacy) && realpathSync(legacy).toLowerCase() === this.dir.toLowerCase()) throw new Error("Personal OS data must be separate from legacy data");
     const marker = path.join(this.dir, "backend.json");
@@ -61,6 +64,7 @@ export class CoreStore {
     writeFileSync(marker, JSON.stringify({ backend: "personal-os", format: 1 }), { mode: 0o600 });
     this.db = new DatabaseSync(path.join(this.dir, "core.db"));
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
+    this.db.exec("CREATE TABLE IF NOT EXISTS model_limit_overrides (provider TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT NOT NULL, context_window INTEGER, max_output_tokens INTEGER, PRIMARY KEY(provider,endpoint,model))");
     const sql = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
     if (!this.get("SELECT name FROM sqlite_master WHERE name='schema_migrations'")) this.db.exec(sql);
     if (!this.get("SELECT version FROM schema_migrations WHERE version=1")) {
@@ -198,6 +202,16 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 12, checksum: hash(appearanceSchema), applied_at: now() });
       });
     }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=13")) this.transaction(() => {
+      const schema = `CREATE TABLE agent_approval_settings(bot_id TEXT PRIMARY KEY REFERENCES bots(id),mode TEXT NOT NULL CHECK(mode IN ('standard','full')),version INTEGER NOT NULL DEFAULT 1) STRICT;
+        CREATE TABLE chat_attachments(id TEXT PRIMARY KEY,bot_id TEXT NOT NULL REFERENCES bots(id),session_id TEXT NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,ciphertext TEXT NOT NULL,created_at INTEGER NOT NULL,message_id TEXT REFERENCES agent_messages(id)) STRICT;`;
+      this.db.exec(schema);
+      for (const policy of this.all("SELECT * FROM bot_policies")) {
+        const value = JSON.parse(String(policy.policy_json));
+        if ([...new Set(value.tools ?? [])].sort().join(",") === basicActions.filter((a) => a !== "attachment.read").sort().join(",")) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools, "attachment.read"] }), policy.bot_id);
+      }
+      this.insert("schema_migrations", { version: 13, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -228,15 +242,29 @@ export class CoreStore {
     if (!row) return;
     return { id: row.id, provider_id: row.provider_id, endpoint: row.endpoint, default_model: row.default_model, configured: row.credential_ref ? 1 : 0 };
   }
+  modelLimitSettings(input: Record<string, unknown>) {
+    const scope = modelLimitScope(input);
+    const row = this.get("SELECT * FROM model_limit_overrides WHERE provider=? AND endpoint=? AND model=?", scope.provider, scope.endpoint, scope.model);
+    const manual: ModelLimitOverrides = { contextWindow: row?.context_window == null ? null : Number(row.context_window), maxOutputTokens: row?.max_output_tokens == null ? null : Number(row.max_output_tokens) };
+    return this.modelLimits.resolve(scope, manual);
+  }
   saveConfig(value: Record<string, unknown>) {
     const endpoint = new URL(text(value.endpoint, 2048));
     if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)))) throw new Error("API 地址须为 HTTPS；本地模型可使用 HTTP localhost");
     const provider = text(value.provider, 30);
     if (!["openai", "anthropic"].includes(provider)) throw new Error("不支持的协议");
     const model = text(value.model, 200);
+    const scope = modelLimitScope({ provider, endpoint: endpoint.toString(), model });
+    const previous = this.modelLimitSettings(scope).manual;
+    const manual = {
+      contextWindow: value.contextWindow === undefined ? previous.contextWindow : parseModelLimit(value.contextWindow, "contextWindow"),
+      maxOutputTokens: value.maxOutputTokens === undefined ? previous.maxOutputTokens : parseModelLimit(value.maxOutputTokens, "maxOutputTokens"),
+    };
+    validateModelLimits(this.modelLimits.resolve(scope, manual));
     const secret = typeof value.apiKey === "string" && value.apiKey.trim() ? text(value.apiKey, 8192) : undefined;
     if (!secret && !this.get("SELECT id FROM secrets WHERE id='model-key'")) throw new Error("请配置 API Key");
     this.transaction(() => {
+      this.run("INSERT INTO model_limit_overrides VALUES(?,?,?,?,?) ON CONFLICT(provider,endpoint,model) DO UPDATE SET context_window=excluded.context_window,max_output_tokens=excluded.max_output_tokens", scope.provider, scope.endpoint, scope.model, manual.contextWindow, manual.maxOutputTokens);
       if (secret) this.run("INSERT INTO secrets VALUES('model-key',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", this.encrypt(secret));
       this.run("INSERT INTO model_connections(id,workspace_id,owner_user_id,display_name,provider_id,endpoint,credential_ref,default_model,status,created_at) VALUES('default',?,?,?,?,?,'model-key',?,'active',?) ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,endpoint=excluded.endpoint,default_model=excluded.default_model,version=version+1", this.workspace, this.owner, "Default", provider, endpoint.toString().replace(/\/$/, ""), model, now());
       this.run("UPDATE bots SET model_connection_id='default' WHERE model_connection_id IS NULL");
@@ -247,7 +275,10 @@ export class CoreStore {
     const row = this.get("SELECT * FROM model_connections WHERE id='default' AND status='active'");
     const secret = this.get("SELECT ciphertext FROM secrets WHERE id='model-key'");
     if (!row || !secret) throw new Error("请先在设置中配置 API Key 和模型");
-    return { provider: String(row.provider_id), endpoint: String(row.endpoint), model: String(row.default_model), apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };
+    const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model: row.default_model });
+    const limits = this.modelLimitSettings(scope);
+    validateModelLimits(limits);
+    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };
   }
   createBot(name: string, instructions?: unknown) {
     const botId = id();

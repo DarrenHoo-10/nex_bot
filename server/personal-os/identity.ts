@@ -188,6 +188,50 @@ export class CoreIdentity {
     const session = this.store.get("SELECT id FROM user_sessions WHERE token_hash=? AND workspace_id=? AND user_id=?", hash(token), this.store.workspace, this.store.owner);
     if (session && session.id !== this.store.session) await this.revoke(String(session.id));
   }
+  /**
+   * Extend one already-authenticated client session without asking for the
+   * password again. This is what lets a phone keep working past the eight-hour
+   * local session without storing a password.
+   *
+   * The presented bearer is rotated, so a copy taken from a backup stops
+   * working the next time the real device refreshes. The upstream session is
+   * rechecked first through the same `authenticate` path every request uses,
+   * which means a revoked account cannot refresh its way past local
+   * revocation, and an outage fails closed with 503 instead of extending.
+   * Expiry still follows the original rule: never beyond the upstream session
+   * and never beyond eight hours from now.
+   */
+  async refresh(token: string) {
+    const session = await this.authenticate(token);
+    if (!session) throw new IdentityError(401, "登录已失效，请重新登录");
+    const encrypted = this.store.get("SELECT ciphertext FROM secrets WHERE id=?", session.upstream_session_ref);
+    if (!encrypted) throw new IdentityError(401, "登录已失效，请重新登录");
+    const upstream = JSON.parse(this.store.decrypt(String(encrypted.ciphertext))) as UpstreamSession;
+    const upstreamExpiry = Number(upstream.expiresAt);
+    if (!Number.isSafeInteger(upstreamExpiry)) throw new IdentityError(409, "账号会话信息不完整，请重新登录");
+    const at = now(), expiresAt = Math.min(upstreamExpiry, at + 8 * 60 * 60_000);
+    if (expiresAt <= at) throw new IdentityError(401, "登录已失效，请重新登录");
+    const next = randomBytes(32).toString("base64url");
+    const rotated = this.store.transaction(() => {
+      // The old hash is part of the predicate: two concurrent refreshes cannot
+      // both win, and one of them is told to use the token it already got.
+      const update = this.store.run("UPDATE user_sessions SET token_hash=?,expires_at=?,status_checked_at=?,version=version+1 WHERE id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>?", hash(next), expiresAt, at, session.id, hash(token), at);
+      if (Number(update.changes) !== 1) return false;
+      this.store.run("UPDATE client_sessions SET last_seen_at=? WHERE session_id=?", at, session.id);
+      this.store.audit("identity.refresh", "session", String(session.id), { protocol: "native-v1" });
+      return true;
+    });
+    if (!rotated) {
+      // Either another refresh won the rotation (send the client back to the
+      // token it already received) or the row expired between the read and the
+      // write (nothing can be extended any more).
+      if (!this.clients.authenticateTokenSession(String(session.id))) throw new IdentityError(401, "登录已失效，请重新登录");
+      throw new IdentityError(409, "登录已刷新，请使用新凭据");
+    }
+    const current = this.clients.authenticateTokenSession(String(session.id));
+    if (current) this.checked.set(String(session.id), { version: Number(current.version), wall: at, mono: performance.now() });
+    return { token: next, sessionId: String(session.id), expiresAt, coreId: this.clients.coreId(), protocol: "native-v1", version: 1 };
+  }
   async authorizeTask(task: Row) {
     const sessionId = String(task.authorized_session_id);
     if (!this.connected()) return false;

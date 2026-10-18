@@ -18,13 +18,15 @@ import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
+import { ChatFiles } from "./chat-files.ts";
 import { requestBody as body } from "./http-body.ts";
+import { modelLimitScope, type ModelCatalogConfig } from "./model-limits.ts";
 
-export interface AppOptions { accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
+export interface AppOptions { modelCatalog?: ModelCatalogConfig; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
 
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
-  const store = new CoreStore(options.dir, options.key, options.token);
+  const store = new CoreStore(options.dir, options.key, options.token, options.modelCatalog);
   const clients = new ClientIdentity(store, options.publicCoreId), sync = new ClientSync(store);
   const identity = options.identity === false ? undefined : new CoreIdentity(store, clients, options.identity?.fixtureOrigin);
   const authenticate = async (token: string) => {
@@ -59,6 +61,7 @@ export async function createPersonalApp(options: AppOptions) {
   const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
 
   const agents = new AgentModule(store, runtime);
+  const files = new ChatFiles(store);
   const routines = new RoutineModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
@@ -81,7 +84,45 @@ export async function createPersonalApp(options: AppOptions) {
   function json(response: ServerResponse, status: number, value: unknown) {
     response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); response.end(JSON.stringify(value));
   }
+  /** The client snapshot. `summary` drops the fields a phone never renders
+   * while polling — memory bodies and the finished-work journal — and names
+   * itself so a client can tell that its request was understood. Everything
+   * else, including the default when `view` is absent or unknown, is what
+   * every existing client already receives. */
+  function stateBody(view: "full" | "summary", requestOrigin: string) {
+    const base = store.state();
+    return {
+      ...base,
+      ...(view === "summary" ? { view: "summary", memories: base.memories.map(({ content: _content, ...memory }) => memory) } : {}),
+      connectors: connectors.list(),
+      sync: sync.snapshot(),
+      hostDeviceId: gateway.hostDeviceId,
+      memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
+      memoryPlugin: memoryPlugin.status(),
+      bots: agents.contacts().map((bot) => ({ ...bot, approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      directory: directory(store),
+      routines: routines.list(),
+      occurrences: routines.occurrences(),
+      ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100") }),
+      onlineDevices: [...gateway.sockets.keys()],
+      node: { ...node.publicState(), hosted: options.hostDevice === false },
+      dataDir: store.dir,
+      runtime: "Pi 1.0.4",
+      address: requestOrigin,
+      lanEnabled: options.host === "0.0.0.0",
+    };
+  }
   const loginAttempts = new Map<string, { count: number; at: number }>();
+  /** One budget for every credential exchange: password login and session
+   * refresh both spend from it, because both are attempts to turn a secret on
+   * the wire into a session. */
+  function throttleLogin(remoteAddress: string) {
+    const address = remoteAddress || "unknown", at = Date.now();
+    for (const [key, attempt] of loginAttempts) if (at - attempt.at > 60_000) loginAttempts.delete(key);
+    const attempt = loginAttempts.get(address) ?? { count: 0, at };
+    if (attempt.count >= 20 || (!loginAttempts.has(address) && loginAttempts.size >= 1000)) throw new IdentityError(429, "登录尝试过多，请稍后重试");
+    attempt.count++; loginAttempts.set(address, attempt);
+  }
   let checkingSessions = false;
   let heartbeatJob: Promise<void> | undefined;
   const heartbeat = setInterval(() => {
@@ -137,13 +178,18 @@ export async function createPersonalApp(options: AppOptions) {
     if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {
       await identity.logout(token); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return;
     }
+    if (identity && url.pathname === "/api/auth/refresh" && request.method === "POST") {
+      // Extending an existing bearer is not a password login: the HTTPS rule
+      // that protects a password in transit does not apply, but the shared
+      // attempt budget does. The response is shaped like /api/auth/respond so a
+      // client has one code path for "I now have a token".
+      throttleLogin(remoteAddress);
+      const login = await identity.refresh(token);
+      setCookie(response, login.token, requestOrigin, login.expiresAt); changed(); json(response, 200, login); return;
+    }
     if (identity && ["/api/auth/start", "/api/auth/respond"].includes(url.pathname) && request.method === "POST") {
       if (!privateRemote && !requestOrigin.startsWith("https:")) throw new IdentityError(426, "远程账号登录须使用 HTTPS Core 地址");
-      const address = remoteAddress || "unknown", at = Date.now();
-      for (const [key, attempt] of loginAttempts) if (at - attempt.at > 60_000) loginAttempts.delete(key);
-      const attempt = loginAttempts.get(address) ?? { count: 0, at };
-      if (attempt.count >= 20 || (!loginAttempts.has(address) && loginAttempts.size >= 1000)) throw new IdentityError(429, "登录尝试过多，请稍后重试");
-      attempt.count++; loginAttempts.set(address, attempt);
+      throttleLogin(remoteAddress);
       const data = await body(request);
       if (url.pathname.endsWith("/start")) { json(response, 200, identity.start(data, bootstrap)); return; }
       const login = await identity.respond(data, bootstrap);
@@ -174,13 +220,20 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname.startsWith("/api/")) {
       const session = await authenticate(token);
       if (!session) { json(response, 401, { error: "Unauthorized" }); return; }
+      if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
+        const { row, bytes } = files.file(text(url.pathname.slice("/api/attachments/".length), 100));
+        response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
+      }
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
         const event = sync.event(Number(request.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0));
         streams.set(response, token); response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); request.once("close", () => streams.delete(response)); return;
       }
       if (url.pathname === "/api/clients" && request.method === "GET") { json(response, 200, { sessions: clients.list(), currentSessionId: session.id }); return; }
-      if (url.pathname === "/api/state") { json(response, 200, { ...store.state(), connectors: connectors.list(), sync: sync.snapshot(), hostDeviceId: gateway.hostDeviceId, memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status }, memoryPlugin: memoryPlugin.status(), bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })), directory: directory(store), routines: routines.list(), occurrences: routines.occurrences(), journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100"), onlineDevices: [...gateway.sockets.keys()], node: { ...node.publicState(), hosted: options.hostDevice === false }, dataDir: store.dir, runtime: "Pi 1.0.4", address: requestOrigin, lanEnabled: options.host === "0.0.0.0" }); return; }
+      if (url.pathname === "/api/state") {
+        const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
+        json(response, 200, stateBody(view, requestOrigin)); return;
+      }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
@@ -250,11 +303,26 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, connectors.remove(data)); return; }
-      if (url.pathname === "/api/agents/input") { json(response, 202, agents.send(text(data.botId, 100), text(data.text), text(data.clientId, 200), String(session.id))); return; }
+      if (url.pathname === "/api/attachments") { json(response, 200, files.upload(data, String(session.id))); return; }
+      if (url.pathname === "/api/agents/input") {
+        const botId = text(data.botId, 100), clientId = text(data.clientId, 200), attachments = data.attachments ?? [];
+        const links = files.references(botId, attachments, String(session.id));
+        const content = text(`${typeof data.text === "string" ? data.text.trim() : ""}${links ? "\n\n" + links : ""}`);
+        const result = store.transaction(() => { const sent = agents.send(botId, content, clientId, String(session.id)); files.bind(attachments as string[], botId, clientId); return sent; });
+        json(response, 202, result); return;
+      }
       if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines/run") { routines.runNow(text(data.id, 100), text(data.clientId, 100)); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/models/limits" || url.pathname === "/api/models/limits/refresh") {
+        if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取模型配置的权限" }); return; }
+        const scope = modelLimitScope(data);
+        const refresh = url.pathname.endsWith("/refresh") ? await store.modelLimits.catalog.refresh({ force: data.force === true }) : undefined;
+        if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+        const automatic = store.modelLimits.resolve(scope, { contextWindow: null, maxOutputTokens: null });
+        json(response, 200, { ...store.modelLimitSettings(scope), automatic, refresh }); return;
+      }
       if (url.pathname === "/api/models/list") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取模型列表的权限" }); return; }
         const settings = catalogSettings(data, store.config() ? store.modelConfig() : undefined);
@@ -269,6 +337,7 @@ export async function createPersonalApp(options: AppOptions) {
       }
       if (url.pathname === "/api/bots/appearance") { agents.updateAppearance(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/policy") { agents.updatePolicy(data); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/bots/approval-mode") { agents.updateApprovalMode(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/archive") { agents.archive(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/conversations") { const conversationId = store.createConversation(text(data.botId, 100)); changed(); json(response, 200, { id: conversationId }); return; }
       if (url.pathname === "/api/input") { const taskId = runtime.input(text(data.conversationId, 100), text(data.text), typeof data.clientId === "string" ? data.clientId : id(), String(session.id)); json(response, 202, { taskId }); return; }

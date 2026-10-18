@@ -40,6 +40,8 @@ await build({ entryPoints: ["server/personal-os/index.ts", "server/personal-os/w
 await build({ entryPoints: [path.join(root, "server/personal-os/service.ts")], outfile: path.join(serverOutput, "core/service.js"), bundle: true, platform: "node", target: "node24", format: "esm", legalComments: "linked" });
 for (const file of ["schema.sql", "node-schema.sql", "agent-schema.sql", "memory-schema.sql", "memory-lifecycle-schema.sql", "client-schema.sql", "task-control-schema.sql", "identity-schema.sql"]) copyFileSync(path.join(root, "server", "personal-os", file), path.join(serverOutput, "core", file));
 cpSync(path.join(root, "server/personal-os/skills"), path.join(serverOutput, "core/skills"), { recursive: true });
+mkdirSync(path.join(serverOutput, "core/model-catalog"), { recursive: true });
+copyFileSync(path.join(root, "server/model-catalog/models-dev.snapshot.json"), path.join(serverOutput, "core/model-catalog/models-dev.snapshot.json"));
 const pi = JSON.parse(readFileSync(path.join(root, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8"));
 writeFileSync(path.join(serverOutput, "package.json"), JSON.stringify({ name: pi.name, version: pi.version, type: "module", piConfig: pi.piConfig }));
 // PDF.js keeps its fake-worker module adjacent and loads the canvas shim using

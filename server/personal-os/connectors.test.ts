@@ -26,10 +26,10 @@ async function fixture() {
     const body = await response.json() as { connectors: Array<ConnectorView & Record<string, unknown>> }; return { status: response.status, body };
   }
   async function current() { return (await api("state")).body.connectors[0]; }
-  async function setup(transport = "http", secret = "synthetic-mcp-secret") {
+  async function setup(transport = "http", secret = "synthetic-mcp-secret", tools = ["echo"]) {
     expect((await api("connectors/save", { name: "测试工具", url: mcp.origin + (transport === "sse" ? "/sse" : "/mcp"), transport, token: secret })).status).toBe(200);
     expect((await api("connectors/test", await current())).status).toBe(200);
-    expect((await api("connectors/grant", { ...await current(), botId: bots[0].id, tools: ["echo"] })).status).toBe(200);
+    expect((await api("connectors/grant", { ...await current(), botId: bots[0].id, tools })).status).toBe(200);
     return current();
   }
   return { app, root, key, token, mcp, model, bots, api, current, setup, restart };
@@ -52,6 +52,26 @@ describe("generic MCP connectors in disposable Core", () => {
     const tools = String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.tools'")?.result_json);
     expect(tools).toContain("echo"); expect(tools).not.toContain("private_tool");
     expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.call'")?.result_json)).toContain("MCP 回显：合成测试");
+  }, 60_000);
+  it.each(["http", "sse"])("runs %s read-only queries automatically but holds external sending", async (transport) => {
+    const f = await fixture(), connector = await f.setup(transport, "synthetic-mcp-secret", ["read_query", "echo", "send_message"]);
+    expect(connector.tools.find((tool) => tool.name === "read_query")?.annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
+    for (const [tool, risk] of [["read_query", undefined], ["echo", "standard"]]) {
+      f.model.scripts.push({ kind: "openai-tool", calls: [{ id: tool!, name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool, risk, parameters: { text: "只读合成数据" } }) }] }, { kind: "openai-text", text: "查询完成" });
+      const task = f.app.agents.send(String(f.bots[0].id), "读取合成数据", "read-" + tool).taskId;
+      await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
+      await until(() => !f.app.runtime.workers.size);
+      expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
+    }
+    expect(f.mcp.calls).toHaveLength(2);
+    f.model.scripts.push({ kind: "openai-tool", calls: [{ id: "send", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "send_message", risk: "standard", parameters: { text: "合成发送" } }) }] }, { kind: "openai-text", text: "已发送" });
+    const task = f.app.agents.send(String(f.bots[0].id), "发送合成数据", "send-fixture").taskId;
+    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
+    expect(f.mcp.calls).toHaveLength(2);
+    const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
+    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
+    expect(f.mcp.calls).toHaveLength(3);
   }, 60_000);
   it("rejects ungranted agents/tools and stale versions before dispatch, and clears grants on target change", async () => {
     const f = await fixture(), connector = await f.setup();
