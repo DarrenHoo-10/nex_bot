@@ -138,7 +138,9 @@ final class SearchTests: XCTestCase {
 
         store.openSearchResult(ConversationMatch(id: "m100", botID: "b1", botName: "Bot b1", snippet: ""))
         await store.refresh()
-        store.select("b1")  // the open contact again
+        store.select("b1")  // the open contact again keeps the view
+        XCTAssertEqual(conv.focusedMessageID, "m100")
+        store.showLatest(botID: "b1")
         XCTAssertNil(conv.focusedMessageID)
         await store.refresh()
         XCTAssertEqual(conv.messages.first?.seq, 101)

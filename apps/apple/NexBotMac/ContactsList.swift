@@ -95,7 +95,7 @@ struct ContactsList: View {
             Text(title).font(.system(size: 11)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
             ForEach(bots) { bot in
-                Button { workspace.select(bot.id) } label: {
+                Button { workspace.showLatest(botID: bot.id); workspace.select(bot.id) } label: {
                     ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
                                phrase: ToolLabels.taskPhrase(workspace.state?.unfinishedTask(botID: bot.id)),
                                selected: workspace.selectedBotID == bot.id)

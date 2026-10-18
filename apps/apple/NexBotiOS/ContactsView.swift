@@ -10,8 +10,9 @@ struct ContactsView: View {
     @State private var showCreate = false
     @State private var errorText: String?
 
-    private var groups: (pinned: [Bot], rest: [Bot]) { preferences.groups(of: workspace.bots, query: query) }
-    private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var groups: (pinned: [Bot], rest: [Bot]) { preferences.groups(of: workspace.bots) }
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var searching: Bool { !trimmedQuery.isEmpty }
 
     var body: some View {
         NavigationStack(path: $nav.path) {
@@ -76,13 +77,20 @@ struct ContactsView: View {
                 Text("\(workspace.bots.count)").font(.footnote).foregroundStyle(Theme.muted)
             }
             .listRowInsets(EdgeInsets(top: 0, leading: 22, bottom: 4, trailing: 22)).plainRow()
-            if groups.pinned.isEmpty && groups.rest.isEmpty {
-                Text(searching ? "没有找到联系人" : "你的 Agent 会出现在这里")
-                    .font(.footnote).foregroundStyle(Theme.muted)
-                    .frame(maxWidth: .infinity).padding(.vertical, 28).plainRow()
+            if searching {
+                ConversationSearchRows(workspace: workspace, query: trimmedQuery) { match in
+                    workspace.openSearchResult(match)
+                    nav.openChat(match.botID)
+                }
+                .id(SearchIdentity(query: trimmedQuery, sync: workspace.sync))
+            } else {
+                if groups.pinned.isEmpty && groups.rest.isEmpty {
+                    Text("你的 Agent 会出现在这里").font(.footnote).foregroundStyle(Theme.muted)
+                        .frame(maxWidth: .infinity).padding(.vertical, 28).plainRow()
+                }
+                if !groups.pinned.isEmpty { section("置顶", groups.pinned) }
+                if !groups.rest.isEmpty { section("我的 Agent", groups.rest) }
             }
-            if !groups.pinned.isEmpty { section("置顶", groups.pinned) }
-            if !groups.rest.isEmpty { section("我的 Agent", groups.rest) }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -152,9 +160,10 @@ struct ContactsView: View {
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
-            TextField("搜索联系人", text: $query)
+            TextField("搜索会话记录", text: $query)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .accessibilityLabel("搜索 Agent")
+                .accessibilityLabel("搜索会话记录")
+                .onChange(of: query) { if query.count > ConversationSearch.maxLength { query = String(query.prefix(ConversationSearch.maxLength)) } }
             if !query.isEmpty {
                 Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted) }
                     .buttonStyle(.plain).accessibilityLabel("清空搜索")
@@ -181,7 +190,16 @@ struct ContactsView: View {
     }
 }
 
-private extension View {
+/// A new search starts when the text changes or the account's history generation does (Core restarted, privacy reset).
+private struct SearchIdentity: Hashable {
+    let query: String
+    let coreID: String?, bootID: String?, privacyEpoch: Int?
+    init(query: String, sync: SyncIdentity?) {
+        self.query = query; coreID = sync?.coreId; bootID = sync?.bootId; privacyEpoch = sync?.privacyEpoch
+    }
+}
+
+extension View {
     /// A list row without separator, background or default chrome.
     func plainRow() -> some View { listRowSeparator(.hidden).listRowBackground(Color.clear) }
 }

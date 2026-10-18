@@ -85,10 +85,10 @@ public final class WorkspaceStore {
 
     /// Chooses the open conversation and loads it.
     public func select(_ botID: String?) {
-        // Choosing a contact always leaves a search-result view, also on the conversation that is open.
-        var left = false
-        for (id, c) in conversations where c.focusedMessageID != nil { left = leaveHistory(id, reload: false) || left }
-        guard botID != selectedBotID || left else { return }
+        // Choosing another contact (or none) leaves a search-result view; the open conversation keeps it. Use ``showLatest(botID:)``
+        // to leave it deliberately.
+        for (id, c) in conversations where id != botID && c.focusedMessageID != nil { leaveHistory(id, reload: false) }
+        guard botID != selectedBotID else { return }
         selectedBotID = botID
         if started { scheduleRefresh(after: 0) }
     }

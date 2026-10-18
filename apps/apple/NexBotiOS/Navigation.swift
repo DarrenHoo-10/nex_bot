@@ -4,7 +4,7 @@ import NexClientKit
 
 /// Categories of the Settings screen (chips at the top).
 enum SettingsCategory: String, CaseIterable {
-    case account = "账号与登录设备", model = "模型", memory = "记忆服务", connectors = "连接器", devices = "设备"
+    case account = "账号与登录设备", model = "模型", memory = "长期记忆", connectors = "连接器", devices = "设备"
     var icon: String {
         switch self { case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .connectors: "powerplug"; case .devices: "cpu" }
     }

@@ -1,123 +1,94 @@
 import SwiftUI
-import Observation
 import NexClientKit
 
-/// Unsaved 记忆服务 form. Held by SettingsView so switching categories keeps the edits.
-@MainActor @Observable
-final class MemoryForm {
-    var enabled: Bool { didSet { feedback = nil; error = nil } }
-    var endpoint: String { didSet { feedback = nil; error = nil } }
-    var token = "" { didSet { feedback = nil; error = nil } }
-    var busy = false
-    var feedback: String?
-    var error: String?
-
-    init(plugin: MemoryPluginState?) {
-        enabled = plugin?.enabled ?? false
-        endpoint = plugin?.endpoint ?? ""
-    }
-}
-
-/// Settings 记忆服务 category content (embedded in SettingsView's scroll view).
+/// Settings 长期记忆 category (web `MemoryDashboard.tsx`): one account-wide switch, one memory model (empty follows the
+/// account default model) and lifetime memory token usage. External Hindsight settings and per-assistant statistics are hidden.
 struct SettingsMemoryView: View {
     let workspace: WorkspaceStore
-    @Bindable var form: MemoryForm
 
-    private var plugin: MemoryPluginState? { workspace.state?.memoryPlugin }
-    private var endpointText: String { form.endpoint.trimmingCharacters(in: .whitespaces) }
-    /// The saved token can be reused only while the endpoint (without a trailing /) is unchanged.
-    private var tokenReusable: Bool {
-        guard let plugin, plugin.hasToken else { return false }
-        var current = endpointText
-        while current.hasSuffix("/") { current.removeLast() }
-        return current == plugin.endpoint
-    }
-    private var canSave: Bool { !form.busy && (!form.enabled || (!endpointText.isEmpty && (!form.token.isEmpty || tokenReusable))) }
+    @State private var summary: MemorySummary?
+    @State private var busy = false
+    @State private var error = ""
+    @State private var pickerOpen = false
+    /// Bumped on every connection change so a late answer from before is dropped.
+    @State private var generation = 0
+    @State private var saving = false
+
+    private var config: ModelConfig? { workspace.state?.config }
+    private var defaultModel: String { (config?.defaultModel).flatMap { $0.isEmpty ? nil : $0 } ?? "未配置" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "记忆服务")
-            if let plugin { content(plugin) }
-            else { Text("当前后端未提供记忆服务配置。").font(.footnote).foregroundStyle(Theme.muted) }
+            PageHeading(title: "长期记忆")
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(isOn: Binding(get: { summary?.enabled ?? false }, set: { save(enabled: $0) })) {
+                        Text("开启长期记忆").font(.subheadline.weight(.semibold))
+                    }
+                    .disabled(summary == nil || busy)
+                    Text("开启后会增加 Token 消耗。").font(.footnote).foregroundStyle(Theme.muted)
+                }
+                ModelPickerField(label: "选择记忆模型", title: "记忆模型", value: summary?.model ?? "", emptyLabel: "默认模型 · \(defaultModel)",
+                                 models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(),
+                                 disabled: summary == nil || busy, isOpen: $pickerOpen, onChange: { save(model: $0) })
+            }
+            .padding(14).cardStyle()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("总 Token").font(.caption).foregroundStyle(Theme.muted)
+                Text(summary?.totalLabel ?? "—").font(.title2.weight(.semibold)).monospacedDigit()
+            }
+            .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
+            if !error.isEmpty { InlineBanner(text: error) }
+        }
+        .task(id: "\(workspace.state?.sync.privacyEpoch ?? 0)|\(config?.providerID ?? "")|\(config?.endpoint ?? "")") {
+            generation += 1
+            summary = nil; error = ""
+            let mine = generation
+            while !Task.isCancelled, generation == mine {
+                await poll(mine)
+                try? await Task.sleep(for: .seconds(5))
+            }
         }
         .onDebugUI { cmd, arg in
             switch cmd {
-            case "p-enable": form.enabled = arg != "off"
-            case "p-endpoint": form.endpoint = arg
-            case "p-token": form.token = arg
-            case "p-test": Task { await test() }
-            case "p-save": Task { await save() }
+            case "mm-on": save(enabled: true)
+            case "mm-off": save(enabled: false)
+            case "mm-toggle": save(enabled: !(summary?.enabled ?? false))
+            case "mm-open": pickerOpen = true
+            case "mm-close": pickerOpen = false
+            case "mm-pick": save(model: arg == "-" ? "" : arg)
+            case "mm-state": mbLogUI("memory enabled=\(summary?.enabled.description ?? "nil") model=\(summary?.model ?? "nil") version=\(summary?.version ?? -1) total=\(summary?.totalLabel ?? "nil") error=\(error)")
             default: break
             }
         }
     }
 
-    private func content(_ plugin: MemoryPluginState) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Hindsight").font(.subheadline.weight(.semibold))
-                Spacer()
-                StatusChip(text: plugin.statusLabel, tone: plugin.status == "ready" ? .good : plugin.status == "unavailable" ? .bad : .neutral)
-            }
-            if plugin.status == "unavailable" {
-                InlineBanner(text: "暂时无法连接记忆服务。聊天仍可使用，请检查服务地址或查看诊断详情。", tone: .warn)
-            }
-            VStack(alignment: .leading, spacing: 16) {
-                Toggle(isOn: $form.enabled) {
-                    Text("启用长期记忆").font(.subheadline.weight(.semibold))
-                }
-                FormField(title: "服务地址") {
-                    TextField("https://memory.example.com", text: $form.endpoint)
-                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                }
-                FormField(title: "访问令牌") {
-                    SecureField(plugin.hasToken ? "地址不变时，留空保留已有令牌" : "输入服务访问令牌", text: $form.token).textInputAutocapitalization(.never).autocorrectionDisabled()
-                }
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 0) {
-                        FactRow(title: "服务协议", value: plugin.protocolName.isEmpty ? "—" : plugin.protocolName)
-                        Divider().overlay(Theme.border)
-                        FactRow(title: "连接状态", value: plugin.statusLabel)
-                        if let error = plugin.error {
-                            Divider().overlay(Theme.border)
-                            FactRow(title: "错误详情", value: error)
-                        }
-                        Text("模型与认证在外部 Hindsight 服务配置；修改本页配置后需重启后端服务。").font(.caption).foregroundStyle(Theme.muted).padding(.top, 8)
-                    }
-                    .padding(.top, 4)
-                } label: { Text("诊断详情").font(.subheadline.weight(.semibold)) }
-                if let error = form.error { InlineBanner(text: error) }
-                if let feedback = feedback(plugin) { InlineBanner(text: feedback, tone: .good) }
-                HStack(spacing: 10) {
-                    PrimaryButton(title: form.busy ? "处理中…" : "保存插件配置", busy: form.busy, brand: true) { Task { await save() } }.disabled(!canSave)
-                    Button("测试连接") { Task { await test() } }.buttonStyle(PillButtonStyle()).disabled(endpointText.isEmpty || form.busy)
-                }
-            }
-            .padding(14).cardStyle()
+    private func poll(_ mine: Int) async {
+        guard !saving else { return }
+        do {
+            let value = try await workspace.memorySummary()
+            guard generation == mine, !saving else { return }
+            if summary == nil || value.version >= (summary?.version ?? 0) { summary = value }
+            error = ""
+        } catch {
+            if generation == mine { self.error = coreMessage(error) }
         }
     }
 
-    private func feedback(_ plugin: MemoryPluginState) -> String? {
-        form.feedback ?? (plugin.restartRequired ? "配置已变更，重启后端服务后生效。" : nil)
-    }
-
-    private func save() async {
-        guard canSave else { return }
-        form.busy = true; form.error = nil
-        defer { form.busy = false }
-        do {
-            _ = try await workspace.saveMemoryPlugin(enabled: form.enabled, endpoint: endpointText, token: form.token)
-            form.token = ""; form.feedback = "配置已加密保存，重启后端服务后生效。"
-        } catch { form.error = coreMessage(error) }
-    }
-
-    private func test() async {
-        guard !endpointText.isEmpty else { return }
-        form.busy = true; form.error = nil
-        defer { form.busy = false }
-        do {
-            _ = try await workspace.testMemoryPlugin(endpoint: endpointText, token: form.token)
-            form.feedback = "连接测试通过，尚未更改配置。"
-        } catch { form.error = coreMessage(error) }
+    private func save(enabled: Bool? = nil, model: String? = nil) {
+        guard let current = summary, !saving else { return }
+        let mine = generation
+        saving = true; busy = true; error = ""
+        Task {
+            defer { saving = false; busy = false }
+            do {
+                let value = try await workspace.saveMemorySettings(enabled: enabled ?? current.enabled, model: model ?? current.model, version: current.version)
+                if generation == mine { summary = value }
+            } catch {
+                guard generation == mine else { return }
+                self.error = coreMessage(error)
+                if let value = try? await workspace.memorySummary(), generation == mine { summary = value }
+            }
+        }
     }
 }

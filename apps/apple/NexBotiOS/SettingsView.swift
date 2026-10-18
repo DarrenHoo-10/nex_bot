@@ -13,12 +13,10 @@ struct SettingsView: View {
     @State private var sessionsLoaded = false
     @State private var sessionsFailed = false
     @State private var modelForm: ModelForm
-    @State private var memoryForm: MemoryForm
 
     init(model: AppModel, workspace: WorkspaceStore) {
         self.model = model; self.workspace = workspace
         _modelForm = State(initialValue: ModelForm(config: workspace.state?.config))
-        _memoryForm = State(initialValue: MemoryForm(plugin: workspace.state?.memoryPlugin))
     }
 
     var body: some View {
@@ -30,7 +28,7 @@ struct SettingsView: View {
                 switch category {
                 case .account: account
                 case .model: SettingsModelView(workspace: workspace, form: modelForm)
-                case .memory: SettingsMemoryView(workspace: workspace, form: memoryForm)
+                case .memory: SettingsMemoryView(workspace: workspace)
                 case .connectors: ConnectorsView(workspace: workspace)
                 case .devices: DevicesView(workspace: workspace)
                 }

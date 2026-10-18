@@ -25,7 +25,7 @@ struct AgentSettingsTab: View {
             group("能力") {
                 row("驱动模型") {
                     Button { nav.openSettings(.model) } label: {
-                        Text(state?.config?.defaultModel.isEmpty == false ? state!.config!.defaultModel : "未连接模型")
+                        Text(bot?.selectedModel ?? (state?.config?.defaultModel.isEmpty == false ? state!.config!.defaultModel : "未连接模型"))
                             .font(.caption.weight(.medium)).lineLimit(1)
                             .padding(.horizontal, 10).padding(.vertical, 4)
                             .background(Theme.secondary, in: Capsule())
