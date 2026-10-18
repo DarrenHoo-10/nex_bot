@@ -5,6 +5,7 @@ export interface ModelPermit { invokeId: string; systemPrompt: string }
 export interface WorkerConfig {
   taskId: string; conversationId: string; runtimeId: string; generation: number; dir: string;
   provider: string; endpoint: string; model: string; apiKey: string; systemPrompt: string;
+  contextWindow: number; maxOutputTokens: number;
   entries?: FileEntry[]; inputs: RuntimeInput[];
 }
 export interface WorkerEvent {

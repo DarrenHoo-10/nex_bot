@@ -828,6 +828,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   }, 60_000);
   it("compacts long conversation context through the SDK and retains durable inputs", async () => {
     const f = await fixture();
+    f.app.store.saveConfig({ ...f.app.store.modelConfig(), contextWindow: 32000, maxOutputTokens: 8192 });
     f.fake.scripts.push(...Array.from({ length: 24 }, () => ({ kind: "openai-text" as const, text: "保留用户目标与已完成步骤的摘要和回复" })));
     for (let turn = 0; turn < 6; turn++) {
       const task = f.app.runtime.input(f.conversation, String(turn) + "x".repeat(31_000), id());

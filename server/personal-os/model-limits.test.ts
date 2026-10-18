@@ -1,0 +1,106 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomBytes } from "node:crypto";
+import { createPersonalApp } from "./index.ts";
+import { CoreStore } from "./store.ts";
+import { matchModelLimits, modelInputBudget, parseModelLimit } from "./model-limits.ts";
+import { trimModelsDevCatalog } from "../model-catalog/trim.ts";
+import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
+
+const catalog = (endpoint = "https://models.example/v1") => ({ fixture: { id: "fixture", name: "Fixture", env: [], api: endpoint, models: {
+  "fixture-model": { id: "fixture-model", name: "Fixture model", tool_call: true, modalities: { input: ["text"] }, limit: { context: 120_000, output: 24_000 } },
+  "fixture-other": { id: "fixture-other", name: "Other", tool_call: true, modalities: { input: ["text"] }, limit: { context: 80_000, output: 10_000 } },
+  "fixture-full-output": { id: "fixture-full-output", name: "Full output", tool_call: true, modalities: { input: ["text"] }, limit: { context: 500_000, output: 500_000 } },
+} } });
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const directory = () => { const root = mkdtempSync(path.join(os.tmpdir(), "nex-model-limits-")); roots.push(root); return root; };
+const config = { provider: "openai", endpoint: "https://models.example/v1", model: "fixture-model", apiKey: "synthetic-secret" };
+
+it("retains per-model overrides across model, endpoint, protocol switches and restarts", () => {
+  const root = directory(), key = randomBytes(32);
+  let store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
+  try {
+    store.saveConfig({ ...config, contextWindow: "160000", maxOutputTokens: "12000" });
+    store.saveConfig({ ...config, model: "fixture-other", contextWindow: 32000, maxOutputTokens: 2048 });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 32000, maxOutputTokens: 2048 });
+    store.saveConfig({ ...config, endpoint: "https://another.example/v1" });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 64000, maxOutputTokens: 8192 });
+    store.saveConfig({ ...config, provider: "anthropic" });
+    expect(store.modelConfig().contextWindow).toBe(64000);
+    store.db.close(); store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
+    store.saveConfig(config);
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 160000, maxOutputTokens: 12000 });
+    const before = store.modelConfig();
+    for (const contextWindow of [-1, 0, 123.5, "1e5", true, 10_000_001]) expect(() => store.saveConfig({ ...config, contextWindow })).toThrow();
+    expect(() => store.saveConfig({ ...config, contextWindow: 1024, maxOutputTokens: 1025 })).toThrow("不能大于");
+    expect(store.modelConfig()).toEqual(before);
+    store.saveConfig({ ...config, contextWindow: "", maxOutputTokens: "" });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 64000, maxOutputTokens: 8192 });
+  } finally { store.db.close(); }
+});
+
+it("matches exact models, refuses conflicts and does not strip arbitrary suffixes", () => {
+  const data = catalog();
+  const providers = trimModelsDevCatalog({ ...data, other: { ...data.fixture, id: "other", api: "https://other.example/v1", models: { "fixture-model": { ...data.fixture.models["fixture-model"], limit: { context: 64000, output: 8192 } } } } });
+  expect(matchModelLimits(providers, "fixture-model", config.endpoint).model?.limit).toEqual({ context: 120000, output: 24000 });
+  expect(matchModelLimits(providers, "fixture-model", "https://proxy.example").ambiguous).toBe(true);
+  expect(matchModelLimits(providers, "fixture/fixture-model", "https://proxy.example").model?.limit?.context).toBe(120000);
+  expect(matchModelLimits(providers, "fixture-model-thinking", config.endpoint)).toEqual({});
+  expect(parseModelLimit("8192", "maxOutputTokens")).toBe(8192);
+  expect(modelInputBudget(128000, 64000)).toBe(102400);
+  expect(modelInputBudget(500000, 500000)).toBe(400000);
+  expect(modelInputBudget(1000000, 8192)).toBe(800000);
+});
+
+it("fetches only the public directory, caches output limits and preserves manual fields on refresh", async () => {
+  const root = directory(), key = randomBytes(32), token = "synthetic-token";
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json(catalog()));
+  const options = { dir: root, key, token, identity: false as const, hostDevice: false as const, memoryRuntime: false as const, modelCatalog: { fetch: fetcher, readSnapshot: () => undefined, log: () => {} } };
+  const app = await createPersonalApp(options);
+  const request = (route: string, data: unknown, authenticated = true) => fetch(app.origin + "/api/" + route, { method: "POST", headers: { "Content-Type": "application/json", ...(authenticated ? { Authorization: "Bearer " + token } : {}) }, body: JSON.stringify(data) });
+  try {
+    app.store.saveConfig({ ...config, contextWindow: 200000 });
+    expect((await request("models/limits/refresh", config, false)).status).toBe(401);
+    expect(fetcher).not.toHaveBeenCalled();
+    const response = await request("models/limits/refresh", config);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ contextWindow: 200000, maxOutputTokens: 24000, source: { contextWindow: "manual", maxOutputTokens: "models.dev" } });
+    expect(fetcher.mock.calls[0][0]).toBe("https://models.dev/api.json");
+    expect(JSON.stringify(fetcher.mock.calls)).not.toContain("synthetic-secret");
+    await request("models/limits/refresh", config);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(app.store.modelConfig()).toMatchObject({ contextWindow: 200000, maxOutputTokens: 24000 });
+    expect(app.store.modelLimitSettings({ ...config, model: "fixture-full-output" })).toMatchObject({ contextWindow: 500000, maxOutputTokens: 500000, source: { maxOutputTokens: "models.dev" } });
+    expect(JSON.stringify(app.store.config())).not.toContain("synthetic-secret");
+  } finally { await app.close(); }
+  const store = new CoreStore(root, key, token, { fetchDisabled: true, readSnapshot: () => undefined });
+  try { expect(store.modelConfig()).toMatchObject({ contextWindow: 200000, maxOutputTokens: 24000 }); } finally { store.db.close(); }
+});
+
+it("offline lookup reports failure and retains usable defaults", async () => {
+  const app = await createPersonalApp({ dir: directory(), key: randomBytes(32), token: "offline", identity: false, hostDevice: false, memoryRuntime: false,
+    modelCatalog: { fetch: async () => { throw new Error("offline"); }, readSnapshot: () => undefined, log: () => {} } });
+  try {
+    const response = await fetch(app.origin + "/api/models/limits/refresh", { method: "POST", headers: { Authorization: "Bearer offline", "Content-Type": "application/json" }, body: JSON.stringify(config) });
+    expect(await response.json()).toMatchObject({ refresh: "failed", status: "unknown", contextWindow: 64000, maxOutputTokens: 8192 });
+  } finally { await app.close(); }
+});
+
+it.each(["openai", "anthropic"])("passes the saved output ceiling to real %s worker requests", async provider => {
+  const fake = await startFakeModel();
+  const app = await createPersonalApp({ dir: directory(), key: randomBytes(32), token: "runtime", identity: false, hostDevice: false, memoryRuntime: false, modelCatalog: { fetchDisabled: true } });
+  try {
+    app.store.saveConfig({ provider, endpoint: fake.origin + "/v1", model: "fixture-model", apiKey: "synthetic-key", contextWindow: 180000, maxOutputTokens: 12345 });
+    const bot = app.store.createBot("Fixture"); app.agents.ensure(bot);
+    fake.scripts.push(provider === "openai" ? { kind: "openai-text", text: "limits applied" } : { kind: "anthropic-text", text: "limits applied" });
+    const sent = app.agents.send(bot, "hello", "limits-input");
+    const deadline = Date.now() + 25000;
+    while (app.store.get("SELECT status FROM tasks WHERE id=?", sent.taskId)?.status !== "succeeded" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
+    expect(app.store.get("SELECT status,result_summary FROM tasks WHERE id=?", sent.taskId)).toMatchObject({ status: "succeeded" });
+    const body = JSON.parse(fake.requests.find(request => request.url.includes(provider === "openai" ? "completions" : "messages"))!.body);
+    expect(body.max_tokens ?? body.max_completion_tokens).toBe(12345);
+  } finally { await app.close(); await fake.close(); }
+}, 30000);

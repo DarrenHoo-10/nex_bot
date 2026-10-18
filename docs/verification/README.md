@@ -58,6 +58,7 @@ Use only mapped, tested commands:
 
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
+- [Per-model context and output limits](model-token-limits.md)
 - [Work summaries and engine hooks](digests.md)
 - [OpenAI-compatible structured tools](openai-tools.md)
 - [Per-bot tool selection and local-model checks](tool-selection.md)

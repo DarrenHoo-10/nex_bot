@@ -19,12 +19,13 @@ import { HindsightClient } from "./hindsight.ts";
 import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
 import { requestBody as body } from "./http-body.ts";
+import { modelLimitScope, type ModelCatalogConfig } from "./model-limits.ts";
 
-export interface AppOptions { accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
+export interface AppOptions { modelCatalog?: ModelCatalogConfig; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
 
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
-  const store = new CoreStore(options.dir, options.key, options.token);
+  const store = new CoreStore(options.dir, options.key, options.token, options.modelCatalog);
   const clients = new ClientIdentity(store, options.publicCoreId), sync = new ClientSync(store);
   const identity = options.identity === false ? undefined : new CoreIdentity(store, clients, options.identity?.fixtureOrigin);
   const authenticate = async (token: string) => {
@@ -301,6 +302,14 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines/run") { routines.runNow(text(data.id, 100), text(data.clientId, 100)); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/models/limits" || url.pathname === "/api/models/limits/refresh") {
+        if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取模型配置的权限" }); return; }
+        const scope = modelLimitScope(data);
+        const refresh = url.pathname.endsWith("/refresh") ? await store.modelLimits.catalog.refresh({ force: data.force === true }) : undefined;
+        if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+        const automatic = store.modelLimits.resolve(scope, { contextWindow: null, maxOutputTokens: null });
+        json(response, 200, { ...store.modelLimitSettings(scope), automatic, refresh }); return;
+      }
       if (url.pathname === "/api/models/list") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取模型列表的权限" }); return; }
         const settings = catalogSettings(data, store.config() ? store.modelConfig() : undefined);

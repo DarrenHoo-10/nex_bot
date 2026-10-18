@@ -123,3 +123,6 @@
 .device-presence i[data-online="true"] { background: #3569e8; }
 @media (max-width: 650px) { .signed-in-device { flex-wrap: wrap; gap: 12px; } .signed-in-device-name { flex-basis: calc(100% - 40px); } .signed-in-device > button { margin-left: auto; } }
 .local-device-unresolved { margin-top: 20px; }
+.model-limits { margin-top: 24px; }
+.model-limits > small { display: block; margin-top: 8px; color: var(--muted-foreground); }
+.model-limits > .model-error { color: var(--destructive); }
