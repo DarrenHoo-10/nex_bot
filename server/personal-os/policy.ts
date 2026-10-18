@@ -54,7 +54,8 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     if (action === "routine.save" && args.routineId !== undefined && !store.get("SELECT id FROM agent_routines WHERE id=? AND bot_id=?", text(args.routineId, 100), botId)) throw new Error("例行任务不属于当前 Agent");
   } else if (action === "memory.write") {
     text(args.title, 200); text(args.content, 20_000);
-    if (args.scope !== undefined && args.scope !== "bot") throw new Error("自动记忆写入仅限自身私有范围；共享内容请由用户在记忆面板明确发布");
+    if (args.scope !== undefined && args.scope !== "bot" && args.scope !== "context") throw new Error("自动记忆写入仅限自身私有范围；共享内容请由用户在记忆面板明确发布");
+    if(args.scope==='context')text(args.content,6000);
   } else if (action === "memory.read") text(args.documentId, 100);
   else if (action === "memory.delete" || action === "memory.forget") {
     const doc = store.get("SELECT * FROM memory_documents WHERE id=? AND status='active' AND scope='bot' AND bot_id=? AND workspace_id=? AND owner_user_id=?", text(args.documentId, 100), botId, store.workspace, store.owner);

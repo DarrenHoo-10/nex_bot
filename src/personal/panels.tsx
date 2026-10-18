@@ -4,6 +4,9 @@ import { Check, Cpu, Eye, EyeOff, KeyRound, Laptop, Plug, Sparkles, UserRound, X
 import { api, desktop, listModels, str, type State, type LocalDeviceState } from "./api";
 import { ConnectorsPage } from "./ConnectorsPage";
 import { ModelLimitsFields } from "./ModelLimitsFields";
+import { ModelPicker } from "./components/ModelPicker";
+import { ModelVisibility } from "./ModelVisibility";
+import { MemoryDashboard } from './MemoryDashboard';
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
   const [pending, setPending] = useState(false);
@@ -18,7 +21,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
   const categories: Array<{ id: SettingsCategory; label: string; icon: typeof UserRound }> = [
     { id: "account", label: "账号与登录设备", icon: UserRound },
     { id: "model", label: "模型", icon: KeyRound },
-    { id: "memory", label: "记忆服务", icon: Sparkles },
+    { id: "memory", label: "长期记忆", icon: Sparkles },
     { id: "connectors", label: "连接器", icon: Plug },
     { id: "devices", label: "设备", icon: Cpu },
   ];
@@ -35,10 +38,12 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
         <section id={`${sectionId}-model`} hidden={category !== "model"} aria-label="模型" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>模型</h2></div>
           <ModelSettings state={state} run={run} active={category === "model"}/>
+          {state.config && <ModelVisibility key={JSON.stringify([state.config.provider_id,state.config.endpoint])} state={state} refresh={refresh} active={category === "model"}/>}
         </section>
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="记忆服务" className="preferences-panel">
-          <div className="preferences-panel-heading"><h2>记忆服务</h2></div>
-          <MemoryPluginSettings state={state} run={run}/>
+          <div className="preferences-panel-heading"><h2>长期记忆</h2></div>
+          <MemoryDashboard state={state} active={category==='memory'}/>
+          <details className="preferences-advanced"><summary>外部记忆服务（兼容）</summary><MemoryPluginSettings state={state} run={run}/></details>
         </section>
         <section id={`${sectionId}-connectors`} hidden={category !== "connectors"} aria-label="连接器" className="preferences-panel">
           <ConnectorsPage state={state} refresh={refresh}/>
@@ -57,20 +62,20 @@ function ModelSettings({ state, run, active }: { state: State; run: (fn: () => P
   const [model, setModel] = useState(str(state.config?.default_model));
   const [models, setModels] = useState<string[]>([]), [loadingModels, setLoadingModels] = useState(false);
   const [modelNotice, setModelNotice] = useState(""), [modelError, setModelError] = useState("");
-  const [manual, setManual] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [catalogRevision, setCatalogRevision] = useState(0);
   const [limitsReady, setLimitsReady] = useState("");
   const limitScope = JSON.stringify([provider, endpoint, model]);
-  const modelId = useId(), keyId = useId(), modelForm = useRef<HTMLFormElement>(null);
+  const keyId = useId(), modelForm = useRef<HTMLFormElement>(null);
   useEffect(() => { if (!active) setShowKey(false); }, [active]);
   const clearEnteredKey = () => { const key = modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement | null; if (key) key.value = ""; setShowKey(false); };
-  const resetModels = () => { setModels([]); setModelNotice(""); setModelError(""); setSaved(false); };
+  const resetModels = () => { setCatalogRevision(value => value + 1); setModels([]); setModelNotice(""); setModelError(""); setSaved(false); };
   const loadModels = async () => {
     const apiKey = (modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement)?.value ?? "";
     setLoadingModels(true); setModelError(""); setModelNotice("");
     try {
       const result = await listModels({ provider, endpoint, apiKey });
-      setModels(result.models); setManual(false);
+      setModels(result.models);
       if (!model && result.models.length) setModel(result.models[0]);
       setModelNotice(result.models.length ? `已获取 ${result.models.length} 个模型${result.hasMore ? "（服务仅返回部分结果，可手动填写其他模型）" : ""}` : "服务未返回可用模型，可手动填写模型 ID");
     } catch (error) { setModelError((error instanceof Error ? error.message : "获取模型列表失败").replace(/^Error invoking remote method '[^']+': Error: /, "")); }
@@ -83,10 +88,10 @@ function ModelSettings({ state, run, active }: { state: State; run: (fn: () => P
           <label className="field">API 协议<select name="provider" value={provider} onChange={(event) => { const next = event.target.value; if (["https://api.openai.com/v1", "https://api.anthropic.com"].includes(endpoint)) setEndpoint(next === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com"); setProvider(next); clearEnteredKey(); resetModels(); }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></label>
         <label className="field">API 基础地址<input name="endpoint" type="url" required value={endpoint} spellCheck={false} onChange={(event) => { setEndpoint(event.target.value); clearEnteredKey(); resetModels(); }}/></label>
         <div className="field"><label htmlFor={keyId}>API Key</label><div className="preferences-secret-input"><input id={keyId} name="apiKey" type={showKey ? "text" : "password"} autoComplete="off" spellCheck={false} required={!state.config} placeholder={state.config ? "留空保留已保存的 Key" : "输入 API Key"} onChange={resetModels}/><button type="button" aria-label={showKey ? "隐藏 API Key" : "显示 API Key"} aria-pressed={showKey} onClick={() => setShowKey(value => !value)}>{showKey ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div></div>
-        <div className="field"><label htmlFor={modelId}>模型</label><div className="preferences-model-controls">
-          {models.length && !manual ? <select id={modelId} name="model" required value={model} onChange={(event) => { setModel(event.target.value); setSaved(false); }}>{model && !models.includes(model) && <option value={model}>{model}（当前配置）</option>}{models.map((id) => <option key={id} value={id}>{id}</option>)}</select> : <input id={modelId} name="model" required value={model} placeholder="选择或填写模型 ID" onChange={(event) => { setModel(event.target.value); setSaved(false); }}/>}
+        <div className="field"><span>默认模型</span><div className="preferences-model-controls">
+          <ModelPicker key={JSON.stringify([provider,endpoint,catalogRevision,models.length])} name="model" label="默认模型" value={model} models={(state.config?.provider_id === provider && state.config?.endpoint === endpoint ? state.modelVisibility?.models : null) ?? (models.length ? models : null)} loadModels={() => listModels({provider,endpoint,apiKey:(modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement)?.value ?? ""})} onChange={value => {setModel(value);setSaved(false);}}/>
           <button type="button" disabled={!endpoint} onClick={() => void loadModels()}>{loadingModels ? "获取中…" : "获取模型列表"}</button>
-        </div>{models.length > 0 && <button className="text-button model-entry-toggle" type="button" onClick={() => setManual(value => !value)}>{manual ? "从列表选择" : "手动填写"}</button>}
+        </div>
         {modelNotice && <small role="status">{modelNotice}</small>}{modelError && <small className="model-error" role="alert">{modelError}</small>}</div>
         <ModelLimitsFields key={limitScope} scopeKey={limitScope} provider={provider} endpoint={endpoint} model={model} active={active} onReady={setLimitsReady} onEdit={() => setSaved(false)}/>
         <div className="preferences-actions"><button className="primary" type="submit" disabled={limitsReady !== limitScope}>{pending ? "保存中…" : "保存配置"}</button>{saved && <span className="preferences-saved" role="status"><Check size={15}/>已保存</span>}</div>

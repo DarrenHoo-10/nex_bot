@@ -24,3 +24,22 @@ test("catalog failures do not expose upstream bodies or credentials", async () =
   await assert.rejects(fetchModelCatalog(saved, async () => new Response("not json")), /格式无效/);
   await assert.rejects(fetchModelCatalog(saved, async () => new Response("x".repeat(2 * 1024 * 1024 + 1))), /过大/);
 });
+
+test("large catalogs are complete and cursor pages stay on the original endpoint", async () => {
+  const all = Array.from({ length: 1505 }, (_, i) => ({ id: `model-${String(i).padStart(4, "0")}` }));
+  assert.equal((await fetchModelCatalog(saved, async () => Response.json({ data: all }))).models.length, 1505);
+  const calls = [];
+  const result = await fetchModelCatalog({ ...saved, provider: "anthropic" }, async url => {
+    calls.push(url);
+    const after = new URL(url).searchParams.get("after_id");
+    return Response.json(after ? { data: all.slice(1000), has_more: false } : { data: all.slice(0, 1000), has_more: true, last_id: "model-0999", next: "https://untrusted.example/steal" });
+  });
+  assert.equal(result.models.length, 1505); assert.equal(result.hasMore, false);
+  assert.equal(calls.length, 2); assert.equal(new URL(calls[1]).origin, new URL(saved.endpoint).origin);
+  assert.equal(new URL(calls[1]).searchParams.get("after_id"), "model-0999");
+});
+test("repeated cursors terminate and report partial catalogs", async () => {
+  let calls = 0;
+  const result = await fetchModelCatalog(saved, async () => { calls++; return Response.json({ data: [{ id: " a " }], has_more: true, next_cursor: "same" }); });
+  assert.equal(calls, 2); assert.deepEqual(result, { models: ["a"], hasMore: true });
+});

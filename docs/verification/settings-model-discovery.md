@@ -71,3 +71,49 @@ simulates a 404 model-list route and proves enter, reveal, hide, save, then
 native discovery, plus remasking and endpoint-change clearing. Synthetic-only
 model and mobile reference screenshots were refreshed. Candidate and install
 evidence are in ignored `release/local-key-reveal/`; production was not changed.
+
+
+## Searchable model picker and visible-model preferences — 2026-10-18
+
+The shared picker serves default, per-assistant chat and memory models. It renders
+only the visible rows (44 px each plus overscan), supports search, arrows, Ctrl+Home /
+Ctrl+End, Enter and Escape with focus return, and positions in the browser top layer.
+A mounted picker retains its fetched catalog between openings. Changing connection
+or entered credentials resets that catalog. Manual IDs remain available by typing.
+
+Settings → Model → Visible models stores an optional shortlist by protocol and
+normalized endpoint in migration 15. Null means all models, an empty array means
+no suggestions; the current model and follow-default option remain selectable.
+The choice survives restart and is shared by chat, default and memory selectors.
+Changes require workspace ownership, the current connection and an optimistic
+version. Hiding models never changes a running assistant's model. The editor can
+search the full directory, show only selected entries and add private IDs.
+
+Catalog retrieval no longer cuts results to 1,000. It follows explicit `last_id`
+(`after_id`) or `next_cursor` (`cursor`) pagination on the original URL, never
+provider-supplied URLs. Repeated/missing cursors and bounded pagination report
+`hasMore`; the UI offers manual IDs. Bounds are 100 pages, 30 seconds, 2 MiB per
+page and 8 MiB total; pagination stops after at least 10,000 unique IDs. Providers
+with other pagination conventions may still require manual IDs. Credentials are
+sent only to the validated endpoint; redirects and upstream error bodies stay blocked.
+
+Verification (all synthetic, isolated Core and hidden Electron):
+
+```powershell
+node --test shared/model-catalog.node-test.mjs
+pnpm exec vitest run server/personal-os/model-catalog.test.ts server/personal-os/agent-model.test.ts
+pnpm typecheck
+pnpm build:core
+node --experimental-strip-types scripts/smoke-model-picker.mjs
+node --experimental-strip-types scripts/smoke-model-limits.mjs
+node --experimental-strip-types scripts/smoke-continuous-memory.mjs
+```
+
+Five catalog unit tests and three backend tests pass. Nine picker UI scenarios
+cover 1,505 models over two pages, bounded DOM rows, last-item scroll/search and
+keyboard navigation, reopening without another fetch, shortlist persistence,
+custom IDs, current-model retention, memory/chat sharing, switching and mobile
+bounds. Six model-limit and eight continuous-memory UI scenarios also pass after
+adapting their model input helpers to the real picker. Screenshots and JSON reports
+are under ignored `release/model-picker-verification`. This verifies bounded
+rendering and interaction; it is not a frame-rate benchmark or a live-provider audit.

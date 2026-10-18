@@ -9,6 +9,7 @@ export interface MemoryPluginState {
 export interface ToolStep { id: string; tool_name: string; status: string; summary: string; preview: string; created_at: number }
 export interface PreviewItem { kind: "file" | "tool"; id?: string; path?: string; title: string; status?: string; exists?: boolean; size?: number; updatedAt?: number; createdAt?: number; arguments?: string; content: string }
 export interface State {
+  modelVisibility?: { models: string[] | null; version: number };
   connectors?: ConnectorView[];
   sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string };
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
@@ -43,8 +44,8 @@ type Bridge = {
 };
 export const desktop = (window as unknown as { nex?: Bridge }).nex;
 export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {
-  if (desktop?.listModels && settings.apiKey.trim()) return desktop.listModels(settings);
   const response = await fetch("/api/models/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
+  if (response.status === 404 && desktop?.listModels && settings.apiKey.trim()) return desktop.listModels(settings);
   if (response.status === 404) throw new Error(desktop?.listModels ? "当前版本暂不能用已保存的 Key 查询模型。请在上方重新填写 Key 后获取，无需先保存。" : "当前服务暂不支持获取模型列表，请手动填写模型 ID");
   const result = await response.json();
   if (!response.ok) {

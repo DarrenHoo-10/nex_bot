@@ -252,14 +252,3 @@
 .attachment-draft { display: flex; align-items: center; gap: 8px; max-width: 240px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
 .attachment-draft span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-draft button { padding: 3px; border: 0; background: transparent; }
-
-.composer-model-menu { padding: 8px; overflow-y: auto; }
-.composer-model-search { display: flex; align-items: center; gap: 8px; padding: 4px 8px 10px; border-bottom: 1px solid var(--border); }
-.composer-model-search input { min-width: 0; width: 100%; border: 0; background: transparent; padding: 6px 0; outline: none; }
-.composer-model-menu [role="menu"] > button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; text-align: left; border: 0; padding: 10px; border-radius: 8px; background: transparent; }
-.composer-model-menu [role="menu"] > button:hover, .composer-model-menu [role="menu"] > button:focus-visible { background: var(--bg-hover, #8881); }
-.composer-model-menu button > span { min-width: 0; overflow-wrap: anywhere; }
-.composer-model-menu button small { display: block; opacity: .65; font-size: 12px; margin-top: 3px; }
-.composer-model-menu button svg { flex-shrink: 0; }
-.composer-model-status { padding: 10px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
-.composer-model-status button { display: block; margin-top: 8px; }

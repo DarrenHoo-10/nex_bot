@@ -505,7 +505,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.fake.scripts.push({ kind: "openai-text", text: "基于上次结论安排下一步" });
     const second = f.app.agents.send(botId, "基于上次结论安排下一步", "next-goal").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", second)?.status === "succeeded");
-    expect(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", first)?.conversation_id).not.toBe(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", second)?.conversation_id);
+    expect(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", first)?.conversation_id).toBe(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", second)?.conversation_id);
     expect(f.fake.requests[1].body).toContain("ALPHA_RESULT");
     expect(f.fake.requests[1].body).not.toContain("OTHER_CONTACT_PRIVATE");
     expect(f.app.agents.search(botId, "OTHER_CONTACT_PRIVATE")).toHaveLength(0);
@@ -841,8 +841,8 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
       await wait(() => !f.app.runtime.workers.size);
     }
-    expect(Number(f.app.store.get("SELECT COUNT(*) count FROM model_invocations WHERE purpose='compact'")?.count)).toBeGreaterThan(0);
-    expect(f.app.store.get("SELECT status,usage_known FROM model_invocations WHERE purpose='compact'")).toMatchObject({ status: "succeeded", usage_known: 0 });
+    expect(Number(f.app.store.get("SELECT COUNT(*) count FROM assistant_usage WHERE purpose='compact'")?.count)).toBeGreaterThan(0);
+    expect(f.app.store.get("SELECT status FROM assistant_usage WHERE purpose='compact'")).toMatchObject({ status: "succeeded" });
     expect(f.app.store.all("SELECT * FROM transcript WHERE role='user'")).toHaveLength(6);
   }, 60_000);
   it("supports three-layer prompt cache ordering, routine preemption, steward agent management, tool trajectories, and preview API", async () => {

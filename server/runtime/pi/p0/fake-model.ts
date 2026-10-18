@@ -191,6 +191,7 @@ export function startFakeModel(probeFetch: typeof fetch = fixtureFetch): Promise
       return;
     }
     if (script.kind === "openai-text") {
+      if(JSON.parse(body).stream===false){write(res,200,'application/json',JSON.stringify({choices:[{message:{content:script.text},finish_reason:'stop'}],usage:{prompt_tokens:3,completion_tokens:2}}));return;}
       write(res, 200, "text/event-stream", openaiText(script.text));
       return;
     }

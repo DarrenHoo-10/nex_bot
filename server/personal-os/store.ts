@@ -5,6 +5,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { basicActions } from "./policy.ts";
 import { connectorSchema } from "./connector-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
+import { continuitySchema } from "./continuity-schema.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 export type Row = Record<string, string | number | null>;
@@ -213,6 +214,15 @@ export class CoreStore {
       }
       this.insert("schema_migrations", { version: 13, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=14")) this.transaction(() => {
+      this.db.exec(continuitySchema);
+      this.insert("schema_migrations", { version: 14, checksum: hash(continuitySchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=15")) this.transaction(() => {
+      const schema = `CREATE TABLE model_visibility(provider TEXT NOT NULL,endpoint TEXT NOT NULL,models_json TEXT,version INTEGER NOT NULL,PRIMARY KEY(provider,endpoint)) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 15, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -242,6 +252,23 @@ export class CoreStore {
     const row = this.get("SELECT * FROM model_connections WHERE id='default'");
     if (!row) return;
     return { id: row.id, provider_id: row.provider_id, endpoint: row.endpoint, default_model: row.default_model, configured: row.credential_ref ? 1 : 0 };
+  }
+  modelVisibility() {
+    const config = this.config();
+    const row = config && this.get("SELECT models_json,version FROM model_visibility WHERE provider=? AND endpoint=?", config.provider_id, String(config.endpoint).replace(/\/+$/, ""));
+    return { models: row?.models_json ? JSON.parse(String(row.models_json)) as string[] : null, version: Number(row?.version ?? 0) };
+  }
+  saveModelVisibility(input: Record<string, unknown>) {
+    const scope = modelLimitScope({ ...input, model: "visibility" }), config = this.config();
+    if (!config || config.provider_id !== scope.provider || String(config.endpoint).replace(/\/+$/, "") !== scope.endpoint) throw new Error("模型连接已变化，请重新打开设置");
+    if (input.models !== null && (!Array.isArray(input.models) || input.models.length > 10000 || input.models.some(value => typeof value !== "string" || !value.trim() || value.length > 200))) throw new Error("显示模型列表无效");
+    const models = input.models === null ? null : [...new Set((input.models as string[]).map(value => value.trim()))];
+    this.transaction(() => {
+      const previous = this.modelVisibility();
+      if (input.version !== previous.version) throw new Error("显示模型已被修改，请重新打开设置");
+      this.run("INSERT INTO model_visibility VALUES(?,?,?,?) ON CONFLICT(provider,endpoint) DO UPDATE SET models_json=excluded.models_json,version=excluded.version", scope.provider, scope.endpoint, models === null ? null : JSON.stringify(models), previous.version + 1);
+    });
+    return this.modelVisibility();
   }
   modelLimitSettings(input: Record<string, unknown>) {
     const scope = modelLimitScope(input);
@@ -349,6 +376,7 @@ export class CoreStore {
   state() {
     return {
       config: this.config(),
+      modelVisibility: this.modelVisibility(),
       bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"),
       conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"),
       approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"),

@@ -38,6 +38,7 @@ export class MemoryLedger {
       quarantined: Number(this.store.get("SELECT COUNT(*) n FROM memory_bank_bindings WHERE state='quarantined'")!.n), error: this.lastError };
   }
   capture(bank: Row, kind: string, originalId: string, version: number, content: string, sourceClass: string, root: string, timestamp: number, taskId: Row[string] = null) {
+    if(bank.bot_id && this.store.get('SELECT bot_id FROM assistant_memory_settings WHERE bot_id=?',bank.bot_id))return;
     if (!content.trim() || sensitive.test(content)) return; // Never enqueue obvious credentials.
     if (this.store.get("SELECT content_hash FROM memory_tombstones WHERE content_hash=?", hash(content)) || (taskId && this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", taskId))) return;
     if (this.store.get("SELECT id FROM memory_source_registry WHERE bank_id=? AND source_kind=? AND original_id=? AND source_version=?", bank.id, kind, originalId, version)) return;
@@ -102,6 +103,7 @@ export class MemoryLedger {
       this.store.run("UPDATE memory_bank_retirements SET status=? WHERE provider_bank_id=?", done ? "succeeded" : "running", retirement.provider_bank_id);
     }
     for (const bank of this.store.all("SELECT * FROM memory_bank_bindings WHERE state!='deleted'")) {
+      if(bank.bot_id && this.store.get('SELECT bot_id FROM assistant_memory_settings WHERE bot_id=?',bank.bot_id) && bank.state!=='quarantined')continue;
       if (this.closing) return;
       if (this.authorizeWork && !await this.authorizeWork().catch(() => false)) return;
       if (this.store.all("SELECT plan_json FROM memory_forget_rules WHERE status='pending'").some((rule) => (JSON.parse(String(rule.plan_json)) as { banks: string[] }).banks.includes(String(bank.id)))) continue;

@@ -2,11 +2,14 @@ import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
 import { MemoryLedger } from "./memory-ledger.ts";
 import { policyTools } from "./policy.ts";
 import { MemoryPrivacy, type ForgetPlan } from "./memory-privacy.ts";
+import { AssistantMemory } from './assistant-memory.ts';
 
 export class MemoryModule {
+  readonly personal: AssistantMemory;
   readonly ledger: MemoryLedger;
   readonly privacy: MemoryPrivacy;
   constructor(readonly store: CoreStore, changed: () => void = () => {}, readonly fence: (plan: ForgetPlan) => void = () => {}) {
+    this.personal=new AssistantMemory(store,changed);
     this.privacy = new MemoryPrivacy(store);
     // Replay before capture/backfill or opening history to the renderer.
     const replayed: ForgetPlan[] = [];
@@ -28,6 +31,7 @@ export class MemoryModule {
     return this.store.all("SELECT d.id,d.title,d.scope,d.bot_id,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status='active' AND (d.scope='workspace' OR d.bot_id=?) AND (d.title LIKE ? ESCAPE '\\' OR c.content LIKE ? ESCAPE '\\') ORDER BY d.updated_at DESC LIMIT 10", this.store.workspace, this.store.owner, botId, needle, needle);
   }
   prompt(botId: string) {
+    if(this.personal.settings(botId).version && !this.personal.enabled(botId)) return '长期记忆已关闭；连续对话和原文历史检索仍可使用。';
     const policy = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", botId);
     if (!policy || !policyTools(policy).includes("memory.search")) return "长期记忆检索已禁用";
     // Order the top active memory ledger oldest-first (append-only) so adding
@@ -92,7 +96,8 @@ export class MemoryModule {
     const bot = this.store.get("SELECT bot_id FROM tasks WHERE id=?", taskId)?.bot_id;
     if (!bot) return;
     const notes = new Set([...documents, ...this.list(String(bot)).slice(0, 15).map((doc) => String(doc.id))]);
-    const history = this.store.all("SELECT id,task_id FROM agent_messages WHERE bot_id=? AND (task_id IS NULL OR task_id!=?) ORDER BY seq DESC LIMIT 12", bot, taskId);
+    const history = this.store.all("SELECT id,task_id FROM agent_messages WHERE bot_id=? AND (task_id IS NULL OR task_id!=?) ORDER BY seq DESC", bot, taskId);
+    for(const message of history)this.store.run('INSERT OR IGNORE INTO assistant_memory_uses VALUES(?,?)',taskId,message.id);
     const rawMessages = new Set(history.map((message) => String(message.id)));
     const refs = new Set(references);
     for (const source of this.store.all("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.status='active' AND (b.bot_id=? OR b.scope='workspace')", bot)) if (refs.has(String(source.id)) || (source.source_kind === "document" ? notes.has(String(source.original_id)) : rawMessages.has(String(source.original_id)))) this.store.run("INSERT OR IGNORE INTO memory_task_sources VALUES(?,?)", taskId, source.id);
@@ -101,6 +106,7 @@ export class MemoryModule {
     if (parent) this.store.run("INSERT OR IGNORE INTO memory_task_sources SELECT ?,source_id FROM memory_task_sources WHERE task_id=?", taskId, parent.parent_task_id);
   }
   expand(botId: string, ref: string) {
+    if(ref.startsWith('message:')) return {ref,sourceClass:'original',content:this.personal.source(botId,ref.slice(8)).content};
     const source = this.store.get("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.id=? AND s.status='active' AND (b.bot_id=? OR b.scope='workspace')", ref, botId);
     if (!source) throw new Error("来源已撤回或不可见");
     const payload = this.ledger.source(source); if (!payload) throw new Error("来源已变化");
@@ -116,11 +122,18 @@ export class MemoryModule {
     this.store.run("INSERT OR IGNORE INTO memory_source_edges VALUES(?,?)", copy.id, ref);
     return result;
   }
-  async recall(botId: string, query: string) { return this.ledger.recall(botId, query); }
+  async recall(botId: string, query: string, taskId?: string) {
+    if(this.personal.settings(botId).version){
+      if(!this.personal.enabled(botId))return {status:'disabled',facts:[]};
+      return {status:'available',facts:this.personal.recall(botId,query,Math.min(2000,Math.floor(this.store.modelConfig(botId).contextWindow*.05)),taskId)};
+    }
+    return this.ledger.client ? this.ledger.recall(botId,query) : {status:'disabled',facts:[]};
+  }
   async reflect(botId: string, query: string, taskId?: string) {
     query = text(query, 1000);
     const policy = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", botId);
     if (!policy || !policyTools(policy).includes("memory.search") || (taskId && this.store.get("SELECT bot_id FROM tasks WHERE id=? AND ended_at IS NULL", taskId)?.bot_id !== botId)) throw new Error("该 Agent 无权综合记忆");
+    if(this.personal.settings(botId).version) return this.personal.reflect(botId,query,taskId);
     const client = this.ledger.client; if (!client) throw new Error("语义记忆服务尚未就绪");
     const banks = this.store.all("SELECT * FROM memory_bank_bindings WHERE (bot_id=? OR scope='workspace') AND state='ready'", botId);
     const answers: Array<{ scope: Row[string]; text: string; refs: string[] }> = [];
