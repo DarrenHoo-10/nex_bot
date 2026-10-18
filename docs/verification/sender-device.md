@@ -44,3 +44,16 @@ against the native app.
 Not verified: a real model's choice to call `device.inventory` and use
 `currentClient`, Windows and Android clients, or a deployed Core. The change takes
 effect only after Core is rebuilt and redeployed.
+
+## Published preview
+
+2026-10-18: `nexbot-v0.9.5-preview.1` (Mac app 0.2.0 DMG, Apple Silicon, developer-signed, not notarized;
+SHA-256 `e137d212…f36072`, the downloaded asset matched). Windows 0.9.4 and Android 0.2.4 were not rebuilt.
+
+Production Core (release `sender-device-20261018`): there were no active tasks in any of the four account workspaces.
+The service was stopped briefly, data and configuration were backed up privately, the drop-in was switched and the
+service restarted; the health check passed after 2 s with the same Core identity. All four databases are at schema 18 with
+passing quick checks and unchanged bot/message counts; the backfill linked two already-bound devices to their sessions
+(one in the primary workspace, one in an account workspace) and left the rest unlinked. Public HTML and its two referenced
+assets match the build, health returned 200 and unauthenticated search returned 401. Rollback is switching the drop-in back
+to `homepage-20261018` (the new column is additive), or restoring the private backup.
