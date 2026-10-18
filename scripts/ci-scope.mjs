@@ -20,7 +20,9 @@ export function selectCiScope(files) {
     }
     // These decide whether the Kotlin suite runs or what it compiles, so a
     // change here tests both sides.
-    if (file === "scripts/capture-android-fixtures.mjs" || file.startsWith(".github/workflows/") || file.startsWith("scripts/ci-")) {
+    if (file === "scripts/capture-android-fixtures.mjs" || file === "scripts/build-android-ui.mjs" ||
+      file.startsWith("src/personal/") || file.startsWith("shared/") || file === "electron/client/style.css" ||
+      file === "package.json" || file === "pnpm-lock.yaml" || file.startsWith(".github/workflows/") || file.startsWith("scripts/ci-")) {
       android = true;
       runtime = true;
       continue;

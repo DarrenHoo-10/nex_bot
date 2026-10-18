@@ -7,6 +7,27 @@
 
 ## 页面索引
 
+### Android 0.2.0
+
+本轮最新变更：会话里的「模型」打开模型选择器，不进入模型设置。
+同一组件供 Windows / Android 使用；当前助手独立保存所选模型。
+旧版桌面菜单截图中的「模型设置」属于历史状态，最新行为以
+[模型选择器](android-model-selector.png) 为准。新接口随本轮 Core 代码提供，尚未部署正式版。
+
+以下为 APK 内同一份界面资源的 **412 × 915** 手机布局，使用隔离环境和离屏渲染器截图；
+不是物理手机截图。Android 模拟器的实际接口及交互检查记录见
+[验证文档](../../docs/verification/android-workspace.md)。
+
+| 页面 | 截图 |
+| --- | --- |
+| 联系人与账号菜单 | [联系人](android-contacts.png)、[账号菜单](android-account-menu.png) |
+| 账号、模型 | [账号设置](android-settings-account.png)、[模型设置](android-settings-model.png)、[模型参数](android-model-limits.png) |
+| 记忆、连接器、设备 | [记忆服务](android-settings-memory.png)、[连接器](android-settings-connectors.png)、[设备](android-settings-devices.png) |
+| 聊天与菜单 | [聊天](android-chat.png)、[＋菜单](android-composer-menu.png)、[权限](android-permissions.png) |
+| 助手详情 | [工作](android-assistant-work.png)、[设置](android-assistant-settings.png) |
+
+### Windows / Web
+
 桌面默认尺寸为 **1440 × 960**。截图是当前工作区代码的界面，不代表已发布到正式服务。
 
 | 页面 / 状态 | 截图 | 入口或说明 |
@@ -97,3 +118,5 @@ node scripts/smoke-personal-workspace.mjs
 - 模型参数参考：[桌面](model-limits-desktop.png)、[窄屏](model-limits-mobile.png)。
 - 未识别到模型时，默认上下文 256,000、最大输出 32,000 Token；手动值优先，最大输出不受上下文输入值限制。截图中的手动值仅为测试数据。
 - 当前正式发布版本为 `composer-menus-20261018`；[部署验收记录](../../docs/verification/composer-menus.md)。
+
+- [Android 会话模型选择](android-model-selector.png)：在会话内搜索并选择模型，不跳到模型设置；选择仅作用于当前助手。

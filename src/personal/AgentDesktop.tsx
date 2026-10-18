@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, FileText, Info, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, statuses, str, taskPhrase, toolLabels, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
+import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
@@ -39,7 +39,7 @@ function AgentPolicyEditor({ bot, close, save }: { bot: RecordRow; close: () => 
 
 const filePathPattern = /^(?:[\w.-]+[\\/])*[\w.-]+\.(?:md|txt|json|csv|yaml|yml|ts|tsx|js|jsx|mjs|py|sql|log|html|css|sh|ps1|toml|xml)$/i;
 function RichText({ value, onPreviewFile }: { value: string; onPreviewFile?: (path: string) => void }) {
-  return <div className="markdown"><Markdown remarkPlugins={[remarkGfm]} components={{ img: ({ alt }) => <span>{alt ?? "图片"}</span>, a: ({ href, children }) => <a href={href} className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => { if (href?.startsWith("/api/attachments/")) return; e.preventDefault(); if (href && /^https?:\/\//.test(href)) void desktop?.openExternal(href); }}>{children}</a>, code: ({ className, children }) => { const raw = String(children ?? "").trim(); if (!className && onPreviewFile && filePathPattern.test(raw)) return <button type="button" className="file-chip" onClick={() => onPreviewFile(raw)} title={`在右侧面板预览 ${raw}`}><FileText size={11}/><span>{raw}</span></button>; return <code className={className}>{children}</code>; } }}>{value}</Markdown></div>;
+  return <div className="markdown"><Markdown remarkPlugins={[remarkGfm]} components={{ img: ({ alt }) => <span>{alt ?? "图片"}</span>, a: ({ href, children }) => <a href={href} className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => { if (href?.startsWith("/api/attachments/")) { if (desktop?.downloadAttachment) { e.preventDefault(); void desktop.downloadAttachment(href, e.currentTarget.textContent || "附件").catch(() => window.dispatchEvent(new CustomEvent("nex-download-error"))); } return; } e.preventDefault(); if (href && /^https?:\/\//.test(href)) void desktop?.openExternal(href); }}>{children}</a>, code: ({ className, children }) => { const raw = String(children ?? "").trim(); if (!className && onPreviewFile && filePathPattern.test(raw)) return <button type="button" className="file-chip" onClick={() => onPreviewFile(raw)} title={`在右侧面板预览 ${raw}`}><FileText size={11}/><span>{raw}</span></button>; return <code className={className}>{children}</code>; } }}>{value}</Markdown></div>;
 }
 
 export function AgentDesktop() {
@@ -50,7 +50,7 @@ export function AgentDesktop() {
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
   const [pinned, setPinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(desktop?.platform === "android" && window.innerWidth <= 720);
   type Attachment = { id: string; name: string; size: number };
   const [attachments, setAttachments] = useState<Attachment[]>([]), [uploading, setUploading] = useState(false);
   const attachmentDrafts = useRef(new Map<string, Attachment[]>()), fileInput = useRef<HTMLInputElement>(null);
@@ -83,7 +83,34 @@ export function AgentDesktop() {
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
+  useEffect(() => {
+    if (desktop?.platform !== "android") return;
+    const back = () => {
+      const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
+      if (modal) { modal.dispatchEvent(new Event("cancel", { cancelable: true })); return; }
+      const popover = document.querySelector<HTMLElement>(":popover-open");
+      if (popover) { popover.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return; }
+      const closeModal = document.querySelector<HTMLButtonElement>('.modal-backdrop button[aria-label^="关闭"]:not(:disabled)');
+      if (closeModal) { closeModal.click(); return; }
+      if (dialog) { setDialog(null); return; }
+      if (detail) { setDetail(false); return; }
+      if (page !== "agent") { setPage("agent"); return; }
+      if (!sidebarOpen) { setSidebarOpen(true); return; }
+      void desktop?.minimize?.();
+    };
+    const select = (event: Event) => { setBotId(String((event as CustomEvent).detail)); setPage("agent"); setSidebarOpen(false); };
+    const downloadError = () => setError("附件下载失败，请重试");
+    window.addEventListener("nex-android-back", back);
+    window.addEventListener("nex-android-agent", select);
+    window.addEventListener("nex-download-error", downloadError);
+    return () => {
+      window.removeEventListener("nex-android-back", back);
+      window.removeEventListener("nex-android-agent", select);
+      window.removeEventListener("nex-download-error", downloadError);
+    };
+  }, [dialog, detail, page, sidebarOpen]);
   const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>());
+  useEffect(() => { void desktop?.workspaceReady?.(); }, []);
   const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
   const offline = useCallback(() => { ++serial.current; loaded.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
@@ -197,7 +224,7 @@ export function AgentDesktop() {
   };
   const closeDialog = () => setDialog(null), select = (target: string) => { setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
-  const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) select(result.id); closeDialog(); })}/>);
+  const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) { await reload(); select(result.id); } closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
   const editRoutine = (existing?: RecordRow) => setDialog(<RoutineEditor botId={botId} existing={existing} close={closeDialog} runNow={existing ? () => run(async () => { await api("routines/run", { id: existing.id, clientId: crypto.randomUUID() }); closeDialog(); }) : undefined} save={(data) => run(async () => { await api("routines", data); closeDialog(); })}/>);
   const loadOlder = async () => {
@@ -230,16 +257,18 @@ export function AgentDesktop() {
     const current = await api<State>("state?view=summary");
     if (selected.current !== target || current.sync.coreId !== initial.coreId || current.sync.privacyEpoch !== initial.privacyEpoch) throw new Error("对话已变化，请重新导出");
     const content = rows.map((m) => `### ${senderLabel(m, bot, state.bots)} · ${formatTime(m.created_at)}\n\n${str(m.content)}`).join("\n\n---\n\n");
+    const name = `${str(bot?.name).replace(/[\\/:*?"<>|]/g, "_") || "NexBot"}-对话.md`;
+    if (desktop?.saveFile) { await desktop.saveFile(name, content); return; }
     const url = URL.createObjectURL(new Blob([content], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a");
-    link.href = url; link.download = `${str(bot?.name).replace(/[\\/:*?"<>|]/g, "_") || "NexBot"}-对话.md`;
+    link.href = url; link.download = name;
     document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   };
   const signOut = () => { void logout().catch(() => setError("退出登录未完成，请重试")); };
   const botLook = lookOf(bot, state.bots);
   const enabledTools: string[] = (() => { try { return JSON.parse(str(bot?.policy_json) || "{}").tools ?? []; } catch { return []; } })();
-  const modelLabel = str(state.config?.default_model) || "未连接模型";
+  const modelLabel = str(bot?.selected_model) || str(state.config?.default_model) || "未连接模型";
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   void lookRevision;
 
@@ -331,7 +360,7 @@ export function AgentDesktop() {
           {uploading && <span role="status">正在上传…</span>}
           <form className="composer conversation-input" onSubmit={send}>
             <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onKeyDown={(e) => { if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls key={botId} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} onModel={() => openSettings("model")} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
+            <ComposerControls key={botId} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
               <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>
             </ComposerControls>
           </form>

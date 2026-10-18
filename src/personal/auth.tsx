@@ -1,5 +1,5 @@
 import { BrandMark } from "./components/BrandMark";
-import { LogOut, UserRound } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, desktop } from "./api";
 
@@ -30,7 +30,7 @@ export function AccountControls() {
   const expiresLabel = status?.expiresAt ? new Date(status.expiresAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
   return <section className="preferences-section preferences-account">
     <div className="ds-account-row">
-      <span className="account-avatar" aria-hidden="true"><UserRound size={24} strokeWidth={1.7}/></span>
+      <span className="account-avatar" aria-hidden="true">{Array.from(name.trim())[0] || "?"}</span>
       <div className="ds-account-meta">
         <strong className="ds-account-name">{name}</strong>
       </div>

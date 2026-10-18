@@ -67,6 +67,7 @@ export class CoreStore {
     this.db.exec("CREATE TABLE IF NOT EXISTS model_limit_overrides (provider TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT NOT NULL, context_window INTEGER, max_output_tokens INTEGER, PRIMARY KEY(provider,endpoint,model))");
     const sql = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
     if (!this.get("SELECT name FROM sqlite_master WHERE name='schema_migrations'")) this.db.exec(sql);
+    this.db.exec("CREATE TABLE IF NOT EXISTS agent_model_settings (bot_id TEXT NOT NULL REFERENCES bots(id),provider TEXT NOT NULL,endpoint TEXT NOT NULL,model TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(bot_id,provider,endpoint)) STRICT");
     if (!this.get("SELECT version FROM schema_migrations WHERE version=1")) {
       this.transaction(() => {
         this.db.exec(extension);
@@ -271,11 +272,15 @@ export class CoreStore {
       this.audit("model.configure", "connection", "default", { provider, model });
     });
   }
-  modelConfig() {
+  botModelSelection(botId: string) {
+    const config = this.config();
+    return config ? this.get("SELECT model selected_model,version model_selection_version FROM agent_model_settings WHERE bot_id=? AND provider=? AND endpoint=?", botId, config.provider_id, config.endpoint) : undefined;
+  }
+  modelConfig(botId?: string) {
     const row = this.get("SELECT * FROM model_connections WHERE id='default' AND status='active'");
     const secret = this.get("SELECT ciphertext FROM secrets WHERE id='model-key'");
     if (!row || !secret) throw new Error("请先在设置中配置 API Key 和模型");
-    const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model: row.default_model });
+    const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model: (botId && this.botModelSelection(botId)?.selected_model) || row.default_model });
     const limits = this.modelLimitSettings(scope);
     validateModelLimits(limits);
     return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };

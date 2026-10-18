@@ -230,6 +230,19 @@ class Repository(
 
     // ---- screen actions --------------------------------------------------
 
+    fun workspaceTransport(): com.nexorai.nexbot.core.WorkspaceTransport {
+        val saved = requireNotNull(_state.value.connection)
+        return com.nexorai.nexbot.core.WorkspaceTransport(saved.origin, {
+            val current = _state.value
+            if (current.phase == Phase.Ready && current.connection?.origin == saved.origin &&
+                current.connection.account == saved.account) client?.token else null
+        })
+    }
+
+    fun workspaceEvents(cursor: String?) = requireNotNull(client).events(cursor)
+
+    fun forgetWorkspace() { expire(_state.value.connection, null) }
+
     fun selectBot(botId: String) {
         scope.launch {
             selectedSeq = 0

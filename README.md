@@ -24,7 +24,7 @@
 | Android APK | 随时查看消息、发送任务、上传文件和处理审批 | Android 8.0 及以上，测试版 |
 | 网页版 | 不安装应用，直接开始对话和管理助手 | 浏览器访问即可 |
 
-Android 当前不提供桌面端的完整设置页，也不会控制手机。通过手机或网页向助手安排电脑任务时，目标电脑需要保持 NexBot 登录、在线且未暂停控制。
+Android 0.2.0 与 Windows 共用账号设置、模型、记忆服务、连接器、设备和助手管理界面；手机不会自动成为可控制的电脑。通过手机或网页向助手安排电脑任务时，目标电脑需要保持 NexBot 登录、在线且未暂停控制。
 
 ## 下载与安装
 
@@ -37,6 +37,8 @@ Android 当前不提供桌面端的完整设置页，也不会控制手机。通
 | 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.1-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
 [查看本次发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.1-preview.1)。Windows 包尚无发布者数字签名；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+
+上表公开 APK 仍为 0.1.0。新增完整设置和助手管理的 0.2.0 构建方式见 [Android 安装包说明](android/README.md)，发布后更新下载入口。
 
 ### Windows：运行 EXE
 

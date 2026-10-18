@@ -22,6 +22,11 @@ export interface State {
 }
 export interface LocalDeviceState { available: boolean; name?: string; status?: string; connected?: boolean; authorized?: boolean; paused?: boolean; deviceId?: string; root?: string; exec?: boolean; computer?: boolean; computerSupported?: boolean; unknownCalls?: RecordRow[] }
 type Bridge = {
+  platform?: "android";
+  saveFile?(name: string, content: string): Promise<unknown>;
+  downloadAttachment?(url: string, name: string): Promise<unknown>;
+  minimize?(): Promise<unknown>;
+  workspaceReady?(): Promise<unknown>;
   deviceState?(): Promise<LocalDeviceState>;
   setDevicePaused?(paused: boolean): Promise<LocalDeviceState>;
   reconcileDevice?(id: string, version: number): Promise<LocalDeviceState>;
