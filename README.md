@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | Windows EXE | 日常对话、完整设置，以及让助手操作这台电脑 | x64 桌面客户端，便携版 |
 | Mac 应用 | 原生 macOS 客户端：对话、完整设置，以及让助手读取文件、运行命令 | Apple Silicon，macOS 14 及以上，DMG 测试版 |
-| iPhone 应用 | 原生 iOS 客户端：对话、附件、审批与设置 | iOS 17 及以上，需从源码构建 |
+| iPhone 应用 | 原生 iOS 客户端：对话、附件、审批与设置 | iOS 17 及以上，未签名 IPA，需用 AltStore 重签（每 7 天续签） |
 | Android APK | 随时查看消息、发送任务、上传文件和处理审批 | Android 8.0 及以上，测试版 |
 | 网页版 | 不安装应用，直接开始对话和管理助手 | 浏览器访问即可 |
 
@@ -37,7 +37,8 @@ Android 0.2.3 与 Windows 共用账号设置、模型、记忆服务、连接器
 | Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/NexBot-0.9.4-x64-Client-Portable.exe) | 双击运行，免安装 |
 | Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/nexbot-0.2.4-debug.apk) | 在手机上打开并安装，测试版 |
 | Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/NexBot-0.2.0-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
-| 校验文件 | Mac：[SHA256SUMS-mac.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/SHA256SUMS-mac.txt)；Windows：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/SHA256SUMS.txt)；Android：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
+| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/NexBot-0.2.0-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
+| 校验文件 | Mac：[SHA256SUMS-mac.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/SHA256SUMS-mac.txt)；iPhone：[SHA256SUMS-ios.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/SHA256SUMS-ios.txt)；Windows：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/SHA256SUMS.txt)；Android：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
 [Android 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.4-preview.1)（跨会话历史搜索、旧消息定位与分页）、[Windows 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.4-preview.1)。[Mac 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.5-preview.1)（Mac 与 iPhone 对齐：会话记录搜索、模型选择、长期记忆）。Windows 包尚无发布者数字签名；Mac 应用使用开发者签名但尚未公证；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
 
@@ -75,9 +76,21 @@ Android 当前为测试版，尚未上架应用商店。
 
 **更新方式：** 退出 NexBot，用新版 DMG 里的应用替换「应用程序」中的旧版，再打开。使用同一账号登录后继续查看原有助手和消息。下载后可用 `shasum -a 256` 对照校验文件核对完整性。
 
-### iPhone：从源码构建
+### iPhone：用 AltStore 安装
 
-iPhone 应用暂未提供安装包。安装 Xcode 16.4 及以上和 XcodeGen 后，按 [Apple 客户端说明](apps/apple/README.md) 构建，可在模拟器或已签名的设备上运行，使用 NexorAI 账号登录，默认连接 NexBot 正式服务。Mac 应用也可以按同一说明从源码构建（需先打包本机执行端）。
+IPA 没有苹果签名，不能直接安装，需要用你自己的 Apple ID 签名。免费 Apple ID 即可，但签名 **7 天后过期**，需要续签（见下方）。
+
+1. 在电脑（Mac 或 Windows）上安装 [AltServer](https://altstore.io)，用数据线把 iPhone 连上电脑，按 AltStore 官网步骤把 AltStore 装到 iPhone，使用你的 Apple ID 登录。
+2. iPhone 上打开「设置 → 隐私与安全性 → 开发者模式」并重启（iOS 16 及以上需要）。
+3. 在 iPhone 上下载 `NexBot-<版本>-ios-unsigned.ipa`，用 AltStore 打开：「My Apps」右上角「＋」选择该文件，等待签名安装。
+4. 首次打开如提示未受信任的开发者，到「设置 → 通用 → VPN 与设备管理」信任你的 Apple ID。
+5. 使用 NexorAI 账号登录，默认连接 NexBot 正式服务。
+
+**续签：** 让电脑开着 AltServer 并与手机在同一 Wi-Fi，AltStore 会每 7 天自动后台续签，不需要重新下载 IPA，数据和登录状态保留。也可以打开 AltStore 在「My Apps」里手动点「Refresh」。超过 7 天没续签，应用会打不开，在 AltStore 里续签或重新安装即可。Sideloadly 也可以安装并自动刷新。
+
+**更新方式：** 下载新版 IPA，用 AltStore 或 Sideloadly 覆盖安装。
+
+免费 Apple ID 同时最多签 3 个应用，每周最多新建 10 个应用 ID。目前没有 TestFlight 或应用商店版本；也可以按 [Apple 客户端说明](apps/apple/README.md) 从源码构建。
 
 ## 第一次使用
 
