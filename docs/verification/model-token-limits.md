@@ -49,5 +49,27 @@ actual OpenAI and Anthropic outgoing output caps and compaction with a smaller
 configured context. No live app or account is mutated.
 
 A separate temporary-directory public catalog lookup verified real models.dev
-fetching and exact-model matches. No production service or installed desktop app
-was deployed or replaced by this work.
+fetching and exact-model matches.
+
+## Deployment — 2026-10-18
+
+Feature commit `4b44cc72` is on `main`. The hosted Core and UI now run release
+`model-limits-20261018`, built on the existing production composer baseline.
+The separate, uncommitted composer-menu revision was excluded; the installed
+desktop client was not replaced. Other worktree changes were not committed.
+
+An independent snapshot of the feature commit passed 46 targeted tests and both
+TypeScript checks. The production-baseline UI passed the five model-limit smoke
+cases. A disposable Linux workspace on the deployment host passed 15 cases,
+covering limits, restart persistence, both outgoing protocol caps and existing
+upload/permission/PDF behavior. A separate disposable Linux fixture successfully
+fetched the real public model directory. No production account was used for
+mutating verification.
+
+Before switching services, both production workspaces had no active tasks.
+A private server-side data/config backup and the previous release were retained.
+Read-only post-deployment checks verified database integrity, preserved records,
+vault keys, identities and model/memory settings. The public HTTPS health check
+returned 200, the HTML and three assets matched the release, and unauthenticated
+model-limit/state requests returned 401. The service was active with zero restarts.
+Local deployment evidence is under ignored `release/deployment-model-limits/`.
