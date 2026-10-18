@@ -1,5 +1,18 @@
 # Android
 
+## 0.2.1 — blank screen and collapsed dialogs
+
+The Android WebView resolves every vertical viewport unit (`vh`, `dvh`, `svh`,
+`lvh`) to 0 px, so the workspace, sized with `100dvh`, collapsed: opening an
+assistant showed a blank page, and the account menu and the add-assistant dialog
+shrank to a sliver. `scripts/build-android-ui.mjs` now rewrites those units to a
+`--nex-vh` variable that the Android entry keeps equal to the visual viewport
+height (so it also follows the keyboard). Desktop builds are unchanged.
+
+A render error in the shared UI now shows the message, stack head and component
+path with retry, reload and copy actions instead of a blank page, and failures
+before React mounts are reported the same way.
+
 ## 0.2.0 — shared Windows workspace
 
 After native account sign-in, Android loads the same `src/personal` workspace
@@ -24,7 +37,7 @@ cd android
 ```
 
 Gradle builds the shared renderer automatically. Output:
-`app/build/outputs/apk/debug/nexbot-0.2.0-debug.apk`. This debug-signed APK updates
+`app/build/outputs/apk/debug/nexbot-0.2.1-debug.apk`. This debug-signed APK updates
 the previous debug installation without clearing login data. Release signing
 still requires a maintainer-provided key outside the repository.
 
