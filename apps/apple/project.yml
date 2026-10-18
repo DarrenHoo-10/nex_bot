@@ -54,6 +54,9 @@ targets:
         path: Executor/bundle-executor.sh
         basedOnDependencyAnalysis: false
         showEnvVars: false
+        # Declared so Xcode re-signs the app whenever the script refreshes the bundled executor.
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/Executor/.bundled
   NexBotiOS:
     type: application
     platform: iOS

@@ -9,6 +9,7 @@ DEST="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Resources/Executor"
 rm -rf "$DEST"
 if [ ! -d "$SOURCE" ]; then
   echo "warning: $SOURCE is missing; run 'node scripts/build-mac-executor.mjs'. Building without the device executor."
+  mkdir -p "$DEST" && date +%s > "$DEST/.bundled"
   exit 0
 fi
 mkdir -p "$(dirname "$DEST")"
@@ -24,4 +25,5 @@ find "$DEST" -type f ! -name '*.mjs' ! -name '*.js' ! -name '*.json' ! -name '*.
     *Mach-O*) codesign --force --sign "$IDENTITY" --options runtime $STAMP "$file" ;;
   esac
 done
+date +%s > "$DEST/.bundled"
 echo "Bundled device executor into $DEST"
