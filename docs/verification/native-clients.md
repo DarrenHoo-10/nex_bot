@@ -238,3 +238,22 @@ Mac and iOS were exercised against isolated fixtures (`release/native-mac-compos
 - The real file and save panels, and drag-and-drop. Debug commands drove the same code paths instead.
 - The 联网识别 online lookup, because the fixture is offline.
 - Session refresh at a real 8-hour boundary. Unit tests cover the policy.
+
+## Mac alignment with unified memory and the searchable model picker (2026-10-18)
+
+Kit (`NexClientKit`): `Bot.selectedModel` / `modelSelectionVersion`, `WorkspaceState.modelVisibility`,
+`WorkspaceStore.setAgentModel(botID:model:)` (`""` follows the default), `saveModelVisibility(models:version:)`
+(`nil` = show all, explicit `null` on the wire), `memorySummary()`, `saveMemorySettings(enabled:model:version:)`.
+`/api/models/list` has no client paging (Core follows provider cursors), so `listModels` returns `{models, hasMore}`.
+Existing APIs are unchanged; iOS compiles without edits.
+
+Mac: one shared searchable picker (`ModelPicker.swift`) for the default model, the assistant's chat model (＋ › 模型,
+anchored to ＋) and the memory model; the composer no longer has a permission pill (＋ › 权限 opens the permission menu).
+设置 › 模型 gained 显示的模型; 设置 › 长期记忆 replaces the Hindsight page (one switch, memory model, 总 Token).
+The header and inspector show the assistant's own model.
+
+Verified against `scripts/fixture-native-client.mjs` with the debug build: setting 工作助手 to `fixture-reasoning`
+persists (`selected_model`), 研究伙伴 still follows the default; switching during a running task shows
+"请等待当前任务结束或停止任务后切换模型" inline; saving a shortlist updates `state.modelVisibility` and the picker then lists
+only the shortlist plus the current (hidden) model and the follow-default row; the memory switch and model save
+through `/api/memory/settings`. Screenshots: `release/native-mac-align3/`.

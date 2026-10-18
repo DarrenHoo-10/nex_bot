@@ -78,3 +78,7 @@ open /tmp/nexbot-dd/Build/Products/Debug/NexBot.app --args --profile=fixture-1 -
 
 `scripts/fixture-native-client.mjs` (repo root) starts an isolated Core with a fake identity and model, and prints the
 origin, account and password. Point the app at it with the flags above. Never use the live account or Core for verification.
+
+## Model picker and memory (Mac)
+
+`NexBotMac/ModelPicker.swift` is the shared searchable picker (default model, per-assistant chat model from the composer's ＋ menu, memory model). Settings › 模型 includes 显示的模型; Settings › 长期记忆 is the unified account-wide memory page. DEBUG commands on `$NEXBOT_DEBUG_COMMAND_FILE` (`modelmenu`, `setmodel <id|->`) and `.b` (`mp ...`, `mv ...`, `mm ...`, `md open|scroll`) drive them for screenshots.

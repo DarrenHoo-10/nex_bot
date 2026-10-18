@@ -258,3 +258,40 @@ extension WorkspaceStore {
         }
     }
 }
+
+// MARK: - Per-assistant model, visible models and unified memory
+
+extension WorkspaceStore {
+    /// Sets the model one assistant chats with; `model == ""` follows the default model. Echoes the assistant's
+    /// `modelSelectionVersion` plus provider and endpoint of the current connection. Core refuses while the assistant has an
+    /// unfinished task (请等待当前任务结束或停止任务后切换模型) and when the version or connection is stale.
+    public func setAgentModel(botID: String, model: String) async throws {
+        guard let b = bot(botID) else { throw CoreError(kind: .unsupported, message: "Agent 不存在") }
+        guard let config = state?.config else { throw CoreError(kind: .unsupported, message: "请先配置模型连接") }
+        do { try await client.updateModel(id: botID, model: model, provider: config.providerID, endpoint: config.endpoint, version: b.modelSelectionVersion) }
+        catch { await refresh(); throw report(error) }
+        await refresh()
+    }
+    /// Saves which models the pickers offer for the current connection (`nil` = all); owner only. `version` is the
+    /// ``ModelVisibility/version`` the edit started from (default: the state's current one); a stale one fails with
+    /// "显示模型已被修改，请重新打开设置".
+    @discardableResult
+    public func saveModelVisibility(models: [String]?, version: Int? = nil) async throws -> ModelVisibility {
+        guard let config = state?.config else { throw CoreError(kind: .unsupported, message: "请先配置模型连接") }
+        let current = version ?? state?.modelVisibility.version ?? 0
+        let value: ModelVisibility
+        do { value = try await client.saveModelVisibility(provider: config.providerID, endpoint: config.endpoint, models: models, version: current) }
+        catch { await refresh(); throw report(error) }
+        await refresh()
+        return value
+    }
+    /// The account-wide memory switch, memory model and lifetime memory token usage. Read only (no state refresh).
+    public func memorySummary() async throws -> MemorySummary {
+        do { return try await client.memorySummary() } catch { throw report(error) }
+    }
+    /// Saves the unified memory switch and, when given, the memory model (`""` follows the account default model).
+    /// `version` is the ``MemorySummary/version`` the caller last saw.
+    public func saveMemorySettings(enabled: Bool, model: String? = nil, version: Int) async throws -> MemorySummary {
+        do { return try await client.saveMemorySettings(enabled: enabled, model: model, version: version) } catch { throw report(error) }
+    }
+}

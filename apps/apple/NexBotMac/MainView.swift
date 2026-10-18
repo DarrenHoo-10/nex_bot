@@ -99,7 +99,7 @@ func message(of error: Error) -> String {
 
 #if DEBUG
 /// DEBUG-only automation: when NEXBOT_DEBUG_COMMAND_FILE is set, the file is polled and consumed line by line.
-/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector [work|settings]` (no argument toggles the column), `logout` (opens the confirmation), `attach <path>[|<path>...]`, `unattach`, `addmenu`, `permmenu`, `closemenu`, `mode full|standard`, `export <path>`, `download <id>|<path>`, `state` (results in `$NEXBOT_DEBUG_COMMAND_FILE.b.log`; the model pane takes `md limits|setlimits ctx|out|lookup` on `.b`), `accountmenu`, `settings [account|model|memory|connectors|devices]`, `dark`, `light`, `system`.
+/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector [work|settings]` (no argument toggles the column), `logout` (opens the confirmation), `attach <path>[|<path>...]`, `unattach`, `addmenu`, `permmenu`, `modelmenu`, `closemenu`, `setmodel <id|->`, `mode full|standard`, `export <path>`, `download <id>|<path>`, `state` (results in `$NEXBOT_DEBUG_COMMAND_FILE.b.log`; the model pane takes `md limits|setlimits ctx|out|lookup|open|list`, the model list `mp search <q>|down|up|home|end|return|pick <id>|state`, the visibility editor `mv ...` and the memory pane `mm on|off|toggle|open|pick <id>|state` on `.b`), `accountmenu`, `settings [account|model|memory|connectors|devices]`, `dark`, `light`, `system`.
 @MainActor func runDebugCommands(workspace: WorkspaceStore, ui: UIState) async {
     guard let path = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_COMMAND_FILE"] else { return }
     while !Task.isCancelled {
@@ -131,7 +131,13 @@ func message(of error: Error) -> String {
             case "unattach": if let id = workspace.selectedBotID { let c = workspace.conversation(for: id); c.attachments.last.map(c.removeAttachment) }
             case "addmenu": ui.composerMenu = .add
             case "permmenu": ui.composerMenu = .permissions
+            case "modelmenu": ui.composerMenu = .models
             case "closemenu": ui.composerMenu = nil
+            case "setmodel":
+                // setmodel <model> ("-" follows the default) [for <agent name> via `select` first]: the ＋ menu › 模型 action.
+                guard let id = workspace.selectedBotID else { break }
+                do { try await workspace.setAgentModel(botID: id, model: arg == "-" ? "" : arg); mbLog("setmodel ok \(workspace.bot(id)?.selectedModel ?? "(default)")") }
+                catch { mbLog("setmodel ERR \(message(of: error))") }
             case "mode":
                 guard let id = workspace.selectedBotID, let mode = ApprovalMode(rawValue: arg) else { break }
                 do { try await workspace.setApprovalMode(botID: id, mode: mode); mbLog("mode \(workspace.bot(id)?.approvalMode.rawValue ?? "?")") }
@@ -153,7 +159,7 @@ func message(of error: Error) -> String {
             case "state":
                 guard let id = workspace.selectedBotID else { break }
                 let c = workspace.conversation(for: id)
-                mbLog("state mode=\(workspace.bot(id)?.approvalMode.rawValue ?? "?") approvals=\(workspace.approvals.count) attachments=\(c.attachments.map { "\($0.name):\($0.isUploading ? "up" : $0.errorMessage ?? "ok")" }) err=\(c.sendError ?? "") last=\(c.messages.last?.content ?? "")")
+                mbLog("state mode=\(workspace.bot(id)?.approvalMode.rawValue ?? "?") model=\(workspace.bot(id)?.selectedModel ?? "(default)") visible=\(workspace.state?.modelVisibility.models?.joined(separator: ",") ?? "all") approvals=\(workspace.approvals.count) attachments=\(c.attachments.map { "\($0.name):\($0.isUploading ? "up" : $0.errorMessage ?? "ok")" }) err=\(c.sendError ?? "") last=\(c.messages.last?.content ?? "")")
             case "dark", "light", "system": UserDefaults.standard.set(parts[0], forKey: AppearanceOverride.key)
             default: break
             }

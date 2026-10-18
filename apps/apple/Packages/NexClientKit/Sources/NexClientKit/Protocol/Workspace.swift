@@ -104,13 +104,15 @@ public struct WorkspaceState: Codable, Sendable {
     /// e.g. "Pi 1.0.4".
     public var runtime: String
     public var lanEnabled: Bool
+    /// Models the pickers offer for the current connection (`nil` models = all). Absent on older Cores.
+    public var modelVisibility: ModelVisibility
 
-    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false) {
+    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false, modelVisibility: ModelVisibility = ModelVisibility()) {
         self.sync = sync; self.bots = bots; self.approvals = approvals; self.tasks = tasks; self.conversations = conversations
         self.routines = routines; self.occurrences = occurrences; self.devices = devices; self.delegations = delegations; self.onlineDevices = onlineDevices
         self.connectors = connectors; self.memories = memories; self.journal = journal; self.usage = usage; self.config = config; self.node = node
         self.memoryEngine = memoryEngine; self.memoryPlugin = memoryPlugin; self.directory = directory; self.hostDeviceID = hostDeviceID
-        self.address = address; self.dataDir = dataDir; self.runtime = runtime; self.lanEnabled = lanEnabled
+        self.address = address; self.dataDir = dataDir; self.runtime = runtime; self.lanEnabled = lanEnabled; self.modelVisibility = modelVisibility
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -131,6 +133,7 @@ public struct WorkspaceState: Codable, Sendable {
         hostDeviceID = c.lenient(.init("hostDeviceId"))?.stringValue
         address = c.lenient(.init("address"))?.stringValue ?? ""; dataDir = c.lenient(.init("dataDir"))?.stringValue ?? ""
         runtime = c.lenient(.init("runtime"))?.stringValue ?? ""; lanEnabled = c.lenient(.init("lanEnabled"))?.boolValue ?? false
+        modelVisibility = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("modelVisibility"))) ?? ModelVisibility()
     }
     /// Newest unfinished task of a bot (tasks arrive unfinished-first, newest first).
     public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.isUnfinished } }

@@ -24,7 +24,7 @@ struct InspectorSettingsTab: View {
             group("能力") {
                 VStack(spacing: 12) {
                     row(symbol: "bolt", title: "驱动模型") {
-                        pillButton(workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型") { ui.openSettings(.model) }
+                        pillButton(bot?.selectedModel ?? workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型") { ui.openSettings(.model) }
                     }
                     row(symbol: "shield", title: "工具权限") {
                         pillButton(PolicyCatalog.summary(count: bot?.policyTools.count ?? 0)) { AgentUI.shared.editPolicy(botID) }

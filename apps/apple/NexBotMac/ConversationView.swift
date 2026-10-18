@@ -98,7 +98,7 @@ struct ConversationView: View {
                         Text(bot?.name ?? "NexBot").font(.system(size: 15, weight: .semibold)).lineLimit(1)
                         HStack(spacing: 4) {
                             Image(systemName: "bolt.fill").font(.system(size: 8))
-                            Text(workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型").font(.system(size: 10)).lineLimit(1)
+                            Text(bot?.selectedModel ?? workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型").font(.system(size: 10)).lineLimit(1)
                         }
                         .foregroundStyle(Theme.muted)
                         .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.secondary, in: Capsule())
