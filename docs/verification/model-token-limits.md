@@ -11,12 +11,13 @@ the public models.dev directory when either field is automatic. The directory
 cache lasts 24 hours; **Online lookup** forces a refresh. Fetching uses the existing
 bounded, redirect-refusing catalog client. No model ID, endpoint, credential or
 conversation is transmitted to the public directory. Manual overrides always win.
-Unavailable or ambiguous IDs use explicitly labelled defaults (64,000 context and
-8,192 output); missing output metadata also falls back independently. Conflicting
+Unavailable or ambiguous IDs use explicitly labelled defaults (256,000 context and
+32,000 output); missing output metadata also falls back independently. Conflicting
 third-party entries do not cause a guessed match. The bundled older snapshot can
 contain context without output metadata; a successful refresh retains both.
 
-The selected limits reach the Personal worker's Pi model registration. Output is
+The selected limits reach the Personal worker's Pi model registration. Context and output overrides are independent; output may exceed the configured
+context window and saving retains both values. Output is
 a ceiling; the SDK additionally clamps requests to the remaining window. Catalog
 entries with output equal to context are valid. Before continuing a task, Core's
 worker compares its reported/estimated context to the smaller of 80% of the window
@@ -73,3 +74,16 @@ vault keys, identities and model/memory settings. The public HTTPS health check
 returned 200, the HTML and three assets matched the release, and unauthenticated
 model-limit/state requests returned 401. The service was active with zero restarts.
 Local deployment evidence is under ignored `release/deployment-model-limits/`.
+
+## 2026-10-18 default and independent-output revision
+
+Fallback defaults are now 256,000 context / 32,000 output tokens. Manual output
+is no longer bounded by the configured context window in the form or Core
+validation; each field retains its own integer/range validation. Automatic
+output defaults are likewise independent of manual context. Catalog matches and
+saved overrides still take precedence; existing saved settings are not reset.
+
+Six unit tests and six isolated renderer scenarios passed, including saving
+100,000 context / 128,000 output, restart persistence, and unknown-model default
+placeholders. This revision is deployed in `composer-menus-20261018`; see the
+[combined rollout record](composer-menus.md).

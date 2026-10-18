@@ -70,7 +70,7 @@
 .workspace-account-name strong, .workspace-account-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-account-name strong { font-size: 12px; font-weight: 550; }
 .workspace-account-name small { color: var(--muted-foreground); font-size: 10px; margin-top: 4px; }
-.account-avatar { position: relative; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; display: grid; place-items: center; background: #3569e8; color: #eef4ff; }
+.account-avatar { position: relative; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; display: grid; place-items: center; background: #3569e8; color: #eef4ff; font-size: 17px; font-weight: 600; line-height: 1; }
 .account-avatar i { position: absolute; width: 6px; height: 6px; bottom: 0; right: 0; border-radius: 50%; border: 2px solid var(--sidebar); box-sizing: content-box; }
 .account-avatar .online { background: var(--success); }.account-avatar .offline { background: var(--warning); }
 .rk-workspace .mobile-menu, .rk-workspace .sidebar-dismiss, .sidebar-scrim { display: none; }
@@ -116,11 +116,11 @@
 .rk-workspace .welcome-chips { display: flex; gap: 7px; flex-wrap: wrap; justify-content: center; margin-top: 22px; }
 .rk-workspace .welcome-chips button { background: var(--card); border: 1px solid var(--input); border-radius: 8px; padding: 8px 11px; font-size: 11px; color: var(--muted-foreground); }
 .rk-workspace .composer-area { flex-shrink: 0; padding: 12px 28px 26px; border: 0; background: var(--background); position: relative; }
-.rk-workspace .composer.conversation-input { display: flex; flex-direction: row; align-items: flex-end; gap: 12px; margin: 0; padding: 11px; border: 1px solid var(--border); border-radius: 28px; background: var(--card); box-shadow: none; }
+.rk-workspace .composer.conversation-input { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 24px; background: var(--card); box-shadow: 0 2px 12px #00000003; position: relative; }
 .rk-workspace .composer.conversation-input:focus-within { border-color: var(--muted-foreground); }
-.rk-workspace .composer textarea { border: 0; background: transparent; padding: 7px 0; font-size: 14px; min-height: 36px; max-height: 160px; line-height: 22px; resize: none; outline: none; width: 100%; box-shadow: none; flex: 1; }
+.rk-workspace .composer textarea { border: 0; background: transparent; padding: 7px 8px; font-size: 14px; min-height: 40px; max-height: 160px; line-height: 22px; resize: none; outline: none; width: 100%; box-shadow: none; flex: none; }
 .rk-workspace .composer-add, .rk-workspace .composer .send { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 50%; padding: 0; margin: 0; }
-.rk-workspace .composer-add { border: 1px solid var(--input); background: transparent; color: var(--muted-foreground); }
+.rk-workspace .composer-add { border: 0; background: var(--secondary); color: var(--muted-foreground); }
 .rk-workspace .composer .send { background: var(--primary); color: var(--primary-foreground); border: 0; }
 .composer-menu { position: absolute; left: 28px; bottom: 100%; z-index: 52; min-width: 205px; padding: 6px; background: var(--popover); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 8px 32px #0002; }
 .rk-workspace .composer-menu button { display: flex; align-items: center; gap: 12px; width: 100%; background: transparent; border: 0; border-radius: 8px; padding: 12px; text-align: left; font-size: 13px; }
@@ -223,3 +223,31 @@
 .avatar-choice-check { position: absolute; top: 5px; right: 5px; color: var(--foreground); }
 .avatar-picker-footer { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding-top: 18px; margin-top: 22px; gap: 12px; }.avatar-picker-footer > span { color: var(--muted-foreground); font-size: 12px; }
 @media (max-width: 600px) { .rk-workspace .modal:has(.avatar-picker) { padding: 20px 16px; }.avatar-picker-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }.avatar-option img { width: 52px; height: 52px; }.rk-workspace .avatar-option { padding: 9px 4px; }.rk-workspace .avatar-picker h2 { font-size: 17px; }.avatar-picker-description { margin-bottom: 15px; } }
+
+.composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+.composer-actions { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.composer-permission-control { position: relative; }
+.rk-workspace .permission-trigger { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 0; border-radius: 8px; color: var(--muted-foreground); background: var(--secondary); font-size: 12px; white-space: nowrap; }
+.rk-workspace .permission-trigger:hover, .rk-workspace .composer-add:hover, .rk-workspace .permission-trigger[aria-expanded=true], .rk-workspace .composer-add[aria-expanded=true] { color: var(--foreground); background: var(--accent); }
+.permission-chevron { transition: transform 120ms ease; }
+.permission-trigger[aria-expanded=true] .permission-chevron { transform: rotate(180deg); }
+.composer-popover { position: fixed; inset: auto; margin: 0; z-index: 54; padding: 7px; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 17px; box-shadow: 0 8px 32px #00000013, 0 2px 7px #00000008; max-height: min(360px, calc(100dvh - 220px)); overflow-y: auto; animation: composer-popover-in 120ms ease-out; }
+.permission-popover { width: 216px; }
+.composer-popover::backdrop { background: transparent; pointer-events: none; }
+.rk-workspace .composer-popover button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 43px; padding: 10px 12px; margin: 0; border: 0; border-radius: 10px; background: transparent; color: var(--foreground); font-size: 14px; font-weight: 400; justify-content: flex-start; text-align: left; box-shadow: none; }
+.rk-workspace .composer-popover button:not(:disabled):hover, .rk-workspace .composer-popover button:focus-visible { background: var(--secondary); outline: none; }
+.composer-popover button > svg { flex-shrink: 0; stroke-width: 1.6; }
+.composer-popover .menu-check { margin-left: auto; }
+.composer-menu-heading { padding: 7px 12px 4px; color: var(--muted-foreground); font-size: 11px; }
+.composer-menu-heading:not(:first-child) { margin-top: 6px; }
+.composer-popover small, .composer-popover .menu-value { color: var(--muted-foreground); font-size: 12px; }
+.composer-popover .menu-value { margin-left: auto; text-align: right; }
+@keyframes composer-popover-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .composer-popover { animation: none; }.permission-chevron { transition: none; } }
+@media (max-width: 480px) { .composer-popover button { gap: 8px; padding-inline: 10px; }.composer-popover .menu-value { font-size: 11px; }.permission-popover { width: 205px; max-width: calc(100vw - 100px); } }
+.rk-workspace .markdown a.file-chip { color: var(--foreground); background: var(--card); border-color: var(--input); font-family: inherit; font-size: 13px; padding: 7px 11px; text-decoration: none; overflow-wrap: anywhere; }
+.rk-workspace .markdown a.file-chip:hover { background: var(--secondary); }
+.attachment-drafts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.attachment-draft { display: flex; align-items: center; gap: 8px; max-width: 240px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+.attachment-draft span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-draft button { padding: 3px; border: 0; background: transparent; }

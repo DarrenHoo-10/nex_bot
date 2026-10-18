@@ -19,7 +19,7 @@ export async function startFakeMcp() {
     if (rpc.id === undefined) { response.writeHead(202); response.end(); return; }
     let result: unknown;
     if (rpc.method === "initialize") result = { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "Isolated fixture", version: "1" } };
-    else if (rpc.method === "tools/list") result = { tools: [{ name: "echo", description: "回显测试文字", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } }, { name: "private_tool", description: "未授权工具", inputSchema: { type: "object" } }] };
+    else if (rpc.method === "tools/list") result = { tools: [{ name: "echo", description: "回显测试文字", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } }, { name: "read_query", description: "只读测试查询", annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: "object" } }, { name: "send_message", description: "模拟发送", annotations: { readOnlyHint: true }, inputSchema: { type: "object" } }, { name: "private_tool", description: "未授权工具", inputSchema: { type: "object" } }] };
     else if (rpc.method === "tools/call") {
       calls.push(rpc.params);
       if (held) return;

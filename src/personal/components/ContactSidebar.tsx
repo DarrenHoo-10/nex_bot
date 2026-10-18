@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ChevronUp, LogOut, Moon, PanelLeftClose, Plus, Search, Settings, Sun, UserRound, X } from "lucide-react";
+import { ChevronUp, LogOut, Moon, PanelLeftClose, Plus, Search, Settings, Sun, X } from "lucide-react";
 import { BrandMark } from "./BrandMark";
 import { companionState } from "../avatars/appearance";
 import { AgentAvatar as Avatar } from "./AgentAvatar";
@@ -64,7 +64,7 @@ export function ContactSidebar(props: Props) {
           <div className="account-menu-divider" role="separator"/>
           <button type="button" role="menuitem" onClick={() => accountAction(props.onLogout)}><LogOut size={18}/><span>退出当前账号</span></button>
         </div>}
-        <button type="button" ref={accountButton} className="workspace-account-name" aria-label={`${props.userName}，账号菜单`} aria-haspopup="menu" aria-expanded={accountOpen} aria-controls={accountOpen ? menuId : undefined} onClick={() => setAccountOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setAccountOpen(true); } }}><span className="account-avatar" aria-hidden="true"><UserRound size={19} strokeWidth={1.7}/><i className={props.connected ? "online" : "offline"}/></span><span className="workspace-account-copy"><strong>{props.userName}</strong>{!props.connected && <small>正在重新连接…</small>}</span><ChevronUp className="account-menu-chevron" size={16}/></button>
+        <button type="button" ref={accountButton} className="workspace-account-name" aria-label={`${props.userName}，账号菜单`} aria-haspopup="menu" aria-expanded={accountOpen} aria-controls={accountOpen ? menuId : undefined} onClick={() => setAccountOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setAccountOpen(true); } }}><span className="account-avatar" aria-hidden="true">{Array.from(props.userName.trim())[0] || "?"}<i className={props.connected ? "online" : "offline"}/></span><span className="workspace-account-copy"><strong>{props.userName}</strong>{!props.connected && <small>正在重新连接…</small>}</span><ChevronUp className="account-menu-chevron" size={16}/></button>
       </footer>
     </aside>
   </>;

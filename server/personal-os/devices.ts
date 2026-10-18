@@ -9,6 +9,14 @@ export class DeviceGateway {
   readonly pending = new Map<string, { resolve: (result: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout; deviceId: string }>();
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   hostDeviceId?: string;
+  private readonly alive = new Set<WebSocket>();
+  private readonly heartbeatTimer: NodeJS.Timeout;
+  heartbeat() {
+    for (const ws of this.sockets.values()) {
+      if (!this.alive.delete(ws)) { ws.terminate(); continue; }
+      if (ws.readyState === WebSocket.OPEN) ws.ping();
+    }
+  }
   inventory() {
     return this.store.all("SELECT d.id,d.name,d.platform,d.status,g.scope_json FROM devices d LEFT JOIN device_local_grants g ON g.device_id=d.id AND g.local_grant_id='shared' WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status!='revoked' ORDER BY d.created_at,d.id", this.store.workspace, this.store.owner).map((device) => {
       const scope = device.scope_json ? JSON.parse(String(device.scope_json)) : {};
@@ -18,6 +26,8 @@ export class DeviceGateway {
   constructor(readonly store: CoreStore, server: Server, readonly changed: () => void) {
     server.on("upgrade", this.handleUpgrade);
     store.run("UPDATE device_calls SET status='unknown' WHERE status IN ('delivered','running')");
+    this.heartbeatTimer = setInterval(() => this.heartbeat(), 15_000);
+    this.heartbeatTimer.unref();
   }
   readonly handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (request.url !== "/dcp/v1/connect") { socket.destroy(); return; }
@@ -40,6 +50,9 @@ export class DeviceGateway {
     const old = this.sockets.get(deviceId);
     if (old) old.close();
     this.sockets.set(deviceId, ws);
+    this.alive.add(ws);
+    ws.on("pong", () => this.alive.add(ws));
+    ws.on("error", () => ws.terminate());
     ws.on("message", (raw) => {
       if (this.sockets.get(deviceId) !== ws) return;
       try {
@@ -86,7 +99,19 @@ export class DeviceGateway {
         }
       } catch { ws.close(1008, "Invalid DCP message"); }
     });
-    ws.on("close", () => { if (this.sockets.get(deviceId) === ws) this.sockets.delete(deviceId); this.changed(); });
+    ws.on("close", () => {
+      this.alive.delete(ws);
+      if (this.sockets.get(deviceId) === ws) {
+        this.sockets.delete(deviceId);
+        for (const [callId, pending] of this.pending) if (pending.deviceId === deviceId) {
+          clearTimeout(pending.timer); this.pending.delete(callId);
+          this.store.run("UPDATE device_calls SET status='unknown' WHERE id=? AND result_json IS NULL", callId);
+          this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=? AND result_json IS NULL", callId);
+          pending.reject(new Error("设备连接中断，正在等待重新连接后核对执行结果"));
+        }
+      }
+      this.changed();
+    });
   }
   async execute(call: Row, args: Record<string, unknown>) {
     const deviceId = String(call.target_id), ws = this.sockets.get(deviceId), local = this.store.get("SELECT * FROM device_local_grants WHERE device_id=? AND local_grant_id='shared' AND status='active'", deviceId);
@@ -109,6 +134,7 @@ export class DeviceGateway {
         this.store.run("UPDATE device_calls SET status='unknown' WHERE id=? AND result_json IS NULL", call.id);
         this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=? AND result_json IS NULL", call.id);
         reject(new Error("设备未返回确认，结果未知；不会自动再次执行"));
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reconcile", calls: [{ id: call.id, argument_hash: call.argument_hash }] }));
       }, 35_000);
       this.pending.set(String(call.id), { resolve, reject, timer, deviceId });
       ws.send(JSON.stringify({ type: "call", callId: call.id, canonicalEnvelope: call.canonical_envelope, argumentHash: call.argument_hash, localPolicyVersion: local.policy_version, leaseSeq: 1, leaseExpiresAt: deadline, deadlineAt: deadline, args }));
@@ -133,5 +159,5 @@ export class DeviceGateway {
     });
     this.sockets.get(deviceId)?.close(); this.changed();
   }
-  close() { for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error("Core shutting down")); } this.pending.clear(); for (const ws of this.sockets.values()) ws.terminate(); this.wss.close(); }
+  close() { clearInterval(this.heartbeatTimer); for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error("Core shutting down")); } this.pending.clear(); for (const ws of this.sockets.values()) ws.terminate(); this.wss.close(); }
 }

@@ -9,7 +9,8 @@ export function requestBody(request: IncomingMessage) {
       let size = 0; const buffers: Buffer[] = [];
       for await (const raw of request) {
         const buffer = Buffer.from(raw as Uint8Array); size += buffer.length;
-        if (size > 256_000) throw new Error("请求过大");
+        const limit = request.url?.split("?")[0] === "/api/attachments" ? 7_100_000 : 256_000;
+        if (size > limit) throw new Error("请求过大");
         buffers.push(buffer);
       }
       const parsed: unknown = JSON.parse(Buffer.concat(buffers).toString("utf8"));

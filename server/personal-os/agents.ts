@@ -76,6 +76,23 @@ export class AgentModule {
     });
     this.runtime.changed();
   }
+  updateApprovalMode(data: Record<string, unknown>) {
+    const botId = text(data.id, 100), mode = data.mode;
+    if (mode !== "standard" && mode !== "full") throw new Error("权限模式无效");
+    this.ensure(botId);
+    this.store.transaction(() => {
+      const current = this.store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", botId);
+      if (data.version !== (current?.version ?? 0)) throw new Error("权限模式已变化，请刷新");
+      this.store.run("INSERT INTO agent_approval_settings(bot_id,mode,version) VALUES(?,?,1) ON CONFLICT(bot_id) DO UPDATE SET mode=excluded.mode,version=version+1", botId, mode);
+      this.store.audit("agent.approval_mode.update", "bot", botId, { mode });
+    });
+    // Explicitly selecting full mode authorizes pending effects too, with the
+    // existing per-call digest/grant checks. Never revive rejected/unknown work.
+    if (mode === "full") for (const approval of this.store.all("SELECT a.*,t.task_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE t.bot_id=? AND t.status='awaiting_approval' AND a.status='pending'", botId)) {
+      try { this.runtime.decide(String(approval.id), String(approval.argument_hash), true); } catch { this.runtime.cancel(String(approval.task_id), "操作权限已变化，旧操作已停止，请重新发送要求"); }
+    }
+    this.runtime.changed();
+  }
   archive(data: Record<string, unknown>) {
     const botId = text(data.id, 100), version = Number(data.version);
     this.store.transaction(() => {

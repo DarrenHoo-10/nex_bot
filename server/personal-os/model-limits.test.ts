@@ -27,18 +27,22 @@ it("retains per-model overrides across model, endpoint, protocol switches and re
     store.saveConfig({ ...config, model: "fixture-other", contextWindow: 32000, maxOutputTokens: 2048 });
     expect(store.modelConfig()).toMatchObject({ contextWindow: 32000, maxOutputTokens: 2048 });
     store.saveConfig({ ...config, endpoint: "https://another.example/v1" });
-    expect(store.modelConfig()).toMatchObject({ contextWindow: 64000, maxOutputTokens: 8192 });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 256000, maxOutputTokens: 32000 });
     store.saveConfig({ ...config, provider: "anthropic" });
-    expect(store.modelConfig().contextWindow).toBe(64000);
+    expect(store.modelConfig().contextWindow).toBe(256000);
     store.db.close(); store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
     store.saveConfig(config);
     expect(store.modelConfig()).toMatchObject({ contextWindow: 160000, maxOutputTokens: 12000 });
     const before = store.modelConfig();
     for (const contextWindow of [-1, 0, 123.5, "1e5", true, 10_000_001]) expect(() => store.saveConfig({ ...config, contextWindow })).toThrow();
-    expect(() => store.saveConfig({ ...config, contextWindow: 1024, maxOutputTokens: 1025 })).toThrow("不能大于");
     expect(store.modelConfig()).toEqual(before);
+    store.saveConfig({ ...config, contextWindow: 100000, maxOutputTokens: 128000 });
+    store.db.close(); store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 100000, maxOutputTokens: 128000 });
+    store.saveConfig({ ...config, contextWindow: 10000, maxOutputTokens: "" });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 10000, maxOutputTokens: 32000 });
     store.saveConfig({ ...config, contextWindow: "", maxOutputTokens: "" });
-    expect(store.modelConfig()).toMatchObject({ contextWindow: 64000, maxOutputTokens: 8192 });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 256000, maxOutputTokens: 32000 });
   } finally { store.db.close(); }
 });
 
@@ -85,7 +89,7 @@ it("offline lookup reports failure and retains usable defaults", async () => {
     modelCatalog: { fetch: async () => { throw new Error("offline"); }, readSnapshot: () => undefined, log: () => {} } });
   try {
     const response = await fetch(app.origin + "/api/models/limits/refresh", { method: "POST", headers: { Authorization: "Bearer offline", "Content-Type": "application/json" }, body: JSON.stringify(config) });
-    expect(await response.json()).toMatchObject({ refresh: "failed", status: "unknown", contextWindow: 64000, maxOutputTokens: 8192 });
+    expect(await response.json()).toMatchObject({ refresh: "failed", status: "unknown", contextWindow: 256000, maxOutputTokens: 32000 });
   } finally { await app.close(); }
 });
 

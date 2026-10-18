@@ -257,6 +257,11 @@ desktop routing, cancellation, and computer authority cleanup.
 
 ## Evidence
 
+The [chat composer record](chat-composer.md) covers file uploads, per-assistant
+permission modes and execution-socket heartbeat/receipt reconciliation.
+The [composer menus record](composer-menus.md) covers the grouped plus menu,
+permission popover and Markdown conversation download.
+
 The [current inspector and contact motion record](inspector-cleanup.md) covers
 compact routines, direct avatar/identity editing and active sidebar animation.
 See [settings and model discovery](settings-model-discovery.md),

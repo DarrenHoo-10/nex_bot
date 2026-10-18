@@ -1,7 +1,7 @@
 import { ModelCatalogStore, type ModelCatalogOptions } from "../model-catalog/catalog.ts";
 import type { CatalogModel, CatalogProviders } from "../model-catalog/trim.ts";
 
-export const DEFAULT_MODEL_LIMITS = { contextWindow: 64_000, maxOutputTokens: 8192 };
+export const DEFAULT_MODEL_LIMITS = { contextWindow: 256_000, maxOutputTokens: 32_000 };
 export type ModelLimitOverrides = { contextWindow: number | null; maxOutputTokens: number | null };
 export type ModelCatalogConfig = Pick<ModelCatalogOptions, "fetch" | "fetchDisabled" | "readSnapshot" | "now" | "log">;
 
@@ -14,7 +14,8 @@ export function modelInputBudget(contextWindow: number, maxOutputTokens: number)
 }
 
 export function validateModelLimits(limits: { contextWindow: number; maxOutputTokens: number }) {
-  if (limits.maxOutputTokens > limits.contextWindow) throw new Error("最大输出 Token 不能大于上下文窗口");
+  parseModelLimit(limits.contextWindow, "contextWindow");
+  parseModelLimit(limits.maxOutputTokens, "maxOutputTokens");
 }
 
 export function modelLimitScope(input: Record<string, unknown>) {
@@ -64,7 +65,7 @@ export class ModelLimits {
     const contextWindow = manual.contextWindow ?? match.model?.limit?.context ?? DEFAULT_MODEL_LIMITS.contextWindow;
     const output = match.model?.limit?.output;
     const detectedOutput = output && Number.isSafeInteger(output) && output > 0 && output <= (match.model?.limit?.context ?? 0) ? output : undefined;
-    const maxOutputTokens = manual.maxOutputTokens ?? Math.min(detectedOutput ?? DEFAULT_MODEL_LIMITS.maxOutputTokens, contextWindow);
+    const maxOutputTokens = manual.maxOutputTokens ?? detectedOutput ?? DEFAULT_MODEL_LIMITS.maxOutputTokens;
     return { manual, contextWindow, maxOutputTokens, matched: match.matched ?? null,
       status: match.ambiguous ? "ambiguous" : match.model ? "matched" : "unknown",
       source: { contextWindow: manual.contextWindow !== null ? "manual" : match.model ? "models.dev" : "default", maxOutputTokens: manual.maxOutputTokens !== null ? "manual" : detectedOutput ? "models.dev" : "default" },

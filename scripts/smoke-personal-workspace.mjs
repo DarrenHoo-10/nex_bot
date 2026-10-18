@@ -1,5 +1,5 @@
 // Isolated Core + real hidden Electron renderer; no user profile or live provider.
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -16,8 +16,8 @@ const output = path.resolve("release/workspace-verification-avatars"); mkdirSync
 const { createPersonalApp } = await import(pathToFileURL(path.resolve("dist-personal/server/core/index.js")).href);
 const identity = await startFakeIdentity({ displayName: "演示账号" }), model = await startFakeModel(), mcp = await startFakeMcp();
 let token = "synthetic-workspace-bootstrap";
-const core = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token, uiDir: path.resolve("dist-personal/server/ui"), memoryRuntime: false, identity: { fixtureOrigin: identity.origin } });
-let child, ws, exited = false, logs = ""; const cases = [], exceptions = [];
+const core = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token, uiDir: path.resolve("dist-personal/server/ui"), memoryRuntime: false, modelCatalog: { fetchDisabled: true, readSnapshot: () => undefined, log: () => {} }, identity: { fixtureOrigin: identity.origin } });
+let child, ws, exited = false, logs = "", fileChoosers = 0; const cases = [], exceptions = [];
 async function until(check, label = "renderer state", timeout = 30_000) { const end = Date.now() + timeout; while (!await check()) { if (Date.now() > end) throw new Error(`Timed out: ${label}`); await new Promise((resolve) => setTimeout(resolve, 70)); } }
 async function api(route, data) { const response = await fetch(core.origin + "/api/" + route, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(data ? { method: "POST", body: JSON.stringify(data) } : {}) }); const value = await response.json(); if (!response.ok) throw new Error(value.error); return value; }
 let command, evaluate;
@@ -54,10 +54,12 @@ try {
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   ws = new WebSocket(targets.find((target) => target.type === "page").webSocketDebuggerUrl); await new Promise((resolve) => ws.once("open", resolve));
   let sequence = 0; const replies = new Map();
-  ws.on("message", (raw) => { const event = JSON.parse(raw); if (event.method === "Runtime.exceptionThrown") exceptions.push(event.params.exceptionDetails.text); const pending = replies.get(event.id); if (pending) { replies.delete(event.id); if (event.error) pending.reject(new Error(event.error.message)); else pending.resolve(event.result); } });
+  ws.on("message", (raw) => { const event = JSON.parse(raw); if (event.method === "Page.fileChooserOpened") fileChoosers++; if (event.method === "Runtime.exceptionThrown") exceptions.push(event.params.exceptionDetails.text); const pending = replies.get(event.id); if (pending) { replies.delete(event.id); if (event.error) pending.reject(new Error(event.error.message)); else pending.resolve(event.result); } });
   command = (method, params = {}) => new Promise((resolve, reject) => { const id = ++sequence; const timer = setTimeout(() => { replies.delete(id); reject(new Error("CDP timeout: " + method)); }, 20_000); replies.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } }); ws.send(JSON.stringify({ id, method, params })); });
-  evaluate = async (expression) => { const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text); return result.result.value; };
+  evaluate = async (expression) => { const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text); return result.result.value; };
   await command("Runtime.enable");
+  await command("Page.enable");
+  await command("Page.setInterceptFileChooserDialog", { enabled: true });
   await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await until(() => evaluate("!!document.querySelector('.contact-item')"), "authenticated workspace");
   await click(`[data-agent='${bot.id}']`);
@@ -99,9 +101,55 @@ try {
   if (!await evaluate("[...document.querySelectorAll('.contact-item .companion-avatar')].every(el=>el.dataset.animate==='off')")) throw new Error("Contact animation continues after task finishes");
   cases.push("real-thinking-completion-and-return-to-idle");
   await until(() => evaluate("document.querySelector('.transcript').textContent.includes('完成后向你汇报结果')"), "actual worker reply");
-  await click("[aria-label='打开快捷操作']");
-  await until(() => evaluate("document.querySelector('.composer-menu')?.textContent.includes('管理连接器')"));
-  await click("[aria-label='关闭快捷操作']");
+  const uploadPath = path.join(root, "项目说明.md"); writeFileSync(uploadPath, "# Synthetic attachment\nCOMPOSER_ATTACHMENT_FIXTURE");
+  await click("[aria-label='添加文件或指令']");
+  await until(() => evaluate("!!document.querySelector('.composer-command-menu')"));
+  await screenshot("composer-add-menu-light");
+  if (await evaluate("/目标|反馈|压缩/.test(document.querySelector('.composer-command-menu').textContent)")) throw new Error("Unimplemented menu entries exposed");
+  await textButton("文件", "document.querySelector('.composer-command-menu')");
+  await until(() => fileChoosers === 1, "file command opens picker");
+  const documentNode = await command("DOM.getDocument");
+  const uploadNode = await command("DOM.querySelector", { nodeId: documentNode.root.nodeId, selector: "input[type=file]" });
+  await command("DOM.setFileInputFiles", { nodeId: uploadNode.nodeId, files: [uploadPath] });
+  await until(() => evaluate("document.querySelector('.attachment-draft')?.textContent.includes('项目说明.md')&&!document.querySelector('.send').disabled"), "upload available for attachment-only send");
+  await click("[aria-label='操作权限']");
+  await textButton("完全权限", "document.querySelector('.permission-popover')");
+  await until(async () => (await api("state")).bots.find(b=>b.id===bot.id).approval_setting==='full');
+  await screenshot("composer-upload-full-access-light");
+  const uploaded = core.store.get("SELECT id FROM chat_attachments WHERE name='项目说明.md'");
+  model.scripts.push({ kind:"openai-tool", calls:[{id:"uploaded-read",name:"broker",args:JSON.stringify({action:"attachment.read",attachmentId:uploaded.id})}] },{kind:"openai-text",text:"已读取你上传的项目说明。"});
+  await click(".send");
+  await until(() => evaluate("document.querySelector('.transcript').textContent.includes('已读取你上传')"));
+  if (!String(core.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='uploaded-read'")?.result_json).includes('COMPOSER_ATTACHMENT_FIXTURE')) throw new Error("Worker did not receive attachment");
+  if (!await evaluate("!!document.querySelector('.transcript a[download]')&&!document.querySelector('.attachment-draft')")) throw new Error("Attachment card/cleanup missing");
+  await command("Page.reload");
+  await until(() => evaluate("document.querySelector('[aria-label=操作权限]')?.dataset.mode==='full'"));
+  await screenshot("composer-attachment-message-light");
+  await click("[aria-label='操作权限']");
+  await until(() => evaluate("document.activeElement.getAttribute('aria-checked')==='true'"), "focus current permission");
+  await screenshot("composer-permission-menu-light");
+  if (!await evaluate("document.querySelector('.permission-popover [aria-checked=true]')?.textContent==='完全权限'")) throw new Error("Selected permission lacks checkmark");
+  await command("Input.dispatchKeyEvent", { type:"keyDown", key:"Escape", code:"Escape", windowsVirtualKeyCode:27 });
+  if (!await evaluate("!document.querySelector('.permission-popover')&&document.activeElement.getAttribute('aria-label')==='操作权限'")) throw new Error("Escape did not restore focus");
+  await click("[aria-label='添加文件或指令']");
+  await textButton("权限", "document.querySelector('.composer-command-menu')");
+  await textButton("标准权限", "document.querySelector('.permission-popover')");
+  await until(async () => (await api("state")).bots.find(b=>b.id===bot.id).approval_setting==='standard');
+  cases.push("real-file-upload-worker-read-download-card", "full-access-selection-persists-and-standard-restores");
+  const downloads = path.join(root, "downloads"); mkdirSync(downloads);
+  await command("Browser.setDownloadBehavior", { behavior:"allow", downloadPath:downloads });
+  await click("[aria-label='添加文件或指令']");
+  await textButton("导出对话", "document.querySelector('.composer-command-menu')");
+  await until(() => readdirSync(downloads).some(name=>name.endsWith('.md')), "download conversation");
+  const exportedText=readFileSync(path.join(downloads,readdirSync(downloads).find(name=>name.endsWith('.md'))),'utf8');
+  if (!exportedText.includes('已读取你上传的项目说明') || !exportedText.includes('帮我整理今天的工作')) throw new Error("Conversation download missing messages");
+  await until(() => evaluate("!document.querySelector('[aria-label=添加文件或指令]').disabled"));
+  await click("[aria-label='添加文件或指令']"); await textButton("模型设置", "document.querySelector('.composer-command-menu')");
+  await until(() => evaluate("!!document.querySelector('.preferences-panel input[name=model]')"));
+  await click(`[data-agent='${bot.id}']`);
+  await until(() => evaluate("!!document.querySelector('.composer')"));
+  cases.push("composer-grouped-menu-file-permission-model-export", "permission-menu-checkmark-escape-focus");
+
   if (await evaluate("!!document.querySelector('.agent-configuration')")) throw new Error("Settings mixed into Work");
   await textButton("设置", "document.querySelector('.inspector-tabs')");
   if (!await evaluate("document.querySelector('.agent-configuration').textContent.includes('工具权限')")) throw new Error("Agent settings missing");
@@ -164,12 +212,12 @@ try {
   await geometry(); await screenshot("workspace-wide");
   await command("Emulation.setDeviceMetricsOverride", {width:1440,height:960,deviceScaleFactor:1,mobile:false});
   cases.push("system-reduced-motion", "wide-reading-column");
-  cases.push("compact-composer-menu-and-inspector-settings");
+  cases.push("compact-upload-composer-and-inspector-settings");
   await geometry(); await screenshot("workspace-light");
-  await click("[aria-label='打开快捷操作']"); await textButton("管理连接器", "document.querySelector('.composer-menu')");
+  await click(".workspace-account-name"); await textButton("设置", "document.querySelector('.account-menu')"); await textButton("连接器", "document.querySelector('.preferences-nav')");
   await until(() => evaluate("document.querySelector('.preferences-nav [aria-current=page]')?.textContent==='连接器'"));
   await click(`[data-agent='${bot.id}']`);
-  cases.push("composer-connector-settings-shortcut"); cases.push("NexorAI-fixture-login", "three-pane-layout", "real-worker-chat");
+  cases.push("account-connector-settings-navigation"); cases.push("NexorAI-fixture-login", "three-pane-layout", "real-worker-chat");
   await input("[aria-label='搜索 Agent']", "研究");
   await until(() => evaluate("document.querySelectorAll('.contact-item').length===1"));
   await input("[aria-label='搜索 Agent']", "");
@@ -224,6 +272,13 @@ try {
   if (!await evaluate("document.querySelector('.inspector').getBoundingClientRect().right<=innerWidth+1&&[...document.querySelectorAll('.routine-summary')].every(el=>el.getBoundingClientRect().right<el.nextElementSibling.getBoundingClientRect().left)")) throw new Error("Narrow inspector overflow");
   // Details can be explicitly opened on narrow screens; close the initial panel.
   await click("[aria-label='收起助手详情']"); await geometry(); await screenshot("workspace-mobile");
+  await click("[aria-label='添加文件或指令']"); await screenshot("composer-add-menu-mobile-dark");
+  if (!await evaluate("(()=>{const r=document.querySelector('.composer-command-menu').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0})()")) throw new Error("Command menu overflows mobile viewport");
+  await textButton("权限", "document.querySelector('.composer-command-menu')"); await screenshot("composer-permission-menu-mobile-dark");
+  if (!await evaluate("(()=>{const r=document.querySelector('.permission-popover').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0})()")) throw new Error("Permission menu overflows mobile viewport");
+  await command("Input.dispatchKeyEvent", { type:"keyDown", key:"Escape", code:"Escape", windowsVirtualKeyCode:27 });
+  cases.push("composer-menus-mobile-dark-bounds");
+
   await click(".mobile-menu"); await until(() => evaluate("document.querySelector('.contact-sidebar').classList.contains('is-open')"));
   await click(".workspace-account-name"); await screenshot("account-menu-mobile-dark");
   await textButton("设置", "document.querySelector('.account-menu')"); await textButton("连接器", "document.querySelector('.preferences-nav')"); await geometry(); await screenshot("connectors-mobile");
@@ -235,7 +290,7 @@ try {
   cases.push("MCP-disable-enable-remove");
   await screenshot("connectors-empty-light");
   await click(".workspace-account-name"); await textButton("设置", "document.querySelector('.account-menu')"); await textButton("设备", "document.querySelector('.preferences-nav')");
-  await until(() => evaluate("!!document.querySelector('.device-list')")); await screenshot("devices-light");
+  await until(() => evaluate("!!document.querySelector('.signed-in-devices')")); await screenshot("devices-light");
   await click(".workspace-account-name"); await textButton("设置", "document.querySelector('.account-menu')");
   await until(() => evaluate("document.querySelector('.preferences-account')?.textContent.includes('演示账号')&&!!document.querySelector('.preferences-page .ds-session-item')"));
   await geometry(); await screenshot("settings-account-light");
@@ -244,12 +299,14 @@ try {
   await input("input[name='model']", "fixture-settings-draft");
   await textButton("记忆服务", settingsNav); await textButton("模型", settingsNav);
   if (!await evaluate("document.querySelector('input[name=model]').value==='fixture-settings-draft'&&document.querySelectorAll('.preferences-panel:not([hidden])').length===1")) throw new Error("Category navigation lost draft or exposed multiple panels");
+  await until(() => evaluate("!document.querySelector('[data-model-settings] button.primary').disabled"), "model form ready");
   await textButton("保存配置", "document.querySelector('[data-model-settings]')");
   await until(() => evaluate("!!document.querySelector('.preferences-saved')"));
   if ((await api("state")).config.default_model !== "fixture-settings-draft") throw new Error("Settings did not persist to Core");
   await textButton("获取模型列表", "document.querySelector('[data-model-settings]')");
   await until(() => evaluate("document.querySelector('select[name=model]')?.textContent.includes('fixture-reasoning')"));
   await evaluate("(()=>{const el=document.querySelector('select[name=model]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(el,'fixture-reasoning');el.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await until(() => evaluate("!document.querySelector('[data-model-settings] button.primary').disabled"), "model form ready");
   await textButton("保存配置", "document.querySelector('[data-model-settings]')");
   await until(async () => (await api("state")).config.default_model === "fixture-reasoning");
   if (await evaluate("/个人工作空间|后端连接|高级设置|系统信息/.test(document.body.innerText)")) throw new Error("Removed technical UI still visible");

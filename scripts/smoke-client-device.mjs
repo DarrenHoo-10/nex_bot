@@ -74,14 +74,13 @@ try {
   cases.push("packaged-pdf-worker-and-native-canvas-load");
   await device.configure({ exec: true });
   await wait(() => core.gateway.inventory().find(d => d.id === id)?.granted.exec, "exec grant reaches Core");
+  const writeStarted = Date.now();
   task = await send({ action: "device.exec", command: process.platform === "win32" ? "Set-Content -LiteralPath saved.md -Value 'fixture document'" : "printf 'fixture document' > saved.md" });
-  await wait(() => !!core.store.get("SELECT a.* FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE t.task_id=? AND a.status='pending'", task), "command approval");
-  assert.equal(existsSync(path.join(shared, "saved.md")), false);
-  const approval = core.store.get("SELECT a.* FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE t.task_id=? AND a.status='pending'", task);
-  core.runtime.decide(approval.id, approval.argument_hash, true);
-  await wait(() => core.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded", "approved write");
+  await wait(() => core.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded", "automatic write");
+  assert.equal(core.store.get("SELECT COUNT(*) n FROM approvals").n, 0);
   assert.match(readFileSync(path.join(shared, "saved.md"), "utf8"), /fixture document/);
-  cases.push("approved-command-actually-saves-local-file");
+  cases.push("ordinary-command-saves-local-file-without-approval");
+  const fileSaveMs = Date.now() - writeStarted;
   await device.setPaused(true);
   await device.stop(); await device.start(owner);
   assert.equal(device.state().paused, true); assert.equal(device.state().connected, false);
@@ -92,9 +91,6 @@ try {
   await device.configure({ exec: true, root: shared });
   await wait(() => core.gateway.inventory().find(d => d.id === id)?.granted.exec, "re-enable");
   task = await send({ action: "device.exec", command: process.platform === "win32" ? "Set-Content started.txt running; Start-Sleep -Seconds 8; Set-Content late.txt forbidden" : "printf running > started.txt; sleep 8; printf forbidden > late.txt" });
-  await wait(() => !!core.store.get("SELECT a.* FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE t.task_id=? AND a.status='pending'", task), "long command approval");
-  const longApproval = core.store.get("SELECT a.* FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE t.task_id=? AND a.status='pending'", task);
-  core.runtime.decide(longApproval.id, longApproval.argument_hash, true);
   await wait(() => existsSync(path.join(shared, "started.txt")), "command started");
   await device.stop({ revoke: true });
   assert.equal(core.store.get("SELECT status FROM devices WHERE id=?", id)?.status, "revoked");
@@ -127,7 +123,7 @@ try {
   assert.equal(device.state().connected, false);
   cases.push("account-isolation-and-background-session-expiry");
   assert.ok(otherId);
-  console.log(JSON.stringify({ passed: true, cases }));
+  console.log(JSON.stringify({ passed: true, cases, fileSaveMs }));
 } finally {
   await device.stop(); await core.close(); await model.close(); await identity.close();
   try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { console.warn("Owned fixture retained:", root); }

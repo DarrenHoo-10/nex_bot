@@ -18,6 +18,7 @@ import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
+import { ChatFiles } from "./chat-files.ts";
 import { requestBody as body } from "./http-body.ts";
 import { modelLimitScope, type ModelCatalogConfig } from "./model-limits.ts";
 
@@ -60,6 +61,7 @@ export async function createPersonalApp(options: AppOptions) {
   const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
 
   const agents = new AgentModule(store, runtime);
+  const files = new ChatFiles(store);
   const routines = new RoutineModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
@@ -97,7 +99,7 @@ export async function createPersonalApp(options: AppOptions) {
       hostDeviceId: gateway.hostDeviceId,
       memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
       memoryPlugin: memoryPlugin.status(),
-      bots: agents.contacts().map((bot) => ({ ...bot, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      bots: agents.contacts().map((bot) => ({ ...bot, approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
       directory: directory(store),
       routines: routines.list(),
       occurrences: routines.occurrences(),
@@ -218,6 +220,10 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname.startsWith("/api/")) {
       const session = await authenticate(token);
       if (!session) { json(response, 401, { error: "Unauthorized" }); return; }
+      if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
+        const { row, bytes } = files.file(text(url.pathname.slice("/api/attachments/".length), 100));
+        response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
+      }
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
         const event = sync.event(Number(request.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0));
@@ -297,7 +303,14 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, connectors.remove(data)); return; }
-      if (url.pathname === "/api/agents/input") { json(response, 202, agents.send(text(data.botId, 100), text(data.text), text(data.clientId, 200), String(session.id))); return; }
+      if (url.pathname === "/api/attachments") { json(response, 200, files.upload(data, String(session.id))); return; }
+      if (url.pathname === "/api/agents/input") {
+        const botId = text(data.botId, 100), clientId = text(data.clientId, 200), attachments = data.attachments ?? [];
+        const links = files.references(botId, attachments, String(session.id));
+        const content = text(`${typeof data.text === "string" ? data.text.trim() : ""}${links ? "\n\n" + links : ""}`);
+        const result = store.transaction(() => { const sent = agents.send(botId, content, clientId, String(session.id)); files.bind(attachments as string[], botId, clientId); return sent; });
+        json(response, 202, result); return;
+      }
       if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
@@ -324,6 +337,7 @@ export async function createPersonalApp(options: AppOptions) {
       }
       if (url.pathname === "/api/bots/appearance") { agents.updateAppearance(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/policy") { agents.updatePolicy(data); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/bots/approval-mode") { agents.updateApprovalMode(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/archive") { agents.archive(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/conversations") { const conversationId = store.createConversation(text(data.botId, 100)); changed(); json(response, 200, { id: conversationId }); return; }
       if (url.pathname === "/api/input") { const taskId = runtime.input(text(data.conversationId, 100), text(data.text), typeof data.clientId === "string" ? data.clientId : id(), String(session.id)); json(response, 202, { taskId }); return; }

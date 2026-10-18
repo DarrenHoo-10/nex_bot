@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import { RemoteMcpClient, McpHttpError } from "../mcp-http.ts";
 import { id, now, text, type CoreStore, type Row } from "./store.ts";
 
-export interface ConnectorTool { name: string; description: string; inputSchema: Record<string, unknown> }
+export interface ConnectorTool { name: string; description: string; inputSchema: Record<string, unknown>; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean } }
 export interface ConnectorView { id: string; name: string; url: string; transport: "http" | "sse"; enabled: boolean; version: number; hasToken: boolean; tools: ConnectorTool[]; checkedAt: number | null; error: string | null; grants: Array<{ botId: string; tools: string[] }> }
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 function redactValue(value: unknown, redact: (text: string) => string): unknown {
@@ -130,7 +130,8 @@ export class ConnectorModule {
           for (const entry of result.tools) {
             if (!object(entry) || typeof entry.name !== "string" || !/^[\w.:-]{1,200}$/.test(entry.name) || !object(entry.inputSchema) || entry.inputSchema.type !== "object") throw new Error("工具目录无效");
             if (tools.some((tool) => tool.name === entry.name)) throw new Error("工具名称重复");
-            tools.push({ name: redact(entry.name), description: redact(typeof entry.description === "string" ? entry.description.slice(0, 2000) : ""), inputSchema: redactValue(entry.inputSchema, redact) as Record<string, unknown> });
+            const annotations = object(entry.annotations) ? Object.fromEntries(["readOnlyHint", "destructiveHint"].filter((key) => typeof (entry.annotations as Record<string, unknown>)[key] === "boolean").map((key) => [key, (entry.annotations as Record<string, unknown>)[key]])) : undefined;
+            tools.push({ name: redact(entry.name), description: redact(typeof entry.description === "string" ? entry.description.slice(0, 2000) : ""), inputSchema: redactValue(entry.inputSchema, redact) as Record<string, unknown>, ...(annotations ? { annotations } : {}) });
           }
           if (tools.length > 200 || JSON.stringify(tools).length > 256_000) throw new Error("工具目录过大");
           if (!result.nextCursor) return tools;

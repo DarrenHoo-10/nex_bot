@@ -111,8 +111,12 @@ try {
   cases.push("clear-override-and-offline-cache");
   await input("input[name=model]", "unrecognized-model"); await ready();
   await until(() => evaluate("document.querySelector('[data-model-limits]').textContent.includes('未识别到此模型')"));
-  await input("input[name=contextWindow]", "10000"); await input("input[name=maxOutputTokens]", "10001");
-  if (await evaluate("document.querySelector('[data-model-settings] form').checkValidity()")) throw new Error("Invalid output ceiling accepted");
+  if (!await evaluate("document.querySelector('input[name=contextWindow]').placeholder.includes('256,000')&&document.querySelector('input[name=maxOutputTokens]').placeholder.includes('32,000')")) throw new Error("Incorrect default limits");
+  await input("input[name=contextWindow]", "100000"); await input("input[name=maxOutputTokens]", "128000");
+  if (!await evaluate("document.querySelector('[data-model-settings] form').checkValidity()")) throw new Error("Independent output ceiling rejected");
+  await save();
+  if (core.store.modelConfig().contextWindow !== 100000 || core.store.modelConfig().maxOutputTokens !== 128000) throw new Error("Independent output ceiling not saved");
+  cases.push("default-256k-32k-and-independent-output-ceiling");
   await input("input[name=model]", "fixture-model"); await ready();
   await until(() => evaluate("document.querySelector('input[name=contextWindow]').value==='190000'"));
   await save();

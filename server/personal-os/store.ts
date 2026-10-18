@@ -202,6 +202,16 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 12, checksum: hash(appearanceSchema), applied_at: now() });
       });
     }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=13")) this.transaction(() => {
+      const schema = `CREATE TABLE agent_approval_settings(bot_id TEXT PRIMARY KEY REFERENCES bots(id),mode TEXT NOT NULL CHECK(mode IN ('standard','full')),version INTEGER NOT NULL DEFAULT 1) STRICT;
+        CREATE TABLE chat_attachments(id TEXT PRIMARY KEY,bot_id TEXT NOT NULL REFERENCES bots(id),session_id TEXT NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,ciphertext TEXT NOT NULL,created_at INTEGER NOT NULL,message_id TEXT REFERENCES agent_messages(id)) STRICT;`;
+      this.db.exec(schema);
+      for (const policy of this.all("SELECT * FROM bot_policies")) {
+        const value = JSON.parse(String(policy.policy_json));
+        if ([...new Set(value.tools ?? [])].sort().join(",") === basicActions.filter((a) => a !== "attachment.read").sort().join(",")) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools, "attachment.read"] }), policy.bot_id);
+      }
+      this.insert("schema_migrations", { version: 13, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
