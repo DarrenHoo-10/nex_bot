@@ -4,6 +4,9 @@ import type { Server, IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
 
+/** How long a device has to take a delivered call. Sent as a duration (`leaseMs`) so the device never has to compare its clock with Core's. */
+export const DEVICE_LEASE_MS = 30_000;
+
 export class DeviceGateway {
   readonly sockets = new Map<string, WebSocket>();
   readonly pending = new Map<string, { resolve: (result: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout; deviceId: string }>();
@@ -123,7 +126,7 @@ export class DeviceGateway {
     if (old?.result_json) return JSON.parse(String(old.result_json));
     if (old?.status === "unknown") { this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=?", call.id); throw new Error("设备执行结果未知，禁止重放"); }
     if (this.store.get("SELECT id FROM device_calls WHERE device_id=? AND status IN ('delivered','running','unknown') AND id!=?", deviceId, call.id)) throw new Error("设备存在运行中或不确定的调用");
-    const deadline = now() + 30_000, grantId = id();
+    const deadline = now() + DEVICE_LEASE_MS, grantId = id();
     if (!old) this.store.transaction(() => {
       this.store.insert("device_grants", { id: grantId, ...this.store.scope(), bot_id: call.bot_id, device_id: deviceId, local_grant_id: "shared", local_policy_version: local.policy_version, scope_json: local.scope_json, status: "active", created_at: now(), expires_at: deadline });
       this.store.insert("device_calls", { id: call.id, ...this.store.scope(), bot_id: call.bot_id, device_id: deviceId, grant_id: grantId, local_grant_id: "shared", grant_version: 1, local_policy_version: local.policy_version, status: "delivered", delivery_count: 1, lease_seq: 1, lease_issued_at: now(), lease_expires_at: deadline, deadline_at: deadline, created_at: now() - 1 });
@@ -137,7 +140,7 @@ export class DeviceGateway {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reconcile", calls: [{ id: call.id, argument_hash: call.argument_hash }] }));
       }, 35_000);
       this.pending.set(String(call.id), { resolve, reject, timer, deviceId });
-      ws.send(JSON.stringify({ type: "call", callId: call.id, canonicalEnvelope: call.canonical_envelope, argumentHash: call.argument_hash, localPolicyVersion: local.policy_version, leaseSeq: 1, leaseExpiresAt: deadline, deadlineAt: deadline, args }));
+      ws.send(JSON.stringify({ type: "call", callId: call.id, canonicalEnvelope: call.canonical_envelope, argumentHash: call.argument_hash, localPolicyVersion: local.policy_version, leaseSeq: 1, leaseMs: DEVICE_LEASE_MS, leaseExpiresAt: deadline, deadlineAt: deadline, args }));
     });
   }
   cancelTask(taskId: string) {

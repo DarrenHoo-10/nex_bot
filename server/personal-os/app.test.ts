@@ -776,6 +776,43 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(readFileSync(path.join(root, "counter.txt"), "utf8").trim()).toBe("executed");
     expect(nodeApp.node.journal.prepare("SELECT COUNT(*) count FROM node_calls WHERE capability='device.exec'").get()?.count).toBe(1);
   }, 60_000);
+  it("runs calls when the device clock lags Core and answers refusals without dropping the socket", async () => {
+    const f = await fixture(), root = path.join(f.root, "shared"); mkdirSync(root);
+    const nodeApp = await createApp({ dir: path.join(f.root, "device"), key: randomBytes(32), token: "node-owner-token" }); f.owned.apps.push(nodeApp);
+    const pair = f.app.gateway.pair("Skewed clock"); nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: false }); await wait(() => nodeApp.node.status === "已连接");
+    const node = nodeApp.node, ws = node.socket!, sent: Array<Record<string, unknown>> = [];
+    (ws as { send: unknown }).send = (data: string) => { sent.push(JSON.parse(data)); };
+    // `coreAhead` is how far Core's wall clock runs ahead of this device's.
+    const call = (callId: string, patch: Record<string, unknown> = {}, coreAhead = 0, capability = "device.info") => {
+      const envelope = JSON.stringify({ callId, targetId: pair.deviceId, capability, arguments: {} }), expires = Date.now() + 30_000 + coreAhead;
+      return { type: "call", callId, canonicalEnvelope: envelope, argumentHash: hash(envelope), localPolicyVersion: node.config!.policyVersion, leaseSeq: 1, leaseMs: 30_000, leaseExpiresAt: expires, deadlineAt: expires, ...patch };
+    };
+    const reply = (callId: string) => sent.find((message) => message.type === "result" && message.callId === callId) as { failed: boolean; result: { error?: string; rejected?: boolean; outcome?: string; hostname?: string } };
+    // Core's clock a second ahead used to read as "Lease expired" and close the socket.
+    await node.message(ws, call("ahead", {}, 1_000));
+    expect(reply("ahead").failed).toBe(false); expect(reply("ahead").result.hostname).toBe(os.hostname());
+    // A Core that predates `leaseMs` still gets the standard 30 s lease from receipt.
+    const legacy = call("legacy", {}, 5_000); delete (legacy as Record<string, unknown>).leaseMs;
+    await node.message(ws, legacy);
+    expect(reply("legacy").failed).toBe(false);
+    expect(node.journal.prepare("SELECT COUNT(*) count FROM node_calls WHERE status='succeeded'").get()?.count).toBe(2);
+    // Refusals are confirmed not-executed results, never journaled, and keep the connection.
+    await node.message(ws, call("stale", {}, -10 * 60_000));
+    expect(reply("stale")).toMatchObject({ failed: true, result: { rejected: true, outcome: "confirmed_not_executed" } }); expect(reply("stale").result.error).toContain("时钟");
+    await node.message(ws, call("long-lease", { leaseMs: 60_000 }));
+    expect(reply("long-lease").result.error).toContain("租约无效");
+    await node.message(ws, call("old-policy", { localPolicyVersion: node.config!.policyVersion + 1 }));
+    expect(reply("old-policy").result.error).toContain("权限版本");
+    await node.message(ws, call("unknown-capability", {}, 0, "device.format"));
+    expect(reply("unknown-capability").result.error).toContain("不支持");
+    node.executing = true;
+    try { await node.message(ws, call("busy")); } finally { node.executing = false; }
+    expect(reply("busy").result.error).toContain("正在执行");
+    expect(node.journal.prepare("SELECT COUNT(*) count FROM node_calls").get()?.count).toBe(2);
+    expect(ws.readyState).toBe(1);
+    // A tampered envelope is a protocol violation, not a refusal.
+    await expect(node.message(ws, call("tampered", { argumentHash: "0".repeat(64) }))).rejects.toThrow("identity conflict");
+  }, 60_000);
   it("invalidates device approvals when the local grant changes and rejects HTTP lookalike domains", async () => {
     const f = await fixture(), root = path.join(f.root, "shared"); mkdirSync(root); writeFileSync(path.join(root, "paper.txt"), "fixture");
     const nodeApp = await createApp({ dir: path.join(f.root, "device"), key: randomBytes(32), token: "node-owner-token" }); f.owned.apps.push(nodeApp);
