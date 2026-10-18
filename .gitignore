@@ -41,3 +41,12 @@ deploy/podman/.env
 deploy/podman/.env.*
 !deploy/podman/.env.example
 /.env
+
+# Native Apple clients (generated project, SwiftPM build output)
+apps/apple/*.xcodeproj
+apps/apple/Packages/*/.build/
+apps/apple/Packages/*/.swiftpm/
+apps/apple/Config/Signing.local.xcconfig
+
+# Staged macOS device executor (scripts/build-mac-executor.mjs)
+apps/apple/build/

@@ -257,6 +257,8 @@ desktop routing, cancellation, and computer authority cleanup.
 
 ## Evidence
 
+The [native macOS and iOS client recipe](native-clients.md) drives the SwiftUI apps
+against an isolated Core fixture.
 The [chat composer record](chat-composer.md) covers file uploads, per-assistant
 permission modes and execution-socket heartbeat/receipt reconciliation.
 The [composer menus record](composer-menus.md) covers the grouped plus menu,

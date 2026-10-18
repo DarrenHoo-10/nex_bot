@@ -24,7 +24,7 @@ it("selects an assistant model independently and sends that model to the worker"
     expect((await select({ endpoint: "https://other.example/v1", version: 1 })).ok).toBe(false);
     expect(app.store.modelConfig(bot)).toMatchObject({ model: "fixture-reasoning", maxOutputTokens: 12345 });
     expect(app.store.modelConfig(other).model).toBe("fixture-model");
-    const state = await (await fetch(app.origin + "/api/state", { headers: { Authorization: "Bearer synthetic" } })).json();
+    const state = await (await fetch(app.origin + "/api/state", { headers: { Authorization: "Bearer synthetic" } })).json() as { bots: Array<{ id: string; selected_model?: string }> };
     expect(state.bots.find((item: { id: string }) => item.id === bot).selected_model).toBe("fixture-reasoning");
     expect(JSON.stringify(state)).not.toContain("synthetic-key");
     fake.scripts.push({ kind: "openai-text", text: "selected model applied" });

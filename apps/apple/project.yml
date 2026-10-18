@@ -1,0 +1,94 @@
+name: NexBot
+options:
+  bundleIdPrefix: com.nexbot
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  NexClientKit:
+    path: Packages/NexClientKit
+targets:
+  NexBotMac:
+    type: application
+    configFiles:
+      Debug: Config/Mac.xcconfig
+      Release: Config/Mac.xcconfig
+    platform: macOS
+    sources:
+      - NexBotMac
+      - Shared
+      - path: ../../build/nexbot-icon.icns
+        buildPhase: resources
+    dependencies:
+      - package: NexClientKit
+    info:
+      path: NexBotMac/Info.plist
+      properties:
+        CFBundleDisplayName: NexBot
+        CFBundleIconFile: nexbot-icon
+        LSApplicationCategoryType: public.app-category.productivity
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nexbot.mac
+        PRODUCT_NAME: NexBot
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: NexBotMac/NexBotMac.entitlements
+        # The executor phase reads apps/apple/build and signs nested binaries, which the script sandbox forbids.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      - name: Bundle device executor
+        path: Executor/bundle-executor.sh
+        basedOnDependencyAnalysis: false
+        showEnvVars: false
+        # Declared so Xcode re-signs the app whenever the script refreshes the bundled executor.
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/Executor/.bundled
+  NexBotiOS:
+    type: application
+    platform: iOS
+    sources:
+      - NexBotiOS
+      - Shared
+    dependencies:
+      - package: NexClientKit
+    info:
+      path: NexBotiOS/Info.plist
+      properties:
+        CFBundleDisplayName: NexBot
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nexbot.ios
+        PRODUCT_NAME: NexBot
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_IDENTITY: "-"
+schemes:
+  NexBotMac:
+    build: { targets: { NexBotMac: all } }
+    run: { config: Debug }
+  NexBotiOS:
+    build: { targets: { NexBotiOS: all } }
+    run: { config: Debug }
