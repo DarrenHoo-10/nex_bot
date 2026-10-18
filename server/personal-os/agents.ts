@@ -277,6 +277,24 @@ export class AgentModule {
     const needle = "%" + text(query, 200).replace(/[\\%_]/g, "\\$&") + "%";
     return this.store.all("SELECT id,role,kind,content,created_at FROM agent_messages WHERE bot_id=? AND content LIKE ? ESCAPE '\\' ORDER BY seq DESC LIMIT 10", botId, needle);
   }
+  searchConversations(query: string, before?: number) {
+    const value = text(query,200), needle = '%' + value.replace(/[\\%_]/g,'\\$&') + '%';
+    if (before!==undefined && (!Number.isSafeInteger(before)||before<=0)) throw new Error('搜索位置无效');
+    const rows = this.store.all("SELECT m.rowid position,m.id,m.bot_id,m.seq,m.content,m.created_at,b.name bot_name FROM agent_messages m JOIN bots b ON b.id=m.bot_id WHERE b.workspace_id=? AND b.owner_user_id=? AND b.status='active' AND m.rowid<? AND m.content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id) AND m.content LIKE ? ESCAPE '\\' ORDER BY m.rowid DESC LIMIT 51",this.store.workspace,this.store.owner,before??Number.MAX_SAFE_INTEGER,needle);
+    const page=rows.slice(0,50);
+    return { results:page.map(row=>{
+      const content=String(row.content),index=content.toLowerCase().indexOf(value.toLowerCase()),start=Math.max(0,index-45);
+      return {id:row.id,botId:row.bot_id,botName:row.bot_name,createdAt:row.created_at,snippet:(start?'…':'')+content.slice(start,start+180)+(content.length>start+180?'…':'')};
+    }), nextBefore:rows.length>50?Number(page.at(-1)!.position):null };
+  }
+  messagesAround(botId: string, messageId: string) {
+    this.ensure(botId);
+    const target=this.store.get("SELECT seq FROM agent_messages m WHERE bot_id=? AND id=? AND content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id)",botId,messageId);
+    if (!target) throw new Error('该消息已不存在或已遗忘');
+    const before=this.store.all('SELECT * FROM (SELECT * FROM agent_messages WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 40) ORDER BY seq',botId,target.seq);
+    const after=this.store.all('SELECT * FROM agent_messages WHERE bot_id=? AND seq>=? ORDER BY seq LIMIT 60',botId,target.seq);
+    return this.projectMessages([...before,...after]);
+  }
   read(botId: string, seq: number) {
     this.ensure(botId);
     if (!Number.isSafeInteger(seq) || seq < 0) throw new Error("读取位置无效");

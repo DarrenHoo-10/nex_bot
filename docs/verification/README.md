@@ -337,3 +337,6 @@ records the 0.9.2 Windows / 0.2.2 Android verification and production rollout.
 
 The [unified memory and composer release](unified-memory-release.md) records the
 0.9.3 Windows / 0.2.3 Android verification and schema 17 deployment.
+
+The [conversation history search fixture](conversation-search.md) covers shared
+desktop/mobile search, pagination and navigation to older messages.

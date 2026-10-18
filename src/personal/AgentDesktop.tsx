@@ -9,6 +9,7 @@ import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { AgentAvatar as Avatar } from "./components/AgentAvatar";
 import { ContactSidebar } from "./components/ContactSidebar";
+import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
@@ -82,6 +83,8 @@ export function AgentDesktop() {
   const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [focusedMessage,setFocusedMessage]=useState("");
+  const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
   useEffect(() => {
     if (desktop?.platform !== "android") return;
@@ -98,7 +101,7 @@ export function AgentDesktop() {
       if (!sidebarOpen) { setSidebarOpen(true); return; }
       void desktop?.minimize?.();
     };
-    const select = (event: Event) => { setBotId(String((event as CustomEvent).detail)); setPage("agent"); setSidebarOpen(false); };
+    const select = (event: Event) => { historyTarget.current=undefined;setFocusedMessage("");loaded.current=undefined;setBotId(String((event as CustomEvent).detail)); setPage("agent"); setSidebarOpen(false); };
     const downloadError = () => setError("附件下载失败，请重试");
     window.addEventListener("nex-android-back", back);
     window.addEventListener("nex-android-agent", select);
@@ -124,10 +127,11 @@ export function AgentDesktop() {
   const reload = useCallback(async () => {
     const request = ++serial.current, current = selected.current;
     type Feed = { messages: RecordRow[]; streaming: Array<{ taskId: string; text: string }>; sync: State["sync"]; hasMore: boolean };
-    const base = `agents/messages?bot=${encodeURIComponent(current)}`;
+    const target=historyTarget.current?.botId===current?historyTarget.current:undefined;
+    const base = `agents/messages?bot=${encodeURIComponent(current)}${target?`&around=${encodeURIComponent(target.id)}`:""}`;
     // Over a slow link every round trip is visible, so the first page of messages is requested together with the state
     // and checked against the state's sync identity afterwards.
-    const guess = loaded.current?.botId === current ? loaded.current : undefined;
+    const guess = !target && loaded.current?.botId === current ? loaded.current : undefined;
     const early = current ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
     early?.catch(() => undefined);
     const next = await api<State>("state");
@@ -143,7 +147,14 @@ export function AgentDesktop() {
       const cached = guess;
       const same = cached?.botId === current && cached.sync.privacyEpoch === next.sync.privacyEpoch && cached.sync.coreId === next.sync.coreId && cached.sync.bootId === next.sync.bootId;
       let history = same ? cached.messages : [];
-      let feed = await (same || !guess?.messages.length ? early! : api<Feed>(base));
+      let feed: Feed;
+      try { feed = await (same || !guess?.messages.length ? early! : api<Feed>(base)); }
+      catch (failure) {
+        if (request !== serial.current || selected.current !== current) return;
+        if (!target || !(failure instanceof Error) || failure.message !== '该消息已不存在或已遗忘') throw failure;
+        historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;
+        feed=await api<Feed>(`agents/messages?bot=${encodeURIComponent(current)}`);
+      }
       while (true) {
         if (request !== serial.current || selected.current !== current) return;
         if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setTimeout(() => void reload().catch(offline), 0); return; }
@@ -157,7 +168,7 @@ export function AgentDesktop() {
       setStreaming(feed.streaming.filter((s) => s.text));
       setHistoryLoading(false);
       const through = Number(history.at(-1)?.seq ?? 0);
-      if (pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(current) ?? 0)) {
+      if (!target && pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(current) ?? 0)) {
         readPositions.current.set(current, through);
         void api("agents/read", { botId: current, seq: through }).catch(() => { if (readPositions.current.get(current) === through) readPositions.current.delete(current); });
       }
@@ -178,7 +189,7 @@ export function AgentDesktop() {
     return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); window.removeEventListener("nex-session-expired", expired); };
   }, [reload, offline]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
-  useEffect(() => { stickToBottom.current = true; setShowScrollPill(false); setQuote(undefined); setMemoryNotice(""); setPreview(undefined); setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); setAttachments(attachmentDrafts.current.get(botId) ?? []); if (botId) { setHistoryLoading(true); localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); }); } }, [botId, reload]);
+  useEffect(() => { stickToBottom.current = !historyTarget.current; setShowScrollPill(false); setQuote(undefined); setMemoryNotice(""); setPreview(undefined); setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); setAttachments(attachmentDrafts.current.get(botId) ?? []); if (botId) { setHistoryLoading(true); localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); }); } }, [botId, reload]);
   const openFilePreview = (targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); };
   const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
@@ -191,6 +202,7 @@ export function AgentDesktop() {
     const content = prefix + raw, attachmentIds = attachments.map((file) => file.id), requestKey = content + JSON.stringify(attachmentIds);
     if (!retry.current || retry.current.botId !== target || retry.current.text !== requestKey) retry.current = { botId: target, text: requestKey, id: crypto.randomUUID() };
     const clientId = retry.current.id;
+    if(historyTarget.current){historyTarget.current=undefined;setFocusedMessage("");loaded.current=undefined;setMessages([]);}
     stickToBottom.current = true; setShowScrollPill(false); setSendingBotId(target);
     void run(async () => { await api("agents/input", { botId: target, text: content, clientId, attachments: attachmentIds }); setFiles(target, []); drafts.current.delete(target); if (selected.current === target) { setDraft(""); setQuote(undefined); } retry.current = undefined; }).finally(() => setSendingBotId(undefined));
   };
@@ -210,7 +222,7 @@ export function AgentDesktop() {
   }, [botId, tasks[0]?.id]);
   const avatarState = !connected ? "offline" : tasks.length ? companionState(tasks[0], state?.approvals.some((a) => a.bot_id === botId), connected) : sendingBotId === botId ? "thinking" : settledState;
   const processing = connected && !streaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
-  useEffect(() => { if (stickToBottom.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); }, [botId, messages.at(-1)?.id, streaming.map((s) => s.text).join(""), processing]);
+  useEffect(() => { if (stickToBottom.current && !historyTarget.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); }, [botId, messages.at(-1)?.id, streaming.map((s) => s.text).join(""), processing]);
   useEffect(() => { const field = composerRef.current; if (field) { field.style.height = "auto"; field.style.height = `${Math.min(160, field.scrollHeight)}px`; } }, [draft, botId, page]);
   const descendantTasks = new Set(tasks.map((task) => task.id));
   for (let depth = 0; depth < 3; depth++) for (const link of state?.delegations ?? []) if (descendantTasks.has(link.parent_task_id)) descendantTasks.add(link.child_task_id);
@@ -222,7 +234,20 @@ export function AgentDesktop() {
     const next = draft.replace(/@([^\s@]*)$/, `@${name} `);
     changeDraft(next); setAtDismissed(true); composerRef.current?.focus();
   };
-  const closeDialog = () => setDialog(null), select = (target: string) => { setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
+  useEffect(()=>{
+    if(!focusedMessage||scrolledTarget.current===focusedMessage)return;
+    const message=scroll.current?.querySelector<HTMLElement>('[data-search-match="true"]');
+    if(message){message.scrollIntoView({block:'center'});scrolledTarget.current=focusedMessage;}
+  },[focusedMessage,messages,page]);
+  const latestMessages=()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});};
+  const openSearchResult=(match:ConversationMatch)=>{
+    ++serial.current;
+    historyTarget.current={botId:match.botId,id:match.id};scrolledTarget.current='';setFocusedMessage(match.id);loaded.current=undefined;stickToBottom.current=false;
+    setMessages([]);setStreaming([]);setHistoryLoading(true);setError('');setPage('agent');setSidebarOpen(false);
+    if(selected.current===match.botId)void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});
+    else setBotId(match.botId);
+  };
+  const closeDialog = () => setDialog(null), select = (target: string) => { if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) { await reload(); select(result.id); } closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
@@ -273,7 +298,7 @@ export function AgentDesktop() {
   void lookRevision;
 
   return <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
-    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
+    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
 
     <main>
       <header>
@@ -308,7 +333,8 @@ export function AgentDesktop() {
       </div> : page === "agent" ? <>
         <div className="transcript" ref={scroll} onScroll={(e) => { const el = e.currentTarget; const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90; stickToBottom.current = nearBottom; setShowScrollPill(!nearBottom && messages.length > 3); }}>
           <div className="transcript-inner">
-          {Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
+          {focusedMessage ? <button type="button" className="older" onClick={latestMessages}>返回最新消息</button> : null}
+          {!focusedMessage && Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
           {!messages.length && !processing && historyLoading ? <div className="history-loading" role="status"><span className="spin"/>正在载入历史会话…</div> : !messages.length && !processing ? <div className="welcome ds-welcome">
             <Avatar bot={bot} allBots={state.bots} large size={84} animate/>
             <div className="ds-welcome-badge" style={{ color: botLook.ink.solid, background: botLook.ink.soft }}>长期陪伴，随时开始</div>
@@ -323,7 +349,7 @@ export function AgentDesktop() {
           </div> : messages.map((m, idx) => {
             const prevDay = idx > 0 ? formatDay(messages[idx - 1].created_at) : "";
             const curDay = formatDay(m.created_at);
-            return <div key={str(m.id)}>
+            return <div key={str(m.id)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
               {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
               <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots); setQuote({ author, text: str(msg.content) }); composerRef.current?.focus(); }}/>
             </div>;
@@ -349,7 +375,7 @@ export function AgentDesktop() {
         </div>
 
         <div className="composer-area">
-          {showScrollPill ? <button type="button" className="scroll-pill" onClick={() => { stickToBottom.current = true; setShowScrollPill(false); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
+          {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" onClick={() => { stickToBottom.current = true; setShowScrollPill(false); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
           {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>批准</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
           {tasks.length > 0 && <div className="task-status"><span className="task-status-dot"/><span>{tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span><button type="button" aria-label="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={12}/>停止任务</button></div>}

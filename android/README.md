@@ -1,5 +1,11 @@
 # Android
 
+## 0.2.4 — conversation history search
+
+Search message content across assistants, paginate results and jump to older
+messages with their surrounding context. Requires the matching Core search API.
+Debug APK version code 204.
+
 ## 0.2.3 — unified memory controls and simplified composer
 
 One memory switch and model apply to all assistants, with lifetime token totals.
@@ -49,7 +55,7 @@ cd android
 ```
 
 Gradle builds the shared renderer automatically. Output:
-`app/build/outputs/apk/debug/nexbot-0.2.1-debug.apk`. This debug-signed APK updates
+`app/build/outputs/apk/debug/nexbot-0.2.4-debug.apk`. This debug-signed APK updates
 the previous debug installation without clearing login data. Release signing
 still requires a maintainer-provided key outside the repository.
 

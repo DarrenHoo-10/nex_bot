@@ -221,14 +221,14 @@ try {
   await until(() => evaluate("document.querySelector('.preferences-nav [aria-current=page]')?.textContent==='连接器'"));
   await click(`[data-agent='${bot.id}']`);
   cases.push("account-connector-settings-navigation"); cases.push("NexorAI-fixture-login", "three-pane-layout", "real-worker-chat");
-  await input("[aria-label='搜索 Agent']", "研究");
-  await until(() => evaluate("document.querySelectorAll('.contact-item').length===1"));
-  await input("[aria-label='搜索 Agent']", "");
+  await input("[aria-label='搜索会话记录']", "帮我整理今天的工作");
+  await until(() => evaluate("document.querySelector('.conversation-search-result')?.textContent.includes('帮我整理今天的工作')"));
+  await input("[aria-label='搜索会话记录']", "");
   await click("[title='置顶联系人']");
   if (!await evaluate("document.querySelector('.sidebar-section-title').textContent.includes('置顶')")) throw new Error("Pin did not update");
   await input(".composer textarea", "保留这段草稿"); await click(`[data-agent='${peer.id}']`); await click(`[data-agent='${bot.id}']`);
   await until(() => evaluate("document.querySelector('.composer textarea').value==='保留这段草稿'")); await input(".composer textarea", "");
-  cases.push("contact-search-pin", "per-agent-draft");
+  cases.push("conversation-search-contact-pin", "per-agent-draft");
   await click(".workspace-account-name"); await screenshot("account-menu-light");
   if (await evaluate("[...document.querySelectorAll('.account-menu button')].some(el=>['连接器','设备'].includes(el.querySelector('span')?.textContent))")) throw new Error("Management entries remain outside settings");
   await textButton("设置", "document.querySelector('.account-menu')"); await textButton("连接器", "document.querySelector('.preferences-nav')");
