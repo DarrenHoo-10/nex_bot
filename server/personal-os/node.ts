@@ -7,6 +7,10 @@ import { WebSocket } from "ws";
 import { hash, now, text, type CoreStore } from "./store.ts";
 import os from "node:os";
 import { ComputerExecutor } from "./computer.ts";
+import { DEVICE_LEASE_MS } from "./devices.ts";
+
+/** A call whose absolute lease is staler than this means the device clock is badly wrong, not merely drifting. */
+const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
 
 export function confined(root: string, relative: string) {
   if (path.isAbsolute(relative) || relative.includes("\0") || /^[a-zA-Z]:/.test(relative)) throw new Error("路径须相对授权目录");
@@ -122,16 +126,26 @@ export class DeviceNode {
     if (event.type !== "call") return;
     if (!this.binding || !this.config || ws !== this.socket) throw new Error("Device is not bound");
     const callId = text(event.callId, 100), envelope = text(event.canonicalEnvelope, 100_000), digest = hash(envelope), source = JSON.parse(envelope) as Record<string, unknown>;
-    if (event.argumentHash !== digest || source.callId !== callId || source.targetId !== this.binding.deviceId || Number(event.localPolicyVersion) !== this.config.policyVersion) throw new Error("DCP identity/policy conflict");
+    if (event.argumentHash !== digest || source.callId !== callId || source.targetId !== this.binding.deviceId) throw new Error("DCP identity conflict");
     const bindingId = this.binding.coreId + ":" + this.binding.deviceId;
     const old = this.journal.prepare("SELECT * FROM node_calls WHERE binding_id=? AND call_id=?").get(bindingId, callId);
     if (old) { if (old.argument_hash !== digest || old.canonical_envelope !== envelope) throw new Error("Immutable call conflict"); this.deliver(ws, old); return; }
-    if (this.executing || this.journal.prepare("SELECT call_id FROM node_calls WHERE binding_id=? AND status IN ('received','running','unknown')").get(bindingId)) throw new Error("A call is running or unresolved");
-    const expires = Number(event.leaseExpiresAt), deadline = Number(event.deadlineAt), leaseSeq = Number(event.leaseSeq);
-    if (!Number.isSafeInteger(expires) || expires <= now() || expires > now() + 30_000 || deadline < expires || !Number.isSafeInteger(leaseSeq) || leaseSeq < 1) throw new Error("Lease expired");
+    // Past this point the call is not in the journal, so each refusal is answered
+    // with a confirmed "not executed". Dropping the socket instead would hide the
+    // reason and leave Core waiting out its timeout and a reconnect.
+    if (Number(event.localPolicyVersion) !== this.config.policyVersion) return this.refuse(ws, callId, digest, "设备本地权限版本已变化，未执行");
+    if (this.executing || this.journal.prepare("SELECT call_id FROM node_calls WHERE binding_id=? AND status IN ('received','running','unknown')").get(bindingId)) return this.refuse(ws, callId, digest, "设备正在执行其他调用或有未核实的调用，未执行");
+    // The lease is a duration counted from receipt. Core's wall clock and this
+    // device's drift apart (an unsynced PC is ahead or behind by seconds), so the
+    // absolute `leaseExpiresAt` is only checked for being wildly stale.
+    const received = now(), expires = Number(event.leaseExpiresAt), deadline = Number(event.deadlineAt), leaseSeq = Number(event.leaseSeq);
+    const leaseMs = event.leaseMs === undefined ? DEVICE_LEASE_MS : Number(event.leaseMs);
+    if (!Number.isSafeInteger(expires) || !Number.isSafeInteger(deadline) || !Number.isSafeInteger(leaseMs) || leaseMs < 1 || leaseMs > DEVICE_LEASE_MS || deadline < expires || !Number.isSafeInteger(leaseSeq) || leaseSeq < 1) return this.refuse(ws, callId, digest, "执行租约无效，未启动操作");
+    if (expires < received - CLOCK_SKEW_TOLERANCE_MS) return this.refuse(ws, callId, digest, "设备系统时钟与 Core 相差超过 5 分钟，请校准系统时间；未启动操作");
+    const leaseEnd = received + leaseMs;
     const capability = text(source.capability, 50), args = source.arguments as Record<string, unknown>;
-    if (!["device.info", "device.list", "device.read", "device.exec", "device.computer"].includes(capability)) throw new Error("Unsupported capability");
-    this.journal.prepare("INSERT INTO node_calls(binding_id,call_id,local_grant_id,local_policy_version,capability,arguments_json,canonical_envelope,argument_hash,status,lease_seq,lease_expires_at,deadline_at,received_at) VALUES(?,?,'shared',?,?,?,?,?,'received',?,?,?,?)").run(bindingId, callId, this.config.policyVersion, capability, JSON.stringify(args), envelope, digest, leaseSeq, expires, deadline, now());
+    if (!["device.info", "device.list", "device.read", "device.exec", "device.computer"].includes(capability)) return this.refuse(ws, callId, digest, "设备不支持该能力，未执行");
+    this.journal.prepare("INSERT INTO node_calls(binding_id,call_id,local_grant_id,local_policy_version,capability,arguments_json,canonical_envelope,argument_hash,status,lease_seq,lease_expires_at,deadline_at,received_at) VALUES(?,?,'shared',?,?,?,?,?,'received',?,?,?,?)").run(bindingId, callId, this.config.policyVersion, capability, JSON.stringify(args), envelope, digest, leaseSeq, expires, deadline, received);
     this.executing = true;
     const controller = new AbortController();
     this.activeCall = { bindingId, callId, digest, controller };
@@ -139,15 +153,15 @@ export class DeviceNode {
     let result: unknown, failed = false;
     try {
       const root = this.config.root;
-      if (now() >= expires) throw new Error("执行租约已过期，未启动操作");
+      if (now() >= leaseEnd) throw new Error("执行租约已过期，未启动操作");
       if (capability === "device.info") result = { ...this.identity(), granted: { info: true, read: !!root, exec: this.config.exec, computer: this.config.computer === true } };
       else if (capability === "device.computer") {
         if (!this.config.computer) throw new Error("目标设备未提供屏幕控制执行器");
-        result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(20_000, expires - now()), controller.signal);
+        result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(20_000, leaseEnd - now()), controller.signal);
         failed = (result as { isError?: boolean }).isError === true;
       } else if (capability === "device.exec") {
         if (!this.config.exec) throw new Error("设备未授权终端");
-        result = await this.command(text(args.command, 8192), root || os.homedir(), Math.min(20_000, expires - now()), controller.signal);
+        result = await this.command(text(args.command, 8192), root || os.homedir(), Math.min(20_000, leaseEnd - now()), controller.signal);
         failed = !!(result as { error?: string }).error;
       } else {
         if (!root) throw new Error("设备未授权文件目录");
@@ -184,6 +198,12 @@ export class DeviceNode {
     this.journal.prepare("UPDATE node_calls SET status=?,result_json=?,result_hash=?,finished_at=?,version=version+1 WHERE binding_id=? AND call_id=?").run(failed ? "failed" : "succeeded", json, hash(json), now(), bindingId, callId);
     this.deliver(ws, this.journal.prepare("SELECT * FROM node_calls WHERE binding_id=? AND call_id=?").get(bindingId, callId)!);
     this.changed();
+  }
+  /** Answers a call that never reached the journal; Core fails it immediately instead of timing out. */
+  refuse(ws: WebSocket, callId: string, argumentHash: string, error: string) {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const result = { error, rejected: true, outcome: "confirmed_not_executed" };
+    ws.send(JSON.stringify({ type: "result", callId, argumentHash, resultHash: hash(JSON.stringify(result)), result, failed: true }));
   }
   deliver(ws: WebSocket, row: Record<string, unknown>) {
     // An owned operation can finish after its transport reconnects. Deliver
