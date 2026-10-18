@@ -252,3 +252,12 @@
 .attachment-draft { display: flex; align-items: center; gap: 8px; max-width: 240px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
 .attachment-draft span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-draft button { padding: 3px; border: 0; background: transparent; }
+
+.conversation-search-results { padding: 4px 8px; }
+.rk-workspace .conversation-search-result { display: block; width: 100%; padding: 12px; border: 0; border-radius: 12px; background: transparent; color: var(--foreground); text-align: left; }
+.rk-workspace .conversation-search-result:hover, .rk-workspace .conversation-search-result:focus-visible { background: var(--secondary); }
+.conversation-search-result > span { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.conversation-search-result strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.conversation-search-result time { flex-shrink: 0; font-size: 10px; color: var(--muted-foreground); }
+.conversation-search-result p { margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted-foreground); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.search-message-target { border-radius: 12px; outline: 2px solid var(--primary); outline-offset: 5px; scroll-margin-block: 24px; }
