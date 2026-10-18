@@ -17,7 +17,7 @@ const wait = async (expression, label = expression) => {
 };
 const click = async selector => { await wait(`!!document.querySelector(${q(selector)}) && !document.querySelector(${q(selector)}).disabled`); await c.evaluate(`document.querySelector(${q(selector)}).click()`); };
 const button = async (text, scope = "document") => {
-  const expression = `[...${scope}.querySelectorAll('button')].find(e=>e.getClientRects().length&&e.textContent.trim()===${q(text)})`;
+  const expression = `[...${scope}.querySelectorAll('button')].find(e=>e.getClientRects().length&&(e.textContent.trim()===${q(text)}||e.querySelector(':scope > span')?.textContent.trim()===${q(text)}))`;
   await wait(`!!(${expression}) && !(${expression}).disabled`, text);
   await c.evaluate(`(${expression}).click()`);
 };
@@ -48,8 +48,8 @@ try {
   await button("获取模型列表"); await wait("document.querySelector('[data-model-settings] [role=status]')?.textContent.includes('已获取')");
   check("provider model list using saved credential");
   await section("长期记忆");
-  await c.evaluate("document.querySelector('[data-memory-plugin]').closest('details').open=true");
-  check("memory service controls", await c.evaluate("!!document.querySelector('input[name=memoryEndpoint]') && document.body.innerText.includes('测试连接')"));
+  await wait("!!document.querySelector('input[name=personalMemoryEnabled]:not(:disabled)')");
+  check("global memory switch and total usage", await c.evaluate("document.querySelectorAll('[data-memory-dashboard] input[type=checkbox]').length===1 && !!document.querySelector('[data-memory-total]') && !document.querySelector('[data-memory-plugin]')"));
   await section("连接器"); await button("添加连接器");
   await input(".connector-modal input[name=name]", "演示知识库"); await input(".connector-modal input[name=url]", fixture.mcp + "/mcp");
   await button("保存连接器"); await wait("!!document.querySelector('.connector-detail')");
@@ -77,9 +77,11 @@ try {
   await button("保存", "document.querySelector('.modal')"); await wait("!!document.querySelector('.routine-toggle')");
   await click(".routine-toggle"); await wait("document.querySelector('.routine-toggle')?.getAttribute('aria-checked')==='false'");
   check("routine creation and pause");
-  await click("[aria-label='收起助手详情']"); await click(".permission-trigger");
+  await click("[aria-label='收起助手详情']"); await click(".composer-add"); await button("权限", "document.querySelector('.composer-command-menu')");
   await button("完全权限", "document.querySelector('.permission-popover')");
-  await wait("document.querySelector('.permission-trigger')?.textContent.includes('完全权限')");
+  await click(".composer-add");
+  await wait("document.querySelector('.composer-command-menu')?.textContent.includes('完全权限')");
+  await back();
   check("full permission mode saves");
   await click(".composer-add");
   check("plus menu includes files permissions model and export", await c.evaluate("['文件','权限','模型','导出'].every(t=>document.querySelector('.composer-popover:popover-open')?.textContent.includes(t))"));

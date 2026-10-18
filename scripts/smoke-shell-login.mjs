@@ -119,7 +119,7 @@ try {
   await second.evaluate("document.querySelector('.workspace-account-name').click();true");
   await until(() => second.evaluate("!!document.querySelector('.account-menu')"));
   await second.evaluate("[...document.querySelectorAll('.account-menu button')].find(button=>button.textContent.includes('设置')).click();true");
-  await until(() => second.evaluate("!!document.querySelector('[data-memory-plugin]')"));
+  await until(() => second.evaluate("!!document.querySelector('[data-memory-dashboard]')"));
   await second.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(button=>button.textContent==='设备').click();true");
   await until(() => second.evaluate("document.querySelector('.local-device')?.textContent.includes('在线')"));
   if (await second.evaluate("/生成配对令牌|文件读取|选择文件夹|终端与文件操作|开启所需能力/.test(document.querySelector('.ds-settings-page').textContent)")) throw new Error("Removed device controls remain");
@@ -148,9 +148,8 @@ try {
   }
   cases.push("minimal-settings-copy");
   await second.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(button=>button.textContent==='长期记忆').click();true");
-  await second.evaluate("document.querySelector('[data-memory-plugin]').closest('details').open=true");
-  await until(() => second.evaluate("document.querySelector('[data-memory-plugin]').getBoundingClientRect().height>0"));
-  if (!await second.evaluate("document.querySelector('[data-memory-plugin]').textContent.includes('后端')")) throw new Error("Plugin configuration is missing from thin shell");
+  await until(() => second.evaluate("!!document.querySelector('input[name=personalMemoryEnabled]:not(:disabled)')"));
+  if (!await second.evaluate("document.querySelectorAll('[data-memory-dashboard] input[type=checkbox]').length===1&&!!document.querySelector('[data-memory-total]')&&!document.querySelector('[data-memory-plugin]')")) throw new Error("Memory settings must show only one switch and total tokens");
   mkdirSync(path.resolve("release/personal-client-mac"), { recursive: true });
   writeFileSync(path.resolve("release/personal-client-mac/shell-settings.png"), Buffer.from((await second.command("Page.captureScreenshot", { format: "png" })).data, "base64"));
   await second.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(button=>button.textContent==='账号与登录设备').click();true");
@@ -167,7 +166,7 @@ try {
   if (!await second.evaluate("!!document.querySelector('#connection')&&document.querySelector('h1').textContent==='登录 NexBot'")) throw new Error("Idle login changed after refresh interval");
   cases.push("styled-logout-cancel-confirm", "no-intermediate-web-login", "idle-login-stable-after-refresh-interval");
   if (existsSync(saved) || (await fetch(core.origin + "/api/state", { headers: { Authorization: "Bearer " + cookie } })).status !== 401) throw new Error("Logout retained access");
-  await second.quit(); cases.push("backend-plugin-settings-visible", "logout-clears-shell-and-Core-session");
+  await second.quit(); cases.push("unified-memory-settings-visible", "logout-clears-shell-and-Core-session");
   const third = await launch(); await until(() => third.evaluate("!!document.querySelector('#connection')")); await login(third, " synthetic password "); await until(() => third.evaluate("document.querySelector('.contact-groups')?.textContent.includes('独立后端联系人')"));
   await third.evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(()=>document.dispatchEvent(new Event('visibilitychange')))").catch(error => { if (!/Inspected target navigated|Execution context was destroyed/.test(error.message)) throw error; });
   await until(() => third.evaluate("!!document.querySelector('#connection')&&document.querySelector('h1').textContent==='登录 NexBot'"));

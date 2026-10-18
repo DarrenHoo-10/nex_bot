@@ -26,7 +26,7 @@
 | Android APK | 随时查看消息、发送任务、上传文件和处理审批 | Android 8.0 及以上，测试版 |
 | 网页版 | 不安装应用，直接开始对话和管理助手 | 浏览器访问即可 |
 
-Android 0.2.2 与 Windows 共用账号设置、模型、记忆服务、连接器、设备和助手管理界面。Mac 应用暂不支持操作窗口。iPhone 和 Android 客户端不会控制手机；通过手机或网页向助手安排电脑任务时，目标电脑需要保持 NexBot 登录、在线且未暂停控制。
+Android 0.2.3 与 Windows 共用账号设置、模型、记忆服务、连接器、设备和助手管理界面。Mac 应用暂不支持操作窗口。iPhone 和 Android 客户端不会控制手机；通过手机或网页向助手安排电脑任务时，目标电脑需要保持 NexBot 登录、在线且未暂停控制。
 
 ## 下载与安装
 
@@ -34,13 +34,13 @@ Android 0.2.2 与 Windows 共用账号设置、模型、记忆服务、连接器
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.2-preview.1/NexBot-0.9.2-x64-Client-Portable.exe) | 双击运行，免安装 |
-| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.2-preview.1/nexbot-0.2.2-debug.apk) | 在手机上打开并安装，测试版 |
-| 校验文件 | Windows：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.2-preview.1/SHA256SUMS.txt)；Android：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.2-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
+| Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.3-preview.1/NexBot-0.9.3-x64-Client-Portable.exe) | 双击运行，免安装 |
+| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.3-preview.1/nexbot-0.2.3-debug.apk) | 在手机上打开并安装，测试版 |
+| 校验文件 | Windows：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.3-preview.1/SHA256SUMS.txt)；Android：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.3-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
-[Android 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.2-preview.1)（连续上下文、个人助手记忆和常用模型）、[Windows 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.2-preview.1)。Windows 包尚无发布者数字签名；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+[Android 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.3-preview.1)（统一记忆设置、总用量与精简输入框）、[Windows 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.3-preview.1)。Windows 包尚无发布者数字签名；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
 
-Android 0.2.2 已包含完整设置和助手管理。自行构建请参阅 [Android 安装包说明](android/README.md)。
+Android 0.2.3 已包含完整设置和助手管理。自行构建请参阅 [Android 安装包说明](android/README.md)。
 
 ### Windows：运行 EXE
 

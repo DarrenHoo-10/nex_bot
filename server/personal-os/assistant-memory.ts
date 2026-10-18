@@ -28,13 +28,37 @@ export class AssistantMemory {
   constructor(readonly store: CoreStore, readonly changed: () => void = () => {}) {
     store.run("UPDATE assistant_usage SET status='unknown',finished_at=? WHERE status='running'", now());
   }
-  settings(botId: string) {
+  settings(botId: string): Row {
     if (!this.store.get("SELECT id FROM bots WHERE id=? AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner)) throw new Error('助手不存在');
-    return this.store.get('SELECT * FROM assistant_memory_settings WHERE bot_id=?', botId) ?? { bot_id: botId, enabled: 0, model: '', daily_budget: 100000, version: 0, cursor_seq: 0, cursor_offset: 0, updated_at: 0, last_success: null, last_error: null, next_attempt: 0, consolidated_at: 0, profile_at: 0 };
+    const settings = this.store.get('SELECT * FROM assistant_memory_settings WHERE bot_id=?', botId) ?? { bot_id: botId, enabled: 0, daily_budget: 100000, version: 0, cursor_seq: 0, cursor_offset: 0, updated_at: 0, last_success: null, last_error: null, next_attempt: 0, consolidated_at: 0, profile_at: 0 };
+    return { ...settings, model: this.globalSettings().model };
   }
   enabled(botId: string) {
     const policy = this.store.get('SELECT * FROM bot_policies WHERE bot_id=?', botId);
-    return !!this.settings(botId).enabled && !!policy && this.store.get('SELECT status FROM bots WHERE id=?',botId)?.status==='active' && policyTools(policy).includes('memory.search');
+    return !!this.globalSettings().enabled && !!this.settings(botId).enabled && !!policy && this.store.get('SELECT status FROM bots WHERE id=?',botId)?.status==='active' && policyTools(policy).includes('memory.search');
+  }
+  globalSettings() { return this.store.get('SELECT enabled,model,version FROM workspace_memory_settings WHERE id=1')!; }
+  summary() {
+    const totals = this.store.get("SELECT COALESCE(SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)),0) tokens,COALESCE(SUM(CASE WHEN u.input_tokens IS NULL OR u.output_tokens IS NULL THEN 1 ELSE 0 END),0) unknown FROM assistant_usage u JOIN bots b ON b.id=u.bot_id WHERE b.workspace_id=? AND b.owner_user_id=? AND u.purpose<>'compact'", this.store.workspace, this.store.owner)!;
+    return { ...this.globalSettings(), totalTokens: Number(totals.tokens), incomplete: Number(totals.unknown)>0 };
+  }
+  saveGlobal(data: Record<string, unknown>) {
+    const old = this.globalSettings();
+    if (Number(data.version)!==Number(old.version)) throw new Error('记忆设置已变化，请刷新');
+    if (typeof data.enabled!=='boolean') throw new Error('记忆开关无效');
+    const model = data.model===undefined ? String(old.model) : data.model;
+    if (typeof model!=='string' || model.trim().length>200) throw new Error('记忆模型 ID 无效');
+    this.pause();
+    this.store.transaction(() => {
+      this.store.run('UPDATE workspace_memory_settings SET enabled=?,model=?,version=version+1 WHERE id=1', data.enabled ? 1 : 0,model.trim());
+      for (const bot of this.store.all('SELECT id FROM bots WHERE workspace_id=? AND owner_user_id=?',this.store.workspace,this.store.owner)) {
+        const settings = this.settings(String(bot.id));
+        const starting = !settings.version || (!old.enabled && data.enabled);
+        const seq = starting ? this.store.get('SELECT COALESCE(MAX(seq),0) n FROM agent_messages WHERE bot_id=?',bot.id)!.n : settings.cursor_seq;
+        this.store.run('INSERT INTO assistant_memory_settings(bot_id,enabled,cursor_seq,cursor_offset,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(bot_id) DO UPDATE SET enabled=excluded.enabled,cursor_seq=excluded.cursor_seq,cursor_offset=excluded.cursor_offset,version=version+1,updated_at=excluded.updated_at,last_error=NULL,next_attempt=0',bot.id,data.enabled?1:0,seq,starting?0:settings.cursor_offset,now());
+      }
+    });
+    this.changed(); return this.summary();
   }
   save(botId: string, data: Record<string, unknown>) {
     const old = this.settings(botId);
@@ -45,10 +69,10 @@ export class AssistantMemory {
     const model = typeof data.model === 'string' ? data.model.trim() : '';
     if (model.length > 200) throw new Error('模型 ID 过长');
     if (data.enabled) this.store.modelConfig(botId);
-    this.pause(botId);
-    const starting=!old.version||(!old.enabled&&data.enabled);
-    const seq = starting ? Number(this.store.get('SELECT COALESCE(MAX(seq),0) n FROM agent_messages WHERE bot_id=?', botId)!.n) : old.cursor_seq;
-    this.store.run("INSERT INTO assistant_memory_settings(bot_id,enabled,model,daily_budget,cursor_seq,cursor_offset,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(bot_id) DO UPDATE SET enabled=excluded.enabled,model=excluded.model,daily_budget=excluded.daily_budget,cursor_seq=excluded.cursor_seq,cursor_offset=excluded.cursor_offset,version=version+1,updated_at=excluded.updated_at,last_error=NULL,next_attempt=0", botId, data.enabled ? 1 : 0, model, budget, seq, starting?0:old.cursor_offset, now());
+    this.store.transaction(() => {
+      this.saveGlobal({ enabled: data.enabled, model, version: this.globalSettings().version });
+      this.store.run('UPDATE assistant_memory_settings SET model=?,daily_budget=? WHERE bot_id=?',model,budget,botId);
+    });
     this.changed(); return this.settings(botId);
   }
   importHistory(botId: string, from: number, to: number) {
@@ -122,8 +146,9 @@ export class AssistantMemory {
     return this.pending;
   }
   async pump() {
-    if (this.closing || this.store.get("SELECT id FROM tasks WHERE status='running' AND ended_at IS NULL") || (this.authorize && !await this.authorize())) return;
-    for (const settings of this.store.all("SELECT s.* FROM assistant_memory_settings s JOIN bots b ON b.id=s.bot_id WHERE s.enabled=1 AND b.status='active' AND s.next_attempt<=? ORDER BY COALESCE(s.last_success,0)", now())) {
+    if (this.closing || !this.globalSettings().enabled || this.store.get("SELECT id FROM tasks WHERE status='running' AND ended_at IS NULL") || (this.authorize && !await this.authorize())) return;
+    for (const candidate of this.store.all("SELECT s.* FROM assistant_memory_settings s JOIN bots b ON b.id=s.bot_id WHERE s.enabled=1 AND b.status='active' AND s.next_attempt<=? ORDER BY COALESCE(s.last_success,0)", now())) {
+      const settings = this.settings(String(candidate.bot_id));
       const botId = String(settings.bot_id);
       if (!this.enabled(botId)) continue;
       this.controller = new AbortController(); this.activeBot = botId;
@@ -140,7 +165,7 @@ export class AssistantMemory {
   async call(settings: Row, purpose: string, instruction: string, content: unknown, signal: AbortSignal) {
     this.check(settings, signal);
     const controller=new AbortController();
-    const job=assistantCompletion(this.store, { botId: String(settings.bot_id), purpose, model: String(settings.model) || undefined, dailyBudget: Number(settings.daily_budget), instruction: rules + '\n' + instruction, content: JSON.stringify(content), signal:AbortSignal.any([signal,controller.signal]) });
+    const job=assistantCompletion(this.store, { botId: String(settings.bot_id), purpose, model: String(settings.model) || this.store.modelConfig().model, dailyBudget: Number(settings.daily_budget), instruction: rules + '\n' + instruction, content: JSON.stringify(content), signal:AbortSignal.any([signal,controller.signal]) });
     this.requests.set(controller,{botId:String(settings.bot_id),job});
     let result:string;try{result=await job;}finally{this.requests.delete(controller);}
     if(controller.signal.aborted)throw new Error('记忆请求已取消');
@@ -161,7 +186,7 @@ export class AssistantMemory {
     const cursor = imported ? Number(imported.from_seq)-1 : Number(settings.cursor_seq), offset = imported ? Number(imported.offset) : Number(settings.cursor_offset);
     const messages = this.store.all("SELECT * FROM agent_messages WHERE bot_id=? AND seq>=? AND seq<=? AND role IN ('user','assistant','peer') ORDER BY seq LIMIT 20", botId, cursor+(offset ? 0 : 1), imported?.to_seq ?? Number.MAX_SAFE_INTEGER);
     const batch: Array<{ id: string; role: string; text: string; at: number }> = []; const refs: Source[] = [];
-    let remaining = Math.min(12000, Math.floor(this.store.modelLimitSettings({ ...this.store.modelConfig(botId), model: String(settings.model) || this.store.modelConfig(botId).model }).contextWindow / 4));
+    let remaining = Math.min(12000, Math.floor(this.store.modelLimitSettings({ ...this.store.modelConfig(botId), model: String(settings.model) || this.store.modelConfig().model }).contextWindow / 4));
     let nextSeq = cursor, nextOffset = offset;
     for (const message of messages) {
       const start = Number(message.seq) === cursor ? offset : 0;

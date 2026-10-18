@@ -223,6 +223,23 @@ export class CoreStore {
       this.db.exec(schema);
       this.insert("schema_migrations", { version: 15, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=16")) this.transaction(() => {
+      const schema = `CREATE TABLE workspace_memory_settings(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),version INTEGER NOT NULL DEFAULT 0) STRICT;`;
+      this.db.exec(schema);
+      // Mixed legacy settings must not silently opt previously disabled assistants in.
+      const bots = this.get("SELECT COUNT(*) n,SUM(COALESCE(s.enabled,0)) enabled FROM bots b LEFT JOIN assistant_memory_settings s ON s.bot_id=b.id WHERE b.status='active'")!;
+      const enabled = Number(bots.n)>0 && Number(bots.n)===Number(bots.enabled) ? 1 : 0;
+      this.run('INSERT INTO workspace_memory_settings(id,enabled) VALUES(1,?)', enabled);
+      this.run('UPDATE assistant_memory_settings SET enabled=?,version=version+1', enabled);
+      this.insert('schema_migrations', { version: 16, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=17")) this.transaction(() => {
+      const schema = "ALTER TABLE workspace_memory_settings ADD COLUMN model TEXT NOT NULL DEFAULT '';";
+      this.db.exec(schema);
+      const models = this.all("SELECT DISTINCT model FROM assistant_memory_settings WHERE model<>''");
+      if (models.length===1) this.run('UPDATE workspace_memory_settings SET model=? WHERE id=1',models[0].model);
+      this.insert('schema_migrations', { version: 17, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -320,6 +337,9 @@ export class CoreStore {
       this.run("INSERT INTO agent_inboxes(bot_id,workspace_id,owner_user_id) VALUES(?,?,?)", botId, this.workspace, this.owner);
       this.insert("memory_bank_bindings", { id: id(), ...this.scope(), scope: "bot", bot_id: botId, provider_bank_id: id(), state: "provisioning" });
       this.insert("bot_public_profiles", { bot_id: botId, ...this.scope() });
+      if (this.get('SELECT enabled FROM workspace_memory_settings WHERE id=1')?.enabled) {
+        this.run('INSERT INTO assistant_memory_settings(bot_id,enabled,updated_at) VALUES(?,1,?)', botId, now());
+      }
     });
     return botId;
   }

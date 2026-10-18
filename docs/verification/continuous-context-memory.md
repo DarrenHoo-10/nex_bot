@@ -60,8 +60,8 @@ external-memory integration remains available as a compatibility option.
 
 | Setting | Initial value / behavior |
 | --- | --- |
-| Long-term memory | Off; explicit opt-in per assistant |
-| Memory model | Follow assistant model unless a model ID is selected; uses the saved API connection |
+| Long-term memory | Off; one account/workspace switch covers existing and future assistants |
+| Memory model | One shared model for all assistants; empty selection follows the account default model, independently of each assistant chat model |
 | Background daily budget | 100,000 input + output tokens; 0 means unlimited |
 | Background scheduling | Poll every 5 seconds, at least 30 seconds between successful batches; yields to active chats |
 | Extraction batch | At most 20 messages and 12,000 estimated source tokens, reduced for small model windows |
@@ -82,15 +82,35 @@ authority, not an exact tokenizer for arbitrary third-party models.
 
 ## User interface
 
-Settings → Long-term memory exposes assistant selection, switch, memory model,
-model discovery, daily budget and the extra-token notice. Monitoring offers
-today / 7 / 30 days, purpose breakdown, daily totals, cache reads, unknown usage,
-pending work, last success/error, derived-document versions and source viewing.
-It also links historical import, search and forgetting. Prices are not inferred:
-the cost field shows unknown until a pricing source is configured.
+Settings → Long-term memory shows one immediate-save switch, one shared memory
+model picker and total memory tokens. There is no assistant selector, budget form,
+detailed monitoring, import/source browser or external-service panel. Stored
+memory remains isolated per assistant; this changes control scope, not ownership.
 
-Polling does not replace unsaved form values. A version check rejects stale
-settings updates. Assistant changes and privacy epochs discard old source views.
+The total sums lifetime reported input and output tokens for native memory
+operations across the account's assistants, including archived assistants.
+Compaction and memory injected into chat are excluded; cache tokens are already
+part of reported input and are not counted again. Missing provider receipts show
+`≥` before the known total rather than presenting incomplete usage as exact.
+Disabling memory stops maintenance and recall and retains both records and usage.
+
+Schema 16 stores the workspace switch and new assistants inherit it immediately.
+Upgrading mixed legacy switches defaults the unified control to off to avoid
+silently enabling previously disabled assistants. Previously saved model and
+budget settings are preserved. Schema 17 adds the shared model selection: a
+single existing nonempty memory model is retained; differing legacy selections
+fall back to the account default until explicitly configured. Model changes
+abort pending memory requests, invalidate stale results and preserve extraction
+cursors. Both new and existing assistants use the shared choice. Concurrent
+changes use a version check. Old
+clients attempting per-assistant switch writes receive an update-required error.
+The previous detailed backend APIs remain available for compatibility/read access.
+
+Verification after the shared-model change: 16 continuity/memory tests passed
+(15 in the suite, then the corrected shared-model fixture), type checking and
+lint passed, and the real renderer passed seven isolated checks covering global opt-in, future assistants,
+combined usage, shared-model routing and persistence, disabling without deleting records and mobile
+layout. The backend synthetic provider processed both assistants separately.
 
 ## Reproduce in disposable fixtures
 

@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, ChevronDown, Search, Square } from 'lucide-react';
 import './model-picker.css';
 
@@ -50,7 +50,8 @@ export function ModelList({ models, value, selected, onSelect, emptyLabel, allow
   </div>;
 }
 
-export function ModelPicker({ value, onChange, models, loadModels, label = '选择模型', emptyLabel, name, disabled, open: controlledOpen, onOpenChange }: {
+export function ModelPicker({ value, onChange, models, loadModels, label = '选择模型', emptyLabel, name, disabled, open: controlledOpen, onOpenChange, anchorRef }: {
+  anchorRef?: RefObject<HTMLElement | null>;
   value: string; onChange: (model: string) => void; models?: string[] | null; loadModels?: () => Promise<Catalog>;
   label?: string; emptyLabel?: string; name?: string; disabled?: boolean; open?: boolean; onOpenChange?: (open: boolean) => void;
 }) {
@@ -71,7 +72,7 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
     const el = panel.current; if (!open || !el) return;
     el.showPopover();
     const position = () => {
-      const anchor = trigger.current?.getBoundingClientRect(); if (!anchor) return;
+      const anchor = (anchorRef?.current ?? trigger.current)?.getBoundingClientRect(); if (!anchor) return;
       el.style.width = `${Math.min(Math.max(anchor.width, 340), innerWidth - 24)}px`;
       const below = innerHeight - anchor.bottom - 12, above = anchor.top - 12;
       const down = below >= Math.min(el.scrollHeight, 390) || below >= above;
@@ -88,11 +89,11 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
     return () => { observer.disconnect(); window.removeEventListener('resize', position); document.removeEventListener('scroll', scroll, true); document.removeEventListener('pointerdown', outside); if (el.isConnected) el.hidePopover(); };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   const options = useMemo(() => [...new Set([...(value ? [value] : []), ...(models ?? catalog?.models ?? [])])], [value, models, catalog]);
-  return <div className="model-picker" ref={root}>
+  return <div className={anchorRef ? "model-picker model-picker-menu-only" : "model-picker"} ref={root}>
     {name && <input type="hidden" name={name} value={value}/>}
-    <button ref={trigger} type="button" className="model-picker-trigger" title={value || emptyLabel} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}><span>{value || emptyLabel || label}</span><ChevronDown size={15}/></button>
-    {open && <div ref={panel} popover="manual" className="model-picker-popover" role="dialog" aria-label={label} onKeyDown={e => { if (e.key === 'Escape' || e.key === 'Tab') { if (e.key === 'Escape') e.preventDefault(); e.stopPropagation(); setOpen(false); trigger.current?.focus(); } }}>
-      <ModelList models={options} value={value} emptyLabel={emptyLabel} allowCustom onSelect={model => { if (disabled) return; onChange(model); setOpen(false); trigger.current?.focus(); }}/>
+    {!anchorRef && <button ref={trigger} type="button" className="model-picker-trigger" title={value || emptyLabel} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}><span>{value || emptyLabel || label}</span><ChevronDown size={15}/></button>}
+    {open && <div ref={panel} popover="manual" className="model-picker-popover" role="dialog" aria-label={label} onKeyDown={e => { if (e.key === 'Escape' || e.key === 'Tab') { if (e.key === 'Escape') e.preventDefault(); e.stopPropagation(); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}>
+      <ModelList models={options} value={value} emptyLabel={emptyLabel} allowCustom onSelect={model => { if (disabled) return; onChange(model); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); }}/>
       {loading && <div className="model-picker-status" role="status">正在获取模型…</div>}
       {error && <div className="model-picker-status" role="alert">{error}</div>}
       {models == null && catalog?.hasMore && <div className="model-picker-status">服务仍有未返回的模型，可输入完整 ID。</div>}

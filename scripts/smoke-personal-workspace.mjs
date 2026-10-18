@@ -112,7 +112,8 @@ try {
   const uploadNode = await command("DOM.querySelector", { nodeId: documentNode.root.nodeId, selector: "input[type=file]" });
   await command("DOM.setFileInputFiles", { nodeId: uploadNode.nodeId, files: [uploadPath] });
   await until(() => evaluate("document.querySelector('.attachment-draft')?.textContent.includes('项目说明.md')&&!document.querySelector('.send').disabled"), "upload available for attachment-only send");
-  await click("[aria-label='操作权限']");
+  await click(".composer-add");
+  await textButton("权限", "document.querySelector('.composer-command-menu')");
   await textButton("完全权限", "document.querySelector('.permission-popover')");
   await until(async () => (await api("state")).bots.find(b=>b.id===bot.id).approval_setting==='full');
   await screenshot("composer-upload-full-access-light");
@@ -123,14 +124,15 @@ try {
   if (!String(core.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='uploaded-read'")?.result_json).includes('COMPOSER_ATTACHMENT_FIXTURE')) throw new Error("Worker did not receive attachment");
   if (!await evaluate("!!document.querySelector('.transcript a[download]')&&!document.querySelector('.attachment-draft')")) throw new Error("Attachment card/cleanup missing");
   await command("Page.reload");
-  await until(() => evaluate("document.querySelector('[aria-label=操作权限]')?.dataset.mode==='full'"));
+  await until(async () => (await api("state")).bots.find(b=>b.id===bot.id).approval_setting==='full');
   await screenshot("composer-attachment-message-light");
-  await click("[aria-label='操作权限']");
+  await click(".composer-add");
+  await textButton("权限", "document.querySelector('.composer-command-menu')");
   await until(() => evaluate("document.activeElement.getAttribute('aria-checked')==='true'"), "focus current permission");
   await screenshot("composer-permission-menu-light");
   if (!await evaluate("document.querySelector('.permission-popover [aria-checked=true]')?.textContent==='完全权限'")) throw new Error("Selected permission lacks checkmark");
   await command("Input.dispatchKeyEvent", { type:"keyDown", key:"Escape", code:"Escape", windowsVirtualKeyCode:27 });
-  if (!await evaluate("!document.querySelector('.permission-popover')&&document.activeElement.getAttribute('aria-label')==='操作权限'")) throw new Error("Escape did not restore focus");
+  if (!await evaluate("!document.querySelector('.permission-popover')&&document.activeElement.getAttribute('aria-label')==='添加文件或指令'")) throw new Error("Escape did not restore focus");
   await click("[aria-label='添加文件或指令']");
   await textButton("权限", "document.querySelector('.composer-command-menu')");
   await textButton("标准权限", "document.querySelector('.permission-popover')");
@@ -144,8 +146,9 @@ try {
   const exportedText=readFileSync(path.join(downloads,readdirSync(downloads).find(name=>name.endsWith('.md'))),'utf8');
   if (!exportedText.includes('已读取你上传的项目说明') || !exportedText.includes('帮我整理今天的工作')) throw new Error("Conversation download missing messages");
   await until(() => evaluate("!document.querySelector('[aria-label=添加文件或指令]').disabled"));
-  await click("[aria-label='添加文件或指令']"); await textButton("模型设置", "document.querySelector('.composer-command-menu')");
-  await until(() => evaluate("!!document.querySelector('.preferences-panel input[name=model]')"));
+  await click("[aria-label='添加文件或指令']"); await textButton("模型", "document.querySelector('.composer-command-menu')");
+  await until(() => evaluate("!!document.querySelector('.model-picker-popover')"));
+  await command("Input.dispatchKeyEvent", {type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
   await click(`[data-agent='${bot.id}']`);
   await until(() => evaluate("!!document.querySelector('.composer')"));
   cases.push("composer-grouped-menu-file-permission-model-export", "permission-menu-checkmark-escape-focus");
@@ -297,7 +300,7 @@ try {
   const settingsNav = "document.querySelector('.preferences-nav')";
   await textButton("模型", settingsNav);
   await input("input[name='model']", "fixture-settings-draft");
-  await textButton("记忆服务", settingsNav); await textButton("模型", settingsNav);
+  await textButton("长期记忆", settingsNav); await textButton("模型", settingsNav);
   if (!await evaluate("document.querySelector('input[name=model]').value==='fixture-settings-draft'&&document.querySelectorAll('.preferences-panel:not([hidden])').length===1")) throw new Error("Category navigation lost draft or exposed multiple panels");
   await until(() => evaluate("!document.querySelector('[data-model-settings] button.primary').disabled"), "model form ready");
   await textButton("保存配置", "document.querySelector('[data-model-settings]')");
@@ -311,7 +314,7 @@ try {
   await until(async () => (await api("state")).config.default_model === "fixture-reasoning");
   if (await evaluate("/个人工作空间|后端连接|高级设置|系统信息/.test(document.body.innerText)")) throw new Error("Removed technical UI still visible");
   await geometry(); await screenshot("settings-model-light");
-  await textButton("记忆服务", settingsNav);
+  await textButton("长期记忆", settingsNav);
   await screenshot("settings-memory-light");
   await click(".workspace-account-name"); await textButton("切换深色模式", "document.querySelector('.account-menu')");
   await geometry(); await screenshot("settings-memory-dark");

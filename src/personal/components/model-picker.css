@@ -24,3 +24,5 @@
 @media(max-width:600px) { .composer-toolbar > .model-picker { max-width: 135px; } }
 
 .rk-workspace .model-search input:focus-visible, .rk-workspace .preferences-page .model-search input:focus-visible { outline: none; box-shadow: none; }
+
+.model-picker.model-picker-menu-only { display: contents; }

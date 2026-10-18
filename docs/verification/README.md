@@ -334,3 +334,6 @@ Windows EXE and Android test APK artifacts and their installation checks.
 
 The [continuous context, memory and model picker release](context-memory-release.md)
 records the 0.9.2 Windows / 0.2.2 Android verification and production rollout.
+
+The [unified memory and composer release](unified-memory-release.md) records the
+0.9.3 Windows / 0.2.3 Android verification and schema 17 deployment.

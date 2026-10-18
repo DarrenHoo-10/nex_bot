@@ -43,7 +43,6 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="长期记忆" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>长期记忆</h2></div>
           <MemoryDashboard state={state} active={category==='memory'}/>
-          <details className="preferences-advanced"><summary>外部记忆服务（兼容）</summary><MemoryPluginSettings state={state} run={run}/></details>
         </section>
         <section id={`${sectionId}-connectors`} hidden={category !== "connectors"} aria-label="连接器" className="preferences-panel">
           <ConnectorsPage state={state} refresh={refresh}/>
@@ -96,30 +95,6 @@ function ModelSettings({ state, run, active }: { state: State; run: (fn: () => P
         <ModelLimitsFields key={limitScope} scopeKey={limitScope} provider={provider} endpoint={endpoint} model={model} active={active} onReady={setLimitsReady} onEdit={() => setSaved(false)}/>
         <div className="preferences-actions"><button className="primary" type="submit" disabled={limitsReady !== limitScope}>{pending ? "保存中…" : "保存配置"}</button>{saved && <span className="preferences-saved" role="status"><Check size={15}/>已保存</span>}</div>
       </fieldset>
-    </form>
-  </section>;
-}
-function MemoryPluginSettings({ state, run }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void> }) {
-  const plugin = state.memoryPlugin;
-  const [enabled, setEnabled] = useState(plugin?.enabled ?? false), [endpoint, setEndpoint] = useState(plugin?.endpoint ?? ""), [token, setToken] = useState("");
-  const [feedback, setFeedback] = useState(""), [pending, setPending] = useState(false);
-  const labels: Record<string, string> = { disabled: "未启用", connecting: "连接中", ready: "已连接", unavailable: "连接异常" };
-  const data = { provider: "hindsight", enabled, endpoint, token };
-  const perform = (action: () => Promise<void>) => { setPending(true); setFeedback(""); void run(action).finally(() => setPending(false)); };
-  if (!plugin) return <p className="preferences-description">当前后端未提供记忆服务配置。</p>;
-  return <section className="preferences-section" data-memory-plugin>
-    <div className="preferences-section-heading"><h3>Hindsight</h3><span role="status" className={`preferences-status ${plugin.status === "unavailable" ? "is-warning" : ""}`}>{labels[plugin.status] ?? "状态未知"}</span></div>
-    {plugin.status === "unavailable" && <p className="preferences-notice">暂时无法连接记忆服务。聊天仍可使用，请检查服务地址或查看诊断详情。</p>}
-    <form onSubmit={(event) => { event.preventDefault(); perform(async () => { await api("plugins/memory", data); setToken(""); setFeedback("配置已加密保存，重启后端服务后生效。"); }); }}>
-      <fieldset disabled={pending}>
-        <label className="preferences-toggle"><span><strong>启用长期记忆</strong></span><input name="memoryEnabled" type="checkbox" role="switch" checked={enabled} onChange={(event) => { setEnabled(event.target.checked); setFeedback(""); }} aria-label="启用长期记忆"/></label>
-        <label className="field">服务地址<input name="memoryEndpoint" type="url" required={enabled} value={endpoint} spellCheck={false} placeholder="https://memory.example.com" onChange={(event) => { setEndpoint(event.target.value); setFeedback(""); }}/></label>
-        <label className="field">访问令牌<input name="memoryToken" type="password" autoComplete="off" value={token} required={enabled && !(plugin.hasToken && endpoint.replace(/\/$/, "") === plugin.endpoint)} placeholder={plugin.hasToken ? "地址不变时，留空保留已有令牌" : "输入服务访问令牌"} onChange={(event) => { setToken(event.target.value); setFeedback(""); }}/></label>
-
-        <details className="preferences-advanced"><summary>诊断详情</summary><dl className="preferences-facts"><div><dt>服务协议</dt><dd>{plugin.providers.find((provider) => provider.id === "hindsight")?.protocol ?? "Hindsight HTTP API"}</dd></div><div><dt>连接状态</dt><dd>{labels[plugin.status] ?? "状态未知"}</dd></div>{plugin.error && <div><dt>错误详情</dt><dd><code>{plugin.error}</code></dd></div>}</dl><p>模型与认证在外部 Hindsight 服务配置；修改本页配置后需重启后端服务。</p></details>
-        <div className="preferences-actions"><button className="primary" type="submit">{pending ? "处理中…" : "保存插件配置"}</button><button type="button" disabled={!endpoint} onClick={() => perform(async () => { await api("plugins/memory/test", data); setFeedback("连接测试通过，尚未更改配置。"); })}>测试连接</button></div>
-      </fieldset>
-      <p role="status" className="preferences-feedback">{feedback || (plugin.restartRequired ? "配置已变更，重启后端服务后生效。" : "")}</p>
     </form>
   </section>;
 }

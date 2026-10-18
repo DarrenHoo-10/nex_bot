@@ -1,5 +1,18 @@
 # Composer menus — 2026-10-18
 
+## Current composer simplification
+
+The persistent permission and model buttons have been removed. Both controls
+are available only through the plus menu, which shows their current values.
+The model dialog is anchored to plus; selection and Escape restore focus there.
+The permission menu also anchors to plus. Settings-page model pickers keep
+their regular triggers. Build, lint and type checking passed; the isolated
+model-picker smoke covers the absent toolbar controls, permission persistence,
+model selection, Escape focus and mobile popover bounds.
+
+The records below describe earlier releases.
+
+
 The user selected existing functionality only. The permission control now uses a
 compact icon button and a rounded menu with a checkmark on the selected mode.
 It retains **Standard / Full access**, the existing server semantics; no

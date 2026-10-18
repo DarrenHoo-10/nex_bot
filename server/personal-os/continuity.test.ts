@@ -25,6 +25,82 @@ async function wait(check:()=>boolean,app:Awaited<ReturnType<typeof fixture>>['a
 }
 afterEach(async()=>{for(const {app,fake,root} of fixtures.splice(0)){await app.close();await fake.close();if(path.dirname(root)!==os.tmpdir()||!path.basename(root).startsWith('nex-continuity-'))throw new Error('Unsafe cleanup');rmSync(root,{recursive:true,force:true});}});
 describe('Continuous personal assistant and memory',()=>{
+  it('uses the unified memory model for every assistant and preserves it across toggles and restart',async()=>{
+    const {app,bot,fake}=await fixture(),memory=app.runtime.memory.personal;
+    memory.saveGlobal({version:0,enabled:true,model:'fixture-memory'});
+    const other=app.store.createBot('不同聊天模型的助手');
+    const config=app.store.modelConfig();
+    app.agents.updateModel({id:other,provider:config.provider,endpoint:config.endpoint,model:'other-chat',version:0});
+    for(const target of [bot,other])app.agents.publish(target,'user','message','请记住此合成偏好','preference:'+target);
+    await memory.flush();await memory.flush();
+    expect(memory.rows(bot).length).toBeGreaterThan(0);expect(memory.rows(other).length,JSON.stringify(memory.settings(other))).toBeGreaterThan(0);
+    expect(fake.requests.length).toBeGreaterThan(0);expect(fake.requests.every(request=>request.model==='fixture-memory')).toBe(true);
+    const cursor=memory.settings(bot).cursor_seq,controller=new AbortController();memory.controller=controller;
+    memory.saveGlobal({version:1,enabled:true,model:'replacement-memory'});
+    expect(controller.signal.aborted).toBe(true);expect(memory.settings(bot).cursor_seq).toBe(cursor);
+    expect(memory.settings(other).model).toBe('replacement-memory');
+    expect(()=>memory.saveGlobal({version:1,enabled:true,model:'stale'})).toThrow('已变化');
+    expect(()=>memory.saveGlobal({version:2,enabled:true,model:123})).toThrow('模型');
+    memory.saveGlobal({version:2,enabled:false});
+    expect(memory.summary()).toMatchObject({enabled:0,model:'replacement-memory'});
+    const {CoreStore}=await import('./store.ts');const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
+    try{expect(reopened.get('SELECT model FROM workspace_memory_settings')?.model).toBe('replacement-memory');}finally{reopened.close();}
+    memory.saveGlobal({version:3,enabled:true,model:''});
+    fake.requests.length=0;app.agents.publish(other,'user','message','新的合成偏好','next');
+    await memory.flush();await memory.flush();
+    expect(fake.requests.length).toBeGreaterThan(0);expect(fake.requests.every(request=>request.model==='fixture-chat')).toBe(true);
+  });
+  it('uses one persistent switch for existing and future assistants and rejects stale changes',async()=>{
+    const {app,bot}=await fixture(), memory=app.runtime.memory.personal;
+    const other=app.store.createBot('第二助手');
+    expect(memory.summary()).toMatchObject({enabled:0,totalTokens:0,incomplete:false});
+    memory.saveGlobal({version:0,enabled:true});
+    expect(memory.enabled(bot)).toBe(true);expect(memory.enabled(other)).toBe(true);
+    const future=app.store.createBot('后来创建的助手');expect(memory.enabled(future)).toBe(true);
+    app.agents.publish(future,'user','message','第一条也要保留','first');
+    expect(memory.settings(future).cursor_seq).toBe(0);
+    const abort=new AbortController();memory.controller=abort;
+    memory.saveGlobal({version:1,enabled:false});
+    expect(abort.signal.aborted).toBe(true);
+    for(const target of [bot,other,future])expect(memory.enabled(target)).toBe(false);
+    app.agents.publish(future,'user','message','关闭期间的消息','off');
+    expect(()=>memory.saveGlobal({version:1,enabled:true})).toThrow('已变化');
+    memory.saveGlobal({version:2,enabled:true});
+    expect(memory.settings(future).cursor_seq).toBe(2);
+    const {CoreStore}=await import('./store.ts');
+    const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
+    try{expect(reopened.get('SELECT enabled,version FROM workspace_memory_settings')).toMatchObject({enabled:1,version:3});}finally{reopened.close();}
+  });
+  it('aggregates lifetime memory tokens without counting compaction or cache twice',async()=>{
+    const {app,bot}=await fixture(),other=app.store.createBot('第二助手'),memory=app.runtime.memory.personal;
+    for(const [id,target,purpose,input,output,cache] of [['a',bot,'retain',100,20,80],['b',other,'reflect',200,30,100],['c',bot,'compact',999,999,500],['d',bot,'retain',null,null,null]] as const){
+      app.store.run('INSERT INTO assistant_usage(id,bot_id,purpose,model,status,reserved_tokens,input_tokens,output_tokens,cache_read,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',id,target,purpose,'fixture','succeeded',2000,input,output,cache,1);
+    }
+    expect(memory.summary()).toMatchObject({totalTokens:350,incomplete:true});
+    memory.saveGlobal({version:0,enabled:true});memory.saveGlobal({version:1,enabled:false});
+    expect(memory.summary()).toMatchObject({totalTokens:350,incomplete:true});
+  });
+  it('migrates mixed old switches to off without changing saved models or budgets',async()=>{
+    const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
+    app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
+    app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
+    app.store.db.exec('DROP TABLE workspace_memory_settings; DELETE FROM schema_migrations WHERE version>=16;');
+    const {CoreStore}=await import('./store.ts');
+    const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
+    try {
+      expect(reopened.get('SELECT enabled FROM workspace_memory_settings')?.enabled).toBe(0);
+      expect(reopened.all('SELECT enabled FROM assistant_memory_settings').every(row=>row.enabled===0)).toBe(true);
+      expect(reopened.get('SELECT model,daily_budget FROM assistant_memory_settings WHERE bot_id=?',bot)).toMatchObject({model:'fixture-memory',daily_budget:80000});
+    } finally {reopened.close();}
+  });
+  it('exposes the global switch through authenticated routes and refuses old per-assistant writes',async()=>{
+    const {app,bot}=await fixture();
+    const post=(route:string,data:unknown,token='synthetic-token')=>fetch(app.origin+'/api/memory/'+route,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(data)});
+    expect((await post('summary',{},'invalid')).status).toBe(401);
+    expect(await (await post('settings',{version:0,enabled:true})).json()).toMatchObject({enabled:1,version:1});
+    expect((await post('settings',{botId:bot,version:1,enabled:false})).ok).toBe(false);
+    expect(await (await post('summary',{})).json()).toMatchObject({enabled:1});
+  });
   it('keeps full turns beyond twelve messages in the same logical conversation',async()=>{
     const {app,fake,bot}=await fixture();
     for(let n=0;n<15;n++){

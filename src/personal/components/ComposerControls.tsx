@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Check, ChevronUp, Download, Paperclip, Plus, Settings2, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Check, Download, Paperclip, Plus, Settings2, ShieldAlert, ShieldCheck } from "lucide-react";
 
 import { ModelPicker } from "./ModelPicker";
 
@@ -12,16 +12,16 @@ type Props = {
 
 export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, children, model, defaultModel, loadModels, visibleModels }: Props) {
   const [menu, setMenu] = useState<"add" | "permissions" | "models" | null>(null);
-  const root = useRef<HTMLDivElement>(null), add = useRef<HTMLButtonElement>(null), permission = useRef<HTMLButtonElement>(null);
+  const root = useRef<HTMLDivElement>(null), add = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null), id = useId();
   const full = mode === "full", ModeIcon = full ? ShieldAlert : ShieldCheck;
-  const close = () => { (menu === "permissions" ? permission : add).current?.focus(); setMenu(null); };
+  const close = () => { add.current?.focus(); setMenu(null); };
   useLayoutEffect(() => {
     const panel = menuRef.current;
     if (!menu || menu === "models" || !panel) return;
     panel.showPopover();
     const position = () => {
-      const anchor = (menu === "permissions" ? permission.current : root.current?.closest("form"))?.getBoundingClientRect();
+      const anchor = (menu === "permissions" ? add.current : root.current?.closest("form"))?.getBoundingClientRect();
       if (!anchor) return;
       panel.style.width = `${Math.min(menu === "add" ? anchor.width : 216, window.innerWidth - 24)}px`;
       panel.style.maxHeight = `${Math.max(80, Math.min(360, anchor.top - 20))}px`;
@@ -51,12 +51,9 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
   return <div className="composer-toolbar" ref={root}>
     <div className="composer-actions">
       <button ref={add} type="button" className="composer-add" aria-label="添加文件或指令" aria-haspopup="menu" aria-expanded={menu === "add"} aria-controls={menu === "add" ? `${id}-add` : undefined} disabled={disabled || uploading} onClick={() => setMenu(menu === "add" ? null : "add")}><Plus size={20}/></button>
-      <div className="composer-permission-control">
-        <button ref={permission} type="button" className="permission-trigger" aria-label="操作权限" data-mode={mode} aria-haspopup="menu" aria-expanded={menu === "permissions"} aria-controls={menu === "permissions" ? `${id}-permissions` : undefined} disabled={disabled} onClick={() => setMenu(menu === "permissions" ? null : "permissions")}><ModeIcon size={16}/><span>{full ? "完全权限" : "标准权限"}</span><ChevronUp size={14} className="permission-chevron"/></button>
         {menu === "permissions" && <div ref={menuRef} id={`${id}-permissions`} className="composer-popover permission-popover" popover="manual" role="menu" aria-label="选择操作权限" onKeyDown={navigate}>
           {[{ value: "standard", label: "标准权限", Icon: ShieldCheck }, { value: "full", label: "完全权限", Icon: ShieldAlert }].map(({ value, label, Icon }) => <button type="button" key={value} role="menuitemradio" aria-checked={mode === value} disabled={disabled} onClick={() => { close(); if (mode !== value) onMode(value); }}><Icon size={18}/><span>{label}</span>{mode === value && <Check size={17} className="menu-check"/>}</button>)}
         </div>}
-      </div>
     </div>
     {menu === "add" && <div ref={menuRef} id={`${id}-add`} className="composer-popover composer-command-menu" popover="manual" role="menu" aria-label="添加与指令" onKeyDown={navigate}>
       <div className="composer-menu-heading" role="presentation">添加</div>
@@ -66,7 +63,7 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
       <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("models")}><Settings2 size={18}/><span>模型</span><small>model</small><span className="menu-value">{model || defaultModel}</span></button>
       <button type="button" role="menuitem" disabled={disabled || !canExport} onClick={() => { close(); onExport(); }}><Download size={18}/><span>导出对话</span><small>export</small><span className="menu-value">Markdown</span></button>
     </div>}
-    <ModelPicker value={model} emptyLabel={`默认 · ${defaultModel}`} label="选择聊天模型" models={visibleModels} loadModels={loadModels} onChange={value => { if (value !== model) void onModel(value); }} disabled={disabled} open={menu === "models"} onOpenChange={open => setMenu(open ? "models" : null)}/>
+    <ModelPicker anchorRef={add} value={model} emptyLabel={`默认 · ${defaultModel}`} label="选择聊天模型" models={visibleModels} loadModels={loadModels} onChange={value => { if (value !== model) void onModel(value); }} disabled={disabled} open={menu === "models"} onOpenChange={open => setMenu(open ? "models" : null)}/>
     {children}
   </div>;
 }

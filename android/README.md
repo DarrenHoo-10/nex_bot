@@ -1,5 +1,11 @@
 # Android
 
+## 0.2.3 — unified memory controls and simplified composer
+
+One memory switch and model apply to all assistants, with lifetime token totals.
+Composer permission/model controls are available through the plus menu.
+Requires matching Core schema 17. Debug APK version code 203.
+
 ## 0.2.2 — context, personal memory and model shortlist
 
 Includes the shared searchable model picker, saved visible-model selection,

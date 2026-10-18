@@ -353,7 +353,15 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/resume") { runtime.resume(text(data.taskId, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/approvals") { runtime.decide(text(data.id, 100), text(data.hash, 100), data.allow === true, String(session.id)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/memory") { const result = runtime.memory.write(text(data.botId, 100), data); changed(); json(response, 200, result); return; }
-      if(url.pathname==='/api/memory/settings'){json(response,200,runtime.memory.personal.save(text(data.botId,100),data));return;}
+      if(url.pathname==='/api/memory/settings'){
+        if(session.user_id!==store.owner){json(response,403,{error:'此账号没有修改记忆设置的权限'});return;}
+        if(data.botId){throw new Error('记忆已改为统一开关，请更新客户端后设置');}
+        json(response,200,runtime.memory.personal.saveGlobal(data));return;
+      }
+      if(url.pathname==='/api/memory/summary'){
+        if(session.user_id!==store.owner){json(response,403,{error:'此账号没有读取记忆用量的权限'});return;}
+        json(response,200,runtime.memory.personal.summary());return;
+      }
       if(url.pathname==='/api/memory/monitor'){json(response,200,runtime.memory.personal.monitor(text(data.botId,100),[1,7,30].includes(Number(data.days))?Number(data.days):7));return;}
       if(url.pathname==='/api/memory/import'){if(data.fromTime!==undefined)runtime.memory.personal.importDates(text(data.botId,100),Number(data.fromTime),Number(data.toTime));else runtime.memory.personal.importHistory(text(data.botId,100),Number(data.from),Number(data.to));json(response,200,{queued:true});return;}
       if(url.pathname==='/api/history/search'){json(response,200,agents.search(text(data.botId,100),text(data.query,200)));return;}
