@@ -1,6 +1,8 @@
 import { installAndroidBridge } from "./android-bridge";
+import { installViewportHeight } from "./android-viewport";
 import { describeError, showBootError } from "./error-report";
 installAndroidBridge();
+installViewportHeight(window, document.documentElement);
 // Before React mounts nothing else can report a failure, which would leave a blank page.
 const fail = (reason: unknown) => {
   const root = document.getElementById("root");
