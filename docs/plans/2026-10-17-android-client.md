@@ -142,13 +142,13 @@
 |---|---|---|
 | `sync` | `{cursor, privacyEpoch, coreId, bootId}` | 缓存分区（`coreId`）与失效判断 |
 | `bots` | 联系人 + `unread_count`、`last_message`、`last_message_at`、`version`、`policy_*`、`expertise_json` | 首页列表、能力标签 |
-| `tasks` | 最近 200 条任务（含 `active_tool`、`status`、`objective`） | 工作指示、停止、资料页 |
+| `tasks` | 最近 200 条任务（含 `active_tool`、`status`、`objective`） | 工作指示、停止、助手详情的工作页 |
 | `approvals` | 待处理审批（含 `argument_hash`、`arguments_json`、`bot_id`、`task_id`） | 审批卡与角标 |
-| `routines` / `occurrences` | 例行任务与最近 100 次执行 | 例行任务页 |
-| `memories` | 记忆文档**含正文** | 资料页记忆；仅摘要视图可省正文 |
+| `routines` / `occurrences` | 例行任务与最近 100 次执行 | 助手详情 → 工作 |
+| `memories` | 记忆文档**含正文** | 手机不展示记忆正文；摘要视图可省正文 |
 | `delegations` | 最近 100 条 A2A 关系 | 同伴消息标记 |
-| `devices` / `onlineDevices` | 设备目录与在线集合 | 概览 |
-| `journal` | 最近 100 条完成记录 | 资料页「已有工作记录」 |
+| `devices` / `onlineDevices` | 设备目录与在线集合 | 暂不展示（P3 设备页） |
+| `journal` | 最近 100 条完成记录 | 工作页「最近执行」 |
 | `connectors` / `usage` / `config` / `memoryEngine` / `memoryPlugin` / `node` | 主机配置与用量 | 概览只读展示 |
 
 ## 5. 身份、会话与安全
@@ -330,8 +330,8 @@ data: {}
 | 连接 / 登录 | 地址、账号、密码、记住连接、错误 | `/api/client/identity`、`auth/start`、`auth/respond`、`session` |
 | Agent 列表（首页） | 头像、名字、最近一句、未读、工作指示、待审批角标；搜索；新建 Agent（P2） | `state.bots`（`agents.contacts()` 已含 unread/last） |
 | 聊天 | 历史、流式、工具步骤、A2A 标记、审批卡、处理中、发送/停止/引用/复制 | `agents/messages`、`state.approvals`、`state.tasks`、`state.delegations` |
-| Agent 资料（底部抽屉） | 概览（状态、连接器、设备、例行任务入口、用量）、记忆（读/编辑/撤回）、工作（任务、最近执行） | `state.*`、`memory*`、`routines` |
-| 例行任务 | 列表、开关、立即执行、下次时间；新建/编辑（P2） | `state.routines`、`state.occurrences` |
+| 助手详情（二级页，`工作` / `设置`） | 工作：任务、最近执行、例行任务列表/开关/立即执行/编辑；设置：基础信息、身份编辑；`资料` 页已从 Windows 移除，手机不做 | `state.tasks`、`state.routines`、`bots.instructions` |
+| 例行任务 | 助手详情 → 工作内的列表、开关、立即执行、下次时间；新建/编辑（P2） | `state.routines`、`state.occurrences` |
 | 账号与连接 | 当前账号、过期时间、登录设备列表、撤销、退出、其他已保存 Core | `auth/status`、`clients` |
 | 工具/文件预览 | 工具调用的参数与结果、文件内容（只读） | `/api/preview?callId=` / `?path=` |
 
@@ -397,8 +397,8 @@ android/
   activity-compose 1.11.0、lifecycle 2.9.4、datastore-preferences 1.1.7、
   kotlinx-coroutines 1.10.2、kotlinx-serialization-json 1.9.0、OkHttp 4.12.0、
   androidx.browser（Custom Tabs，打开链接）。
-- 暂不加 CameraX/ML Kit（二维码扫描）与 Room；前者用于「扫桌面生成的连接二维码」，后者用于离线阅读，
-  都在 P2/P3。
+- 暂不加 CameraX/ML Kit 与 Room：二维码配对需要账号中心或桌面先提供配对入口，不是 Windows 已有能力，
+  推迟到 P3；Room 用于离线阅读，P2/P3 再评估。
 
 ### 9.2 签名与版本
 
@@ -600,14 +600,17 @@ job：安装 `platforms;android-36` 与 `build-tools;36.1.0`，temurin 17 跑
 `scripts/ci-scope.test.ts` 与 `scripts/ci-workflow.test.ts` 已同步，51 个用例通过。
 
 尚未完成（下一步）：审批卡的端到端工具调用、物理设备上的 Keystore/通知/输入法验证、
-release 签名与 R8、把 `android-core` 提升为 gate 的必需 job；P2 的例行任务页、Agent 资料抽屉、
-完整块级 Markdown、经典肖像头像、头部共享/详情入口、二维码连接。
+release 签名与 R8、把 `android-core` 提升为 gate 的必需 job；P2 的助手详情（工作/设置）、
+完整块级 Markdown、经典肖像头像、头部共享/详情入口；二维码连接需要配对入口，属新能力。
 
 ### P2 — 日常可用（M）
 
-Agent 资料抽屉（概览/记忆/工作）、例行任务开关与立即执行、工具/文件预览、通知（前台）、
-引用/复制/搜索、草稿、二维码连接（需连接页或桌面生成 `nexbot://connect?origin=…&coreId=…` 二维码，
-手机侧扫码填入地址）、分享文本给某个 Agent。
+对齐 Windows 的「助手详情」两个页签（`src/personal/AgentDesktop.tsx`：`工作` / `设置`；`资料` 页已移除，
+不做）：工作页的例行任务列表/开关/立即执行/编辑、当前工作与最近执行；设置页的基础信息与身份编辑。
+手机上「工作」和「设置」落到二级页，工具/文件预览也在这里打开。另加前台通知、引用/复制/搜索、草稿、
+分享文本给某个 Agent。
+二维码连接不是 Windows 已有能力：它需要账号中心或桌面新增配对入口（生成 `nexbot://connect?origin=…&coreId=…`），
+手机侧扫码填入地址，单列为新能力（P3 / 需 Core 配合），不算对 Windows 的对齐项。
 验收：Robolectric 语义测试 + 模拟器上逐项点通并截图。
 
 ### P3 — 分发与稳定（M）

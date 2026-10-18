@@ -52,8 +52,10 @@ outside version control; see the design §9.2.
 - Local notifications for approvals and replies while the process is alive.
   Closed-app push needs Core-side registration and is not part of P1.
 
-Not yet: routines screen, agent profile sheet, memory editing, QR connection,
-full block Markdown, release signing and store packaging.
+Not yet: assistant details (`工作` / `设置`: routines, identity edit), memory
+editing, QR pairing (needs a pairing entrypoint that does not exist yet), full
+block Markdown, release signing and store packaging. The old `资料` drawer was
+removed from the Windows client, so it is not on the phone roadmap.
 
 ## Fixtures
 
