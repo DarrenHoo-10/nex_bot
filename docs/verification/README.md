@@ -340,3 +340,6 @@ The [unified memory and composer release](unified-memory-release.md) records the
 
 The [conversation history search fixture](conversation-search.md) covers shared
 desktop/mobile search, pagination and navigation to older messages.
+
+The [web homepage](web-homepage.md) records the signed-out browser homepage, the
+public GitHub-backed downloads endpoint and its production rollout.
