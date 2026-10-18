@@ -14,6 +14,10 @@ public final class ConversationStore {
     public private(set) var isLoadingOlder = false
     /// The first page for the current generation has arrived.
     public private(set) var isLoaded = false
+    /// A search hit is being viewed: ``messages`` is the window around that message (up to 40 before, 60 from it), not the
+    /// latest page. Older history, read receipts and "back to bottom" are off until ``WorkspaceStore/showLatest(botID:)``
+    /// or a sent message ends the view.
+    public internal(set) var focusedMessageID: String?
     /// Last send or load error text (Core's message).
     public private(set) var sendError: String?
     public private(set) var isSending = false
@@ -85,7 +89,7 @@ public final class ConversationStore {
 
     /// Fetches the 100 messages before the oldest loaded one.
     public func loadOlder() async {
-        guard hasOlder, !isLoadingOlder, let first = messages.first?.seq, let sync = loadedSync else { return }
+        guard hasOlder, focusedMessageID == nil, !isLoadingOlder, let first = messages.first?.seq, let sync = loadedSync else { return }
         isLoadingOlder = true
         let gen = generation
         defer { if gen == generation { isLoadingOlder = false } }
@@ -117,6 +121,7 @@ public final class ConversationStore {
         do {
             try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID, attachments: ids)
             pending = nil
+            if focusedMessageID != nil { workspace.leaveHistory(botID, reload: false) }
             attachments.removeAll { $0.attachment.map { ids.contains($0.id) } ?? false }
             if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
             await workspace.refresh()
@@ -141,7 +146,7 @@ public final class ConversationStore {
 
     /// Posts the read position once per new last `seq`, only while ``isActive`` and selected.
     public func markReadIfNeeded() async {
-        guard isActive, workspace.selectedBotID == botID, let through = messages.last?.seq, through > readPosition else { return }
+        guard isActive, focusedMessageID == nil, workspace.selectedBotID == botID, let through = messages.last?.seq, through > readPosition else { return }
         readPosition = through
         let gen = generation
         do { try await workspace.client.markRead(bot: botID, seq: through) }

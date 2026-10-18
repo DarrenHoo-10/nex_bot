@@ -25,6 +25,8 @@ final class UIState {
     var inspectorVisible = true
     var inspectorTab = InspectorTab.work
     var accountMenuOpen = false
+    /// The sidebar search text; non-empty replaces the contact list with message hits.
+    var contactSearch = ""
     /// The open composer popover (＋ menu, permission or model); DEBUG commands set it for screenshots.
     var composerMenu: ComposerMenuKind?
     /// The in-app 退出当前账号？ dialog of the main window.

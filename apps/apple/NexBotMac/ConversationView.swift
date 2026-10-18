@@ -240,15 +240,37 @@ private struct MessageList: View {
             && (conversation.isSending || tasks.contains { ["queued", "running", "cancelling"].contains($0.status) })
     }
 
+    private var focusedID: String? { conversation.focusedMessageID }
+
+    /// Changes when a search-result view finishes loading, so the target is scrolled to once per opening and not on each poll.
+    private var focusKey: String { "\(focusedID ?? "")|\(conversation.isLoaded)" }
+
     private var tailKey: String {
         "\(conversation.messages.last?.seq ?? 0)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")"
+    }
+
+    /// Centers the searched message. Row heights are estimated until laid out, so the jump is repeated once they are known.
+    private func scrollToFocused(_ proxy: ScrollViewProxy) async {
+        guard let id = focusedID, conversation.isLoaded else { return }
+        for delay in [50, 300] {
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard !Task.isCancelled, let seq = conversation.messages.first(where: { $0.id == id })?.seq else { return }
+            proxy.scrollTo(seq, anchor: .center)
+        }
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if conversation.hasOlder {
+                    if focusedID != nil {
+                        HStack {
+                            Spacer()
+                            Button("返回最新消息") { workspace.showLatest(botID: botID) }.buttonStyle(.link)
+                            Spacer()
+                        }
+                        .padding(.bottom, 8)
+                    } else if conversation.hasOlder {
                         HStack {
                             Spacer()
                             if conversation.isLoadingOlder { ProgressView().controlSize(.small) }
@@ -265,6 +287,12 @@ private struct MessageList: View {
                             DayDivider(label: day)
                         }
                         MessageRow(message: message, bot: bot, workspace: workspace)
+                            .overlay {
+                                if message.id == focusedID {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
+                                        .padding(-6).allowsHitTesting(false)
+                                }
+                            }
                             .padding(.bottom, 22)
                             .id(message.seq)
                     }
@@ -302,7 +330,7 @@ private struct MessageList: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if !atBottom && conversation.messages.count > 3 {
+                if !atBottom && conversation.messages.count > 3 && focusedID == nil {
                     Button { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
@@ -316,9 +344,11 @@ private struct MessageList: View {
                 }
             }
             .onChange(of: tailKey) {
+                guard focusedID == nil else { return }
                 if atBottom || conversation.messages.last?.isFromUser == true { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: conversation.isLoaded) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: conversation.isLoaded) { if focusedID == nil { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .task(id: focusKey) { await scrollToFocused(proxy) }
         }
         .environment(\.openURL, OpenURLAction { url in
             if let path = ChatLinks.path(from: url) {
