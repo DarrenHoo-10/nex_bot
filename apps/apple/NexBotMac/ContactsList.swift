@@ -106,7 +106,7 @@ struct ContactsList: View {
     private var accountCard: some View {
         Button { ui.accountMenuOpen.toggle() } label: {
             HStack(spacing: 10) {
-                PersonAvatar(size: 34)
+                PersonAvatar(initial: workspace.account?.initial ?? "N", size: 34)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(accountName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                     if workspace.connection != .connected { Text("正在重新连接…").font(.system(size: 10)).foregroundStyle(Theme.muted) }

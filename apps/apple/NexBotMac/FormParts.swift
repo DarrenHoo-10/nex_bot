@@ -260,6 +260,14 @@ extension Notification.Name { static let mbDebug = Notification.Name("nexbot.mac
     }
 }
 
+/// DEBUG: appends a line to `$NEXBOT_DEBUG_COMMAND_FILE.b.log`.
+func mbLog(_ text: String) {
+    guard let base = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_COMMAND_FILE"] else { return }
+    let path = base + ".b.log", line = text + "\n"
+    if let handle = FileHandle(forWritingAtPath: path) { handle.seekToEndOfFile(); handle.write(Data(line.utf8)); try? handle.close() }
+    else { try? line.write(toFile: path, atomically: true, encoding: .utf8) }
+}
+
 extension Notification {
     /// Splits a debug line `"cx fill a|b"` into prefix `cx`, verb `fill` and argument `a|b`.
     var mbCommand: (prefix: String, verb: String, arg: String)? {

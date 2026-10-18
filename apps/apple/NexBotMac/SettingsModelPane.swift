@@ -23,12 +23,15 @@ struct SettingsModelPane: View {
     @State private var modelNotice = ""
     @State private var modelError = ""
     @State private var manual = false
+    @State private var limits = ModelLimitsModel()
 
     private var config: ModelConfig? { workspace.state?.config }
     private var valid: Bool {
         !model.trimmingCharacters(in: .whitespaces).isEmpty && !endpoint.trimmingCharacters(in: .whitespaces).isEmpty
             && (config != nil || !apiKey.isEmpty)
     }
+    /// Limit overrides are stored per provider + endpoint + model.
+    private var limitScope: String { [provider, endpoint.trimmingCharacters(in: .whitespaces), model.trimmingCharacters(in: .whitespaces)].joined(separator: "\u{1F}") }
     private var busy: Bool { saving || loadingModels }
 
     var body: some View {
@@ -48,11 +51,13 @@ struct SettingsModelPane: View {
                         placeholder: Self.openAIDefault, mono: false)
                 keyField
                 modelField
+                ModelLimitsFields(workspace: workspace, model: limits, provider: provider, endpoint: endpoint.trimmingCharacters(in: .whitespaces),
+                                  name: model.trimmingCharacters(in: .whitespaces), onEdit: { dirty = true; saved = false })
             }
             .disabled(busy)
             .padding(.top, 20).padding(.bottom, 26)
             HStack(spacing: 14) {
-                MBButton(title: saving ? "保存中…" : "保存配置", kind: .brand, busy: saving, enabled: valid && !loadingModels, action: save)
+                MBButton(title: saving ? "保存中…" : "保存配置", kind: .brand, busy: saving, enabled: valid && !loadingModels && limits.ready, action: save)
                 if saved && !dirty {
                     HStack(spacing: 5) {
                         Image(systemName: "checkmark").font(.system(size: 11)); Text("已保存").font(.system(size: 12))
@@ -63,6 +68,7 @@ struct SettingsModelPane: View {
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).padding(.top, 12) }
         }
         .onAppear { load() }
+        .onChange(of: limitScope, initial: true) { limits.reset(scope: limitScope) }
         .onChange(of: "\(config?.providerID ?? "")|\(config?.defaultModel ?? "")|\(config?.endpoint ?? "")") { if !dirty { load(keepList: true) } }
         #if DEBUG
         .task { MBDebug.start() }
@@ -79,6 +85,15 @@ struct SettingsModelPane: View {
             case "reveal": showKey.toggle()
             case "manual": manual.toggle()
             case "save": save()
+            case "limits":
+                let l = limits.limits
+                mbLog("limits ctx=\(limits.context) out=\(limits.output) auto=\(l?.automatic.contextWindow ?? -1)/\(l?.automatic.maxOutputTokens ?? -1) manual=\(l?.manual.contextWindow.map(String.init) ?? "nil")/\(l?.manual.maxOutputTokens.map(String.init) ?? "nil") src=\(l?.source.contextWindow.rawValue ?? "-")/\(l?.source.maxOutputTokens.rawValue ?? "-") status=\(l?.status.rawValue ?? "-") err=\(limits.error) saved=\(saved) saveError=\(error ?? "")")
+            case "setlimits":
+                let p = cmd.arg.components(separatedBy: "|")
+                limits.context = p.first ?? ""; limits.userEdited(context: true)
+                limits.output = p.count > 1 ? p[1] : ""; limits.userEdited(context: false)
+                dirty = true; saved = false
+            case "lookup": limits.retry += 1
             default: break
             }
         }
@@ -203,13 +218,21 @@ struct SettingsModelPane: View {
 
     private func save() {
         guard valid, !saving else { return }
+        let context: LimitSetting, output: LimitSetting
+        do {
+            context = try ModelLimits.parse(limits.context, field: .contextWindow)
+            output = try ModelLimits.parse(limits.output, field: .maxOutputTokens)
+        } catch { self.error = mbFallbackMessage(error); saved = false; return }
         saving = true; error = nil
         Task {
             defer { saving = false }
             do {
                 try await workspace.saveModel(provider: provider, model: model.trimmingCharacters(in: .whitespaces),
-                                              endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: apiKey)
+                                              endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: apiKey,
+                                              contextWindow: context, maxOutputTokens: output)
                 apiKey = ""; showKey = false; dirty = false; saved = true
+                // Re-read what Core stored, so the form and its source labels show the saved overrides.
+                await limits.load(workspace: workspace, provider: provider, endpoint: endpoint.trimmingCharacters(in: .whitespaces), model: model.trimmingCharacters(in: .whitespaces))
             } catch {
                 self.error = mbFallbackMessage(error); saved = false
             }

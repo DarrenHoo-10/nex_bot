@@ -20,8 +20,15 @@ struct ConversationView: View {
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.scenePhase) private var scenePhase
     @State private var exported = false
+    @State private var dropTargeted = false
     @State private var memoryBaseline: [String: String]?
     @State private var memoryNotice = ""
+
+    private var dropHighlight: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.brand, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+            .background(Theme.brand.opacity(0.05)).padding(8).allowsHitTesting(false)
+            .overlay { Label("松开以添加文件", systemImage: "paperclip").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.brand) }
+    }
 
     private var conversation: ConversationStore { workspace.conversation(for: botID) }
     private var bot: Bot? { workspace.bot(botID) }
@@ -52,6 +59,12 @@ struct ConversationView: View {
             .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 24)
             .frame(maxWidth: .infinity)
         }
+        .overlay { if dropTargeted { dropHighlight } }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard bot != nil, !conv.isSending, workspace.connection == .connected else { return false }
+            Task { await conv.addFiles(urls.filter(\.isFileURL)) }
+            return true
+        } isTargeted: { dropTargeted = $0 }
         // Read receipts: only while this chat is visible and the window is key.
         .onChange(of: isActive, initial: true) { conv.isActive = isActive }
         .onChange(of: conv.messages.last?.seq) { Task { await conv.markReadIfNeeded() } }
@@ -397,10 +410,14 @@ private struct MessageRow: View {
             Text(message.content).font(.system(size: 12)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity).textSelection(.enabled)
         } else if message.isFromUser {
+            let parsed = AttachmentLink.parse(message.content)
             VStack(alignment: .trailing, spacing: 6) {
-                ChatMarkdown(source: message.content, hug: true)
-                    .padding(.horizontal, 18).padding(.vertical, 13)
-                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                VStack(alignment: .leading, spacing: 10) {
+                    if !parsed.body.isEmpty { ChatMarkdown(source: parsed.body, hug: true) }
+                    ForEach(parsed.links) { AttachmentCard(link: $0, conversation: workspace.conversation(for: botID)) }
+                }
+                .padding(.horizontal, 18).padding(.vertical, 13)
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 meta
             }
             .padding(.leading, 80)

@@ -104,7 +104,9 @@ struct MessageRow: View {
         default: botName
         }
     }
-    private var quotable: Bool { ["user", "assistant", "peer"].contains(message.role) && !message.content.isEmpty }
+    /// The Markdown text without the trailing attachment link lines, and those links.
+    private var parsed: (links: [AttachmentLink], body: String) { AttachmentLink.parse(message.content) }
+    private var quotable: Bool { ["user", "assistant", "peer"].contains(message.role) && !parsed.body.isEmpty }
     private var replied: Bool { message.a2aDirection == "replied" && message.role == "assistant" }
 
     var body: some View {
@@ -112,7 +114,9 @@ struct MessageRow: View {
             marker
             if message.role == "peer" && message.a2aDirection == nil { peerAuthor }
             if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps, onOpen: onOpenStep) }
-            if !message.content.isEmpty { bodyText }
+            let split = parsed
+            if !split.body.isEmpty { bodyText(split.body) }
+            if !split.links.isEmpty { AttachmentCards(links: split.links, workspace: workspace, trailing: message.isFromUser) }
             if let date = message.createdAt {
                 Text(TimeFormat.formatShortTime(date)).font(.system(size: 10)).foregroundStyle(Theme.muted)
                     .accessibilityLabel(TimeFormat.formatTime(date))
@@ -122,27 +126,27 @@ struct MessageRow: View {
         .contentShape(Rectangle())
         .contextMenu {
             if quotable {
-                Button { onQuote(author, message.content) } label: { Label("引用", systemImage: "arrow.turn.up.left") }
-                Button { UIPasteboard.general.string = message.content } label: { Label("复制", systemImage: "doc.on.doc") }
+                Button { onQuote(author, parsed.body) } label: { Label("引用", systemImage: "arrow.turn.up.left") }
+                Button { UIPasteboard.general.string = parsed.body } label: { Label("复制", systemImage: "doc.on.doc") }
             }
         }
     }
 
-    @ViewBuilder private var bodyText: some View {
+    @ViewBuilder private func bodyText(_ content: String) -> some View {
         if message.isFromUser {
-            ChatMarkdown(source: message.content)
+            ChatMarkdown(source: content)
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .padding(.leading, 40)
         } else if message.kind == "error" {
-            Text(message.content).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            Text(content).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
         } else if replied {
             VStack(alignment: .leading, spacing: 6) {
                 Text(botName).font(.caption.weight(.semibold))
-                FoldedReply(label: "已回复给\(peerName)", folded: $folded) { ChatMarkdown(source: message.content) }
+                FoldedReply(label: "已回复给\(peerName)", folded: $folded) { ChatMarkdown(source: content) }
             }
         } else {
-            ChatMarkdown(source: message.content)
+            ChatMarkdown(source: content)
         }
     }
 

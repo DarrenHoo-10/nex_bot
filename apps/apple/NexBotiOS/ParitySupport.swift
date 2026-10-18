@@ -117,6 +117,7 @@ final class UIDebug {
                 for line in text.split(separator: "\n") {
                     let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
                     name = parts.first ?? ""; arg = parts.count > 1 ? parts[1] : ""; seq += 1
+                    NotificationCenter.default.post(name: .nexbotDebugUI, object: nil, userInfo: ["cmd": name, "arg": arg])
                     try? await Task.sleep(for: .milliseconds(250))
                 }
             }

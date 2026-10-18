@@ -216,3 +216,25 @@ afterwards.
 - **Screenshots** (git-ignored):
   - `release/native-mac-parityA`, `-parityB`, `-align`, `native-mac-acceptance2`
   - `release/native-ios-parityA`, `-parityB`, `-align`
+
+## Composer menus, uploads, permission modes and model limits (2026-10-18)
+
+Base: `main` at `b992ddf8`, merged. The kit has 90 tests, which cover:
+- uploads and downloads, and pending attachments that are retried with the same `clientId` and ids;
+- per-agent `standard`/`full` mode;
+- tri-state model limits;
+- paginated Markdown export with privacy checks;
+- `?view=summary` polling;
+- bearer rotation 30 minutes before expiry, which is persisted and restarts SSE.
+
+Mac and iOS were exercised against isolated fixtures (`release/native-mac-composer`, `release/native-ios-composer`, `release/native-mac-acceptance3`):
+- **Attachments.** A file was attached and sent, and the message carries the `/api/attachments/<id>` link. Downloading the file gave the same bytes. A message with only an attachment also sends. A 6 MB file is rejected inline.
+- **Full access.** With 完全权限, the tool ran with no approval card. Back on 标准权限, the approval card returned.
+- **Export.** It uses the `### 我 · M/D HH:mm` + `---` format.
+- **Model limits.** The fields start on automatic (256,000 / 32,000). A manual 100000 / 128000 survives a relaunch, and clearing the fields returns them to automatic.
+- **Account avatar.** It shows the initial of the account name.
+
+**Not exercised:**
+- The real file and save panels, and drag-and-drop. Debug commands drove the same code paths instead.
+- The 联网识别 online lookup, because the fixture is offline.
+- Session refresh at a real 8-hour boundary. Unit tests cover the policy.

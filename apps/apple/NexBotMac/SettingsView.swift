@@ -117,8 +117,7 @@ private struct AccountPane: View {
         VStack(alignment: .leading, spacing: 0) {
             paneHeader("账号与登录设备")
             HStack(spacing: 14) {
-                Circle().fill(Color(hex: 0x3B66E8)).frame(width: 44, height: 44)
-                    .overlay(Image(systemName: "person").font(.system(size: 20)).foregroundStyle(.white))
+                PersonAvatar(initial: model.workspace?.account?.initial ?? "N", size: 44, online: false)
                 Text(model.workspace?.account?.displayName ?? "NexorAI 用户").font(.system(size: 15, weight: .semibold))
                 Spacer()
                 OutlineButton(title: "退出登录", action: requestLogout)

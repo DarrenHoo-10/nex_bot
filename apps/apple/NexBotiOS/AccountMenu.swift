@@ -22,7 +22,7 @@ struct AccountMenu: View {
             .padding(6)
             .cardStyle()
             HStack(spacing: 10) {
-                AccountAvatar(size: 36)
+                AccountAvatar(size: 36, initial: accountInitial(model.workspace))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(model.workspace.map(accountName) ?? "NexorAI 账号").font(.subheadline.weight(.semibold)).lineLimit(1)
                 }

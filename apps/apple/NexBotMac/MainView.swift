@@ -99,7 +99,7 @@ func message(of error: Error) -> String {
 
 #if DEBUG
 /// DEBUG-only automation: when NEXBOT_DEBUG_COMMAND_FILE is set, the file is polled and consumed line by line.
-/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector [work|settings]` (no argument toggles the column), `logout` (opens the confirmation), `accountmenu`, `settings [account|model|memory|connectors|devices]`, `dark`, `light`, `system`.
+/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector [work|settings]` (no argument toggles the column), `logout` (opens the confirmation), `attach <path>[|<path>...]`, `unattach`, `addmenu`, `permmenu`, `closemenu`, `mode full|standard`, `export <path>`, `download <id>|<path>`, `state` (results in `$NEXBOT_DEBUG_COMMAND_FILE.b.log`; the model pane takes `md limits|setlimits ctx|out|lookup` on `.b`), `accountmenu`, `settings [account|model|memory|connectors|devices]`, `dark`, `light`, `system`.
 @MainActor func runDebugCommands(workspace: WorkspaceStore, ui: UIState) async {
     guard let path = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_COMMAND_FILE"] else { return }
     while !Task.isCancelled {
@@ -126,6 +126,34 @@ func message(of error: Error) -> String {
             case "settings":
                 let category: SettingsCategory? = ["account": .account, "model": .model, "memory": .memory, "connectors": .connectors, "devices": .devices][arg]
                 ui.openSettings(category)
+            case "attach":
+                if let id = workspace.selectedBotID { await workspace.conversation(for: id).addFiles(arg.split(separator: "|").map { URL(fileURLWithPath: String($0)) }) }
+            case "unattach": if let id = workspace.selectedBotID { let c = workspace.conversation(for: id); c.attachments.last.map(c.removeAttachment) }
+            case "addmenu": ui.composerMenu = .add
+            case "permmenu": ui.composerMenu = .permissions
+            case "closemenu": ui.composerMenu = nil
+            case "mode":
+                guard let id = workspace.selectedBotID, let mode = ApprovalMode(rawValue: arg) else { break }
+                do { try await workspace.setApprovalMode(botID: id, mode: mode); mbLog("mode \(workspace.bot(id)?.approvalMode.rawValue ?? "?")") }
+                catch { mbLog("mode ERR \(message(of: error))") }
+            case "export":
+                guard let id = workspace.selectedBotID else { break }
+                do {
+                    let r = try await workspace.exportMarkdown(botID: id)
+                    try r.content.write(toFile: arg, atomically: true, encoding: .utf8)
+                    mbLog("export \(r.filename) \(r.content.count) chars")
+                } catch { mbLog("export ERR \(message(of: error))") }
+            case "download":
+                // download <attachment id>|<path>: the file Core returns, written without a save panel.
+                guard let id = workspace.selectedBotID else { break }
+                let f = arg.components(separatedBy: "|")
+                guard f.count == 2 else { break }
+                do { let name = try await AttachmentCard.debugDownload(AttachmentLink(id: f[0], name: ""), conversation: workspace.conversation(for: id), to: f[1]); mbLog("download \(name)") }
+                catch { mbLog("download ERR \(message(of: error))") }
+            case "state":
+                guard let id = workspace.selectedBotID else { break }
+                let c = workspace.conversation(for: id)
+                mbLog("state mode=\(workspace.bot(id)?.approvalMode.rawValue ?? "?") approvals=\(workspace.approvals.count) attachments=\(c.attachments.map { "\($0.name):\($0.isUploading ? "up" : $0.errorMessage ?? "ok")" }) err=\(c.sendError ?? "") last=\(c.messages.last?.content ?? "")")
             case "dark", "light", "system": UserDefaults.standard.set(parts[0], forKey: AppearanceOverride.key)
             default: break
             }

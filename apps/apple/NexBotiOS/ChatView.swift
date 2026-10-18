@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var errorText: String?
     @State private var quote: QuoteDraft?
     @State private var showRoutine = false
+    @State private var composerMenu: ComposerMenu?
     @State private var showMemory = false
     @State private var atBottom = true
     @State private var knownMemories: [String: String]?
@@ -72,6 +73,9 @@ struct ChatView: View {
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
             .overlay {
+                if composerMenu != nil { Color.black.opacity(0.001).onTapGesture { composerMenu = nil } }
+            }
+            .overlay {
                 if !conv.isLoaded {
                     VStack(spacing: 8) {
                         ProgressView()
@@ -110,7 +114,7 @@ struct ChatView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ComposerView(workspace: workspace, botID: botID, conversation: conv, botName: bot?.name ?? "Agent", quote: $quote) { showRoutine = true }
+            ComposerView(workspace: workspace, botID: botID, conversation: conv, botName: bot?.name ?? "Agent", quote: $quote, menu: $composerMenu)
         }
         .environment(\.openURL, OpenURLAction { url in
             if url.scheme == ChatMarkdown.fileScheme {

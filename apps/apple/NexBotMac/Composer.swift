@@ -12,14 +12,14 @@ struct QuoteDraft: Equatable {
     }
 }
 
-/// Return sends, Shift-Return inserts a newline. The "+" button opens the quick menu; typing `@` offers the other agents.
+/// Return sends, Shift-Return inserts a newline. The "＋" button opens the 添加 / 指令 menu, the shield button the permission menu; typing `@` offers the other agents.
 struct Composer: View {
     let workspace: WorkspaceStore
     @Bindable var conversation: ConversationStore
     let bot: Bot?
     @Environment(UIState.self) private var ui
     @FocusState private var focused: Bool
-    @State private var menuOpen = false
+    @State private var menuError: String?
     @State private var mentionIndex = 0
     @State private var mentionDismissed = false
 
@@ -28,8 +28,7 @@ struct Composer: View {
     private var botName: String { bot?.name ?? "Agent" }
     private var quote: QuoteDraft? { agentUI.quotes[botID] }
     private var hasModel: Bool { workspace.state?.config != nil }
-    private var hasText: Bool { !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var canSend: Bool { hasText && !conversation.isSending && hasModel && bot != nil }
+    private var canSend: Bool { conversation.canSend && hasModel && bot != nil }
     private var height: CGFloat {
         let lines = conversation.draft.split(separator: "\n", omittingEmptySubsequences: false).count
         return min(104, max(22, CGFloat(min(lines, 5)) * 19 + 3))
@@ -45,6 +44,8 @@ struct Composer: View {
         VStack(spacing: 8) {
             if let quote { quoteBar(quote) }
             if !mentions.isEmpty { mentionMenu }
+            if !conversation.attachments.isEmpty { AttachmentChips(conversation: conversation) }
+            if let menuError { errorLine(menuError) }
             field
         }
         .onChange(of: ui.composerFocusTick) { focused = true }
@@ -53,42 +54,74 @@ struct Composer: View {
     }
 
     private var field: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            Button { menuOpen.toggle() } label: {
-                Image(systemName: "plus").font(.system(size: 15)).foregroundStyle(Theme.foreground)
-                    .frame(width: 34, height: 34).overlay(Circle().strokeBorder(Theme.border)).contentShape(Circle())
-            }
-            .buttonStyle(.plain).help("快捷操作").accessibilityLabel("打开快捷操作")
-            .popover(isPresented: $menuOpen, arrowEdge: .top) { quickMenu }
+        VStack(alignment: .leading, spacing: 8) {
+            textInput
+            toolbar
+        }
+        .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 10)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border))
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+    }
 
-            TextEditor(text: $conversation.draft)
-                .font(.system(size: 14))
-                .scrollContentBackground(.hidden)
-                .focused($focused)
-                .frame(height: height)
-                .padding(.bottom, 5)
-                .overlay(alignment: .topLeading) {
-                    if conversation.draft.isEmpty {
-                        Text("给 \(botName) 发消息…")
-                            .font(.system(size: 14)).foregroundStyle(Theme.muted)
-                            .padding(.leading, 5).allowsHitTesting(false)
-                    }
+    private var textInput: some View {
+        TextEditor(text: $conversation.draft)
+            .font(.system(size: 14))
+            .scrollContentBackground(.hidden)
+            .focused($focused)
+            .frame(height: height)
+            .overlay(alignment: .topLeading) {
+                if conversation.draft.isEmpty {
+                    Text("给 \(botName) 发消息…")
+                        .font(.system(size: 14)).foregroundStyle(Theme.muted)
+                        .padding(.leading, 5).allowsHitTesting(false)
                 }
-                .onKeyPress(.downArrow) { moveMention(1) }
-                .onKeyPress(.upArrow) { moveMention(-1) }
-                .onKeyPress(.tab) { applyMention() }
-                .onKeyPress(.escape) {
-                    guard !mentions.isEmpty else { return .ignored }
-                    mentionDismissed = true
-                    return .handled
+            }
+            .onKeyPress(.downArrow) { moveMention(1) }
+            .onKeyPress(.upArrow) { moveMention(-1) }
+            .onKeyPress(.tab) { applyMention() }
+            .onKeyPress(.escape) {
+                guard !mentions.isEmpty else { return .ignored }
+                mentionDismissed = true
+                return .handled
+            }
+            .onKeyPress(.return, phases: .down) { press in
+                if press.modifiers.contains(.shift) { return .ignored }
+                if !mentions.isEmpty { return applyMention() }
+                send()
+                return .handled
+            }
+            .accessibilityLabel("发送给 Agent 的消息")
+    }
+
+    /// Bottom row: 添加 (＋), 操作权限 and the round send button.
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            Button { toggle(.add) } label: {
+                Image(systemName: "plus").font(.system(size: 15, weight: .regular)).foregroundStyle(Theme.muted)
+                    .frame(width: 34, height: 34).background(menu == .add ? Theme.border : Theme.secondary, in: Circle()).contentShape(Circle())
+            }
+            .buttonStyle(.plain).disabled(controlsDisabled)
+            .help("添加文件或指令").accessibilityLabel("添加文件或指令")
+            .popover(isPresented: open(.add), arrowEdge: .top) { addMenu }
+
+            Button { toggle(.permissions) } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: full ? "exclamationmark.shield" : "checkmark.shield").font(.system(size: 14))
+                    Text(mode.title).font(.system(size: 12))
+                    Image(systemName: "chevron.up").font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(menu == .permissions ? 180 : 0))
                 }
-                .onKeyPress(.return, phases: .down) { press in
-                    if press.modifiers.contains(.shift) { return .ignored }
-                    if !mentions.isEmpty { return applyMention() }
-                    send()
-                    return .handled
-                }
-                .accessibilityLabel("发送给 Agent 的消息")
+                .foregroundStyle(menu == .permissions ? Theme.foreground : Theme.muted)
+                .padding(.horizontal, 10).frame(height: 32)
+                .background(menu == .permissions ? Theme.border : Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(controlsDisabled)
+            .help("操作权限").accessibilityLabel("操作权限").accessibilityValue(mode.title)
+            .popover(isPresented: open(.permissions), arrowEdge: .top) { permissionMenu }
+
+            Spacer(minLength: 0)
             Button(action: send) {
                 Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
                     .foregroundStyle(canSend ? Theme.primaryForeground : .white)
@@ -98,34 +131,62 @@ struct Composer: View {
             .buttonStyle(.plain)
             .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送消息")
         }
-        .padding(.leading, 14).padding(.trailing, 14).padding(.vertical, 12)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border))
-        .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
     }
 
-    // MARK: Quick menu
+    // MARK: Menus
 
-    private var quickMenu: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            menuItem("at", "提及同伴") { conversation.draft += " @"; focused = true }
-            menuItem("clock", "安排例行任务") { agentUI.editRoutine(botID: botID) }
-            menuItem("powerplug", "管理连接器") { ui.openSettings(.connectors) }
-        }
-        .padding(6).frame(width: 170)
-        .accessibilityLabel("快捷操作")
+    private var mode: ApprovalMode { bot?.approvalMode ?? .standard }
+    private var full: Bool { mode == .full }
+    private var menu: ComposerMenuKind? { ui.composerMenu }
+    private var controlsDisabled: Bool { conversation.isSending || workspace.connection != .connected || bot == nil }
+
+    private func open(_ kind: ComposerMenuKind) -> Binding<Bool> {
+        Binding(get: { ui.composerMenu == kind }, set: { if $0 { ui.composerMenu = kind } else if ui.composerMenu == kind { ui.composerMenu = nil } })
+    }
+    private func toggle(_ kind: ComposerMenuKind) { ui.composerMenu = ui.composerMenu == kind ? nil : kind }
+    private func close() { ui.composerMenu = nil; focused = true }
+
+    private var addMenu: some View {
+        ComposerMenu(label: "添加与指令", entries: [
+            .heading("添加"),
+            .row(.init(id: "file", icon: "paperclip", title: "文件", key: "file", enabled: !conversation.isUploadingAttachments, action: { close(); chooseFiles() })),
+            .heading("指令"),
+            .row(.init(id: "permission", icon: full ? "exclamationmark.shield" : "checkmark.shield", title: "权限", key: "permission", value: mode.title,
+                       action: { ui.composerMenu = .permissions })),
+            .row(.init(id: "model", icon: "slider.horizontal.3", title: "模型设置", key: "model", action: { close(); ui.openSettings(.model) })),
+            .row(.init(id: "export", icon: "arrow.down.to.line", title: "导出对话", key: "export", value: "Markdown",
+                       enabled: !conversation.messages.isEmpty, action: { close(); exportConversation() })),
+        ], initialID: "file", width: 340, close: close)
     }
 
-    private func menuItem(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
-        Button { menuOpen = false; action() } label: {
-            HStack(spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 12)).foregroundStyle(Theme.muted).frame(width: 16)
-                Text(title).font(.system(size: 12)).foregroundStyle(Theme.foreground)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10).frame(height: 30).contentShape(Rectangle())
+    private var permissionMenu: some View {
+        ComposerMenu(label: "选择操作权限", entries: ApprovalMode.allCases.map { option in
+            .row(.init(id: option.rawValue, icon: option == .full ? "exclamationmark.shield" : "checkmark.shield", title: option.title,
+                       checked: mode == option, radio: true, action: { close(); setMode(option) }))
+        }, initialID: mode.rawValue, width: 216, close: close)
+    }
+
+    private func setMode(_ next: ApprovalMode) {
+        guard next != mode else { return }
+        menuError = nil
+        Task {
+            do { try await workspace.setApprovalMode(botID: botID, mode: next) }
+            catch { menuError = message(of: error) }
         }
-        .buttonStyle(.plain)
+    }
+
+    private func chooseFiles() {
+        FilePanels.pickFiles { urls in Task { await conversation.addFiles(urls) } }
+    }
+
+    private func exportConversation() {
+        menuError = nil
+        Task {
+            do {
+                let result = try await workspace.exportMarkdown(botID: botID)
+                _ = try FilePanels.save(Data(result.content.utf8), suggested: result.filename)
+            } catch { menuError = message(of: error) }
+        }
     }
 
     // MARK: Quote and mention
@@ -145,6 +206,12 @@ struct Composer: View {
         .padding(.horizontal, 14).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(alignment: .leading) { Rectangle().fill(Theme.brand).frame(width: 3).padding(.vertical, 6) }
+    }
+
+    private func errorLine(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 12)).foregroundStyle(Theme.danger).textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var mentionMenu: some View {

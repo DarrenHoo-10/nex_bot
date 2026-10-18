@@ -25,6 +25,8 @@ final class UIState {
     var inspectorVisible = true
     var inspectorTab = InspectorTab.work
     var accountMenuOpen = false
+    /// The open composer popover (＋ or permission); DEBUG commands set it for screenshots.
+    var composerMenu: ComposerMenuKind?
     /// The in-app 退出当前账号？ dialog of the main window.
     var logoutConfirmOpen = false
     /// Incremented to open the settings window.
@@ -155,17 +157,19 @@ struct RootView: View {
     }
 }
 
-/// The account avatar of the web sidebar: a blue circle with a person and a green online dot.
+/// The account avatar of the web sidebar: a blue circle with the user name initial and a green online dot.
 struct PersonAvatar: View {
+    var initial = "N"
     var size: CGFloat = 34
+    var online = true
 
     var body: some View {
         Circle().fill(Color(hex: 0x3B66E8))
             .frame(width: size, height: size)
-            .overlay(Image(systemName: "person").font(.system(size: size * 0.46, weight: .medium)).foregroundStyle(.white))
+            .overlay(Text(initial).font(.system(size: size * 0.42, weight: .semibold)).foregroundStyle(.white))
             .overlay(alignment: .bottomTrailing) {
-                Circle().fill(Theme.success).frame(width: size * 0.3, height: size * 0.3)
-                    .overlay(Circle().stroke(Theme.background, lineWidth: 2))
+                if online { Circle().fill(Theme.success).frame(width: size * 0.3, height: size * 0.3)
+                    .overlay(Circle().stroke(Theme.background, lineWidth: 2)) }
             }
             .accessibilityHidden(true)
     }

@@ -16,19 +16,25 @@ extension WorkspaceStore {
     }
 }
 
-/// The account avatar: blue circle with a person icon and an online dot.
+/// The account avatar: blue circle with the first character of the account name and an online dot.
 struct AccountAvatar: View {
     var size: CGFloat = 32
+    var initial = "N"
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             Circle().fill(Theme.brand)
-                .overlay(Image(systemName: "person").font(.system(size: size * 0.45, weight: .medium)).foregroundStyle(.white))
+                .overlay(Text(initial).font(.system(size: size * 0.45, weight: .semibold)).foregroundStyle(.white))
             Circle().fill(Theme.success).frame(width: max(8, size * 0.28), height: max(8, size * 0.28))
                 .overlay(Circle().stroke(Theme.background, lineWidth: 2))
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
+}
+
+/// The avatar letter of the signed-in account (`AccountStatus.initial`).
+@MainActor func accountInitial(_ workspace: WorkspaceStore?) -> String {
+    (workspace?.account ?? AccountStatus(authenticated: false)).initial
 }
 
 /// The signed-in account's display name from Core (`/api/auth/status`).

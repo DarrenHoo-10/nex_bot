@@ -127,24 +127,8 @@ extension View {
 }
 
 #if DEBUG
+/// One poller serves both `.debugCommand` and `.onDebugUI` (two readers of the same file would consume each other's lines).
 @MainActor enum DebugUIPoller {
-    private static var started = false
-    static func start() {
-        guard !started, let path = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_UI_FILE"] else { return }
-        started = true
-        Task { await poll(path) }
-    }
-    private static func poll(_ path: String) async {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(300))
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8), !text.isEmpty else { continue }
-            try? "".write(toFile: path, atomically: true, encoding: .utf8)
-            for line in text.split(separator: "\n") {
-                let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
-                NotificationCenter.default.post(name: .nexbotDebugUI, object: nil, userInfo: ["cmd": parts[0], "arg": parts.count > 1 ? parts[1] : ""])
-                try? await Task.sleep(for: .milliseconds(150))
-            }
-        }
-    }
+    static func start() { UIDebug.shared.start() }
 }
 #endif

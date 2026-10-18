@@ -8,9 +8,9 @@ final class ModelForm {
     static let openAIDefault = "https://api.openai.com/v1"
     static let anthropicDefault = "https://api.anthropic.com"
 
-    var provider: String { didSet { saved = false; resetModels(); clearEnteredKey() } }
-    var model: String { didSet { saved = false } }
-    var endpoint: String { didSet { saved = false; resetModels(); clearEnteredKey() } }
+    var provider: String { didSet { saved = false; resetModels(); clearEnteredKey(); resetLimits() } }
+    var model: String { didSet { saved = false; if model != oldValue { resetLimits() } } }
+    var endpoint: String { didSet { saved = false; resetModels(); clearEnteredKey(); resetLimits() } }
     var apiKey = "" { didSet { saved = false; if apiKey != oldValue { resetModels() } } }
     /// Fetched catalog (never saved by itself).
     var models: [String] = []
@@ -24,6 +24,32 @@ final class ModelForm {
     var saving = false
     var saved = false
     var errorText: String?
+
+    // 模型参数: the limits of the current provider + endpoint + model. Blank text = automatic.
+    var limits: ModelLimitInfo?
+    var contextText = "" { didSet { if contextText != oldValue { saved = false } } }
+    var outputText = "" { didSet { if outputText != oldValue { saved = false } } }
+    var contextEdited = false
+    var outputEdited = false
+    var limitsLoading = false
+    var limitsError: String?
+    /// Scope the loaded `limits` belong to.
+    var limitsScope: String?
+    var scopeKey: String { "\(provider)\n\(endpoint.trimmingCharacters(in: .whitespaces))\n\(model.trimmingCharacters(in: .whitespaces))" }
+
+    /// A different model: show that model's saved overrides, never the previous model's edits.
+    func resetLimits() {
+        limits = nil; limitsScope = nil; limitsError = nil; limitsLoading = false
+        contextText = ""; outputText = ""; contextEdited = false; outputEdited = false
+    }
+
+    /// Applies an answer for `scope`; ignored when the form moved on. Fields the user edited are kept.
+    func apply(_ info: ModelLimitInfo, scope: String) {
+        guard scope == scopeKey else { return }
+        limits = info; limitsScope = scope
+        if !contextEdited { contextText = info.manual.contextWindow.map(String.init) ?? "" }
+        if !outputEdited { outputText = info.manual.maxOutputTokens.map(String.init) ?? "" }
+    }
 
     init(config: ModelConfig?) {
         provider = config?.providerID == "anthropic" ? "anthropic" : "openai"
@@ -93,6 +119,7 @@ struct SettingsModelView: View {
                     }
                 }
                 modelField
+                limitsSection
                 if let message = form.errorText { InlineBanner(text: message) }
                 HStack(spacing: 12) {
                     PrimaryButton(title: form.saving ? "保存中…" : "保存配置", busy: form.saving, brand: true) { Task { await save() } }.disabled(!canSave)
@@ -104,6 +131,7 @@ struct SettingsModelView: View {
             .padding(14).cardStyle()
         }
         .onDisappear { form.showKey = false }
+        .task(id: form.scopeKey) { await loadLimits() }
         .onDebugUI { cmd, arg in
             switch cmd {
             case "m-provider": form.changeProvider(to: arg)
@@ -114,6 +142,9 @@ struct SettingsModelView: View {
             case "m-pick": if form.models.contains(arg) { form.model = arg }
             case "m-manual": form.manual.toggle()
             case "m-save": Task { await save() }
+            case "m-context": form.contextEdited = true; form.contextText = arg
+            case "m-output": form.outputEdited = true; form.outputText = arg
+            case "m-lookup": Task { await lookup(force: true) }
             default: break
             }
         }
@@ -163,6 +194,78 @@ struct SettingsModelView: View {
         }
     }
 
+    // MARK: 模型参数
+
+    private var limitsModelReady: Bool { !form.model.trimmingCharacters(in: .whitespaces).isEmpty && !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    private func separated(_ n: Int?) -> String { n.map { $0.formatted(.number.grouping(.automatic)) } ?? "—" }
+
+    private var limitsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("模型参数").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button { Task { await lookup(force: true) } } label: {
+                    HStack(spacing: 6) {
+                        if form.limitsLoading { ProgressView().controlSize(.small) }
+                        Text(form.limitsLoading ? "识别中…" : "联网识别")
+                    }
+                }
+                .buttonStyle(PillButtonStyle()).disabled(form.limitsLoading || !limitsModelReady || form.limitsScope != form.scopeKey)
+            }
+            limitField("上下文窗口（Token）", text: $form.contextText, edited: { form.contextEdited = true },
+                       automatic: form.limits?.automatic.contextWindow, source: form.limits?.automatic.source.contextWindow, name: "context")
+            limitField("最大输出 Token", text: $form.outputText, edited: { form.outputEdited = true },
+                       automatic: form.limits?.automatic.maxOutputTokens, source: form.limits?.automatic.source.maxOutputTokens, name: "output")
+            Text((form.limits?.status ?? .matched).text).font(.caption).foregroundStyle(Theme.muted)
+            if let error = form.limitsError { Text(error).font(.caption).foregroundStyle(Theme.danger) }
+        }
+    }
+
+    private func limitField(_ title: String, text: Binding<String>, edited: @escaping () -> Void, automatic: Int?, source: ModelLimitSource?, name: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.footnote.weight(.semibold))
+            TextField(automatic.map { "自动 · \(separated($0))" } ?? "读取中…", text: Binding(get: { text.wrappedValue }, set: { edited(); text.wrappedValue = $0 }))
+                .keyboardType(.numberPad)
+                .disabled(form.limits == nil)
+                .padding(.horizontal, 12).padding(.vertical, 11)
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .accessibilityLabel(title)
+            Text(text.wrappedValue.isEmpty ? "\(source == .modelsDev ? "models.dev" : "默认") · \(separated(automatic))" : "手动配置")
+                .font(.caption).foregroundStyle(Theme.muted)
+        }
+    }
+
+    /// Saved overrides and the cached answer first, then the public directory while a field is automatic.
+    private func loadLimits() async {
+        guard limitsModelReady else { return }
+        try? await Task.sleep(for: .milliseconds(400))
+        guard !Task.isCancelled else { return }
+        await lookup(force: false)
+    }
+
+    private func lookup(force: Bool) async {
+        guard limitsModelReady else { return }
+        let scope = form.scopeKey
+        let (provider, endpoint, model) = (form.provider, form.endpoint.trimmingCharacters(in: .whitespaces), form.model.trimmingCharacters(in: .whitespaces))
+        form.limitsError = nil
+        do {
+            if !force || form.limitsScope != scope {
+                let cached = try await workspace.modelLimits(provider: provider, endpoint: endpoint, model: model)
+                form.apply(cached, scope: scope)
+                guard scope == form.scopeKey else { return }
+                if !force && cached.manual.contextWindow != nil && cached.manual.maxOutputTokens != nil { return }
+            }
+            form.limitsLoading = true
+            defer { if scope == form.scopeKey { form.limitsLoading = false } }
+            let result = try await workspace.refreshModelLimits(provider: provider, endpoint: endpoint, model: model, force: force)
+            form.apply(result, scope: scope)
+            if scope == form.scopeKey, result.refreshFailed { form.limitsError = "联网识别失败，使用缓存或默认值" }
+        } catch {
+            if scope == form.scopeKey { form.limitsError = coreMessage(error) }
+        }
+    }
+
     /// Fetches the provider's catalog with the typed provider/endpoint/key (an empty key reuses the saved one). Never saves.
     private func loadModels() async {
         guard loadable else { return }
@@ -183,7 +286,12 @@ struct SettingsModelView: View {
         form.saving = true; form.errorText = nil
         defer { form.saving = false }
         do {
-            try await workspace.saveModel(provider: form.provider, model: form.model.trimmingCharacters(in: .whitespaces), endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey)
+            // Untouched or not yet loaded fields keep what Core has saved; blank edited fields clear to automatic.
+            let ready = form.limitsScope == form.scopeKey
+            let context = ready ? try ModelLimits.parse(form.contextText, field: .contextWindow) : LimitSetting.preserve
+            let output = ready ? try ModelLimits.parse(form.outputText, field: .maxOutputTokens) : LimitSetting.preserve
+            try await workspace.saveModel(provider: form.provider, model: form.model.trimmingCharacters(in: .whitespaces), endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey,
+                                          contextWindow: context, maxOutputTokens: output)
             form.showKey = false; form.saved = true
         } catch { form.errorText = coreMessage(error) }
     }

@@ -89,7 +89,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             PageHeading(title: "账号与登录设备")
             HStack(spacing: 12) {
-                AccountAvatar(size: 44)
+                AccountAvatar(size: 44, initial: accountInitial(workspace))
                 Text(workspace.account?.displayName ?? "NexorAI 用户").font(.subheadline.weight(.semibold)).lineLimit(1)
                 Spacer()
                 Button("退出登录") { confirmLogout = true }.buttonStyle(PillButtonStyle())

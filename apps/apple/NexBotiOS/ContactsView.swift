@@ -142,7 +142,7 @@ struct ContactsView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("添加 Agent")
-            Button { nav.showMenu = true } label: { AccountAvatar(size: 32) }
+            Button { nav.showMenu = true } label: { AccountAvatar(size: 32, initial: accountInitial(workspace)) }
                 .buttonStyle(.plain)
                 .accessibilityLabel("账号菜单")
         }
