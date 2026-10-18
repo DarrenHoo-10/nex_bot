@@ -240,12 +240,19 @@ export async function createPersonalApp(options: AppOptions) {
         const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
         json(response, 200, stateBody(view, requestOrigin)); return;
       }
+      if (url.pathname === "/api/agents/search" && request.method === "GET") {
+        if(session.user_id!==store.owner){json(response,403,{error:'此账号没有搜索会话的权限'});return;}
+        const result=agents.searchConversations(text(url.searchParams.get('q'),200),url.searchParams.has('before')?Number(url.searchParams.get('before')):undefined);
+        json(response,200,{...result,sync:sync.snapshot()});return;
+      }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
         const after = url.searchParams.has("after") ? Number(url.searchParams.get("after")) : undefined;
         if (after !== undefined && (!Number.isSafeInteger(after) || after < 0 || before !== undefined)) throw new Error("消息位置无效");
-        const messages = after === undefined ? agents.messages(botId, before) : agents.messagesAfter(botId, after);
+        const around=url.searchParams.get('around');
+        if(around&&(before!==undefined||after!==undefined))throw new Error('消息位置无效');
+        const messages = around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before) : agents.messagesAfter(botId, after);
         json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && messages.length === 200, streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT bot_id FROM tasks WHERE id=?", w.taskId)?.bot_id === botId).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
       }
       if (url.pathname === "/api/messages" && request.method === "GET") {
