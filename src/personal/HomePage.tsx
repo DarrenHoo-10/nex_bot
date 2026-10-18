@@ -1,19 +1,25 @@
 import { ArrowRight, ArrowUp, Bot, CalendarClock, Check, Cpu, Download, FileText, Globe, Laptop, LoaderCircle, MonitorSmartphone, Plug, Plus, ShieldCheck, Smartphone, SquareTerminal } from "lucide-react";
-import type { MouseEvent, ReactNode } from "react";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { BrandMark } from "./components/BrandMark";
 import { AgentAvatar } from "./components/AgentAvatar";
 import type { Appearance } from "./avatars/appearance";
 
-// Downloads follow the current preview release; update together with README.md.
 const repo = "https://github.com/DarrenHoo-10/nex_bot";
-const release = `${repo}/releases/download/nexbot-v0.9.3-preview.1`;
 export const registerUrl = "https://user.nexorai.com.cn/register/nexbot";
-const links = {
-  windows: `${release}/NexBot-0.9.3-x64-Client-Portable.exe`,
-  android: `${release}/nexbot-0.2.3-debug.apk`,
-  releases: `${repo}/releases`,
-  apple: `${repo}/tree/main/apps/apple`,
-};
+const links = { releases: `${repo}/releases`, apple: `${repo}/tree/main/apps/apple` };
+
+interface ClientDownload { url: string; version: string; publishedAt: string }
+interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload }
+/** Core resolves the newest GitHub release; until it answers (or on an older Core) the cards open the release list. */
+function useClientDownloads() {
+  const [downloads, setDownloads] = useState<ClientDownloads>({});
+  useEffect(() => {
+    let live = true;
+    void fetch("/api/client/downloads").then((response) => response.ok ? response.json() as Promise<ClientDownloads> : {}).then((value) => { if (live) setDownloads(value); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  return downloads;
+}
 
 const work: Appearance = { kind: "companion", shape: "soft", color: "teal" };
 const research: Appearance = { kind: "companion", shape: "bean", color: "blue" };
@@ -30,12 +36,19 @@ const features = [
   { icon: ShieldCheck, title: "关键操作你来定", text: "删除、覆盖、发消息等操作先请你批准，随时可以停止。" },
 ];
 
-const platforms = [
-  { icon: Laptop, name: "Windows", detail: "x64 便携版，免安装", note: "可让助手操作这台电脑", href: links.windows, action: "下载 EXE" },
-  { icon: Smartphone, name: "Android", detail: "Android 8.0 及以上", note: "查看消息、发送任务、处理审批", href: links.android, action: "下载 APK" },
-  { icon: Globe, name: "网页版", detail: "浏览器直接使用", note: "对话和管理助手，无需安装", href: "#login", action: "立即登录" },
-  { icon: MonitorSmartphone, name: "Mac 与 iPhone", detail: "原生客户端", note: "需从源码构建", href: links.apple, action: "构建说明" },
-];
+function platforms({ windows, android }: ClientDownloads) {
+  return [
+    { icon: Laptop, name: "Windows", detail: windows ? `${windows.version} · x64 便携版，免安装` : "x64 便携版，免安装", note: "可让助手操作这台电脑", href: windows?.url ?? links.releases, action: windows ? "下载 EXE" : "前往 GitHub 下载" },
+    { icon: Smartphone, name: "Android", detail: android ? `${android.version} · Android 8.0 及以上` : "Android 8.0 及以上", note: "查看消息、发送任务、处理审批", href: android?.url ?? links.releases, action: android ? "下载 APK" : "前往 GitHub 下载" },
+    { icon: Globe, name: "网页版", detail: "浏览器直接使用", note: "对话和管理助手，无需安装", href: "#login", action: "立即登录" },
+    { icon: MonitorSmartphone, name: "Mac 与 iPhone", detail: "原生客户端", note: "需从源码构建", href: links.apple, action: "构建说明" },
+  ];
+}
+function releaseNote({ windows, android }: ClientDownloads) {
+  const published = [windows?.publishedAt, android?.publishedAt].filter(Boolean).sort().at(-1);
+  const date = published ? new Date(published).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" }) : "";
+  return `${date ? `最新预览版发布于 ${date}。` : "安装包发布在 GitHub。"}Windows 包尚无发布者签名，Android 包为测试签名。`;
+}
 
 const steps = [
   { title: "注册账号", text: "使用邀请码注册 NexorAI 账号，邀请码由服务运营方提供。" },
@@ -88,6 +101,7 @@ function ProductPreview() {
 }
 
 export function HomePage({ login }: { login: ReactNode }) {
+  const downloads = useClientDownloads();
   return <div className="home">
     <header className="home-nav">
       <a className="home-logo" href="#top"><BrandMark size={30}/><strong>NexBot</strong></a>
@@ -114,8 +128,8 @@ export function HomePage({ login }: { login: ReactNode }) {
         <div className="home-features">{features.map(({ icon: Icon, title, text }) => <article key={title}><span className="home-icon"><Icon size={19}/></span><h3>{title}</h3><p>{text}</p></article>)}</div>
       </section>
       <section id="platforms" className="home-section">
-        <div className="home-section-head"><p className="home-eyebrow">下载</p><h2>在常用的设备上使用</h2><p>当前为 2026-10-18 预览版。Windows 包尚无发布者签名，Android 包为测试签名。</p></div>
-        <div className="home-platforms">{platforms.map(({ icon: Icon, name, detail, note, href, action }) => <a key={name} href={href} {...external(href)} onClick={href === "#login" ? toLogin : undefined}>
+        <div className="home-section-head"><p className="home-eyebrow">下载</p><h2>在常用的设备上使用</h2><p>{releaseNote(downloads)}</p></div>
+        <div className="home-platforms">{platforms(downloads).map(({ icon: Icon, name, detail, note, href, action }) => <a key={name} href={href} {...external(href)} onClick={href === "#login" ? toLogin : undefined}>
           <span className="home-icon"><Icon size={19}/></span><strong>{name}</strong><span>{detail}</span><small>{note}</small><b>{action}<ArrowRight size={14}/></b>
         </a>)}</div>
         <p className="home-release-link"><a href={links.releases} {...external(links.releases)}>查看全部版本与校验文件</a></p>
