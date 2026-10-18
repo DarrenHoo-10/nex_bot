@@ -261,6 +261,8 @@ The [chat composer record](chat-composer.md) covers file uploads, per-assistant
 permission modes and execution-socket heartbeat/receipt reconciliation.
 The [composer menus record](composer-menus.md) covers the grouped plus menu,
 permission popover and Markdown conversation download.
+The [effect approvals record](effect-approvals.md) covers the shift from asking
+for every terminal write or MCP call to gating only dangerous effects.
 
 The [current inspector and contact motion record](inspector-cleanup.md) covers
 compact routines, direct avatar/identity editing and active sidebar animation.
