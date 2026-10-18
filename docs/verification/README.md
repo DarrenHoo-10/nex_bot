@@ -331,3 +331,6 @@ printed path. Never kill processes by name and never delete a broad temp root.
 
 The [downloadable client preview](client-downloads.md) records the public
 Windows EXE and Android test APK artifacts and their installation checks.
+
+The [continuous context, memory and model picker release](context-memory-release.md)
+records the 0.9.2 Windows / 0.2.2 Android verification and production rollout.

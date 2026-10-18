@@ -1,5 +1,11 @@
 # Android
 
+## 0.2.2 — context, personal memory and model shortlist
+
+Includes the shared searchable model picker, saved visible-model selection,
+optional assistant memory and monitoring. Requires the matching Core with
+schema 15. Retains the 0.2.1 WebView viewport fix. Debug APK version code 202.
+
 ## 0.2.1 — blank screen and collapsed dialogs
 
 The Android WebView resolves every vertical viewport unit (`vh`, `dvh`, `svh`,

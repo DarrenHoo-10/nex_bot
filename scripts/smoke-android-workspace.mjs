@@ -1,9 +1,11 @@
 // Run only against fixture-android-workspace.mjs and its explicitly forwarded emulator.
 import assert from "node:assert/strict";
+import path from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 import { connectAndroidWorkspace } from "./testing/android-workspace-cdp.mjs";
-const fixture = JSON.parse(readFileSync("release/android-workspace/fixture.json", "utf8"));
-const c = await connectAndroidWorkspace();
+const fixtureFile = process.argv[2] || "release/android-workspace/fixture.json";
+const fixture = JSON.parse(readFileSync(fixtureFile, "utf8"));
+const c = await connectAndroidWorkspace(Number(process.argv[3] || 9227));
 const cases = [];
 const q = JSON.stringify;
 const wait = async (expression, label = expression) => {
@@ -43,9 +45,10 @@ try {
   await input("input[name=contextWindow]", "256000"); await input("input[name=maxOutputTokens]", "32000");
   await button("保存配置"); await wait("!!document.querySelector('.preferences-saved')");
   check("model configuration saved through native authenticated transport");
-  await button("获取模型列表"); await wait("!!document.querySelector('.preferences-model-controls select')");
+  await button("获取模型列表"); await wait("document.querySelector('[data-model-settings] [role=status]')?.textContent.includes('已获取')");
   check("provider model list using saved credential");
-  await section("记忆服务");
+  await section("长期记忆");
+  await c.evaluate("document.querySelector('[data-memory-plugin]').closest('details').open=true");
   check("memory service controls", await c.evaluate("!!document.querySelector('input[name=memoryEndpoint]') && document.body.innerText.includes('测试连接')"));
   await section("连接器"); await button("添加连接器");
   await input(".connector-modal input[name=name]", "演示知识库"); await input(".connector-modal input[name=url]", fixture.mcp + "/mcp");
@@ -83,16 +86,16 @@ try {
   await back();
   check("Back closes menu state", await c.evaluate("document.querySelector('.composer-add').getAttribute('aria-expanded')==='false'"));
   await click(".composer-add"); await c.evaluate("[...document.querySelectorAll('.composer-command-menu button')].find(b=>b.querySelector('small')?.textContent==='model').click()");
-  await wait("[...document.querySelectorAll('.composer-model-menu button')].some(b=>b.textContent==='fixture-reasoning')");
+  await wait("[...document.querySelectorAll('.model-picker-popover [role=option]')].some(b=>b.textContent==='fixture-reasoning')");
   check("composer opens model selector without settings", await c.evaluate("!document.querySelector('.preferences-nav') && !!document.querySelector('[aria-label=搜索模型]')"));
-  await button("fixture-reasoning", "document.querySelector('.composer-model-menu')");
-  await wait("!document.querySelector('.composer-model-menu')");
+  await c.evaluate("[...document.querySelectorAll('.model-picker-popover [role=option]')].find(el=>el.textContent==='fixture-reasoning').click()");
+  await wait("!document.querySelector('.model-picker-popover')");
   await new Promise(resolve=>setTimeout(resolve,500));
   check("selected model saved per assistant", (await api("state")).bots.some(b=>String(b.name).startsWith('手机助手') && b.selected_model==='fixture-reasoning'));
   check("mobile layout has no horizontal overflow", await c.evaluate("document.documentElement.scrollWidth<=innerWidth"));
-  writeFileSync("release/android-workspace/smoke-result.json", JSON.stringify({ passed: true, cases }, null, 2));
+  writeFileSync(path.join(path.dirname(fixtureFile), "smoke-result.json"), JSON.stringify({ passed: true, cases }, null, 2));
   console.log(JSON.stringify({ passed: true, cases }, null, 2));
 } catch (error) {
-  writeFileSync("release/android-workspace/smoke-failure.txt", await c.evaluate("document.body.innerText"));
+  writeFileSync(path.join(path.dirname(fixtureFile), "smoke-failure.txt"), await c.evaluate("document.body.innerText"));
   console.error(JSON.stringify({ passed: false, cases })); throw error;
 } finally { c.close(); }

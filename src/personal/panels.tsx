@@ -40,7 +40,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
           <ModelSettings state={state} run={run} active={category === "model"}/>
           {state.config && <ModelVisibility key={JSON.stringify([state.config.provider_id,state.config.endpoint])} state={state} refresh={refresh} active={category === "model"}/>}
         </section>
-        <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="记忆服务" className="preferences-panel">
+        <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="长期记忆" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>长期记忆</h2></div>
           <MemoryDashboard state={state} active={category==='memory'}/>
           <details className="preferences-advanced"><summary>外部记忆服务（兼容）</summary><MemoryPluginSettings state={state} run={run}/></details>
