@@ -340,3 +340,6 @@ The [unified memory and composer release](unified-memory-release.md) records the
 
 The [conversation history search fixture](conversation-search.md) covers shared
 desktop/mobile search, pagination and navigation to older messages.
+
+The [sending-device context check](sender-device.md) covers telling the assistant
+which client (and paired device) the user's latest message came from, via device.inventory.
