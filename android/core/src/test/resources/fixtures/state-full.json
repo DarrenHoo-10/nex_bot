@@ -15,7 +15,9 @@
       "unread_count": 1,
       "last_message": "### 发布清单\n\n- 合并改动\n- 更新说明\n\n| 项 | 状态 |\n|---|---|\n| 构建 | 通过 |",
       "last_message_at": 1700000000000,
-      "policy_version": 1
+      "policy_version": 1,
+      "approval_setting": "standard",
+      "approval_setting_version": 0
     },
     {
       "id": "fixture-id-9",
@@ -26,7 +28,9 @@
       "unread_count": 1,
       "last_message": "有什么可以帮你？",
       "last_message_at": 1700000000000,
-      "policy_version": 1
+      "policy_version": 1,
+      "approval_setting": "standard",
+      "approval_setting_version": 0
     }
   ],
   "tasks": [],

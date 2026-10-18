@@ -14,9 +14,14 @@ import com.nexorai.nexbot.core.StreamingText
 import com.nexorai.nexbot.core.SyncPolicy
 import com.nexorai.nexbot.core.SyncState
 import com.nexorai.nexbot.core.TaskRow
+import com.nexorai.nexbot.core.UploadedAttachment
 import com.nexorai.nexbot.data.ConnectionStore
 import com.nexorai.nexbot.data.StoredConnection
 import com.nexorai.nexbot.notifications.Notifier
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Base64
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -251,18 +256,18 @@ class Repository(
         _state.update { it.copy(selectedBotId = null, messages = emptyList(), streaming = emptyList(), hasMore = false) }
     }
 
-    fun send(text: String) {
+    fun send(text: String, attachmentIds: List<String> = emptyList()) {
         val body = text.trim()
-        if (body.isEmpty()) return
+        if (body.isEmpty() && attachmentIds.isEmpty()) return
         val botId = _state.value.selectedBotId ?: return
         val core = client ?: return
-        val key = botId to body
+        val key = botId to (body + attachmentIds.joinToString("\u0000"))
         val clientId = pendingSend?.takeIf { it.first == key }?.second
             ?: UUID.randomUUID().toString().also { pendingSend = key to it }
         scope.launch {
             _state.update { it.copy(busy = true, error = null) }
             try {
-                core.send(botId, body, clientId)
+                core.send(botId, body, clientId, attachmentIds)
                 pendingSend = null
                 _state.update { it.copy(busy = false) }
                 requestReload(forceSnapshot = true)
@@ -271,6 +276,60 @@ class Repository(
             } catch (failure: Exception) {
                 _state.update { it.copy(busy = false, error = failure.message ?: "发送失败，请重试") }
             }
+        }
+    }
+
+    /** Uploads one attachment; the caller enforces the five-file, five-megabyte limits. */
+    suspend fun uploadAttachment(botId: String, name: String, bytes: ByteArray): UploadedAttachment {
+        val core = client ?: throw CoreException(0, "连接已断开")
+        return core.uploadAttachment(botId, name, Base64.getEncoder().encodeToString(bytes))
+    }
+
+    /** Changes the per-Agent approval mode and refreshes the snapshot for its version. */
+    fun setApprovalMode(mode: String) {
+        val bot = _state.value.selectedBot ?: return
+        val core = client ?: return
+        scope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            try {
+                core.setApprovalMode(bot.id, mode, bot.approvalSettingVersion)
+                _state.update { it.copy(busy = false) }
+                requestReload(forceSnapshot = true)
+            } catch (failure: CoreException) {
+                _state.update { it.copy(busy = false, error = failure.message) }
+            } catch (failure: Exception) {
+                _state.update { it.copy(busy = false, error = failure.message ?: "权限保存失败") }
+            }
+        }
+    }
+
+    suspend fun downloadAttachment(path: String): ByteArray {
+        val core = client ?: throw CoreException(0, "连接已断开")
+        return core.download(path)
+    }
+
+    /** The whole transcript as Markdown, fetched page by page from the start. */
+    suspend fun exportTranscript(): String {
+        val core = client ?: throw CoreException(0, "连接已断开")
+        val botId = _state.value.selectedBotId ?: throw CoreException(0, "没有选中的 Agent")
+        val botName = _state.value.selectedBot?.name ?: "Agent"
+        val initial = loadedSync ?: throw CoreException(0, "状态尚未加载")
+        val rows = mutableListOf<MessageRow>()
+        var after = 0L
+        while (true) {
+            val feed = core.messages(botId, after = after)
+            if (feed.sync.coreId != initial.coreId || feed.sync.privacyEpoch != initial.privacyEpoch) {
+                throw CoreException(0, "对话已变化，请重新导出")
+            }
+            rows += feed.messages
+            if (!feed.hasMore || feed.messages.isEmpty()) break
+            after = feed.messages.last().seq
+        }
+        val formatter = DateTimeFormatter.ofPattern("M月d日 HH:mm")
+        return rows.joinToString("\n\n---\n\n") { message ->
+            "### ${Copy.senderLabel(message, botName, null)} · " +
+                formatter.format(Instant.ofEpochMilli(message.createdAt).atZone(ZoneId.systemDefault())) +
+                "\n\n" + message.content
         }
     }
 

@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import com.nexorai.nexbot.core.ApprovalRow
 import com.nexorai.nexbot.core.BotRow
 import com.nexorai.nexbot.core.MessageRow
@@ -70,5 +71,9 @@ class ChatScreenTest {
         compose.onNodeWithContentDescription("发送").assertIsDisplayed()
         compose.onNodeWithText("给 Ada 发消息…").assertIsDisplayed()
         compose.onNodeWithText("等你批准").assertIsDisplayed()
+        compose.onNodeWithText("标准权限").assertIsDisplayed()
+        compose.onNodeWithContentDescription("添加").performClick()
+        compose.onNodeWithText("文件").assertIsDisplayed()
+        compose.onNodeWithText("导出对话").assertIsDisplayed()
     }
 }

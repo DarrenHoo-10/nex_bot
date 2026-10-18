@@ -23,7 +23,11 @@ import androidx.compose.ui.text.withStyle
  * keeps line breaks and reads correctly today.
  */
 @Composable
-fun MarkdownText(text: String, modifier: Modifier = Modifier) {
+fun MarkdownText(
+    text: String,
+    modifier: Modifier = Modifier,
+    onAttachment: ((path: String, name: String) -> Unit)? = null,
+) {
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val annotated = remember(text, linkColor, codeBackground) { markdown(text, linkColor, codeBackground) }
@@ -34,7 +38,11 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier) {
         style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
         onClick = { offset ->
             annotated.getStringAnnotations(TAG_URL, offset, offset).firstOrNull()?.let { annotation ->
-                runCatching { uriHandler.openUri(annotation.item) }
+                if (annotation.item.startsWith("/api/attachments/") && onAttachment != null) {
+                    onAttachment(annotation.item, annotated.text.substring(annotation.start, annotation.end))
+                } else {
+                    runCatching { uriHandler.openUri(annotation.item) }
+                }
             }
         },
     )

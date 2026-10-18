@@ -26,11 +26,11 @@ cd android
 ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug
 ```
 
-Result: `:core` **41 tests / 6 classes**, `:app` **26 tests / 7 classes**, 0
+Result: `:core` **44 tests / 6 classes**, `:app` **26 tests / 7 classes**, 0
 failures. The debug APK is
 `android/app/build/outputs/apk/debug/nexbot-0.1.0-debug.apk`,
-**12,247,893 bytes**, SHA-256
-`5FB8AFA2EC2F83D922209551643767BD287C1DB084DBD3BE07BEFEA44303716A`. The
+**12,275,408 bytes**, SHA-256
+`C002B4A9888C2CC9B14B1CF164C27D3F66D3FF3A4514D70A09471D3B79B4776F`. The
 unsigned release build is `nexbot-0.1.0-unsigned.apk`; both names come from
 `versionName` in `android/app/build.gradle.kts`.
 
@@ -76,7 +76,15 @@ The phone follows `doc/ui/` rather than Material defaults:
   transparent assistant text, per-message time plus 引用/复制, collapsible
   `执行记录` with a status dot, tool label, monospace summary and status,
   amber-bordered approval card with 批准/拒绝, `Agent 正在工作…` row with
-  停止任务, and the pill composer with circular add and send buttons.
+  停止任务, and the composer from the 2026-10-18 reference: text on top,
+  `＋` / 权限 / send below.
+- **Composer.** `＋` groups `添加` (文件) and `指令` (权限, 导出对话); the
+  desktop-only 模型设置 entry is omitted until the phone has a settings page.
+  The 权限 button shows the per-Agent mode (`标准权限` / `完全权限`) and saves it
+  with the bot version. Attachments are limited to five files of 5 MiB each,
+  upload one at a time and appear as removable chips; sent attachment links
+  download with the bearer into Downloads (Q+) or the app's own files folder
+  (26–28). 导出对话 shares the whole transcript as Markdown.
 - **Logout.** The account row opens the menu; 退出登录 opens the confirmation
   from `logout-confirm-light.png` (`退出当前账号？` / `退出后需要重新登录。你的聊天和助手会保留。`)
   before the session is cleared.
@@ -91,9 +99,9 @@ necessary errors only. The server dialog is a title plus one field, empty
 screens are a single line, and there are no explanatory paragraphs or
 redundant subtitles.
 
-Deliberately not built in P1: the header share/info actions, the composer's
-new-conversation action, portrait avatars, and the settings/connectors/devices
-and identity pages from the references. The desktop device executor (auto
+Deliberately not built in P1: the header share/info actions, portrait avatars,
+the settings/connectors/devices and identity pages, and the 模型设置 entry
+(it needs the settings page that P2 adds). The desktop device executor (auto
 local control, Pause/Resume, stop on logout) is a Windows/Mac client concern;
 a phone client has no local device to control in this version.
 
@@ -149,6 +157,13 @@ a poll.
 - No approval round-trip from the phone: the approval card is covered by the
   Robolectric chat-screen test and the rendered screen, not by an end-to-end
   tool call.
+- The attachment flow is covered at the request layer (upload body, send with
+  attachment ids, bearer download) and by the composer's Robolectric test; the
+  system file picker, the upload of a real file and the save-to-Downloads step
+  are not driven end-to-end. 导出对话 is covered only at the request layer; the
+  share sheet is not automated.
+- The phone has no model settings; the desktop-only 模型设置 menu entry is not
+  rendered rather than shown as a dead control.
 - Portrait avatars fall back to the companion body; the 20 classic portraits
   are not shipped.
 - Release signing, R8/minified builds and store packaging are not exercised.

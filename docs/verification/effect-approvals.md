@@ -70,4 +70,4 @@ targeted lint and the Core build pass.
 
 The checks above were isolated. The rebuilt Core and worker instructions were
 subsequently deployed with the composer release on 2026-10-18; the local client
-was also updated. See the [deployment record](chat-composer.md#production-deployment--2026-10-18).
+was also updated. See the [deployment record](chat-composer.md#production-deployment-2026-10-18).

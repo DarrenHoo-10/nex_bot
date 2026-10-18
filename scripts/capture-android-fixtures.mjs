@@ -98,6 +98,8 @@ const projectState = (state) => ({
     last_message: bot.last_message,
     last_message_at: bot.last_message_at,
     policy_version: bot.policy_version,
+    approval_setting: bot.approval_setting,
+    approval_setting_version: bot.approval_setting_version,
   })),
   tasks: state.tasks ?? [],
   approvals: state.approvals ?? [],

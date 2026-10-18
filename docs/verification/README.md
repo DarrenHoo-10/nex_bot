@@ -263,6 +263,8 @@ The [chat composer record](chat-composer.md) covers file uploads, per-assistant
 permission modes and execution-socket heartbeat/receipt reconciliation.
 The [composer menus record](composer-menus.md) covers the grouped plus menu,
 permission popover and Markdown conversation download.
+The [effect approvals record](effect-approvals.md) covers the shift from asking
+for every terminal write or MCP call to gating only dangerous effects.
 
 The [current inspector and contact motion record](inspector-cleanup.md) covers
 compact routines, direct avatar/identity editing and active sidebar animation.
@@ -325,3 +327,6 @@ state. A green unit test alone does not prove a user workflow.
 Interrupt the `launch` process with Ctrl-C. It stops the exact child it owns and
 removes only its temporary data directory. The server log remains at the
 printed path. Never kill processes by name and never delete a broad temp root.
+
+The [downloadable client preview](client-downloads.md) records the public
+Windows EXE and Android test APK artifacts and their installation checks.
