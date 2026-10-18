@@ -8,6 +8,8 @@ const sourceRefs = (row: Row) => JSON.parse(String(row.refs_json)) as Source[];
 function searchTerms(query:string) {
   const q=query.toLocaleLowerCase();
   const terms = new Set(q.match(/[a-z0-9_.-]{2,}|[\u3400-\u9fff]{2,}/g) ?? []);
+  // Snapshot original terms: this loop adds derived bigrams to the same Set.
+  // eslint-disable-next-line unicorn/no-useless-spread
   for (const term of [...terms]) if (/[\u3400-\u9fff]/.test(term)) for (let i = 0; i < term.length - 1; i++) terms.add(term.slice(i, i + 2));
   return [...terms];
 }

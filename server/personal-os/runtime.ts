@@ -507,6 +507,8 @@ export class TaskRuntime {
     this.closing = true;
     const workers = [...this.workers.values()];
     for(const worker of workers)worker.controller.abort();
+    // Capture the jobs present at shutdown before awaiting their completion.
+    // eslint-disable-next-line unicorn/no-useless-spread
     await Promise.allSettled([...this.modelJobs]);
     await Promise.all(workers.map((w) => new Promise<void>((resolve) => { w.child.once("close", resolve); w.child.kill(); })));
     this.projection.close();
