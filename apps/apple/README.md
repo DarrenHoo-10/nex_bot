@@ -28,8 +28,14 @@ Keychain entitlement and login fails with `钥匙串错误 (-34018)`. Install th
 If Xcode reports "iOS 18.5 is not installed" (no iOS platform/simulator runtime on the machine), run
 `apps/apple/scripts/check-ios.sh` instead. It builds the package and type-checks the iOS sources against the simulator SDK.
 
-The built Mac app is `/tmp/nexbot-dd/Build/Products/Debug/NexBot.app`. Builds are ad-hoc signed (`CODE_SIGN_IDENTITY: "-"`),
-which is enough for local runs; set your team in Xcode for distribution. The Mac app is not sandboxed in v1.
+The built Mac app is `/tmp/nexbot-dd/Build/Products/Debug/NexBot.app`. The Mac app is not sandboxed.
+
+### Mac signing
+
+`Config/Mac.xcconfig` signs ad-hoc by default. macOS then treats every rebuild as a new app and asks for the login keychain
+password before it can read the saved login. For a stable identity, copy `Config/Signing.local.xcconfig.example` to
+`Config/Signing.local.xcconfig` (git-ignored) and set your Apple Development identity and team
+(`security find-identity -v -p codesigning`). Developer ID signing and notarization are not set up yet.
 
 ## Device executor (macOS)
 
