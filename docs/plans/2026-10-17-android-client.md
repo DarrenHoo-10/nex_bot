@@ -548,7 +548,7 @@ Gradle 工程 + `:core` 协议层 + 连接/登录 + 首页 + 聊天（读、发�
 
 ```sh
 cd android && ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug
-# :core 41 tests / 6 classes；:app 26 tests / 7 classes；debug APK 12,247,893 bytes（nexbot-0.1.0-debug.apk）
+# :core 44 tests / 6 classes；:app 26 tests / 7 classes；debug APK 12,275,408 bytes（nexbot-0.1.0-debug.apk）
 node --experimental-transform-types --no-warnings scripts/capture-android-fixtures.mjs --core=server/personal-os/index.ts --check  # 7 个 fixture 与一次性 Core 一致
 pnpm exec vitest run scripts/ci-scope.test.ts scripts/ci-workflow.test.ts   # 51 passed（CI 选择与 job 形状）
 pnpm typecheck                                      # 通过
@@ -584,7 +584,10 @@ Core 的地址收在卡片下方那行 `服务器：…` 里）、联系人（�
 44dp 头像/预览/时间/未读圆点、底部账号行，退出前有 `退出当前账号？` 确认）、
 聊天（65dp 头部与状态、居中日期分隔、右对齐浅色用户气泡、无气泡的助手正文、每条消息的
 时间/引用/复制、带状态点/工具名/等宽摘要的执行记录、琥珀边框审批卡、`Agent 正在工作…` +
-停止任务、胶囊输入条 + 圆形加号/发送）。`ScreenRenderTest` 用 Robolectric native graphics
+停止任务）。输入区按 2026-10-18 的 Windows 版：上方输入，底部 `＋` / 权限 / 发送；`＋` 分
+`添加`（文件）与 `指令`（权限、导出对话），权限按 Agent 保存标准/完全两档，附件每条消息最多
+5 个、单个 5 MiB，发送后可下载，导出对话走系统分享。桌面版的「模型设置」入口要等手机有设置页
+（P2），本轮不画死入口。`ScreenRenderTest` 用 Robolectric native graphics
 把三屏画成 PNG（`build/screens`，断言不是空白），因此布局回归不会只靠肉眼。
 
 这轮还发现并修掉一个真 bug：`GET /api/events` 请求没带 `Authorization`，Core 回 401，而
@@ -601,13 +604,15 @@ job：安装 `platforms;android-36` 与 `build-tools;36.1.0`，temurin 17 跑
 
 尚未完成（下一步）：审批卡的端到端工具调用、物理设备上的 Keystore/通知/输入法验证、
 release 签名与 R8、把 `android-core` 提升为 gate 的必需 job；P2 的助手详情（工作/设置）、
-完整块级 Markdown、经典肖像头像、头部共享/详情入口；二维码连接需要配对入口，属新能力。
+模型设置（模型参数与上下文/输出上限）、完整块级 Markdown、经典肖像头像、头部共享/详情入口；
+二维码连接需要配对入口，属新能力。
 
 ### P2 — 日常可用（M）
 
 对齐 Windows 的「助手详情」两个页签（`src/personal/AgentDesktop.tsx`：`工作` / `设置`；`资料` 页已移除，
 不做）：工作页的例行任务列表/开关/立即执行/编辑、当前工作与最近执行；设置页的基础信息与身份编辑。
-手机上「工作」和「设置」落到二级页，工具/文件预览也在这里打开。另加前台通知、引用/复制/搜索、草稿、
+手机上「工作」和「设置」落到二级页，工具/文件预览也在这里打开；设置页补上模型参数与
+上下文/输出上限（输入区「模型设置」入口等它落地后再显示）。另加前台通知、引用/复制/搜索、草稿、
 分享文本给某个 Agent。
 二维码连接不是 Windows 已有能力：它需要账号中心或桌面新增配对入口（生成 `nexbot://connect?origin=…&coreId=…`），
 手机侧扫码填入地址，单列为新能力（P3 / 需 Core 配合），不算对 Windows 的对齐项。

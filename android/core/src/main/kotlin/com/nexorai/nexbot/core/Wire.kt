@@ -107,6 +107,9 @@ data class BotRow(
     @SerialName("policy_json") val policyJson: String? = null,
     @SerialName("policy_version") val policyVersion: Long = 0,
     @SerialName("expertise_json") val expertiseJson: String? = null,
+    /** `standard` asks before risky tools; `full` applies them directly. */
+    @SerialName("approval_setting") val approvalSetting: String = "standard",
+    @SerialName("approval_setting_version") val approvalSettingVersion: Long = 0,
 )
 
 @Serializable
@@ -270,6 +273,16 @@ data class MessageFeed(
 
 @Serializable
 data class SendReceipt(val taskId: String = "")
+
+/** `POST /api/attachments`; the message itself carries the link. */
+@Serializable
+data class UploadedAttachment(
+    val id: String = "",
+    @SerialName("botId") val botId: String = "",
+    val name: String = "",
+    val mime: String = "",
+    val size: Long = 0,
+)
 
 @Serializable
 data class OkReply(val ok: Boolean = false)

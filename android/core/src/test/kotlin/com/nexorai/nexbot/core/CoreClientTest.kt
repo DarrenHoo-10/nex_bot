@@ -106,12 +106,52 @@ class CoreClientTest {
     fun `sending reuses the caller's idempotency key`() = runBlocking {
         server.enqueue(json("""{"taskId":"task-1"}"""))
         client.useToken("tok")
-        val receipt = client.send("bot-1", "你好", "client-1")
+        val receipt = client.send("bot-1", "你好", "client-1", listOf("a1", "a2"))
         assertEquals("task-1", receipt.taskId)
         val body = server.takeRequest().body.readUtf8()
         assertTrue(body.contains("\"clientId\":\"client-1\""))
         assertTrue(body.contains("\"text\":\"你好\""))
         assertTrue(body.contains("\"botId\":\"bot-1\""))
+        assertTrue(body.contains("\"attachments\":[\"a1\",\"a2\"]"))
+    }
+
+    @Test
+    fun `an upload carries the base64 payload and returns the attachment`() = runBlocking {
+        server.enqueue(json("""{"id":"a1","botId":"bot-1","name":"notes.md","mime":"text/markdown","size":5}"""))
+        client.useToken("tok")
+        val uploaded = client.uploadAttachment("bot-1", "notes.md", "aGVsbG8=")
+        assertEquals("a1", uploaded.id)
+        assertEquals("text/markdown", uploaded.mime)
+        val recorded = server.takeRequest()
+        assertEquals("/api/attachments", recorded.path)
+        val body = recorded.body.readUtf8()
+        assertTrue(body.contains("\"name\":\"notes.md\""))
+        assertTrue(body.contains("\"data\":\"aGVsbG8=\""))
+        assertEquals("Bearer tok", recorded.getHeader("Authorization"))
+    }
+
+    @Test
+    fun `approval mode is saved with the bot version`() = runBlocking {
+        server.enqueue(json("""{"ok":true}"""))
+        client.useToken("tok")
+        client.setApprovalMode("bot-1", "full", 3)
+        val recorded = server.takeRequest()
+        assertEquals("/api/bots/approval-mode", recorded.path)
+        val body = recorded.body.readUtf8()
+        assertTrue(body.contains("\"id\":\"bot-1\""))
+        assertTrue(body.contains("\"mode\":\"full\""))
+        assertTrue(body.contains("\"version\":3"))
+    }
+
+    @Test
+    fun `attachments download with the bearer`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        client.useToken("tok")
+        val bytes = client.download("/api/attachments/a1")
+        assertEquals("hello", bytes.decodeToString())
+        val recorded = server.takeRequest()
+        assertEquals("/api/attachments/a1", recorded.path)
+        assertEquals("Bearer tok", recorded.getHeader("Authorization"))
     }
 
     @Test

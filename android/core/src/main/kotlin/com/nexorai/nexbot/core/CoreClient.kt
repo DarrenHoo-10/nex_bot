@@ -10,10 +10,13 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -134,11 +137,41 @@ class CoreClient(
         return get(withQuery("/api/agents/messages", params), MessageFeed.serializer())
     }
 
-    suspend fun send(botId: String, text: String, clientId: String): SendReceipt = post(
-        "/api/agents/input",
-        jsonBody("botId" to botId, "text" to text, "clientId" to clientId),
-        SendReceipt.serializer(),
+    suspend fun send(
+        botId: String,
+        text: String,
+        clientId: String,
+        attachments: List<String> = emptyList(),
+    ): SendReceipt {
+        val body = buildJsonObject {
+            put("botId", botId)
+            put("text", text)
+            put("clientId", clientId)
+            put("attachments", buildJsonArray { attachments.forEach { add(it) } })
+        }
+        return post("/api/agents/input", CoreJson.encodeToString(JsonObject.serializer(), body), SendReceipt.serializer())
+    }
+
+    suspend fun uploadAttachment(botId: String, name: String, data: String): UploadedAttachment = post(
+        "/api/attachments",
+        jsonBody("botId" to botId, "name" to name, "data" to data),
+        UploadedAttachment.serializer(),
     )
+
+    suspend fun setApprovalMode(botId: String, mode: String, version: Long) {
+        post("/api/bots/approval-mode", jsonBody("id" to botId, "mode" to mode, "version" to version), OkReply.serializer())
+    }
+
+    /** Download an already-sent attachment; the bearer is added like any call. */
+    suspend fun download(path: String): ByteArray {
+        require(path.startsWith("/api/attachments/")) { "not an attachment path" }
+        val response = execute("GET", path, null, token)
+        return try {
+            withContext(Dispatchers.IO) { response.body?.bytes() ?: ByteArray(0) }
+        } finally {
+            response.close()
+        }
+    }
 
     suspend fun markRead(botId: String, seq: Long) {
         post("/api/agents/read", jsonBody("botId" to botId, "seq" to seq), OkReply.serializer())

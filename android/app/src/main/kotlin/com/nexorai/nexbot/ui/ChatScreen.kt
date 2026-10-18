@@ -1,5 +1,16 @@
 package com.nexorai.nexbot.ui
 
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.OpenableColumns
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -9,6 +20,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +36,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -44,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -53,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -69,7 +84,10 @@ import com.nexorai.nexbot.core.Copy
 import com.nexorai.nexbot.core.MessageRow
 import com.nexorai.nexbot.core.SyncPolicy
 import com.nexorai.nexbot.core.ToolStep
+import com.nexorai.nexbot.core.UploadedAttachment
 import com.nexorai.nexbot.sync.Repository
+import java.io.File
+import kotlinx.coroutines.launch
 
 private data class Quote(val author: String, val text: String)
 
@@ -94,7 +112,83 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
     )
     var draft by rememberSaveable(bot?.id) { mutableStateOf("") }
     var quote by remember(bot?.id) { mutableStateOf<Quote?>(null) }
-    var menuOpen by remember { mutableStateOf(false) }
+    var attachments by remember(bot?.id) { mutableStateOf<List<UploadedAttachment>>(emptyList()) }
+    var uploading by remember { mutableStateOf(false) }
+    var addMenu by remember { mutableStateOf(false) }
+    var permissionMenu by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val approvalMode = bot?.approvalSetting ?: "standard"
+    val toast: (String) -> Unit = { message -> Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
+
+    fun submit() {
+        if ((draft.isBlank() && attachments.isEmpty()) || state.busy || uploading) return
+        repository.send(composeBody(quote, draft), attachments.map { it.id })
+        draft = ""
+        quote = null
+        attachments = emptyList()
+    }
+
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val botId = bot?.id
+        if (uris.isEmpty() || botId == null) return@rememberLauncherForActivityResult
+        val room = 5 - attachments.size
+        if (room <= 0) {
+            toast("最多添加 5 个附件")
+            return@rememberLauncherForActivityResult
+        }
+        if (uris.size > room) toast("最多添加 5 个附件")
+        scope.launch {
+            uploading = true
+            try {
+                for (uri in uris.take(room)) {
+                    val name = displayName(context, uri) ?: "附件"
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: continue
+                    if (bytes.isEmpty() || bytes.size > 5 * 1024 * 1024) {
+                        toast("请选择 5 MB 以内的非空文件")
+                        continue
+                    }
+                    attachments = attachments + repository.uploadAttachment(botId, name, bytes)
+                }
+            } catch (failure: Exception) {
+                toast(failure.message ?: "上传失败")
+            } finally {
+                uploading = false
+            }
+        }
+    }
+
+    fun changeMode(mode: String) {
+        permissionMenu = false
+        if (mode != approvalMode) repository.setApprovalMode(mode)
+    }
+
+    fun exportTranscript() {
+        scope.launch {
+            try {
+                val markdown = repository.exportTranscript()
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "$botName-对话.md")
+                    putExtra(Intent.EXTRA_TEXT, markdown)
+                }
+                context.startActivity(Intent.createChooser(share, "导出对话"))
+            } catch (failure: Exception) {
+                toast(failure.message ?: "导出失败")
+            }
+        }
+    }
+
+    fun downloadAttachment(path: String, name: String) {
+        scope.launch {
+            try {
+                val bytes = repository.downloadAttachment(path)
+                toast(if (saveDownload(context, name, bytes)) "已保存到下载" else "保存失败")
+            } catch (failure: Exception) {
+                toast(failure.message ?: "下载失败")
+            }
+        }
+    }
 
     val rows = remember(state.messages) { chatItems(state.messages) }
     LaunchedEffect(rows.size, state.streamingText, processing) {
@@ -209,6 +303,7 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
                         bots = state.bots,
                         onQuote = { author, text -> quote = Quote(author, text) },
                         onCopy = { text -> clipboard.setText(AnnotatedString(text)) },
+                        onAttachment = { path, name -> downloadAttachment(path, name) },
                     )
                 }
             }
@@ -246,67 +341,67 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
         }
 
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            if (attachments.isNotEmpty() || uploading) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    attachments.forEach { file ->
+                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Row(
+                                modifier = Modifier.padding(start = 9.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    file.name,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 150.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "×",
+                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .clickable(enabled = !state.busy && !uploading) {
+                                            attachments = attachments.filter { it.id != file.id }
+                                        }
+                                        .padding(horizontal = 4.dp),
+                                )
+                            }
+                        }
+                    }
+                    if (uploading) {
+                        Text("正在上传…", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
             quote?.let { quoted ->
                 QuoteBar(quoted, onDismiss = { quote = null })
                 Spacer(Modifier.height(8.dp))
             }
             Surface(
-                shape = RoundedCornerShape(28.dp),
+                shape = RoundedCornerShape(22.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(8.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    Box {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-                                .clickable { menuOpen = true }
-                                .semantics { contentDescription = "更多操作" },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            PlusGlyph(16.dp, MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text("刷新对话", fontSize = 13.sp) },
-                                onClick = {
-                                    menuOpen = false
-                                    repository.retry()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("复制对话", fontSize = 13.sp) },
-                                onClick = {
-                                    menuOpen = false
-                                    val transcript = state.messages.joinToString("\n\n") { message ->
-                                        "${Copy.senderLabel(message, botName, null)}：${message.content}"
-                                    }
-                                    clipboard.setText(AnnotatedString(transcript))
-                                },
-                            )
-                        }
-                    }
-                    Spacer(Modifier.width(10.dp))
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
                     BasicTextField(
                         value = draft,
                         onValueChange = { draft = it },
-                        modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         textStyle = TextStyle(fontSize = 14.sp, lineHeight = 22.sp, color = MaterialTheme.colorScheme.onSurface),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         maxLines = 6,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            if (draft.isNotBlank()) {
-                                repository.send(composeBody(quote, draft))
-                                draft = ""
-                                quote = null
-                            }
-                        }),
+                        keyboardActions = KeyboardActions(onSend = { submit() }),
                         decorationBox = { inner ->
                             Box {
                                 if (draft.isEmpty()) {
@@ -320,29 +415,159 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
                             }
                         },
                     )
-                    Spacer(Modifier.width(10.dp))
-                    val canSend = draft.isNotBlank() && !state.busy
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
-                            .clickable(enabled = canSend) {
-                                repository.send(composeBody(quote, draft))
-                                draft = ""
-                                quote = null
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .clickable(enabled = !uploading) { addMenu = true }
+                                    .semantics { contentDescription = "添加" },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                PlusGlyph(20.dp, MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            .semantics { contentDescription = "发送" },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        UpArrow(
-                            15.dp,
-                            if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                            DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                                Text(
+                                    "添加",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                )
+                                DropdownMenuItem(
+                                    text = { CommandRow("文件", "file") },
+                                    enabled = !uploading && bot != null,
+                                    onClick = {
+                                        addMenu = false
+                                        pickFiles.launch(arrayOf("*/*"))
+                                    },
+                                )
+                                Text(
+                                    "指令",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                )
+                                DropdownMenuItem(
+                                    text = { CommandRow("权限", if (approvalMode == "full") "完全权限" else "标准权限") },
+                                    enabled = !state.busy,
+                                    onClick = {
+                                        addMenu = false
+                                        permissionMenu = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { CommandRow("导出对话", "Markdown") },
+                                    enabled = state.messages.isNotEmpty(),
+                                    onClick = {
+                                        addMenu = false
+                                        exportTranscript()
+                                    },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        Box {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(enabled = !state.busy) { permissionMenu = true }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                ShieldGlyph(
+                                    15.dp,
+                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                                    filled = approvalMode == "full",
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    if (approvalMode == "full") "完全权限" else "标准权限",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.width(2.dp))
+                                ChevronUpGlyph(11.dp, MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            DropdownMenu(expanded = permissionMenu, onDismissRequest = { permissionMenu = false }) {
+                                PermissionItem("标准权限", approvalMode == "standard") { changeMode("standard") }
+                                PermissionItem("完全权限", approvalMode == "full") { changeMode("full") }
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        val canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !state.busy && !uploading
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable(enabled = canSend) { submit() }
+                                .semantics { contentDescription = "发送" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            UpArrow(
+                                15.dp,
+                                if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CommandRow(label: String, hint: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 13.sp)
+        Spacer(Modifier.weight(1f))
+        Text(hint, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun PermissionItem(label: String, selected: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, fontSize = 13.sp)
+                Spacer(Modifier.weight(1f))
+                if (selected) Text("✓", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+            }
+        },
+        onClick = onClick,
+    )
+}
+
+private fun displayName(context: Context, uri: Uri): String? =
+    context.contentResolver
+        .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        ?: uri.lastPathSegment
+
+/** Downloads go to the public Downloads collection on Q+, and to the app's own
+ *  external files folder on 26–28, which needs no storage permission. */
+private fun saveDownload(context: Context, name: String, bytes: ByteArray): Boolean {
+    val safe = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "attachment" }
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, safe)
+            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val target = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+        val written = resolver.openOutputStream(target)?.use { it.write(bytes) } != null
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        resolver.update(target, values, null, null)
+        written
+    } else {
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return false
+        File(dir, safe).writeBytes(bytes)
+        true
     }
 }
 
@@ -363,6 +588,7 @@ private fun MessageBlock(
     bots: List<BotRow>,
     onQuote: (String, String) -> Unit,
     onCopy: (String) -> Unit,
+    onAttachment: (String, String) -> Unit,
 ) {
     if (message.a2aDirection != null && message.a2aDirection != "replied") {
         val peer = bots.firstOrNull { it.id == (message.a2aPeerId ?: message.senderBotId) }
@@ -402,7 +628,7 @@ private fun MessageBlock(
                     )
                 }
             } else {
-                MarkdownText(message.content)
+                MarkdownText(message.content, onAttachment = onAttachment)
                 if (message.toolSteps.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
                     ToolSteps(message.toolSteps)

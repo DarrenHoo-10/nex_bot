@@ -9,7 +9,7 @@ workspace tokens (near-neutral surfaces, blue companion accent), the blue brand
 mark, companion avatars from `shared/personal-appearance.ts`, and the chat
 layout from the narrow-screen screenshot — assistant text without a bubble,
 right-aligned user bubbles, per-message time/quote/copy, the amber approval
-card and the pill composer.
+card and the two-row composer (`＋`, per-Agent permission mode, send).
 
 ## Modules
 
@@ -52,10 +52,11 @@ outside version control; see the design §9.2.
 - Local notifications for approvals and replies while the process is alive.
   Closed-app push needs Core-side registration and is not part of P1.
 
-Not yet: assistant details (`工作` / `设置`: routines, identity edit), memory
-editing, QR pairing (needs a pairing entrypoint that does not exist yet), full
-block Markdown, release signing and store packaging. The old `资料` drawer was
-removed from the Windows client, so it is not on the phone roadmap.
+Not yet: assistant details (`工作` / `设置`: routines, identity edit), model
+parameters, memory editing, QR pairing (needs a pairing entrypoint that does not
+exist yet), full block Markdown, release signing and store packaging. The old
+`资料` drawer was removed from the Windows client, so it is not on the phone
+roadmap.
 
 ## Fixtures
 
@@ -81,14 +82,15 @@ changes a field.
 
 ## What the tests prove
 
-`:core` (41 JVM tests):
+`:core` (44 JVM tests):
 
 - origin acceptance rules (`Origin.kt`), including public-HTTP refusal;
 - SSE parsing across CRLF/LF/CR, comments, multi-line data, sticky ids and
   malformed payloads;
 - decoding of captured identity, login, state (full and summary), messages and
   live-frame documents, with unknown fields tolerated;
-- request shapes and error mapping against a MockWebServer;
+- request shapes and error mapping against a MockWebServer, including the
+  attachment upload, send-with-attachments, approval-mode and download calls;
 - the timing decisions the stream depends on (coalescing, backoff, staleness,
   refresh lead, snapshot invalidation, typing rule) with plain numbers.
 
@@ -100,7 +102,8 @@ changes a field.
 - inline Markdown spans and links, list markers becoming bullets;
 - the companion avatar contract (first Agent soft/teal, the 4×5 hash grid) and
   day/time labels;
-- the chat screen mounting with a real approval card and composer;
+- the chat screen mounting with a real approval card, the composer's
+  permission label and the `＋` menu (文件 / 导出对话);
 - a native-graphics render of the login, agent-list and chat screens that
   asserts the pixels are not blank and writes PNGs to `build/screens`.
 
