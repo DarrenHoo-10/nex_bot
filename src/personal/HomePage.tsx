@@ -73,7 +73,7 @@ function ProductPreview() {
       <div className="home-window-body">
         <aside className="home-mock-sidebar">
           <div className="home-mock-brand"><BrandMark size={22}/><strong>NexBot</strong><Plus size={15}/></div>
-          <div className="home-mock-search">搜索联系人</div>
+          <div className="home-mock-search">搜索会话记录</div>
           <p className="home-mock-label">对话</p>
           <div className="home-mock-contact is-selected"><AgentAvatar appearance={work} size={34} state="working" animate/><div><strong>工作助手</strong><span>正在生成周报草稿…</span></div></div>
           <div className="home-mock-contact"><AgentAvatar appearance={research} size={34}/><div><strong>研究伙伴</strong><span>找到 3 篇相关资料</span></div></div>
