@@ -19,6 +19,16 @@ public final class ConversationStore {
     public private(set) var isSending = false
     /// Composer text. Survives resets; discarded only when the session ends.
     public var draft = ""
+    /// Files attached to the next message (up to 5), in the order they were added. Survive resets like ``draft``.
+    public private(set) var attachments: [PendingAttachment] = []
+    /// At least one file is still uploading; ``send(text:)`` waits (returns false) until it finishes.
+    public var isUploadingAttachments: Bool { attachments.contains { $0.isUploading } }
+    /// Files that are uploaded and will be sent with the next message.
+    public var readyAttachments: [ChatAttachment] { attachments.compactMap(\.attachment) }
+    /// The composer can send: there is text or a ready file, nothing is uploading or sending.
+    public var canSend: Bool {
+        !isSending && !isUploadingAttachments && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !readyAttachments.isEmpty)
+    }
     /// Set by the UI while this conversation is visible and the window/scene is active; enables read receipts.
     public var isActive = false { didSet { if isActive && !oldValue { Task { await markReadIfNeeded() } } } }
 
@@ -27,7 +37,7 @@ public final class ConversationStore {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var readPosition = 0
     /// Same text keeps the same clientId, so a retry after a network error is never a duplicate.
-    @ObservationIgnored private(set) var pending: (text: String, clientID: String)?
+    @ObservationIgnored private(set) var pending: (text: String, attachmentIDs: [String], clientID: String)?
 
     init(botID: String, workspace: WorkspaceStore) { self.botID = botID; self.workspace = workspace }
 
@@ -47,7 +57,31 @@ public final class ConversationStore {
         loadedSync = nil; readPosition = 0
     }
 
-    func discardDraft() { draft = ""; pending = nil; sendError = nil }
+    func discardDraft() { draft = ""; attachments = []; pending = nil; sendError = nil }
+
+    /// Uploads a file for the next message. A file over 5 MiB or empty, or a sixth file, sets ``sendError`` ("文件不能超过 5 MB" /
+    /// "最多添加 5 个附件") and adds nothing. A failed upload stays in ``attachments`` as `.failed` until removed.
+    public func addAttachment(name: String, data: Data) async {
+        guard attachments.count < ChatAttachment.maxCount else { sendError = ChatAttachment.tooManyMessage; return }
+        guard !data.isEmpty, data.count <= ChatAttachment.maxBytes else { sendError = ChatAttachment.tooLargeMessage; return }
+        sendError = nil
+        let local = PendingAttachment(id: UUID().uuidString, name: name, size: data.count, state: .uploading)
+        attachments.append(local)
+        do {
+            let uploaded = try await workspace.client.uploadAttachment(botID: botID, name: name, data: data)
+            update(local.id, .ready(uploaded))
+        } catch {
+            update(local.id, .failed(workspace.report(error).message))
+        }
+    }
+
+    /// Drops a pending file (uploaded files simply stay unreferenced on Core and expire).
+    public func removeAttachment(_ attachment: PendingAttachment) { attachments.removeAll { $0.id == attachment.id } }
+
+    private func update(_ id: String, _ state: PendingAttachment.State) {
+        guard let i = attachments.firstIndex(where: { $0.id == id }) else { return }
+        attachments[i].state = state
+    }
 
     /// Fetches the 100 messages before the oldest loaded one.
     public func loadOlder() async {
@@ -67,19 +101,23 @@ public final class ConversationStore {
         }
     }
 
-    /// Sends `text` (default: the draft). Returns true when Core accepted it. On failure the draft stays and
-    /// calling again with the same text reuses the same `clientId`.
+    /// Sends `text` (default: the draft) with the ready ``attachments``. The text may be empty when files are attached.
+    /// Returns true when Core accepted it. On failure the draft and files stay and calling again with the same text and
+    /// the same files reuses the same `clientId` and attachment ids, so a retry is never a duplicate. Files are cleared only
+    /// after success. Returns false while a file is uploading.
     @discardableResult
     public func send(text override: String? = nil) async -> Bool {
         let text = (override ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isSending else { return false }
-        if pending?.text != text { pending = (text, UUID().uuidString) }
+        let ids = readyAttachments.map(\.id)
+        guard (!text.isEmpty || !ids.isEmpty), !isSending, !isUploadingAttachments else { return false }
+        if pending?.text != text || pending?.attachmentIDs != ids { pending = (text, ids, UUID().uuidString) }
         let clientID = pending!.clientID
         isSending = true; sendError = nil
         defer { isSending = false }
         do {
-            try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID)
+            try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID, attachments: ids)
             pending = nil
+            attachments.removeAll { $0.attachment.map { ids.contains($0.id) } ?? false }
             if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
             await workspace.refresh()
             return true
@@ -87,6 +125,11 @@ public final class ConversationStore {
             sendError = workspace.report(error).message
             return false
         }
+    }
+
+    /// Downloads a sent file; see ``WorkspaceStore/downloadAttachment(id:)``.
+    public func download(_ link: AttachmentLink) async throws -> (data: Data, filename: String) {
+        try await workspace.downloadAttachment(id: link.id)
     }
 
     /// Cancels the bot's unfinished task.

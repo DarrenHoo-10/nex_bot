@@ -100,6 +100,20 @@ public actor LoginService {
         }
     }
 
+    /// Stores a refreshed session (`/api/auth/refresh`) in place of the saved one: new token, session id and expiry,
+    /// same origin, device name and Core id. Returns the updated record even when the keychain write fails (the error
+    /// is thrown afterwards), because the old token is already dead on Core.
+    @discardableResult
+    public func persistRefreshed(_ granted: LoginSession) throws -> StoredCredential {
+        guard var credential = saved, credential.coreId == granted.coreId else { throw CoreError.identityChanged("Core 身份已变化，请重新登录") }
+        credential.token = granted.token
+        if !granted.sessionId.isEmpty { credential.sessionId = granted.sessionId }
+        credential.expiresAt = granted.expiresAt
+        saved = credential
+        try store.save(credential)
+        return credential
+    }
+
     /// Best-effort server logout, then deletes the credential.
     public func logout() async {
         if let s = saved, let origin = try? CoreOrigin(s.origin) {

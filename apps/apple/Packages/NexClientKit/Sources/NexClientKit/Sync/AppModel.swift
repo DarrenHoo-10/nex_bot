@@ -128,15 +128,32 @@ public final class AppModel {
 
     /// iOS: pass `scenePhase == .active`. Backgrounding closes the stream; returning does a full refresh.
     public func setForeground(_ active: Bool) {
-        if active { workspace?.start() } else { workspace?.stop() }
+        if active {
+            workspace?.start()
+            if let workspace { Task { await workspace.refreshSessionIfNeeded() } }
+        } else { workspace?.stop() }
     }
 
     private func connect(_ connection: Connection) {
         let store = WorkspaceStore(client: connection.client, timing: timing)
         store.onSessionEnded = { [weak self] end in self?.sessionEnded(end) }
+        store.enableSessionRefresh(expiresAt: connection.credential.expiresAt, coreID: connection.credential.coreId) { [weak self, weak store] granted in
+            guard let self, self.workspace === store else { return }
+            await self.sessionRefreshed(granted)
+        }
         workspace = store; credential = connection.credential; hasSavedLogin = true
         phase = .connected
         store.start()
+    }
+
+    /// The token was rotated: publish the new credential (``credential`` changes, so observers such as the Mac
+    /// executor can restart with the new token) and save it. A failed keychain write keeps the in-memory login.
+    private func sessionRefreshed(_ granted: LoginSession) async {
+        guard var updated = credential else { return }
+        updated.token = granted.token; updated.expiresAt = granted.expiresAt
+        if !granted.sessionId.isEmpty { updated.sessionId = granted.sessionId }
+        credential = updated
+        _ = try? await service.persistRefreshed(granted)
     }
 
     private func sessionEnded(_ end: SessionEnd) {

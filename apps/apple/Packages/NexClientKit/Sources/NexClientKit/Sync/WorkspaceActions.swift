@@ -46,6 +46,15 @@ extension WorkspaceStore {
         let b = try currentBot(botID)
         try await act { try await client.updatePolicy(id: botID, version: b.policyVersion, tools: tools) }
     }
+    /// Switches 标准权限 / 完全权限. Echoes `Bot.approvalModeVersion`; a stale version throws "权限模式已变化，请刷新".
+    public func setApprovalMode(botID: String, mode: ApprovalMode) async throws {
+        let b = try currentBot(botID)
+        try await act { try await client.updateApprovalMode(id: botID, mode: mode, version: b.approvalModeVersion) }
+    }
+    /// Downloads a sent attachment (`AttachmentLink.id`). The suggested file name comes from Core.
+    public func downloadAttachment(id: String) async throws -> (data: Data, filename: String) {
+        try await act(refresh: false) { try await client.downloadAttachment(id: id) }
+    }
     /// Archives the agent. The store then selects the first remaining agent.
     public func archiveAgent(botID: String) async throws {
         let b = try currentBot(botID)
@@ -120,8 +129,19 @@ extension WorkspaceStore {
 
     // MARK: Settings
 
-    public func saveModel(provider: String, model: String, endpoint: String, apiKey: String = "") async throws {
-        try await act { try await client.saveModel(ModelSettings(provider: provider, model: model, endpoint: endpoint, apiKey: apiKey.isEmpty ? nil : apiKey)) }
+    /// Saves the model connection. `contextWindow` / `maxOutputTokens` are tri-state: ``LimitSetting/preserve`` (default) keeps
+    /// the saved override for this provider + endpoint + model, `.automatic` clears it, `.manual(n)` sets it.
+    public func saveModel(provider: String, model: String, endpoint: String, apiKey: String = "",
+                          contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve) async throws {
+        try await act { try await client.saveModel(ModelSettings(provider: provider, model: model, endpoint: endpoint, apiKey: apiKey.isEmpty ? nil : apiKey, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens)) }
+    }
+    /// Saved overrides and the cached catalog answer for a model (read only, no state refresh, no network lookup).
+    public func modelLimits(provider: String, endpoint: String, model: String) async throws -> ModelLimitInfo {
+        try await act(refresh: false) { try await client.modelLimits(provider: provider, endpoint: endpoint, model: model) }
+    }
+    /// Online models.dev lookup (联网识别); `force` bypasses the 24 h cache. Read only on the workspace.
+    public func refreshModelLimits(provider: String, endpoint: String, model: String, force: Bool = false) async throws -> ModelLimitInfo {
+        try await act(refresh: false) { try await client.refreshModelLimits(provider: provider, endpoint: endpoint, model: model, force: force) }
     }
     /// Lists the provider's models for the model picker; saves nothing. Empty `apiKey` reuses the saved key.
     public func listModels(provider: String, endpoint: String, apiKey: String = "") async throws -> ModelCatalog {
@@ -196,5 +216,45 @@ extension WorkspaceStore {
             let time = m.createdAt.map { TimeFormat.formatTime($0, timeZone: timeZone) } ?? ""
             return "[\(time)] \(sender): \(m.content)"
         }.joined(separator: "\n\n")
+    }
+
+    /// The full conversation as Markdown, like the web's 下载对话: every message is fetched page by page, so it is
+    /// independent of how much is loaded. Entries are `### {sender} · {M/D HH:mm}` + blank line + content, joined by `---`.
+    /// Throws "对话已变化，请重新导出" when the Core generation (coreId / privacyEpoch) or the selected agent changes
+    /// meanwhile, so content that was forgotten during the export is never written out.
+    public func exportMarkdown(botID: String, timeZone: TimeZone = .current) async throws -> (filename: String, content: String) {
+        let changed = CoreError(kind: .unsupported, message: "对话已变化，请重新导出")
+        guard let initial = sync, selectedBotID == botID else { throw changed }
+        let botName = bot(botID)?.name
+        func stable(_ s: SyncIdentity) -> Bool { s.coreId == initial.coreId && s.privacyEpoch == initial.privacyEpoch }
+        var rows: [AgentMessage] = []
+        var after = 0
+        do {
+            while true {
+                let feed = try await client.feed(bot: botID, after: after)
+                guard selectedBotID == botID, stable(feed.sync) else { throw changed }
+                rows += feed.messages
+                guard feed.hasMore, let last = feed.messages.last else { break }
+                after = last.seq
+            }
+            let current = try await client.state(view: .summary)
+            guard selectedBotID == botID, stable(current.sync) else { throw changed }
+        } catch let e as CoreError where e == changed { throw e }
+        catch { throw report(error) }
+        let content = rows.map { m in
+            let time = m.createdAt.map { TimeFormat.formatTime($0, timeZone: timeZone) } ?? ""
+            return "### \(senderLabel(m, botName: botName ?? "Agent")) · \(time)\n\n\(m.content)"
+        }.joined(separator: "\n\n---\n\n")
+        let safe = (botName ?? "").map { "\\/:*?\"<>|".contains($0) ? "_" : String($0) }.joined()
+        return ("\(safe.isEmpty ? "NexBot" : safe)-对话.md", content)
+    }
+
+    private func senderLabel(_ m: AgentMessage, botName: String) -> String {
+        switch m.role {
+        case "user": "我"
+        case "system": "系统"
+        case "peer": (m.a2aPeerID ?? m.senderBotID).flatMap { bot($0)?.name } ?? "同伴 Agent"
+        default: botName
+        }
     }
 }

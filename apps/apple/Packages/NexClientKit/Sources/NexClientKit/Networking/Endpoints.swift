@@ -109,7 +109,27 @@ public struct ModelSettings: Sendable, Hashable, Encodable {
     public var provider: String
     public var model: String, endpoint: String
     public var apiKey: String?
-    public init(provider: String, model: String, endpoint: String, apiKey: String? = nil) { self.provider = provider; self.model = model; self.endpoint = endpoint; self.apiKey = apiKey }
+    /// Context window override for this provider + endpoint + model. Default ``LimitSetting/preserve`` omits the field.
+    public var contextWindow: LimitSetting
+    /// Max output token override; independent of ``contextWindow`` (it may even exceed it).
+    public var maxOutputTokens: LimitSetting
+    public init(provider: String, model: String, endpoint: String, apiKey: String? = nil, contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve) {
+        self.provider = provider; self.model = model; self.endpoint = endpoint; self.apiKey = apiKey
+        self.contextWindow = contextWindow; self.maxOutputTokens = maxOutputTokens
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.encode(provider, forKey: .init("provider")); try c.encode(model, forKey: .init("model")); try c.encode(endpoint, forKey: .init("endpoint"))
+        try c.encodeIfPresent(apiKey, forKey: .init("apiKey"))
+        func put(_ setting: LimitSetting, _ key: String) throws {
+            switch setting {
+            case .preserve: break
+            case .automatic: try c.encodeNil(forKey: .init(key))
+            case .manual(let n): try c.encode(n, forKey: .init(key))
+            }
+        }
+        try put(contextWindow, "contextWindow"); try put(maxOutputTokens, "maxOutputTokens")
+    }
 }
 
 // MARK: - Responses
@@ -261,6 +281,8 @@ struct BotQuery: Encodable { let botId: String; let query: String }
 struct BotRef: Encodable { let botId: String; let ref: String }
 struct ForgetBody: Encodable { let botId: String; let query: String; let revision: String }
 struct MemoryDeleteBody: Encodable { let id: String; let version: Int }
+struct UploadBody: Encodable { let botId: String; let name: String; let data: String }
+struct ApprovalModeBody: Encodable { let id: String; let mode: String; let version: Int }
 struct IDResult: Decodable, Sendable {
     let id: String
     init(from decoder: Decoder) throws { id = try decoder.container(keyedBy: AnyKey.self).lenient(.init("id"))?.stringValue ?? "" }
@@ -327,6 +349,24 @@ extension CoreClient {
     }
     public func deleteConnector(id: String, version: Int) async throws { try await post("/api/connectors/delete", body: IDVersion(id: id, version: version)) }
 
+    // Chat attachments and permission mode
+    /// `POST /api/attachments`: uploads one file (base64 in JSON) for `botID`. At most 5 MiB and not empty; the 5-per-message
+    /// limit is enforced when sending. Throws Core's text ("文件不能超过 5 MB") before sending anything when the size is wrong.
+    public func uploadAttachment(botID: String, name: String, data: Data) async throws -> ChatAttachment {
+        guard !data.isEmpty, data.count <= ChatAttachment.maxBytes else { throw CoreError(kind: .http, message: ChatAttachment.tooLargeMessage, status: 400) }
+        return try await post("/api/attachments", UploadBody(botId: botID, name: name, data: data.base64EncodedString()), timeout: 120)
+    }
+    /// `GET /api/attachments/<id>` with the bearer. `filename` is decoded from `Content-Disposition` (`attachment` when absent).
+    public func downloadAttachment(id: String) async throws -> (data: Data, filename: String) {
+        guard !id.isEmpty, !id.contains("/"), !id.contains("?"), !id.contains("#") else { throw CoreError(kind: .http, message: "附件不存在或不可访问", status: 404) }
+        let (data, headers) = try await getData("/api/attachments/" + (id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id))
+        return (data, Self.dispositionFilename(headers["content-disposition"]) ?? "attachment")
+    }
+    /// `POST /api/bots/approval-mode`. `version` is `Bot.approvalModeVersion`; a stale one fails with "权限模式已变化，请刷新".
+    public func updateApprovalMode(id: String, mode: ApprovalMode, version: Int) async throws {
+        try await post("/api/bots/approval-mode", body: ApprovalModeBody(id: id, mode: mode.rawValue, version: version))
+    }
+
     // Devices and node
     /// `POST /api/devices`. The token is shown only once.
     public func pairDevice(name: String) async throws -> DevicePairing { try await post("/api/devices", body: NameBody(name: name)) }
@@ -339,6 +379,16 @@ extension CoreClient {
     // Settings
     /// `POST /api/config`. Refused while any task runs.
     public func saveModel(_ settings: ModelSettings) async throws { try await post("/api/config", body: settings) }
+    /// `POST /api/models/limits`: saved overrides and the cached catalog answer for one model. Does not go online.
+    /// Owner only (403 otherwise).
+    public func modelLimits(provider: String, endpoint: String, model: String) async throws -> ModelLimitInfo {
+        try await post("/api/models/limits", ModelLimitQuery(provider: provider, endpoint: endpoint, model: model, force: nil), timeout: 20)
+    }
+    /// `POST /api/models/limits/refresh`: refreshes the public models.dev catalog (cached 24 h unless `force`), then answers
+    /// like ``modelLimits(provider:endpoint:model:)`` with ``ModelLimitInfo/refresh`` set. Nothing about the user is sent to models.dev.
+    public func refreshModelLimits(provider: String, endpoint: String, model: String, force: Bool = false) async throws -> ModelLimitInfo {
+        try await post("/api/models/limits/refresh", ModelLimitQuery(provider: provider, endpoint: endpoint, model: model, force: force), timeout: 40)
+    }
     public func listModels(_ query: ModelCatalogQuery) async throws -> ModelCatalog {
         do { return try await post("/api/models/list", query, timeout: 40) }
         catch let error as CoreError where error.status == 404 {

@@ -32,7 +32,9 @@ public final class WorkspaceStore {
     public static let resyncMessage = "正在重新同步…"
     public static let expiredMessage = "此设备的登录已过期或被撤销，请重新连接。"
 
-    public let client: CoreClient
+    /// The Core client. Its bearer token changes when the session is refreshed (see ``enableSessionRefresh(expiresAt:coreID:persist:)``),
+    /// so read it at call time instead of keeping a copy.
+    public private(set) var client: CoreClient
     /// Latest snapshot; nil until the first sync and while resyncing.
     public private(set) var state: WorkspaceState?
     public private(set) var sync: SyncIdentity?
@@ -62,6 +64,14 @@ public final class WorkspaceStore {
     @ObservationIgnored private var timerTask: Task<Void, Never>?
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     @ObservationIgnored private var lastEventID: String?
+    @ObservationIgnored private var streamEpoch = 0
+    @ObservationIgnored private var tokenGeneration = 0
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var sessionExpiry: Double?
+    @ObservationIgnored private var sessionCoreID: String?
+    @ObservationIgnored private var persistRefresh: (@MainActor (LoginSession) async -> Void)?
+    /// Clock for the refresh policy; tests replace it.
+    @ObservationIgnored var now: @Sendable () -> Date = { Date() }
 
     public init(client: CoreClient, timing: SyncTiming = SyncTiming()) {
         self.client = client; self.timing = timing
@@ -87,20 +97,76 @@ public final class WorkspaceStore {
         guard !ended, !started else { return }
         started = true
         if state == nil { connection = .connecting }
-        let stream = EventStream(client: client, lastEventID: lastEventID, backoff: timing.backoff)
-        streamTask = Task { [weak self] in
-            for await event in stream.events() { guard let self else { return }; self.handle(event) }
-        }
+        openStream()
         let interval = timing.fallbackInterval
         timerTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled, let self else { return }
+                // Rotate a near-expiry token first, so the poll below already uses the new one.
+                await self.refreshSessionIfNeeded()
+                guard !Task.isCancelled else { return }
                 self.scheduleRefresh()
             }
         }
         scheduleRefresh(after: 0)
         if account == nil { Task { await loadAccount() } }
+        Task { await refreshSessionIfNeeded() }
+    }
+
+    private func openStream() {
+        streamTask?.cancel()
+        streamEpoch += 1
+        let epoch = streamEpoch
+        let stream = EventStream(client: client, lastEventID: lastEventID, backoff: timing.backoff)
+        streamTask = Task { [weak self] in
+            for await event in stream.events() { guard let self, self.streamEpoch == epoch else { return }; self.handle(event) }
+        }
+    }
+
+    // MARK: Session refresh
+
+    /// Starts the refresh policy for this login. The session is refreshed (`POST /api/auth/refresh`) when `expiresAt`
+    /// (epoch ms) is within 30 minutes, checked on the fallback tick, on ``start()`` and by ``refreshSessionIfNeeded()``.
+    /// `AppModel` does this for you. `persist` runs after the new token is already in use; it must save the credential.
+    public func enableSessionRefresh(expiresAt: Double, coreID: String, persist: @escaping @MainActor (LoginSession) async -> Void) {
+        sessionExpiry = expiresAt; sessionCoreID = coreID; persistRefresh = persist
+    }
+
+    /// Lead time before expiry at which a refresh starts (30 minutes, as on Android).
+    public static let refreshLead: Double = 30 * 60_000
+    /// True when `expiresAt` is in the future but at most ``refreshLead`` away.
+    public static func shouldRefresh(now: Date, expiresAt: Double) -> Bool {
+        let ms = now.timeIntervalSince1970 * 1000
+        return expiresAt > ms && expiresAt - ms <= refreshLead
+    }
+
+    /// Refreshes the session token when it is close to expiry; never runs two refreshes at once. 401 ends the session as
+    /// usual. 409 (another rotation won), 429, network and malformed answers keep the current token and retry on the next tick.
+    /// A success swaps ``client``'s token, calls the persist hook and restarts the event stream without clearing content.
+    public func refreshSessionIfNeeded() async {
+        if let task = refreshTask { await task.value; return }
+        guard !ended, let expiry = sessionExpiry, Self.shouldRefresh(now: now(), expiresAt: expiry) else { return }
+        let task = Task { await performSessionRefresh() }
+        refreshTask = task
+        await task.value
+    }
+
+    private func performSessionRefresh() async {
+        defer { refreshTask = nil }
+        do {
+            let granted = try await client.refreshSession()
+            guard !granted.token.isEmpty, granted.coreId == (sessionCoreID ?? sync?.coreId ?? granted.coreId), granted.expiresAt > 0 else { return }
+            guard !ended else { return }
+            tokenGeneration += 1
+            client = client.withToken(granted.token)
+            sessionExpiry = granted.expiresAt
+            if started { openStream() }
+            await persistRefresh?(granted)
+        } catch {
+            let e = CoreError.wrap(error)
+            if e.status == 401 { refreshTask = nil; report(e) }
+        }
     }
 
     /// Loads ``account`` from `/api/auth/status`. Failures leave it unchanged; session expiry is handled by sync.
@@ -172,7 +238,8 @@ public final class WorkspaceStore {
     @discardableResult
     func report(_ error: Error) -> CoreError {
         let e = CoreError.wrap(error)
-        if e.endsSession { endSession(SessionEnd(message: Self.expiredMessage, deleteCredential: e.invalidatesCredential)) }
+        // While a refresh is in flight a 401 may just mean the old token was rotated; the refresh result decides.
+        if e.endsSession && !(e.status == 401 && refreshTask != nil) { endSession(SessionEnd(message: Self.expiredMessage, deleteCredential: e.invalidatesCredential)) }
         return e
     }
 
@@ -186,10 +253,16 @@ public final class WorkspaceStore {
     }
 
     private func reload() async {
+        let generation = tokenGeneration
         do { try await performReload() }
         catch {
             let e = CoreError.wrap(error)
             if e.isCancellation { return }
+            if e.status == 401 {
+                // A request signed with a token that was rotated meanwhile is not a lost session.
+                if let task = refreshTask { await task.value }
+                if generation != tokenGeneration, !ended { scheduleRefresh(after: 0); return }
+            }
             if e.endsSession { report(e) } else { offline() }
         }
     }
@@ -202,7 +275,7 @@ public final class WorkspaceStore {
         let guess = (conv?.loadedSync != nil && conv?.messages.isEmpty == false) ? conv : nil
         let afterSeq = guess?.messages.last?.seq
         async let early = Self.capture(client, bot: current, after: afterSeq)
-        let next = try await client.state()
+        let next = try await client.state(view: .summary)
         guard request == serial else { return }
         if let old = sync, !old.sameGeneration(as: next.sync) { for c in conversations.values { c.reset() } }
         state = next; sync = next.sync; connection = .connected

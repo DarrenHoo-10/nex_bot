@@ -1,5 +1,8 @@
 import Foundation
 
+/// Which `/api/state` projection to fetch.
+public enum StateView: String, Sendable { case full, summary }
+
 /// Response type for endpoints whose body is ignored (`{"ok":true}`).
 public struct Empty: Decodable, Sendable { public init() {} }
 
@@ -37,6 +40,22 @@ public struct CoreClient: Sendable {
 
     public func get<T: Decodable & Sendable>(_ path: String, query: [(String, String)] = []) async throws -> T {
         try await send(request(path, query: query, body: nil), as: T.self)
+    }
+
+    /// The same client with another bearer token (after a session refresh). Origin and URLSession are kept.
+    public func withToken(_ token: String?) -> CoreClient { CoreClient(origin: origin, token: token, session: session) }
+
+    /// `GET` of a non-JSON body. Returns the bytes and the response headers (lower-cased names).
+    func getData(_ path: String, timeout: TimeInterval = 60) async throws -> (data: Data, headers: [String: String]) {
+        let r = try request(path, query: [], body: nil, timeout: timeout)
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: r, delegate: Self.refuser) } catch { throw CoreError.wrap(error) }
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw Self.httpError(status: status, data: data) }
+        var headers: [String: String] = [:]
+        for (k, v) in http?.allHeaderFields ?? [:] { if let k = k as? String, let v = v as? String { headers[k.lowercased()] = v } }
+        return (data, headers)
     }
 
     public func post<T: Decodable & Sendable, B: Encodable>(_ path: String, body: B, as: T.Type = T.self) async throws -> T {
@@ -95,7 +114,14 @@ public struct CoreClient: Sendable {
 
 struct EmptyBody: Encodable {}
 struct BotSeq: Encodable { let botId: String; let seq: Int }
-struct InputBody: Encodable { let botId: String; let text: String; let clientId: String }
+struct InputBody: Encodable {
+    let botId: String; let text: String; let clientId: String; let attachments: [String]
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.encode(botId, forKey: .init("botId")); try c.encode(text, forKey: .init("text")); try c.encode(clientId, forKey: .init("clientId"))
+        if !attachments.isEmpty { try c.encode(attachments, forKey: .init("attachments")) }
+    }
+}
 struct TaskBody: Encodable { let taskId: String }
 struct ApprovalBody: Encodable { let id: String; let hash: String; let allow: Bool }
 struct SessionBody: Encodable { let token: String }
@@ -111,7 +137,11 @@ struct RespondBody: Encodable {
 
 extension CoreClient {
     public func identity() async throws -> ClientIdentity { try await get("/api/client/identity") }
-    public func state() async throws -> WorkspaceState { try await get("/api/state") }
+    /// `GET /api/state`. `.summary` (`?view=summary`) omits memory `content` and `journal`; the stores poll with it.
+    /// `.full` sends no query and returns everything.
+    public func state(view: StateView = .full) async throws -> WorkspaceState {
+        try await get("/api/state", query: view == .summary ? [("view", "summary")] : [])
+    }
     /// Latest 100 messages, or the 100 before `before`, or the next 200 after `after`.
     public func feed(bot: String, before: Int? = nil, after: Int? = nil) async throws -> Feed {
         var q = [("bot", bot)]
@@ -119,9 +149,14 @@ extension CoreClient {
         if let after { q.append(("after", String(after))) }
         return try await get("/api/agents/messages", query: q)
     }
-    public func sendInput(bot: String, text: String, clientID: String) async throws {
-        try await post("/api/agents/input", body: InputBody(botId: bot, text: text, clientId: clientID))
+    /// `POST /api/agents/input`. `attachments` are ids from ``uploadAttachment(botID:name:data:)``; text may be empty
+    /// when at least one is given. The same `clientID` is idempotent.
+    public func sendInput(bot: String, text: String, clientID: String, attachments: [String] = []) async throws {
+        try await post("/api/agents/input", body: InputBody(botId: bot, text: text, clientId: clientID, attachments: attachments))
     }
+    /// `POST /api/auth/refresh` with the current bearer: rotates the token and extends the session.
+    /// 401 = session over; 409 = another refresh already rotated it; 429 = throttled.
+    public func refreshSession() async throws -> LoginSession { try await post("/api/auth/refresh", body: EmptyBody()) }
     public func markRead(bot: String, seq: Int) async throws { try await post("/api/agents/read", body: BotSeq(botId: bot, seq: seq)) }
     public func cancel(task: String) async throws { try await post("/api/cancel", body: TaskBody(taskId: task)) }
     public func decide(approval id: String, hash: String, allow: Bool) async throws {
