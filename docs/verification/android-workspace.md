@@ -67,7 +67,8 @@ endpoint, checks an optimistic version, and rejects changes during unfinished
 work. Other assistants keep their own choices. Returning to Default removes the
 effective override. The worker resolves token limits for the selected model.
 This requires the accompanying Core update; an older deployed Core does not
-implement the new route. No production deployment is performed by this change.
+implement the new route. The matching Core was deployed on 2026-10-18; see
+[release verification](android-parity-deployment.md).
 
 ## Recorded results
 
@@ -93,4 +94,4 @@ implement the new route. No production deployment is performed by this change.
 Artifact: `release/nexbot-0.2.0-debug.apk`, 12,546,925 bytes, debug-signed,
 APK v2 verification passed. SHA-256:
 `7a33de9b10b3df096ca42e593878127f23e9a810e31709ab071aba6a6f23d89f`.
-This local artifact has not replaced the public 0.1.0 release download.
+The APK is included in the `nexbot-v0.9.1-preview.2` release.
