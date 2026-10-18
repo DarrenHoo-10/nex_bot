@@ -1,6 +1,5 @@
 package com.nexorai.nexbot.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,7 +24,7 @@ fun NexBotRoot(repository: Repository) {
             when (state.phase) {
                 Repository.Phase.Starting -> StartingScreen()
                 Repository.Phase.Login -> ConnectScreen(state, repository::login)
-                Repository.Phase.Ready -> ReadyRoot(state, repository)
+                Repository.Phase.Ready -> WorkspaceScreen(state, repository)
             }
         }
     }
@@ -45,21 +44,5 @@ private fun StartingScreen() {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-@Composable
-private fun ReadyRoot(state: Repository.UiState, repository: Repository) {
-    val selected = state.selectedBotId
-    BackHandler(enabled = selected != null) { repository.clearSelection() }
-    if (selected == null) {
-        AgentsScreen(
-            state = state,
-            onOpen = repository::selectBot,
-            onLogout = repository::logout,
-            onRefresh = repository::retry,
-        )
-    } else {
-        ChatScreen(state, repository)
     }
 }

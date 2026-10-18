@@ -1,5 +1,8 @@
 # Android client — 2026-10-17
 
+> Historical 0.1.0 record. Android 0.2.0 uses the shared Windows workspace;
+> see [current parity verification](android-workspace.md).
+
 The phone client's P1 loop and its alignment with the current workspace design
 (`doc/ui/`, updated 2026-10-17). Design: [Android client
 plan](../plans/2026-10-17-android-client.md). Module notes:

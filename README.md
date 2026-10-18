@@ -26,7 +26,7 @@
 | Android APK | 随时查看消息、发送任务、上传文件和处理审批 | Android 8.0 及以上，测试版 |
 | 网页版 | 不安装应用，直接开始对话和管理助手 | 浏览器访问即可 |
 
-Mac 应用暂不支持操作窗口。iPhone 和 Android 客户端不会控制手机；Android 当前不提供桌面端的完整设置页。通过手机或网页向助手安排电脑任务时，目标电脑需要保持 NexBot 登录、在线且未暂停控制。
+Android 0.2.0 与 Windows 共用账号设置、模型、记忆服务、连接器、设备和助手管理界面。Mac 应用暂不支持操作窗口。iPhone 和 Android 客户端不会控制手机；通过手机或网页向助手安排电脑任务时，目标电脑需要保持 NexBot 登录、在线且未暂停控制。
 
 ## 下载与安装
 
@@ -34,11 +34,13 @@ Mac 应用暂不支持操作窗口。iPhone 和 Android 客户端不会控制手
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.1-preview.1/NexBot-0.9.1-x64-Client-Portable.exe) | 双击运行，免安装 |
-| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.1-preview.1/nexbot-0.1.0-debug.apk) | 在手机上打开并安装，测试版 |
-| 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.1-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
+| Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.1-preview.2/NexBot-0.9.1-x64-Client-Portable.exe) | 双击运行，免安装 |
+| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.1-preview.2/nexbot-0.2.0-debug.apk) | 在手机上打开并安装，测试版 |
+| 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.1-preview.2/SHA256SUMS.txt) | 核对下载文件完整性 |
 
-[查看本次发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.1-preview.1)。Windows 包尚无发布者数字签名；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+[查看本次发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.1-preview.2)。Windows 包尚无发布者数字签名；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+
+Android 0.2.0 已包含完整设置和助手管理。自行构建请参阅 [Android 安装包说明](android/README.md)。
 
 ### Windows：运行 EXE
 
@@ -75,11 +77,13 @@ Android 当前为测试版，尚未上架应用商店。
 
 ### 2. 连接你的模型
 
-在 Windows 或网页版点击左下角账号，进入「设置 → 模型」：
+在 Windows、Android 或网页版点击账号，进入「设置 → 模型」：
 
 1. 选择 API 协议，填写服务商提供的 API 基础地址和 API Key。
 2. 点击「获取模型列表」，选择模型；也可以手动填写模型 ID。
 3. 保存配置，返回对话开始使用。
+
+在会话输入框点击「＋ → 模型」，可搜索并切换当前助手使用的模型，不影响其他助手。
 
 「联网识别」从公共模型目录查找上下文和输出参数。服务商自定义的模型名称可能无法匹配，此时可以手动填写。未识别到参数时，默认上下文为 **256,000 Token**，最大输出为 **32,000 Token**；手动设置优先。
 

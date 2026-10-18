@@ -122,7 +122,7 @@ export class TaskRuntime {
     // The conversation binding stays exclusive until the close event arrives.
     if (this.store.get("SELECT id FROM task_runs WHERE conversation_id=? AND ended_at IS NULL", task.conversation_id)) return;
     if (this.workers.size >= 4) return; // drain on exit; durable queued tasks stay queued
-    const model = this.store.modelConfig(), runtime = this.store.get("SELECT * FROM runtime_sessions WHERE conversation_id=? AND status='active'", task.conversation_id)!;
+    const model = this.store.modelConfig(String(task.bot_id)), runtime = this.store.get("SELECT * FROM runtime_sessions WHERE conversation_id=? AND status='active'", task.conversation_id)!;
     const runId = id(), generation = Number(task.run_generation) + 1, runtimeId = String(runtime.id);
     const workerDir = path.join(this.store.dir, "workers", runtimeId); mkdirSync(workerDir, { recursive: true });
     this.store.transaction(() => {

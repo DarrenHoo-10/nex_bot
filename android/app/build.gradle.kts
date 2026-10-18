@@ -7,8 +7,20 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-val appVersionName = "0.1.0"
-val appVersionCode = 100
+val appVersionName = "0.2.0"
+val appVersionCode = 200
+
+val buildWorkspaceUi by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile)
+    commandLine("node", "scripts/build-android-ui.mjs")
+    inputs.dir(rootProject.file("../src/personal"))
+    inputs.dir(rootProject.file("../shared"))
+    inputs.file(rootProject.file("../electron/client/style.css"))
+    inputs.file(rootProject.file("../scripts/build-android-ui.mjs"))
+    inputs.file(rootProject.file("../pnpm-lock.yaml"))
+    outputs.dir(layout.buildDirectory.dir("generated/workspaceAssets"))
+}
+tasks.named("preBuild").configure { dependsOn(buildWorkspaceUi) }
 
 android {
     namespace = "com.nexorai.nexbot"
@@ -46,6 +58,7 @@ android {
     buildFeatures {
         compose = true
     }
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/workspaceAssets").get().asFile)
 
     testOptions {
         unitTests {

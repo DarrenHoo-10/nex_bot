@@ -64,7 +64,7 @@ describe("CI path scope", () => {
   });
 
   it("tests both sides when the selector, the fixture capture or CI itself changes", () => {
-    for (const file of ["scripts/capture-android-fixtures.mjs", "scripts/ci-scope.mjs", ".github/workflows/ci.yml"]) {
+    for (const file of ["scripts/capture-android-fixtures.mjs", "scripts/build-android-ui.mjs", "src/personal/auth.tsx", "shared/personal-appearance.ts", "pnpm-lock.yaml", "scripts/ci-scope.mjs", ".github/workflows/ci.yml"]) {
       expect(selectCiScope([file])).toEqual({ runtime: true, android: true });
     }
   });
@@ -80,8 +80,8 @@ describe("CI path scope", () => {
   });
 
   it.each([
-    ["server/index.ts"], ["shared/types.ts"], ["electron/main.mjs"], ["companion/src/index.ts"],
-    ["package.json"], ["pnpm-lock.yaml"], ["vite.config.ts"],
+    ["server/index.ts"], ["electron/main.mjs"], ["companion/src/index.ts"],
+    ["vite.config.ts"],
     ["docs/fixture.json"], ["unknown/file"], ["src/App.tsx", "server/index.ts"], ["scripts/capture-companion-fixtures.mjs"],
   ])("runs the runtime suite for %j without the Kotlin one", (...files) => {
     expect(selectCiScope(files)).toEqual({ runtime: true, android: false });

@@ -1,4 +1,39 @@
-# android
+# Android
+
+## 0.2.0 — shared Windows workspace
+
+After native account sign-in, Android loads the same `src/personal` workspace
+as Windows from assets bundled inside the APK. Settings, assistant management,
+avatars, routines, tool permissions, Markdown, composer menus and model limits
+therefore ship from one implementation. The account avatar uses the first
+character of the display name in both the sidebar and account settings.
+
+Android provides the document picker, Save As, clipboard, browser links,
+notification navigation and Back handling. Tokens remain in the existing
+Keystore-backed store; a restricted native transport adds the current bearer
+only to the selected Core. The WebView cannot navigate to remote content, load
+frames, or read arbitrary filesystem paths. Web preferences are isolated by
+account and server. Remote registered computers remain usable from chat;
+Android does not include a phone-control/accessibility executor.
+
+Build with Node 24, `pnpm install --frozen-lockfile`, JDK 17 and Android SDK 36:
+
+```sh
+cd android
+./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug
+```
+
+Gradle builds the shared renderer automatically. Output:
+`app/build/outputs/apk/debug/nexbot-0.2.0-debug.apk`. This debug-signed APK updates
+the previous debug installation without clearing login data. Release signing
+still requires a maintainer-provided key outside the repository.
+
+See [workspace parity verification](../docs/verification/android-workspace.md)
+for the current checks. The P1 native screen records below describe 0.1.0;
+`AgentsScreen` / `ChatScreen` remain test references and are no longer the
+production signed-in entry point.
+
+## Historical 0.1.0 implementation
 
 The phone client for NexBot Personal AI OS. It is a thin client of Core: it
 carries no Agent, model credential, memory or business database of its own.
