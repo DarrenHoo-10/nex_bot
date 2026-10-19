@@ -4,6 +4,7 @@ SwiftUI clients for Core's client protocol v1. Design: `docs/plans/2026-10-17-na
 
 ```
 Packages/NexClientKit/   SwiftPM library: protocol DTOs, CoreClient, SSE, login, sync stores
+Packages/NexMarkdown/    GFM parsing and static HTML filtering shared by Mac/iOS
 NexBotMac/  NexBotiOS/   app targets (SwiftUI)
 project.yml              XcodeGen spec; NexBot.xcodeproj is generated and gitignored
 ```
@@ -15,6 +16,7 @@ Requirements: Xcode 16.4+, `brew install xcodegen`. Deployment targets are macOS
 ```sh
 node scripts/build-mac-executor.mjs                             # stages apps/apple/build/Executor (bundled device executor), see below
 swift test --package-path apps/apple/Packages/NexClientKit     # unit tests (URLProtocol stubs)
+swift test --package-path apps/apple/Packages/NexMarkdown      # isolated GFM parser regressions
 apps/apple/scripts/generate.sh                                  # writes apps/apple/NexBot.xcodeproj
 xcodebuild -project apps/apple/NexBot.xcodeproj -scheme NexBotMac -destination 'platform=macOS' \
   -derivedDataPath /tmp/nexbot-dd build CODE_SIGNING_ALLOWED=NO
@@ -75,6 +77,12 @@ open /tmp/nexbot-dd/Build/Products/Debug/NexBot.app --args --profile=fixture-1 -
 ```
 
 ## Fixture
+
+Chart messages use the same renderer as web/Android, bundled in NexMarkdown.
+After changing `shared/chat-charts*.ts`, run `node scripts/build-chat-charts.mjs`
+from the repository root and commit the regenerated package resource with the
+source. `node scripts/build-chat-charts.mjs --check` verifies parity. See
+`docs/verification/apple-chart-release.md` for native build and acceptance records.
 
 `scripts/fixture-native-client.mjs` (repo root) starts an isolated Core with a fake identity and model, and prints the
 origin, account and password. Point the app at it with the flags above. Never use the live account or Core for verification.

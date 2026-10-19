@@ -258,6 +258,9 @@ desktop routing, cancellation, and computer authority cleanup.
 
 ## Evidence
 
+The [Apple chart release record](apple-chart-release.md) covers Mac/iOS 0.2.1
+compilation, isolated WebKit visual acceptance and published installer hashes.
+
 The [native macOS and iOS client recipe](native-clients.md) drives the SwiftUI apps
 against an isolated Core fixture.
 The [chat composer record](chat-composer.md) covers file uploads, per-assistant
