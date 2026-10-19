@@ -68,8 +68,12 @@ final class ChartRenderingTests: XCTestCase {
         XCTAssertTrue(pie.contains("25%"), pie)
         try await Task.sleep(for: .milliseconds(500))
         let collapsed = measured
-        _ = try await evaluate(view, "document.querySelectorAll('details').forEach(x=>x.open=true);'open'")
-        try await Task.sleep(for: .milliseconds(500))
+        let expanded = try await evaluate(view, "document.querySelectorAll('details').forEach(x=>x.open=true);String(Math.ceil(document.body.getBoundingClientRect().height))")
+        XCTAssertGreaterThan(Double(expanded) ?? 0, Double(collapsed))
+        for _ in 0..<50 {
+            if measured > collapsed { break }
+            try await Task.sleep(for: .milliseconds(200))
+        }
         XCTAssertGreaterThan(measured, collapsed)
         let snapshot = try await view.takeSnapshot(configuration: nil)
         let attachment = XCTAttachment(image: snapshot)

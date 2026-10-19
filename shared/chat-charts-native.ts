@@ -12,4 +12,10 @@ bindCharts(document);
 // Height-only bridge in the isolated world, so expanding data on Apple resizes
 // the message. It cannot access accounts, files, network or application actions.
 const bridge = (window as unknown as { webkit?: { messageHandlers?: { nexChartHeight?: { postMessage: (height: number) => void } } } }).webkit?.messageHandlers?.nexChartHeight;
-if (bridge) new ResizeObserver(() => bridge.postMessage(Math.ceil(document.body.getBoundingClientRect().height))).observe(document.body);
+if (bridge) {
+  const measure = () => bridge.postMessage(Math.ceil(document.body.getBoundingClientRect().height));
+  new ResizeObserver(measure).observe(document.body);
+  // WebKit may defer ResizeObserver delivery. Native details interactions should
+  // update the message height immediately, including when several tables open.
+  document.addEventListener('toggle', measure, true);
+}
