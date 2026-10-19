@@ -14,10 +14,12 @@ jobs:
     timeout-minutes: 60
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      RENDER_ONLY: ${{ contains(github.event.head_commit.message, '[render verification]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -32,7 +34,11 @@ jobs:
           swift test --package-path apps/apple/Packages/NexClientKit
           swift test --package-path apps/apple/Packages/NexMarkdown
       - name: Build executor
+        if: env.RENDER_ONLY != 'true'
         run: node scripts/build-mac-executor.mjs
+      - name: Verify unchanged installer sources
+        if: env.RENDER_ONLY == 'true'
+        run: git diff --exit-code 42d13813628352aac2a4f10c9552469b934f4493 HEAD -- apps/apple/NexBotMac apps/apple/NexBotiOS apps/apple/Shared apps/apple/Packages apps/apple/project.yml shared/chat-charts.ts shared/chat-charts-native.ts scripts/build-chat-charts.mjs
       - name: Compile and verify native apps
         run: bash apps/apple/scripts/release-preview.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

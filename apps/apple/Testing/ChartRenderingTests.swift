@@ -38,11 +38,16 @@ final class ChartRenderingTests: XCTestCase {
         window.orderFront(nil)
         defer { window.orderOut(nil) }
         #else
-        let window = UIWindow(frame: view.frame)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
         let controller = UIViewController()
-        controller.view = view
+        controller.view.backgroundColor = .systemBackground
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 600)
+        controller.view.addSubview(view)
         window.rootViewController = controller
         window.makeKeyAndVisible()
+        XCTAssertNotNil(view.window?.windowScene)
         defer { window.isHidden = true }
         #endif
         defer {
@@ -76,6 +81,9 @@ final class ChartRenderingTests: XCTestCase {
         }
         XCTAssertGreaterThan(measured, collapsed)
         let snapshot = try await view.takeSnapshot(configuration: nil)
+        #if os(iOS)
+        try assertChartPixels(snapshot)
+        #endif
         let attachment = XCTAttachment(image: snapshot)
         attachment.name = "four-charts-narrow"
         attachment.lifetime = .keepAlways
@@ -96,4 +104,18 @@ final class ChartRenderingTests: XCTestCase {
         wide.lifetime = .keepAlways
         add(wide)
     }
+
+    #if os(iOS)
+    @MainActor
+    private func assertChartPixels(_ image: UIImage) throws {
+        let cg = try XCTUnwrap(image.cgImage)
+        let context = try XCTUnwrap(CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        let painted = stride(from: 0, to: cg.width * cg.height * 4, by: 16).contains { i in
+            pixels[i] < 80 && pixels[i + 1] > 90 && pixels[i + 1] < 170 && pixels[i + 2] > 150 && pixels[i + 3] > 200
+        }
+        XCTAssertTrue(painted, "The visible iOS window must paint the blue chart, not export a transparent snapshot")
+    }
+    #endif
 }
