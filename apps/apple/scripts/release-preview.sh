@@ -1,12 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-mkdir -p build/release build/RenderFixture
+mkdir -p build/release
 xcodegen generate
-xcodegen generate --spec Testing/project.yml --project build/RenderFixture
-xcodebuild -project build/RenderFixture/NexRenderFixture.xcodeproj -scheme RenderMac -destination 'platform=macOS' -resultBundlePath build/mac-render.xcresult test CODE_SIGN_IDENTITY=-
+xcodegen generate --spec Testing/project.yml --project Testing
+xcodebuild -project Testing/NexRenderFixture.xcodeproj -scheme RenderMac -destination 'platform=macOS' -resultBundlePath build/mac-render.xcresult test CODE_SIGN_IDENTITY=-
 SIM_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
-xcodebuild -project build/RenderFixture/NexRenderFixture.xcodeproj -scheme RenderiOS -destination "platform=iOS Simulator,id=$SIM_ID" -resultBundlePath build/ios-render.xcresult test CODE_SIGN_IDENTITY=-
+xcodebuild -project Testing/NexRenderFixture.xcodeproj -scheme RenderiOS -destination "platform=iOS Simulator,id=$SIM_ID" -resultBundlePath build/ios-render.xcresult test CODE_SIGN_IDENTITY=-
 mkdir -p build/release/mac-screenshots build/release/ios-screenshots
 xcrun xcresulttool export attachments --path build/mac-render.xcresult --output-path build/release/mac-screenshots
 xcrun xcresulttool export attachments --path build/ios-render.xcresult --output-path build/release/ios-screenshots
