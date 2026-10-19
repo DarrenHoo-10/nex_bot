@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-mkdir -p build/release
+mkdir -p build/release build/RenderFixture
 xcodegen generate
 xcodegen generate --spec Testing/project.yml --project build/RenderFixture
 xcodebuild -project build/RenderFixture/NexRenderFixture.xcodeproj -scheme RenderMac -destination 'platform=macOS' -resultBundlePath build/mac-render.xcresult test CODE_SIGN_IDENTITY=-
