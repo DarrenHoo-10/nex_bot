@@ -1,5 +1,6 @@
 import SwiftUI
 import NexClientKit
+import NexMarkdown
 
 /// Block Markdown for agent replies, styled like the web UI's `.markdown`: paragraphs, bullet and numbered
 /// lists, headings, quotes and code blocks. Inline formatting and safe links come from `Markdown.attributed`.
@@ -13,6 +14,9 @@ struct MarkdownText: View {
     init(source: String, fontSize: CGFloat = 14) { self.source = source; self.baseSize = fontSize }
 
     var body: some View {
+        if let html = ChatDocument(source).staticHTML {
+            StaticHTMLMessage(fragment: html, fontSize: fontSize)
+        } else {
         VStack(alignment: .leading, spacing: fontSize * 0.6) {
             ForEach(Array(Markdown.blocks(source).enumerated()), id: \.offset) { _, block in
                 view(for: block)
@@ -20,6 +24,7 @@ struct MarkdownText: View {
         }
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder private func view(for block: MarkdownBlock) -> some View {

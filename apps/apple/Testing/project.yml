@@ -1,0 +1,63 @@
+name: NexRenderFixture
+options:
+  deploymentTarget:
+    macOS: '14.0'
+    iOS: '17.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    CODE_SIGN_IDENTITY: '-'
+    CODE_SIGN_STYLE: Manual
+    GENERATE_INFOPLIST_FILE: YES
+packages:
+  NexMarkdown:
+    path: ../Packages/NexMarkdown
+targetTemplates:
+  host:
+    type: application
+    sources:
+      - path: RenderHost.swift
+      - path: ../Shared/StaticHTMLMessage.swift
+    dependencies:
+      - package: NexMarkdown
+    settings:
+      base:
+        PRODUCT_MODULE_NAME: NexRenderFixture
+        PRODUCT_BUNDLE_IDENTIFIER: com.nexbot.renderfixture
+  tests:
+    type: bundle.unit-test
+    sources:
+      - path: ChartRenderingTests.swift
+    dependencies:
+      - package: NexMarkdown
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nexbot.renderfixture.tests
+targets:
+  RenderMac:
+    templates: [host]
+    platform: macOS
+  RenderiOS:
+    templates: [host]
+    platform: iOS
+  RenderMacTests:
+    templates: [tests]
+    platform: macOS
+    dependencies:
+      - target: RenderMac
+  RenderiOSTests:
+    templates: [tests]
+    platform: iOS
+    dependencies:
+      - target: RenderiOS
+schemes:
+  RenderMac:
+    build:
+      targets: { RenderMac: all }
+    test:
+      targets: [RenderMacTests]
+  RenderiOS:
+    build:
+      targets: { RenderiOS: all }
+    test:
+      targets: [RenderiOSTests]
