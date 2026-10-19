@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
@@ -28,6 +28,7 @@ jobs:
       - name: Shared renderer and package checks
         run: |
           node scripts/build-chat-charts.mjs --check
+          pnpm exec vitest run shared/chat-charts.test.ts
           swift test --package-path apps/apple/Packages/NexClientKit
           swift test --package-path apps/apple/Packages/NexMarkdown
       - name: Build executor

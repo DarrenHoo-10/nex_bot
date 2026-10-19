@@ -7,6 +7,11 @@ xcodegen generate --spec Testing/project.yml --project build/RenderFixture
 xcodebuild -project build/RenderFixture/NexRenderFixture.xcodeproj -scheme RenderMac -destination 'platform=macOS' -resultBundlePath build/mac-render.xcresult test CODE_SIGN_IDENTITY=-
 SIM_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
 xcodebuild -project build/RenderFixture/NexRenderFixture.xcodeproj -scheme RenderiOS -destination "platform=iOS Simulator,id=$SIM_ID" -resultBundlePath build/ios-render.xcresult test CODE_SIGN_IDENTITY=-
+mkdir -p build/release/mac-screenshots build/release/ios-screenshots
+xcrun xcresulttool export attachments --path build/mac-render.xcresult --output-path build/release/mac-screenshots
+xcrun xcresulttool export attachments --path build/ios-render.xcresult --output-path build/release/ios-screenshots
+xcrun xcresulttool get test-results summary --path build/mac-render.xcresult > build/release/mac-tests.json
+xcrun xcresulttool get test-results summary --path build/ios-render.xcresult > build/release/ios-tests.json
 xcodebuild -project NexBot.xcodeproj -scheme NexBotMac -configuration Release -derivedDataPath build/mac -destination 'platform=macOS' build CODE_SIGN_IDENTITY=-
 xcodebuild -project NexBot.xcodeproj -scheme NexBotiOS -configuration Debug -derivedDataPath build/ios-simulator -destination "platform=iOS Simulator,id=$SIM_ID" build CODE_SIGN_IDENTITY=-
 xcodebuild -project NexBot.xcodeproj -scheme NexBotiOS -configuration Release -derivedDataPath build/ios -sdk iphoneos -destination 'generic/platform=iOS' build CODE_SIGNING_ALLOWED=NO
