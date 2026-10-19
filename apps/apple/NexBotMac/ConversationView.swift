@@ -347,12 +347,11 @@ private struct MessageList: View {
                 guard focusedID == nil else { return }
                 if atBottom || conversation.messages.last?.isFromUser == true { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-                        .onChange(of: conversation.isSending) { _, sending in
-                            if sending { atBottom = true; proxy.scrollTo("bottom", anchor: .bottom) }
-                        }
-                        .onChange(of: conversation.isLoaded) { if focusedID == nil { proxy.scrollTo("bottom", anchor: .bottom) } }
-                        .task(id: focusKey) { await scrollToFocused(proxy) }
-
+            .onChange(of: conversation.isSending) { _, sending in
+                if sending { atBottom = true; proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            .onChange(of: conversation.isLoaded) { if focusedID == nil { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .task(id: focusKey) { await scrollToFocused(proxy) }
         }
         .environment(\.openURL, OpenURLAction { url in
             if let path = ChatLinks.path(from: url) {

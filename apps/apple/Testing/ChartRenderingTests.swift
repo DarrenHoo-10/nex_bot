@@ -80,10 +80,16 @@ final class ChartRenderingTests: XCTestCase {
         view.frame.size.width = 800
         renderer.update(view, coordinator: coordinator)
         for _ in 0..<100 {
-            if (try? await evaluate(view, "String(document.querySelectorAll('.nex-chart svg').length)")) == "4" { break }
+            if (try? await evaluate(view, "getComputedStyle(document.body).color+'|'+document.querySelectorAll('.nex-chart svg').length")) == "rgb(231, 231, 231)|4" { break }
             try await Task.sleep(for: .milliseconds(200))
         }
         let darkCount = try await evaluate(view, "String(document.querySelectorAll('.nex-chart svg').length)")
         XCTAssertEqual(darkCount, "4")
+        let darkColor = try await evaluate(view, "getComputedStyle(document.body).color")
+        XCTAssertEqual(darkColor, "rgb(231, 231, 231)")
+        let wide = XCTAttachment(image: try await view.takeSnapshot(configuration: nil))
+        wide.name = "four-charts-wide-dark"
+        wide.lifetime = .keepAlways
+        add(wide)
     }
 }

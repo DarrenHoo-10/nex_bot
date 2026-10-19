@@ -152,4 +152,3 @@ export function bindCharts(root: HTMLElement | Document): () => void {
   events.forEach(e => root.addEventListener(e, show));
   return () => events.forEach(e => root.removeEventListener(e, show));
 }
-
