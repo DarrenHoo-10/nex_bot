@@ -72,7 +72,9 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const terminal = f.app.agents.send(botId, "查看默认工作目录", "default-terminal-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", terminal)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     const result = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=?", terminal)?.result_json));
-    expect(realpathSync.native(result.stdout.trim())).toBe(realpathSync.native(os.homedir()));
+    expect(result).toMatchObject({ code: 0, timedOut: false });
+    // Resolve symlinks and compare with the host's path semantics (Windows ignores casing).
+    expect(path.relative(realpathSync.native(os.homedir()), realpathSync.native(result.stdout.trim()))).toBe("");
     expect(f.app.node.config!.root).toBe("");
     expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
     const policyVersion = f.app.node.config!.policyVersion;

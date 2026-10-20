@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { describeError } from "./error-report";
+import { copyText } from "../lib/copy-text";
 
 const button = { padding: "8px 16px", font: "inherit", marginRight: 8 } as const;
 
@@ -12,7 +13,7 @@ export function ErrorPanel({ details, onRetry }: { details: string; onRetry: () 
       <pre style={{ margin: "0 0 16px", padding: 12, borderRadius: 8, border: "1px solid GrayText", whiteSpace: "pre-wrap", wordBreak: "break-word", userSelect: "text", font: "12px/1.5 ui-monospace, monospace" }}>{details}</pre>
       <button type="button" style={button} onClick={onRetry}>重试</button>
       <button type="button" style={button} onClick={() => location.reload()}>重新加载</button>
-      <button type="button" style={button} onClick={() => { void navigator.clipboard?.writeText(details)?.catch(() => undefined); }}>复制错误</button>
+      <button type="button" style={button} onClick={() => { void copyText(details); }}>复制错误</button>
     </div>
   );
 }

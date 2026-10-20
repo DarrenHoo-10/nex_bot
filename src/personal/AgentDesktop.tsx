@@ -15,6 +15,7 @@ import { companionState, companionLabels, type CompanionState } from "./avatars/
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
 import { BotIdentity } from "./components/BotIdentity";
+import { copyText as writeCopyText } from "../lib/copy-text";
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -197,7 +198,7 @@ export function AgentDesktop() {
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(botId, value); setAtDismissed(false); setAtIndex(0); };
   const togglePin = (id: string) => setPinned((current) => { const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id]; localStorage.setItem("nexbot.pinnedAgents", JSON.stringify(next)); return next; });
-  const copyText = (id: string, value: string) => { void navigator.clipboard?.writeText(value); setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
+  const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
   const send = (event: FormEvent) => {
     event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || !state?.bots.some((agent) => agent.id === target)) return;
     const prefix = quote ? `> ${quote.author}：${quote.text.replace(/\s+/g, " ").slice(0, 140)}\n\n` : "";
@@ -265,9 +266,9 @@ export function AgentDesktop() {
   };
   if (!state) return <div className="boot"><BrandMark size={44}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接页</button> : null}</div>;
   const botUsage = state.usage?.find((u) => u.bot_id === botId);
-  const exportTranscript = () => {
+  const exportTranscript = async () => {
     const text = messages.map((m) => `[${formatTime(m.created_at)}] ${senderLabel(m, bot, state.bots)}: ${str(m.content)}`).join("\n\n");
-    void navigator.clipboard?.writeText(text);
+    if (await writeCopyText(text) !== "copied") return;
     setExported(true); setTimeout(() => setExported(false), 1800);
   };
   const downloadTranscript = async () => {
