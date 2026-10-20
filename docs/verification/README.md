@@ -346,3 +346,11 @@ desktop/mobile search, pagination and navigation to older messages.
 
 The [sending-device context check](sender-device.md) covers telling the assistant
 which client (and paired device) the user's latest message came from, via device.inventory.
+
+The [Android parity deployment record](android-parity-deployment.md) and the
+[Android workspace check](android-workspace.md) cover the Android client rollout.
+
+The [Windows chart client record](windows-chart-client.md) covers the 0.9.6 Windows chart fix.
+
+The [composer image / IME / model / copy fix](composer-image-ime-model-copy.md) covers image
+attachments, IME Enter guarding, inline model choice and message copy/selection across clients.
