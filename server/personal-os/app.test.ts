@@ -174,7 +174,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.app.store.run("DELETE FROM schema_migrations WHERE version=7");
     await f.app.close(); f.owned.apps.splice(0, 1);
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
-    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory"]);
+    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory", "image.models", "image.generate"]);
   }, 60_000);
   it("runs ordinary computer input automatically and approves dangerous effects only in the executing Agent, returning screenshot images to the vision model", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);

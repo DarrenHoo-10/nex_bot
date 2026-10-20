@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import Markdown from "react-markdown";
+import { universalImageActions } from '../../shared/personal-capabilities';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import Markdown, { type ExtraProps } from "react-markdown";
+import type { ComponentProps } from "react";
+import { ChatChart } from "./components/ChatChart";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import { rehypeStaticHTML } from "./static-html";
 import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, FileText, Info, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
 import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
@@ -14,6 +19,7 @@ import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
+import { ModelPicker } from "./components/ModelPicker";
 import { BotIdentity } from "./components/BotIdentity";
 import { copyText as writeCopyText } from "../lib/copy-text";
 
@@ -35,13 +41,43 @@ const formatDay = (value: RecordRow[string]) => {
 
 function AgentPolicyEditor({ bot, close, save }: { bot: RecordRow; close: () => void; save: (tools: string[]) => Promise<unknown> }) {
   const [tools, setTools] = useState<string[]>(JSON.parse(str(bot.policy_json) || "{}").tools ?? []);
-  const labels: Record<string, string> = { "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看已授权连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
-  return <><div className="modal-heading"><h2>{bot.name} 的工具权限</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(event) => { event.preventDefault(); void save(tools); }}><div className="policy-grid">{Object.entries(labels).map(([action, label]) => <label className="check-field" key={action}><input type="checkbox" checked={tools.includes(action)} onChange={(event) => setTools((current) => event.target.checked ? [...current, action] : current.filter((tool) => tool !== action))}/>{label}</label>)}</div><div className="actions"><button className="primary">保存</button><button type="button" onClick={close}>取消</button></div></form></>;
+  const labels: Record<string, string> = { "image.models": "查看生图模型", "image.generate": "按需生成图片", "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看已授权连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
+  return <><div className="modal-heading"><h2>{bot.name} 的工具权限</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(event) => { event.preventDefault(); void save(tools); }}><div className="policy-grid">{Object.entries(labels).map(([action, label]) => <label className="check-field" key={action}><input type="checkbox" checked={universalImageActions.some(tool => tool === action) || tools.includes(action)} disabled={universalImageActions.some(tool => tool === action)} onChange={(event) => setTools((current) => event.target.checked ? [...current, action] : current.filter((tool) => tool !== action))}/>{label}</label>)}</div><div className="actions"><button className="primary">保存</button><button type="button" onClick={close}>取消</button></div></form></>;
 }
 
 const filePathPattern = /^(?:[\w.-]+[\\/])*[\w.-]+\.(?:md|txt|json|csv|yaml|yml|ts|tsx|js|jsx|mjs|py|sql|log|html|css|sh|ps1|toml|xml)$/i;
-function RichText({ value, onPreviewFile }: { value: string; onPreviewFile?: (path: string) => void }) {
-  return <div className="markdown"><Markdown remarkPlugins={[remarkGfm]} components={{ img: ({ alt }) => <span>{alt ?? "图片"}</span>, a: ({ href, children }) => <a href={href} className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => { if (href?.startsWith("/api/attachments/")) { if (desktop?.downloadAttachment) { e.preventDefault(); void desktop.downloadAttachment(href, e.currentTarget.textContent || "附件").catch(() => window.dispatchEvent(new CustomEvent("nex-download-error"))); } return; } e.preventDefault(); if (href && /^https?:\/\//.test(href)) void desktop?.openExternal(href); }}>{children}</a>, code: ({ className, children }) => { const raw = String(children ?? "").trim(); if (!className && onPreviewFile && filePathPattern.test(raw)) return <button type="button" className="file-chip" onClick={() => onPreviewFile(raw)} title={`在右侧面板预览 ${raw}`}><FileText size={11}/><span>{raw}</span></button>; return <code className={className}>{children}</code>; } }}>{value}</Markdown></div>;
+function MarkdownPre({ node, children, ...props }: ComponentProps<'pre'> & ExtraProps) {
+  const code = node?.children.length === 1 ? node.children[0] : undefined;
+  if (code?.type === 'element' && code.tagName === 'code' && Array.isArray(code.properties.className) && code.properties.className.includes('language-chart')) {
+    return <ChatChart source={code.children.map(child => child.type === 'text' ? child.value : '').join('')}/>;
+  }
+  return <pre {...props}>{children}</pre>;
+}
+const FilePreviewContext = createContext<((path: string) => void) | undefined>(undefined);
+function MarkdownImage({ src, alt }: ComponentProps<'img'> & ExtraProps) {
+  return typeof src === "string" && /^\/api\/attachments\/[a-zA-Z0-9-]+$/.test(src)
+    ? <img className="generated-chat-image" src={`${src}?preview=1`} alt={alt ?? "生成图片"} loading="lazy"/>
+    : <span>{alt ?? "图片"}</span>;
+}
+function MarkdownLink({ href, children }: ComponentProps<'a'> & ExtraProps) {
+  return <a href={href} target={href?.startsWith("http") ? "_blank" : undefined} rel="noopener noreferrer" className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => {
+    if (href?.startsWith("/api/attachments/")) {
+      if (desktop?.downloadAttachment) { e.preventDefault(); void desktop.downloadAttachment(href, e.currentTarget.textContent || "附件").catch(() => window.dispatchEvent(new CustomEvent("nex-download-error"))); }
+      return;
+    }
+    if (href && /^https?:\/\//.test(href) && desktop?.openExternal) { e.preventDefault(); void desktop.openExternal(href); }
+  }}>{children}</a>;
+}
+function MarkdownCode({ className, children }: ComponentProps<'code'> & ExtraProps) {
+  const onPreviewFile = useContext(FilePreviewContext), raw = String(children ?? "").trim();
+  if (!className && onPreviewFile && filePathPattern.test(raw)) return <button type="button" className="file-chip" onClick={() => onPreviewFile(raw)} title={`在右侧面板预览 ${raw}`}><FileText size={11}/><span>{raw}</span></button>;
+  return <code className={className}>{children}</code>;
+}
+// Stable component types preserve focused links/buttons across conversation
+// refreshes. Context supplies the latest preview callback without remounting.
+const markdownComponents = { pre: MarkdownPre, img: MarkdownImage, a: MarkdownLink, code: MarkdownCode };
+export function RichText({ value, onPreviewFile }: { value: string; onPreviewFile?: (path: string) => void }) {
+  return <div className="markdown"><FilePreviewContext.Provider value={onPreviewFile}><Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeStaticHTML]} components={markdownComponents}>{value}</Markdown></FilePreviewContext.Provider></div>;
 }
 
 export function AgentDesktop() {
@@ -450,7 +486,7 @@ export function AgentDesktop() {
             <div className="ds-field-card ds-kv-list">
               <div className="ds-kv-row">
                 <span><Zap size={13}/>驱动模型</span>
-                <button type="button" className="ds-pill-btn" onClick={() => openSettings("model")}>{modelLabel}</button>
+                <ModelPicker key={JSON.stringify([botId, state.config?.provider_id, state.config?.endpoint])} label="驱动模型" triggerClassName="ds-pill-btn inspector-model-trigger" displayValue={modelLabel} value={str(bot.selected_model)} emptyLabel={`跟随默认（${str(state.config?.default_model) || "未设置"}）`} models={state.modelVisibility?.models} disabled={busy || !connected} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onChange={(model) => { void run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot.model_selection_version ?? 0) })); }}/>
               </div>
               <div className="ds-kv-row">
                 <span><Shield size={13}/>工具权限</span>

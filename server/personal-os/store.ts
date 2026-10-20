@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync, existsSync } from
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { basicActions } from "./policy.ts";
+import type { AttachmentObjects } from './attachment-objects.ts';
 import { connectorSchema } from "./connector-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
 import { continuitySchema } from "./continuity-schema.ts";
@@ -46,6 +47,8 @@ CREATE TABLE a2a_messages(id TEXT PRIMARY KEY, call_id TEXT NOT NULL UNIQUE REFE
 `;
 
 export class CoreStore {
+  attachmentObjects?: AttachmentObjects;
+  readonly attachmentJobs = new Map<string, Promise<void>>();
   private transactionDepth = 0;
   readonly db: DatabaseSync;
   readonly dir: string;
@@ -251,6 +254,28 @@ export class CoreStore {
       }
       this.insert("schema_migrations", { version: 18, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=19")) this.transaction(() => {
+      const schema = 'CREATE TABLE image_models(id TEXT PRIMARY KEY,name TEXT NOT NULL,endpoint TEXT NOT NULL,model TEXT NOT NULL,ciphertext TEXT NOT NULL,version INTEGER NOT NULL) STRICT;';
+      this.db.exec(schema);
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TRIGGER sync_image_models_${operation} AFTER ${operation} ON image_models BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
+      const oldDefault = basicActions.filter(action => !action.startsWith('image.')).sort().join(',');
+      for (const policy of this.all('SELECT * FROM bot_policies')) {
+        const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
+        if ([...new Set(value.tools ?? [])].sort().join(',') === oldDefault) this.run('UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?', JSON.stringify({ ...value, tools: basicActions }), policy.bot_id);
+      }
+      this.insert('schema_migrations', { version: 19, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get('SELECT version FROM schema_migrations WHERE version=20')) this.transaction(() => {
+      const schema = 'CREATE TABLE image_model_selections(provider TEXT NOT NULL,endpoint TEXT NOT NULL,models_json TEXT NOT NULL,version INTEGER NOT NULL,PRIMARY KEY(provider,endpoint)) STRICT;';
+      this.db.exec(schema);
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TRIGGER sync_image_model_selections_${operation} AFTER ${operation} ON image_model_selections BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
+      this.insert('schema_migrations', { version: 20, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get('SELECT version FROM schema_migrations WHERE version=21')) this.transaction(() => {
+      const schema = 'CREATE TABLE attachment_objects(attachment_id TEXT PRIMARY KEY REFERENCES chat_attachments(id) ON DELETE CASCADE,object_key TEXT NOT NULL,ciphertext_hash TEXT NOT NULL) STRICT;';
+      this.db.exec(schema);
+      this.insert('schema_migrations', { version: 21, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -285,6 +310,24 @@ export class CoreStore {
     const config = this.config();
     const row = config && this.get("SELECT models_json,version FROM model_visibility WHERE provider=? AND endpoint=?", config.provider_id, String(config.endpoint).replace(/\/+$/, ""));
     return { models: row?.models_json ? JSON.parse(String(row.models_json)) as string[] : null, version: Number(row?.version ?? 0) };
+  }
+  imageModelSelection() {
+    const config = this.config();
+    const row = config && this.get('SELECT models_json,version FROM image_model_selections WHERE provider=? AND endpoint=?', config.provider_id, String(config.endpoint).replace(/\/+$/, ''));
+    return { models: row ? JSON.parse(String(row.models_json)) as string[] : [], version: Number(row?.version ?? 0) };
+  }
+  saveImageModelSelection(input: Record<string, unknown>) {
+    const config = this.config();
+    if (!config || input.provider !== config.provider_id || input.endpoint !== config.endpoint) throw new Error('模型连接已变化，请重新选择');
+    if (config.provider_id !== 'openai') throw new Error('当前模型连接不支持生图');
+    if (!Array.isArray(input.models) || input.models.length > 100 || input.models.some(model => typeof model !== 'string' || !model.trim() || model.length > 200)) throw new Error('生图模型选择无效');
+    const models = [...new Set((input.models as string[]).map(model => model.trim()))];
+    this.transaction(() => {
+      const previous = this.imageModelSelection();
+      if (input.version !== previous.version) throw new Error('生图模型选择已变化，请刷新');
+      this.run('INSERT INTO image_model_selections VALUES(?,?,?,?) ON CONFLICT(provider,endpoint) DO UPDATE SET models_json=excluded.models_json,version=excluded.version', config.provider_id, String(config.endpoint).replace(/\/+$/, ''), JSON.stringify(models), previous.version + 1);
+    });
+    return this.imageModelSelection();
   }
   saveModelVisibility(input: Record<string, unknown>) {
     const scope = modelLimitScope({ ...input, model: "visibility" }), config = this.config();
@@ -408,6 +451,7 @@ export class CoreStore {
     return {
       config: this.config(),
       modelVisibility: this.modelVisibility(),
+      imageModelSelection: this.imageModelSelection(),
       bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"),
       conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"),
       approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"),

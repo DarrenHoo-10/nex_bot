@@ -50,7 +50,9 @@ export function ModelList({ models, value, selected, onSelect, emptyLabel, allow
   </div>;
 }
 
-export function ModelPicker({ value, onChange, models, loadModels, label = '选择模型', emptyLabel, name, disabled, open: controlledOpen, onOpenChange, anchorRef }: {
+export function ModelPicker({ value, onChange, models, loadModels, label = '选择模型', emptyLabel, name, disabled, open: controlledOpen, onOpenChange, anchorRef, selected, allowCustom = true, displayValue, triggerClassName }: {
+  displayValue?: string; triggerClassName?: string;
+  selected?: Set<string>; allowCustom?: boolean;
   anchorRef?: RefObject<HTMLElement | null>;
   value: string; onChange: (model: string) => void; models?: string[] | null; loadModels?: () => Promise<Catalog>;
   label?: string; emptyLabel?: string; name?: string; disabled?: boolean; open?: boolean; onOpenChange?: (open: boolean) => void;
@@ -88,16 +90,28 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
     el.querySelector('input')?.focus();
     return () => { observer.disconnect(); window.removeEventListener('resize', position); document.removeEventListener('scroll', scroll, true); document.removeEventListener('pointerdown', outside); if (el.isConnected) el.hidePopover(); };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-  const options = useMemo(() => [...new Set([...(value ? [value] : []), ...(models ?? catalog?.models ?? [])])], [value, models, catalog]);
+  const options = useMemo(() => [...new Set([...(value ? [value] : []), ...(models ?? catalog?.models ?? []), ...(selected ?? [])])], [value, selected, models, catalog]);
   return <div className={anchorRef ? "model-picker model-picker-menu-only" : "model-picker"} ref={root}>
     {name && <input type="hidden" name={name} value={value}/>}
-    {!anchorRef && <button ref={trigger} type="button" className="model-picker-trigger" title={value || emptyLabel} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}><span>{value || emptyLabel || label}</span><ChevronDown size={15}/></button>}
+    {!anchorRef && <button ref={trigger} type="button" className={triggerClassName ?? "model-picker-trigger"} title={displayValue || value || emptyLabel} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}><span>{displayValue || value || emptyLabel || label}</span><ChevronDown size={15}/></button>}
     {open && <div ref={panel} popover="manual" className="model-picker-popover" role="dialog" aria-label={label} onKeyDown={e => { if (e.key === 'Escape' || e.key === 'Tab') { if (e.key === 'Escape') e.preventDefault(); e.stopPropagation(); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}>
-      <ModelList models={options} value={value} emptyLabel={emptyLabel} allowCustom onSelect={model => { if (disabled) return; onChange(model); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); }}/>
+      <ModelList models={options} value={value} selected={selected} emptyLabel={emptyLabel} allowCustom={allowCustom} onSelect={model => { if (disabled) return; onChange(model); if (!selected) { setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}/>
       {loading && <div className="model-picker-status" role="status">正在获取模型…</div>}
       {error && <div className="model-picker-status" role="alert">{error}</div>}
       {models == null && catalog?.hasMore && <div className="model-picker-status">服务仍有未返回的模型，可输入完整 ID。</div>}
       {loadModels && models == null && <button className="model-refresh" type="button" disabled={loading} onClick={() => void load()}>{error ? '重试' : '刷新列表'}</button>}
+      {selected && <button type="button" className="model-refresh" onClick={() => { setOpen(false); trigger.current?.focus(); }}>完成</button>}
     </div>}
+  </div>;
+}
+
+export function ModelSelection({ models, selected, onSelect, label, disabled, allowCustom = false }: {
+  models: string[]; selected: Set<string>; onSelect: (id: string) => void; label: string; disabled?: boolean; allowCustom?: boolean;
+}) {
+  return <div className="model-selection">
+    <ModelPicker value="" models={models} selected={selected} onChange={onSelect} label={label} disabled={disabled} allowCustom={allowCustom}/>
+    <div className="model-selection-values" aria-label="已选模型">
+      {selected.size ? [...selected].map(model => <span key={model} className="model-selection-value">{model}</span>) : <span className="preferences-status">未选择</span>}
+    </div>
   </div>;
 }

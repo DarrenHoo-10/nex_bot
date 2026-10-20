@@ -2,15 +2,17 @@ import { canonical, hash, optionalText, text, type CoreStore, type Row } from ".
 import { computerOperations } from "./computer.ts";
 import { dangerousEffect } from "./risk.ts";
 import { connectorAccess, type ConnectorTool } from "./connectors.ts";
+import { universalImageActions } from '../../shared/personal-capabilities.ts';
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate"] as const;
 // Device binding, Agent policy and effect-specific approval remain independent.
 export const basicActions = [...actions];
 export function policyTools(policy: Row): string[] {
   const parsed = JSON.parse(String(policy.policy_json)) as { tools?: unknown };
-  return Array.isArray(parsed.tools) ? parsed.tools.filter((value): value is string => typeof value === "string" && actions.includes(value as typeof actions[number])) : [];
+  const configured = Array.isArray(parsed.tools) ? parsed.tools.filter((value): value is string => typeof value === "string" && actions.includes(value as typeof actions[number])) : [];
+  return [...new Set([...configured, ...universalImageActions])];
 }
 export function evaluateTool(store: CoreStore, botId: string, args: Record<string, unknown>) {
   const action = text(args.action, 40);
@@ -63,6 +65,10 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     if (!Number.isSafeInteger(args.expectedVersion) || doc.version !== args.expectedVersion) throw new Error("记忆版本已变化");
   }
   else if (action === "memory.search" || action === "memory.reflect") text(args.query, action === "memory.reflect" ? 1000 : 200);
+  else if (action === 'image.generate') {
+    text(args.prompt, 16000);
+    if (args.modelId !== undefined) text(args.modelId, 200);
+  }
   else if (action === "skill.read") text(args.skillId, 80);
   else if (action === "connector.tools" || action === "connector.call") {
     const connector = connectorAccess(store, botId, args);

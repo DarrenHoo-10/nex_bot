@@ -1,4 +1,4 @@
-import { id, now, text, type CoreStore } from "./store.ts";
+import { hash, id, now, text, type CoreStore } from "./store.ts";
 
 export const attachmentLimit = 5 * 1024 * 1024;
 export class ChatFiles {
@@ -30,13 +30,52 @@ export class ChatFiles {
     if (!message) throw new Error("附件消息未保存");
     for (const fileId of ids) this.store.run("UPDATE chat_attachments SET message_id=? WHERE id=? AND bot_id=? AND message_id IS NULL", message.id, fileId, botId);
   }
-  file(fileId: string, botId?: string) {
+  authorize(fileId: string, botId?: string) {
     const row = this.store.get("SELECT a.* FROM chat_attachments a JOIN agent_messages m ON m.id=a.message_id WHERE a.id=? AND instr(m.content,'/api/attachments/'||a.id)>0", fileId);
     if (!row || (botId && row.bot_id !== botId)) throw new Error("附件不存在或不可访问");
-    return { row, bytes: Buffer.from(this.store.decrypt(String(row.ciphertext)), "base64") };
+    return row;
+  }
+  objectKey(fileId: string) {
+    const core = this.store.get('SELECT core_id FROM workspaces')!.core_id;
+    return `nexbot/attachments/v1/${hash(String(core))}/${text(fileId, 100)}.enc`;
+  }
+  persist(fileId: string): Promise<void> {
+    const pending = this.store.attachmentJobs.get(fileId); if (pending) return pending;
+    const objects = this.store.attachmentObjects; if (!objects) return Promise.resolve();
+    const job = (async () => {
+      const row = this.store.get('SELECT ciphertext FROM chat_attachments WHERE id=?', fileId);
+      if (!row || !row.ciphertext) return;
+      const ciphertext = String(row.ciphertext), key = this.objectKey(fileId), digest = hash(ciphertext);
+      await objects.put(key, ciphertext);
+      if (hash(await objects.get(key)) !== digest) throw new Error('附件上传校验失败');
+      this.store.transaction(() => {
+        if (this.store.get('SELECT ciphertext FROM chat_attachments WHERE id=?', fileId)?.ciphertext !== ciphertext) return;
+        this.store.run('INSERT INTO attachment_objects VALUES(?,?,?) ON CONFLICT(attachment_id) DO UPDATE SET object_key=excluded.object_key,ciphertext_hash=excluded.ciphertext_hash', fileId, key, digest);
+        this.store.run("UPDATE chat_attachments SET ciphertext='' WHERE id=?", fileId);
+      });
+    })();
+    this.store.attachmentJobs.set(fileId, job);
+    void job.finally(() => this.store.attachmentJobs.delete(fileId)).catch(() => {});
+    return job;
+  }
+  async migrate(shouldStop: () => boolean = () => false) {
+    const rows = this.store.all("SELECT id FROM chat_attachments WHERE ciphertext<>'' AND message_id IS NOT NULL LIMIT 20");
+    for (const row of rows) { if (shouldStop()) break; await this.persist(String(row.id)); }
+    return rows.length;
+  }
+  async file(fileId: string, botId?: string) {
+    let row = this.authorize(fileId, botId), ciphertext = String(row.ciphertext);
+    if (!ciphertext) {
+      const object = this.store.get('SELECT * FROM attachment_objects WHERE attachment_id=?', fileId);
+      if (!object || object.object_key !== this.objectKey(fileId) || !this.store.attachmentObjects) throw new Error('附件存储不可用');
+      ciphertext = await this.store.attachmentObjects.get(String(object.object_key));
+      if (hash(ciphertext) !== object.ciphertext_hash) throw new Error('附件完整性校验失败');
+      row = this.authorize(fileId, botId);
+    }
+    return { row, bytes: Buffer.from(this.store.decrypt(ciphertext), 'base64') };
   }
   async read(botId: string, fileId: string) {
-    const { row, bytes } = this.file(fileId, botId);
+    const { row, bytes } = await this.file(fileId, botId);
     if (String(row.mime).startsWith("image/")) return { name: row.name, images: [{ type: "image", mimeType: row.mime, data: bytes.toString("base64") }] };
     let content: string;
     if (row.mime === "application/pdf") {
