@@ -826,7 +826,6 @@ private fun ApprovalCard(approval: ApprovalRow, botName: String, onAllow: () -> 
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
-                    }
                 }
             }
             Spacer(Modifier.height(12.dp))
