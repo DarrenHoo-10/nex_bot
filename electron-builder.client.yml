@@ -4,7 +4,7 @@ directories:
   output: release/personal-client
 extraMetadata:
   name: nexbot-client
-  version: 0.9.4
+  version: 0.9.6
   main: electron/nex-client-main.mjs
 npmRebuild: false
 electronVersion: 39.8.10
@@ -26,8 +26,6 @@ extraResources:
     to: client-executor/node_modules
     filter:
       - '**/*'
-  - from: dist-personal/client-ui
-    to: client-ui
   - from: LICENSE
     to: LICENSE-OpenMausBot.txt
   - from: NOTICE
