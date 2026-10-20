@@ -7,6 +7,7 @@ import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPersonalApp } from "./index.ts";
 import { startFakeIdentity } from "./testing/fake-identity.ts";
+import { SESSION_MAX_MS } from "./identity.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 import { NEX_USER_ORIGIN } from "./identity-provider.ts";
 
@@ -52,7 +53,9 @@ describe("mandatory built-in account login", () => {
     expect((await request(app, "state", undefined, { Authorization: `Bearer ${client.body.token}` })).status).toBe(200);
     expect(app.store.get("SELECT COUNT(*) n FROM external_identities")!.n).toBe(1);
     expect(app.store.get("SELECT protocol FROM user_sessions WHERE id=?", owner.body.sessionId)!.protocol).toBe("native-v1");
-    expect(owner.body.expiresAt - Date.now()).toBeLessThanOrEqual(8 * 3_600_000);
+    expect(owner.body.expiresAt - Date.now()).toBeLessThanOrEqual(SESSION_MAX_MS);
+    // The fake upstream session lasts 30 days, so the Core cap is what applies.
+    expect(owner.body.expiresAt - Date.now()).toBeGreaterThan(SESSION_MAX_MS - 60_000);
   });
   it("binds identity by immutable subject and rejects another account without replacing the owner", async () => {
     const { app, provider } = await fixture(); await login(app, await bootstrap(app));
@@ -126,7 +129,7 @@ describe("mandatory built-in account login", () => {
     expect(refreshed.body.sessionId).toBe(owner.body.sessionId);
     expect(refreshed.body.coreId).toBe(owner.body.coreId);
     expect(refreshed.body.token).not.toBe(owner.body.token);
-    expect(refreshed.body.expiresAt - Date.now()).toBeLessThanOrEqual(8 * 3_600_000);
+    expect(refreshed.body.expiresAt - Date.now()).toBeLessThanOrEqual(SESSION_MAX_MS);
     // The rotated token is the only live one: a copy taken before the refresh stops working.
     expect((await request(app, "state", undefined, { Authorization: `Bearer ${owner.body.token}` })).status).toBe(401);
     expect((await request(app, "state", undefined, { Authorization: `Bearer ${refreshed.body.token}` })).status).toBe(200);
