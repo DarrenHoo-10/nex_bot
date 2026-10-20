@@ -382,7 +382,6 @@
   "composer.busy.team": "チーム",
   "composer.busy.aBot": "ボット",
   "composer.busy.theBot": "ボット",
-  "composer.error.noImages": "選択中の回答者は画像の添付に対応していません。",
   "composer.error.clipboardImage": "クリップボードの画像を読み取れませんでした。代わりに画像ファイルを添付してください。",
   "composer.dictation.macOnly": "音声入力は今のところ macOS でのみ利用できます。",
   "composer.dictation.permission": "音声入力にはマイクと音声認識の許可が必要です — システム設定 → プライバシーとセキュリティ。",

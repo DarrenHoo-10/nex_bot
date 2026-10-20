@@ -24,6 +24,9 @@ describe("MessageActions", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("grid-cols-[0fr]");
     expect(html).toContain("group-hover/actions:grid-cols-[1fr]");
+    expect(html).toContain("group-hover:grid-cols-[1fr]");
+    expect(html).toContain("group-focus-within:grid-cols-[1fr]");
+    expect(html).toContain("delay-200");
     expect(html).toContain(">copy<");
     expect(html).toContain(">reply<");
     expect(html).not.toContain('data-open="true"');

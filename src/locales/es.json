@@ -382,7 +382,6 @@
   "composer.busy.team": "El equipo",
   "composer.busy.aBot": "Un bot",
   "composer.busy.theBot": "El bot",
-  "composer.error.noImages": "El respondedor seleccionado no admite imágenes adjuntas.",
   "composer.error.clipboardImage": "No se pudo leer la imagen del portapapeles. Prueba a adjuntar el archivo de imagen.",
   "composer.dictation.macOnly": "El dictado solo está disponible en macOS por ahora.",
   "composer.dictation.permission": "El dictado necesita acceso al Micrófono y al Reconocimiento de voz: Ajustes del Sistema → Privacidad y seguridad.",

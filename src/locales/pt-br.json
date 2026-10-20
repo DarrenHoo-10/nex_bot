@@ -469,7 +469,6 @@
   "composer.busy.team": "A equipe",
   "composer.busy.aBot": "Um bot",
   "composer.busy.theBot": "O bot",
-  "composer.error.noImages": "O respondente selecionado não aceita imagens anexadas.",
   "composer.error.clipboardImage": "Não foi possível ler a imagem da área de transferência. Tente anexar o arquivo da imagem.",
   "composer.dictation.macOnly": "O ditado só está disponível no macOS por enquanto.",
   "composer.dictation.permission": "O ditado precisa de acesso ao Microfone e ao Reconhecimento de Fala — Ajustes do Sistema → Privacidade e Segurança.",

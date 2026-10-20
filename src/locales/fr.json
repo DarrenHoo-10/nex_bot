@@ -382,7 +382,6 @@
   "composer.busy.team": "L'équipe",
   "composer.busy.aBot": "Un bot",
   "composer.busy.theBot": "Le bot",
-  "composer.error.noImages": "Le répondeur sélectionné ne prend pas en charge les images jointes.",
   "composer.error.clipboardImage": "Impossible de lire l'image du presse-papiers. Joignez plutôt le fichier image.",
   "composer.dictation.macOnly": "La dictée n'est disponible que sur macOS pour l'instant.",
   "composer.dictation.permission": "La dictée a besoin de l'accès au Micro et à la Reconnaissance vocale — Réglages Système → Confidentialité et sécurité.",

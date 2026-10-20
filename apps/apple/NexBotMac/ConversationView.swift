@@ -19,6 +19,7 @@ struct ConversationView: View {
     @Environment(ContactPreferences.self) private var preferences
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.scenePhase) private var scenePhase
+    @State private var modelChooserOpen = false
     @State private var exported = false
     @State private var dropTargeted = false
     @State private var memoryBaseline: [String: String]?
@@ -144,15 +145,21 @@ struct ConversationView: View {
     }
 
     private var noModelBanner: some View {
-        HStack(spacing: 10) {
-            Text(ToolLabels.noModelBanner).font(.system(size: 12)).foregroundStyle(Theme.foreground)
-            Button { ui.openSettings(.model) } label: {
-                Text("配置 API Key").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.primaryForeground)
-                    .padding(.horizontal, 10).frame(height: 24)
-                    .background(Theme.primary, in: RoundedRectangle(cornerRadius: 7, style: .continuous)).contentShape(Rectangle())
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text(ToolLabels.noModelBanner).font(.system(size: 12)).foregroundStyle(Theme.foreground)
+                Button { modelChooserOpen.toggle() } label: {
+                    Text("选择模型").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.primaryForeground)
+                        .padding(.horizontal, 10).frame(height: 24)
+                        .background(Theme.primary, in: RoundedRectangle(cornerRadius: 7, style: .continuous)).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Spacer()
             }
-            .buttonStyle(.plain)
-            Spacer()
+            if modelChooserOpen {
+                ScrollView { SettingsModelPane(workspace: workspace).padding(16) }
+                    .frame(maxHeight: 360)
+            }
         }
         .padding(.horizontal, 28).padding(.vertical, 8)
         .background(Theme.approvalSoft)
@@ -426,6 +433,7 @@ private struct MessageRow: View {
     let workspace: WorkspaceStore
     @Environment(UIState.self) private var ui
     @State private var hover = false
+    @State private var hideActions: Task<Void, Never>?
     @State private var copied = false
 
     private var peer: Bot? { workspace.bot(message.a2aPeerID ?? message.senderBotID ?? "") }
@@ -452,7 +460,9 @@ private struct MessageRow: View {
             }
             .padding(.leading, 80)
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .onHover { hover = $0 }
+            .contentShape(Rectangle())
+            .onHover(perform: updateHover)
+            .onDisappear { hideActions?.cancel() }
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 if message.role == "peer" {
@@ -477,7 +487,18 @@ private struct MessageRow: View {
             }
             .padding(.trailing, 40)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onHover { hover = $0 }
+            .contentShape(Rectangle())
+            .onHover(perform: updateHover)
+            .onDisappear { hideActions?.cancel() }
+        }
+    }
+
+    private func updateHover(_ inside: Bool) {
+        hideActions?.cancel()
+        if inside { hover = true; return }
+        hideActions = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+            hover = false
         }
     }
 

@@ -382,7 +382,6 @@
   "composer.busy.team": "टीम",
   "composer.busy.aBot": "एक बॉट",
   "composer.busy.theBot": "बॉट",
-  "composer.error.noImages": "चुना गया उत्तरदाता छवि अटैचमेंट स्वीकार नहीं करता।",
   "composer.error.clipboardImage": "क्लिपबोर्ड की छवि पढ़ी नहीं जा सकी। इसके बजाय छवि फ़ाइल संलग्न करें।",
   "composer.dictation.macOnly": "फ़िलहाल श्रुतलेख सिर्फ़ macOS पर उपलब्ध है।",
   "composer.dictation.permission": "श्रुतलेख के लिए माइक्रोफ़ोन और स्पीच रिकग्निशन की अनुमति चाहिए — System Settings → Privacy & Security।",

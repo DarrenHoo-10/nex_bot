@@ -8,6 +8,8 @@ struct ChatView: View {
     @Environment(Navigation.self) private var nav
     @State private var errorText: String?
     @State private var quote: QuoteDraft?
+    @State private var modelChooserOpen = false
+    @State private var modelForm = ModelForm(config: nil)
     @State private var showRoutine = false
     @State private var composerMenu: ComposerMenu?
     @State private var showMemory = false
@@ -239,11 +241,17 @@ struct ChatView: View {
     // MARK: Banners
 
     private var noModelBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.approval)
-            Text(ToolLabels.noModelBanner).font(.footnote).lineLimit(2)
-            Spacer(minLength: 4)
-            Button("配置 API Key") { nav.openSettings(.model) }.buttonStyle(PillButtonStyle(primary: true))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.approval)
+                Text(ToolLabels.noModelBanner).font(.footnote).lineLimit(2)
+                Spacer(minLength: 4)
+                Button("选择模型") { modelChooserOpen.toggle() }.buttonStyle(PillButtonStyle(primary: true))
+            }
+            if modelChooserOpen {
+                ScrollView { SettingsModelView(workspace: workspace, form: modelForm).padding(14) }
+                    .frame(maxHeight: 320)
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .frame(maxWidth: .infinity).background(Theme.approvalSoft)

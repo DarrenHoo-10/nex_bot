@@ -538,7 +538,6 @@
   "composer.busy.team": "Команда",
   "composer.busy.aBot": "Бот",
   "composer.busy.theBot": "Бот",
-  "composer.error.noImages": "Обраний респондер не підтримує вкладення зображень.",
   "composer.error.clipboardImage": "Не вдалося прочитати зображення з буфера обміну. Спробуйте прикріпити файл зображення.",
   "composer.dictation.macOnly": "Диктування поки що доступне лише на macOS.",
   "composer.dictation.permission": "Диктуванню потрібен доступ до Мікрофона + Розпізнавання мовлення — Системні налаштування → Конфіденційність і безпека.",
