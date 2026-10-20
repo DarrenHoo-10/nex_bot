@@ -1,6 +1,7 @@
 package com.nexorai.nexbot.ui
 
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -32,20 +33,22 @@ fun MarkdownText(
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val annotated = remember(text, linkColor, codeBackground) { markdown(text, linkColor, codeBackground) }
     val uriHandler = LocalUriHandler.current
-    ClickableText(
-        text = annotated,
-        modifier = modifier,
-        style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-        onClick = { offset ->
-            annotated.getStringAnnotations(TAG_URL, offset, offset).firstOrNull()?.let { annotation ->
-                if (annotation.item.startsWith("/api/attachments/") && onAttachment != null) {
-                    onAttachment(annotation.item, annotated.text.substring(annotation.start, annotation.end))
-                } else {
-                    runCatching { uriHandler.openUri(annotation.item) }
+    SelectionContainer {
+        ClickableText(
+            text = annotated,
+            modifier = modifier,
+            style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+            onClick = { offset ->
+                annotated.getStringAnnotations(TAG_URL, offset, offset).firstOrNull()?.let { annotation ->
+                    if (annotation.item.startsWith("/api/attachments/") && onAttachment != null) {
+                        onAttachment(annotation.item, annotated.text.substring(annotation.start, annotation.end))
+                    } else {
+                        runCatching { uriHandler.openUri(annotation.item) }
+                    }
                 }
-            }
-        },
-    )
+            },
+        )
+    }
 }
 
 private const val TAG_URL = "nexbot-url"

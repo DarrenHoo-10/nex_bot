@@ -8,9 +8,9 @@ import { t } from "@/lib/i18n";
 export const messageActionClass =
   "rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-secondary";
 
-/** One "…" handle beside a bubble. Hovering or focusing it slides the row of
- * message controls out sideways — away from the bubble — so an idle message
- * shows a single quiet dot cluster instead of a heap of icons.
+/** One "…" handle beside a bubble. Hovering or focusing the message keeps
+ * the controls expanded while the pointer travels from the bubble to the tray.
+ * A short closing delay also tolerates briefly leaving the message boundary.
  *
  * Click toggles the tray open for touch and keyboard, and `forceOpen` keeps
  * it out while a control needs to stay reachable (a message being read
@@ -52,7 +52,7 @@ export function MessageActions({
       </button>
       <div
         className={cn(
-          "grid grid-cols-[0fr] transition-[grid-template-columns] duration-200 ease-out group-hover/actions:grid-cols-[1fr] group-focus-within/actions:grid-cols-[1fr]",
+          "grid grid-cols-[0fr] transition-[grid-template-columns] duration-200 ease-out delay-200 group-hover:delay-0 group-focus-within:delay-0 group-hover:grid-cols-[1fr] group-focus-within:grid-cols-[1fr] group-hover/actions:grid-cols-[1fr] group-focus-within/actions:grid-cols-[1fr]",
           open && "grid-cols-[1fr]",
         )}
       >

@@ -38,10 +38,10 @@ const IN_PLACE_ASSIGNMENT = "destination = appImageFile;";
 // absorbs any cross-filesystem copy, then rename(2) within a single directory
 // replaces the old file atomically and works over a running binary. Nothing
 // is removed until the replacement is complete.
-const UNLINK_BEFORE_INSTALL = /^\s*\(0, fs_1\.unlinkSync\)\(appImageFile\);\n/m;
+const UNLINK_BEFORE_INSTALL = /^\s*\(0, fs_1\.unlinkSync\)\(appImageFile\);\n/gm;
 
 const MOVE_INTO_PLACE =
-  /\(0, child_process_1\.execFileSync\)\("mv", \["-f", installerPath, destination\]\);/;
+  /\(0, child_process_1\.execFileSync\)\("mv", \["-f", installerPath, destination\]\);/g;
 
 const ATOMIC_MOVE = [
   'const stagedDestination = `${destination}.new`;',
@@ -53,11 +53,13 @@ const ATOMIC_MOVE = [
 // spawn can reach the data-directory lease while the old desktop is still
 // cleaning up. Electron's relauncher waits for this process to exit instead;
 // keep the original AppImage path, not the executable inside its old mount.
-const IMMEDIATE_RELAUNCH = /this\.spawnLog\(destination, \[\], env\);/g;
+// Bundling 6.8.9 renames this local to env2. Capture the emitted identifier,
+// just as we do for the path import, and preserve it in the replacement.
+const IMMEDIATE_RELAUNCH = /this\.spawnLog\(destination, \[\], (env\d*)\);/g;
 const QUEUED_RELAUNCH = [
   'const previousSilentInstall = process.env.APPIMAGE_SILENT_INSTALL;',
   'try {',
-  '  process.env.APPIMAGE_SILENT_INSTALL = env.APPIMAGE_SILENT_INSTALL;',
+  '  process.env.APPIMAGE_SILENT_INSTALL = $1.APPIMAGE_SILENT_INSTALL;',
   '  if (require("electron").app.relaunch({ execPath: destination, args: [] }) === false) {',
   '    throw new Error("Could not schedule the updated AppImage to restart");',
   '  }',

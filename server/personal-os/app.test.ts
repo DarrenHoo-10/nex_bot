@@ -72,7 +72,9 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const terminal = f.app.agents.send(botId, "查看默认工作目录", "default-terminal-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", terminal)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     const result = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=?", terminal)?.result_json));
-    expect(realpathSync.native(result.stdout.trim())).toBe(realpathSync.native(os.homedir()));
+    expect(result).toMatchObject({ code: 0, timedOut: false });
+    // Resolve symlinks and compare with the host's path semantics (Windows ignores casing).
+    expect(path.relative(realpathSync.native(os.homedir()), realpathSync.native(result.stdout.trim()))).toBe("");
     expect(f.app.node.config!.root).toBe("");
     expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
     const policyVersion = f.app.node.config!.policyVersion;
@@ -261,6 +263,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-exec", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: process.platform === "win32" ? "Set-Content -LiteralPath marker.txt -Value synthetic" : "printf synthetic > marker.txt" }) }] }, { kind: "openai-text", text: "合成命令已批准执行" });
       const taskId = f.app.agents.send(String(f.bots[0].id), "执行客户端命令", "thin-exec-input").taskId;
       await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+      expect(JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='thin-exec'")?.result_json))).toMatchObject({ code: 0, timedOut: false });
       expect(readFileSync(path.join(shared, "marker.txt"), "utf8").trim()).toBe("synthetic");
       expect(approval(f.app)).toBeUndefined();
       expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
@@ -271,6 +274,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       expect(existsSync(path.join(shared, "marker.txt"))).toBe(true);
       const grant = approval(f.app); f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true);
       await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", deleteTask)?.status === "succeeded");
+      expect(JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='thin-delete'")?.result_json))).toMatchObject({ code: 0, timedOut: false });
       expect(existsSync(path.join(shared, "marker.txt"))).toBe(false);
     } finally { await client.close(); }
   }, 60_000);
@@ -769,6 +773,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "shell-once", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, command: process.platform === "win32" ? "Add-Content -LiteralPath counter.txt -Value executed; Get-Content -LiteralPath counter.txt" : "echo executed >> counter.txt; cat counter.txt" }) }] }, { kind: "openai-text", text: "命令完成" });
     const commandTask = f.app.runtime.input(f.conversation, "执行普通文件保存", id());
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", commandTask)?.status === "succeeded");
+    expect(JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='shell-once'")?.result_json))).toMatchObject({ code: 0, timedOut: false });
     const receipt = nodeApp.node.journal.prepare("SELECT * FROM node_calls WHERE capability='device.exec'").get()!;
     // Delivery retries carry exactly the same immutable source, even after expiry.
     f.app.gateway.sockets.get(pair.deviceId)!.send(JSON.stringify({ type: "call", callId: receipt.call_id, canonicalEnvelope: receipt.canonical_envelope, argumentHash: receipt.argument_hash, localPolicyVersion: receipt.local_policy_version, leaseSeq: receipt.lease_seq, leaseExpiresAt: receipt.lease_expires_at, deadlineAt: receipt.deadline_at }));

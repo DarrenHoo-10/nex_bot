@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 
 import { patchAppImageUpdater } from "../scripts/patch-appimage-updater.mjs";
 import { acquireDataDirLease } from "./data-dir-lease.mjs";
@@ -62,7 +63,7 @@ const UPSTREAM = [
   "          destination = path2.join(path2.dirname(appImageFile), path2.basename(installerPath));",
   "        }",
   '        (0, child_process_1.execFileSync)("mv", ["-f", installerPath, destination]);',
-  '        this.spawnLog(destination, [], env);',
+  '        this.spawnLog(destination, [], env2);',
 ].join("\n");
 
 test("the patch keeps the running path and never deletes ahead of the rename", () => {
@@ -74,14 +75,29 @@ test("the patch keeps the running path and never deletes ahead of the rename", (
   assert.match(patched, /mv", \["-f", installerPath, stagedDestination\]/);
   assert.match(patched, /renameSync\)\(stagedDestination, destination\)/);
   assert.match(patched, /app\.relaunch\(\{ execPath: destination, args: \[\] \}\)/);
+  assert.match(patched, /process\.env\.APPIMAGE_SILENT_INSTALL = env2\.APPIMAGE_SILENT_INSTALL;/);
   assert.doesNotMatch(patched, /this\.spawnLog\(destination/);
 });
 
-test("the patch tolerates esbuild renaming the path import", () => {
-  const patched = patchAppImageUpdater(UPSTREAM.replaceAll("path2", "path7"));
+test("the patch tolerates esbuild renaming the path import and environment local", () => {
+  for (const env of ["env", "env7"]) {
+    const patched = patchAppImageUpdater(UPSTREAM.replaceAll("path2", "path7").replaceAll("env2", env));
+    assert.doesNotMatch(patched, renamePattern);
+    assert.equal(patched.match(/destination = appImageFile;/g)?.length, 2);
+    assert.ok(patched.includes(`process.env.APPIMAGE_SILENT_INSTALL = ${env}.APPIMAGE_SILENT_INSTALL;`));
+  }
+});
 
+test("all four patches match the installed upstream after bundling", async () => {
+  const result = await build({
+    entryPoints: [createRequire(import.meta.url).resolve("electron-updater")],
+    bundle: true, platform: "node", target: "node20", format: "cjs",
+    external: ["electron"], write: false,
+  });
+  const patched = patchAppImageUpdater(result.outputFiles[0].text);
   assert.doesNotMatch(patched, renamePattern);
-  assert.equal(patched.match(/destination = appImageFile;/g)?.length, 2);
+  assert.doesNotMatch(patched, /this\.spawnLog\(destination/);
+  assert.match(patched, /renameSync\)\(stagedDestination, destination\)/);
 });
 
 test("the patch fails closed when upstream's shape moves", () => {
@@ -91,8 +107,11 @@ test("the patch fails closed when upstream's shape moves", () => {
     ["no rename branch", UPSTREAM.replace(/destination = path2\.join[^;]+;/, "destination = elsewhere;")],
     ["no early unlink", UPSTREAM.replace("        (0, fs_1.unlinkSync)(appImageFile);\n", "")],
     ["no move", UPSTREAM.replace(/\(0, child_process_1\.execFileSync\)\("mv"[^;]+;/, "")],
-    ["no immediate relaunch", UPSTREAM.replace("this.spawnLog(destination, [], env);", "")],
+    ["no immediate relaunch", UPSTREAM.replace("this.spawnLog(destination, [], env2);", "")],
     ["two rename branches", `${UPSTREAM}\n${UPSTREAM}`],
+    ["two early unlinks", `${UPSTREAM}\n(0, fs_1.unlinkSync)(appImageFile);\n`],
+    ["two moves", `${UPSTREAM}\n(0, child_process_1.execFileSync)("mv", ["-f", installerPath, destination]);`],
+    ["two immediate relaunches", `${UPSTREAM}\nthis.spawnLog(destination, [], env2);`],
   ]) {
     assert.throws(() => patchAppImageUpdater(mutated), /to patch, found/, label);
   }

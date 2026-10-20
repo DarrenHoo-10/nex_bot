@@ -54,7 +54,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
     </div>
   </div>;
 }
-function ModelSettings({ state, run, active }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; active: boolean }) {
+export function ModelSettings({ state, run, active }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; active: boolean }) {
   const [provider, setProvider] = useState(str(state.config?.provider_id) || "openai");
   const [endpoint, setEndpoint] = useState(str(state.config?.endpoint) || "https://api.openai.com/v1");
   const [saved, setSaved] = useState(false), [pending, setPending] = useState(false);

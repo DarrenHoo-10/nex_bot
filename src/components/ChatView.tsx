@@ -384,6 +384,7 @@ function BubbleEditor({
 }) {
   const [draft, setDraft] = useState(initial);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const imeEndedAt = useRef(0);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -399,9 +400,11 @@ function BubbleEditor({
         ref={ref}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
+        onCompositionEnd={() => { imeEndedAt.current = Date.now(); }}
         onKeyDown={(e) => {
           // isComposing: an IME confirm-Enter must not submit the edit
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return;
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) {
             e.preventDefault();
             submit();
           }
