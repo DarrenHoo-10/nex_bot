@@ -12,6 +12,21 @@ import { DEVICE_LEASE_MS } from "./devices.ts";
 /** A call whose absolute lease is staler than this means the device clock is badly wrong, not merely drifting. */
 const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
 
+// Windows PowerShell initializes .NET and module discovery before running
+// -Command. PATH/SystemRoot/TEMP alone omit required installation/profile
+// paths (PowerShell/PowerShell#3545); closing stdin cannot fix that startup.
+// Keep an allowlist rather than exposing Core/provider credentials. Do not
+// inherit PSModulePath from a pwsh parent: its PS7 modules can break PS5.1.
+const WINDOWS_COMMAND_ENV = new Set([
+  "PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT",
+  "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+  "ALLUSERSPROFILE", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+  "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "COMMONPROGRAMW6432",
+]);
+export function windowsCommandEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(source).filter(([key, value]) => value !== undefined && WINDOWS_COMMAND_ENV.has(key.toUpperCase())));
+}
+
 export function confined(root: string, relative: string) {
   if (path.isAbsolute(relative) || relative.includes("\0") || /^[a-zA-Z]:/.test(relative)) throw new Error("路径须相对授权目录");
   const actualRoot = realpathSync(root), candidate = realpathSync(path.resolve(actualRoot, relative));
@@ -222,7 +237,7 @@ export class DeviceNode {
       // stdin pipe can leave PowerShell (or a command reading stdin) waiting
       // until the lease expires, even with -NonInteractive.
       const child = process.platform === "win32"
-        ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP } })
+        ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: windowsCommandEnvironment() })
         : spawn("/bin/sh", ["-c", command], { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH } });
       this.commands.add(child);
       let stdout = "", stderr = "", timedOut = false, cancelled = false;

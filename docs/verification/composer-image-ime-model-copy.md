@@ -164,3 +164,61 @@ was modified and nothing was pushed.
 - `src/personal/agent.css`
 - `src/personal/panels.tsx`
 - `src/styles.css`
+
+## PR #7 CI follow-up, round 2
+
+Work began at `203a2e6b` on the same branch on 2026-10-20.
+
+The Device Node Windows launch passed only PATH, SystemRoot and TEMP.
+`-NoProfile`, `-NonInteractive` and closed stdin were already present.
+The failing Convert-Path, Set-Content and Add-Content commands are complete
+PowerShell statements; the working directory is passed as `spawn.cwd`,
+not interpolated into their source. Both output pipes already have data
+listeners that continue draining after the capture limits.
+
+The fix retains a case-insensitive allowlist of Windows installation,
+profile, application-data and temporary paths. It keeps Core/provider
+credentials out of the child environment and does not inherit a PowerShell 7
+PSModulePath into Windows PowerShell 5.1. Missing ProgramFiles/profile
+environment is a documented PowerShell startup defect:
+[PowerShell issue 3545](https://github.com/PowerShell/PowerShell/issues/3545).
+The module-path distinction is documented in
+[about_PSModulePath](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath).
+This is the leading explanation for the CI hang, not a Windows reproduction:
+Windows CI must confirm it. No shell flags, execution deadlines, POSIX launch
+behavior or test selection were changed.
+
+`server/personal-os/node-command.test.ts` now exercises EOF, the same marker/counter/working-directory
+commands as the failing integration tests, output beyond both capture limits,
+and environment preservation/filtering. All **6 tests pass locally on macOS**.
+`tsc -p tsconfig.server.json`, focused oxlint and `git diff --check` pass.
+
+The Boat test's exact count of two resumes was timing-dependent: its final
+sleep is clipped to a wall-clock deadline and can wake early enough for one
+more poll. It now requires at least two resumes, while still requiring the
+final null result that proves a later accepted resume cleared the old error.
+The HTTP integration checks cannot be certified in this sandbox.
+
+The Android capture was attempted exactly as requested:
+
+```sh
+node --experimental-transform-types --no-warnings scripts/capture-android-fixtures.mjs --core=server/personal-os/index.ts
+```
+
+It fails while opening the isolated fake identity server with
+`listen EPERM: operation not permitted 127.0.0.1`, before writing any fixture.
+No Android fixture diff was accepted, and `--check` is not verified.
+The script does not execute Device Node commands. Its state projection
+retains `device.name`, populated by `gateway.pair(os.hostname())`; the checked-in
+state files contain `darren-win-1`. That host-dependent value is a separate
+concrete drift source requiring normalization, not a stdio contract change.
+
+macOS smokes **need CI re-run**. `node scripts/smoke-packaged-server.mjs`
+against the existing build exits at sandbox-denied `uv_uptime` before serving
+health. `node scripts/smoke-app-permissions.mjs` cannot acquire its missing
+Electron binary because its download fails. Approval-mode and phone-relay
+smokes share that unavailable Electron runtime.
+
+Local commit was attempted, but `git add` cannot create `.git/index.lock`
+(`Operation not permitted`). This session mounts `.git` read-only and
+disallows escalation. The changes remain uncommitted; nothing was pushed.
