@@ -84,7 +84,9 @@ struct Composer: View {
         }
             .frame(height: height)
             .overlay(alignment: .topLeading) {
-                if conversation.draft.isEmpty {
+                // TextEditor may not publish marked (IME) text to the binding yet.
+                // Hide the overlay throughout editing so it cannot cover composition.
+                if conversation.draft.isEmpty && !focused {
                     Text("给 \(botName) 发消息…")
                         .font(.system(size: 14)).foregroundStyle(Theme.muted)
                         .padding(.leading, 5).allowsHitTesting(false)

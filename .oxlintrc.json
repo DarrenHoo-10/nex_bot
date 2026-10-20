@@ -1,5 +1,6 @@
 {
   "ignorePatterns": [
+    "apps/apple/Packages/NexMarkdown/Sources/NexMarkdown/Resources/chat-charts.js",
     ".agent/**",
     ".agents/**",
     ".claude/**",
