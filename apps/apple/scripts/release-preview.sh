@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/release
-VERSION=$(sed -n 's/^ *MARKETING_VERSION: "\(.*\)"$//p' project.yml | head -1)
+VERSION=$(sed -n 's/^ *MARKETING_VERSION: "\(.*\)"$/\1/p' project.yml | head -1)
 test -n "$VERSION"
 xcodegen generate
 xcodegen generate --spec Testing/project.yml --project Testing
