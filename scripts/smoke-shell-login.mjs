@@ -14,7 +14,7 @@ const provider = await startFakeIdentity(), catalogModel = await startFakeModel(
 const accountWorkspaces = process.argv.includes("--account-workspaces");
 const bundle = await import(pathToFileURL(path.resolve(`dist-personal/server/core/${accountWorkspaces ? "workspaces" : "index"}.js`)).href);
 const createPersonalApp = accountWorkspaces ? bundle.createWorkspaceService : bundle.createPersonalApp;
-let core = await createPersonalApp({ dir: path.join(root, "core"), key, token: "synthetic-bootstrap", uiDir: path.resolve("dist-personal/server/ui"), identity: { fixtureOrigin: provider.origin } });
+let core = await createPersonalApp({ dir: path.join(root, "core"), key, token: "synthetic-bootstrap", uiDir: path.resolve(process.argv.find(arg => arg.startsWith("--ui-dir="))?.slice(9) ?? "dist-personal/server/ui"), identity: { fixtureOrigin: provider.origin } });
 const operator = core.store.get("SELECT * FROM user_sessions WHERE id=?", core.store.session);
 const transaction = core.identity.start({ account: "owner@example.test", name: "Service initialization" }, operator);
 const initial = await core.identity.respond({ ...transaction, password: " synthetic password " }, operator); await core.identity.logout(initial.token);
@@ -175,7 +175,7 @@ try {
   await login(third, " synthetic password "); await until(() => third.evaluate("!!document.querySelector('.workspace-brand')")); await third.quit();
   const port = Number(new URL(core.origin).port); await core.close();
   for (const session of provider.sessions.values()) session.active = false;
-  core = await createPersonalApp({ dir: path.join(root, "core"), key, port, token: "synthetic-bootstrap", uiDir: path.resolve("dist-personal/server/ui"), identity: { fixtureOrigin: provider.origin } });
+  core = await createPersonalApp({ dir: path.join(root, "core"), key, port, token: "synthetic-bootstrap", uiDir: path.resolve(process.argv.find(arg => arg.startsWith("--ui-dir="))?.slice(9) ?? "dist-personal/server/ui"), identity: { fixtureOrigin: provider.origin } });
   const fourth = await launch(); await until(() => fourth.evaluate("!!document.querySelector('#connection')&&document.querySelector('#error').textContent.length>0"));
   if (existsSync(saved)) throw new Error("Invalid resumed token retained"); await fourth.quit();
   for (const file of ["personal-os", "core.db", "memory"]) if (existsSync(path.join(profile, file))) throw new Error("Thin shell created backend state: " + file);
