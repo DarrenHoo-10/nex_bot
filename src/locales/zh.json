@@ -702,7 +702,6 @@
   "composer.busy.team": "团队",
   "composer.busy.aBot": "某个机器人",
   "composer.busy.theBot": "机器人",
-  "composer.error.noImages": "所选的回复方不支持图片附件。",
   "composer.error.clipboardImage": "无法读取剪贴板中的图片。请改为附加图片文件。",
   "composer.dictation.macOnly": "目前听写功能仅在 macOS 上可用。",
   "composer.dictation.permission": "听写需要麦克风和语音识别权限——系统设置 → 隐私与安全性。",

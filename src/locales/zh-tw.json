@@ -695,7 +695,6 @@
   "composer.busy.team": "團隊",
   "composer.busy.aBot": "某個機器人",
   "composer.busy.theBot": "這個機器人",
-  "composer.error.noImages": "所選的回應者不支援圖片附件。",
   "composer.error.clipboardImage": "無法讀取剪貼簿中的圖片。請改為附加該圖片檔案。",
   "composer.dictation.macOnly": "語音輸入目前僅在 macOS 上提供。",
   "composer.dictation.permission": "語音輸入需要麥克風與語音辨識權限——請前往「系統設定」→「隱私權與安全性」。",

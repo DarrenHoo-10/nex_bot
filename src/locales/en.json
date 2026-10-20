@@ -1187,7 +1187,6 @@
   "composer.busy.team": "The team",
   "composer.busy.aBot": "A bot",
   "composer.busy.theBot": "The bot",
-  "composer.error.noImages": "The selected responder does not support image attachments.",
   "composer.error.clipboardImage": "Could not read the clipboard image. Try attaching the image file instead.",
   "composer.dictation.macOnly": "Dictation is only available on macOS for now.",
   "composer.dictation.permission": "Dictation needs Microphone + Speech Recognition access — System Settings → Privacy & Security.",

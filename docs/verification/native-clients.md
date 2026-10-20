@@ -256,7 +256,7 @@ Verified against `scripts/fixture-native-client.mjs` with the debug build: setti
 persists (`selected_model`), 研究伙伴 still follows the default; switching during a running task shows
 "请等待当前任务结束或停止任务后切换模型" inline; saving a shortlist updates `state.modelVisibility` and the picker then lists
 only the shortlist plus the current (hidden) model and the follow-default row; the memory switch and model save
-through `/api/memory/settings`. Screenshots: `release/native-mac-align3/`.
+through the Core memory-settings endpoint (see `server/personal-os/index.ts`). Screenshots: `release/native-mac-align3/`.
 
 ## iOS alignment and conversation search (2026-10-18)
 

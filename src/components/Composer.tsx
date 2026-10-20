@@ -54,7 +54,7 @@ import {
   type PasteAttachment,
 } from "@/lib/composer-attachments";
 import { normalizeState } from "@/lib/mascot";
-import { goalCoordinatorForComposer, groupComposerHint, jevRoomRoutingOn, roomRespondersForComposer } from "@/lib/group-routing";
+import { groupComposerHint, jevRoomRoutingOn } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { CallButton } from "./CallView";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
@@ -281,27 +281,11 @@ export function Composer({
   const mentionListRef = useRef<HTMLDivElement>(null);
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
+  const imeEndedAt = useRef(0);
 
-  // image paste is offered only when every bot that will actually answer
-  // can open one. sendGroup routes to mentions, else the room default —
-  // `members.some` would let a mixed room send <attached-image> to Grok.
-  const botSupportsImages = (candidate?: Bot) =>
-    Boolean(
-      candidate &&
-        state.instances.find((i) => i.instanceId === candidate.modelSelection.instanceId)?.capabilities?.images,
-    );
-  const imageTargetsSupport = (message: string, mode: "chat" | "goal") => {
-    if (!group) return botSupportsImages(bot);
-    if (mode === "goal") {
-      return botSupportsImages(goalCoordinatorForComposer(message, members ?? [], group) ?? undefined);
-    }
-    const responders = roomRespondersForComposer(message, members ?? [], group);
-    return responders.length > 0 && responders.every(botSupportsImages);
-  };
   const typedGoalText = group && !group.dm ? goalTextFromComposer(text) : null;
   const effectiveText = typedGoalText ?? text;
   const effectiveChannelMode = typedGoalText !== null ? "goal" : channelMode;
-  const engineSupportsImages = imageTargetsSupport(effectiveText, effectiveChannelMode);
 
   // ── Slash commands and @mentions ─────────────────────────────────────
   const slash = composerSlashTrigger(text, caret);
@@ -543,7 +527,7 @@ export function Composer({
     changeDraftAttachmentPending(draftId, true);
     try {
       const { attachments: added, notice } = await intakeFiles(Array.from(picked), {
-        allowImages: engineSupportsImages,
+        allowImages: true,
         getPath: pathForFile,
         uploadImage,
       });
@@ -574,10 +558,6 @@ export function Composer({
   const hasContent = Boolean(effectiveText.trim()) || attachments.length > 0;
   const retryFailedSend = (failed: FailedComposerSend) => {
     const failedMode = failed.channelMode ?? "chat";
-    if (failed.requestText.includes("<attached-image ") && !imageTargetsSupport(failed.requestText, failedMode)) {
-      dispatch({ type: "error", message: t("composer.error.noImages") });
-      return;
-    }
     forgetFailedComposerSend(draftId, failed.id);
     const retry = {
       sendId: failed.sendId,
@@ -603,13 +583,6 @@ export function Composer({
   };
   const send = () => {
     if (locked || attachmentPending) return;
-    if (
-      attachments.some((attachment) => attachment.kind === "image") &&
-      !imageTargetsSupport(effectiveText, effectiveChannelMode)
-    ) {
-      dispatch({ type: "error", message: t("composer.error.noImages") });
-      return;
-    }
     // named `body`, not `t` — that name belongs to the catalog lookup now
     // resolvable "#Title" runs leave as canonical links, so the thread id
     // stays machine-readable in the stored send and the model's context
@@ -659,25 +632,16 @@ export function Composer({
 
   /**
    * Handles clipboard paste events in the composer textarea: converts pasted clipboard
-   * images into uploaded attachments (if supported by the responder) and converts oversized
+   * images into uploaded attachments and converts oversized
    * text into draft attachment chips.
    *
    * @param e - Clipboard event from the composer textarea.
    */
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    // an image from the clipboard becomes an uploaded attachment —
-    // but only for engines that can open one; a grok bot politely
-    // refuses instead of receiving a path it cannot read
+    // An image from the clipboard becomes an uploaded attachment.
     const imageFiles = clipboardImageFiles(e.clipboardData);
     if (imageFiles.length > 0 || clipboardHasImages(e.clipboardData)) {
       e.preventDefault();
-      if (!engineSupportsImages) {
-        dispatch({
-          type: "error",
-          message: t("composer.error.noImages"),
-        });
-        return;
-      }
       if (!imageFiles.length) {
         dispatch({ type: "error", message: t("composer.error.clipboardImage") });
         return;
@@ -937,7 +901,7 @@ export function Composer({
           onRemove={removeAttachment}
           onChangeCitation={(citation: CitationAttachment) => editAttachments((current) => current.map((attachment) => attachment.id === citation.id ? citation : attachment))}
           onDisplayInChatBox={displayPasteInChatBox}
-          allowImages={engineSupportsImages}
+          allowImages={true}
           notice={attachmentNotice}
           onNotice={setAttachmentNotice}
           onPendingChange={(pending) => changeDraftAttachmentPending(draftId, pending)}
@@ -1068,9 +1032,13 @@ export function Composer({
             setDismissedSlashAt(null);
           }}
           onPaste={handlePaste}
+          onCompositionEnd={() => { imeEndedAt.current = Date.now(); }}
           onKeyUp={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onClick={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onKeyDown={(e) => {
+            // IME candidate keys must reach the editor before any picker or send shortcut.
+            if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return;
+            if (e.key === "Enter" && e.shiftKey) return;
             if (commandPickerOpen) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
@@ -1116,7 +1084,7 @@ export function Composer({
               return;
             }
             // Shift+Enter inserts a newline; plain Enter sends
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) {
               e.preventDefault();
               // The second Enter of the gesture: the chip above is waiting,
               // the composer is empty, and the window is open — steer the

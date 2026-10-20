@@ -66,10 +66,22 @@ struct Composer: View {
     }
 
     private var textInput: some View {
-        TextEditor(text: $conversation.draft)
-            .font(.system(size: 14))
-            .scrollContentBackground(.hidden)
-            .focused($focused)
+        ComposerTextEditor(text: $conversation.draft, focused: $focused) { key in
+            switch key {
+            case 125: return moveMention(1) == .handled
+            case 126: return moveMention(-1) == .handled
+            case 48: return applyMention() == .handled
+            case 53:
+                guard !mentions.isEmpty else { return false }
+                mentionDismissed = true
+                return true
+            case 36, 76:
+                if !mentions.isEmpty { return applyMention() == .handled }
+                send()
+                return true
+            default: return false
+            }
+        }
             .frame(height: height)
             .overlay(alignment: .topLeading) {
                 // TextEditor may not publish marked (IME) text to the binding yet.
@@ -79,20 +91,6 @@ struct Composer: View {
                         .font(.system(size: 14)).foregroundStyle(Theme.muted)
                         .padding(.leading, 5).allowsHitTesting(false)
                 }
-            }
-            .onKeyPress(.downArrow) { moveMention(1) }
-            .onKeyPress(.upArrow) { moveMention(-1) }
-            .onKeyPress(.tab) { applyMention() }
-            .onKeyPress(.escape) {
-                guard !mentions.isEmpty else { return .ignored }
-                mentionDismissed = true
-                return .handled
-            }
-            .onKeyPress(.return, phases: .down) { press in
-                if press.modifiers.contains(.shift) { return .ignored }
-                if !mentions.isEmpty { return applyMention() }
-                send()
-                return .handled
             }
             .accessibilityLabel("发送给 Agent 的消息")
     }

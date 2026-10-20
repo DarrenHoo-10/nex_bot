@@ -469,7 +469,6 @@
   "composer.busy.team": "Das Team",
   "composer.busy.aBot": "Ein Bot",
   "composer.busy.theBot": "Der Bot",
-  "composer.error.noImages": "Der gewählte Beantworter unterstützt keine Bildanhänge.",
   "composer.error.clipboardImage": "Das Bild aus der Zwischenablage ließ sich nicht lesen. Häng stattdessen die Bilddatei an.",
   "composer.dictation.macOnly": "Diktieren gibt es vorerst nur unter macOS.",
   "composer.dictation.permission": "Diktieren braucht Zugriff auf Mikrofon und Spracherkennung — Systemeinstellungen → Datenschutz & Sicherheit.",

@@ -662,6 +662,10 @@
    English stack trace lays each line out correctly instead of letting the
    first line decide for all of them — which is what a single dir="auto"
    would do. `start` then follows that per-line direction. */
+.chat-text, .chat-md {
+  -webkit-user-select: text;
+  user-select: text;
+}
 .chat-text {
   unicode-bidi: plaintext;
   text-align: start;

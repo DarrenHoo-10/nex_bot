@@ -44,6 +44,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -110,7 +112,9 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
         tasks = state.activeTasks,
         approvals = state.pendingApprovals,
     )
-    var draft by rememberSaveable(bot?.id) { mutableStateOf("") }
+    var draftValue by rememberSaveable(bot?.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
+    val draft = draftValue.text
+    var imeEndedAt by remember { mutableStateOf(0L) }
     var quote by remember(bot?.id) { mutableStateOf<Quote?>(null) }
     var attachments by remember(bot?.id) { mutableStateOf<List<UploadedAttachment>>(emptyList()) }
     var uploading by remember { mutableStateOf(false) }
@@ -124,7 +128,7 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
     fun submit() {
         if ((draft.isBlank() && attachments.isEmpty()) || state.busy || uploading) return
         repository.send(composeBody(quote, draft), attachments.map { it.id })
-        draft = ""
+        draftValue = TextFieldValue()
         quote = null
         attachments = emptyList()
     }
@@ -394,14 +398,21 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
             ) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
                     BasicTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
+                        value = draftValue,
+                        onValueChange = { next ->
+                            if (draftValue.composition != null && next.composition == null) {
+                                imeEndedAt = android.os.SystemClock.uptimeMillis()
+                            }
+                            draftValue = next
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = TextStyle(fontSize = 14.sp, lineHeight = 22.sp, color = MaterialTheme.colorScheme.onSurface),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         maxLines = 6,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = { submit() }),
+                        keyboardActions = KeyboardActions(onSend = {
+                            if (draftValue.composition == null && android.os.SystemClock.uptimeMillis() - imeEndedAt >= 150) submit()
+                        }),
                         decorationBox = { inner ->
                             Box {
                                 if (draft.isEmpty()) {
@@ -619,13 +630,15 @@ private fun MessageBlock(
                     color = extra.chatUserBubble,
                     shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomEnd = 5.dp, bottomStart = 18.dp),
                 ) {
-                    Text(
-                        message.content,
-                        modifier = Modifier.padding(horizontal = 17.dp, vertical = 13.dp),
-                        fontSize = 14.sp,
-                        lineHeight = 25.sp,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
+                    SelectionContainer {
+                        Text(
+                            message.content,
+                            modifier = Modifier.padding(horizontal = 17.dp, vertical = 13.dp),
+                            fontSize = 14.sp,
+                            lineHeight = 25.sp,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                    }
                 }
             } else {
                 MarkdownText(message.content, onAttachment = onAttachment)
