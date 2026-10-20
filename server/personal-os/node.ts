@@ -218,7 +218,12 @@ export class DeviceNode {
     // cwd is convenience, never described as a shell security sandbox.
     return new Promise((resolve) => {
       if (signal?.aborted) { resolve({ error: "用户停止了终端执行", cancelled: true }); return; }
-      const child = process.platform === "win32" ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP } }) : spawn("/bin/sh", ["-c", command], { cwd: root, detached: true, env: { PATH: process.env.PATH } });
+      // Device calls have no interactive input channel. An open, unwritten
+      // stdin pipe can leave PowerShell (or a command reading stdin) waiting
+      // until the lease expires, even with -NonInteractive.
+      const child = process.platform === "win32"
+        ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP } })
+        : spawn("/bin/sh", ["-c", command], { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH } });
       this.commands.add(child);
       let stdout = "", stderr = "", timedOut = false, cancelled = false;
       const kill = () => stopOwnedCommand(child);
