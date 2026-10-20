@@ -30,17 +30,17 @@ Android 0.2.3 与 Windows 共用账号设置、模型、记忆服务、连接器
 
 ## 下载与安装
 
-当前下载为 **2026-10-18 预览版**（Mac 为 0.9.5 预览版，Windows 与 Android 仍为 0.9.4 预览版）：
+当前下载为 **2026-10-20 预览版**：Mac / iOS 0.2.1、Android 0.2.6；Windows 保持 0.9.4，并加载已更新的网页界面。
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
 | Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/NexBot-0.9.4-x64-Client-Portable.exe) | 双击运行，免安装 |
-| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/nexbot-0.2.4-debug.apk) | 在手机上打开并安装，测试版 |
-| Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/NexBot-0.2.0-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
-| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/NexBot-0.2.0-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
-| 校验文件 | Mac：[SHA256SUMS-mac.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/SHA256SUMS-mac.txt)；iPhone：[SHA256SUMS-ios.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.5-preview.1/SHA256SUMS-ios.txt)；Windows：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/SHA256SUMS.txt)；Android：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
+| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.6-preview.1/nexbot-0.2.6-debug.apk) | 在手机上打开并安装，测试版 |
+| Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.6-preview.1/NexBot-0.2.1-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
+| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.6-preview.1/NexBot-0.2.1-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
+| 校验文件 | Mac：[SHA256SUMS-mac.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.6-preview.1/SHA256SUMS-mac.txt)；iPhone：[SHA256SUMS-ios.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.6-preview.1/SHA256SUMS-ios.txt)；Windows：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.4-preview.1/SHA256SUMS.txt)；Android：[SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.6-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
-[Android 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.4-preview.1)（跨会话历史搜索、旧消息定位与分页）、[Windows 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.4-preview.1)。[Mac 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.5-preview.1)（Mac 与 iPhone 对齐：会话记录搜索、模型选择、长期记忆）。Windows 包尚无发布者数字签名；Mac 应用使用开发者签名但尚未公证；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+[Android 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.6-preview.1)（图表、静态 HTML、模型选择）、[Windows 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.4-preview.1)。[Mac 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.6-preview.1)（Mac 与 iPhone：柱状图、直方图、折线图、饼图和静态 HTML）。Windows 包尚无发布者数字签名；Mac 应用使用临时签名，尚未公证；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
 
 Android 0.2.3 已包含完整设置和助手管理。自行构建请参阅 [Android 安装包说明](android/README.md)。
 

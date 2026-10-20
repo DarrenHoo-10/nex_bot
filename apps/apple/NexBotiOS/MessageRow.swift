@@ -1,5 +1,6 @@
 import SwiftUI
 import NexClientKit
+import NexMarkdown
 
 /// Day divider: 今天 / 昨天 / M月D日.
 struct DateDivider: View {
@@ -21,6 +22,9 @@ struct ChatMarkdown: View {
     static let fileScheme = "nexbot-file"
 
     var body: some View {
+        if let html = ChatDocument(source).staticHTML {
+            StaticHTMLMessage(fragment: html, fontSize: size)
+        } else {
         VStack(alignment: .leading, spacing: size * 0.6) {
             ForEach(Array(Markdown.blocks(source).enumerated()), id: \.offset) { _, block in
                 view(for: block)
@@ -28,6 +32,7 @@ struct ChatMarkdown: View {
         }
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// Inline Markdown where `` `path/to/file.md` `` spans become tappable chips.
