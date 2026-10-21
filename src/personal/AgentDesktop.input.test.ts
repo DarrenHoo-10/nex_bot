@@ -209,10 +209,13 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(paste.defaultPrevented).toBe(true);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
     expect(fixture.api).toHaveBeenCalledWith("attachments", expect.objectContaining({ botId: "agent", name: "截图.png" }));
-    expect(container.querySelector(".attachment-draft span")?.textContent).toBe("截图.png");
-    expect(container.querySelector(".attachment-draft img")).not.toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="移除 截图.png"]')!.click(); });
+    // Images show as thumbnails inside the composer, not as file chips.
+    const preview = container.querySelector<HTMLImageElement>(".composer.conversation-input .composer-image img");
+    expect(preview?.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+    expect(preview?.alt).toBe("截图.png");
     expect(container.querySelector(".attachment-draft")).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="移除 截图.png"]')!.click(); });
+    expect(container.querySelector(".composer-image")).toBeNull();
     const text = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(text, "clipboardData", {
       value: { items: [{ kind: "string", type: "text/plain", getAsFile: () => null }], files: [] },
