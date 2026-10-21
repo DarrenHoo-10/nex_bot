@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { ClientDevice } from "./nex-client-device.mjs";
@@ -89,4 +90,86 @@ test("a failed refresh keeps the current login and the running device", async ()
     assert.equal(fixture.closed(), 0);
     assert.equal(fixture.device.state().connected, true);
   } finally { await fixture.cleanup(); }
+});
+
+function identityFixture() {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "nex-device-identity-"));
+  const devices = [], live = new Set(), calls = [];
+  let paired = 0, closed = 0, failure;
+  const safeStorage = { encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() };
+  const make = () => new ClientDevice({
+    directory, safeStorage, interval: 5,
+    createNode: () => ({ node: { configure() {}, publicState: () => ({ status: "已连接", connected: true }), computer: { available: () => false } }, async close() { closed++; } }),
+    async request(_origin, route, data, token) {
+      calls.push(route);
+      if (failure && route === "/api/session") throw failure;
+      if (route === "/api/session") return { authenticated: live.has(data.token), sessionId: data.token.replace("token-", ""), coreId: "core" };
+      if (route === "/api/state") return { sync: { coreId: "workspace" }, devices: devices.map((id) => ({ id, status: "bound" })) };
+      if (route === "/api/devices") { const id = `device-${++paired}`; devices.push(id); return { deviceId: id, token: `device-token-${paired}` }; }
+      if (route === "/api/devices/revoke") { devices.splice(devices.indexOf(data.id), 1); return {}; }
+      void token; return {};
+    },
+  });
+  const session = (id) => { live.add(`token-${id}`); return { origin: "https://fixture.invalid", token: `token-${id}`, coreId: "core", sessionId: id, expiresAt: Date.now() + 3_600_000, name: "Fixture" }; };
+  return { directory, devices, live, calls, make, session, paired: () => paired, closed: () => closed, fail: (error) => { failure = error; }, cleanup: () => rmSync(directory, { recursive: true, force: true }) };
+}
+
+test("signing in again on the same computer keeps the same device", async () => {
+  const f = identityFixture(), first = f.make();
+  try {
+    await first.start(f.session("a"));
+    assert.equal(first.state().deviceId, "device-1");
+    await first.stop();
+    const second = f.make();
+    await second.start(f.session("b"));
+    assert.equal(second.state().deviceId, "device-1");
+    assert.equal(f.paired(), 1);
+    await second.stop();
+  } finally { f.cleanup(); }
+});
+
+test("a revoked device stays revoked for its login, and a new login registers again", async () => {
+  const f = identityFixture(), device = f.make();
+  try {
+    await device.start(f.session("a"));
+    f.devices.splice(0);
+    await device.start(f.session("a"));
+    assert.equal(device.state().status, "此电脑已被撤销，请重新登录后连接");
+    assert.equal(f.paired(), 1);
+    await device.start(f.session("b"));
+    assert.equal(device.state().deviceId, "device-2");
+    await device.stop();
+  } finally { f.cleanup(); }
+});
+
+test("an existing per-login device folder is carried over instead of registering a new device", async () => {
+  const f = identityFixture();
+  try {
+    const legacy = path.join(f.directory, createHash("sha256").update(JSON.stringify(["https://fixture.invalid", "core", "a"])).digest("hex"));
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(path.join(legacy, "binding.bin"), JSON.stringify({ deviceId: "legacy-device", token: "legacy-token" }));
+    f.devices.push("legacy-device");
+    const device = f.make();
+    await device.start(f.session("a"));
+    assert.equal(device.state().deviceId, "legacy-device");
+    assert.equal(f.paired(), 0);
+    assert.equal(existsSync(legacy), false);
+    await device.stop();
+  } finally { f.cleanup(); }
+});
+
+test("a network failure keeps the executor running; a rejected login stops it", async () => {
+  const f = identityFixture(), device = f.make();
+  try {
+    await device.start(f.session("a"));
+    f.fail(new Error("fetch failed"));
+    const checks = f.calls.length;
+    await until(() => f.calls.length >= checks + 3);
+    assert.equal(f.closed(), 0);
+    assert.equal(device.state().connected, true);
+    f.fail(Object.assign(new Error("Unauthorized"), { status: 401 }));
+    await until(() => f.closed() === 1);
+    assert.equal(device.state().connected, false);
+    await device.stop();
+  } finally { f.cleanup(); }
 });

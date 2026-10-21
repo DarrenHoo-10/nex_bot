@@ -23,6 +23,25 @@ const WINDOWS_COMMAND_ENV = new Set([
   "ALLUSERSPROFILE", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
   "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "COMMONPROGRAMW6432",
 ]);
+// Windows PowerShell 5.1 writes redirected output in the system code page
+// (GBK on Chinese Windows). Switch its output to UTF-8 before the command runs.
+const windowsUtf8Prelude = "try{[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)}catch{};$OutputEncoding=[Text.UTF8Encoding]::new($false);";
+
+/** Decodes command output line by line: UTF-8 where valid, otherwise the Windows Chinese code page. */
+export function decodeCommandOutput(bytes: Buffer, windows = process.platform === "win32") {
+  if (!windows) return bytes.toString("utf8");
+  const utf8 = new TextDecoder("utf-8", { fatal: true }), legacy = new TextDecoder("gb18030");
+  const lines: string[] = [];
+  let start = 0;
+  for (let index = 0; index <= bytes.length; index++) {
+    if (index < bytes.length && bytes[index] !== 0x0a) continue;
+    const line = bytes.subarray(start, Math.min(index + 1, bytes.length));
+    try { lines.push(utf8.decode(line)); } catch { lines.push(legacy.decode(line)); }
+    start = index + 1;
+  }
+  return lines.join("");
+}
+
 export function windowsCommandEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(source).filter(([key, value]) => value !== undefined && WINDOWS_COMMAND_ENV.has(key.toUpperCase())));
 }
@@ -191,7 +210,12 @@ export class DeviceNode {
             if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error("只支持 20 MB 以内的文件");
             confined(root, path.relative(root, file));
             const buffer = readFileSync(handle);
-            if (/\.pdf$/i.test(file)) {
+            const imageType = /\.png$/i.test(file) ? "image/png" : /\.jpe?g$/i.test(file) ? "image/jpeg" : /\.webp$/i.test(file) ? "image/webp" : "";
+            if (imageType) {
+              // Images go to the model as images; Core also shows them in the chat.
+              if (buffer.length > 5 * 1024 * 1024) throw new Error("图片超过 5 MB，无法读取");
+              result = { path: args.path, mime: imageType, size: buffer.length, images: [{ type: "image", mimeType: imageType, data: buffer.toString("base64") }] };
+            } else if (/\.pdf$/i.test(file)) {
               const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
               const loading = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: false });
               const pdf = await loading.promise;
@@ -237,20 +261,22 @@ export class DeviceNode {
       // stdin pipe can leave PowerShell (or a command reading stdin) waiting
       // until the lease expires, even with -NonInteractive.
       const child = process.platform === "win32"
-        ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", command], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: windowsCommandEnvironment() })
+        ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", windowsUtf8Prelude + command], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: windowsCommandEnvironment() })
         : spawn("/bin/sh", ["-c", command], { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH } });
       this.commands.add(child);
-      let stdout = "", stderr = "", timedOut = false, cancelled = false;
+      // Bytes are kept until exit so a multibyte character split across chunks decodes intact.
+      const out: Buffer[] = [], err: Buffer[] = [];
+      let outBytes = 0, errBytes = 0, timedOut = false, cancelled = false;
       const kill = () => stopOwnedCommand(child);
       const abort = () => { cancelled = true; kill(); };
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      child.stdout.on("data", (data: Buffer) => { stdout = (stdout + data.toString()).slice(0, 50_000); });
-      child.stderr.on("data", (data: Buffer) => { stderr = (stderr + data.toString()).slice(0, 10_000); });
+      child.stdout.on("data", (data: Buffer) => { if (outBytes < 200_000) { out.push(data); outBytes += data.length; } });
+      child.stderr.on("data", (data: Buffer) => { if (errBytes < 40_000) { err.push(data); errBytes += data.length; } });
       const timer = setTimeout(() => { timedOut = true; kill(); }, Math.max(1, timeout));
       const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); this.commands.delete(child); };
       child.once("error", (e) => { cleanup(); resolve({ error: e.message }); });
-      child.once("close", (code) => { cleanup(); resolve({ stdout, stderr, code, timedOut, ...(cancelled ? { cancelled: true, error: "用户停止了终端执行" } : {}) }); });
+      child.once("close", (code) => { cleanup(); const stdout = decodeCommandOutput(Buffer.concat(out)).slice(0, 50_000), stderr = decodeCommandOutput(Buffer.concat(err)).slice(0, 10_000); resolve({ stdout, stderr, code, timedOut, ...(cancelled ? { cancelled: true, error: "用户停止了终端执行" } : {}) }); });
     });
   }
   reconcile(callId: string, version: number) {

@@ -23,6 +23,7 @@ export interface State {
   dataDir: string; address: string; lanEnabled: boolean;
 }
 export interface LocalDeviceState { available: boolean; name?: string; status?: string; connected?: boolean; authorized?: boolean; paused?: boolean; deviceId?: string; root?: string; exec?: boolean; computer?: boolean; computerSupported?: boolean; unknownCalls?: RecordRow[] }
+export interface ClientUpdateState { status: "idle" | "downloading" | "ready" | "error" | "unsupported"; current?: string; version?: string; progress?: number; error?: string }
 type Bridge = {
   platform?: "android";
   saveFile?(name: string, content: string): Promise<unknown>;
@@ -43,6 +44,9 @@ type Bridge = {
   quit(): Promise<void>;
   closeWindow(): Promise<void>;
   onClipboardImage?(callback: (image: { name: string; type: string; bytes: Uint8Array }) => void): (() => void) | void;
+  updateState?(): Promise<ClientUpdateState>;
+  installUpdate?(): Promise<void>;
+  onUpdateState?(callback: (state: ClientUpdateState) => void): (() => void) | void;
 };
 export const desktop = (window as unknown as { nex?: Bridge }).nex;
 export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {

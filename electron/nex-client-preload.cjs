@@ -16,6 +16,14 @@ contextBridge.exposeInMainWorld("nex", {
   preferences: () => Promise.resolve({ openAtLogin: false, notifications: false }),
   quit: () => ipcRenderer.invoke("client:quit"),
   closeWindow: () => ipcRenderer.invoke("client:quit"),
+  updateState: () => ipcRenderer.invoke("client:update-state"),
+  installUpdate: () => ipcRenderer.invoke("client:update-install"),
+  onUpdateState: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    const listener = (_event, state) => { if (state && typeof state.status === "string") callback(state); };
+    ipcRenderer.on("nex:update-state", listener);
+    return () => ipcRenderer.removeListener("nex:update-state", listener);
+  },
   onClipboardImage: (callback) => {
     if (typeof callback !== "function") return () => {};
     const listener = (_event, payload) => {

@@ -60,6 +60,7 @@ const licenseDir = path.join(serverOutput, "licenses"); mkdirSync(licenseDir, { 
 copyFileSync(pdfRequire.resolve("@napi-rs/canvas/LICENSE"), path.join(licenseDir, "canvas-LICENSE.txt"));
 copyFileSync(path.join(root, "third_party/rakazo/LICENSE"), path.join(licenseDir, "Rakazo-LICENSE.txt"));
 copyFileSync(path.join(root, "third_party/rakazo/README.md"), path.join(licenseDir, "Rakazo-NOTICE.md"));
+copyFileSync(path.join(root, "third_party/agent-reach/LICENSE"), path.join(licenseDir, "AgentReach-LICENSE.txt"));
 copyFileSync(path.join(root, "LICENSE"), path.join(serverOutput, "LICENSE-OpenMausBot.txt"));
 copyFileSync(path.join(root, "NOTICE"), path.join(serverOutput, "NOTICE"));
 copyFileSync(path.join(root, "deploy/core/README.md"), path.join(serverOutput, "README.md"));

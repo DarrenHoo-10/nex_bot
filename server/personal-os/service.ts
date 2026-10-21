@@ -1,4 +1,5 @@
 import { OssAttachmentObjects } from './attachment-objects.ts';
+import { OssReleaseMirror } from './client-updates.ts';
 import { randomBytes } from "node:crypto";
 import { openSync, closeSync, readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -87,7 +88,7 @@ export async function runService(options: ServiceOptions) {
       ? (await import(new URL("./workspaces" + extension, import.meta.url).href) as typeof import("./workspaces.ts")).createWorkspaceService
       : (await import(new URL("./index" + extension, import.meta.url).href) as { createPersonalApp: typeof createPersonalApp }).createPersonalApp;
     const resources = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    app = await start({ attachmentObjects: OssAttachmentObjects.fromEnvironment(), dir: options.dir, key, token: randomBytes(32).toString("base64url"), strictPort: true, host: options.command === "init" ? "127.0.0.1" : options.host, port: options.command === "init" ? 0 : options.port,
+    app = await start({ attachmentObjects: OssAttachmentObjects.fromEnvironment(), releaseMirror: OssReleaseMirror.fromEnvironment(), dir: options.dir, key, token: randomBytes(32).toString("base64url"), strictPort: true, host: options.command === "init" ? "127.0.0.1" : options.host, port: options.command === "init" ? 0 : options.port,
       publicOrigin: options.command === "init" ? undefined : options.publicOrigin, trustProxy: options.command === "init" ? false : options.trustProxy, uiDir: path.join(resources, "ui"), ...(options.fixtureOrigin ? { identity: { fixtureOrigin: options.fixtureOrigin } } : {}) });
     if (stopping) return;
     if (options.command === "init") {

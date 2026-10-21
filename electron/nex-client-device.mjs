@@ -1,10 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
 /** Refresh the login when it has this long left, as the Apple and Android clients do. */
 export const REFRESH_LEAD_MS = 30 * 60_000;
+
+// Only a rejected login stops this computer's executor; a network or server
+// hiccup keeps it running and the next check retries.
+const loginRejected = (error) => error?.status === 401 || error?.status === 403;
+const rejected = (message) => Object.assign(new Error(message), { status: 401 });
 
 export function consentScope(session) {
   return createHash("sha256").update(JSON.stringify([session.origin, session.coreId, session.workspaceId || session.sessionId])).digest("hex");
@@ -39,9 +44,9 @@ export class ClientDevice {
   valid(epoch) { return epoch === this.generation && !!this.session; }
   async closeRuntime() { const runtime = this.runtime; this.runtime = undefined; if (runtime) await runtime.close(); }
   async verify(session) {
-    if (session.expiresAt <= Date.now()) throw new Error("登录已过期");
+    if (session.expiresAt <= Date.now()) throw rejected("登录已过期");
     const result = await this.request(session.origin, "/api/session", { token: session.token });
-    if (!result.authenticated || result.sessionId !== session.sessionId || result.coreId !== session.coreId) throw new Error("登录已失效");
+    if (!result.authenticated || result.sessionId !== session.sessionId || result.coreId !== session.coreId) throw rejected("登录已失效");
   }
   async refreshSession(epoch) {
     const session = this.session, at = Date.now();
@@ -62,11 +67,7 @@ export class ClientDevice {
     return this.enqueue(async () => {
       await this.closeRuntime();
       if (!this.valid(epoch)) return;
-      const scope = createHash("sha256").update(JSON.stringify([session.origin, session.coreId, session.sessionId])).digest("hex");
-      this.folder = path.join(this.directory, scope); mkdirSync(this.folder, { recursive: true });
-      this.recordFile = path.join(this.folder, "binding.bin");
-      this.consent = undefined;
-      this.record = existsSync(this.recordFile) ? this.read(this.recordFile) : undefined;
+      this.consent = undefined; this.record = undefined;
       try { await this.connect(epoch); } catch { this.error = "此电脑连接失败，正在重试"; await this.closeRuntime(); }
       if (this.valid(epoch)) { this.changed(); this.schedule(epoch); }
     });
@@ -81,16 +82,19 @@ export class ClientDevice {
     // Public service IDs and display names are shared and cannot scope consent.
     this.consentFile = path.join(this.directory, `consent-${consentScope({ ...session, workspaceId: state.sync?.coreId })}.bin`);
     this.consent = existsSync(this.consentFile) ? this.read(this.consentFile) : undefined;
+    this.useFolder(session, state.sync?.coreId);
     if (this.record && !state.devices.some(d => d.id === this.record.deviceId && d.status === "bound")) {
-      // Revocation must not be undone by silently registering a replacement.
-      this.error = "此电脑已被撤销，请重新登录后连接"; return;
+      // Within one login, revocation must not be undone by silently
+      // registering a replacement. A new login may register this computer again.
+      if (!this.record.sessionId || this.record.sessionId === session.sessionId) { this.error = "此电脑已被撤销，请重新登录后连接"; return; }
+      this.record = undefined;
     }
     if (!this.record) {
       const pair = await this.request(session.origin, "/api/devices", { name: session.name }, session.token);
       if (!this.valid(epoch)) {
         await this.request(session.origin, "/api/devices/revoke", { id: pair.deviceId }, session.token).catch(() => {}); return;
       }
-      this.record = { deviceId: pair.deviceId, token: pair.token, root: "", exec: false, computer: false };
+      this.record = { deviceId: pair.deviceId, token: pair.token, sessionId: session.sessionId, root: "", exec: false, computer: false };
       this.write(this.recordFile, this.record);
     }
     // Login enables this device. Migrate old declined grants, retaining an
@@ -104,10 +108,25 @@ export class ClientDevice {
     const key = existsSync(keyFile) ? Buffer.from(this.read(keyFile), "base64") : randomBytes(32);
     if (!existsSync(keyFile)) this.write(keyFile, key.toString("base64"));
     this.runtime = this.createNode(this.folder, key, this.changed, session.origin, { autoConnect: false });
-    this.record = { ...this.record, root: this.consent.allowed ? os.homedir() : "", exec: this.consent.allowed, computer: this.consent.allowed && this.runtime.node.computer.available() };
+    this.record = { ...this.record, sessionId: session.sessionId, root: this.consent.allowed ? os.homedir() : "", exec: this.consent.allowed, computer: this.consent.allowed && this.runtime.node.computer.available() };
     this.write(this.recordFile, this.record);
     this.runtime.node.configure({ ...this.record, origin: session.origin, computer: this.record.computer && this.runtime.node.computer.available() });
     this.error = "";
+  }
+  /**
+   * One device identity per computer and account workspace, so signing in
+   * again keeps the same device instead of leaving the old one offline.
+   * Older Cores without a workspace ID keep the per-login scope.
+   */
+  useFolder(session, workspaceId) {
+    const scope = (parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+    const legacy = path.join(this.directory, scope([session.origin, session.coreId, session.sessionId]));
+    this.folder = workspaceId ? path.join(this.directory, scope([session.origin, session.coreId, "workspace", workspaceId])) : legacy;
+    // Carry this login's existing device over once instead of registering a new one.
+    if (this.folder !== legacy && !existsSync(this.folder) && existsSync(path.join(legacy, "binding.bin"))) renameSync(legacy, this.folder);
+    mkdirSync(this.folder, { recursive: true });
+    this.recordFile = path.join(this.folder, "binding.bin");
+    this.record = existsSync(this.recordFile) ? this.read(this.recordFile) : undefined;
   }
   schedule(epoch) {
     this.timer = setTimeout(() => {
@@ -120,7 +139,10 @@ export class ClientDevice {
           if (!this.valid(epoch)) return;
           if (!this.runtime) await this.connect(epoch);
           this.error = this.runtime ? "" : this.error;
-        } catch { await this.closeRuntime(); this.error = "登录或网络暂不可用，已暂停本机操作"; }
+        } catch (error) {
+          if (loginRejected(error)) { await this.closeRuntime(); this.error = "登录已失效，已暂停本机操作"; }
+          else if (!this.runtime) this.error = "网络暂不可用，正在重试";
+        }
         if (this.valid(epoch)) { this.changed(); this.schedule(epoch); }
       });
     }, this.interval);
@@ -131,7 +153,10 @@ export class ClientDevice {
     return this.enqueue(async () => {
       if (!this.valid(epoch) || !this.runtime) throw new Error("请等待此电脑连接后重试");
       try { await this.verify(this.session); }
-      catch { await this.closeRuntime(); this.error = "登录或网络暂不可用，已暂停本机操作"; this.changed(); throw new Error(this.error); }
+      catch (error) {
+        if (!loginRejected(error)) throw new Error("网络暂不可用，请稍后重试");
+        await this.closeRuntime(); this.error = "登录已失效，已暂停本机操作"; this.changed(); throw new Error(this.error);
+      }
       if (!this.valid(epoch) || !this.runtime) throw new Error("登录已变化");
       const next = { ...this.record, ...update };
       this.runtime.node.configure({ ...next, origin: this.session.origin });

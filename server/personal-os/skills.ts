@@ -7,6 +7,7 @@ const catalog = [
   { id: "memory", title: "记忆检索与维护", actions: ["memory.search", "memory.write"] },
   { id: "collaboration", title: "联系其他 Agent", actions: ["agent.directory", "agent.delegate"] },
   { id: "routines", title: "定时与主动汇报", actions: ["routine.list", "routine.save"] },
+  { id: "agent-reach", title: "全网调研与平台内容获取（Agent Reach：搜索、网页、小红书、Twitter、B站、Reddit、YouTube、GitHub 等）", actions: ["device.exec"] },
 ];
 export function skillList(store: CoreStore, botId: string) {
   const policy = store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId);

@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { startFakeModel, type FakeModel } from "../runtime/pi/p0/fake-model.ts";
 import { hash, id } from "./store.ts";
 import { nextDaily } from "./routines.ts";
+import { skillRead } from "./skills.ts";
 import { createClientNode } from "./client-node.ts";
 function pdfFixture(content: string) {
   const stream = `BT /F1 12 Tf 60 750 Td (${content}) Tj ET`;
@@ -59,6 +60,46 @@ function pendingCleanup(app: App, botId: string) {
   return { action: "memory.delete", documentId: doc.documentId, expectedVersion: doc.version };
 }
 describe("Personal AI OS production workflows in isolated fixtures", () => {
+  it("gives an image read from a device to the model as an image and shows it in the chat", async () => {
+    const f = await fixture(), botId = String(f.bots[1].id);
+    await wait(() => f.app.node.status === "已连接");
+    const shared = path.join(f.root, "shared-images"); mkdirSync(shared);
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64");
+    writeFileSync(path.join(shared, "截图.png"), png);
+    f.app.node.configure({ ...f.app.node.config, root: shared });
+    await wait(() => f.app.node.status === "已连接" && f.app.gateway.inventory()[0]?.granted.read === true);
+    const [device] = f.app.gateway.inventory();
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "read-image", name: "broker", args: JSON.stringify({ action: "device.read", deviceId: device.id, path: "截图.png" }) }] }, { kind: "openai-text", text: "看到了图片" });
+    const taskId = f.app.agents.send(botId, "看看这张截图", "device-image-input").taskId;
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
+    const call = f.app.store.get("SELECT id,result_json FROM tool_calls WHERE task_id=? AND tool_name='device.read'", taskId)!;
+    const result = JSON.parse(String(call.result_json));
+    expect(result).toMatchObject({ path: "截图.png", mime: "image/png", size: png.length });
+    expect(Buffer.from(result.images[0].data, "base64").equals(png)).toBe(true);
+    const message = f.app.store.get("SELECT content FROM agent_messages WHERE source_key=?", `image:${call.id}`)!;
+    expect(String(message.content)).toMatch(/^!\[截图\.png\]\(\/api\/attachments\/[a-zA-Z0-9-]+\)$/);
+    const attachment = String(message.content).match(/attachments\/([a-zA-Z0-9-]+)/)![1];
+    const response = await fetch(`${f.app.origin}/api/attachments/${attachment}`, { headers: { Authorization: "Bearer " + f.token } });
+    expect(Buffer.from(await response.arrayBuffer()).equals(png)).toBe(true);
+  });
+  it("runs parallel calls to one device one after another instead of rejecting the second", async () => {
+    const f = await fixture(), botId = String(f.bots[1].id);
+    await wait(() => f.app.node.status === "已连接");
+    const [device] = f.app.gateway.inventory();
+    // The delay is what makes the calls overlap; full access keeps it from waiting on approval.
+    f.app.agents.updateApprovalMode({ id: botId, mode: "full", version: 0 });
+    const slow = process.platform === "win32" ? "Start-Sleep -Milliseconds 700; 'first'" : "sleep 0.7; echo first";
+    const fast = process.platform === "win32" ? "'second'" : "echo second";
+    f.fake.scripts.push({ kind: "openai-tool", calls: [
+      { id: "parallel-a", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: device.id, command: slow }) },
+      { id: "parallel-b", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: device.id, command: fast }) },
+    ] }, { kind: "openai-text", text: "两条命令都完成" });
+    const taskId = f.app.agents.send(botId, "同时运行两条命令", "parallel-device-input").taskId;
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
+    const calls = f.app.store.all("SELECT status,result_json FROM tool_calls WHERE task_id=? AND tool_name='device.exec' ORDER BY created_at,rowid", taskId);
+    expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded"]);
+    expect(calls.map((call) => JSON.parse(String(call.result_json)).stdout.trim())).toEqual(["first", "second"]);
+  });
   it("registers the primary computer with default shell/computer capabilities and a separate shared folder, exposes actual device metadata and keeps its ID through restart", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
     await wait(() => f.app.node.status === "已连接");
@@ -168,7 +209,12 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const taskId = f.app.agents.send(botId, "了解内置技能", "skills-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     const skills = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=? AND tool_name='skill.list'", taskId)?.result_json));
-    expect(skills.skills.map((skill: { id: string }) => skill.id)).toEqual(["devices", "computer", "memory", "collaboration", "routines"]);
+    expect(skills.skills.map((skill: { id: string }) => skill.id)).toEqual(["devices", "computer", "memory", "collaboration", "routines", "agent-reach"]);
+    // Agent Reach runs its commands on a device, so it is offered with the terminal capability.
+    const reach = skillRead(f.app.store, botId, "agent-reach").content;
+    expect(reach).toContain("broker(action=device.exec");
+    expect(reach).toContain("## 参考：social");
+    expect(reach).not.toMatch(/Administrator|127\.0\.0\.1:12001/);
     expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=? AND tool_name='skill.read'", taskId)?.result_json)).toContain("主设备会自动登记");
     f.app.agents.updatePolicy({ id: botId, version: 1, tools: ["agent.directory"] });
     f.app.store.run("DELETE FROM schema_migrations WHERE version=7");

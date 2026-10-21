@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
 import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, FileText, Info, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
+import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, ModelSettings, SettingsPage, type SettingsCategory } from "./panels";
@@ -96,8 +96,6 @@ export function AgentDesktop() {
   const attachmentDrafts = useRef(new Map<string, Attachment[]>()), fileInput = useRef<HTMLInputElement>(null);
   const uploadRef = useRef<(files: FileList | readonly File[] | null) => Promise<void>>(async () => {});
   const setFiles = (target: string, files: Attachment[]) => {
-    const previous = attachmentDrafts.current.get(target) ?? [];
-    for (const file of previous) if (file.previewUrl && !files.some((item) => item.previewUrl === file.previewUrl)) URL.revokeObjectURL(file.previewUrl);
     attachmentDrafts.current.set(target, files);
     if (selected.current === target) setAttachments(files);
   };
@@ -113,7 +111,8 @@ export function AgentDesktop() {
         const name = file.name.trim() || "截图.png";
         const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file); });
         const uploaded = await api<Attachment>("attachments", { botId: target, name, data });
-        const previewUrl = file.type.startsWith("image/") && typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : undefined;
+        // The page's CSP allows data: images but not blob: URLs.
+        const previewUrl = file.type.startsWith("image/") ? `data:${file.type};base64,${data}` : undefined;
         setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), { ...uploaded, mime: file.type || undefined, previewUrl }]);
       }
     } catch (error) { setError(error instanceof Error ? error.message : "上传失败"); }
@@ -167,6 +166,11 @@ export function AgentDesktop() {
   const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>()), messagesRef = useRef(messages);
   messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
+  const [update, setUpdate] = useState<ClientUpdateState>();
+  useEffect(() => {
+    void desktop?.updateState?.().then(setUpdate).catch(() => {});
+    return desktop?.onUpdateState?.(setUpdate) ?? undefined;
+  }, []);
   useEffect(() => desktop?.onClipboardImage?.((image) => {
     const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
     if (!bytes.byteLength || !image.type.startsWith("image/")) return;
@@ -452,6 +456,7 @@ export function AgentDesktop() {
         </div>
       </header>
 
+      {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(e.message))}>立即更新</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ModelSettings state={state} run={run} active={modelChooserOpen}/>}</div> : null}
 
@@ -508,16 +513,20 @@ export function AgentDesktop() {
           {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
           {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>批准</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
-          {tasks.length > 0 && <div className="task-status"><span className="task-status-dot"/><span>{tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span><button type="button" aria-label="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={12}/>停止任务</button></div>}
+          {tasks.length > 0 && <div className="task-status"><span className="task-status-dot"/><span>{tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span></div>}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}
           <input ref={fileInput} type="file" hidden multiple aria-label="上传附件" onChange={(event) => void upload(event.target.files)}/>
-          {attachments.length > 0 && <div className="attachment-drafts">{attachments.map((file) => <div className="attachment-draft" key={file.id}>{file.previewUrl ? <img src={file.previewUrl} alt=""/> : <FileText size={16}/>}<span>{file.name}</span><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={14}/></button></div>)}</div>}
+          {attachments.some((file) => !file.previewUrl) && <div className="attachment-drafts">{attachments.filter((file) => !file.previewUrl).map((file) => <div className="attachment-draft" key={file.id}><FileText size={16}/><span>{file.name}</span><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={14}/></button></div>)}</div>}
           {uploading && <span role="status">正在上传…</span>}
           <form className="composer conversation-input" onSubmit={send}>
+            {attachments.some((file) => file.previewUrl) && <div className="composer-images">{attachments.filter((file) => file.previewUrl).map((file) => <div className="composer-image" key={file.id}><img src={file.previewUrl} alt={file.name}/><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={12}/></button></div>)}</div>}
             <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={(event) => { const images = imageFilesFromClipboard(event.clipboardData); if (!images.length) return; event.preventDefault(); void upload(images); }} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
             <ComposerControls key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
-              <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>
+              {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
+              {tasks.length > 0 && !draft.trim() && !attachments.length
+                ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
+                : <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
             </ComposerControls>
           </form>
         </div>

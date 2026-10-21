@@ -432,7 +432,10 @@ ${chartPrompt}
       else if (call.tool_name === "skill.list") result = { skills: skillList(this.store, String(call.bot_id)) };
       else if (call.tool_name === "skill.read") result = skillRead(this.store, String(call.bot_id), text(args.skillId, 80));
       else if (String(call.tool_name).startsWith("routine.") && this.routineExecutor) result = this.routineExecutor(call, args);
-      else if (String(call.tool_name).startsWith("device.") && this.deviceExecutor) result = await this.deviceExecutor(call, args);
+      else if (String(call.tool_name).startsWith("device.") && this.deviceExecutor) {
+        result = await this.deviceExecutor(call, args);
+        if (call.tool_name === "device.read") await this.publishDeviceImage(call, result, worker);
+      }
       else if (String(call.tool_name).startsWith("connector.") && this.connectorExecutor) result = await this.connectorExecutor(call, args, async () => { this.assert(worker); await this.requireIdentity(worker); const { policy, approvalRequired } = evaluateTool(this.store, String(call.bot_id), args); if (policy.version !== JSON.parse(String(call.authorization_snapshot_json)).policyVersion) throw new Error("工具权限已变化"); if (approvalRequired && !this.store.get("SELECT id FROM approvals WHERE tool_call_id=? AND status IN ('approved','consumed') AND argument_hash=?", call.id, call.argument_hash)) throw new Error("已切换标准权限，此操作需要批准"); });
       else throw new Error("能力尚未配置");
       this.resolveCall(call, result, !!(result as { isError?: boolean; error?: string })?.isError || !!(result as { error?: string })?.error, worker);
@@ -444,6 +447,27 @@ ${chartPrompt}
       if (current?.status === "unknown") { this.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=?", call.task_id); worker.child.kill(); this.changed(); return; }
       this.resolveCall(call, { error: error instanceof Error ? error.message : "工具执行失败" }, true, worker);
     }
+  }
+  /** Shows an image read from a device in the chat, the same way a generated image is shown. */
+  async publishDeviceImage(call: Row, result: unknown, worker: Running) {
+    const read = result as { path?: unknown; images?: Array<{ mimeType?: string; data?: string }> } | undefined;
+    const image = read?.images?.[0];
+    if (!image?.data) return;
+    try {
+      const files = new ChatFiles(this.store), task = this.assert(worker);
+      const name = String(read?.path ?? "").split(/[\\/]/).pop() || "图片";
+      const file = files.upload({ botId: call.bot_id, name, data: image.data }, String(task.authorized_session_id));
+      await files.persist(file.id);
+      this.store.transaction(() => {
+        const task = this.assert(worker);
+        const url = `/api/attachments/${file.id}`, label = name.replace(/[[\]\\\r\n]/g, " ");
+        const content = `![${label}](${url})`, source = `image:${call.id}`;
+        this.store.message(String(task.conversation_id), String(task.id), "assistant", content, source);
+        this.onResult?.(task, "assistant", content, source);
+        const message = this.store.get("SELECT id FROM agent_messages WHERE source_key=?", source);
+        if (message) this.store.run("UPDATE chat_attachments SET message_id=? WHERE id=?", message.id, file.id);
+      });
+    } catch { /* Display is best effort; the model already has the image. */ }
   }
   resolveCall(call: Row, result: unknown, failed: boolean, worker?: Running) {
     // Fencing prevents cancelled or replaced workers from committing late results.
