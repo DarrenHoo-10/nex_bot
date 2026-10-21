@@ -588,6 +588,7 @@ main > header {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   padding: 24px 30px 18px;
   scrollbar-width: thin;
 }

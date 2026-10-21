@@ -1,5 +1,6 @@
 import { universalImageActions } from '../../shared/personal-capabilities';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "@/lib/bottom-follow";
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
 import { ChatChart } from "./components/ChatChart";
@@ -22,6 +23,7 @@ import { ComposerControls } from "./components/ComposerControls";
 import { ModelPicker } from "./components/ModelPicker";
 import { BotIdentity } from "./components/BotIdentity";
 import { copyText as writeCopyText } from "../lib/copy-text";
+import { imageFilesFromClipboard, optimisticOutgoing, withPendingOptimistic } from "./transcript-session";
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -89,25 +91,35 @@ export function AgentDesktop() {
   const [pinned, setPinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
   const [sidebarOpen, setSidebarOpen] = useState(desktop?.platform === "android" && window.innerWidth <= 720);
-  type Attachment = { id: string; name: string; size: number };
+  type Attachment = { id: string; name: string; size: number; mime?: string; previewUrl?: string };
   const [attachments, setAttachments] = useState<Attachment[]>([]), [uploading, setUploading] = useState(false);
   const attachmentDrafts = useRef(new Map<string, Attachment[]>()), fileInput = useRef<HTMLInputElement>(null);
-  const setFiles = (target: string, files: Attachment[]) => { attachmentDrafts.current.set(target, files); if (selected.current === target) setAttachments(files); };
-  const upload = async (files: FileList | null) => {
-    if (!files?.length) return;
+  const uploadRef = useRef<(files: FileList | readonly File[] | null) => Promise<void>>(async () => {});
+  const setFiles = (target: string, files: Attachment[]) => {
+    const previous = attachmentDrafts.current.get(target) ?? [];
+    for (const file of previous) if (file.previewUrl && !files.some((item) => item.previewUrl === file.previewUrl)) URL.revokeObjectURL(file.previewUrl);
+    attachmentDrafts.current.set(target, files);
+    if (selected.current === target) setAttachments(files);
+  };
+  const upload = async (files: FileList | readonly File[] | null) => {
+    const list = files ? Array.from(files) : [];
+    if (!list.length) return;
     const target = botId;
-    if ((attachmentDrafts.current.get(target)?.length ?? 0) + files.length > 5) { setError("最多添加 5 个附件"); return; }
+    if ((attachmentDrafts.current.get(target)?.length ?? 0) + list.length > 5) { setError("最多添加 5 个附件"); return; }
     setUploading(true); setError("");
     try {
-      for (const file of Array.from(files)) {
+      for (const file of list) {
         if (!file.size || file.size > 5 * 1024 * 1024) throw new Error("请选择 5 MB 以内的非空文件");
+        const name = file.name.trim() || "截图.png";
         const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file); });
-        const uploaded = await api<Attachment>("attachments", { botId: target, name: file.name, data });
-        setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), uploaded]);
+        const uploaded = await api<Attachment>("attachments", { botId: target, name, data });
+        const previewUrl = file.type.startsWith("image/") && typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : undefined;
+        setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), { ...uploaded, mime: file.type || undefined, previewUrl }]);
       }
     } catch (error) { setError(error instanceof Error ? error.message : "上传失败"); }
     finally { setUploading(false); if (fileInput.current) fileInput.current.value = ""; }
   };
+  uploadRef.current = upload;
   const [lookRevision, setLookRevision] = useState(0);
   const [motion] = useState(() => localStorage.getItem("nexbot.motion") !== "0");
   const [settledState, setSettledState] = useState<CompanionState>("idle");
@@ -124,7 +136,8 @@ export function AgentDesktop() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [focusedMessage,setFocusedMessage]=useState("");
   const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
-  const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
+  const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), transcriptInner = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
+  const previousScrollTop = useRef(0), touchY = useRef(0), feedRetry = useRef(false), loadedBot = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (desktop?.platform !== "android") return;
     const back = () => {
@@ -151,8 +164,16 @@ export function AgentDesktop() {
       window.removeEventListener("nex-download-error", downloadError);
     };
   }, [dialog, detail, page, sidebarOpen]);
-  const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>());
+  const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>()), messagesRef = useRef(messages);
+  messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
+  useEffect(() => desktop?.onClipboardImage?.((image) => {
+    const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
+    if (!bytes.byteLength || !image.type.startsWith("image/")) return;
+    const blob = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(blob).set(bytes);
+    void uploadRef.current([new File([blob], image.name.trim() || "截图.png", { type: image.type })]);
+  }), []);
   const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
   const offline = useCallback(() => { ++serial.current; loaded.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
@@ -196,14 +217,21 @@ export function AgentDesktop() {
       }
       while (true) {
         if (request !== serial.current || selected.current !== current) return;
-        if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setTimeout(() => void reload().catch(offline), 0); return; }
+        if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) {
+          const retry = !feedRetry.current;
+          feedRetry.current = true;
+          loaded.current = undefined;
+          if (retry) setTimeout(() => void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }), 0);
+          return;
+        }
         history = [...history, ...feed.messages];
         if (!feed.hasMore) break;
         feed = await api<Feed>(`${base}&after=${history.at(-1)!.seq}`);
       }
       if (request !== serial.current || selected.current !== current) return;
       loaded.current = { botId: current, messages: history, sync: feed.sync };
-      setMessages(history);
+      feedRetry.current = false;
+      setMessages((shown) => withPendingOptimistic(history, shown));
       setStreaming(feed.streaming.filter((s) => s.text));
       setHistoryLoading(false);
       const through = Number(history.at(-1)?.seq ?? 0);
@@ -218,17 +246,42 @@ export function AgentDesktop() {
     // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
     if (!selected.current) void reload().catch((e: Error) => setError(e.message));
     const events = new EventSource("/api/events"); let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch(offline); }, 150); };
-    const change = (event: MessageEvent) => { const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean }; if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setDialog(null); } refresh(); };
+    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }); }, 150); };
+    const change = (event: MessageEvent) => {
+      const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
+      // A reconnect can report reset. Drop the incremental cursor and refetch,
+      // but leave the rows on screen until the next page arrives.
+      if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) loaded.current = undefined;
+      refresh();
+    };
     const expired = () => { offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
-    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired"))); events.onerror = offline;
+    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired"))); events.onerror = () => refresh();
     window.addEventListener("nex-session-expired", expired);
     window.addEventListener("focus", refresh);
     const interval = setInterval(refresh, 10_000);
     return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); window.removeEventListener("nex-session-expired", expired); };
   }, [reload, offline]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
-  useEffect(() => { stickToBottom.current = !historyTarget.current; setShowScrollPill(false); setQuote(undefined); setMemoryNotice(""); setPreview(undefined); setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); setAttachments(attachmentDrafts.current.get(botId) ?? []); if (botId) { setHistoryLoading(true); localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); }); } }, [botId, reload]);
+  useEffect(() => {
+    const switched = loadedBot.current !== botId;
+    loadedBot.current = botId;
+    if (switched) {
+      stickToBottom.current = !historyTarget.current;
+      setShowScrollPill(false);
+      setQuote(undefined);
+      setMemoryNotice("");
+      setPreview(undefined);
+      setMessages([]);
+      setStreaming([]);
+      setDraft(drafts.current.get(botId) ?? "");
+      setAttachments(attachmentDrafts.current.get(botId) ?? []);
+    }
+    if (botId) {
+      if (switched) setHistoryLoading(true);
+      localStorage.setItem("nexbot.selectedAgent", botId);
+      void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); });
+    }
+  }, [botId, reload]);
   const openFilePreview = (targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); };
   const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
@@ -241,9 +294,26 @@ export function AgentDesktop() {
     const content = prefix + raw, attachmentIds = attachments.map((file) => file.id), requestKey = content + JSON.stringify(attachmentIds);
     if (!retry.current || retry.current.botId !== target || retry.current.text !== requestKey) retry.current = { botId: target, text: requestKey, id: crypto.randomUUID() };
     const clientId = retry.current.id;
-    if(historyTarget.current){historyTarget.current=undefined;setFocusedMessage("");loaded.current=undefined;setMessages([]);}
-    stickToBottom.current = true; setShowScrollPill(false); setSendingBotId(target);
-    void run(async () => { await api("agents/input", { botId: target, text: content, clientId, attachments: attachmentIds }); setFiles(target, []); drafts.current.delete(target); if (selected.current === target) { setDraft(""); setQuote(undefined); } retry.current = undefined; }).finally(() => setSendingBotId(undefined));
+    if (historyTarget.current) { historyTarget.current = undefined; setFocusedMessage(""); loaded.current = undefined; stickToBottom.current = true; setShowScrollPill(false); }
+    const savedDraft = draft, savedQuote = quote;
+    drafts.current.delete(target);
+    if (selected.current === target) { setDraft(""); setQuote(undefined); }
+    setSendingBotId(target);
+    setMessages((shown) => shown.some((row) => row.id === `optimistic:${clientId}`) ? shown : [...shown, optimisticOutgoing(clientId, content)]);
+    void run(async () => {
+      try {
+        await api("agents/input", { botId: target, text: content, clientId, attachments: attachmentIds });
+        setFiles(target, []);
+        retry.current = undefined;
+      } catch (error) {
+        if (!drafts.current.has(target)) drafts.current.set(target, savedDraft);
+        if (selected.current === target) {
+          setDraft((current) => current || savedDraft);
+          setQuote((current) => current ?? savedQuote);
+        }
+        throw error;
+      }
+    }).finally(() => setSendingBotId(undefined));
   };
   const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && !terminal.includes(str(t.status))) ?? [];
   useEffect(() => {
@@ -261,7 +331,27 @@ export function AgentDesktop() {
   }, [botId, tasks[0]?.id]);
   const avatarState = !connected ? "offline" : tasks.length ? companionState(tasks[0], state?.approvals.some((a) => a.bot_id === botId), connected) : sendingBotId === botId ? "thinking" : settledState;
   const processing = connected && !streaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
-  useEffect(() => { if (stickToBottom.current && !historyTarget.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); }, [botId, messages.at(-1)?.id, streaming.map((s) => s.text).join(""), processing]);
+  const setFollowing = useCallback((next: boolean) => {
+    stickToBottom.current = next;
+    setShowScrollPill(!next && messagesRef.current.length > 3 && !historyTarget.current);
+  }, []);
+  const atEnd = () => {
+    const el = scroll.current;
+    return !el || el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_FOLLOW_THRESHOLD;
+  };
+  // Content growth used to unpin follow via the distance check, so streaming
+  // stopped at the send-time jump and the "回到底部" pill appeared. Follow now
+  // breaks only on an upward gesture and tracks height while it stays armed.
+  useBottomFollowResize(scroll, transcriptInner, stickToBottom, state ? `${botId}:${page}` : null);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const typing = event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement;
+      if (event.key === "PageUp" || ((event.key === "Home" || event.key === "ArrowUp") && !typing)) setFollowing(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setFollowing]);
+  useEffect(() => { setShowScrollPill(!stickToBottom.current && messages.length > 3 && !historyTarget.current); }, [messages]);
   useEffect(() => { const field = composerRef.current; if (field) { field.style.height = "auto"; field.style.height = `${Math.min(160, field.scrollHeight)}px`; } }, [draft, botId, page]);
   const descendantTasks = new Set(tasks.map((task) => task.id));
   for (let depth = 0; depth < 3; depth++) for (const link of state?.delegations ?? []) if (descendantTasks.has(link.parent_task_id)) descendantTasks.add(link.child_task_id);
@@ -298,7 +388,8 @@ export function AgentDesktop() {
     const current = loaded.current;
     if (!current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
     const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];
-    loaded.current = { ...current, messages: merged }; setMessages(merged);
+    loaded.current = { ...current, messages: merged };
+    setMessages((shown) => withPendingOptimistic(merged, shown));
   };
   if (!state) return <div className="boot"><BrandMark size={44}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接页</button> : null}</div>;
   const botUsage = state.usage?.find((u) => u.bot_id === botId);
@@ -370,8 +461,8 @@ export function AgentDesktop() {
         <p>给它一个名字，身份与职责可以之后补充。消息、记忆和工作会持续保留。</p>
         <button className="primary" onClick={() => editBot()}><Plus size={16}/>创建 Agent</button>
       </div> : page === "agent" ? <>
-        <div className="transcript" ref={scroll} onScroll={(e) => { const el = e.currentTarget; const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90; stickToBottom.current = nearBottom; setShowScrollPill(!nearBottom && messages.length > 3); }}>
-          <div className="transcript-inner">
+        <div className="transcript" ref={scroll} onPointerDown={(event) => { const el = scroll.current; if (el && event.target === el && event.nativeEvent.offsetX >= el.clientWidth) setFollowing(false); }} onWheel={(event) => { if (event.deltaY < 0) setFollowing(false); else if (atEnd()) setFollowing(true); }} onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={(event) => { const y = event.touches[0]?.clientY ?? 0; if (y > touchY.current + 4) setFollowing(false); else if (atEnd()) setFollowing(true); }} onScroll={() => { const el = scroll.current; if (!el) return; const scrollTop = el.scrollTop; const resume = shouldResumeBottomFollow({ following: stickToBottom.current, previousScrollTop: previousScrollTop.current, scrollTop, distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight }); previousScrollTop.current = scrollTop; if (resume) setFollowing(true); }}>
+          <div className="transcript-inner" ref={transcriptInner}>
           {focusedMessage ? <button type="button" className="older" onClick={latestMessages}>返回最新消息</button> : null}
           {!focusedMessage && Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
           {!messages.length && !processing && historyLoading ? <div className="history-loading" role="status"><span className="spin"/>正在载入历史会话…</div> : !messages.length && !processing ? <div className="welcome ds-welcome">
@@ -414,17 +505,17 @@ export function AgentDesktop() {
         </div>
 
         <div className="composer-area">
-          {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" onClick={() => { stickToBottom.current = true; setShowScrollPill(false); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
+          {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
           {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>批准</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
           {tasks.length > 0 && <div className="task-status"><span className="task-status-dot"/><span>{tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span><button type="button" aria-label="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={12}/>停止任务</button></div>}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}
           <input ref={fileInput} type="file" hidden multiple aria-label="上传附件" onChange={(event) => void upload(event.target.files)}/>
-          {attachments.length > 0 && <div className="attachment-drafts">{attachments.map((file) => <div className="attachment-draft" key={file.id}><FileText size={16}/><span>{file.name}</span><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={14}/></button></div>)}</div>}
+          {attachments.length > 0 && <div className="attachment-drafts">{attachments.map((file) => <div className="attachment-draft" key={file.id}>{file.previewUrl ? <img src={file.previewUrl} alt=""/> : <FileText size={16}/>}<span>{file.name}</span><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={14}/></button></div>)}</div>}
           {uploading && <span role="status">正在上传…</span>}
           <form className="composer conversation-input" onSubmit={send}>
-            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
+            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={(event) => { const images = imageFilesFromClipboard(event.clipboardData); if (!images.length) return; event.preventDefault(); void upload(images); }} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
             <ComposerControls key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
               <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>
             </ComposerControls>
