@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from "electron";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { isIP } from "node:net";
@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ClientDevice } from "./nex-client-device.mjs";
 import { installLocalUi } from "./nex-client-ui.mjs";
+import { installClipboardImagePaste } from "./nex-client-clipboard.mjs";
 import { fetchModelCatalog } from "../shared/model-catalog.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -121,6 +122,7 @@ else {
     }
     const bundledUi = path.join(resourceRoot, "client-ui");
     installLocalUi(window.webContents.session, existsSync(bundledUi) ? bundledUi : path.join(root, "ui"), () => origin);
+    installClipboardImagePaste(window.webContents, clipboard, () => origin);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event, url) => { if (url !== connectionPage && (!origin || new URL(url).origin !== origin)) event.preventDefault(); });
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

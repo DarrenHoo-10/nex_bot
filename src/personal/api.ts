@@ -42,6 +42,7 @@ type Bridge = {
   preferences(): Promise<{ openAtLogin: boolean; notifications: boolean }>;
   quit(): Promise<void>;
   closeWindow(): Promise<void>;
+  onClipboardImage?(callback: (image: { name: string; type: string; bytes: Uint8Array }) => void): (() => void) | void;
 };
 export const desktop = (window as unknown as { nex?: Bridge }).nex;
 export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {

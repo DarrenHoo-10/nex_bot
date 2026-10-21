@@ -85,7 +85,7 @@
 .rk-workspace .contact-heading > div > span { display: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 430px; font-size: 11px; line-height: 18px; color: var(--muted-foreground); margin-top: 3px; }
 .rk-workspace .ds-model-pill { display: none; color: var(--muted-foreground); background: var(--secondary); border: 0; font-size: 10px; max-width: 175px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border-radius: 5px; }
 .rk-workspace .header-actions { display: flex; gap: 5px; align-items: center; }
-.rk-workspace .transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 28px 24px; scroll-behavior: auto; }
+.rk-workspace .transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: 22px 28px 24px; scroll-behavior: auto; }
 .rk-workspace .message { display: flex; gap: 12px; padding: 0; margin: 12px 0 18px; width: 100%; max-width: none; }
 .rk-workspace .message-body { min-width: 0; flex: initial; width: fit-content; max-width: 87%; }
 .rk-workspace .message .bubble { background: var(--secondary); box-shadow: none; border: 0; border-radius: 18px; padding: 13px 17px; max-width: none; color: var(--foreground); font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
@@ -252,6 +252,7 @@
 .attachment-draft { display: flex; align-items: center; gap: 8px; max-width: 240px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
 .attachment-draft span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-draft button { padding: 3px; border: 0; background: transparent; }
+.attachment-draft img { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
 
 .conversation-search-results { padding: 4px 8px; }
 .rk-workspace .conversation-search-result { display: block; width: 100%; padding: 12px; border: 0; border-radius: 12px; background: transparent; color: var(--foreground); text-align: left; }
