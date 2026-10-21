@@ -31,3 +31,62 @@ test("logout during registration revokes the late grant without starting a runti
     assert.ok(calls.some(([route, data]) => route === "/api/devices/revoke" && data.id === "late-device"));
   } finally { await device.stop(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+function refreshFixture({ expiresIn, refresh, sessionRefreshed }) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "nex-device-refresh-"));
+  const session = { origin: "https://fixture.invalid", token: "old-token", coreId: "core", sessionId: "session", expiresAt: Date.now() + expiresIn, name: "Fixture" };
+  const live = new Set([session.token]), calls = [];
+  let closed = 0;
+  const device = new ClientDevice({
+    directory, interval: 5, sessionRefreshed,
+    safeStorage: { encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+    createNode: () => ({ node: { configure() {}, publicState: () => ({ status: "已连接", connected: true }), computer: { available: () => false } }, async close() { closed++; } }),
+    async request(_origin, route, data, token) {
+      calls.push([route, data?.token ?? token]);
+      if (route === "/api/session") return { authenticated: live.has(data.token), ...session };
+      if (route === "/api/state") return { sync: { coreId: "core" }, devices: [{ id: "device", status: "bound" }] };
+      if (route === "/api/devices") return { deviceId: "device", token: "device-token" };
+      if (route === "/api/auth/refresh") { const next = await refresh(token); live.delete(token); live.add(next.token); return next; }
+      return {};
+    },
+  });
+  return { device, session, calls, closed: () => closed, cleanup: async () => { await device.stop(); rmSync(directory, { recursive: true, force: true }); } };
+}
+const until = async (check) => { for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 5)); assert.ok(check()); };
+
+test("a login close to expiry is refreshed, saved and used for later checks", async () => {
+  const saved = [];
+  const fixture = refreshFixture({ expiresIn: 10 * 60_000, refresh: async () => ({ token: "new-token", sessionId: "session", coreId: "core", expiresAt: Date.now() + 7 * 86_400_000 }), sessionRefreshed: async (next) => { saved.push(next); } });
+  try {
+    await fixture.device.start(fixture.session);
+    await until(() => fixture.calls.some(([route, token]) => route === "/api/session" && token === "new-token"));
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].token, "new-token");
+    assert.equal(fixture.calls.filter(([route]) => route === "/api/auth/refresh").length, 1);
+    assert.equal(fixture.closed(), 0);
+    assert.equal(fixture.device.state().connected, true);
+  } finally { await fixture.cleanup(); }
+});
+
+test("a login far from expiry, or a host without a refresh hook, is not refreshed", async () => {
+  for (const options of [{ expiresIn: 60 * 60_000, sessionRefreshed: async () => {} }, { expiresIn: 10 * 60_000 }]) {
+    const fixture = refreshFixture({ ...options, refresh: async () => { throw new Error("must not refresh"); } });
+    try {
+      await fixture.device.start(fixture.session);
+      await until(() => fixture.calls.filter(([route]) => route === "/api/session").length >= 3);
+      assert.equal(fixture.calls.filter(([route]) => route === "/api/auth/refresh").length, 0);
+    } finally { await fixture.cleanup(); }
+  }
+});
+
+test("a failed refresh keeps the current login and the running device", async () => {
+  const fixture = refreshFixture({ expiresIn: 10 * 60_000, refresh: async () => { throw Object.assign(new Error("upstream unavailable"), { status: 503 }); }, sessionRefreshed: async () => { throw new Error("must not save"); } });
+  try {
+    await fixture.device.start(fixture.session);
+    await until(() => fixture.calls.filter(([route]) => route === "/api/session").length >= 4);
+    // Retries are spaced a minute apart, not on every check.
+    assert.equal(fixture.calls.filter(([route]) => route === "/api/auth/refresh").length, 1);
+    assert.equal(fixture.closed(), 0);
+    assert.equal(fixture.device.state().connected, true);
+  } finally { await fixture.cleanup(); }
+});

@@ -26,3 +26,12 @@
 .rk-workspace .model-search input:focus-visible, .rk-workspace .preferences-page .model-search input:focus-visible { outline: none; box-shadow: none; }
 
 .model-picker.model-picker-menu-only { display: contents; }
+
+.ds-kv-row > .model-picker { flex: 0 1 auto; max-width: 70%; }
+.rk-workspace .inspector-model-trigger { display: flex; align-items: center; gap: 6px; max-width: 100%; }
+.inspector-model-trigger span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-model-trigger svg { flex-shrink: 0; }
+
+.model-selection { display: grid; gap: 12px; }
+.model-selection-values { display: flex; flex-wrap: wrap; gap: 8px; max-height: 160px; overflow-y: auto; }
+.model-selection-value { max-width: 100%; padding: 5px 9px; border-radius: 6px; background: var(--secondary); color: var(--foreground); font-size: 12px; overflow-wrap: anywhere; }

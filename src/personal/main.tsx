@@ -7,6 +7,7 @@ import "./agent.css";
 import "./workspace.css";
 import "./identity.css";
 import "./settings.css";
+import "./home.css";
 import "../../electron/client/style.css";
 async function boot() {
  const token = new URLSearchParams(location.hash.slice(1)).get("token");

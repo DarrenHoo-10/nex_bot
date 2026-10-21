@@ -3,6 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
+/** Refresh the login when it has this long left, as the Apple and Android clients do. */
+export const REFRESH_LEAD_MS = 30 * 60_000;
+
 export function consentScope(session) {
   return createHash("sha256").update(JSON.stringify([session.origin, session.coreId, session.workspaceId || session.sessionId])).digest("hex");
 }
@@ -10,9 +13,12 @@ export function consentScope(session) {
 // The controller holds credentials in the main process. Renderers receive only
 // public state and cannot select a Core, token, device identity or command.
 export class ClientDevice {
-  constructor({ directory, safeStorage, request, createNode, changed = () => {}, interval = 15_000 }) {
-    Object.assign(this, { directory, safeStorage, request, createNode, changed, interval });
-    this.generation = 0; this.queue = Promise.resolve(); this.status = "未连接";
+  // `sessionRefreshed` opts in to refreshing the login here; it must save the
+  // rotated token, because the old one stops working. Hosts that refresh the
+  // login themselves leave it out so two refreshers never rotate each other out.
+  constructor({ directory, safeStorage, request, createNode, changed = () => {}, interval = 15_000, sessionRefreshed }) {
+    Object.assign(this, { directory, safeStorage, request, createNode, changed, interval, sessionRefreshed });
+    this.generation = 0; this.queue = Promise.resolve(); this.status = "未连接"; this.refreshAfter = 0;
   }
   enqueue(work) {
     const result = this.queue.then(work);
@@ -36,6 +42,18 @@ export class ClientDevice {
     if (session.expiresAt <= Date.now()) throw new Error("登录已过期");
     const result = await this.request(session.origin, "/api/session", { token: session.token });
     if (!result.authenticated || result.sessionId !== session.sessionId || result.coreId !== session.coreId) throw new Error("登录已失效");
+  }
+  async refreshSession(epoch) {
+    const session = this.session, at = Date.now();
+    if (!this.sessionRefreshed || !this.valid(epoch) || session.expiresAt - at > REFRESH_LEAD_MS || at < this.refreshAfter) return;
+    // A failed refresh keeps the current token; retry at most once a minute until it expires.
+    this.refreshAfter = at + 60_000;
+    let next;
+    try { next = await this.request(session.origin, "/api/auth/refresh", {}, session.token); } catch { return; }
+    if (typeof next?.token !== "string" || !next.token || next.sessionId !== session.sessionId || next.coreId !== session.coreId || !(next.expiresAt > Date.now())) return;
+    if (this.session === session) this.session = { ...session, token: next.token, expiresAt: next.expiresAt };
+    // Save the rotated token even if this login stopped meanwhile: the old one is already dead.
+    try { await this.sessionRefreshed(next); } catch {}
   }
   start(session) {
     const epoch = ++this.generation;
@@ -96,6 +114,8 @@ export class ClientDevice {
       void this.enqueue(async () => {
         if (!this.valid(epoch)) return;
         try {
+          await this.refreshSession(epoch);
+          if (!this.valid(epoch)) return;
           await this.verify(this.session);
           if (!this.valid(epoch)) return;
           if (!this.runtime) await this.connect(epoch);

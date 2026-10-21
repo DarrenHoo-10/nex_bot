@@ -354,3 +354,21 @@ The [Windows chart client record](windows-chart-client.md) covers the 0.9.6 Wind
 
 The [composer image / IME / model / copy fix](composer-image-ime-model-copy.md) covers image
 attachments, IME Enter guarding, inline model choice and message copy/selection across clients.
+
+The [image-model selection fixture](image-models.md) checks personal Core model
+settings, on-demand image generation, encrypted chat attachments, cancellation,
+and responsive image previews with synthetic providers.
+
+The [Mac Markdown checks](native-markdown.md) cover GFM tables, tasks, nested
+blocks, inline formatting and streaming parse regressions.
+The [static HTML message checks](static-html.md) cover the shared web/Windows/
+Android renderer, Mac/iOS HTML isolation, APK verification and UI deployment.
+The [chat chart checks](chat-charts.md) cover bar, histogram, line and pie data,
+the shared cross-platform renderer, isolated interactions and deployment.
+
+The [private OSS attachment fixture](attachment-oss.md) covers encrypted cloud
+storage, existing-attachment migration, authenticated cross-device downloads and
+rollback hydration.
+
+The [public web homepage record](web-homepage.md) covers the signed-out browser
+homepage and its client download links.

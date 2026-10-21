@@ -35,6 +35,17 @@ async function request(address, route, data, token) {
   if (!response.ok) throw Object.assign(new Error(result.error ?? "无法连接 Core"), { status: response.status });
   return result;
 }
+// The cookie has no expiry, so Chromium never writes the token to disk (it is restored from connection.bin).
+function setSessionCookie(address, token) {
+  return window.webContents.session.cookies.set({ url: address, name: "nex", value: token, httpOnly: true, sameSite: "strict", secure: address.startsWith("https:"), path: "/" });
+}
+// The device refreshes the login before it expires; keep the saved credential and the window on the rotated token.
+async function sessionRefreshed(next) {
+  if (!saved || next.sessionId !== saved.sessionId || next.coreId !== saved.coreId) return;
+  saved = { ...saved, token: next.token, expiresAt: next.expiresAt };
+  writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
+  if (origin === saved.origin) await setSessionCookie(saved.origin, saved.token);
+}
 async function login(settings) {
   await device?.stop();
   const old = saved, epoch = loginEpoch;
@@ -70,9 +81,8 @@ async function login(settings) {
     writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
   }
   // Resuming keeps the HTTP cache and the Agent view preferences in localStorage; a new login starts clean.
-  // The cookie has no expiry, so Chromium never writes the token to disk (it is restored from connection.bin).
   if (!settings.resume) await window.webContents.session.clearStorageData({ storages: ["cookies", "localstorage", "indexdb", "websql", "filesystem", "serviceworkers", "cachestorage"] });
-  await window.webContents.session.cookies.set({ url: address, name: "nex", value: saved.token, httpOnly: true, sameSite: "strict", secure: address.startsWith("https:"), path: "/" });
+  await setSessionCookie(address, saved.token);
   origin = address;
   connectionError = "";
   resuming = false;
@@ -106,7 +116,7 @@ else {
     const executorFile = path.join(resourceRoot, "client-executor", "client-node", "client-node.js");
     if (existsSync(executorFile)) {
       const { createClientNode } = await import(pathToFileURL(executorFile).href);
-      device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode,
+      device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode, sessionRefreshed,
       });
     }
     const bundledUi = path.join(resourceRoot, "client-ui");

@@ -144,3 +144,8 @@
 .memory-source { white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto; }
 .memory-dashboard fieldset { border:0;padding:0;margin:0;display:grid;gap:14px; }
 @media(max-width:520px) { .memory-stats { grid-template-columns:1fr; } .memory-monitor-heading { flex-wrap:wrap; } }
+
+.generated-chat-image { display: block; max-width: min(100%, 640px); max-height: 640px; height: auto; object-fit: contain; border-radius: 10px; }
+.rk-workspace .markdown input[type="checkbox"] { display: inline-block; width: 14px; height: 14px; min-height: 0; margin: 0 6px 0 0; padding: 0; vertical-align: middle; box-shadow: none; }
+.rk-workspace .markdown .task-list-item { list-style: none; }
+.rk-workspace .markdown a:not(.file-chip) { color: var(--foreground); text-decoration: underline; }

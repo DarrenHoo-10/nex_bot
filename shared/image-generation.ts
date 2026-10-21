@@ -1,4 +1,5 @@
 export type AvatarImageProvider = "openai" | "xai" | "custom";
+export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
 export interface ImageGenerationConfig {
   provider?: AvatarImageProvider;

@@ -18,16 +18,21 @@ import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
+import type { AttachmentObjects } from './attachment-objects.ts';
+export { OssAttachmentObjects } from './attachment-objects.ts';
 import { ChatFiles } from "./chat-files.ts";
 import { requestBody as body } from "./http-body.ts";
 import { modelLimitScope, type ModelCatalogConfig } from "./model-limits.ts";
+import { ClientDownloadsSource, type ClientDownloadsOptions } from "./client-downloads.ts";
 
-export interface AppOptions { modelCatalog?: ModelCatalogConfig; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
+export interface AppOptions { attachmentObjects?: AttachmentObjects; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
 
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
   const store = new CoreStore(options.dir, options.key, options.token, options.modelCatalog);
+  store.attachmentObjects = options.attachmentObjects;
   const clients = new ClientIdentity(store, options.publicCoreId), sync = new ClientSync(store);
+  const downloads = new ClientDownloadsSource(options.clientDownloads);
   const identity = options.identity === false ? undefined : new CoreIdentity(store, clients, options.identity?.fixtureOrigin);
   const authenticate = async (token: string) => {
     const session = identity ? await identity.authenticate(token) : clients.authenticate(token);
@@ -102,7 +107,7 @@ export async function createPersonalApp(options: AppOptions) {
       hostDeviceId: gateway.hostDeviceId,
       memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
       memoryPlugin: memoryPlugin.status(),
-      bots: agents.contacts().map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      bots: agents.contacts().map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
       directory: directory(store),
       routines: routines.list(),
       occurrences: routines.occurrences(),
@@ -162,7 +167,7 @@ export async function createPersonalApp(options: AppOptions) {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
-    if (url.pathname === "/health") { json(response, 200, { app: "NexBot", backend: "personal-os", runtime: "pi/1.0.4", ...(options.accountWorkspaces ? { accountWorkspaces: true } : {}) }); return; }
+    if (url.pathname === "/health") { json(response, 200, { app: "NexBot", backend: "personal-os", runtime: "pi/1.0.4", attachmentStorage: options.attachmentObjects ? "oss" : "database", ...(options.accountWorkspaces ? { accountWorkspaces: true } : {}) }); return; }
     const mutating = request.method !== "GET" && request.method !== "HEAD";
     if (mutating && request.headers.origin && request.headers.origin !== requestOrigin) { json(response, 403, { error: "Invalid origin" }); return; }
     const cookieValue = (name: string) => request.headers.cookie?.split(";").map((v) => v.trim()).find((v) => v.startsWith(name + "="))?.slice(name.length + 1) ?? "";
@@ -176,6 +181,7 @@ export async function createPersonalApp(options: AppOptions) {
     const privateRemote = loopback || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(remoteAddress);
     const bootstrap = loopback ? clients.authenticate(cookieValue("nex-bootstrap")) : undefined;
     if (url.pathname.startsWith("/api/auth/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid login request" }); return; }
+    if (url.pathname === "/api/client/downloads" && request.method === "GET") { json(response, 200, await downloads.current()); return; }
     if (url.pathname === "/api/client/identity" && request.method === "GET") { json(response, 200, identity ? { ...identity.publicConfiguration(), version: 1, coreId: clients.coreId(), loginMethods: ["password"] } : { version: 1, coreId: clients.coreId(), mode: "local-owner", loginMethods: ["one-time-code"] }); return; }
     if (identity && url.pathname === "/api/auth/status" && request.method === "GET") { json(response, 200, await identity.status(token, bootstrap)); return; }
     if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {
@@ -224,8 +230,10 @@ export async function createPersonalApp(options: AppOptions) {
       const session = await authenticate(token);
       if (!session) { json(response, 401, { error: "Unauthorized" }); return; }
       if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
-        const { row, bytes } = files.file(text(url.pathname.slice("/api/attachments/".length), 100));
-        response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
+        const { row, bytes } = await files.file(text(url.pathname.slice("/api/attachments/".length), 100));
+        if (!await authenticate(token)) { json(response, 401, { error: 'Unauthorized' }); return; }
+        const preview = url.searchParams.get('preview') === '1' && ['image/png', 'image/jpeg', 'image/webp'].includes(String(row.mime));
+        response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
       }
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
@@ -313,7 +321,15 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, connectors.remove(data)); return; }
-      if (url.pathname === "/api/attachments") { json(response, 200, files.upload(data, String(session.id))); return; }
+      if (url.pathname === '/api/models/images') {
+        if (session.user_id !== store.owner) { json(response, 403, { error: '此账号没有修改模型选择的权限' }); return; }
+        const result = store.saveImageModelSelection(data);
+        changed(); json(response, 200, result); return;
+      }
+      if (url.pathname === '/api/image-models/save' || url.pathname === '/api/image-models/delete') {
+        json(response, 410, { error: '请刷新页面，从现有模型列表选择生图模型' }); return;
+      }
+      if (url.pathname === "/api/attachments") { const file = files.upload(data, String(session.id)); await files.persist(file.id); if (!await authenticate(token)) { json(response, 401, { error: "Unauthorized" }); return; } json(response, 200, file); return; }
       if (url.pathname === "/api/agents/input") {
         const botId = text(data.botId, 100), clientId = text(data.clientId, 200), attachments = data.attachments ?? [];
         const links = files.references(botId, attachments, String(session.id));
@@ -425,9 +441,16 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.memory.personal.start();
   runtime.startRecovered();
   routines.start();
+  let archiveJob: Promise<unknown> | undefined;
+  const archive = () => {
+    if (closing || !options.attachmentObjects || archiveJob) return;
+    archiveJob = files.migrate(() => closing).catch(() => { console.warn("Attachment archive migration will retry"); }).finally(() => { archiveJob = undefined; });
+  };
+  const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
+  archiveTimer?.unref(); archive();
   return { server, store, runtime, agents, routines, gateway, node, memoryPlugin, identity, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
-    closing = true; clearInterval(heartbeat);
+    closing = true; clearInterval(heartbeat); clearInterval(archiveTimer); await archiveJob;
     await identity?.close();
     await heartbeatJob;
     routines.close();
@@ -435,6 +458,6 @@ export async function createPersonalApp(options: AppOptions) {
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();
-    await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); store.close();
+    await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); await Promise.allSettled(store.attachmentJobs.values()); store.close();
   } };
 }

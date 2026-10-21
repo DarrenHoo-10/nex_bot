@@ -63,6 +63,8 @@ const normalize = (value, key = "") => {
   if (typeof value === "string") {
     if (key === "dataDir") return "fixture-data-dir";
     if (key === "address") return "http://127.0.0.1:0";
+    // The Core host device is named after the capturing machine.
+    if (value === os.hostname()) return "fixture-host";
     if (HASH.test(value)) return "fixture-hash";
     const loopback = value.replace(/http:\/\/127\.0\.0\.1:\d+/g, "http://127.0.0.1:0");
     if (UUID.test(value) || TOKEN.test(value)) return mapString(value);

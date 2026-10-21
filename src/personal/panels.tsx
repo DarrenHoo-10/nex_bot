@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+﻿import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AccountControls, useAccount } from "./auth";
 import { Check, Cpu, Eye, EyeOff, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
 import { api, desktop, listModels, str, type State, type LocalDeviceState } from "./api";
@@ -7,6 +7,7 @@ import { ModelLimitsFields } from "./ModelLimitsFields";
 import { ModelPicker } from "./components/ModelPicker";
 import { ModelVisibility } from "./ModelVisibility";
 import { MemoryDashboard } from './MemoryDashboard';
+import { ImageModelSettings } from './ImageModelSettings';
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
   const [pending, setPending] = useState(false);
@@ -38,6 +39,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
         <section id={`${sectionId}-model`} hidden={category !== "model"} aria-label="模型" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>模型</h2></div>
           <ModelSettings state={state} run={run} active={category === "model"}/>
+          <ImageModelSettings key={JSON.stringify([state.config?.provider_id,state.config?.endpoint])} state={state} refresh={refresh} active={category === "model"}/>
           {state.config && <ModelVisibility key={JSON.stringify([state.config.provider_id,state.config.endpoint])} state={state} refresh={refresh} active={category === "model"}/>}
         </section>
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="长期记忆" className="preferences-panel">
