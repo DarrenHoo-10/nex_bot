@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
 import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, FileText, Info, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
+import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, ModelSettings, SettingsPage, type SettingsCategory } from "./panels";
@@ -166,6 +166,11 @@ export function AgentDesktop() {
   const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>()), messagesRef = useRef(messages);
   messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
+  const [update, setUpdate] = useState<ClientUpdateState>();
+  useEffect(() => {
+    void desktop?.updateState?.().then(setUpdate).catch(() => {});
+    return desktop?.onUpdateState?.(setUpdate) ?? undefined;
+  }, []);
   useEffect(() => desktop?.onClipboardImage?.((image) => {
     const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
     if (!bytes.byteLength || !image.type.startsWith("image/")) return;
@@ -451,6 +456,7 @@ export function AgentDesktop() {
         </div>
       </header>
 
+      {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(e.message))}>立即更新</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ModelSettings state={state} run={run} active={modelChooserOpen}/>}</div> : null}
 

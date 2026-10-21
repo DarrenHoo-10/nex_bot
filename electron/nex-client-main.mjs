@@ -8,6 +8,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ClientDevice } from "./nex-client-device.mjs";
 import { installLocalUi } from "./nex-client-ui.mjs";
 import { installClipboardImagePaste } from "./nex-client-clipboard.mjs";
+import { ClientUpdater, portableHandoff } from "./nex-client-update.mjs";
+import { spawn } from "node:child_process";
 import { fetchModelCatalog } from "../shared/model-catalog.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,7 +17,7 @@ const profile = process.argv.find((a) => a.startsWith("--profile="))?.slice(10);
 app.setName(process.platform === "darwin" && profile ? "NexBot Client Fixture " + createHash("sha256").update(profile).digest("hex").slice(0, 12) : "NexBot Client");
 app.setPath("userData", profile ? path.resolve(profile) : path.join(app.getPath("appData"), "NexBotClient"));
 const defaultOrigin = process.env.NEX_CLIENT_DEFAULT_ORIGIN || "https://bot.nexorai.com.cn";
-let device, shuttingDown = false;
+let device, updater, shuttingDown = false;
 let window, saved, origin, connectionError = "", resuming = false, loginEpoch = 0, repointed = false;
 const cancelled = Object.assign(new Error("已取消"), { cancelled: true });
 const credentials = path.join(app.getPath("userData"), "connection.bin");
@@ -91,6 +93,7 @@ async function login(settings) {
   await device?.start(saved);
   if (epoch !== loginEpoch) throw cancelled;
   await window.loadURL(origin + "/");
+  void updater?.check(origin);
 }
 if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) app.quit();
 else {
@@ -119,6 +122,11 @@ else {
       const { createClientNode } = await import(pathToFileURL(executorFile).href);
       device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode, sessionRefreshed,
       });
+    }
+    // Only the packaged portable can replace itself; development builds skip updates.
+    if (process.platform === "win32" && process.env.PORTABLE_EXECUTABLE_FILE) {
+      updater = new ClientUpdater({ version: app.getVersion(), directory: path.join(app.getPath("userData"), "updates"), changed: (state) => { if (!window?.isDestroyed()) window.webContents.send("nex:update-state", state); } });
+      setInterval(() => { const target = origin ?? saved?.origin; if (target) void updater.check(target); }, 6 * 60 * 60_000).unref();
     }
     const bundledUi = path.join(resourceRoot, "client-ui");
     installLocalUi(window.webContents.session, existsSync(bundledUi) ? bundledUi : path.join(root, "ui"), () => origin);
@@ -179,6 +187,16 @@ else {
     });
     ipcMain.handle("client:external", async (event, value) => { validate(event); const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid URL"); await shell.openExternal(url.href); });
     ipcMain.handle("client:quit", (event) => { validate(event); setTimeout(() => app.quit(), 50); });
+    ipcMain.handle("client:update-state", (event) => { validate(event); return updater?.state() ?? { status: "unsupported" }; });
+    ipcMain.handle("client:update-install", (event) => {
+      validate(event);
+      if (!updater || updater.status !== "ready") throw new Error("更新尚未就绪");
+      // The running portable is locked, so a hidden PowerShell waits for this client to exit,
+      // starts the new version with the same profile and Core, then removes the old file.
+      const script = portableHandoff({ downloaded: updater.file, currentExe: process.env.PORTABLE_EXECUTABLE_FILE, pids: [process.pid, process.ppid], args: process.argv.filter((value) => /^--(profile|origin)=/.test(value)) });
+      spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      setTimeout(() => app.quit(), 50);
+    });
     resuming = !!saved;
     await window.loadURL(connectionPage);
     if (profile && process.env.NEX_CLIENT_SMOKE_OUTPUT) writeFileSync(process.env.NEX_CLIENT_SMOKE_OUTPUT, JSON.stringify({ pid: process.pid, profile: app.getPath("userData") }));
