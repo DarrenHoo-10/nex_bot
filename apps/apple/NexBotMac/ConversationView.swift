@@ -239,6 +239,10 @@ private struct MessageList: View {
     @Environment(UIState.self) private var ui
     @Environment(ContactPreferences.self) private var preferences
     @State private var atBottom = true
+    /// False until a freshly loaded transcript has been placed at its end. Until then the
+    /// top row must not page in older history: on a cold start the lazy stack first lays
+    /// out from the top, and loading older messages there left the view on unmeasured rows.
+    @State private var settled = false
 
     private var botID: String { conversation.botID }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
@@ -251,6 +255,7 @@ private struct MessageList: View {
 
     /// Changes when a search-result view finishes loading, so the target is scrolled to once per opening and not on each poll.
     private var focusKey: String { "\(focusedID ?? "")|\(conversation.isLoaded)" }
+    private var loadKey: String { "\(botID)|\(conversation.isLoaded)" }
 
     private var tailKey: String {
         "\(conversation.messages.last?.seq ?? 0)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")"
@@ -264,6 +269,20 @@ private struct MessageList: View {
             guard !Task.isCancelled, let seq = conversation.messages.first(where: { $0.id == id })?.seq else { return }
             proxy.scrollTo(seq, anchor: .center)
         }
+    }
+
+    /// Scrolls to the end once rows exist and again after they are measured, then allows older pages.
+    private func settleAtBottom(_ proxy: ScrollViewProxy) async {
+        settled = false
+        guard conversation.isLoaded else { return }
+        if focusedID == nil {
+            for delay in [0, 60, 300] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+        }
+        settled = true
     }
 
     var body: some View {
@@ -284,7 +303,7 @@ private struct MessageList: View {
                             else { Button("加载更早的消息") { loadOlder(proxy) }.buttonStyle(.link) }
                             Spacer()
                         }
-                        .onAppear { loadOlder(proxy) }
+                        .onAppear { if settled { loadOlder(proxy) } }
                         .id("older")
                     }
                     let messages = conversation.messages
@@ -357,7 +376,7 @@ private struct MessageList: View {
             .onChange(of: conversation.isSending) { _, sending in
                 if sending { atBottom = true; proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: conversation.isLoaded) { if focusedID == nil { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .task(id: loadKey) { await settleAtBottom(proxy) }
             .task(id: focusKey) { await scrollToFocused(proxy) }
         }
         .environment(\.openURL, OpenURLAction { url in
