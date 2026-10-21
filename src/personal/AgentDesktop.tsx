@@ -1,6 +1,6 @@
 import { universalImageActions } from '../../shared/personal-capabilities';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "@/lib/bottom-follow";
+import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
 import { ChatChart } from "./components/ChatChart";
