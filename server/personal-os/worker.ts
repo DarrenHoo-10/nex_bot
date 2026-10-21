@@ -111,9 +111,15 @@ async function main(value: WorkerConfig) {
     let messages=manager.buildSessionContext().messages;
     const clean=(input:typeof messages)=>{
       const latestSystem=input.findLast(message=>message.role==='system');
-      return input.filter(message=>message.role!=='system'||message===latestSystem).map((message,index)=>{
+      const kept=input.filter(message=>message.role!=='system'||message===latestSystem);
+      // Tool results from the current turn stay whole while they fit, so a
+      // listing or image read earlier in the same task is not collapsed away.
+      const turnStart=kept.findLastIndex(message=>message.role==='user'||(message.role==='custom'&&(message as {customType?:string}).customType==='nex.input'));
+      const turnTokens=kept.slice(turnStart+1).reduce((sum,message)=>sum+(message.role==='toolResult'?tokens(message.content):0),0);
+      const keepTurn=turnTokens<=inputBudget*.4;
+      return kept.map((message,index)=>{
         if(message.role==='system')return {role:'system' as const,content:config.systemPrompt,toolsAdded:[{name:broker.name,description:broker.description,parameters:broker.parameters}],timestamp:Date.now()};
-        if(message.role==='toolResult' && index<input.length-6 && tokens(message.content)>1500){
+        if(message.role==='toolResult' && index<kept.length-6 && tokens(message.content)>1500 && !(keepTurn && index>turnStart)){
           const source=manager.getBranch().findLast(entry=>entry.type==='message'&&entry.message.role==='toolResult'&&entry.message.toolCallId===message.toolCallId);
           return {...message,content:[{type:'text' as const,text:`较早工具输出已收起，状态：${message.isError?'失败':'完成'}。通过 memory.search(query="entry:${source?.id}") 读取原文。`} ]};
         }
