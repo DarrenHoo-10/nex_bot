@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { startFakeModel, type FakeModel } from "../runtime/pi/p0/fake-model.ts";
 import { hash, id } from "./store.ts";
 import { nextDaily } from "./routines.ts";
+import { skillRead } from "./skills.ts";
 import { createClientNode } from "./client-node.ts";
 function pdfFixture(content: string) {
   const stream = `BT /F1 12 Tf 60 750 Td (${content}) Tj ET`;
@@ -208,7 +209,12 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const taskId = f.app.agents.send(botId, "了解内置技能", "skills-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     const skills = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=? AND tool_name='skill.list'", taskId)?.result_json));
-    expect(skills.skills.map((skill: { id: string }) => skill.id)).toEqual(["devices", "computer", "memory", "collaboration", "routines"]);
+    expect(skills.skills.map((skill: { id: string }) => skill.id)).toEqual(["devices", "computer", "memory", "collaboration", "routines", "agent-reach"]);
+    // Agent Reach runs its commands on a device, so it is offered with the terminal capability.
+    const reach = skillRead(f.app.store, botId, "agent-reach").content;
+    expect(reach).toContain("broker(action=device.exec");
+    expect(reach).toContain("## 参考：social");
+    expect(reach).not.toMatch(/Administrator|127\.0\.0\.1:12001/);
     expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=? AND tool_name='skill.read'", taskId)?.result_json)).toContain("主设备会自动登记");
     f.app.agents.updatePolicy({ id: botId, version: 1, tools: ["agent.directory"] });
     f.app.store.run("DELETE FROM schema_migrations WHERE version=7");
