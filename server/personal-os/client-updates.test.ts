@@ -51,6 +51,17 @@ describe("client updates", () => {
     expect(new URL(mirrorUrl.signedUrl(manifestKey)).pathname).toBe("/" + manifestKey);
   });
 
+  it("downloads relayed installers with header signing, which OSS accepts for .apk", async () => {
+    const secret = "synthetic-secret", seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    const transport = (async (url: string, init?: RequestInit) => { seen.push({ url, headers: init?.headers as Record<string, string> }); return new Response("ok"); }) as typeof fetch;
+    const oss = new OssReleaseMirror({ endpoint: "oss-cn-hangzhou.aliyuncs.com", bucket: "fixture-bucket", accessKeyId: "synthetic-id", accessKeySecret: secret }, transport, () => 1_000_000_000_000);
+    await oss.download(manifest.platforms.android.key);
+    const date = new Date(1_000_000_000_000).toUTCString();
+    expect(seen[0].url).toBe(`https://fixture-bucket.oss-cn-hangzhou.aliyuncs.com/${manifest.platforms.android.key}`);
+    expect(seen[0].headers).toEqual({ Date: date, Authorization: `OSS synthetic-id:${createHmac("sha1", secret).update(`GET\n\n\n${date}\n/fixture-bucket/${manifest.platforms.android.key}`).digest("base64")}` });
+    await expect(oss.download("nexbot/attachments/v1/x.enc")).rejects.toThrow();
+  });
+
   it("offers a newer version with its digest and a signed URL, and nothing when current", async () => {
     const source = new ClientUpdateSource(mirror);
     expect(await source.check("windows", "0.9.8")).toMatchObject({ available: true, version: "0.9.9", sha256: sha, size: 1024, url: `https://mirror.test/${manifest.platforms.windows.key}?signed`, notes: "修复若干问题" });
