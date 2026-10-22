@@ -14,7 +14,11 @@ const manifest = {
     android: { version: "0.2.9", file: "nexbot-0.2.9-debug.apk", key: "nexbot/releases/nexbot-v0.9.9-preview.1/nexbot-0.2.9-debug.apk", size: 2048, sha256: sha },
   },
 };
-const mirror = { manifest: async () => parseManifest(manifest), signedUrl: (key: string) => `https://mirror.test/${key}?signed` };
+const apk = Buffer.alloc(2048, 7);
+const mirror = {
+  manifest: async () => parseManifest(manifest), signedUrl: (key: string) => `https://mirror.test/${key}?signed`,
+  download: async (key: string) => { if (key !== manifest.platforms.android.key) throw new Error("unexpected key"); return new Response(apk); },
+};
 
 describe("client updates", () => {
   it("compares x.y.z versions numerically and never treats malformed versions as newer", () => {
@@ -75,8 +79,15 @@ describe("client update routes", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "nex-client-update-")); roots.push(root);
     const github = async () => new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
     const app = await createPersonalApp({ dir: path.join(root, "core"), key: randomBytes(32), token: "synthetic-token", identity: false, releaseMirror: mirror, clientDownloads: { fetch: github as typeof fetch } }); apps.push(app);
-    const update = await (await fetch(`${app.origin}/api/client/update?platform=android&version=0.2.8`)).json();
-    expect(update).toMatchObject({ available: true, version: "0.2.9", url: `https://mirror.test/${manifest.platforms.android.key}?signed` });
+    // OSS refuses .apk/.ipa on its default domain, so Android and iOS download through Core.
+    const update = await (await fetch(`${app.origin}/api/client/update?platform=android&version=0.2.8`)).json() as { url: string };
+    expect(update).toMatchObject({ available: true, version: "0.2.9", url: `${app.origin}/api/client/installer/android/nexbot-0.2.9-debug.apk` });
+    const installer = await fetch(update.url);
+    expect(installer.status).toBe(200);
+    expect(installer.headers.get("content-type")).toBe("application/vnd.android.package-archive");
+    expect(Buffer.from(await installer.arrayBuffer()).equals(apk)).toBe(true);
+    expect((await fetch(`${app.origin}/api/client/installer/android/nexbot-0.2.8-debug.apk`)).status).toBe(404);
+    expect((await fetch(`${app.origin}/api/client/installer/windows/NexBot-0.9.9-x64-Client-Portable.exe`)).status).not.toBe(200);
     const downloads = await (await fetch(`${app.origin}/api/client/downloads`)).json() as { windows?: unknown };
     expect(downloads.windows).toMatchObject({ version: "0.9.9", url: `https://mirror.test/${manifest.platforms.windows.key}?signed` });
   });

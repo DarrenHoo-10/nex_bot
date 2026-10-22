@@ -16,6 +16,9 @@ export interface ClientUpdate { platform: UpdatePlatform; current: string; avail
 export const manifestKey = "nexbot/releases/manifest.json";
 const releaseKey = /^nexbot\/releases\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const semver = /^\d+\.\d+\.\d+$/;
+/** OSS refuses to serve .apk/.ipa from its default domain (ApkDownloadForbidden), so Core relays these. */
+export const relayedPlatforms: ReadonlySet<UpdatePlatform> = new Set(["android", "ios"]);
+const installerTypes: Record<string, string> = { android: "application/vnd.android.package-archive", ios: "application/octet-stream" };
 
 /** Numeric x.y.z comparison; anything malformed is never treated as newer. */
 export function newerVersion(candidate: string, current: string) {
@@ -62,6 +65,13 @@ export class OssReleaseMirror {
     const signature = createHmac("sha1", this.config.accessKeySecret).update(`GET\n\n\n${expires}\n/${this.config.bucket}/${key}`).digest("base64");
     return `${this.origin}/${key.split("/").map(encodeURIComponent).join("/")}?OSSAccessKeyId=${encodeURIComponent(this.config.accessKeyId)}&Expires=${expires}&Signature=${encodeURIComponent(signature)}`;
   }
+  /** Fetches a release object server-side; Core then streams it to the client. */
+  async download(key: string) {
+    if (!releaseKey.test(key)) throw new Error("OSS 对象路径无效");
+    const response = await this.transport(this.signedUrl(key, 600), { redirect: "error", signal: AbortSignal.timeout(300_000) });
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`安装包返回 HTTP ${response.status}`); }
+    return response;
+  }
   async manifest() {
     const response = await this.transport(this.signedUrl(manifestKey, 120), { redirect: "error", signal: AbortSignal.timeout(8_000) });
     if (response.status === 404) { await response.body?.cancel(); return undefined; }
@@ -73,7 +83,7 @@ export class OssReleaseMirror {
 export class ClientUpdateSource {
   private cached?: { value: ReleaseManifest | undefined; until: number };
   private pending?: Promise<ReleaseManifest | undefined>;
-  constructor(readonly mirror: Pick<OssReleaseMirror, "manifest" | "signedUrl"> | undefined, readonly now: () => number = Date.now) {}
+  constructor(readonly mirror: Pick<OssReleaseMirror, "manifest" | "signedUrl"> & Partial<Pick<OssReleaseMirror, "download">> | undefined, readonly now: () => number = Date.now) {}
   /** One shared lookup every five minutes; an outage keeps the last good manifest. */
   manifest(): Promise<ReleaseManifest | undefined> {
     if (!this.mirror) return Promise.resolve(undefined);
@@ -85,21 +95,32 @@ export class ClientUpdateSource {
       .finally(() => { this.pending = undefined; });
     return this.pending;
   }
-  async check(platform: string, current: string): Promise<ClientUpdate> {
+  /** The mirror URL, or a Core path for installers OSS will not serve directly. */
+  private url(platform: UpdatePlatform, entry: ReleaseFile, origin?: string) {
+    return origin && relayedPlatforms.has(platform) ? `${origin}/api/client/installer/${platform}/${encodeURIComponent(entry.file)}` : this.mirror!.signedUrl(entry.key);
+  }
+  /** The current installer for a relayed platform, streamed from the mirror. Undefined when `file` is not current. */
+  async installer(platform: string, file: string) {
+    if (!relayedPlatforms.has(platform as UpdatePlatform) || !this.mirror?.download) return undefined;
+    const entry = (await this.manifest())?.platforms[platform as UpdatePlatform];
+    if (!entry || entry.file !== file) return undefined;
+    return { entry, type: installerTypes[platform], response: await this.mirror.download(entry.key) };
+  }
+  async check(platform: string, current: string, origin?: string): Promise<ClientUpdate> {
     if (!updatePlatforms.includes(platform as UpdatePlatform)) throw new Error("不支持的平台");
     const target = platform as UpdatePlatform, version = String(current).slice(0, 40);
     const manifest = await this.manifest(), entry = manifest?.platforms[target];
     if (!manifest || !entry || !newerVersion(entry.version, version)) return { platform: target, current: version, available: false };
-    return { platform: target, current: version, available: true, version: entry.version, file: entry.file, size: entry.size, sha256: entry.sha256, url: this.mirror!.signedUrl(entry.key), notes: manifest.notes, tag: manifest.tag, publishedAt: manifest.publishedAt };
+    return { platform: target, current: version, available: true, version: entry.version, file: entry.file, size: entry.size, sha256: entry.sha256, url: this.url(target, entry, origin), notes: manifest.notes, tag: manifest.tag, publishedAt: manifest.publishedAt };
   }
   /** The newest mirrored installer per platform, for the public download page. */
-  async downloads() {
+  async downloads(origin?: string) {
     const manifest = await this.manifest();
     if (!manifest) return undefined;
     const result: Partial<Record<UpdatePlatform, { name: string; url: string; size: number; version: string; tag: string; publishedAt: string; sha256: string }>> = {};
     for (const platform of updatePlatforms) {
       const entry = manifest.platforms[platform];
-      if (entry) result[platform] = { name: entry.file, url: this.mirror!.signedUrl(entry.key), size: entry.size, version: entry.version, tag: manifest.tag, publishedAt: manifest.publishedAt, sha256: entry.sha256 };
+      if (entry) result[platform] = { name: entry.file, url: this.url(platform, entry, origin), size: entry.size, version: entry.version, tag: manifest.tag, publishedAt: manifest.publishedAt, sha256: entry.sha256 };
     }
     return result;
   }
