@@ -79,6 +79,10 @@ struct SettingsModelPane: View {
                 }
             }
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).padding(.top, 12) }
+            if let config {
+                Hairline().padding(.vertical, 28)
+                ImageModelSection(workspace: workspace, active: active).id("\(config.providerID)|\(config.endpoint)")
+            }
         }
         .onAppear { load() }
         .onChange(of: limitScope, initial: true) { limits.reset(scope: limitScope) }

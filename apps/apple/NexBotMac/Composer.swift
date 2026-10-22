@@ -29,6 +29,22 @@ struct Composer: View {
     private var quote: QuoteDraft? { agentUI.quotes[botID] }
     private var hasModel: Bool { workspace.state?.config != nil }
     private var canSend: Bool { conversation.canSend && hasModel && bot != nil }
+    private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
+    private var showStop: Bool {
+        !tasks.isEmpty && conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && conversation.attachments.isEmpty
+    }
+    @State private var stopping = false
+
+    private func stopAll() {
+        guard !stopping else { return }
+        stopping = true; menuError = nil
+        Task {
+            defer { stopping = false }
+            for task in tasks where task.status != "cancelling" {
+                do { try await workspace.cancelTask(task.id) } catch { menuError = message(of: error) }
+            }
+        }
+    }
     private var height: CGFloat {
         let lines = conversation.draft.split(separator: "\n", omittingEmptySubsequences: false).count
         return min(104, max(22, CGFloat(min(lines, 5)) * 19 + 3))
@@ -109,14 +125,27 @@ struct Composer: View {
             .popover(isPresented: anyMenuOpen, arrowEdge: .top) { menuContent }
 
             Spacer(minLength: 0)
-            Button(action: send) {
-                Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(canSend ? Theme.primaryForeground : .white)
-                    .frame(width: 34, height: 34)
-                    .background(canSend ? Theme.primary : Color(hex: 0x9A9A9E), in: Circle())
+            // While the agent works and nothing is typed, the send key stops it (web composer).
+            if showStop {
+                Button(action: stopAll) {
+                    Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.primaryForeground)
+                        .frame(width: 34, height: 34)
+                        .background(Theme.primary, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(stopping || tasks.allSatisfy { $0.status == "cancelling" })
+                .help("停止任务").accessibilityLabel("停止任务")
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(canSend ? Theme.primaryForeground : .white)
+                        .frame(width: 34, height: 34)
+                        .background(canSend ? Theme.primary : Color(hex: 0x9A9A9E), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送消息")
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送消息")
         }
     }
 

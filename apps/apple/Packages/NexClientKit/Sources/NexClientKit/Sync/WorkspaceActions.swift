@@ -285,6 +285,17 @@ extension WorkspaceStore {
         await refresh()
         return value
     }
+    /// Saves the image generation models for the current connection; owner only. `version` is the
+    /// ``WorkspaceState/imageModelSelection`` version the edit started from.
+    @discardableResult
+    public func saveImageModelSelection(models: [String], version: Int) async throws -> ModelVisibility {
+        guard let config = state?.config else { throw CoreError(kind: .unsupported, message: "请先配置模型连接") }
+        let value: ModelVisibility
+        do { value = try await client.saveImageModelSelection(provider: config.providerID, endpoint: config.endpoint, models: models, version: version) }
+        catch { await refresh(); throw report(error) }
+        await refresh()
+        return value
+    }
     /// The account-wide memory switch, memory model and lifetime memory token usage. Read only (no state refresh).
     public func memorySummary() async throws -> MemorySummary {
         do { return try await client.memorySummary() } catch { throw report(error) }

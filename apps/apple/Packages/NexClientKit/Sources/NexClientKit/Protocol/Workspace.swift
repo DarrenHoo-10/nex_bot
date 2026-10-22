@@ -106,6 +106,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var lanEnabled: Bool
     /// Models the pickers offer for the current connection (`nil` models = all). Absent on older Cores.
     public var modelVisibility: ModelVisibility
+    /// `imageModelSelection`: the models offered for image generation (always a list; OpenAI-compatible connections only).
+    public var imageModelSelection: ModelVisibility = ModelVisibility(models: [])
 
     public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false, modelVisibility: ModelVisibility = ModelVisibility()) {
         self.sync = sync; self.bots = bots; self.approvals = approvals; self.tasks = tasks; self.conversations = conversations
@@ -134,6 +136,8 @@ public struct WorkspaceState: Codable, Sendable {
         address = c.lenient(.init("address"))?.stringValue ?? ""; dataDir = c.lenient(.init("dataDir"))?.stringValue ?? ""
         runtime = c.lenient(.init("runtime"))?.stringValue ?? ""; lanEnabled = c.lenient(.init("lanEnabled"))?.boolValue ?? false
         modelVisibility = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("modelVisibility"))) ?? ModelVisibility()
+        imageModelSelection = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("imageModelSelection"))) ?? ModelVisibility(models: [])
+        if imageModelSelection.models == nil { imageModelSelection.models = [] }
     }
     /// Newest unfinished task of a bot (tasks arrive unfinished-first, newest first).
     public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.isUnfinished } }
