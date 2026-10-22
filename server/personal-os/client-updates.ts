@@ -65,10 +65,17 @@ export class OssReleaseMirror {
     const signature = createHmac("sha1", this.config.accessKeySecret).update(`GET\n\n\n${expires}\n/${this.config.bucket}/${key}`).digest("base64");
     return `${this.origin}/${key.split("/").map(encodeURIComponent).join("/")}?OSSAccessKeyId=${encodeURIComponent(this.config.accessKeyId)}&Expires=${expires}&Signature=${encodeURIComponent(signature)}`;
   }
-  /** Fetches a release object server-side; Core then streams it to the client. */
+  /**
+   * Fetches a release object server-side; Core then streams it to the client. Uses header signing:
+   * OSS rejects .apk/.ipa through query-signed URLs on its default domain even from the server.
+   */
   async download(key: string) {
     if (!releaseKey.test(key)) throw new Error("OSS 对象路径无效");
-    const response = await this.transport(this.signedUrl(key, 600), { redirect: "error", signal: AbortSignal.timeout(300_000) });
+    const date = new Date(this.now()).toUTCString();
+    const signature = createHmac("sha1", this.config.accessKeySecret).update(`GET\n\n\n${date}\n/${this.config.bucket}/${key}`).digest("base64");
+    const response = await this.transport(`${this.origin}/${key.split("/").map(encodeURIComponent).join("/")}`, {
+      headers: { Date: date, Authorization: `OSS ${this.config.accessKeyId}:${signature}` }, redirect: "error", signal: AbortSignal.timeout(300_000),
+    });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`安装包返回 HTTP ${response.status}`); }
     return response;
   }
