@@ -172,11 +172,13 @@ struct AttachmentThumbnail: View {
     var body: some View {
         Group {
             if let image {
+                // Same bounds as the web workspace; clicking opens the original in Preview.
                 Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: 360, maxHeight: 360, alignment: .leading)
+                    .frame(maxWidth: min(640, image.size.width), maxHeight: 640, alignment: .leading)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .contextMenu { Button("存储图片…") { save() } }
-                    .accessibilityLabel(link.name)
+                    .onTapGesture(perform: openOriginal)
+                    .contextMenu { Button("打开原图") { openOriginal() }; Button("存储图片…") { save() } }
+                    .help(link.name).accessibilityLabel(link.name).accessibilityAddTraits(.isButton)
             } else if failed {
                 AttachmentCard(link: link, conversation: conversation)
             } else {
@@ -193,8 +195,20 @@ struct AttachmentThumbnail: View {
         }
     }
 
+    private var fileName: String { link.name.contains(".") ? link.name : link.name + ".png" }
     private func save() {
         guard let data else { return }
-        _ = try? FilePanels.save(data, suggested: link.name.contains(".") ? link.name : link.name + ".png")
+        _ = try? FilePanels.save(data, suggested: fileName)
+    }
+    private func openOriginal() {
+        guard let data else { return }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NexBotImages/\(UUID().uuidString)", isDirectory: true)
+        let safe = fileName.map { "/:\\".contains($0) ? "_" : $0 }.map(String.init).joined()
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(safe)
+            try data.write(to: url, options: .atomic)
+            NSWorkspace.shared.open(url)
+        } catch {}
     }
 }

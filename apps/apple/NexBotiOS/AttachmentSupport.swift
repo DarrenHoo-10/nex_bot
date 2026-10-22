@@ -69,21 +69,8 @@ struct AttachmentCards: View {
     var body: some View {
         VStack(alignment: trailing ? .trailing : .leading, spacing: 6) {
             ForEach(links) { link in
-                Button { Task { await open(link) } } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: attachmentIcon(link.name)).foregroundStyle(Theme.brand)
-                        Text(link.name).font(.subheadline.weight(.medium)).lineLimit(1).truncationMode(.middle).foregroundStyle(Theme.foreground)
-                        if loading == link.id { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "arrow.down.circle").font(.footnote).foregroundStyle(Theme.muted) }
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .frame(maxWidth: 260, alignment: .leading)
-                    .cardStyle(radius: 10)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(loading != nil)
-                .accessibilityLabel("附件 \(link.name)")
+                if link.isImage { ImageThumbnail(link: link, workspace: workspace) { Task { await open(link) } } }
+                else { card(link) }
             }
             if let errorText { Text(errorText).font(.caption).foregroundStyle(Theme.danger) }
         }
@@ -93,12 +80,65 @@ struct AttachmentCards: View {
         }
     }
 
+    private func card(_ link: AttachmentLink) -> some View {
+        Button { Task { await open(link) } } label: {
+            HStack(spacing: 8) {
+                Image(systemName: attachmentIcon(link.name)).foregroundStyle(Theme.brand)
+                Text(link.name).font(.subheadline.weight(.medium)).lineLimit(1).truncationMode(.middle).foregroundStyle(Theme.foreground)
+                if loading == link.id { ProgressView().controlSize(.small) }
+                else { Image(systemName: "arrow.down.circle").font(.footnote).foregroundStyle(Theme.muted) }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .frame(maxWidth: 260, alignment: .leading)
+            .cardStyle(radius: 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(loading != nil)
+        .accessibilityLabel("附件 \(link.name)")
+    }
+
     private func open(_ link: AttachmentLink) async {
         loading = link.id; errorText = nil
         defer { loading = nil }
         do {
             let file = try await workspace.downloadAttachment(id: link.id)
-            preview = SharedFile(url: try TempFiles.write(file.data, name: file.filename == "attachment" ? link.name : file.filename))
+            let name = file.filename == "attachment" ? (link.picture ? link.name + ".png" : link.name) : file.filename
+            preview = SharedFile(url: try TempFiles.write(file.data, name: name))
         } catch { errorText = coreMessage(error) }
+    }
+}
+
+/// A sent or generated picture, loaded through Core. Tapping opens Quick Look; a failed load shows the file name.
+struct ImageThumbnail: View {
+    let link: AttachmentLink
+    let workspace: WorkspaceStore
+    let onOpen: () -> Void
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            Group {
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFit()
+                        .frame(maxWidth: 260, maxHeight: 320)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } else {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.card)
+                        .frame(width: 200, height: 140)
+                        .overlay {
+                            if failed { Label(link.name, systemImage: "photo").font(.footnote).foregroundStyle(Theme.muted).padding(8) }
+                            else { ProgressView() }
+                        }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("图片 \(link.name)")
+        .task(id: link.id) {
+            do { image = UIImage(data: try await workspace.downloadAttachment(id: link.id).data); failed = image == nil }
+            catch { failed = true }
+        }
     }
 }
