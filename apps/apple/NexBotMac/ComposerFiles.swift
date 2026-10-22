@@ -159,3 +159,42 @@ struct AttachmentCard: View {
     }
     #endif
 }
+
+/// A sent or generated picture, loaded through Core.
+/// Falls back to the file card when the bytes are not an image.
+struct AttachmentThumbnail: View {
+    let link: AttachmentLink
+    let conversation: ConversationStore
+    @State private var image: NSImage?
+    @State private var data: Data?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: 360, maxHeight: 360, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .contextMenu { Button("存储图片…") { save() } }
+                    .accessibilityLabel(link.name)
+            } else if failed {
+                AttachmentCard(link: link, conversation: conversation)
+            } else {
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.card)
+                    .frame(width: 240, height: 160)
+                    .overlay(ProgressView().controlSize(.small))
+            }
+        }
+        .task(id: link.id) {
+            do {
+                let bytes = try await conversation.image(link)
+                data = bytes; image = NSImage(data: bytes); failed = image == nil
+            } catch { failed = true }
+        }
+    }
+
+    private func save() {
+        guard let data else { return }
+        _ = try? FilePanels.save(data, suggested: link.name.contains(".") ? link.name : link.name + ".png")
+    }
+}

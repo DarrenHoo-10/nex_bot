@@ -32,7 +32,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nexorai.nexbot.core.LiveFrame
+import com.nexorai.nexbot.core.WorkspaceTransport
 import com.nexorai.nexbot.sync.Repository
+import com.nexorai.nexbot.update.AppUpdater
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +60,7 @@ fun WorkspaceScreen(state: Repository.UiState, repository: Repository) {
         MessageDigest.getInstance("SHA-256").digest("${connection.origin}\n${connection.account}".toByteArray())
             .take(16).joinToString("") { "%02x".format(it) }
     }
-    val workspace = remember(namespace) { AndroidWorkspace(context, repository, "https://$namespace.nexbot.invalid") }
+    val workspace = remember(namespace) { AndroidWorkspace(context, repository, "https://$namespace.nexbot.invalid", connection.origin) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         workspace.fileCallback?.onReceiveValue(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
         workspace.fileCallback = null
@@ -86,7 +88,7 @@ fun WorkspaceScreen(state: Repository.UiState, repository: Repository) {
 
 /** Only bundled assets are loaded in this WebView. Remote pages open in the browser. */
 @SuppressLint("SetJavaScriptEnabled")
-internal class AndroidWorkspace(private val context: Context, private val repository: Repository, private val origin: String) {
+internal class AndroidWorkspace(private val context: Context, private val repository: Repository, private val origin: String, coreOrigin: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val transport = repository.workspaceTransport()
     private val subscriptions = mutableSetOf<String>()
@@ -100,6 +102,9 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     var fileCallback: ValueCallback<Array<Uri>>? = null
     var pickFiles: () -> Unit = {}
     var chooseSave: (String) -> Unit = {}
+    private val updater = AppUpdater(context, coreOrigin) { state ->
+        if (!closed) web.evaluateJavascript("window.dispatchEvent(new CustomEvent('nex-android-update',{detail:$state}))", null)
+    }
 
     val web = WebView(context).apply {
         settings.javaScriptEnabled = true
@@ -129,6 +134,15 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse {
                 val uri = request.url
                 val path = uri.path.orEmpty()
+                // Image previews come from Core with the native token; storage URLs never reach the page.
+                if (request.method == "GET" && "https://${uri.host}" == origin && WorkspaceTransport.isAttachmentPreview(path, uri.query)) {
+                    return try {
+                        val reply = transport.request("$path?preview=1", "GET", "")
+                        val mime = reply.contentType.substringBefore(';').trim()
+                        if (reply.status == 200 && mime.startsWith("image/")) response(200, mime, ByteArrayInputStream(reply.body))
+                        else response(404, "text/plain", ByteArrayInputStream(ByteArray(0)))
+                    } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
+                }
                 if (uri.scheme != "https" || "https://${uri.host}" != origin || request.method != "GET" ||
                     path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path.startsWith("/assets/"))) {
                     return response(403, "text/plain", ByteArrayInputStream(ByteArray(0)))
@@ -149,6 +163,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         }
         loadUrl("$origin/index.html")
     }
+    init { updater.start(scope) }
 
     private fun response(code: Int, mime: String, stream: java.io.InputStream) = WebResourceResponse(mime, "UTF-8", code, if (code == 200) "OK" else "Blocked", mapOf(
         "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff",
@@ -181,6 +196,8 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                     "external" -> external(value)
                     "background" -> (context as? ComponentActivity)?.moveTaskToBack(true)
                     "ready" -> repository.state.value.selectedBotId?.let { selectBot(it) }
+                    "updateState" -> { reply(id, JSONObject().put("value", updater.state)); return@launch }
+                    "installUpdate" -> updater.install()
                     "save" -> {
                         check(save == null) { "请先完成当前保存" }
                         val data = JSONObject(value)
@@ -256,5 +273,5 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     }
     fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); web.onPause(); web.pauseTimers() }
     fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'))", null) }
-    fun close() { closed = true; scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.removeJavascriptInterface("NexAndroid"); web.destroy() }
+    fun close() { closed = true; updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.removeJavascriptInterface("NexAndroid"); web.destroy() }
 }

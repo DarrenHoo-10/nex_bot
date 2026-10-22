@@ -75,6 +75,13 @@ export function installAndroidBridge() {
     downloadAttachment: (url: string, name: string) => action("download", JSON.stringify({ url, name })),
     minimize: () => action("background"),
     workspaceReady: () => action("ready"),
+    updateState: () => action("updateState"),
+    installUpdate: () => action("installUpdate"),
+    onUpdateState: (callback: (state: unknown) => void) => {
+      const listener = (event: Event) => callback((event as CustomEvent).detail);
+      window.addEventListener("nex-android-update", listener);
+      return () => window.removeEventListener("nex-android-update", listener);
+    },
   };
   document.documentElement.dataset.platform = "android";
 }

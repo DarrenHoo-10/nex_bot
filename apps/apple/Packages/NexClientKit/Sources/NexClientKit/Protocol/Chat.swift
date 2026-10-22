@@ -62,7 +62,22 @@ public struct PendingAttachment: Sendable, Hashable, Identifiable {
 public struct AttachmentLink: Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String
-    public init(id: String, name: String) { self.id = id; self.name = name }
+    /// Set for pictures embedded with `![alt](...)`, whatever their name.
+    public var picture: Bool
+    public init(id: String, name: String, picture: Bool = false) { self.id = id; self.name = name; self.picture = picture }
+    /// Pictures render as thumbnails instead of file cards.
+    public var isImage: Bool { picture || ["png", "jpg", "jpeg", "webp", "gif"].contains((name as NSString).pathExtension.lowercased()) }
+
+    /// Pictures embedded as `![alt](/api/attachments/<id>)` (generated images), in order.
+    public static func embeddedImages(_ content: String) -> [AttachmentLink] {
+        guard content.contains("](/api/attachments/") else { return [] }
+        let range = NSRange(content.startIndex..., in: content)
+        return embedded.matches(in: content, range: range).compactMap { match in
+            guard let alt = Range(match.range(at: 1), in: content), let id = Range(match.range(at: 2), in: content) else { return nil }
+            return AttachmentLink(id: String(content[id]), name: content[alt].isEmpty ? "图片" : String(content[alt]), picture: true)
+        }
+    }
+    private static let embedded = try! NSRegularExpression(pattern: #"!\[([^\[\]]*)\]\(/api/attachments/([A-Za-z0-9_-]+)\)"#)
 
     /// Splits trailing attachment link lines off a message. `body` is the remaining Markdown, trimmed;
     /// links are in order. Only a contiguous block at the end of the content counts, so a link the user typed
