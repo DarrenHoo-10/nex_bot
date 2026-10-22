@@ -1,10 +1,15 @@
 import SwiftUI
 import NexClientKit
 
-/// 显示的模型 (web `ModelVisibility.tsx`): choose which models the pickers offer for the saved connection.
+/// 显示的模型 (web `ModelVisibility.tsx`): choose which models the pickers offer.
 /// `selection == nil` shows the whole provider directory; an array is a shortlist. The edit echoes the version it started from.
+/// For a connection still being edited (`draft`), the choice is reported through `onSelection` and saved with the connection.
 struct ModelVisibilitySection: View {
     let workspace: WorkspaceStore
+    /// Models fetched with 获取模型列表 in the connection form.
+    var fetched: [String] = []
+    var draft = false
+    var onSelection: ([String]?) -> Void = { _ in }
 
     @State private var catalog: [String] = []
     @State private var selection: [String]?
@@ -22,7 +27,7 @@ struct ModelVisibilitySection: View {
     private var defaultModel: String { workspace.state?.config?.defaultModel ?? "" }
     private var all: [String] {
         var seen = Set<String>()
-        return (catalog + (selection ?? []) + [defaultModel]).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
+        return (catalog + fetched + (selection ?? []) + (draft ? [] : [defaultModel])).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
     }
     private var selected: Set<String> { Set(selection ?? all) }
 
@@ -38,7 +43,7 @@ struct ModelVisibilitySection: View {
                 Button("全部显示") { edit(nil) }.buttonStyle(PillButtonStyle())
                 Button("清空选择") { edit([]) }.buttonStyle(PillButtonStyle())
                 Button(onlySelected ? "查看全部" : "只看已选") { onlySelected.toggle() }.buttonStyle(PillButtonStyle())
-                Button(loading ? "获取中…" : "刷新目录") { Task { await load(force: true) } }.buttonStyle(PillButtonStyle()).disabled(loading)
+                if !draft { Button(loading ? "获取中…" : "刷新目录") { Task { await load(force: true) } }.buttonStyle(PillButtonStyle()).disabled(loading) }
             }
             ModelMultiList(models: onlySelected ? selected.sorted() : all, selected: selected, onToggle: toggle)
             HStack(spacing: 8) {
@@ -50,16 +55,20 @@ struct ModelVisibilitySection: View {
                 Button("添加", action: addCustom).buttonStyle(PillButtonStyle()).disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if !error.isEmpty { InlineBanner(text: error) }
-            HStack(spacing: 12) {
-                PrimaryButton(title: busy ? "保存中…" : "保存显示模型", busy: busy, brand: true, action: save).disabled(!dirty || busy)
-                if !notice.isEmpty { Text(notice).font(.footnote).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
+            if draft {
+                Text("随模型连接一起保存").font(.caption).foregroundStyle(Theme.muted)
+            } else {
+                HStack(spacing: 12) {
+                    PrimaryButton(title: busy ? "保存中…" : "保存显示模型", busy: busy, brand: true, action: save).disabled(!dirty || busy)
+                    if !notice.isEmpty { Text(notice).font(.footnote).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
+                }
             }
         }
-        .padding(14).cardStyle()
         .disabled(busy)
-        .onAppear { selection = stored.models; version = stored.version }
-        .onChange(of: stored) { if !dirty { selection = stored.models; version = stored.version } }
-        .task { if !loaded { loaded = true; await load(force: false) } }
+        .onAppear { if !draft { selection = stored.models; version = stored.version } }
+        .onChange(of: stored) { if !dirty && !draft { selection = stored.models; version = stored.version } }
+        .onChange(of: selection, initial: true) { onSelection(selection) }
+        .task { if !loaded, !draft { loaded = true; await load(force: false) } }
         .onDebugUI { cmd, arg in
             switch cmd {
             case "mv-all": edit(nil)

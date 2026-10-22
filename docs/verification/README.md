@@ -373,5 +373,8 @@ rollback hydration.
 The [public web homepage record](web-homepage.md) covers the signed-out browser
 homepage and its client download links.
 
+The [Mac and iOS parity record](apple-model-paste-parity.md) covers the native
+model picker, model settings order and pasted images.
+
 The [client update record](client-updates.md) covers the OSS installer mirror,
 the update API and the Windows portable updater.

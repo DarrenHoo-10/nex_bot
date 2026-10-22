@@ -75,12 +75,20 @@ struct SettingsModelView: View {
     let workspace: WorkspaceStore
     @Bindable var form: ModelForm
     @State private var pickerOpen = false
+    /// The 显示的模型 choice shown in the form; for a new connection it is saved after the connection.
+    @State private var visible: [String]?
 
     private var config: ModelConfig? { workspace.state?.config }
     private var keyRequired: Bool { config == nil }
     private var canSave: Bool {
         !form.model.trimmingCharacters(in: .whitespaces).isEmpty && !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty
             && (!keyRequired || !form.apiKey.isEmpty) && !form.saving
+    }
+
+    /// The form addresses the saved connection, whose 显示的模型 save on their own.
+    private var connectionSaved: Bool {
+        let slash = CharacterSet(charactersIn: "/")
+        return config.map { $0.providerID == form.provider && $0.endpoint.trimmingCharacters(in: slash) == form.endpoint.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: slash) } ?? false
     }
 
     private var loadable: Bool { !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty && !form.loadingModels && !form.saving }
@@ -119,6 +127,9 @@ struct SettingsModelView: View {
                         .accessibilityLabel(form.showKey ? "隐藏 API Key" : "显示 API Key")
                     }
                 }
+                listField
+                ModelVisibilitySection(workspace: workspace, fetched: form.models, draft: !connectionSaved, onSelection: { visible = $0 })
+                    .id("\(form.provider)|\(form.endpoint.trimmingCharacters(in: .whitespaces))|\(connectionSaved)")
                 modelField
                 limitsSection
                 if let message = form.errorText { InlineBanner(text: message) }
@@ -130,9 +141,6 @@ struct SettingsModelView: View {
                 }
             }
             .padding(14).cardStyle()
-            if let config {
-                ModelVisibilitySection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)")
-            }
         }
         .onDisappear { form.showKey = false }
         .task(id: form.scopeKey) { await loadLimits() }
@@ -155,10 +163,9 @@ struct SettingsModelView: View {
         }
     }
 
-    /// The saved shortlist for the saved connection, else a list fetched with 获取模型列表, else nil (the picker fetches it).
+    /// The 显示的模型 choice, else a list fetched with 获取模型列表, else nil (the picker fetches it).
     private var pickerModels: [String]? {
-        let current = config.map { $0.providerID == form.provider && $0.endpoint == form.endpoint.trimmingCharacters(in: .whitespaces) } ?? false
-        if current, let shortlist = workspace.state?.modelVisibility.models { return shortlist }
+        if let visible { return visible }
         return form.models.isEmpty ? nil : form.models
     }
     private var pickerSource: ModelSource? {
@@ -172,6 +179,12 @@ struct SettingsModelView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("默认模型").font(.footnote.weight(.semibold))
             ModelPickerField(label: "默认模型", value: form.model, models: pickerModels, source: pickerSource, isOpen: $pickerOpen, onChange: { form.model = $0 })
+        }
+    }
+
+    private var listField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("模型列表").font(.footnote.weight(.semibold))
             HStack(spacing: 12) {
                 Button { Task { await loadModels() } } label: {
                     HStack(spacing: 6) {
@@ -282,8 +295,11 @@ struct SettingsModelView: View {
             let ready = form.limitsScope == form.scopeKey
             let context = ready ? try ModelLimits.parse(form.contextText, field: .contextWindow) : LimitSetting.preserve
             let output = ready ? try ModelLimits.parse(form.outputText, field: .maxOutputTokens) : LimitSetting.preserve
+            let wasSaved = connectionSaved, draft = visible
             try await workspace.saveModel(provider: form.provider, model: form.model.trimmingCharacters(in: .whitespaces), endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey,
                                           contextWindow: context, maxOutputTokens: output)
+            // A new connection's 显示的模型 were a draft until the connection existed.
+            if !wasSaved, let draft { try await workspace.saveModelVisibility(models: draft) }
             form.showKey = false; form.saved = true
         } catch { form.errorText = coreMessage(error) }
     }

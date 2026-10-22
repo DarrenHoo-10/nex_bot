@@ -66,7 +66,9 @@ struct Composer: View {
     }
 
     private var textInput: some View {
-        ComposerTextEditor(text: $conversation.draft, focused: $focused) { key in
+        ComposerTextEditor(text: $conversation.draft, focused: $focused, onPasteImage: { data, name in
+            Task { await conversation.addAttachment(name: name, data: data) }
+        }) { key in
             switch key {
             case 125: return moveMention(1) == .handled
             case 126: return moveMention(-1) == .handled

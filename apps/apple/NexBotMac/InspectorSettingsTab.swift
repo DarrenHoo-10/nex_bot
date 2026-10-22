@@ -9,6 +9,7 @@ struct InspectorSettingsTab: View {
     @State private var exported = false
     @State private var confirmArchive = false
     @State private var error: String?
+    @State private var modelOpen = false
 
     private var bot: Bot? { workspace.bot(botID) }
 
@@ -24,7 +25,15 @@ struct InspectorSettingsTab: View {
             group("能力") {
                 VStack(spacing: 12) {
                     row(symbol: "bolt", title: "驱动模型") {
-                        pillButton(bot?.selectedModel ?? workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型") { ui.openSettings(.model) }
+                        // Picks the assistant's model in place, like the composer's ＋ › 模型; 设置 only when nothing is connected.
+                        pillButton(bot?.selectedModel ?? workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型") {
+                            if workspace.state?.config == nil { ui.openSettings(.model) } else { modelOpen = true }
+                        }
+                        .popover(isPresented: $modelOpen, arrowEdge: .leading) {
+                            ModelPickerPopover(label: "选择聊天模型", value: bot?.selectedModel ?? "", emptyLabel: "默认 · \(workspace.state?.config?.defaultModel ?? "")",
+                                               models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(),
+                                               onSelect: setModel, close: { modelOpen = false })
+                        }
                     }
                     row(symbol: "shield", title: "工具权限") {
                         pillButton(PolicyCatalog.summary(count: bot?.policyTools.count ?? 0)) { AgentUI.shared.editPolicy(botID) }
@@ -63,6 +72,14 @@ struct InspectorSettingsTab: View {
             Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("确认", role: .destructive) { archive() }
         } message: { Text("保留消息与记忆，停用例行任务。") }
+        #if DEBUG
+        // `im model` on `$NEXBOT_DEBUG_COMMAND_FILE.b` opens the 驱动模型 picker; `im close` closes it.
+        .task { MBDebug.start() }
+        .onReceive(NotificationCenter.default.publisher(for: .mbDebug)) { note in
+            guard let cmd = note.mbCommand, cmd.prefix == "im" else { return }
+            if cmd.verb == "model" { modelOpen = true } else if cmd.verb == "close" { modelOpen = false }
+        }
+        #endif
     }
 
     private func group<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {
@@ -78,6 +95,16 @@ struct InspectorSettingsTab: View {
             Text(title).font(.system(size: 12))
             Spacer(minLength: 6)
             trailing()
+        }
+    }
+
+    private func setModel(_ next: String) {
+        modelOpen = false
+        guard next != (bot?.selectedModel ?? "") else { return }
+        error = nil
+        Task {
+            do { try await workspace.setAgentModel(botID: botID, model: next) }
+            catch { self.error = message(of: error) }
         }
     }
 

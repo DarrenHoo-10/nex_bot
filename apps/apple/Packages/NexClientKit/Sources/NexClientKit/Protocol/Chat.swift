@@ -52,6 +52,8 @@ public struct PendingAttachment: Sendable, Hashable, Identifiable {
     public var name: String
     public var size: Int
     public var state: State
+    /// The bytes of a picture, so the composer can show a thumbnail before sending.
+    public var preview: Data? = nil
     /// The uploaded file once ``state`` is `.ready`.
     public var attachment: ChatAttachment? { if case .ready(let a) = state { a } else { nil } }
     public var isUploading: Bool { state == .uploading }
