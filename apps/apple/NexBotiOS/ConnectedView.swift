@@ -7,6 +7,9 @@ struct ConnectedView: View {
     let workspace: WorkspaceStore
     @State private var nav = Navigation()
     @State private var preferences = ContactPreferences()
+    @State private var update: ClientUpdateOffer?
+    @AppStorage("nexbot.skippedUpdate") private var skipped = ""
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         ContactsView(model: model, workspace: workspace, nav: nav)
@@ -16,6 +19,15 @@ struct ConnectedView: View {
                 AccountMenu(model: model, nav: nav)
                     .environment(nav)
                     .environment(preferences)
+            }
+            // iOS cannot install itself: tell the person once per version and link the installer.
+            .task {
+                let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+                if let offer = try? await workspace.client.clientUpdate(platform: "ios", current: current), offer.version != skipped { update = offer }
+            }
+            .alert("新版本 \(update?.version ?? "") 可用", isPresented: Binding(get: { update != nil }, set: { if !$0 { update = nil } })) {
+                Button("下载") { if let url = update?.url { openURL(url) }; update = nil }
+                Button("稍后", role: .cancel) { skipped = update?.version ?? ""; update = nil }
             }
         #if DEBUG
             .task { await DebugHooks.runCommands(model: model, workspace: workspace, nav: nav) }
