@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { networkInterfaces } from "node:os";
 import os from "node:os";
@@ -183,8 +184,17 @@ export async function createPersonalApp(options: AppOptions) {
     const bootstrap = loopback ? clients.authenticate(cookieValue("nex-bootstrap")) : undefined;
     if (url.pathname.startsWith("/api/auth/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid login request" }); return; }
     // The OSS mirror, when configured, replaces GitHub links: installers download reliably in China.
-    if (url.pathname === "/api/client/downloads" && request.method === "GET") { json(response, 200, { ...await downloads.current(), ...await updates.downloads() }); return; }
-    if (url.pathname === "/api/client/update" && request.method === "GET") { json(response, 200, await updates.check(url.searchParams.get("platform") ?? "", url.searchParams.get("version") ?? "")); return; }
+    if (url.pathname === "/api/client/downloads" && request.method === "GET") { json(response, 200, { ...await downloads.current(), ...await updates.downloads(requestOrigin) }); return; }
+    if (url.pathname === "/api/client/update" && request.method === "GET") { json(response, 200, await updates.check(url.searchParams.get("platform") ?? "", url.searchParams.get("version") ?? "", requestOrigin)); return; }
+    const installer = /^\/api\/client\/installer\/(android|ios)\/([A-Za-z0-9._-]+)$/.exec(url.pathname);
+    if (installer && request.method === "GET") {
+      let found: Awaited<ReturnType<typeof updates.installer>>;
+      try { found = await updates.installer(installer[1], installer[2]); } catch { json(response, 502, { error: "安装包暂时无法下载" }); return; }
+      if (!found || !found.response.body) { json(response, 404, { error: "安装包不存在" }); return; }
+      response.writeHead(200, { "Content-Type": found.type, "Content-Length": found.entry.size, "Content-Disposition": `attachment; filename="${found.entry.file}"`, "Cache-Control": "no-store" });
+      Readable.fromWeb(found.response.body as import("node:stream/web").ReadableStream).on("error", () => response.destroy()).pipe(response);
+      return;
+    }
     if (url.pathname === "/api/client/identity" && request.method === "GET") { json(response, 200, identity ? { ...identity.publicConfiguration(), version: 1, coreId: clients.coreId(), loginMethods: ["password"] } : { version: 1, coreId: clients.coreId(), mode: "local-owner", loginMethods: ["one-time-code"] }); return; }
     if (identity && url.pathname === "/api/auth/status" && request.method === "GET") { json(response, 200, await identity.status(token, bootstrap)); return; }
     if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {

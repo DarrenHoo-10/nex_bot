@@ -15,6 +15,11 @@ windows|android|mac|ios&version=x.y.z` needs no login and answers with the
 newer version, size, SHA-256 and a one-hour signed OSS URL. The public
 `/api/client/downloads` prefers the mirror over GitHub links.
 
+OSS refuses to serve `.apk` and `.ipa` from its default domain
+(`ApkDownloadForbidden`), so Android and iOS get a Core URL instead:
+`/api/client/installer/<android|ios>/<file>` streams the current manifest's
+file from OSS and returns 404 for any other file name.
+
 The packaged Windows portable (`electron/nex-client-update.mjs`) checks after
 sign-in and every six hours, downloads in the background and discards a file
 whose size or digest differs. Only a verified file shows "新版本 x 已就绪 /
