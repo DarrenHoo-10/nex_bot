@@ -82,6 +82,8 @@ struct AgentSettingsTab: View {
         .debugCommand { command, _ in
             switch command {
             case "policy": showPolicy = true
+            case "agentmodel": showModels = true
+            case "closemodels": showModels = false
             case "archive": confirmArchive = true
             case "archiveconfirm": Task { await archive() }
             default: break

@@ -44,6 +44,9 @@ struct ComposerView: View {
     private var chatModel: String { bot?.selectedModel ?? "" }
     private var mode: ApprovalMode { bot?.approvalMode ?? .standard }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
+    private var showStop: Bool {
+        !tasks.isEmpty && conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && conversation.attachments.isEmpty
+    }
     private var allCancelling: Bool { !tasks.isEmpty && tasks.allSatisfy { $0.status == "cancelling" } }
     private var errorText: String? { conversation.sendError ?? actionError }
 
@@ -84,17 +87,29 @@ struct ComposerView: View {
                     .disabled(conversation.isSending || conversation.isUploadingAttachments)
                     .accessibilityLabel("添加文件或指令")
                     Spacer(minLength: 0)
-                    Button { Task { await send() } } label: {
-                        Group {
-                            if conversation.isSending { ProgressView() }
-                            else { Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold)) }
+                    // While the agent works and nothing is typed, the send key stops it (web composer).
+                    if showStop {
+                        Button { Task { await stopAll() } } label: {
+                            Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
+                                .frame(width: 34, height: 34)
+                                .foregroundStyle(Theme.primaryForeground)
+                                .background(Theme.primary, in: Circle())
                         }
-                        .frame(width: 34, height: 34)
-                        .foregroundStyle(canSend ? Theme.primaryForeground : Theme.muted)
-                        .background(canSend ? Theme.primary : Theme.secondary, in: Circle())
+                        .disabled(stopping || allCancelling || workspace.connection == .resyncing)
+                        .accessibilityLabel("停止任务")
+                    } else {
+                        Button { Task { await send() } } label: {
+                            Group {
+                                if conversation.isSending { ProgressView() }
+                                else { Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold)) }
+                            }
+                            .frame(width: 34, height: 34)
+                            .foregroundStyle(canSend ? Theme.primaryForeground : Theme.muted)
+                            .background(canSend ? Theme.primary : Theme.secondary, in: Circle())
+                        }
+                        .disabled(!canSend)
+                        .accessibilityLabel("发送消息")
                     }
-                    .disabled(!canSend)
-                    .accessibilityLabel("发送消息")
                 }
             }
             .padding(.horizontal, 6).padding(.bottom, 6)
@@ -145,12 +160,6 @@ struct ComposerView: View {
             Text(tasks.contains { $0.status == "cancelling" } ? "正在停止…" : "Agent 正在工作 · \(tasks[0].phrase)")
                 .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
             Spacer()
-            Button { Task { await stopAll() } } label: {
-                Label("停止任务", systemImage: "stop").font(.caption).foregroundStyle(Theme.foreground)
-            }
-            .buttonStyle(.plain)
-            .disabled(stopping || allCancelling || workspace.connection == .resyncing)
-            .accessibilityLabel("停止任务")
         }
         .padding(.horizontal, 6)
     }
@@ -221,6 +230,7 @@ struct ComposerView: View {
             heading("添加")
             menuRow("paperclip", "文件", "file", disabled: conversation.isUploadingAttachments) { menu = nil; showFiles = true }
             menuRow("photo", "照片", "photo", disabled: conversation.isUploadingAttachments) { menu = nil; showPhotos = true }
+            pasteRow
             heading("指令")
             menuRow(mode == .full ? "exclamationmark.shield" : "checkmark.shield", "权限", "permission", value: mode.title, disabled: bot == nil) { menu = .permissions }
             menuRow("slider.horizontal.3", "模型", "model", value: chatModel.isEmpty ? (defaultModel.isEmpty ? "未连接模型" : defaultModel) : chatModel, disabled: config == nil || bot == nil) { menu = nil; showModels = true }
@@ -229,6 +239,46 @@ struct ComposerView: View {
         .padding(.bottom, 4)
         .cardStyle(radius: 16)
         .accessibilityElement(children: .contain).accessibilityLabel("添加与指令")
+    }
+
+    /// 粘贴图片: the system paste button reads a copied picture without the "允许粘贴" prompt.
+    private var pasteRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "doc.on.clipboard").font(.system(size: 16)).frame(width: 22)
+            Text("粘贴图片").font(.subheadline.weight(.semibold))
+            Spacer(minLength: 8)
+            PasteButton(supportedContentTypes: [.png, .jpeg, .heic, .gif, .webP, .image]) { providers in
+                Task { @MainActor in menu = nil; await addPasted(providers) }
+            }
+            .labelStyle(.titleOnly).buttonBorderShape(.capsule).controlSize(.small)
+            .disabled(conversation.isUploadingAttachments)
+        }
+        .foregroundStyle(Theme.foreground)
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .accessibilityElement(children: .contain).accessibilityLabel("粘贴图片")
+    }
+
+    private func addPasted(_ providers: [NSItemProvider]) async {
+        actionError = nil
+        for (index, provider) in providers.enumerated() {
+            guard let picture = await Self.pastedPicture(provider) else { actionError = "剪贴板里没有可用的图片"; continue }
+            await conversation.addAttachment(name: "粘贴的图片-\(Int(Date().timeIntervalSince1970))-\(index + 1).\(picture.ext)", data: picture.data)
+        }
+    }
+
+    /// PNG and JPEG are kept as they are; other formats (HEIC, WebP, …) are converted to PNG.
+    static func pastedPicture(_ provider: NSItemProvider) async -> (data: Data, ext: String)? {
+        for (type, ext) in [(UTType.png, "png"), (UTType.jpeg, "jpg")] where provider.hasItemConformingToTypeIdentifier(type.identifier) {
+            if let data = await load(provider, type) { return (data, ext) }
+        }
+        guard let data = await load(provider, .image), let png = UIImage(data: data)?.pngData() else { return nil }
+        return (png, "png")
+    }
+
+    private static func load(_ provider: NSItemProvider, _ type: UTType) async -> Data? {
+        await withCheckedContinuation { done in
+            _ = provider.loadDataRepresentation(for: type) { data, _ in done.resume(returning: data) }
+        }
     }
 
     private var permissionMenu: some View {
@@ -263,6 +313,10 @@ struct ComposerView: View {
                     HStack(spacing: 6) {
                         if file.isUploading { ProgressView().controlSize(.small) }
                         else if file.errorMessage != nil { Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.danger) }
+                        else if let preview = file.preview, let image = UIImage(data: preview) {
+                            Image(uiImage: image).resizable().scaledToFill().frame(width: 32, height: 32)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous)).accessibilityHidden(true)
+                        }
                         else { Image(systemName: attachmentIcon(file.name)).foregroundStyle(Theme.muted) }
                         VStack(alignment: .leading, spacing: 0) {
                             Text(file.name).font(.footnote.weight(.medium)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)

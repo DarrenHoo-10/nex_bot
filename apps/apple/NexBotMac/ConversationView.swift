@@ -36,7 +36,6 @@ struct ConversationView: View {
     private var isActive: Bool { activeState == .key && scenePhase == .active }
     private var pendingApprovals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
-    private var connected: Bool { workspace.connection == .connected }
 
     /// `version:updated_at` of every memory this agent can see; a change makes the 已更新记忆 pill appear.
     private var memorySignatures: [String: String] {
@@ -182,27 +181,14 @@ struct ConversationView: View {
     }
 
     private func statusLine(_ conv: ConversationStore) -> some View {
+        // Text only, as on the web: the composer's send key turns into the stop key.
         let stopping = tasks.contains { $0.status == "cancelling" }
-        let allStopping = tasks.allSatisfy { $0.status == "cancelling" }
         return HStack(spacing: 8) {
             Circle().fill(tasks.first?.status == "awaiting_approval" ? Theme.approval : Theme.success).frame(width: 6, height: 6)
             Text(stopping ? "正在停止…" : "Agent 正在工作 · \(ToolLabels.taskPhrase(tasks.first))").font(.system(size: 11)).foregroundStyle(Theme.muted)
             Spacer()
-            Button { stopAll() } label: {
-                HStack(spacing: 5) {
-                    RoundedRectangle(cornerRadius: 2).strokeBorder(Theme.foreground, lineWidth: 1.2).frame(width: 9, height: 9)
-                    Text("停止任务").font(.system(size: 11))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).disabled(allStopping || !connected).help("停止当前任务 (⌘.)").accessibilityLabel("停止任务")
         }
         .padding(.horizontal, 4)
-    }
-
-    private func stopAll() {
-        let ids = tasks.filter { $0.status != "cancelling" }.map(\.id)
-        Task { for id in ids { try? await workspace.cancelTask(id) } }
     }
 }
 
