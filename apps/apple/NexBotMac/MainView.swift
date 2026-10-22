@@ -16,6 +16,7 @@ struct MainView: View {
                 .frame(width: 260)
             Hairline(vertical: true)
             VStack(spacing: 0) {
+                UpdateBanner()
                 NoticeBanner(workspace: workspace)
                 Group {
                     if let id = workspace.selectedBotID, workspace.bot(id) != nil {
@@ -41,6 +42,8 @@ struct MainView: View {
         #if DEBUG
         .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif
+        .onAppear { AppUpdater.shared.start { workspace.client } }
+        .onDisappear { AppUpdater.shared.stop() }
         .onChange(of: workspace.bots.first?.id, initial: true) {
             if workspace.selectedBotID == nil, let first = workspace.bots.first { workspace.select(first.id) }
         }

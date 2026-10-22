@@ -56,19 +56,25 @@ function MarkdownPre({ node, children, ...props }: ComponentProps<'pre'> & Extra
   return <pre {...props}>{children}</pre>;
 }
 const FilePreviewContext = createContext<((path: string) => void) | undefined>(undefined);
+const imageName = /\.(?:png|jpe?g|webp|gif)$/i;
+/** Images are always served by Core; clients never receive storage URLs. */
+function AttachmentImage({ id, alt }: { id: string; alt: string }) {
+  return <img className="generated-chat-image" src={`/api/attachments/${id}?preview=1`} alt={alt} loading="lazy"/>;
+}
 function MarkdownImage({ src, alt }: ComponentProps<'img'> & ExtraProps) {
-  return typeof src === "string" && /^\/api\/attachments\/[a-zA-Z0-9-]+$/.test(src)
-    ? <img className="generated-chat-image" src={`${src}?preview=1`} alt={alt ?? "生成图片"} loading="lazy"/>
-    : <span>{alt ?? "图片"}</span>;
+  const id = typeof src === "string" ? /^\/api\/attachments\/([a-zA-Z0-9-]+)$/.exec(src)?.[1] : undefined;
+  return id ? <AttachmentImage id={id} alt={alt ?? "生成图片"}/> : <span>{alt ?? "图片"}</span>;
 }
 function MarkdownLink({ href, children }: ComponentProps<'a'> & ExtraProps) {
-  return <a href={href} target={href?.startsWith("http") ? "_blank" : undefined} rel="noopener noreferrer" className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => {
+  const attachment = href ? /^\/api\/attachments\/([a-zA-Z0-9-]+)$/.exec(href)?.[1] : undefined, label = String(children ?? "");
+  const image = attachment && imageName.test(label) ? <AttachmentImage id={attachment} alt={label}/> : undefined;
+  return <>{image}<a href={href} target={href?.startsWith("http") ? "_blank" : undefined} rel="noopener noreferrer" className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => {
     if (href?.startsWith("/api/attachments/")) {
       if (desktop?.downloadAttachment) { e.preventDefault(); void desktop.downloadAttachment(href, e.currentTarget.textContent || "附件").catch(() => window.dispatchEvent(new CustomEvent("nex-download-error"))); }
       return;
     }
     if (href && /^https?:\/\//.test(href) && desktop?.openExternal) { e.preventDefault(); void desktop.openExternal(href); }
-  }}>{children}</a>;
+  }}>{children}</a></>;
 }
 function MarkdownCode({ className, children }: ComponentProps<'code'> & ExtraProps) {
   const onPreviewFile = useContext(FilePreviewContext), raw = String(children ?? "").trim();

@@ -5,6 +5,8 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import java.io.IOException
 
 class WorkspaceTransportTest {
@@ -14,6 +16,11 @@ class WorkspaceTransportTest {
         }
         assertFailsWith<IllegalArgumentException> { WorkspaceTransport.validate("/api/state", "DELETE") }
         WorkspaceTransport.validate("/api/agents/messages?bot=a%2Fb", "GET")
+    }
+    @Test fun `only core image previews are served to the page`() {
+        assertTrue(WorkspaceTransport.isAttachmentPreview("/api/attachments/0a1b-2c", "preview=1"))
+        assertFalse(WorkspaceTransport.isAttachmentPreview("/api/attachments/0a1b-2c", null))
+        assertFalse(WorkspaceTransport.isAttachmentPreview("/api/attachments/0a1b-2c/link", "preview=1"))
     }
     @Test fun `requests use current native token and preserve server error statuses`() {
         MockWebServer().use { server ->

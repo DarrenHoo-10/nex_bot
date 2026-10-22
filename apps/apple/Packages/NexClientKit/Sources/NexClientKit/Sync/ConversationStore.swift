@@ -137,6 +137,11 @@ public final class ConversationStore {
         try await workspace.downloadAttachment(id: link.id)
     }
 
+    /// Image bytes of a sent or generated picture, served by Core (clients never receive storage URLs).
+    public func image(_ link: AttachmentLink) async throws -> Data {
+        try await workspace.downloadAttachment(id: link.id).data
+    }
+
     /// Cancels the bot's unfinished task.
     public func stop() async {
         guard let task = activeTask else { return }

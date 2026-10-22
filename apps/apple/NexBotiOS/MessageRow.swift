@@ -122,6 +122,8 @@ struct MessageRow: View {
             let split = parsed
             if !split.body.isEmpty { bodyText(split.body) }
             if !split.links.isEmpty { AttachmentCards(links: split.links, workspace: workspace, trailing: message.isFromUser) }
+            let pictures = message.isFromUser ? [] : AttachmentLink.embeddedImages(message.content)
+            if !pictures.isEmpty { AttachmentCards(links: pictures, workspace: workspace) }
             if let date = message.createdAt {
                 Text(TimeFormat.formatShortTime(date)).font(.system(size: 10)).foregroundStyle(Theme.muted)
                     .accessibilityLabel(TimeFormat.formatTime(date))

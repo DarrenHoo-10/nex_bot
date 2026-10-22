@@ -474,7 +474,10 @@ private struct MessageRow: View {
             VStack(alignment: .trailing, spacing: 6) {
                 VStack(alignment: .leading, spacing: 10) {
                     if !parsed.body.isEmpty { ChatMarkdown(source: parsed.body, hug: true) }
-                    ForEach(parsed.links) { AttachmentCard(link: $0, conversation: workspace.conversation(for: botID)) }
+                    ForEach(parsed.links) { link in
+                        if link.isImage { AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID)) }
+                        else { AttachmentCard(link: link, conversation: workspace.conversation(for: botID)) }
+                    }
                 }
                 .padding(.horizontal, 18).padding(.vertical, 13)
                 .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -503,6 +506,7 @@ private struct MessageRow: View {
                         Text(message.content).font(.system(size: 14)).foregroundStyle(Theme.danger).textSelection(.enabled)
                     } else {
                         ChatMarkdown(source: message.content)
+                        ForEach(AttachmentLink.embeddedImages(message.content)) { AttachmentThumbnail(link: $0, conversation: workspace.conversation(for: botID)) }
                     }
                 }
                 meta

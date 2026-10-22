@@ -159,3 +159,56 @@ struct AttachmentCard: View {
     }
     #endif
 }
+
+/// A sent or generated picture, loaded through Core.
+/// Falls back to the file card when the bytes are not an image.
+struct AttachmentThumbnail: View {
+    let link: AttachmentLink
+    let conversation: ConversationStore
+    @State private var image: NSImage?
+    @State private var data: Data?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                // Same bounds as the web workspace; clicking opens the original in Preview.
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: min(640, image.size.width), maxHeight: 640, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .onTapGesture(perform: openOriginal)
+                    .contextMenu { Button("打开原图") { openOriginal() }; Button("存储图片…") { save() } }
+                    .help(link.name).accessibilityLabel(link.name).accessibilityAddTraits(.isButton)
+            } else if failed {
+                AttachmentCard(link: link, conversation: conversation)
+            } else {
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.card)
+                    .frame(width: 240, height: 160)
+                    .overlay(ProgressView().controlSize(.small))
+            }
+        }
+        .task(id: link.id) {
+            do {
+                let bytes = try await conversation.image(link)
+                data = bytes; image = NSImage(data: bytes); failed = image == nil
+            } catch { failed = true }
+        }
+    }
+
+    private var fileName: String { link.name.contains(".") ? link.name : link.name + ".png" }
+    private func save() {
+        guard let data else { return }
+        _ = try? FilePanels.save(data, suggested: fileName)
+    }
+    private func openOriginal() {
+        guard let data else { return }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NexBotImages/\(UUID().uuidString)", isDirectory: true)
+        let safe = fileName.map { "/:\\".contains($0) ? "_" : $0 }.map(String.init).joined()
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(safe)
+            try data.write(to: url, options: .atomic)
+            NSWorkspace.shared.open(url)
+        } catch {}
+    }
+}
