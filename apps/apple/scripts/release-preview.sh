@@ -32,6 +32,8 @@ if [ "${RENDER_ONLY:-false}" = true ]; then exit 0; fi
 MAC_APP=build/native/Build/Products/Release/NexBot.app
 test -x "$MAC_APP/Contents/Resources/Executor/node"
 codesign --verify --deep --strict "$MAC_APP"
+# Start from empty staging folders, so files from an earlier run never end up in these packages.
+rm -rf build/dmg build/ipa
 mkdir -p build/dmg build/ipa/Payload
 ditto "$MAC_APP" build/dmg/NexBot.app
 ln -s /Applications build/dmg/Applications
