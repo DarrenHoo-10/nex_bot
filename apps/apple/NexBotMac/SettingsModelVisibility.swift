@@ -1,11 +1,16 @@
 import SwiftUI
 import NexClientKit
 
-/// 显示的模型 (web `ModelVisibility.tsx`): choose which models the pickers offer for the saved connection.
+/// 显示的模型 (web `ModelVisibility.tsx`): choose which models the pickers offer.
 /// `selection == nil` shows the whole provider directory; an array is a shortlist. The edit echoes the version it started from.
+/// For a connection still being edited (`draft`), the choice is reported through `onSelection` and saved with the connection.
 struct ModelVisibilitySection: View {
     let workspace: WorkspaceStore
     let active: Bool
+    /// Models fetched with 获取模型列表 in the connection form.
+    var fetched: [String] = []
+    var draft = false
+    var onSelection: ([String]?) -> Void = { _ in }
 
     @State private var catalog: [String] = []
     @State private var selection: [String]?
@@ -23,7 +28,7 @@ struct ModelVisibilitySection: View {
     private var defaultModel: String { workspace.state?.config?.defaultModel ?? "" }
     private var all: [String] {
         var seen = Set<String>()
-        return (catalog + (selection ?? []) + [defaultModel]).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
+        return (catalog + fetched + (selection ?? []) + (draft ? [] : [defaultModel])).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
     }
     private var selected: Set<String> { Set(selection ?? all) }
 
@@ -36,13 +41,12 @@ struct ModelVisibilitySection: View {
                     .padding(.horizontal, 8).padding(.vertical, 4).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 5))
                     .accessibilityIdentifier("visibility-status")
             }
-            .padding(.top, 24)
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     MBButton(title: "全部显示") { edit(nil) }
                     MBButton(title: "清空选择") { edit([]) }
                     MBButton(title: onlySelected ? "查看全部" : "只看已选") { onlySelected.toggle() }
-                    MBButton(title: loading ? "获取中…" : "刷新目录", enabled: !loading) { Task { await load(force: true) } }
+                    if !draft { MBButton(title: loading ? "获取中…" : "刷新目录", enabled: !loading) { Task { await load(force: true) } } }
                     Spacer()
                 }
                 ModelListView(models: onlySelected ? selected.sorted() : all, selected: selected, maxHeight: 300, debugPrefix: "mv", onSelect: toggle)
@@ -59,18 +63,21 @@ struct ModelVisibilitySection: View {
                         .onSubmit(addCustom)
                     MBButton(title: "添加", enabled: !custom.trimmingCharacters(in: .whitespaces).isEmpty, action: addCustom)
                 }
-                HStack(spacing: 14) {
+                if draft {
+                    Text("随模型连接一起保存").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                } else { HStack(spacing: 14) {
                     MBButton(title: busy ? "保存中…" : "保存显示模型", kind: .brand, busy: busy, enabled: dirty && !busy, action: save)
                     if !notice.isEmpty { Text(notice).font(.system(size: 12)).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
-                }
+                } }
                 if !error.isEmpty { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
             }
             .disabled(busy)
             .padding(.top, 16)
         }
-        .onAppear { selection = stored.models; version = stored.version }
-        .onChange(of: stored) { if !dirty { selection = stored.models; version = stored.version } }
-        .task(id: active) { if active, !loaded { loaded = true; await load(force: false) } }
+        .onAppear { if !draft { selection = stored.models; version = stored.version } }
+        .onChange(of: stored) { if !dirty && !draft { selection = stored.models; version = stored.version } }
+        .onChange(of: selection, initial: true) { onSelection(selection) }
+        .task(id: active) { if active, !loaded, !draft { loaded = true; await load(force: false) } }
         #if DEBUG
         .onReceive(NotificationCenter.default.publisher(for: .mbDebug)) { note in
             guard let cmd = note.mbCommand, cmd.prefix == "mv" else { return }

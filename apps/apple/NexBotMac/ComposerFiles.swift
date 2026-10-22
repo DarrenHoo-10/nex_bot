@@ -91,6 +91,10 @@ struct AttachmentChips: View {
         HStack(spacing: 8) {
             if file.isUploading { ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 16, height: 16) }
             else if file.errorMessage != nil { Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(Theme.danger) }
+            else if let preview = file.preview, let image = NSImage(data: preview) {
+                Image(nsImage: image).resizable().scaledToFill().frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous)).accessibilityHidden(true)
+            }
             else { Image(systemName: "doc.text").font(.system(size: 14)).foregroundStyle(Theme.foreground) }
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)

@@ -69,7 +69,8 @@ public final class ConversationStore {
         guard attachments.count < ChatAttachment.maxCount else { sendError = ChatAttachment.tooManyMessage; return }
         guard !data.isEmpty, data.count <= ChatAttachment.maxBytes else { sendError = ChatAttachment.tooLargeMessage; return }
         sendError = nil
-        let local = PendingAttachment(id: UUID().uuidString, name: name, size: data.count, state: .uploading)
+        let picture = AttachmentLink(id: "", name: name).isImage
+        let local = PendingAttachment(id: UUID().uuidString, name: name, size: data.count, state: .uploading, preview: picture ? data : nil)
         attachments.append(local)
         do {
             let uploaded = try await workspace.client.uploadAttachment(botID: botID, name: name, data: data)

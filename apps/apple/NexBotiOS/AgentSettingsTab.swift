@@ -12,6 +12,7 @@ struct AgentSettingsTab: View {
     @State private var copied = false
     @State private var archiving = false
     @State private var errorText: String?
+    @State private var showModels = false
 
     private var bot: Bot? { workspace.bot(botID) }
     private var state: WorkspaceState? { workspace.state }
@@ -24,7 +25,8 @@ struct AgentSettingsTab: View {
 
             group("能力") {
                 row("驱动模型") {
-                    Button { nav.openSettings(.model) } label: {
+                    // Picks the assistant's model in place; 设置 only when nothing is connected.
+                    Button { if state?.config == nil { nav.openSettings(.model) } else { showModels = true } } label: {
                         Text(bot?.selectedModel ?? (state?.config?.defaultModel.isEmpty == false ? state!.config!.defaultModel : "未连接模型"))
                             .font(.caption.weight(.medium)).lineLimit(1)
                             .padding(.horizontal, 10).padding(.vertical, 4)
@@ -65,6 +67,11 @@ struct AgentSettingsTab: View {
             }
         }
         .sheet(isPresented: $showPolicy) { PolicyEditorSheet(workspace: workspace, botID: botID) }
+        .sheet(isPresented: $showModels) {
+            ModelPickerSheet(title: "选择聊天模型", value: bot?.selectedModel ?? "", emptyLabel: "默认 · \(state?.config?.defaultModel ?? "")",
+                             models: state?.modelVisibility.models, source: workspace.savedModelSource(), onSelect: setModel)
+                .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        }
         .alert("归档这个 Agent？", isPresented: $confirmArchive) {
             Button("取消", role: .cancel) {}
             Button("确认", role: .destructive) { Task { await archive() } }
@@ -90,6 +97,11 @@ struct AgentSettingsTab: View {
             try await workspace.archiveAgent(botID: botID)
             nav.path = []
         } catch { errorText = message(of: error) }
+    }
+
+    private func setModel(_ next: String) {
+        guard next != (bot?.selectedModel ?? "") else { return }
+        Task { do { try await workspace.setAgentModel(botID: botID, model: next) } catch { errorText = message(of: error) } }
     }
 
     private func group<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {

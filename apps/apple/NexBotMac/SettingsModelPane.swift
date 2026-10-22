@@ -1,7 +1,8 @@
 import SwiftUI
 import NexClientKit
 
-/// Settings 模型 category: API protocol, endpoint, key, default model picker and limits (web `ModelSettings`), then 显示的模型.
+/// Settings 模型 category (web `ModelSettings`): API protocol, endpoint, key, 获取模型列表, 显示的模型, then the default
+/// model (offered from the visible models) and limits.
 struct SettingsModelPane: View {
     let workspace: WorkspaceStore
     /// The 模型 category is showing (the visible-models editor loads its directory on first show).
@@ -26,6 +27,8 @@ struct SettingsModelPane: View {
     @State private var modelError = ""
     @State private var pickerOpen = false
     @State private var limits = ModelLimitsModel()
+    /// The 显示的模型 choice shown in the form; for a new connection it is saved after the connection.
+    @State private var visible: [String]?
 
     private var config: ModelConfig? { workspace.state?.config }
     private var valid: Bool {
@@ -35,6 +38,11 @@ struct SettingsModelPane: View {
     /// Limit overrides are stored per provider + endpoint + model.
     private var limitScope: String { [provider, endpoint.trimmingCharacters(in: .whitespaces), model.trimmingCharacters(in: .whitespaces)].joined(separator: "\u{1F}") }
     private var busy: Bool { saving || loadingModels }
+    /// The form addresses the saved connection, whose 显示的模型 save on their own.
+    private var connectionSaved: Bool {
+        let slash = CharacterSet(charactersIn: "/")
+        return config.map { $0.providerID == provider && $0.endpoint.trimmingCharacters(in: slash) == endpoint.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: slash) } ?? false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -52,6 +60,9 @@ struct SettingsModelPane: View {
                 MBInput(label: "API 基础地址", text: Binding(get: { endpoint }, set: { endpoint = $0; apiKey = ""; showKey = false; edited(resetList: true) }),
                         placeholder: Self.openAIDefault, mono: false)
                 keyField
+                listField
+                ModelVisibilitySection(workspace: workspace, active: active, fetched: models, draft: !connectionSaved, onSelection: { visible = $0 })
+                    .id("\(provider)|\(endpoint.trimmingCharacters(in: .whitespaces))|\(connectionSaved)")
                 modelField
                 ModelLimitsFields(workspace: workspace, model: limits, provider: provider, endpoint: endpoint.trimmingCharacters(in: .whitespaces),
                                   name: model.trimmingCharacters(in: .whitespaces), onEdit: { dirty = true; saved = false })
@@ -68,11 +79,6 @@ struct SettingsModelPane: View {
                 }
             }
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).padding(.top, 12) }
-            if let config {
-                Hairline().padding(.top, 28)
-                ModelVisibilitySection(workspace: workspace, active: active)
-                    .id("\(config.providerID)|\(config.endpoint)")
-            }
         }
         .onAppear { load() }
         .onChange(of: limitScope, initial: true) { limits.reset(scope: limitScope) }
@@ -133,21 +139,26 @@ struct SettingsModelPane: View {
         }
     }
 
-    /// Models the default-model picker lists: the saved shortlist for the saved connection, else a list fetched with 获取模型列表,
+    /// Models the default-model picker lists: the 显示的模型 choice, else a list fetched with 获取模型列表,
     /// else nil (the picker fetches the catalog itself).
     private var pickerModels: [String]? {
-        let current = config.map { $0.providerID == provider && $0.endpoint == endpoint.trimmingCharacters(in: .whitespaces) } ?? false
-        if current, let shortlist = workspace.state?.modelVisibility.models { return shortlist }
+        if let visible { return visible }
         return models.isEmpty ? nil : models
     }
 
     private var modelField: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("默认模型").font(.system(size: 12, weight: .medium))
+            ModelPickerField(label: "默认模型", value: model, models: pickerModels,
+                             source: endpoint.trimmingCharacters(in: .whitespaces).isEmpty ? nil : workspace.formModelSource(provider: provider, endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: apiKey),
+                             identifier: "模型", debugPrefix: "mp", isOpen: $pickerOpen, onChange: { model = $0; dirty = true; saved = false })
+        }
+    }
+
+    private var listField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("模型列表").font(.system(size: 12, weight: .medium))
             HStack(spacing: 10) {
-                ModelPickerField(label: "默认模型", value: model, models: pickerModels,
-                                 source: endpoint.trimmingCharacters(in: .whitespaces).isEmpty ? nil : workspace.formModelSource(provider: provider, endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: apiKey),
-                                 identifier: "模型", debugPrefix: "mp", isOpen: $pickerOpen, onChange: { model = $0; dirty = true; saved = false })
                 Button(action: loadModels) {
                     Text(loadingModels ? "获取中…" : "获取模型列表").font(.system(size: 12)).foregroundStyle(Theme.foreground)
                         .padding(.horizontal, 14).frame(height: 38)
@@ -157,6 +168,7 @@ struct SettingsModelPane: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(endpoint.trimmingCharacters(in: .whitespaces).isEmpty)
+                Spacer()
             }
             if !modelNotice.isEmpty { Text(modelNotice).font(.system(size: 10)).foregroundStyle(Theme.muted).accessibilityIdentifier("model-notice") }
             if !modelError.isEmpty { Text(modelError).font(.system(size: 10)).foregroundStyle(Theme.danger).textSelection(.enabled).accessibilityIdentifier("model-error") }
@@ -221,9 +233,12 @@ struct SettingsModelPane: View {
         Task {
             defer { saving = false }
             do {
+                let wasSaved = connectionSaved, draft = visible
                 try await workspace.saveModel(provider: provider, model: model.trimmingCharacters(in: .whitespaces),
                                               endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: apiKey,
                                               contextWindow: context, maxOutputTokens: output)
+                // A new connection's 显示的模型 were a draft until the connection existed.
+                if !wasSaved, let draft { try await workspace.saveModelVisibility(models: draft) }
                 apiKey = ""; showKey = false; dirty = false; saved = true
                 // Re-read what Core stored, so the form and its source labels show the saved overrides.
                 await limits.load(workspace: workspace, provider: provider, endpoint: endpoint.trimmingCharacters(in: .whitespaces), model: model.trimmingCharacters(in: .whitespaces))
