@@ -124,7 +124,8 @@ struct InputBody: Encodable {
 }
 struct DeleteMessageImageBody: Encodable { let botId: String; let messageId: String; let attachmentId: String }
 struct TaskBody: Encodable { let taskId: String }
-struct ApprovalBody: Encodable { let id: String; let hash: String; let allow: Bool }
+struct ApprovalBody: Encodable { let id: String; let hash: String; let allow: Bool; let remember: Bool }
+struct RevokeApprovalRuleBody: Encodable { let id: String; let botId: String }
 struct SessionBody: Encodable { let token: String }
 struct StartBody: Encodable { let account: String; let name: String }
 struct RevokeBody: Encodable { let sessionId: String }
@@ -167,8 +168,11 @@ extension CoreClient {
     public func refreshSession() async throws -> LoginSession { try await post("/api/auth/refresh", body: EmptyBody()) }
     public func markRead(bot: String, seq: Int) async throws { try await post("/api/agents/read", body: BotSeq(botId: bot, seq: seq)) }
     public func cancel(task: String) async throws { try await post("/api/cancel", body: TaskBody(taskId: task)) }
-    public func decide(approval id: String, hash: String, allow: Bool) async throws {
-        try await post("/api/approvals", body: ApprovalBody(id: id, hash: hash, allow: allow))
+    public func decide(approval id: String, hash: String, allow: Bool, remember: Bool = false) async throws {
+        try await post("/api/approvals", body: ApprovalBody(id: id, hash: hash, allow: allow, remember: remember))
+    }
+    public func revokeApprovalRule(id: String, botID: String) async throws {
+        try await post("/api/approvals/revoke", body: RevokeApprovalRuleBody(id: id, botId: botID))
     }
     public func clientSessions() async throws -> ClientSessionList { try await get("/api/clients") }
     public func authStatus() async throws -> AccountStatus { try await get("/api/auth/status") }

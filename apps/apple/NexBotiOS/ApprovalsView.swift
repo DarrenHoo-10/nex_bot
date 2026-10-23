@@ -8,14 +8,17 @@ struct ApprovalsView: View {
 
     var body: some View {
         List(workspace.approvals) { approval in
-            ApprovalCard(approval: approval, botName: workspace.bot(approval.botID)?.name ?? "") { allow in await decide(approval, allow) }
+            ApprovalCard(approval: approval, botName: workspace.bot(approval.botID)?.name ?? "") { allow, remember in await decide(approval, allow, remember: remember) }
                 .listRowBackground(Color.clear).listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 .swipeActions(edge: .trailing) {
                     Button("拒绝", role: .destructive) { Task { await decide(approval, false) } }
                 }
                 .swipeActions(edge: .leading) {
-                    Button("批准") { Task { await decide(approval, true) } }.tint(Theme.success)
+                    Button("允许一次") { Task { await decide(approval, true) } }.tint(Theme.success)
+                    if approval.rememberLabel != nil {
+                        Button("始终允许") { Task { await decide(approval, true, remember: true) } }.tint(Theme.brand)
+                    }
                 }
         }
         .listStyle(.plain)
@@ -34,8 +37,8 @@ struct ApprovalsView: View {
         .errorAlert($errorText)
     }
 
-    private func decide(_ approval: Approval, _ allow: Bool) async {
-        do { try await workspace.decide(approval, allow: allow) }
+    private func decide(_ approval: Approval, _ allow: Bool, remember: Bool = false) async {
+        do { try await workspace.decide(approval, allow: allow, remember: remember) }
         catch { errorText = (error as? CoreError)?.message ?? error.localizedDescription }
     }
 }

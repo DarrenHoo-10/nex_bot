@@ -25,7 +25,7 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("\(botName) 需要你的批准").font(.system(size: 13, weight: .semibold))
-            Text(approval.title).font(.system(size: 11)).foregroundStyle(Theme.muted)
+            Text(approval.rememberLabel ?? approval.title).font(.system(size: 11)).foregroundStyle(Theme.muted)
             Button { showArguments.toggle() } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).rotationEffect(.degrees(showArguments ? 90 : 0))
@@ -45,9 +45,16 @@ struct ApprovalCard: View {
             }
             HStack(spacing: 8) {
                 Button { decide(true) } label: {
-                    Text("批准").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.primaryForeground)
+                    Text("允许一次").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.primaryForeground)
                         .padding(.horizontal, 14).frame(height: 28)
                         .background(Theme.primary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                if approval.rememberLabel != nil {
+                    Button { decide(true, remember: true) } label: {
+                        Text("始终允许").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.foreground)
+                            .padding(.horizontal, 12).frame(height: 28)
+                            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
                 }
                 Button { decide(false) } label: {
                     Text("拒绝").font(.system(size: 11)).foregroundStyle(Theme.foreground)
@@ -68,10 +75,10 @@ struct ApprovalCard: View {
         .accessibilityIdentifier("approval-card")
     }
 
-    private func decide(_ allow: Bool) {
+    private func decide(_ allow: Bool, remember: Bool = false) {
         busy = true; error = nil
         Task {
-            do { try await workspace.decide(approval, allow: allow) }
+            do { try await workspace.decide(approval, allow: allow, remember: remember) }
             catch { self.error = message(of: error) }
             busy = false
         }

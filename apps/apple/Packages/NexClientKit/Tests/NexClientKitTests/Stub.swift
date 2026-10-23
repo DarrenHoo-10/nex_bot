@@ -47,9 +47,10 @@ final class StubCore: @unchecked Sendable {
 }
 
 final class StubProtocol: URLProtocol, @unchecked Sendable {
+    private var delivery: DispatchWorkItem?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func stopLoading() {}
+    override func stopLoading() { delivery?.cancel() }
     override func startLoading() {
         let url = request.url!
         var body = request.httpBody ?? Data()
@@ -67,7 +68,11 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didLoad: response.body)
             client?.urlProtocolDidFinishLoading(self)
         }
-        if response.delay > 0 { DispatchQueue.global().asyncAfter(deadline: .now() + response.delay, execute: deliver) } else { deliver() }
+        if response.delay > 0 {
+            let work = DispatchWorkItem(block: deliver)
+            delivery = work
+            DispatchQueue.global().asyncAfter(deadline: .now() + response.delay, execute: work)
+        } else { deliver() }
     }
 }
 

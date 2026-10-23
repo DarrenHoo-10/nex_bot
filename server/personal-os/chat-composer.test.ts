@@ -12,22 +12,29 @@ import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 async function until(check: () => boolean) { const end = Date.now()+25000; while (!check()) { if (Date.now()>end) throw new Error("Fixture timeout"); await new Promise((resolve) => setTimeout(resolve,25)); } }
-async function fixture() {
+async function fixture(legacyDefault = false) {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-composer-")), key = randomBytes(32), token = "synthetic-owner";
   cleanups.push(async () => { if (path.dirname(root).toLowerCase() !== os.tmpdir().toLowerCase() || !path.basename(root).startsWith("nex-composer-")) throw new Error("Unsafe cleanup"); rmSync(root,{recursive:true,force:true}); });
   const model = await startFakeModel(); cleanups.push(() => model.close());
-  const app = await createPersonalApp({ dir: root,key,token,identity:false,memoryRuntime:false,hostDevice:false }); let current = app; cleanups.push(() => current.close());
+  let app = await createPersonalApp({ dir: root,key,token,identity:false,memoryRuntime:false,hostDevice:false }); let current = app; cleanups.push(() => current.close());
   const restart = async () => { await current.close(); current = await createPersonalApp({dir:root,key,token,identity:false,memoryRuntime:false,hostDevice:false}); return current; };
   app.store.saveConfig({ provider:"openai",endpoint:model.origin+"/v1",model:"fixture",apiKey:"synthetic" });
   const bot = app.store.createBot("Fixture"), peer = app.store.createBot("Peer");
+  if (legacyDefault) {
+    const tools = ["memory.search", "memory.read", "memory.write", "agent.delegate", "device.read", "device.list", "device.exec", "routine.list", "routine.save", "routine.toggle", "routine.run", "memory.reflect", "memory.delete", "memory.forget", "agent.directory", "device.inventory", "device.info", "device.computer", "skill.list", "skill.read"];
+    app.store.run("UPDATE bot_policies SET policy_json=?,version=3 WHERE bot_id=?", JSON.stringify({ tools }), bot);
+    expect(() => evaluateTool(app.store, bot, { action: "attachment.read", attachmentId: "fixture" })).toThrow("无权");
+    app.store.run("DELETE FROM schema_migrations WHERE version=22");
+    app = await restart();
+  }
   const api = async (route:string,data?:unknown,auth=token) => {
     const response = await fetch(app.origin+"/api/"+route,{headers:{Authorization:`Bearer ${auth}`,"Content-Type":"application/json"},...(data === undefined ? {} : {method:"POST",body:JSON.stringify(data)})});
     return { status:response.status, body:await response.json() as Record<string,string> };
   };
   return {app,model,bot,peer,api,root,key,token,restart};
 }
-it("uploads, sends, reads through a real worker and downloads a scoped attachment", async () => {
-  const f = await fixture();
+it.each([false, true])("uploads, sends, reads through a real worker and downloads a scoped attachment (legacy=%s)", async (legacyDefault) => {
+  const f = await fixture(legacyDefault);
   const file = (await f.api("attachments",{botId:f.bot,name:"报告.md",data:Buffer.from("SYNTHETIC_REPORT_CONTENT").toString("base64")})).body;
   expect(f.app.store.get("SELECT ciphertext FROM chat_attachments")?.ciphertext).not.toContain("SYNTHETIC_REPORT_CONTENT");
   const files = new ChatFiles(f.app.store);
@@ -48,6 +55,16 @@ it("uploads, sends, reads through a real worker and downloads a scoped attachmen
   f.app.store.run("UPDATE agent_messages SET content='[redacted]' WHERE role='user'");
   await expect(files.read(f.bot,file.id)).rejects.toThrow("不可访问");
 },60000);
+
+it("keeps an explicit user restriction when a default Agent restarts", async () => {
+  const f = await fixture();
+  const version = f.app.store.get("SELECT version FROM bot_policies WHERE bot_id=?", f.bot)!.version;
+  expect((await f.api("bots/policy", { id: f.bot, version, tools: ["agent.directory"] })).status).toBe(200);
+  const app = await f.restart();
+  expect(JSON.parse(String(app.agents.policyView(f.bot)!.policy_json)).inheritDefaults).toBeUndefined();
+  expect(() => evaluateTool(app.store, f.bot, { action: "attachment.read", attachmentId: "fixture" })).toThrow("无权");
+  expect(evaluateTool(app.store, f.bot, { action: "agent.directory" }).approvalRequired).toBe(false);
+});
 
 it("bounds uploads, rejects missing/stolen references and exposes images as model image content",async () => {
   const f=await fixture();
@@ -112,6 +129,42 @@ it("switches full mode from the user API, releases pending approval and restores
   expect(reopened.store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?",f.bot)?.mode).toBe("full");
   expect(()=>evaluateTool(reopened.store,f.bot,args)).toThrow("无权");
 },60000);
+
+it("remembers approval only after a valid user decision, reuses it and allows revocation", async () => {
+  const f = await fixture();
+  for (let turn = 0; turn < 3; turn++) {
+    f.model.scripts.push({ kind: "openai-tool", calls: [{ id: `always-${turn}`, name: "broker", args: JSON.stringify({ action: "agent.create", name: `Allowed peer ${turn}` }) }] }, { kind: "openai-text", text: "done" });
+    const sent = f.app.agents.send(f.bot, `Create fixture peer ${turn}`, `always-input-${turn}`);
+    if (turn < 2) {
+      await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
+      const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
+      const decision = { id: approval.id, hash: approval.argument_hash, allow: true, remember: turn === 1 };
+      if (turn === 1) {
+        expect((await f.api("approvals", decision, "invalid")).status).toBe(401);
+        expect((await f.api("approvals", { ...decision, hash: "stale" })).status).toBe(400);
+        expect((await f.api("approvals", { ...decision, allow: false })).status).toBe(400);
+        expect((await f.api("approvals", { ...decision, remember: "true" })).status).toBe(400);
+        expect(f.app.store.all("SELECT * FROM agent_approval_rules")).toHaveLength(0);
+      }
+      expect((await f.api("approvals", decision)).status).toBe(200);
+      expect(f.app.store.all("SELECT * FROM agent_approval_rules")).toHaveLength(turn);
+      expect((await f.api("approvals", decision)).status).toBe(400);
+    }
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", sent.taskId)?.status === "succeeded");
+    await until(() => !f.app.runtime.workers.size);
+  }
+  expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(2);
+  const app = await f.restart(), args = { action: "agent.create", name: "Another peer" };
+  expect(evaluateTool(app.store, f.bot, args).approvalRequired).toBe(false);
+  expect(evaluateTool(app.store, f.peer, args).approvalRequired).toBe(true);
+  const rules = app.store.all("SELECT * FROM agent_approval_rules");
+  const state = await (await fetch(app.origin + "/api/state", { headers: { Authorization: `Bearer ${f.token}` } })).json() as { approvalRules: unknown[] };
+  expect(state.approvalRules).toHaveLength(1);
+  const revoke = (botId: string) => fetch(app.origin + "/api/approvals/revoke", { method: "POST", headers: { Authorization: `Bearer ${f.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: rules[0].id, botId }) });
+  expect((await revoke(f.peer)).status).toBe(400);
+  expect((await revoke(f.bot)).status).toBe(200);
+  expect(evaluateTool(app.store, f.bot, args).approvalRequired).toBe(true);
+}, 60000);
 
 it("pings live device connections and removes a half-open connection without waiting for a new command",async () => {
   const f=await fixture(), pair=f.app.gateway.pair("Heartbeat fixture");

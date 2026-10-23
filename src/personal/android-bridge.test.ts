@@ -48,6 +48,18 @@ it("does not forward off-origin requests or arbitrary bodies", async () => {
   await expect(host.fetch("/api/config", { method: "POST", body: new FormData() })).rejects.toThrow();
   expect(native.request).not.toHaveBeenCalled();
 });
+it("preserves remembered approval and scoped revocation through native transport", async () => {
+  for (const [path, payload] of [
+    ["/api/approvals", { id: "a1", hash: "fixture-hash", allow: true, remember: true }],
+    ["/api/approvals/revoke", { id: "r1", botId: "b1" }],
+  ] as const) {
+    const result = host.fetch(path, { method: "POST", body: JSON.stringify(payload) });
+    const [id, actualPath, method, body] = native.request.mock.calls.at(-1)!;
+    expect([actualPath, method, JSON.parse(body)]).toEqual([path, "POST", payload]);
+    host.__nexReply(id, { status: 200, body: '{"ok":true}' });
+    expect(await (await result).json()).toEqual({ ok: true });
+  }
+});
 it("dispatches SSE changes and unsubscribes on close", () => {
   connectNative();
   const stream = new host.EventSource("/api/events");

@@ -75,8 +75,7 @@ struct FlowLayout: Layout {
     }
 }
 
-/// Files waiting in the composer. Pictures are compact thumbnails with no
-/// filename or status row; their X lives in the enlarged view.
+/// Files waiting in the composer, with direct removal on every picture.
 struct AttachmentChips: View {
     let conversation: ConversationStore
     let onOpenImage: (ChatImagePreview) -> Void
@@ -91,35 +90,33 @@ struct AttachmentChips: View {
         .accessibilityLabel("待发送的附件")
     }
 
-    @ViewBuilder private func picture(_ file: PendingAttachment) -> some View {
-        if file.isUploading {
-            ComposerImagePlaceholder(uploading: true)
-                .accessibilityLabel("\(file.name) 正在上传")
-        } else if file.errorMessage != nil {
-            ZStack(alignment: .topTrailing) {
-                ComposerImagePlaceholder(uploading: false)
-                Button { conversation.removeAttachment(file) } label: {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-                        .frame(width: 20, height: 20).foregroundStyle(.white)
-                        .background(.black.opacity(0.65), in: Circle())
+    private func picture(_ file: PendingAttachment) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if let preview = file.preview, let image = NSImage(data: preview) {
+                Button {
+                    onOpenImage(ChatImagePreview(image: image) { conversation.removeAttachment(file) })
+                } label: {
+                    Image(nsImage: image).resizable().scaledToFit()
+                        .frame(width: 96, height: 96).background(Theme.secondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
+                        .overlay {
+                            if file.isUploading { ProgressView().controlSize(.small) }
+                            else if file.errorMessage != nil { Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.danger) }
+                        }
                 }
-                .buttonStyle(.plain).offset(x: 5, y: -5)
-                .help("移除 \(file.name)").accessibilityLabel("移除 \(file.name)")
+                .buttonStyle(.plain)
+                .help(file.errorMessage ?? file.name).accessibilityLabel("查看图片 \(file.name)")
+            } else { ComposerImagePlaceholder(uploading: file.isUploading) }
+            Button { conversation.removeAttachment(file) } label: {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white).frame(width: 26, height: 26)
+                    .background(Color(white: 0.13), in: Circle())
+                    .overlay(Circle().strokeBorder(Theme.card, lineWidth: 2))
             }
-        } else if let preview = file.preview, let image = NSImage(data: preview) {
-            Button {
-                onOpenImage(ChatImagePreview(image: image) { conversation.removeAttachment(file) })
-            } label: {
-                Image(nsImage: image).resizable().scaledToFill()
-                    .frame(width: 56, height: 56)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
-            }
-            .buttonStyle(.plain)
-            .help(file.name).accessibilityLabel("查看图片 \(file.name)")
-        } else {
-            ComposerImagePlaceholder(uploading: false)
-        }
+            .buttonStyle(.plain).disabled(conversation.isSending).offset(x: 5, y: -5)
+            .help("移除 \(file.name)").accessibilityLabel("移除 \(file.name)")
+        }.padding(5)
     }
 
     private func chip(_ file: PendingAttachment) -> some View {
@@ -152,7 +149,7 @@ private struct ComposerImagePlaceholder: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Theme.secondary)
-            .frame(width: 56, height: 56)
+            .frame(width: 96, height: 96)
             .overlay {
                 if uploading { ProgressView().controlSize(.small) }
                 else { Image(systemName: "photo").font(.system(size: 16)).foregroundStyle(Theme.muted) }

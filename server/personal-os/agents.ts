@@ -194,7 +194,8 @@ export class AgentModule {
         // A new Agent never receives more capabilities than the Agent that created it.
         const creator = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", String(call.bot_id));
         const granted = creator ? policyTools(creator) : [];
-        this.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: actions.filter((tool) => granted.includes(tool)) }), botId);
+        const inheritDefaults = creator && JSON.parse(String(creator.policy_json)).inheritDefaults === true;
+        this.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: actions.filter((tool) => granted.includes(tool)), ...(inheritDefaults ? { inheritDefaults: true } : {}) }), botId);
         this.ensure(botId);
         if (expertise.length) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify(expertise), botId);
         const result = { created: true, botId, name, instructions, expertise };

@@ -359,7 +359,11 @@ export function AgentDesktop() {
     const content = prefix + raw, attachmentIds = attachments.map((file) => file.id), requestKey = content + JSON.stringify(attachmentIds);
     if (!retry.current || retry.current.botId !== target || retry.current.text !== requestKey) retry.current = { botId: target, text: requestKey, id: crypto.randomUUID() };
     const clientId = retry.current.id;
-    if (historyTarget.current) { historyTarget.current = undefined; setFocusedMessage(""); loaded.current = undefined; stickToBottom.current = true; setShowScrollPill(false); }
+    if (historyTarget.current) { historyTarget.current = undefined; setFocusedMessage(""); loaded.current = undefined; }
+    // Sending explicitly returns to the latest turn, even from scrollback.
+    stickToBottom.current = true;
+    setShowScrollPill(false);
+    scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "instant" });
     const savedDraft = draft, savedQuote = quote;
     drafts.current.delete(target);
     if (selected.current === target) { setDraft(""); setQuote(undefined); }
@@ -572,7 +576,7 @@ export function AgentDesktop() {
 
         <div className="composer-area">
           {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
-          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>批准</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
+          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
           {tasks.length > 0 && <div className="task-status"><span className="task-status-dot"/><span>{tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span></div>}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
@@ -581,9 +585,12 @@ export function AgentDesktop() {
           <form className="composer conversation-input" onSubmit={send}>
             {(attachments.length > 0 || pending.length > 0) && <div className="attachment-drafts" role="list" aria-label="待发送附件">
               {attachments.map((file) => file.previewUrl
-                ? <button type="button" className="attachment-image-draft" key={file.id} role="listitem" aria-label={`查看图片 ${file.name}`} onClick={() => setDraftPreview({ src: file.previewUrl!, label: file.name })}>
-                    <img className="attachment-thumb-tile" src={file.previewUrl} alt={file.name}/>
-                  </button>
+                ? <div className="attachment-image-draft" key={file.id} role="listitem">
+                    <button type="button" className="attachment-image-preview" aria-label={`查看图片 ${file.name}`} onClick={() => setDraftPreview({ src: file.previewUrl!, label: file.name })}>
+                      <img className="attachment-thumb-tile" src={file.previewUrl} alt={file.name}/>
+                    </button>
+                    <button type="button" className="attachment-tile-remove" aria-label={`移除 ${file.name}`} disabled={busy} onClick={() => removeAttachment(file)}><X size={14}/></button>
+                  </div>
                 : <div className="attachment-file-draft" key={file.id} role="listitem">
                     <span className="attachment-file-draft-icon" aria-hidden="true"><FileText size={15}/></span>
                     <span title={file.name}>{file.name}</span>
@@ -597,6 +604,7 @@ export function AgentDesktop() {
                 : item.file.type.startsWith("image/") || isImageFileName(item.file.name)
                   ? <div className="attachment-image-draft is-uploading" key={item.key} role="listitem" aria-busy="true" aria-label={`${item.file.name} 正在上传`}>
                       <span className="attachment-thumb-tile is-uploading" aria-hidden="true"><ImageIcon size={18}/></span>
+                      <button type="button" className="attachment-tile-remove" aria-label={`取消上传 ${item.file.name}`} onClick={() => removePending(item)}><X size={14}/></button>
                     </div>
                   : <div className="attachment-file-draft" key={item.key} role="listitem" aria-busy="true">
                       <span className="attachment-file-draft-icon" aria-hidden="true"><FileText size={15}/></span>
@@ -606,7 +614,7 @@ export function AgentDesktop() {
                     </div>)}
             </div>}
             <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
+            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
               {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
               {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
                 ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>

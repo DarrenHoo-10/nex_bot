@@ -346,7 +346,7 @@ private struct MessageList: View {
             }
             .overlay(alignment: .bottom) {
                 if !atBottom && conversation.messages.count > 3 && focusedID == nil {
-                    Button { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
+                    Button { atBottom = true; withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                             Text("回到底部").font(.system(size: 11))
@@ -360,10 +360,10 @@ private struct MessageList: View {
             }
             .onChange(of: tailKey) {
                 guard focusedID == nil else { return }
-                if atBottom || conversation.messages.last?.isFromUser == true { proxy.scrollTo("bottom", anchor: .bottom) }
+                if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: conversation.isSending) { _, sending in
-                if sending { atBottom = true; proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: conversation.sendRevision) {
+                atBottom = true; proxy.scrollTo("bottom", anchor: .bottom)
             }
             .task(id: loadKey) { await settleAtBottom(proxy) }
             .task(id: focusKey) { await scrollToFocused(proxy) }

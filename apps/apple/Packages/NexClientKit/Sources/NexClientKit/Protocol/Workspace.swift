@@ -57,6 +57,16 @@ public struct Approval: RowBacked {
     }
     public var expiresAt: Date? { dateFromMilliseconds(row.double("expires_at")) }
     public var title: String { ToolLabels.approvalTitle(toolName) }
+    /// Core supplies the scope only when it supports remembered approvals.
+    public var rememberLabel: String? { row.string("remember_label").flatMap { $0.isEmpty ? nil : $0 } }
+}
+
+public struct ApprovalRule: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var botID: String { row.string("bot_id") ?? "" }
+    public var label: String { row.string("label") ?? "" }
+    public var isActive: Bool { row["active"]?.boolValue ?? false }
 }
 
 /// A task row (`tasks[]`).
@@ -80,6 +90,7 @@ public struct WorkspaceState: Codable, Sendable {
     public var sync: SyncIdentity
     public var bots: [Bot]
     public var approvals: [Approval]
+    public var approvalRules: [ApprovalRule] = []
     public var tasks: [AgentTask]
     public var conversations: [Row]
     public var routines: [Routine]
@@ -122,6 +133,7 @@ public struct WorkspaceState: Codable, Sendable {
         func object(_ key: String) -> Row? { c.lenient(.init(key))?.objectValue }
         sync = try c.decode(SyncIdentity.self, forKey: .init("sync"))
         bots = rows("bots").map(Bot.init); approvals = rows("approvals").map(Approval.init); tasks = rows("tasks").map(AgentTask.init)
+        approvalRules = rows("approvalRules").map(ApprovalRule.init)
         conversations = rows("conversations"); routines = rows("routines").map(Routine.init); occurrences = rows("occurrences").map(RoutineOccurrence.init)
         delegations = rows("delegations").map(Delegation.init)
         onlineDevices = c.lenient(.init("onlineDevices"))?.arrayValue?.compactMap(\.stringValue) ?? []

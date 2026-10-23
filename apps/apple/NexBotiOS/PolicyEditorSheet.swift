@@ -57,7 +57,7 @@ struct PolicyEditorSheet: View {
     private func save() async {
         saving = true; error = nil
         defer { saving = false }
-        let tools = PolicyCatalog.serverOrder.filter(granted.contains)
+        let tools = PolicyCatalog.orderedTools(granted)
         do { try await workspace.updatePolicy(botID: botID, tools: tools); dismiss() }
         catch { self.error = message(of: error) }
     }

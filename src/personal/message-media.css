@@ -73,11 +73,11 @@
 /* Composer attachment drafts: images are compact thumbnails. Until the server
    confirms an upload its slot is a pulsing gray default image; the real
    thumbnail replaces it afterwards. */
-.rk-workspace .composer .attachment-drafts { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 2px 0; }
-.rk-workspace .attachment-image-draft { position: relative; width: 56px; height: 56px; flex: 0 0 56px; }
-.rk-workspace button.attachment-image-draft { padding: 0; border: 0; background: transparent; line-height: 0; cursor: zoom-in; }
+.rk-workspace .composer .attachment-drafts { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 2px 0; padding: 6px 6px 0 0; }
+.rk-workspace .attachment-image-draft { position: relative; width: 96px; height: 96px; flex: 0 0 96px; }
+.rk-workspace .attachment-image-preview { display: block; padding: 0; border: 0; border-radius: 12px; background: transparent; line-height: 0; cursor: zoom-in; }
 .rk-workspace .attachment-image-draft .attachment-thumb-tile {
-  display: block; width: 56px; height: 56px; object-fit: cover;
+  display: block; width: 96px; height: 96px; object-fit: contain;
   border: 1px solid var(--border); border-radius: 12px; background: var(--input);
 }
 .rk-workspace .attachment-image-draft span.attachment-thumb-tile,
@@ -92,10 +92,13 @@
 .rk-workspace .attachment-image-draft img.attachment-thumb-tile { animation: nex-thumb-in 150ms ease-out; }
 .rk-workspace .attachment-image-draft .attachment-tile-remove {
   position: absolute; top: -5px; right: -5px; display: grid; place-items: center;
-  width: 20px; height: 20px; padding: 0; border: 2px solid var(--card); border-radius: 50%;
-  background: var(--foreground); color: var(--background);
+  width: 26px; height: 26px; padding: 0; border: 2px solid var(--card); border-radius: 50%;
+  background: #202123; color: #fff; cursor: pointer;
 }
-.rk-workspace .attachment-image-draft .attachment-tile-remove:hover { opacity: .82; }
+.rk-workspace .attachment-image-draft .attachment-tile-remove:hover:not(:disabled) { background: #3c3d3f; }
+.rk-workspace .attachment-image-draft .attachment-tile-remove:disabled { opacity: .5; cursor: default; }
+.rk-workspace .attachment-image-preview:focus-visible,
+.rk-workspace .attachment-image-draft .attachment-tile-remove:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
 .rk-workspace .attachment-file-draft {
   display: flex; align-items: center; gap: 7px; max-width: 240px; min-width: 0;
   padding: 6px 7px; border: 1px solid var(--border); border-radius: 11px;
