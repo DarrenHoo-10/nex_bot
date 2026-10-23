@@ -153,3 +153,30 @@ The client build now includes `html-preview.html` next to its matching UI.
 The override keeps the shell's CSP sandbox header and embedded resource policy.
 Generated shell line endings are normalized before serialization so Windows
 and Unix checkouts produce the same Apple resource.
+
+## Local Windows installation
+
+Built and installed from clean, pushed `main` commit `32526f7d` on 2026-10-24.
+The local candidate includes the matching client UI and preview shell, plus the
+normal desktop device executor. It was not published as a downloadable release.
+
+- The exact packaged executable passed 30 isolated login, account-workspace,
+  device lifecycle, settings, logout and restart checks.
+- Eight additional checks exercised the same executable's real saved-message
+  preview: local UI delivery, slider/DOM/SVG updates, fullscreen state retention,
+  native bridge isolation, sandbox response headers, Stop, rerun and history
+  reload. The preview used its separate sandbox renderer target. Its screenshot
+  was inspected and contains only a synthetic account/conversation.
+- All 665 installed files match the verified candidate. The previous portable
+  executable remains available for rollback; the desktop shortcut now opens the
+  new installation. The previous client exited gracefully and the new process
+  remained running after launch.
+- The saved-login file's hash was unchanged across installation. No live chat
+  or settings mutations were used for verification. No remote Core/web service,
+  Android installation or Apple installation was deployed in this follow-up.
+
+Candidate manifests, synthetic test logs, screenshot, rollback reference and
+installation report are retained under ignored
+`release/local-html-preview-20261024/`. Private profile files were neither copied
+into packages nor committed. The earlier Apple native acceptance limitation
+still applies.
