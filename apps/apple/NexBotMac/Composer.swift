@@ -21,6 +21,7 @@ struct Composer: View {
     @Environment(UIState.self) private var ui
     @FocusState private var focused: Bool
     @State private var menuError: String?
+    @State private var revokingRule = false
     @State private var mentionIndex = 0
     @State private var mentionDismissed = false
 
@@ -191,10 +192,39 @@ struct Composer: View {
     }
 
     private var permissionMenu: some View {
-        ComposerMenu(label: "选择操作权限", entries: ApprovalMode.allCases.map { option in
-            .row(.init(id: option.rawValue, icon: option == .full ? "exclamationmark.shield" : "checkmark.shield", title: option.title,
-                       checked: mode == option, radio: true, action: { close(); setMode(option) }))
-        }, initialID: mode.rawValue, width: 216, close: close)
+        VStack(alignment: .leading, spacing: 0) {
+            ComposerMenu(label: "选择操作权限", entries: ApprovalMode.allCases.map { option in
+                .row(.init(id: option.rawValue, icon: option == .full ? "exclamationmark.shield" : "checkmark.shield", title: option.title,
+                           checked: mode == option, radio: true, action: { close(); setMode(option) }))
+            }, initialID: mode.rawValue, width: 300, close: close)
+            let rules = workspace.approvalRules(botID: botID)
+            if !rules.isEmpty {
+                Divider()
+                Text("始终允许").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(12)
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(rules) { rule in
+                            HStack(spacing: 8) {
+                                Text(rule.label + (rule.isActive ? "" : " · 已失效")).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 0)
+                                Button("撤销") { revokeRule(rule) }
+                                    .disabled(revokingRule).accessibilityLabel("撤销授权：\(rule.label)")
+                            }
+                        }
+                    }.padding(.horizontal, 12).padding(.bottom, 12)
+                }.frame(maxHeight: 180)
+            }
+        }.frame(width: 300)
+    }
+
+    private func revokeRule(_ rule: ApprovalRule) {
+        guard !revokingRule else { return }
+        revokingRule = true; menuError = nil
+        Task {
+            defer { revokingRule = false }
+            do { try await workspace.revokeApprovalRule(rule) }
+            catch { menuError = message(of: error) }
+        }
     }
 
     private var modelMenu: some View {

@@ -5,14 +5,14 @@ import NexClientKit
 struct ApprovalCard: View {
     let approval: Approval
     var botName = ""
-    let decide: (Bool) async -> Void
+    let decide: (Bool, Bool) async -> Void
     @State private var busy = false
     @State private var showArguments = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(botName.isEmpty ? "需要你的批准" : "\(botName) 需要你的批准").font(.subheadline.weight(.semibold))
-            Text(approval.title).font(.caption).foregroundStyle(Theme.muted)
+            Text(approval.rememberLabel ?? approval.title).font(.caption).foregroundStyle(Theme.muted)
             if !details.isEmpty {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showArguments.toggle() } } label: {
                     Text("\(showArguments ? "▾" : "▸") 查看具体操作").font(.caption).foregroundStyle(Theme.muted)
@@ -27,7 +27,10 @@ struct ApprovalCard: View {
                 }
             }
             HStack(spacing: 8) {
-                Button("批准") { run(true) }.buttonStyle(PillButtonStyle(primary: true))
+                Button("允许一次") { run(true) }.buttonStyle(PillButtonStyle(primary: true))
+                if approval.rememberLabel != nil {
+                    Button("始终允许") { run(true, remember: true) }.buttonStyle(PillButtonStyle())
+                }
                 Button("拒绝") { run(false) }.buttonStyle(PillButtonStyle())
                 if busy { ProgressView() }
             }
@@ -50,8 +53,8 @@ struct ApprovalCard: View {
         return prettyJSON(.object(object)) ?? approval.argumentsText
     }
 
-    private func run(_ allow: Bool) {
+    private func run(_ allow: Bool, remember: Bool = false) {
         busy = true
-        Task { await decide(allow); busy = false }
+        Task { await decide(allow, remember); busy = false }
     }
 }

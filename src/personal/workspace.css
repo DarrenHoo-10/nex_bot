@@ -230,6 +230,7 @@
 .rk-workspace .permission-trigger { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 0; border-radius: 8px; color: var(--muted-foreground); background: var(--secondary); font-size: 12px; white-space: nowrap; }
 .rk-workspace .permission-trigger:hover, .rk-workspace .composer-add:hover, .rk-workspace .permission-trigger[aria-expanded=true], .rk-workspace .composer-add[aria-expanded=true] { color: var(--foreground); background: var(--accent); }
 .permission-chevron { transition: transform 120ms ease; }
+.approval-rule-label { min-width: 0; overflow-wrap: anywhere; }
 .permission-trigger[aria-expanded=true] .permission-chevron { transform: rotate(180deg); }
 .composer-popover { position: fixed; inset: auto; margin: 0; z-index: 54; padding: 7px; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 17px; box-shadow: 0 8px 32px #00000013, 0 2px 7px #00000008; max-height: min(360px, calc(100dvh - 220px)); overflow-y: auto; animation: composer-popover-in 120ms ease-out; }
 .permission-popover { width: 216px; }

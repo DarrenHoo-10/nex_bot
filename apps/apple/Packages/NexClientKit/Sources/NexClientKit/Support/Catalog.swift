@@ -37,7 +37,7 @@ public struct PolicyAction: Sendable, Hashable, Identifiable {
     public let label: String
 }
 
-/// The 25 tool actions of an agent policy.
+/// Tool actions offered by the shared permission editor.
 public enum PolicyCatalog {
     /// Order of the server's `actions` list (`policy.ts`).
     public static let serverOrder: [String] = [
@@ -46,6 +46,7 @@ public enum PolicyCatalog {
         "routine.list", "routine.save", "routine.toggle", "routine.run",
         "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer",
         "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call",
+        "attachment.read", "image.models", "image.generate",
     ]
     /// Order of the web checkbox grid, with Chinese labels.
     public static let uiOrder: [PolicyAction] = [
@@ -53,8 +54,8 @@ public enum PolicyCatalog {
         .init(id: "memory.reflect", label: "综合记忆并引用来源"),
         .init(id: "memory.read", label: "读取自身与共享记忆"),
         .init(id: "memory.write", label: "维护自身私有记忆"),
-        .init(id: "memory.delete", label: "撤回自身私有记忆（需批准）"),
-        .init(id: "memory.forget", label: "彻底遗忘相关原文与副本（需批准）"),
+        .init(id: "memory.delete", label: "撤回自身私有记忆"),
+        .init(id: "memory.forget", label: "彻底遗忘相关原文与副本"),
         .init(id: "routine.list", label: "查看自己的计划"),
         .init(id: "routine.save", label: "安排或修改自己的计划"),
         .init(id: "routine.toggle", label: "暂停或恢复自己的计划"),
@@ -71,13 +72,20 @@ public enum PolicyCatalog {
         .init(id: "device.computer", label: "使用获准的电脑窗口"),
         .init(id: "connector.list", label: "查看已授权连接器"),
         .init(id: "connector.tools", label: "查看连接器工具"),
-        .init(id: "connector.call", label: "调用连接器工具（需批准）"),
+        .init(id: "connector.call", label: "调用连接器工具"),
+        .init(id: "attachment.read", label: "读取对话附件"),
+        .init(id: "image.models", label: "查看生图模型"),
+        .init(id: "image.generate", label: "按需生成图片"),
         .init(id: "skill.list", label: "查看通用技能目录"),
         .init(id: "skill.read", label: "阅读通用技能说明"),
     ]
     public static func label(for action: String) -> String { uiOrder.first { $0.id == action }?.label ?? action }
     /// Footer note of the editor.
-    public static let footnote = "设备还须在本机授权。终端命令由这个 Agent 逐次申请批准；联系同伴和普通记忆操作自动执行。"
+    public static let footnote = "危险操作需批准；已记住的授权自动执行。"
+    /// Retain grants introduced by a newer Core when editing an unrelated checkbox.
+    public static func orderedTools(_ selected: Set<String>) -> [String] {
+        serverOrder.filter(selected.contains) + selected.subtracting(serverOrder).sorted()
+    }
     /// Button text of the 设置 tab row: `已授权 {n} 项 · 配置`.
     public static func summary(count: Int) -> String { "已授权 \(count) 项 · 配置" }
 }

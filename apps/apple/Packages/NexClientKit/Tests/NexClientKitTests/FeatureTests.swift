@@ -417,6 +417,31 @@ final class AttachmentTests: XCTestCase {
         XCTAssertFalse(conv.isUploadingAttachments)
         let sent = await conv.send(text: "x"); XCTAssertTrue(sent)
     }
+
+    func testRemovingUploadingPictureDoesNotRestoreItOrBlockSending() async throws {
+        let core = StubCore()
+        core.handle { request in
+            if request.path == "/api/attachments" {
+                return .json(["id": "removed", "botId": "b1", "name": "paste.png", "mime": "image/png", "size": 1], delay: 0.3)
+            }
+            return .json(["ok": true])
+        }
+        let store = WorkspaceStore(client: core.client()), conv = store.conversation(for: "b1")
+        conv.draft = "keep the draft"
+        let upload = Task { await conv.addAttachment(name: "paste.png", data: Data([1])) }
+        for _ in 0..<100 where core.recorded("/api/attachments").isEmpty { try await Task.sleep(for: .milliseconds(2)) }
+        let picture = try XCTUnwrap(conv.attachments.first)
+        XCTAssertTrue(picture.isUploading)
+        conv.removeAttachment(picture)
+        await upload.value
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(conv.attachments.isEmpty)
+        XCTAssertFalse(conv.isUploadingAttachments)
+        XCTAssertTrue(conv.canSend)
+        XCTAssertEqual(conv.draft, "keep the draft")
+        XCTAssertNil(conv.sendError)
+        XCTAssertNil(store.notice)
+    }
 }
 
 /// Markdown export.

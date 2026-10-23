@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync, existsSync } from
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { basicActions } from "./policy.ts";
+import { isLegacyDefaultTools } from "./policy-defaults.ts";
 import type { AttachmentObjects } from './attachment-objects.ts';
 import { connectorSchema } from "./connector-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
@@ -276,6 +277,23 @@ export class CoreStore {
       this.db.exec(schema);
       this.insert('schema_migrations', { version: 21, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get('SELECT version FROM schema_migrations WHERE version=22')) this.transaction(() => {
+      for (const policy of this.all('SELECT * FROM bot_policies')) {
+        if (this.get("SELECT id FROM audit_records WHERE action='agent.policy.update' AND entity_id=?", policy.bot_id)) continue;
+        // A peer created by another Agent may carry that creator's restrictions.
+        if (this.get("SELECT id FROM audit_records WHERE action='steward.agent.create' AND json_extract(details_json,'$.botId')=?", policy.bot_id)) continue;
+        const value = JSON.parse(String(policy.policy_json));
+        if (!isLegacyDefaultTools(value.tools)) continue;
+        this.run('UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?', JSON.stringify({ ...value, tools: basicActions, inheritDefaults: true }), policy.bot_id);
+      }
+      this.insert('schema_migrations', { version: 22, checksum: hash('default-capability-inheritance-v1'), applied_at: now() });
+    });
+    if (!this.get('SELECT version FROM schema_migrations WHERE version=23')) this.transaction(() => {
+      const schema = `CREATE TABLE agent_approval_rules(id TEXT PRIMARY KEY,bot_id TEXT NOT NULL REFERENCES bots(id),action TEXT NOT NULL,target_id TEXT NOT NULL,operation TEXT NOT NULL,policy_version INTEGER NOT NULL,resource_version INTEGER NOT NULL,created_at INTEGER NOT NULL,UNIQUE(bot_id,action,target_id,operation)) STRICT;`;
+      this.db.exec(schema);
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TRIGGER sync_agent_approval_rules_${operation} AFTER ${operation} ON agent_approval_rules BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
+      this.insert('schema_migrations', { version: 23, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -387,7 +405,7 @@ export class CoreStore {
     const botId = id();
     this.transaction(() => {
       this.insert("bots", { id: botId, ...this.scope(), name: text(name, 80), instructions: optionalText(instructions), model_connection_id: this.config() ? "default" : null, status: "active", created_at: now() });
-      this.insert("bot_policies", { bot_id: botId, ...this.scope(), policy_json: JSON.stringify({ tools: basicActions }), approval_mode: "allow_scoped" });
+      this.insert("bot_policies", { bot_id: botId, ...this.scope(), policy_json: JSON.stringify({ tools: basicActions, inheritDefaults: true }), approval_mode: "allow_scoped" });
       this.run("INSERT INTO agent_inboxes(bot_id,workspace_id,owner_user_id) VALUES(?,?,?)", botId, this.workspace, this.owner);
       this.insert("memory_bank_bindings", { id: id(), ...this.scope(), scope: "bot", bot_id: botId, provider_bank_id: id(), state: "provisioning" });
       this.insert("bot_public_profiles", { bot_id: botId, ...this.scope() });

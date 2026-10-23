@@ -119,7 +119,7 @@ struct PolicyEditorSheet: View {
 
     private func save() {
         busy = true; error = nil
-        let tools = PolicyCatalog.serverOrder.filter(selected.contains)
+        let tools = PolicyCatalog.orderedTools(selected)
         Task {
             do { try await workspace.updatePolicy(botID: botID, tools: tools); dismiss() }
             catch { self.error = message(of: error) }
