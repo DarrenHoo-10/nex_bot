@@ -61,6 +61,26 @@ it("bounds uploads, rejects missing/stolen references and exposes images as mode
   await until(()=>f.app.store.get("SELECT status FROM tasks WHERE id=?",sent.taskId)?.status === "succeeded");
   expect(await new ChatFiles(f.app.store).read(f.bot,file.id)).toMatchObject({images:[{mimeType:"image/png",data:image}]});
 });
+it("deletes one sent image while preserving text and removes an image-only message", async () => {
+  const f=await fixture(), files=new ChatFiles(f.app.store);
+  const image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aEtcAAAAASUVORK5CYII=";
+  const attach = (source: string, role: "user" | "assistant", content: (url: string) => string) => {
+    const file = files.upload({ botId: f.bot, name: "image.png", data: image }, f.app.store.session);
+    f.app.agents.publish(f.bot, role, "message", content(`/api/attachments/${file.id}`), source);
+    const message = f.app.store.get("SELECT id FROM agent_messages WHERE source_key=?", source)!;
+    f.app.store.run("UPDATE chat_attachments SET message_id=? WHERE id=?", message.id, file.id);
+    return { file, message };
+  };
+  const kept = attach("fixture-delete-text", "user", (url) => `保留这段文字\n\n[image.png](${url})`);
+  const removed = await f.api("agents/messages/image/delete", { botId: f.bot, messageId: kept.message.id, attachmentId: kept.file.id });
+  expect(removed.status).toBe(200);
+  expect(f.app.store.get("SELECT content FROM agent_messages WHERE id=?", kept.message.id)?.content).toBe("保留这段文字");
+  expect(f.app.store.get("SELECT id FROM chat_attachments WHERE id=?", kept.file.id)).toBeUndefined();
+  expect((await f.api("agents/messages/image/delete", { botId: f.bot, messageId: kept.message.id, attachmentId: kept.file.id })).status).toBe(400);
+  const only = attach("fixture-delete-only", "assistant", (url) => `![生成图片](${url})`);
+  expect((await f.api("agents/messages/image/delete", { botId: f.bot, messageId: only.message.id, attachmentId: only.file.id })).status).toBe(200);
+  expect(f.app.store.get("SELECT id FROM agent_messages WHERE id=?", only.message.id)).toBeUndefined();
+});
 
 it("switches full mode from the user API, releases pending approval and restores standard mode", async () => {
   const f=await fixture(), args={action:"agent.create",name:"Created by fixture"};

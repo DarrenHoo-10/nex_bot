@@ -1,5 +1,5 @@
 import { universalImageActions } from '../../shared/personal-capabilities';
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type ReactNode } from "react";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
@@ -7,7 +7,7 @@ import { ChatChart } from "./components/ChatChart";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, FileText, Info, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
+import { ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Info, Loader2, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
 import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
@@ -20,6 +20,9 @@ import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
+import { MessageImages } from "./components/MessageImages";
+import { ImageLightbox } from "./components/ImageLightbox";
+import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
 import { ModelPicker } from "./components/ModelPicker";
 import { BotIdentity } from "./components/BotIdentity";
 import { copyText as writeCopyText } from "../lib/copy-text";
@@ -98,33 +101,72 @@ export function AgentDesktop() {
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
   const [sidebarOpen, setSidebarOpen] = useState(desktop?.platform === "android" && window.innerWidth <= 720);
   type Attachment = { id: string; name: string; size: number; mime?: string; previewUrl?: string };
-  const [attachments, setAttachments] = useState<Attachment[]>([]), [uploading, setUploading] = useState(false);
-  const attachmentDrafts = useRef(new Map<string, Attachment[]>()), fileInput = useRef<HTMLInputElement>(null);
+  type PendingUpload = { key: string; file: File; error?: string; controller: AbortController };
+  const [attachments, setAttachments] = useState<Attachment[]>([]), [pending, setPending] = useState<PendingUpload[]>([]);
+  const [draftPreview, setDraftPreview] = useState<{ src: string; label: string }>();
+  const attachmentDrafts = useRef(new Map<string, Attachment[]>()), pendingDrafts = useRef(new Map<string, PendingUpload[]>()), fileInput = useRef<HTMLInputElement>(null);
   const uploadRef = useRef<(files: FileList | readonly File[] | null) => Promise<void>>(async () => {});
+  const uploading = pending.length > 0;
   const setFiles = (target: string, files: Attachment[]) => {
     attachmentDrafts.current.set(target, files);
     if (selected.current === target) setAttachments(files);
   };
+  const setPendingFiles = (target: string, files: PendingUpload[]) => {
+    pendingDrafts.current.set(target, files);
+    if (selected.current === target) setPending(files);
+  };
+  const readFile = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file); });
+  const uploadOne = async (target: string, item: PendingUpload) => {
+    try {
+      const data = await readFile(item.file);
+      if (item.controller.signal.aborted) return;
+      const uploaded = await api<Attachment>("attachments", { botId: target, name: item.file.name.trim() || "截图.png", data });
+      if (item.controller.signal.aborted) return;
+      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).filter((entry) => entry.key !== item.key));
+      const mime = item.file.type || uploaded.mime || "";
+      const previewUrl = mime.startsWith("image/") ? `data:${mime};base64,${data}` : undefined;
+      setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), { ...uploaded, mime: uploaded.mime || item.file.type, previewUrl }]);
+    } catch (error) {
+      if (item.controller.signal.aborted) return;
+      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: error instanceof Error ? error.message : "上传失败，请重试" } : entry));
+    }
+  };
   const upload = async (files: FileList | readonly File[] | null) => {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
-    const target = botId;
-    if ((attachmentDrafts.current.get(target)?.length ?? 0) + list.length > 5) { setError("最多添加 5 个附件"); return; }
-    setUploading(true); setError("");
-    try {
-      for (const file of list) {
-        if (!file.size || file.size > 5 * 1024 * 1024) throw new Error("请选择 5 MB 以内的非空文件");
-        const name = file.name.trim() || "截图.png";
-        const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file); });
-        const uploaded = await api<Attachment>("attachments", { botId: target, name, data });
-        // The page's CSP allows data: images but not blob: URLs.
-        const previewUrl = file.type.startsWith("image/") ? `data:${file.type};base64,${data}` : undefined;
-        setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), { ...uploaded, mime: file.type || undefined, previewUrl }]);
-      }
-    } catch (error) { setError(error instanceof Error ? error.message : "上传失败"); }
-    finally { setUploading(false); if (fileInput.current) fileInput.current.value = ""; }
+    const target = botId, current = attachmentDrafts.current.get(target) ?? [], waiting = pendingDrafts.current.get(target) ?? [];
+    if (current.length + waiting.length + list.length > 5) { setError("最多添加 5 个附件"); if (fileInput.current) fileInput.current.value = ""; return; }
+    if (list.some((file) => !file.size || file.size > 5 * 1024 * 1024)) { setError("请选择 5 MB 以内的非空文件"); if (fileInput.current) fileInput.current.value = ""; return; }
+    setError("");
+    const items: PendingUpload[] = list.map((file) => ({ key: crypto.randomUUID(), file, controller: new AbortController() }));
+    setPendingFiles(target, [...waiting, ...items]);
+    await Promise.all(items.map((item) => uploadOne(target, item)));
+    if (fileInput.current) fileInput.current.value = "";
   };
   uploadRef.current = upload;
+  const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = imageFilesFromClipboard(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void upload(files);
+  };
+  const retryUpload = (item: PendingUpload) => {
+    const controller = new AbortController();
+    setPendingFiles(botId, (pendingDrafts.current.get(botId) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: undefined, controller } : entry));
+    void uploadOne(botId, { ...item, controller, error: undefined });
+  };
+  const removePending = (item: PendingUpload) => {
+    item.controller.abort();
+    setPendingFiles(botId, (pendingDrafts.current.get(botId) ?? []).filter((entry) => entry.key !== item.key));
+  };
+  const removeAttachment = (file: Attachment) => setFiles(botId, (attachmentDrafts.current.get(botId) ?? []).filter((entry) => entry.id !== file.id));
+  const removeDraftImage = (src: string) => {
+    const uploaded = (attachmentDrafts.current.get(botId) ?? []).find((file) => file.previewUrl === src);
+    if (uploaded) removeAttachment(uploaded);
+  };
+  useEffect(() => () => {
+    for (const list of pendingDrafts.current.values()) for (const item of list) item.controller.abort();
+  }, []);
   const [lookRevision, setLookRevision] = useState(0);
   const [motion] = useState(() => localStorage.getItem("nexbot.motion") !== "0");
   const [settledState, setSettledState] = useState<CompanionState>("idle");
@@ -285,6 +327,8 @@ export function AgentDesktop() {
       setStreaming([]);
       setDraft(drafts.current.get(botId) ?? "");
       setAttachments(attachmentDrafts.current.get(botId) ?? []);
+      setPending(pendingDrafts.current.get(botId) ?? []);
+      setDraftPreview(undefined);
     }
     if (botId) {
       if (switched) setHistoryLoading(true);
@@ -298,6 +342,11 @@ export function AgentDesktop() {
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(botId, value); setAtDismissed(false); setAtIndex(0); };
   const togglePin = (id: string) => setPinned((current) => { const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id]; localStorage.setItem("nexbot.pinnedAgents", JSON.stringify(next)); return next; });
   const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
+  const deleteMessageImage = async (messageId: string, image: MessageImage) => {
+    await api("agents/messages/image/delete", { botId, messageId, attachmentId: image.id });
+    loaded.current = undefined;
+    await reload();
+  };
   const send = (event: FormEvent) => {
     event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || !state?.bots.some((agent) => agent.id === target)) return;
     const prefix = quote ? `> ${quote.author}：${quote.text.replace(/\s+/g, " ").slice(0, 140)}\n\n` : "";
@@ -492,7 +541,7 @@ export function AgentDesktop() {
             const curDay = formatDay(m.created_at);
             return <div key={str(m.id)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
               {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots); setQuote({ author, text: str(msg.content) }); composerRef.current?.focus(); }}/>
+              <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
             </div>;
           })}
           {streaming.map((s) => {
@@ -523,14 +572,37 @@ export function AgentDesktop() {
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}
           <input ref={fileInput} type="file" hidden multiple aria-label="上传附件" onChange={(event) => void upload(event.target.files)}/>
-          {attachments.some((file) => !file.previewUrl) && <div className="attachment-drafts">{attachments.filter((file) => !file.previewUrl).map((file) => <div className="attachment-draft" key={file.id}><FileText size={16}/><span>{file.name}</span><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={14}/></button></div>)}</div>}
-          {uploading && <span role="status">正在上传…</span>}
           <form className="composer conversation-input" onSubmit={send}>
-            {attachments.some((file) => file.previewUrl) && <div className="composer-images">{attachments.filter((file) => file.previewUrl).map((file) => <div className="composer-image" key={file.id}><img src={file.previewUrl} alt={file.name}/><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={12}/></button></div>)}</div>}
-            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={(event) => { const images = imageFilesFromClipboard(event.clipboardData); if (!images.length) return; event.preventDefault(); void upload(images); }} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
+            {(attachments.length > 0 || pending.length > 0) && <div className="attachment-drafts" role="list" aria-label="待发送附件">
+              {attachments.map((file) => file.previewUrl
+                ? <button type="button" className="attachment-image-draft" key={file.id} role="listitem" aria-label={`查看图片 ${file.name}`} onClick={() => setDraftPreview({ src: file.previewUrl!, label: file.name })}>
+                    <img className="attachment-thumb-tile" src={file.previewUrl} alt={file.name}/>
+                  </button>
+                : <div className="attachment-file-draft" key={file.id} role="listitem">
+                    <span className="attachment-file-draft-icon" aria-hidden="true"><FileText size={15}/></span>
+                    <span title={file.name}>{file.name}</span>
+                    <button type="button" className="attachment-file-remove" aria-label={`移除 ${file.name}`} disabled={busy} onClick={() => removeAttachment(file)}><X size={12}/></button>
+                  </div>)}
+              {pending.map((item) => item.error
+                ? <div className="attachment-image-draft is-error" key={item.key} role="listitem" aria-label={`${item.file.name} 上传失败`} title={`${item.file.name}：${item.error}，点击重试`}>
+                    <button type="button" className="attachment-thumb-tile is-error" aria-label={`上传失败：${item.file.name}，点击重试`} onClick={() => retryUpload(item)}><CircleAlert size={18}/></button>
+                    <button type="button" className="attachment-tile-remove" aria-label={`移除 ${item.file.name}`} onClick={() => removePending(item)}><X size={12}/></button>
+                  </div>
+                : item.file.type.startsWith("image/") || isImageFileName(item.file.name)
+                  ? <div className="attachment-image-draft is-uploading" key={item.key} role="listitem" aria-busy="true" aria-label={`${item.file.name} 正在上传`}>
+                      <span className="attachment-thumb-tile is-uploading" aria-hidden="true"><ImageIcon size={18}/></span>
+                    </div>
+                  : <div className="attachment-file-draft" key={item.key} role="listitem" aria-busy="true">
+                      <span className="attachment-file-draft-icon" aria-hidden="true"><FileText size={15}/></span>
+                      <span title={item.file.name}>{item.file.name}</span>
+                      <span className="attachment-upload-state" aria-hidden="true"><Loader2 size={13}/></span>
+                      <button type="button" className="attachment-file-remove" aria-label={`取消上传 ${item.file.name}`} onClick={() => removePending(item)}><X size={12}/></button>
+                    </div>)}
+            </div>}
+            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
             <ComposerControls key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
               {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
-              {tasks.length > 0 && !draft.trim() && !attachments.length
+              {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
                 ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
                 : <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
             </ComposerControls>
@@ -625,6 +697,7 @@ export function AgentDesktop() {
     </aside> : null}
 
     {dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}
+    {draftPreview ? <ImageLightbox src={draftPreview.src} alt={draftPreview.label} deleteLabel="移除图片" onClose={() => setDraftPreview(undefined)} onDelete={() => removeDraftImage(draftPreview.src)}/> : null}
   </div>;
 }
 
@@ -640,18 +713,20 @@ function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]
   if (m.role === "peer") return str(bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id))?.name) || "同伴 Agent";
   return str(bot?.name) || "Agent";
 }
-function AgentMessage({ message: m, bot, bots, select, copiedId, onCopy, onQuote, onPreviewFile, onPreviewStep }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; select: (id: string) => void; copiedId: string; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void }) {
+function AgentMessage({ message: m, bot, bots, select, copiedId, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; select: (id: string) => void; copiedId: string; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void> }) {
   const direction = str(m.a2a_direction), peer = bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id));
   if (direction === "sent" || direction === "returned") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "received") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={34}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;
   const canAct = m.role === "user" || m.role === "assistant" || m.role === "peer";
   const steps = Array.isArray(m.tool_steps) ? m.tool_steps : [];
-  return <article className={`message ${m.role} ${m.kind}`}>
+  const { text, images } = parseMessageMedia(str(m.content));
+  return <article className={`message ${m.role} ${m.kind}`} data-message-id={str(m.id)}>
     <div className="message-body">
       {m.role === "peer" ? <div className="message-author"><Avatar bot={peer} allBots={bots} size={22}/>{peer?.name ?? "Agent"} · {m.kind === "request" ? "发来任务" : "返回结果"}</div> : null}
       {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length}><div className="step-list">{steps.map((step) => <button type="button" key={step.id} className="step-row" onClick={() => onPreviewStep(step)} title="点击在右侧面板查看详情"><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>)}</div></ToolActivityDisclosure> : null}
-      <div className="bubble"><RichText value={str(m.content)} onPreviewFile={onPreviewFile}/></div>
+      <MessageImages images={images} onDelete={(image) => onDeleteImage(str(m.id), image)}/>
+      {text ? <div className="bubble"><RichText value={text} onPreviewFile={onPreviewFile}/></div> : null}
       <div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time>{canAct ? <span className="message-tools"><button type="button" className="tool-link" onClick={() => onQuote(m)} title="引用回复"><CornerUpLeft size={11}/>引用</button><button type="button" className="tool-link" onClick={() => onCopy(str(m.id), str(m.content))} title="复制内容">{copiedId === str(m.id) ? <><Check size={11}/>已复制</> : <><Copy size={11}/>复制</>}</button></span> : null}</div>
     </div>
   </article>;

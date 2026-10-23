@@ -5,6 +5,7 @@ import { api } from "./api";
 import { ErrorBoundary } from "./ErrorBoundary";
 import "./agent.css";
 import "./workspace.css";
+import "./message-media.css";
 import "./identity.css";
 import "./settings.css";
 import "./home.css";

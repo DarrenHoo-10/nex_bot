@@ -221,13 +221,16 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(paste.defaultPrevented).toBe(true);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
     expect(fixture.api).toHaveBeenCalledWith("attachments", expect.objectContaining({ botId: "agent", name: "截图.png" }));
-    // Images show as thumbnails inside the composer, not as file chips.
-    const preview = container.querySelector<HTMLImageElement>(".composer.conversation-input .composer-image img");
+    // Images show as compact thumbnails inside the composer, not as file chips.
+    const preview = container.querySelector<HTMLImageElement>(".composer.conversation-input .attachment-image-draft img.attachment-thumb-tile");
     expect(preview?.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
     expect(preview?.alt).toBe("截图.png");
     expect(container.querySelector(".attachment-draft")).toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="移除 截图.png"]')!.click(); });
-    expect(container.querySelector(".composer-image")).toBeNull();
+    await act(async () => { preview!.closest("button")!.click(); });
+    const remove = document.querySelector<HTMLButtonElement>(".image-lightbox-delete");
+    expect(remove?.getAttribute("aria-label")).toBe("移除图片");
+    await act(async () => { remove!.click(); });
+    expect(container.querySelector(".attachment-image-draft")).toBeNull();
     const text = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(text, "clipboardData", {
       value: { items: [{ kind: "string", type: "text/plain", getAsFile: () => null }], files: [] },
@@ -235,5 +238,29 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     await act(async () => { composer().dispatchEvent(text); });
     expect(text.defaultPrevented).toBe(false);
     expect(fixture.api.mock.calls.filter(([route]) => route === "attachments")).toHaveLength(1);
+  });
+
+  it("shows only a pulsing gray placeholder until the upload succeeds", async () => {
+    let finish!: (value: unknown) => void;
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "state") return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
+      if (route === "attachments") return new Promise((resolve) => { finish = resolve; });
+      return {};
+    });
+    const png = new File([Uint8Array.from([1, 2, 3, 4])], "", { type: "" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: { items: [{ kind: "file", type: "image/png", getAsFile: () => png }], files: [] },
+    });
+    await act(async () => { composer().dispatchEvent(paste); });
+    const pending = container.querySelector(".attachment-image-draft.is-uploading");
+    expect(pending).not.toBeNull();
+    expect(pending?.textContent).toBe("");
+    expect(container.querySelector(".attachment-tile-remove")).toBeNull();
+    expect(container.querySelector(".attachment-file-draft")).toBeNull();
+    await act(async () => { for (let i = 0; i < 50 && !finish; i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); finish({ id: "file-1", botId: "agent", name: "截图.png", size: 4, mime: "image/png" }); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(container.querySelector(".attachment-image-draft.is-uploading")).toBeNull();
+    expect(container.querySelector<HTMLImageElement>(".attachment-image-draft img.attachment-thumb-tile")?.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
   });
 });

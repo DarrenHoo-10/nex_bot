@@ -34,6 +34,7 @@ struct ComposerView: View {
     @State private var exporting = false
     @State private var actionError: String?
     @State private var showModels = false
+    @State private var draftImage: ImagePreview?
 
     private var hasModel: Bool { workspace.state?.config != nil }
     private var canSend: Bool { conversation.canSend && hasModel }
@@ -135,6 +136,7 @@ struct ComposerView: View {
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
         .sheet(item: $exportFile) { file in ShareSheet(url: file.url).presentationDetents([.medium, .large]) }
+        .fullScreenCover(item: $draftImage) { preview in NativeImageViewer(preview: preview) }
         .debugCommand { command, arg in
             switch command {
             case "type": conversation.draft = arg
@@ -310,32 +312,64 @@ struct ComposerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(conversation.attachments) { file in
-                    HStack(spacing: 6) {
-                        if file.isUploading { ProgressView().controlSize(.small) }
-                        else if file.errorMessage != nil { Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.danger) }
-                        else if let preview = file.preview, let image = UIImage(data: preview) {
-                            Image(uiImage: image).resizable().scaledToFill().frame(width: 32, height: 32)
-                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous)).accessibilityHidden(true)
-                        }
-                        else { Image(systemName: attachmentIcon(file.name)).foregroundStyle(Theme.muted) }
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(file.name).font(.footnote.weight(.medium)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
-                            if file.isUploading { Text("正在上传…").font(.caption2).foregroundStyle(Theme.muted) }
-                            else if let message = file.errorMessage { Text(message).font(.caption2).foregroundStyle(Theme.danger).lineLimit(1).frame(maxWidth: 160, alignment: .leading) }
-                        }
-                        Button { conversation.removeAttachment(file) } label: {
-                            Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 24, height: 24)
-                        }
-                        .buttonStyle(.plain).disabled(conversation.isSending)
-                        .accessibilityLabel("移除 \(file.name)")
-                    }
-                    .padding(.leading, 10).padding(.trailing, 4).padding(.vertical, 4)
-                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(file.errorMessage != nil ? Theme.danger.opacity(0.6) : .clear))
+                    if file.preview != nil { composerPicture(file) }
+                    else { fileChip(file) }
                 }
             }
             .padding(.horizontal, 2)
         }
+    }
+
+    @ViewBuilder private func composerPicture(_ file: PendingAttachment) -> some View {
+        if file.isUploading {
+            ComposerImagePlaceholder(uploading: true)
+                .accessibilityLabel("\(file.name) 正在上传")
+        } else if file.errorMessage != nil {
+            ZStack(alignment: .topTrailing) {
+                ComposerImagePlaceholder(uploading: false)
+                Button { conversation.removeAttachment(file) } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        .frame(width: 20, height: 20).foregroundStyle(.white)
+                        .background(.black.opacity(0.65), in: Circle())
+                }
+                .buttonStyle(.plain).offset(x: 5, y: -5)
+                .accessibilityLabel("移除 \(file.name)")
+            }
+        } else if let preview = file.preview, let image = UIImage(data: preview) {
+            Button {
+                draftImage = ImagePreview(image: image) { conversation.removeAttachment(file) }
+            } label: {
+                Image(uiImage: image).resizable().scaledToFill()
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.border))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("查看图片 \(file.name)")
+        } else {
+            ComposerImagePlaceholder(uploading: false)
+        }
+    }
+
+    private func fileChip(_ file: PendingAttachment) -> some View {
+        HStack(spacing: 6) {
+            if file.isUploading { ProgressView().controlSize(.small) }
+            else if file.errorMessage != nil { Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.danger) }
+            else { Image(systemName: attachmentIcon(file.name)).foregroundStyle(Theme.muted) }
+            VStack(alignment: .leading, spacing: 0) {
+                Text(file.name).font(.footnote.weight(.medium)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+                if file.isUploading { Text("正在上传…").font(.caption2).foregroundStyle(Theme.muted) }
+                else if let message = file.errorMessage { Text(message).font(.caption2).foregroundStyle(Theme.danger).lineLimit(1).frame(maxWidth: 160, alignment: .leading) }
+            }
+            Button { conversation.removeAttachment(file) } label: {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain).disabled(conversation.isSending)
+            .accessibilityLabel("移除 \(file.name)")
+        }
+        .padding(.leading, 10).padding(.trailing, 4).padding(.vertical, 4)
+        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(file.errorMessage != nil ? Theme.danger.opacity(0.6) : .clear))
     }
 
     // MARK: Actions
@@ -406,5 +440,23 @@ struct ComposerView: View {
         stopping = true
         defer { stopping = false }
         for task in tasks where task.status != "cancelling" { try? await workspace.cancelTask(task.id) }
+    }
+}
+
+private struct ComposerImagePlaceholder: View {
+    let uploading: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Theme.secondary)
+            .frame(width: 56, height: 56)
+            .overlay {
+                if uploading { ProgressView().controlSize(.small) }
+                else { Image(systemName: "photo").font(.system(size: 16)).foregroundStyle(Theme.muted) }
+            }
+            .opacity(uploading && pulse ? 0.45 : 1)
+            .animation(uploading ? .easeInOut(duration: 1.05).repeatForever(autoreverses: true) : nil, value: pulse)
+            .onAppear { if uploading { pulse = true } }
     }
 }

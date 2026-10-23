@@ -75,26 +75,57 @@ struct FlowLayout: Layout {
     }
 }
 
-/// Files waiting in the composer: name, uploading / failed state and a remove button.
+/// Files waiting in the composer. Pictures are compact thumbnails with no
+/// filename or status row; their X lives in the enlarged view.
 struct AttachmentChips: View {
     let conversation: ConversationStore
+    let onOpenImage: (ChatImagePreview) -> Void
 
     var body: some View {
         FlowLayout(spacing: 8) {
-            ForEach(conversation.attachments) { file in chip(file) }
+            ForEach(conversation.attachments) { file in
+                if file.preview != nil { picture(file) } else { chip(file) }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityLabel("待发送的附件")
+    }
+
+    @ViewBuilder private func picture(_ file: PendingAttachment) -> some View {
+        if file.isUploading {
+            ComposerImagePlaceholder(uploading: true)
+                .accessibilityLabel("\(file.name) 正在上传")
+        } else if file.errorMessage != nil {
+            ZStack(alignment: .topTrailing) {
+                ComposerImagePlaceholder(uploading: false)
+                Button { conversation.removeAttachment(file) } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        .frame(width: 20, height: 20).foregroundStyle(.white)
+                        .background(.black.opacity(0.65), in: Circle())
+                }
+                .buttonStyle(.plain).offset(x: 5, y: -5)
+                .help("移除 \(file.name)").accessibilityLabel("移除 \(file.name)")
+            }
+        } else if let preview = file.preview, let image = NSImage(data: preview) {
+            Button {
+                onOpenImage(ChatImagePreview(image: image) { conversation.removeAttachment(file) })
+            } label: {
+                Image(nsImage: image).resizable().scaledToFill()
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
+            }
+            .buttonStyle(.plain)
+            .help(file.name).accessibilityLabel("查看图片 \(file.name)")
+        } else {
+            ComposerImagePlaceholder(uploading: false)
+        }
     }
 
     private func chip(_ file: PendingAttachment) -> some View {
         HStack(spacing: 8) {
             if file.isUploading { ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 16, height: 16) }
             else if file.errorMessage != nil { Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(Theme.danger) }
-            else if let preview = file.preview, let image = NSImage(data: preview) {
-                Image(nsImage: image).resizable().scaledToFill().frame(width: 36, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous)).accessibilityHidden(true)
-            }
             else { Image(systemName: "doc.text").font(.system(size: 14)).foregroundStyle(Theme.foreground) }
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
@@ -111,6 +142,24 @@ struct AttachmentChips: View {
         .padding(.horizontal, 10).padding(.vertical, 7).frame(maxWidth: 260, alignment: .leading)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(file.errorMessage != nil ? Theme.danger.opacity(0.5) : Theme.border))
+    }
+}
+
+private struct ComposerImagePlaceholder: View {
+    let uploading: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Theme.secondary)
+            .frame(width: 56, height: 56)
+            .overlay {
+                if uploading { ProgressView().controlSize(.small) }
+                else { Image(systemName: "photo").font(.system(size: 16)).foregroundStyle(Theme.muted) }
+            }
+            .opacity(uploading && pulse ? 0.45 : 1)
+            .animation(uploading ? .easeInOut(duration: 1.05).repeatForever(autoreverses: true) : nil, value: pulse)
+            .onAppear { if uploading { pulse = true } }
     }
 }
 
@@ -169,6 +218,8 @@ struct AttachmentCard: View {
 struct AttachmentThumbnail: View {
     let link: AttachmentLink
     let conversation: ConversationStore
+    let messageID: String
+    let onOpen: (ChatImagePreview) -> Void
     @State private var image: NSImage?
     @State private var data: Data?
     @State private var failed = false
@@ -176,12 +227,12 @@ struct AttachmentThumbnail: View {
     var body: some View {
         Group {
             if let image {
-                // Same bounds as the web workspace; clicking opens the original in Preview.
-                Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: min(640, image.size.width), maxHeight: 640, alignment: .leading)
+                Image(nsImage: image).resizable().scaledToFill()
+                    .frame(width: 240, height: 160)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .onTapGesture(perform: openOriginal)
-                    .contextMenu { Button("打开原图") { openOriginal() }; Button("存储图片…") { save() } }
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: open)
+                    .contextMenu { Button("存储图片…") { save() } }
                     .help(link.name).accessibilityLabel(link.name).accessibilityAddTraits(.isButton)
             } else if failed {
                 AttachmentCard(link: link, conversation: conversation)
@@ -204,15 +255,70 @@ struct AttachmentThumbnail: View {
         guard let data else { return }
         _ = try? FilePanels.save(data, suggested: fileName)
     }
-    private func openOriginal() {
-        guard let data else { return }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NexBotImages/\(UUID().uuidString)", isDirectory: true)
-        let safe = fileName.map { "/:\\".contains($0) ? "_" : $0 }.map(String.init).joined()
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent(safe)
-            try data.write(to: url, options: .atomic)
-            NSWorkspace.shared.open(url)
-        } catch {}
+    private func open() {
+        guard let image else { return }
+        onOpen(ChatImagePreview(image: image) {
+            try await conversation.deleteImage(link, messageID: messageID)
+        })
+    }
+}
+
+/// What the in-window picture viewer is showing. The X deletes the picture; the backdrop closes.
+struct ChatImagePreview: Identifiable {
+    let id = UUID()
+    let image: NSImage
+    let delete: @MainActor () async throws -> Void
+}
+
+struct ChatImageViewer: View {
+    let preview: ChatImagePreview
+    let onClose: () -> Void
+    @State private var deleting = false
+    @State private var error = ""
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.16).background(.ultraThinMaterial).ignoresSafeArea()
+                .onTapGesture(perform: onClose)
+            Image(nsImage: preview.image).resizable().scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(32)
+                .overlay(alignment: .topTrailing) {
+                    Button(action: remove) {
+                        Group {
+                            if deleting { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+                        }
+                        .frame(width: 34, height: 34)
+                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.55), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(deleting)
+                    .help("删除图片").accessibilityLabel("删除图片")
+                    .offset(x: -10, y: 10)
+                }
+            if !error.isEmpty {
+                Text(error).font(.system(size: 12)).foregroundStyle(Theme.danger)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(Theme.card, in: Capsule())
+                    .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 28)
+            }
+        }
+        .onExitCommand(perform: onClose)
+    }
+
+    private func remove() {
+        guard !deleting else { return }
+        deleting = true; error = ""
+        Task { @MainActor in
+            do {
+                try await preview.delete()
+                onClose()
+            } catch {
+                self.error = error.localizedDescription
+                deleting = false
+            }
+        }
     }
 }

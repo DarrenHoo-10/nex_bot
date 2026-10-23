@@ -3,6 +3,7 @@ import { createHash, createHmac } from 'node:crypto';
 export interface AttachmentObjects {
   put(key: string, ciphertext: string): Promise<void>;
   get(key: string): Promise<string>;
+  delete?(key: string): Promise<void>;
 }
 const limit = 10 * 1024 * 1024;
 
@@ -20,7 +21,7 @@ export class OssAttachmentObjects implements AttachmentObjects {
     if (env.NEX_ATTACHMENT_STORAGE !== 'oss') return undefined;
     return new OssAttachmentObjects({ endpoint: env.OSS_ENDPOINT ?? '', bucket: env.OSS_BUCKET ?? '', accessKeyId: env.OSS_ACCESS_KEY_ID ?? '', accessKeySecret: env.OSS_ACCESS_KEY_SECRET ?? '' });
   }
-  async request(method: 'PUT' | 'GET', key: string, body?: string) {
+  async request(method: 'PUT' | 'GET' | 'DELETE', key: string, body?: string) {
     if (!/^nexbot\/attachments\/v1\/[a-f0-9]{64}\/[a-f0-9-]+\.enc$/.test(key)) throw new Error('OSS 对象路径无效');
     if (body !== undefined && Buffer.byteLength(body) > limit) throw new Error('附件对象过大');
     const date = new Date().toUTCString(), mime = body === undefined ? '' : 'application/octet-stream';
@@ -48,5 +49,9 @@ export class OssAttachmentObjects implements AttachmentObjects {
       }
     } finally { reader.releaseLock(); }
     return Buffer.concat(chunks).toString('utf8');
+  }
+  async delete(key: string) {
+    const response = await this.request('DELETE', key);
+    await response.body?.cancel();
   }
 }

@@ -120,10 +120,24 @@ struct MessageRow: View {
             if message.role == "peer" && message.a2aDirection == nil { peerAuthor }
             if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps, onOpen: onOpenStep) }
             let split = parsed
-            if !split.body.isEmpty { bodyText(split.body) }
-            if !split.links.isEmpty { AttachmentCards(links: split.links, workspace: workspace, trailing: message.isFromUser) }
-            let pictures = message.isFromUser ? [] : AttachmentLink.embeddedImages(message.content)
-            if !pictures.isEmpty { AttachmentCards(links: pictures, workspace: workspace) }
+            let images = split.links.filter(\.isImage), files = split.links.filter { !$0.isImage }
+            let conversation = workspace.conversation(for: message.botID)
+            if message.isFromUser {
+                if !images.isEmpty {
+                    AttachmentCards(links: images, workspace: workspace, conversation: conversation, messageID: message.id, trailing: true)
+                }
+                if !split.body.isEmpty { bodyText(split.body) }
+                if !files.isEmpty {
+                    AttachmentCards(links: files, workspace: workspace, conversation: conversation, messageID: message.id, trailing: true)
+                }
+            } else {
+                let pictures = AttachmentLink.embeddedImages(message.content)
+                let body = AttachmentLink.stripped(message.content)
+                if !pictures.isEmpty {
+                    AttachmentCards(links: pictures, workspace: workspace, conversation: conversation, messageID: message.id)
+                }
+                if !body.isEmpty { bodyText(body) }
+            }
             if let date = message.createdAt {
                 Text(TimeFormat.formatShortTime(date)).font(.system(size: 10)).foregroundStyle(Theme.muted)
                     .accessibilityLabel(TimeFormat.formatTime(date))

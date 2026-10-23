@@ -57,24 +57,36 @@ func attachmentIcon(_ name: String) -> String {
     }
 }
 
-/// Sent attachments of a message: cards that download the file and open Quick Look.
+/// Sent attachments of a message: pictures are thumbnails, other files are cards.
 struct AttachmentCards: View {
     let links: [AttachmentLink]
     let workspace: WorkspaceStore
+    let conversation: ConversationStore
+    let messageID: String
     var trailing = false
     @State private var loading: String?
     @State private var errorText: String?
     @State private var preview: SharedFile?
+    @State private var shareFile: SharedFile?
+    @State private var imagePreview: ImagePreview?
 
     var body: some View {
         VStack(alignment: trailing ? .trailing : .leading, spacing: 6) {
             ForEach(links) { link in
-                if link.isImage { ImageThumbnail(link: link, workspace: workspace) { Task { await open(link) } } }
+                if link.isImage {
+                    ImageThumbnail(link: link, workspace: workspace, onOpen: { image in
+                        imagePreview = ImagePreview(image: image) {
+                            try await conversation.deleteImage(link, messageID: messageID)
+                        }
+                    }, onSave: { Task { await save(link) } })
+                }
                 else { card(link) }
             }
             if let errorText { Text(errorText).font(.caption).foregroundStyle(Theme.danger) }
         }
         .sheet(item: $preview) { file in QuickLookSheet(url: file.url).ignoresSafeArea() }
+        .sheet(item: $shareFile) { file in ShareSheet(url: file.url) }
+        .fullScreenCover(item: $imagePreview) { preview in NativeImageViewer(preview: preview) }
         .onDebugUI { cmd, arg in
             if cmd == "openattachment", let link = links.first(where: { arg.isEmpty || $0.name.contains(arg) }) { Task { await open(link) } }
         }
@@ -107,38 +119,109 @@ struct AttachmentCards: View {
             preview = SharedFile(url: try TempFiles.write(file.data, name: name))
         } catch { errorText = coreMessage(error) }
     }
+
+    private func save(_ link: AttachmentLink) async {
+        loading = link.id; errorText = nil
+        defer { loading = nil }
+        do {
+            let file = try await workspace.downloadAttachment(id: link.id)
+            let name = file.filename == "attachment" ? (link.picture ? link.name + ".png" : link.name) : file.filename
+            shareFile = SharedFile(url: try TempFiles.write(file.data, name: name))
+        } catch { errorText = coreMessage(error) }
+    }
 }
 
-/// A sent or generated picture, loaded through Core. Tapping opens Quick Look; a failed load shows the file name.
+/// A sent or generated picture, loaded through Core.
 struct ImageThumbnail: View {
     let link: AttachmentLink
     let workspace: WorkspaceStore
-    let onOpen: () -> Void
+    let onOpen: (UIImage) -> Void
+    let onSave: () -> Void
     @State private var image: UIImage?
     @State private var failed = false
 
     var body: some View {
-        Button(action: onOpen) {
+        Button { if let image { onOpen(image) } } label: {
             Group {
                 if let image {
-                    Image(uiImage: image).resizable().scaledToFit()
-                        .frame(maxWidth: 260, maxHeight: 320)
+                    Image(uiImage: image).resizable().scaledToFill()
+                        .frame(width: 240, height: 160)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 } else {
                     RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.card)
-                        .frame(width: 200, height: 140)
+                        .frame(width: 240, height: 160)
                         .overlay {
-                            if failed { Label(link.name, systemImage: "photo").font(.footnote).foregroundStyle(Theme.muted).padding(8) }
+                            if failed { Image(systemName: "photo").font(.title3).foregroundStyle(Theme.muted) }
                             else { ProgressView() }
                         }
                 }
             }
         }
         .buttonStyle(.plain)
+        .contextMenu { Button { onSave() } label: { Label("存储图片", systemImage: "square.and.arrow.down") } }
         .accessibilityLabel("图片 \(link.name)")
         .task(id: link.id) {
             do { image = UIImage(data: try await workspace.downloadAttachment(id: link.id).data); failed = image == nil }
             catch { failed = true }
+        }
+    }
+}
+
+/// What the picture viewer is showing. The X deletes the picture; the backdrop closes.
+struct ImagePreview: Identifiable {
+    let id = UUID()
+    let image: UIImage
+    let onDelete: @MainActor () async throws -> Void
+}
+
+struct NativeImageViewer: View {
+    let preview: ImagePreview
+    @Environment(\.dismiss) private var dismiss
+    @State private var deleting = false
+    @State private var errorText = ""
+
+    var body: some View {
+        ZStack {
+            Theme.background.opacity(0.82).background(.ultraThinMaterial).ignoresSafeArea()
+                .onTapGesture { dismiss() }
+            Image(uiImage: preview.image).resizable().scaledToFit()
+                .padding(16)
+                .overlay(alignment: .topTrailing) {
+                    Button { remove() } label: {
+                        Group {
+                            if deleting { ProgressView() }
+                            else { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+                        }
+                        .frame(width: 34, height: 34)
+                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.55), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(deleting)
+                    .accessibilityLabel("删除图片")
+                    .offset(x: 6, y: -6)
+                }
+            if !errorText.isEmpty {
+                Text(errorText).font(.caption).foregroundStyle(Theme.danger)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(Theme.card, in: Capsule())
+                    .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 28)
+            }
+        }
+        .statusBarHidden()
+    }
+
+    private func remove() {
+        guard !deleting else { return }
+        deleting = true; errorText = ""
+        Task { @MainActor in
+            do {
+                try await preview.onDelete()
+                dismiss()
+            } catch {
+                errorText = coreMessage(error)
+                deleting = false
+            }
         }
     }
 }

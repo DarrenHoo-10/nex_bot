@@ -122,6 +122,7 @@ struct InputBody: Encodable {
         if !attachments.isEmpty { try c.encode(attachments, forKey: .init("attachments")) }
     }
 }
+struct DeleteMessageImageBody: Encodable { let botId: String; let messageId: String; let attachmentId: String }
 struct TaskBody: Encodable { let taskId: String }
 struct ApprovalBody: Encodable { let id: String; let hash: String; let allow: Bool }
 struct SessionBody: Encodable { let token: String }
@@ -155,6 +156,11 @@ extension CoreClient {
     /// when at least one is given. The same `clientID` is idempotent.
     public func sendInput(bot: String, text: String, clientID: String, attachments: [String] = []) async throws {
         try await post("/api/agents/input", body: InputBody(botId: bot, text: text, clientId: clientID, attachments: attachments))
+    }
+    /// `POST /api/agents/messages/image/delete`: removes one image from a sent message. Text and other attachments stay;
+    /// when the image was the whole message, Core removes the message too.
+    public func deleteMessageImage(bot: String, messageID: String, attachmentID: String) async throws {
+        try await post("/api/agents/messages/image/delete", body: DeleteMessageImageBody(botId: bot, messageId: messageID, attachmentId: attachmentID))
     }
     /// `POST /api/auth/refresh` with the current bearer: rotates the token and extends the session.
     /// 401 = session over; 409 = another refresh already rotated it; 429 = throttled.

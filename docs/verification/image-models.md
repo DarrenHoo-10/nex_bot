@@ -135,3 +135,38 @@ including a real worker with a restrictive legacy policy. Typecheck and build pa
 image selections, credentials, settings, identity and records with passing database
 integrity checks. Public HTML/assets match the candidate, health is 200 and protected
 APIs return 401 unauthenticated. Private receipts: `release/deployment-image-access/`.
+
+## Client image UX (2026-10-23)
+
+The Personal workspace (Windows desktop, browser and Android WebView) and the
+native Mac/iOS clients now share the same interaction rules:
+
+- Composer pictures are bare thumbnails. Before upload confirms, the slot is a
+  pulsing gray placeholder; after success it shows the real thumbnail. No file
+  name, upload label, progress bar or persistent remove badge is shown.
+- Tapping or clicking a chat picture opens an in-place lightbox with only a
+  top-right X. The X deletes that picture; the backdrop or Escape closes without
+  deleting. Deleting one picture keeps the message text and other attachments;
+  deleting the only content removes the message.
+- Right-click on desktop and long-press on touch open a download-only menu. The
+  message row keeps its own 引用 / 复制 actions.
+- Pasting an image bitmap into the composer uses the same upload path. The Mac
+  editor handles ⌘V; iOS has 粘贴图片 in the composer menu; the web composer
+  handles the paste event.
+
+The Core route is `POST /api/agents/messages/image/delete` with `botId`,
+`messageId` and `attachmentId`. It checks that the attachment is an image of the
+message and refuses while the message's task is still active. Attachments and
+their encrypted object-store entries are removed together.
+
+Focused verification on this checkout: `pnpm typecheck` and `pnpm lint` pass;
+the focused composer/attachment parser suites pass; `node
+scripts/smoke-image-models.mjs` passes 12 isolated hidden-renderer cases,
+including the generated-image thumbnail, X deletion preserving text, and the
+download-only lightbox control set. `./gradlew :app:assembleDebug` builds the
+Android WebView bundle.
+
+The Mac/iOS native changes were reviewed statically on this Windows host; an
+Xcode/macOS toolchain is required to compile and run those targets. They reuse
+the same Core route and replace the old Quick Look/Preview behavior with the
+in-place X-delete viewer.

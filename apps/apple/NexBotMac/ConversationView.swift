@@ -24,6 +24,7 @@ struct ConversationView: View {
     @State private var dropTargeted = false
     @State private var memoryBaseline: [String: String]?
     @State private var memoryNotice = ""
+    @State private var imagePreview: ChatImagePreview?
 
     private var dropHighlight: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.brand, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
@@ -48,18 +49,19 @@ struct ConversationView: View {
             header
             Hairline()
             if workspace.state != nil && workspace.state?.config == nil { noModelBanner }
-            MessageList(workspace: workspace, conversation: conv, bot: bot)
+            MessageList(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             VStack(spacing: 10) {
                 ForEach(pendingApprovals) { ApprovalCard(workspace: workspace, approval: $0) }
                 ForEach(workspace.state?.peersAwaitingApproval(for: botID) ?? [], id: \.self) { peerID in waitingLine(peerID) }
                 if !tasks.isEmpty { statusLine(conv) }
-                Composer(workspace: workspace, conversation: conv, bot: bot)
+                Composer(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             }
             .frame(maxWidth: Theme.readingWidth)
             .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 24)
             .frame(maxWidth: .infinity)
         }
         .overlay { if dropTargeted { dropHighlight } }
+        .overlay { if let imagePreview { ChatImageViewer(preview: imagePreview) { self.imagePreview = nil } } }
         .dropDestination(for: URL.self) { urls, _ in
             guard bot != nil, !conv.isSending, workspace.connection == .connected else { return false }
             Task { await conv.addFiles(urls.filter(\.isFileURL)) }
@@ -222,6 +224,7 @@ private struct MessageList: View {
     let workspace: WorkspaceStore
     let conversation: ConversationStore
     let bot: Bot?
+    let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @Environment(ContactPreferences.self) private var preferences
     @State private var atBottom = true
@@ -298,7 +301,7 @@ private struct MessageList: View {
                         if let day, day != Self.dayLabel(index > 0 ? messages[index - 1].createdAt : nil) {
                             DayDivider(label: day)
                         }
-                        MessageRow(message: message, bot: bot, workspace: workspace)
+                        MessageRow(message: message, bot: bot, workspace: workspace, onOpenImage: onOpenImage)
                             .overlay {
                                 if message.id == focusedID {
                                     RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
@@ -439,6 +442,7 @@ private struct MessageRow: View {
     let message: AgentMessage
     let bot: Bot?
     let workspace: WorkspaceStore
+    let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @State private var hover = false
     @State private var hideActions: Task<Void, Never>?
@@ -457,16 +461,25 @@ private struct MessageRow: View {
                 .frame(maxWidth: .infinity).textSelection(.enabled)
         } else if message.isFromUser {
             let parsed = AttachmentLink.parse(message.content)
+            let images = parsed.links.filter(\.isImage), files = parsed.links.filter { !$0.isImage }
             VStack(alignment: .trailing, spacing: 6) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if !parsed.body.isEmpty { ChatMarkdown(source: parsed.body, hug: true) }
-                    ForEach(parsed.links) { link in
-                        if link.isImage { AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID)) }
-                        else { AttachmentCard(link: link, conversation: workspace.conversation(for: botID)) }
+                if !images.isEmpty {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        ForEach(images) { link in
+                            AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
+                        }
                     }
                 }
-                .padding(.horizontal, 18).padding(.vertical, 13)
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                if !parsed.body.isEmpty || !files.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !parsed.body.isEmpty { ChatMarkdown(source: parsed.body, hug: true) }
+                        ForEach(files) { link in
+                            AttachmentCard(link: link, conversation: workspace.conversation(for: botID))
+                        }
+                    }
+                    .padding(.horizontal, 18).padding(.vertical, 13)
+                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
                 meta
             }
             .padding(.leading, 80)
@@ -491,8 +504,16 @@ private struct MessageRow: View {
                     if message.kind == "error" {
                         Text(message.content).font(.system(size: 14)).foregroundStyle(Theme.danger).textSelection(.enabled)
                     } else {
-                        ChatMarkdown(source: message.content)
-                        ForEach(AttachmentLink.embeddedImages(message.content)) { AttachmentThumbnail(link: $0, conversation: workspace.conversation(for: botID)) }
+                        let images = AttachmentLink.embeddedImages(message.content)
+                        let body = AttachmentLink.stripped(message.content)
+                        if !images.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(images) { link in
+                                    AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
+                                }
+                            }
+                        }
+                        if !body.isEmpty { ChatMarkdown(source: body) }
                     }
                 }
                 meta

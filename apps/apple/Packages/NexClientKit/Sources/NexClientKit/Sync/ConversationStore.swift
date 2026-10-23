@@ -138,6 +138,12 @@ public final class ConversationStore {
         try await workspace.downloadAttachment(id: link.id)
     }
 
+    /// Deletes one image from a sent message. Text and other attachments stay; an image-only message disappears.
+    public func deleteImage(_ link: AttachmentLink, messageID: String) async throws {
+        try await workspace.client.deleteMessageImage(bot: botID, messageID: messageID, attachmentID: link.id)
+        await workspace.refresh()
+    }
+
     /// Image bytes of a sent or generated picture, served by Core (clients never receive storage URLs).
     public func image(_ link: AttachmentLink) async throws -> Data {
         try await workspace.downloadAttachment(id: link.id).data

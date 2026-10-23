@@ -17,6 +17,7 @@ struct Composer: View {
     let workspace: WorkspaceStore
     @Bindable var conversation: ConversationStore
     let bot: Bot?
+    let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @FocusState private var focused: Bool
     @State private var menuError: String?
@@ -60,7 +61,7 @@ struct Composer: View {
         VStack(spacing: 8) {
             if let quote { quoteBar(quote) }
             if !mentions.isEmpty { mentionMenu }
-            if !conversation.attachments.isEmpty { AttachmentChips(conversation: conversation) }
+            if !conversation.attachments.isEmpty { AttachmentChips(conversation: conversation, onOpenImage: onOpenImage) }
             if let menuError { errorLine(menuError) }
             field
         }

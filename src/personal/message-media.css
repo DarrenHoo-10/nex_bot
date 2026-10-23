@@ -1,0 +1,126 @@
+/* Image thumbnails above a chat message. The native action menu opens on a
+   right-click (pointer) or a long press (touch), so no download link needs to
+   live inside the message body. */
+.rk-workspace .message-media { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+.rk-workspace .message.user .message-media { justify-content: flex-end; }
+.rk-workspace .message-image {
+  position: relative; display: block; width: min(240px, 64vw); aspect-ratio: 3 / 2;
+  flex: 0 0 auto; padding: 0; overflow: hidden; cursor: zoom-in;
+  border: 1px solid var(--border); border-radius: 14px; background: var(--secondary);
+  -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; user-select: none;
+}
+.rk-workspace .message-image:hover { border-color: color-mix(in srgb, var(--foreground) 22%, var(--border)); }
+.rk-workspace .message-image img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; -webkit-user-drag: none; }
+.rk-workspace .message-image.is-failed { cursor: default; }
+.rk-workspace .message-image-loading, .rk-workspace .message-image-failed {
+  display: flex; width: 100%; height: 100%; align-items: center; justify-content: center; gap: 7px;
+  padding: 10px; color: var(--muted-foreground); font-size: 10px; line-height: 1.4; text-align: center;
+}
+.rk-workspace .message-image-loading svg { animation: nex-image-spin 900ms linear infinite; }
+.rk-workspace .message-image-failed { flex-direction: column; }
+.rk-workspace .message-image-failed span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Context menu is portalled under .rk-workspace so it inherits the theme
+   tokens while fixed positioning keeps it out of the transcript scroller. */
+.rk-workspace .image-context-menu {
+  position: fixed; z-index: 141; min-width: 168px; padding: 6px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--popover); color: var(--popover-foreground);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 18%), 0 2px 8px rgb(0 0 0 / 8%);
+  animation: nex-image-menu-in 120ms ease-out;
+}
+.rk-workspace .image-context-menu button {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 11px; border: 0; border-radius: 9px; background: transparent;
+  color: var(--foreground); font-size: 13px; text-align: left;
+}
+.rk-workspace .image-context-menu button:hover,
+.rk-workspace .image-context-menu button:focus-visible { background: var(--secondary); outline: none; }
+
+.rk-workspace .image-lightbox {
+  position: fixed; inset: 0; z-index: 130; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: color-mix(in srgb, var(--background) 78%, transparent);
+  backdrop-filter: blur(10px);
+}
+.rk-workspace .image-lightbox-frame { position: relative; display: inline-flex; max-width: 100%; max-height: 100%; }
+.rk-workspace .image-lightbox-frame img {
+  display: block; max-width: calc(100vw - 48px); max-height: calc(100dvh - 48px);
+  object-fit: contain; border-radius: 10px; box-shadow: 0 18px 48px rgb(0 0 0 / 24%);
+}
+.rk-workspace .image-lightbox-delete {
+  position: absolute; top: 8px; right: 8px; display: grid; place-items: center;
+  width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%;
+  background: rgb(0 0 0 / 55%); color: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+}
+.rk-workspace .image-lightbox-delete:hover:not(:disabled) { background: rgb(0 0 0 / 78%); }
+.rk-workspace .image-lightbox-delete:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.rk-workspace .image-lightbox-delete:disabled svg { animation: nex-image-spin 900ms linear infinite; }
+.rk-workspace .image-lightbox-error {
+  position: fixed; z-index: 150; left: 50%; bottom: 28px; transform: translateX(-50%);
+  max-width: calc(100vw - 32px); padding: 9px 14px; border-radius: 999px;
+  background: var(--foreground); color: var(--background); font-size: 12px; line-height: 1.4;
+  text-align: center; box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+.rk-workspace .image-notice {
+  position: fixed; z-index: 150; left: 50%; bottom: 28px; transform: translateX(-50%);
+  padding: 9px 14px; border-radius: 999px; background: var(--foreground); color: var(--background);
+  font-size: 12px; line-height: 1; white-space: nowrap; box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  pointer-events: none;
+}
+@keyframes nex-image-menu-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes nex-image-spin { to { transform: rotate(360deg); } }
+
+/* Composer attachment drafts: images are compact thumbnails. Until the server
+   confirms an upload its slot is a pulsing gray default image; the real
+   thumbnail replaces it afterwards. */
+.rk-workspace .composer .attachment-drafts { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 2px 0; }
+.rk-workspace .attachment-image-draft { position: relative; width: 56px; height: 56px; flex: 0 0 56px; }
+.rk-workspace button.attachment-image-draft { padding: 0; border: 0; background: transparent; line-height: 0; cursor: zoom-in; }
+.rk-workspace .attachment-image-draft .attachment-thumb-tile {
+  display: block; width: 56px; height: 56px; object-fit: cover;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--input);
+}
+.rk-workspace .attachment-image-draft span.attachment-thumb-tile,
+.rk-workspace .attachment-image-draft button.attachment-thumb-tile {
+  display: grid; place-items: center; padding: 0; color: var(--muted-foreground);
+}
+.rk-workspace .attachment-image-draft .is-uploading { animation: nex-upload-placeholder 1.05s ease-in-out infinite; }
+.rk-workspace .attachment-image-draft .is-error {
+  color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 55%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 8%, var(--input)); cursor: pointer;
+}
+.rk-workspace .attachment-image-draft img.attachment-thumb-tile { animation: nex-thumb-in 150ms ease-out; }
+.rk-workspace .attachment-image-draft .attachment-tile-remove {
+  position: absolute; top: -5px; right: -5px; display: grid; place-items: center;
+  width: 20px; height: 20px; padding: 0; border: 2px solid var(--card); border-radius: 50%;
+  background: var(--foreground); color: var(--background);
+}
+.rk-workspace .attachment-image-draft .attachment-tile-remove:hover { opacity: .82; }
+.rk-workspace .attachment-file-draft {
+  display: flex; align-items: center; gap: 7px; max-width: 240px; min-width: 0;
+  padding: 6px 7px; border: 1px solid var(--border); border-radius: 11px;
+  background: var(--secondary); font-size: 11px; line-height: 1.4;
+}
+.rk-workspace .attachment-file-draft > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-workspace .attachment-file-draft-icon { display: grid; place-items: center; width: 22px; height: 22px; flex: 0 0 22px; color: var(--muted-foreground); }
+.rk-workspace .attachment-file-draft.is-error { border-color: color-mix(in srgb, var(--destructive) 55%, var(--border)); }
+.rk-workspace .attachment-file-draft.is-error .attachment-file-draft-icon { color: var(--destructive); }
+.rk-workspace .attachment-file-draft .attachment-file-remove,
+.rk-workspace .attachment-file-draft .attachment-file-retry {
+  padding: 2px; border: 0; background: transparent; color: var(--muted-foreground); font-size: 10px; line-height: 1.4;
+}
+.rk-workspace .attachment-file-draft .attachment-file-retry { color: var(--destructive); white-space: nowrap; }
+.rk-workspace .attachment-upload-state { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 20px; color: var(--muted-foreground); }
+.rk-workspace .attachment-upload-state svg { animation: nex-upload-spin 900ms linear infinite; }
+@keyframes nex-upload-placeholder {
+  0%, 100% { background: var(--input); color: var(--muted-foreground); opacity: .38; }
+  50% { background: color-mix(in srgb, var(--muted-foreground) 18%, var(--input)); color: var(--foreground); opacity: 1; }
+}
+@keyframes nex-thumb-in { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+@keyframes nex-upload-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 720px) {
+  .rk-workspace .image-lightbox { padding: 12px; }
+  .rk-workspace .image-lightbox-frame img { max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 8px; }
+  .rk-workspace .message-image { width: min(240px, 70vw); }
+}

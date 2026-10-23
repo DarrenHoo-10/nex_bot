@@ -14,7 +14,7 @@ async function fixture() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'nex-oss-fixture-')), key = randomBytes(32), token = 'synthetic-owner';
   closes.push(async () => { if (path.dirname(dir).toLowerCase() !== os.tmpdir().toLowerCase() || !path.basename(dir).startsWith('nex-oss-fixture-')) throw new Error('Unsafe cleanup'); rmSync(dir, { recursive: true, force: true }); });
   const objects = new Map<string, string>(); let fail = false, corrupt = false, reads = 0, beforeRead: (() => void) | undefined;
-  const storage: AttachmentObjects = { async put(key, value) { if (fail) throw new Error('Synthetic offline'); objects.set(key, value); }, async get(key) { reads++; beforeRead?.(); return corrupt ? 'corrupt' : objects.get(key)!; } };
+  const storage: AttachmentObjects = { async put(key, value) { if (fail) throw new Error('Synthetic offline'); objects.set(key, value); }, async get(key) { reads++; beforeRead?.(); return corrupt ? 'corrupt' : objects.get(key)!; }, async delete(key) { objects.delete(key); } };
   const options = { dir, key, token, identity: false as const, memoryRuntime: false as const, hostDevice: false as const };
   let app = await createPersonalApp(options); closes.push(() => app.close());
   const bot = app.store.createBot('Attachment fixture');
@@ -70,6 +70,7 @@ it('signs OSS writes with private ACL, bounded safe keys, checksums and safe fai
   const config = { endpoint: 'oss-cn-beijing.aliyuncs.com', bucket: 'fixture-bucket', accessKeyId: 'synthetic-id', accessKeySecret: 'synthetic-secret' };
   const oss = new OssAttachmentObjects(config, transport), key = `nexbot/attachments/v1/${'a'.repeat(64)}/01234567.enc`;
   await oss.put(key, 'ciphertext'); expect(await oss.get(key)).toBe('ciphertext');
+  await oss.delete(key); expect(calls.at(-1)?.init.method).toBe('DELETE');
   const headers = new Headers(calls[0].init.headers), md5 = createHash('md5').update('ciphertext').digest('base64');
   const canonical = `PUT\n${md5}\napplication/octet-stream\n${headers.get('Date')}\nx-oss-forbid-overwrite:true\nx-oss-object-acl:private\n/fixture-bucket/${key}`;
   expect(headers.get('Authorization')).toBe('OSS synthetic-id:' + createHmac('sha1', config.accessKeySecret).update(canonical).digest('base64'));
