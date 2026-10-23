@@ -9,6 +9,10 @@ const until = async (check) => { const end = Date.now() + 10000; while (!await c
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: false, width: 1100, height: 800, webPreferences: { sandbox: true, contextIsolation: true, offscreen: true, backgroundThrottling: false } });
   const wc = window.webContents, cases = [], logs = [];
+  if (config.localUi) {
+    const { installLocalUi } = await import(require('node:url').pathToFileURL(path.resolve('electron/nex-client-ui.mjs')).href);
+    installLocalUi(wc.session, config.localUi, () => config.origin);
+  }
   wc.on('console-message', (_event, ...args) => { logs.push(String(args[1] ?? args[0])); });
   const evaluate = script => wc.executeJavaScript(script, true);
   const frames = () => wc.mainFrame.framesInSubtree.filter(frame => frame.url.startsWith('data:text/html;base64,'));

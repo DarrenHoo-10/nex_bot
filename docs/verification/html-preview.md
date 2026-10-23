@@ -57,7 +57,8 @@ then removes its owned profile/data. It verifies:
 - Narrow-screen geometry and history-source reloading work.
 
 The shell route is public, constant and contains no model/user data. Windows'
-optional local UI override forwards this route to Core. The application CSP
+optional local UI override also serves the bundled shell with a sandbox CSP,
+allowing a local client update without deploying the new backend route. The application CSP
 continues to forbid inline script; only the separate sandbox shell permits it.
 These checks do not establish OS-level network isolation or CPU/memory quotas.
 
@@ -129,3 +130,26 @@ xcodebuild -project apps/apple/Testing/NexRenderFixture.xcodeproj -scheme Render
 Native fullscreen presentation, SwiftUI disposal during navigation and visual
 acceptance on macOS/iOS remain unverified until that run. Syntax parsing and
 Linux package tests must not be reported as an Xcode build or native UI pass.
+
+## Main synchronization and local client candidate
+
+The 2026-10-24 follow-up merged `origin/main` at `6c376c1b`, including its
+composer and remembered-approval changes. The bridge regression was adapted to
+perform the new native MessagePort handshake before its approval requests.
+Eight affected Vitest suites passed 49 tests; the two Electron local-UI tests,
+frontend/server typechecks and Core/UI build passed.
+
+Both normal Core delivery and the Windows local-UI protocol override passed
+the same 15-case rendering smoke. The local override served every preview shell
+without a request to Core (`remoteShellRequests: 0`), so this capability does
+not require a remote server rollout for a bundled Windows client.
+
+```sh
+node --test electron/nex-client-ui.node-test.mjs
+node scripts/smoke-html-preview.mjs --local-ui --electron=/absolute/path/to/staged/electron.exe
+```
+
+The client build now includes `html-preview.html` next to its matching UI.
+The override keeps the shell's CSP sandbox header and embedded resource policy.
+Generated shell line endings are normalized before serialization so Windows
+and Unix checkouts produce the same Apple resource.

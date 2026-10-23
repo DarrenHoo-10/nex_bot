@@ -48,14 +48,14 @@ Web 全屏改变当前容器的布局，不移动 iframe。Apple 全屏移动同
 | 平台 | 接入路径 |
 | --- | --- |
 | Web | RichText 拆分明确内容块；Core 提供无用户数据的 /html-preview.html |
-| Windows | 复用 Core UI 和相同 iframe；保留 Electron 主框架 IPC 校验 |
+| Windows | 复用 Core UI 和相同 iframe；本地 UI 包含预览运行页，可独立于后端上线；保留 Electron 主框架 IPC 校验 |
 | Android | 打包同一预览页和 React 组件；原全框架 JavascriptInterface 改为只投递至准确主框架 origin 的 MessagePort |
 | macOS | CommonMark 识别同一格式；共享 HTMLPreviewMessage，独立非持久化 WKWebView |
 | iOS | 同一解析器和共享 WebKit 组件，适配触控和全屏 |
 
 Apple 只在隔离内容世界提供受限生命周期消息处理器；原生导航代理和内容规则额外拒绝网络导航/资源。不提供文件 base URL、账号存储或业务原生接口。静态 HTML 的 WebKit 配置不启用页面脚本。
 
-共享运行内核位于 shared/html-preview-shell.mjs。构建脚本生成 Apple 资源，并将相同文件放进 Android 资产，--check 检测资源漂移。Web/Windows 通过 Core 直接提供该内核。
+共享运行内核位于 shared/html-preview-shell.mjs。构建脚本生成 Apple 资源，并将相同文件放进 Android 资产和客户端 UI，--check 检测资源漂移。Web 通过 Core 提供该内核；Windows 本地 UI 优先使用打包文件，没有本地 UI 时仍由 Core 提供。
 
 ## 验证与交付
 
@@ -67,4 +67,4 @@ Apple 只在隔离内容世界提供受限生命周期消息处理器；原生�
 4. Android：桥传输回归、编译及独立模拟器验收。
 5. Apple：Swift 包测试及 macOS/iOS 共用的 WebKit fixture；在 Windows 上不能把 Swift 语法检查当作 Xcode 编译或原生 UI 验收。
 
-实现与验证记录另存 docs/verification/html-preview.md。开发位于 codex/html-rendering worktree，不部署或发布。若以后发布，必须先合并并推送 main，再从该提交构建。
+实现、本地部署与验证记录另存 docs/verification/html-preview.md。开发位于 codex/html-rendering worktree，线上发布必须先合并并推送 main，再从该提交构建。

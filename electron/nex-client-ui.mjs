@@ -11,12 +11,13 @@ export function installLocalUi(session, directory, getOrigin) {
     for (const item of readdirSync(folder, { withFileTypes: true })) {
       const relative = prefix + item.name;
       if (item.isDirectory() && relative === "assets") collect(path.join(folder, item.name), "assets/");
-      else if (item.isFile() && (relative.startsWith("assets/") || ["index.html", "personal.html", "app-icon.svg"].includes(relative))) {
+      else if (item.isFile() && (relative.startsWith("assets/") || ["index.html", "personal.html", "app-icon.svg", "html-preview.html"].includes(relative))) {
         const type = types[path.extname(item.name)];
         if (!type) continue;
         let body = readFileSync(path.join(folder, item.name));
-        if (item.name.endsWith(".html")) body = Buffer.from(body.toString("utf8").replace("</head>", '<meta name="nexbot-ui-source" content="local"></head>'));
-        files.set("/" + relative, { body, type });
+        const preview = relative === "html-preview.html";
+        if (item.name.endsWith(".html") && !preview) body = Buffer.from(body.toString("utf8").replace("</head>", '<meta name="nexbot-ui-source" content="local"></head>'));
+        files.set("/" + relative, { body, type, preview });
       }
     }
   }
@@ -25,7 +26,7 @@ export function installLocalUi(session, directory, getOrigin) {
   const handler = (request) => {
     const url = new URL(request.url);
     const file = request.method === "GET" && url.origin === getOrigin() ? files.get(url.pathname) : undefined;
-    if (file) return new Response(file.body, { headers: { "Content-Type": file.type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+    if (file) return new Response(file.body, { headers: { "Content-Type": file.type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...(file.preview ? { "Content-Security-Policy": "sandbox allow-scripts; frame-ancestors 'self'" } : {}) } });
     return session.fetch(request, { bypassCustomProtocolHandlers: true });
   };
   session.protocol.handle("https", handler);

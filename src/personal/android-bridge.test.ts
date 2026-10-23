@@ -49,6 +49,7 @@ it("does not forward off-origin requests or arbitrary bodies", async () => {
   expect(native.request).not.toHaveBeenCalled();
 });
 it("preserves remembered approval and scoped revocation through native transport", async () => {
+  connectNative();
   for (const [path, payload] of [
     ["/api/approvals", { id: "a1", hash: "fixture-hash", allow: true, remember: true }],
     ["/api/approvals/revoke", { id: "r1", botId: "b1" }],

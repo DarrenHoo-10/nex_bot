@@ -69,7 +69,7 @@ function previewHost(bootstrap, policy) {
 
 /** Identical trusted shell is served by Core and bundled in Android/Apple. */
 export function htmlPreviewShell() {
-  const bootstrap = `(${contentBootstrap.toString()})()`;
-  const script = `(${previewHost.toString()})(${JSON.stringify(bootstrap)},${JSON.stringify(HTML_PREVIEW_CSP)})`;
+  const bootstrap = `(${contentBootstrap.toString().replace(/\r\n?/g, '\n')})()`;
+  const script = `(${previewHost.toString().replace(/\r\n?/g, '\n')})(${JSON.stringify(bootstrap)},${JSON.stringify(HTML_PREVIEW_CSP)})`;
   return '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + HTML_PREVIEW_CSP + '"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;height:100%;overflow:hidden}iframe{display:block;border:0;width:100%;height:100%;background:white}</style></head><body><script>' + script.replace(/<\/script/gi, '<\\/script') + '</script></body></html>';
 }
