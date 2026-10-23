@@ -170,3 +170,25 @@ The Mac/iOS native changes were reviewed statically on this Windows host; an
 Xcode/macOS toolchain is required to compile and run those targets. They reuse
 the same Core route and replace the old Quick Look/Preview behavior with the
 in-place X-delete viewer.
+
+## Production deployment — 2026-10-23
+
+The Core/UI release `main-d3bfb7e7-20261023` was built from pushed main commit
+`d3bfb7e7`. The service was active with no unfinished tasks across all five
+workspaces. The previous executable, data directory, environment files and
+systemd drop-ins were backed up under
+`main-d3bfb7e7-20261023-pre`; the previous release remains available for
+rollback.
+
+The isolated candidate check passed image deletion with preserved text,
+image-only message removal, UI asset equality and unauthenticated API refusal.
+After the switch, database quick/foreign-key checks passed, schema 21 and all
+vault/identity/model/secret hashes were preserved, and the five workspaces
+retained their record counts. Public HTTPS health returned 200; the HTML and
+all three hashed assets matched the candidate exactly; `/api/state` and the new
+image-delete route returned 401 without authentication. The new UI bundle
+contains the in-place lightbox and compact composer thumbnail markers.
+
+This deployment covers Core and the served Personal UI. Native Mac/iOS clients
+were not packaged on this Windows host; Android used the previously built debug
+APK. Private receipts are in ignored `release/deployment-image-ux-20261023/`.
