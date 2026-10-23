@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { HTML_PREVIEW_CSP, htmlPreviewShell } from '../../shared/html-preview-shell.mjs';
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { networkInterfaces } from "node:os";
 import os from "node:os";
@@ -168,7 +169,11 @@ export async function createPersonalApp(options: AppOptions) {
     const requestOrigin = options.publicOrigin && request.headers.host === new URL(options.publicOrigin).host ? new URL(options.publicOrigin).origin : `http://${request.headers.host}`;
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (url.pathname === '/html-preview.html' && request.method === 'GET') {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_PREVIEW_CSP + "; sandbox allow-scripts; frame-ancestors 'self'" });
+      response.end(htmlPreviewShell()); return;
+    }
     if (url.pathname === "/health") { json(response, 200, { app: "NexBot", backend: "personal-os", runtime: "pi/1.0.4", attachmentStorage: options.attachmentObjects ? "oss" : "database", ...(options.accountWorkspaces ? { accountWorkspaces: true } : {}) }); return; }
     const mutating = request.method !== "GET" && request.method !== "HEAD";
     if (mutating && request.headers.origin && request.headers.origin !== requestOrigin) { json(response, 403, { error: "Invalid origin" }); return; }

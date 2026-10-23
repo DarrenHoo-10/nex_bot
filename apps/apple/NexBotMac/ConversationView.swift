@@ -625,7 +625,7 @@ private struct FoldedReply: View {
                 .font(.system(size: 12)).foregroundStyle(Theme.foreground).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if open { ChatMarkdown(source: content) }
+            if open { ChatMarkdown(source: content, pending: pending) }
         }
         .padding(.horizontal, 14).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -645,7 +645,7 @@ private struct StreamingReply: View {
                 Text(bot?.name ?? "Agent").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
                 FoldedReply(content: stream.text, recipient: peer?.name ?? "Agent", pending: true)
             } else {
-                ChatMarkdown(source: stream.text)
+                ChatMarkdown(source: stream.text, pending: true)
                 Text("正在回复…").font(.system(size: 11)).foregroundStyle(Theme.muted)
                 TypingDots()
             }

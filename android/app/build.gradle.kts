@@ -17,6 +17,7 @@ val buildWorkspaceUi by tasks.registering(Exec::class) {
     inputs.dir(rootProject.file("../shared"))
     inputs.file(rootProject.file("../electron/client/style.css"))
     inputs.file(rootProject.file("../scripts/build-android-ui.mjs"))
+    inputs.file(rootProject.file("../scripts/build-html-preview.mjs"))
     inputs.file(rootProject.file("../pnpm-lock.yaml"))
     outputs.dir(layout.buildDirectory.dir("generated/workspaceAssets"))
 }

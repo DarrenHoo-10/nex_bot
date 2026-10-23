@@ -9,6 +9,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+await import('./build-html-preview.mjs');
 const output = path.join(root, "dist-personal");
 const coreOnly = process.argv.includes("--core");
 const shellOnly = process.argv.includes("--shell");

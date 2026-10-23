@@ -4,6 +4,8 @@ import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResiz
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
 import { ChatChart } from "./components/ChatChart";
+import { HtmlPreview } from "./components/HtmlPreview";
+import { htmlPreviewParts } from "../../shared/html-preview";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
@@ -87,8 +89,10 @@ function MarkdownCode({ className, children }: ComponentProps<'code'> & ExtraPro
 // Stable component types preserve focused links/buttons across conversation
 // refreshes. Context supplies the latest preview callback without remounting.
 const markdownComponents = { pre: MarkdownPre, img: MarkdownImage, a: MarkdownLink, code: MarkdownCode };
-export function RichText({ value, onPreviewFile }: { value: string; onPreviewFile?: (path: string) => void }) {
-  return <div className="markdown"><FilePreviewContext.Provider value={onPreviewFile}><Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeStaticHTML]} components={markdownComponents}>{value}</Markdown></FilePreviewContext.Provider></div>;
+export function RichText({ value, onPreviewFile, pending = false }: { value: string; onPreviewFile?: (path: string) => void; pending?: boolean }) {
+  return <div className="markdown"><FilePreviewContext.Provider value={onPreviewFile}>{htmlPreviewParts(value).map((part, index) => part.kind === 'preview'
+    ? <HtmlPreview key={index} source={part.source} complete={part.complete} pending={pending}/>
+    : <Markdown key={index} remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeStaticHTML]} components={markdownComponents}>{part.source}</Markdown>)}</FilePreviewContext.Provider></div>;
 }
 
 export function AgentDesktop() {
@@ -188,6 +192,8 @@ export function AgentDesktop() {
   useEffect(() => {
     if (desktop?.platform !== "android") return;
     const back = () => {
+      const preview = document.querySelector<HTMLButtonElement>('.html-preview-fullscreen [aria-label="退出全屏"]');
+      if (preview) { preview.click(); return; }
       const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
       if (modal) { modal.dispatchEvent(new Event("cancel", { cancelable: true })); return; }
       const popover = document.querySelector<HTMLElement>(":popover-open");
@@ -549,7 +555,7 @@ export function AgentDesktop() {
             return <article className={`message assistant ${link ? "a2a-reply" : ""}`} key={s.taskId}>
               <Avatar bot={bot} allBots={state.bots} size={34} state={avatarState}/>
               <div className="message-body">
-                {link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div><div className="bubble"><RichText value={s.text}/></div><span className="muted">正在回复…</span></>}
+                {link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div><div className="bubble"><RichText value={s.text} pending/></div><span className="muted">正在回复…</span></>}
               </div>
             </article>;
           })}
@@ -705,7 +711,7 @@ function A2AMarker({ direction, peer, bots, timestamp, select }: { direction: st
   return <div className="a2a-marker" data-a2a-direction={direction}><span>{direction === "sent" ? "已发消息给" : "消息来自"}</span><button className="a2a-contact" aria-label={`打开 ${peer?.name ?? "Agent"} 的消息`} disabled={!peer} onClick={() => { if (peer) select(str(peer.id)); }}><Avatar bot={peer} allBots={bots} size={20}/><span>{peer?.name ?? "Agent"}</span></button><time title={timestamp ? new Date(Number(timestamp)).toLocaleString("zh-CN") : undefined}>{formatTime(timestamp)}</time></div>;
 }
 function FoldedReply({ content, recipient, pending = false }: { content: string; recipient: string; pending?: boolean }) {
-  return <details className="bubble folded-content folded-reply"><summary><span className="reply-recipient">{pending ? "正在回复给" : "已回复给"}{recipient}</span><span aria-hidden="true">·</span><span className="expand-label">展开</span><span className="collapse-label">收起</span><ChevronDown size={13}/></summary><div className="folded-body" data-reply-content><RichText value={content}/></div></details>;
+  return <details className="bubble folded-content folded-reply"><summary><span className="reply-recipient">{pending ? "正在回复给" : "已回复给"}{recipient}</span><span aria-hidden="true">·</span><span className="expand-label">展开</span><span className="collapse-label">收起</span><ChevronDown size={13}/></summary><div className="folded-body" data-reply-content><RichText value={content} pending={pending}/></div></details>;
 }
 function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]) {
   if (m.role === "user") return "我";

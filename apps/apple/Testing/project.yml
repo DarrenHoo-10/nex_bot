@@ -18,6 +18,8 @@ targetTemplates:
     sources:
       - path: RenderHost.swift
       - path: ../Shared/StaticHTMLMessage.swift
+      - path: ../Shared/HTMLPreviewMessage.swift
+      - path: ../Shared/Theme.swift
     dependencies:
       - package: NexMarkdown
     settings:
@@ -28,6 +30,7 @@ targetTemplates:
     type: bundle.unit-test
     sources:
       - path: ChartRenderingTests.swift
+      - path: HTMLPreviewRenderingTests.swift
     dependencies:
       - package: NexMarkdown
     settings:
