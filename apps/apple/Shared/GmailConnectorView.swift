@@ -10,29 +10,94 @@ struct GmailMark: View {
     }
 }
 
+/// The catalog row. While no mailbox is linked it offers Connect directly; the row itself
+/// still opens the details. Leaving the catalog cancels a pending attempt, like the details page.
 @MainActor
 struct GmailCatalogButton: View {
     let workspace: WorkspaceStore
     let open: () -> Void
-    private var added: Bool { workspace.state?.connectors.contains { $0.isGmail } == true }
-    var body: some View {
-        Button(action: open) {
-            HStack(spacing: 16) {
-                GmailMark(size: 54)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Gmail").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.foreground)
-                    Text("搜索、读取邮件与会话。").font(.system(size: 13)).foregroundStyle(Theme.muted)
-                }
-                Spacer(minLength: 8)
-                if added {
-                    Image(systemName: "checkmark").foregroundStyle(Theme.success)
-                    Text("已添加").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                } else { Image(systemName: "chevron.right").foregroundStyle(Theme.muted) }
-            }
-            .padding(.vertical, 16).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).accessibilityIdentifier("gmail-catalog")
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var authorization: ConnectorAuthorization
+
+    init(workspace: WorkspaceStore, open: @escaping () -> Void) {
+        #if DEBUG
+        self.init(workspace: workspace, open: open, authorization: ConnectorAuthorization(workspace: workspace, allowLoopbackFixture: true))
+        #else
+        self.init(workspace: workspace, open: open, authorization: ConnectorAuthorization(workspace: workspace))
+        #endif
     }
+    /// Lets render fixtures start from an attempt that is already in flight.
+    init(workspace: WorkspaceStore, open: @escaping () -> Void, authorization: ConnectorAuthorization) {
+        self.workspace = workspace; self.open = open
+        _authorization = State(initialValue: authorization)
+    }
+    private var added: Bool { workspace.state?.connectors.contains { $0.isGmail } == true }
+    private var direct: Bool { !added && workspace.state?.gmailAvailable == true }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Button(action: open) {
+                    HStack(spacing: 16) {
+                        GmailMark(size: 54)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Gmail").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.foreground)
+                            Text("搜索、读取邮件与会话。").font(.system(size: 13)).foregroundStyle(Theme.muted)
+                        }
+                        Spacer(minLength: 8)
+                        if added {
+                            Image(systemName: "checkmark").foregroundStyle(Theme.success)
+                            Text("已添加").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                        } else if !direct { Image(systemName: "chevron.right").foregroundStyle(Theme.muted) }
+                    }
+                    .padding(.vertical, 16).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).accessibilityIdentifier("gmail-catalog")
+                if direct && authorization.authorizationURL == nil { connectButton }
+            }
+            if direct { status }
+        }
+        .task(id: "\(authorization.attempt?.id ?? "")-\(scenePhase == .active)") {
+            if scenePhase == .active { await authorization.waitForCompletion() }
+        }
+        .onDisappear { authorization.cancel() }
+    }
+
+    private var connectButton: some View {
+        Button {
+            Task { if let url = await authorization.start() { launch(url) } }
+        } label: {
+            HStack(spacing: 6) {
+                if authorization.starting { ProgressView().controlSize(.small) }
+                Text(authorization.starting ? "准备连接…" : "连接")
+            }
+            .font(.system(size: 13)).foregroundStyle(Theme.foreground)
+            .padding(.horizontal, 16).padding(.vertical, 7).background(Theme.secondary, in: Capsule())
+        }
+        .buttonStyle(.plain).disabled(authorization.busy).accessibilityIdentifier("gmail-catalog-connect")
+    }
+
+    @ViewBuilder private var status: some View {
+        if let url = authorization.authorizationURL {
+            let waiting = HStack(spacing: 8) { ProgressView().controlSize(.small); Text("等待 Google 授权").lineLimit(1).fixedSize() }
+            let actions = HStack(spacing: 14) {
+                Button("继续授权") { launch(url) }
+                Button("取消连接") { authorization.cancel() }
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) { waiting; Spacer(minLength: 8); actions }
+                VStack(alignment: .leading, spacing: 8) { waiting; actions }
+            }
+            .font(.system(size: 13)).buttonStyle(.borderless).padding(.leading, 70).padding(.bottom, 12)
+            .accessibilityIdentifier("gmail-catalog-authorizing")
+        } else if let message = authorization.error {
+            Text(message).font(.system(size: 13)).foregroundStyle(Theme.danger)
+                .padding(.leading, 70).padding(.bottom, 12).accessibilityIdentifier("gmail-catalog-feedback")
+        }
+    }
+
+    private func launch(_ url: URL) { openURL(url) { accepted in if !accepted { authorization.failedToOpenBrowser() } } }
 }
 
 private struct GmailGrantTarget: Identifiable {
