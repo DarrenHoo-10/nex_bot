@@ -6,7 +6,7 @@ import { createAgentSession, DefaultResourceLoader, defineTool, ModelRuntime, Se
 import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply } from "./contracts.ts";
 import { modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
-import { tokens } from './token-estimate.ts';
+import { isImagePart, tokens } from './token-estimate.ts';
 
 let session: AgentSession | undefined;
 const replies = new Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
@@ -145,11 +145,13 @@ async function main(value: WorkerConfig) {
       const first=entries[index];
       const earlier=entries.slice(0,index);
       if(!first || !earlier.length)throw new Error('当前单轮内容超出上下文预算，原文已保留。请缩小输入或增大模型窗口。');
+      // The summarizer reads text; image bytes stay in the original entry.
+      const textOnly=(content:unknown)=>Array.isArray(content)?content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part):content;
       const source=earlier.flatMap<{ref:string;role:string;content:unknown}>((entry,index)=>{
         const ref=`entry:${entry.id}`;
-        if(entry.type==='custom_message')return [{ref,role:'user',content:entry.content}];
+        if(entry.type==='custom_message')return [{ref,role:'user',content:textOnly(entry.content)}];
         if(entry.type==='compaction'&&index===0)return [{ref,role:'summary',content:entry.summary}];
-        if(entry.type==='message'&&entry.message.role!=='system')return [{ref,role:entry.message.role,content:'content' in entry.message?entry.message.content:JSON.stringify(entry.message)}];
+        if(entry.type==='message'&&entry.message.role!=='system')return [{ref,role:entry.message.role,content:'content' in entry.message?textOnly(entry.message.content):JSON.stringify(entry.message)}];
         return [];
       });
       // Core persists source snapshot and checkpoint before the worker changes
@@ -198,8 +200,7 @@ async function main(value: WorkerConfig) {
           const role = messages.find((m) => m.role === "system" || m.role === "developer")?.role ?? "system";
           payload.messages = [{ role, content: permit.systemPrompt }, ...messages.filter((m) => m.role !== "system" && m.role !== "developer")];
         }
-        body = JSON.stringify(payload);
-        const estimated=tokens(body);
+        const estimated=tokens(payload);
         const available=Math.floor(config.contextWindow-estimated-256);
         if(available<256)throw new Error('当前请求超出上下文窗口，原文已保留');
         if(config.provider==='anthropic')payload.max_tokens=Math.min(Number(payload.max_tokens??config.maxOutputTokens),available);

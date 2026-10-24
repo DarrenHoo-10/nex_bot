@@ -78,6 +78,18 @@ it("bounds uploads, rejects missing/stolen references and exposes images as mode
   await until(()=>f.app.store.get("SELECT status FROM tasks WHERE id=?",sent.taskId)?.status === "succeeded");
   expect(await new ChatFiles(f.app.store).read(f.bot,file.id)).toMatchObject({images:[{mimeType:"image/png",data:image}]});
 });
+it("sends a large attached photo without counting its base64 bytes against the context window", async () => {
+  const f = await fixture();
+  f.app.store.saveConfig({ provider:"openai",endpoint:f.model.origin+"/v1",model:"fixture",apiKey:"synthetic",contextWindow:64000,maxOutputTokens:4096 });
+  // ~1.2M base64 characters: the old estimate was ~400k tokens, far past 64k.
+  const data = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), randomBytes(900_000)]).toString("base64");
+  const file = (await f.api("attachments",{botId:f.bot,name:"photo.png",data})).body;
+  f.model.scripts.push({kind:"openai-tool",calls:[{id:"read-photo",name:"broker",args:JSON.stringify({action:"attachment.read",attachmentId:file.id})}]},{kind:"openai-text",text:"看到了"});
+  const sent = (await f.api("agents/input",{botId:f.bot,text:"能看到图片吗",clientId:"photo",attachments:[file.id]})).body;
+  await until(() => ["succeeded","failed"].includes(String(f.app.store.get("SELECT status FROM tasks WHERE id=?",sent.taskId)?.status)));
+  expect(f.app.store.get("SELECT status,result_summary FROM tasks WHERE id=?",sent.taskId)).toMatchObject({status:"succeeded"});
+  expect(f.model.requests.at(-1)!.body).toContain(data);
+},60000);
 it("deletes one sent image while preserving text and removes an image-only message", async () => {
   const f=await fixture(), files=new ChatFiles(f.app.store);
   const image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aEtcAAAAASUVORK5CYII=";
