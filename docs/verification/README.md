@@ -2,6 +2,7 @@
 
 - [Unified UI and role avatars: all-platform release](ui-roles-release.md)
 - [Gmail Connect from the connector catalog](gmail-catalog-connect.md)
+- [Flat layout in client windows](client-frame-flat.md)
 
 NexBot Core is a standalone Node backend. Desktop clients now include a local
 device executor; use the [client device executor recipe](client-device-executor.md)
