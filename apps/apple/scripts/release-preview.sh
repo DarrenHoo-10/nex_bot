@@ -8,7 +8,7 @@ test -n "$VERSION"
 if [ "${RENDER_ONLY:-false}" != true ]; then node ../../scripts/build-mac-executor.mjs; fi
 xcodegen generate
 xcodegen generate --spec Testing/project.yml --project Testing
-SIM_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')
+SIM_ID=${SIM_ID:-$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if "iPhone" in x["name"]))')}
 failures=0
 check() { if "$@"; then return 0; else failures=$((failures + 1)); fi; }
 if [ "${RENDER_ONLY:-false}" != true ]; then

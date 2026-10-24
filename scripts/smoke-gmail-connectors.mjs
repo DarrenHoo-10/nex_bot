@@ -178,6 +178,8 @@ try {
   if (await evaluate("!!document.querySelector('[data-connector=gmail] button')")) throw new Error("Interactive control nested inside the catalog row button");
   await geometry(); await screenshot("gmail-catalog-connect-light");
   await evaluate("window.fixtureOriginalOpen=window.open;window.open=()=>null");
+  // The native shell would finish authorization at once; keep it pending so cancellation can be exercised.
+  if (nativeShell) writeFileSync(browserMode, "fail");
   const pendingFromCatalog = async (width) => {
     await button("连接", rowConnect);
     await until(() => evaluate(`!!document.querySelector('${rowConnect} .gmail-authorization a')`), "catalog authorization link");

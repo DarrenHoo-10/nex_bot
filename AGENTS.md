@@ -45,7 +45,12 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    "no Xcode here": Apple code is built and tested on the user's Mac over SSH
    (`ssh mac-air`). Copy sources into a fresh temporary directory there, convert
    CRLF to LF (a Windows checkout breaks bash scripts), and never touch the user's
-   existing checkouts. Release builds come from a fresh checkout of the pushed commit.
+   existing checkouts. Release builds come from a fresh `git clone` of the pushed
+   commit on the Mac (it reaches GitHub directly): run
+   `corepack pnpm install --frozen-lockfile` and `node scripts/build-nexbot-icons.mjs`
+   (the icon files are generated, not tracked), create a dedicated simulator with
+   `xcrun simctl create` and pass it as `SIM_ID` to `release-preview.sh`, so the
+   user's booted simulator is never used. Delete the simulator and directory afterwards.
 4. **Packages.** Build every platform the change reaches from the pushed commit:
    Windows `pnpm package:client:win`; Android
    `./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug`
@@ -54,7 +59,10 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    on the Mac. Clients update by comparing version numbers, so bump the version
    (`electron-builder.client.yml`, `android/app/build.gradle.kts`,
    `apps/apple/project.yml`) for every platform you ship, and never replace the
-   bytes of an already published version or asset name.
+   bytes of an already published version or asset name. Check each exact artifact,
+   not only the source: Windows with `node scripts/smoke-shell-login.mjs --exe=<exe>`,
+   Android's test results and `apksigner` (same certificate as the published build),
+   Mac/iOS version, signature and bundle contents.
 5. **Publish.** Create a GitHub pre-release tagged `nexbot-v<windows>-preview.N`
    (Apple-only: `nexbot-apple-v<version>-preview.N`) at the build commit, with a
    Chinese title and notes (platform/version table, install notes, what was and
@@ -63,6 +71,12 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    and update the in-app update manifest with `scripts/publish-client-update.mjs`
    on the Core host (`--dry-run` first; see
    [`docs/verification/client-updates.md`](docs/verification/client-updates.md)).
+   Keep the previous manifest privately for rollback. Then verify the result: GitHub
+   asset digests match the local files; `/api/client/update?platform=<p>&version=<old>`
+   offers the new version (Core re-reads the manifest every five minutes) while the
+   current version gets none; downloading each offered installer matches the
+   manifest size and SHA-256. A finished background command is not success: read
+   its result before moving on.
 6. **README and records.** Update the README download table and version line to the
    new tag, add a `docs/verification/<topic>.md` record with the evidence and
    limits, and link it from `docs/verification/README.md`.
