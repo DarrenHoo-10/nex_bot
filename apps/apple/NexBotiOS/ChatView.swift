@@ -146,7 +146,7 @@ struct ChatView: View {
             }
             return Markdown.isOpenable(url) ? .systemAction : .discarded
         })
-        .background(Theme.background)
+        .background { WorkspaceSurface(kind: .reading) }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbarBackground(Theme.background, for: .navigationBar)

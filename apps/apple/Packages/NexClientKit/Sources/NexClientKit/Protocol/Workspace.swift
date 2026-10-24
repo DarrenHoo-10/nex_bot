@@ -178,6 +178,7 @@ public struct ToolStep: RowBacked {
 public struct AgentMessage: RowBacked {
     public let row: Row
     public init(row: Row) { self.row = row }
+    public var botID: String { row.string("bot_id") ?? "" }
     public var seq: Int { row.int("seq") ?? 0 }
     /// `user`, `assistant`, `peer` or `system`.
     public var role: String { row.string("role") ?? "" }

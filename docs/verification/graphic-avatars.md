@@ -62,9 +62,9 @@ Screenshots: [desktop picker](../../doc/ui/graphic-avatar-picker.png) and
 [mobile picker](../../doc/ui/graphic-avatar-picker-mobile.png).
 The ignored full report is `release/workspace-verification-avatars/result.json`.
 
-This verifies the shared web renderer used by browser, Windows and Android
-WebView. It is not a physical Android device run. The Apple native avatar
-component was not extended in this change. No release package was published.
+The initial implementation verified the shared web renderer. The subsequent
+[native and Android adaptation](avatar-platform-parity.md) adds macOS and iOS,
+builds Android and records the platform checks. No release package was published.
 
 An earlier workspace smoke closed its owned services but left the temporary profile
 `nex-workspace-fixture-9o9KEz` after a file-lock cleanup failure; the later

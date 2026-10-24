@@ -83,7 +83,7 @@ struct ContactsList: View {
             Hairline().padding(.horizontal, 12)
             accountCard
         }
-        .background(Theme.sidebar)
+        .background { WorkspaceSurface(kind: .sidebar) }
         .modifier(AgentSheetsHost(workspace: workspace))
         #if DEBUG
         .task { await runAgentDebugCommands(workspace: workspace, ui: ui, preferences: preferences) }

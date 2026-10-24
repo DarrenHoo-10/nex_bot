@@ -272,6 +272,8 @@ for every terminal write or MCP call to gating only dangerous effects.
 
 The [current inspector and contact motion record](inspector-cleanup.md) covers
 compact routines, direct avatar/identity editing and active sidebar animation.
+The [avatar platform parity record](avatar-platform-parity.md) covers the accepted
+graphic roles, native macOS/iOS adaptation and Android bundle verification.
 See [settings and model discovery](settings-model-discovery.md),
 [login/logout](login-refresh.md), [invite registration](invite-registration.md),
 and the [Mac UI references](../../doc/ui/README.md) for related changes.

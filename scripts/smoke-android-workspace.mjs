@@ -5,7 +5,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { connectAndroidWorkspace } from "./testing/android-workspace-cdp.mjs";
 const fixtureFile = process.argv[2] || "release/android-workspace/fixture.json";
 const fixture = JSON.parse(readFileSync(fixtureFile, "utf8"));
-const c = await connectAndroidWorkspace(Number(process.argv[3] || 9227));
+// Optional loopback origin is for smoke-android-renderer.mjs, which uses the exact APK assets.
+const rendererOrigin = process.argv[4];
+if (rendererOrigin && !/^http:\/\/127\.0\.0\.1:\d+$/.test(rendererOrigin)) throw new Error("Renderer fixture must be loopback");
+const c = await connectAndroidWorkspace(Number(process.argv[3] || 9227), rendererOrigin);
 const cases = [];
 const q = JSON.stringify;
 const wait = async (expression, label = expression) => {
@@ -69,9 +72,18 @@ try {
   await button("保存", "document.querySelector('.bot-identity-editor')"); await wait("document.querySelector('.bot-identity-link')?.textContent==='协助整理资料，简洁回答。'");
   check("inline bot identity editing");
   await click(".profile-avatar-button"); await wait("!!document.querySelector('.avatar-picker')");
-  await button("经典图库", "document.querySelector('.avatar-picker')");
-  check("shared avatar collection", await c.evaluate("document.querySelectorAll('.avatar-option').length>=20"));
+  check("unlabelled role catalog and preserved original companions", await c.evaluate("document.querySelectorAll('[data-graphic-option]').length===12 && document.querySelectorAll('[data-preset]').length===20 && [...document.querySelectorAll('[data-graphic-option]')].every(e=>!e.textContent.trim()) && !document.querySelector('.avatar-picker').innerText.includes('经典图库')"));
+  await click('[data-graphic-option="male-06"]');
+  await button("思考", "document.querySelector('.identity-state-picker')");
+  check("selected artwork animates in preview", await c.evaluate("getComputedStyle(document.querySelector('.identity-preview .graphic-avatar-frame')).animationName==='graphic-ponder'"));
+  await button("应用形象", "document.querySelector('.avatar-picker')");
+  await wait("!document.querySelector('.avatar-picker')");
+  check("graphic choice persists through native transport", (await api("state")).bots.some(b=>String(b.name).startsWith('手机助手') && JSON.parse(b.appearance_json || '{}').id==='male-06'));
+  await click(".profile-avatar-button"); await wait("!!document.querySelector('.avatar-picker')");
+  check("saved choice reopens selected", await c.evaluate("document.querySelector('[data-graphic-option=male-06]').getAttribute('aria-pressed')==='true'"));
+  await click('[data-graphic-option="female-06"]');
   await back();
+  check("native back cancels avatar draft", (await api("state")).bots.some(b=>String(b.name).startsWith('手机助手') && JSON.parse(b.appearance_json || '{}').id==='male-06'));
   await button("工作", "document.querySelector('.inspector-tabs')"); await click("[aria-label='添加例行任务']");
   await input(".modal input[name=name]", "每日整理"); await input(".modal textarea[name=prompt]", "整理今日进度"); await input(".modal input[name=localTime]", "23:55");
   await button("保存", "document.querySelector('.modal')"); await wait("!!document.querySelector('.routine-toggle')");

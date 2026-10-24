@@ -6,13 +6,22 @@ extension WorkspaceStore {
     func appearance(of bot: Bot) -> AgentAppearance { AgentAppearance.of(bot, firstID: bots.first?.id) }
 
     func companionState(of botID: String) -> CompanionState {
-        CompanionState(task: state?.unfinishedTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection != .resyncing)
+        CompanionState(task: state?.avatarTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection != .resyncing)
     }
 
     /// `animated: nil` follows the web sidebar: move only while thinking or working. Chat header and detail pass `true`.
-    func avatar(of bot: Bot, size: CGFloat, animated: Bool? = nil) -> AgentAvatar {
-        let state = companionState(of: bot.id)
-        return AgentAvatar(appearance: appearance(of: bot), state: state, size: size, animated: animated ?? [.thinking, .working].contains(state))
+    func avatar(of bot: Bot, size: CGFloat, animated: Bool? = nil) -> some View {
+        WorkspaceAgentAvatar(workspace: self, bot: bot, size: size, animated: animated)
+    }
+}
+
+private struct WorkspaceAgentAvatar: View {
+    let workspace: WorkspaceStore, bot: Bot, size: CGFloat, animated: Bool?
+    @Environment(ContactPreferences.self) private var preferences
+    var body: some View {
+        let state = workspace.companionState(of: bot.id)
+        AgentAvatar(appearance: workspace.appearance(of: bot), state: state, size: size,
+                    animated: preferences.motionEnabled && (animated ?? [.thinking, .working].contains(state)))
     }
 }
 
