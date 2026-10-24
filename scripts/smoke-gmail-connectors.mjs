@@ -171,6 +171,48 @@ try {
   await click(".connector-back");
   if (await evaluate("document.querySelector('[data-connector=gmail]').textContent.includes('已添加')")) throw new Error("Removed mailbox still appears connected");
   cases.push("disconnect-revocation-and-empty-state");
+  // The catalog row offers Connect directly; opening the detail page first is not required.
+  const rowConnect = ".connector-catalog-item > .gmail-connect";
+  const onCatalog = "!!document.querySelector('.connector-catalog')&&!document.querySelector('.connector-profile')";
+  if (!await evaluate(`(()=>{const el=document.querySelector('${rowConnect} button');return !!el&&el.textContent.trim()==='连接'&&!el.disabled&&el.getClientRects().length>0&&!document.querySelector('[data-connector=gmail]').textContent.includes('已添加')})()`)) throw new Error("Catalog row has no direct Connect button");
+  if (await evaluate("!!document.querySelector('[data-connector=gmail] button')")) throw new Error("Interactive control nested inside the catalog row button");
+  await geometry(); await screenshot("gmail-catalog-connect-light");
+  await evaluate("window.fixtureOriginalOpen=window.open;window.open=()=>null");
+  const pendingFromCatalog = async (width) => {
+    await button("连接", rowConnect);
+    await until(() => evaluate(`!!document.querySelector('${rowConnect} .gmail-authorization a')`), "catalog authorization link");
+    if (!await evaluate(onCatalog)) throw new Error("Connecting from the catalog left the catalog");
+    await geometry();
+    if (!await evaluate(`[...document.querySelectorAll('.connector-catalog-item *')].every(el=>el.getBoundingClientRect().right<=innerWidth+1)`)) throw new Error("Catalog authorization overflows at " + width);
+    await screenshot(`gmail-catalog-authorizing-${width}`);
+    return evaluate(`document.querySelector('${rowConnect} .gmail-authorization a').href`);
+  };
+  const cancelFromCatalog = async (url) => {
+    await button("取消连接", rowConnect);
+    await until(() => evaluate(`!document.querySelector('${rowConnect} .gmail-authorization')&&!!document.querySelector('${rowConnect} button')`), "catalog cancelled flow");
+    if ((await fetch(url)).status !== 400 || core.connectors.list().length) throw new Error("Cancelled catalog flow connected");
+  };
+  await cancelFromCatalog(await pendingFromCatalog("desktop"));
+  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+  await geometry(); await screenshot("gmail-catalog-connect-mobile");
+  await cancelFromCatalog(await pendingFromCatalog("mobile"));
+  await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  // Opening the detail page while authorizing abandons the pending flow, like leaving the detail page does.
+  const abandonedFromCatalog = await pendingFromCatalog("desktop");
+  await click("[data-connector=gmail]"); await until(() => evaluate("!!document.querySelector('.connector-profile')"), "detail from catalog");
+  if ((await fetch(abandonedFromCatalog)).status !== 400 || core.connectors.list().length) throw new Error("Opening details retained catalog authorization");
+  await click(".connector-back");
+  cases.push("catalog-direct-connect-blocked-popup-cancel-mobile-and-abandon");
+  await evaluate("window.open=window.fixtureOriginalOpen");
+  if (nativeShell) writeFileSync(browserMode, "complete");
+  const exchanges = google.exchanges;
+  await button("连接", rowConnect);
+  await until(() => google.exchanges > exchanges, "catalog popup callback");
+  await until(() => evaluate("document.querySelector('[data-connector=gmail]').textContent.includes('已添加')&&!document.querySelector('.connector-catalog-item > .gmail-connect')"), "catalog connected state");
+  if (!await evaluate(onCatalog)) throw new Error("Catalog connection navigated away");
+  if (core.connectors.list().length !== 1 || core.connectors.list()[0].grants.length) throw new Error("Catalog connection created extra records or grants");
+  await screenshot("gmail-catalog-connected-direct-light");
+  cases.push("catalog-direct-connect-completes-without-grants");
   if (exceptions.length) throw new Error("Renderer exceptions: " + exceptions.join(", "));
   const report = { passed: true, cases, googleExchanges: google.exchanges, mailRequests: google.requests.filter((request) => request.path.includes("/gmail/")).length, ...(nativeShell ? {} : { screenshots: output }) };
   writeFileSync(path.join(output, "result.json"), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report));
