@@ -24,7 +24,7 @@ async function fixture() {
   const bot = app.store.all("SELECT * FROM bots ORDER BY created_at")[0];
   async function api(route: string, data?: unknown) {
     const response = await fetch(app.origin + "/api/" + route, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(data ? { method: "POST", body: JSON.stringify(data) } : {}) });
-    return { status: response.status, body: await response.json() as Record<string, unknown> as { feishu?: { job?: Record<string, unknown>; apps: Array<Record<string, unknown>> } } & Record<string, unknown> };
+    return { status: response.status, body: await response.json() as Record<string, unknown> & { feishu?: { job?: { stage?: string; url?: string; error?: string }; userAuth?: { stage?: string; url?: string; error?: string }; apps: Array<{ id: string; appId: string; brand: string; status: string; ownerBound: boolean; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null; botName: string; version: number }> } } };
   }
   async function state() { return (await api("state")).body.feishu!; }
   async function connectFake() {
@@ -164,5 +164,111 @@ describe("feishu connector in disposable Core", () => {
     f.model.scripts.push({ kind: "openai-text", text: "现在在线" });
     f.fake.deliver("cli_fake", messageEvent({ messageId: "om_free", chatId: "oc_free", senderOpenId: "ou_owner", content: JSON.stringify({ text: "重新上线" }) }));
     await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_free'")?.task_id);
+  }, 60_000);
+
+  it("auto-grants the built-in tools and answers read calls without approval", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const policy = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", String(f.bot.id))?.policy_json)) as { tools: string[] };
+    expect(policy.tools).toEqual(expect.arrayContaining(["connector.list", "connector.tools", "connector.call"]));
+    const connector = (await f.state()).apps[0];
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "dir", name: "broker", args: JSON.stringify({ action: "connector.tools", connectorId: connector.id }) }] },
+      { kind: "openai-tool", calls: [{ id: "read", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "feishu_read", parameters: { path: "/open-apis/docx/v1/documents/doc1/raw_content" } }) }] },
+      { kind: "openai-text", text: "查询完成" },
+    );
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_read", chatId: "oc_read", senderOpenId: "ou_owner", content: JSON.stringify({ text: "读一下 doc1 的内容" }) }));
+    await until(() => f.fake.apiCalls.length >= 1);
+    await until(() => !!f.app.store.get("SELECT id FROM tool_calls WHERE tool_name='connector.call' AND status='succeeded'"));
+    const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_read'")?.task_id);
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
+    expect(f.fake.apiCalls[0]).toMatchObject({ method: "GET", path: "/open-apis/docx/v1/documents/doc1/raw_content", authorization: /^Bearer tenant-/ });
+    expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.call'")?.result_json)).toContain("doc1");
+  }, 60_000);
+
+  it("holds feishu_write for approval, posts after the owner allows, and validates parameters", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const connector = (await f.state()).apps[0];
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "bad", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "feishu_read", parameters: { path: "https://evil.test/open-apis/x" } }) }] },
+      { kind: "openai-tool", calls: [{ id: "write", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "feishu_write", parameters: { path: "/open-apis/docx/v1/documents", body: { title: "会议纪要" } } }) }] },
+      { kind: "openai-text", text: "已创建" },
+    );
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_write", chatId: "oc_write", senderOpenId: "ou_owner", content: JSON.stringify({ text: "建一篇会议纪要文档" }) }));
+    await until(() => !!f.app.store.get("SELECT id FROM tool_calls WHERE status IN ('failed','succeeded') AND result_json LIKE '%参数无效%'"));
+    const bad = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE result_json LIKE '%参数无效%' LIMIT 1")?.result_json)) as { isError?: boolean; text?: string };
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain("参数无效");
+    expect(f.fake.apiCalls).toHaveLength(0);
+    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
+    await until(() => f.fake.sent.some((entry) => String(entry.body.content ?? "").includes("请求批准")));
+    const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
+    expect(f.app.store.get("SELECT status FROM tool_calls WHERE status='awaiting_approval'")?.status).toBe("awaiting_approval");
+    expect(f.fake.apiCalls).toHaveLength(0);
+    const toast = await f.fake.card("cli_fake", cardActionEvent({ openId: "ou_owner", value: { kind: "approval", id: approval.id, hash: approval.argument_hash, decision: "allow" } }));
+    expect(toast).toMatchObject({ toast: { type: "success" } });
+    await until(() => f.fake.apiCalls.length >= 1);
+    expect(f.fake.apiCalls[0]).toMatchObject({ method: "POST", path: "/open-apis/docx/v1/documents" });
+    expect(f.fake.apiCalls[0].body).toMatchObject({ title: "会议纪要" });
+    const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_write'")?.task_id);
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+  }, 60_000);
+
+  it("authorizes the owner via device flow and serves user-identity reads", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    f.fake.setPendingPolls(2);
+    const connector = (await f.state()).apps[0];
+    expect((await f.api("feishu/user-auth/start", { id: connector.id })).status).toBe(200);
+    await until(async () => (await f.state()).apps[0].userAuthorized);
+    expect((await f.state()).apps[0].userScopes.length).toBeGreaterThan(0);
+    const stored = String(f.app.store.get("SELECT user_token FROM personal_feishu_apps")?.user_token);
+    expect(stored).not.toContain("user-access");
+    expect(stored).not.toContain("user-refresh");
+    const connectorAfter = (await f.state()).apps[0];
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "userRead", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connectorAfter.id, connectorVersion: connectorAfter.version, tool: "feishu_read", parameters: { path: "/open-apis/wiki/v2/spaces", as: "user" } }) }] },
+      { kind: "openai-text", text: "知识库读取完成" },
+    );
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_wiki", chatId: "oc_wiki", senderOpenId: "ou_owner", content: JSON.stringify({ text: "看看我的知识库" }) }));
+    await until(() => f.fake.apiCalls.length >= 1);
+    expect(f.fake.apiCalls[0].authorization).toBe("Bearer user-access-1");
+  }, 60_000);
+
+  it("discards authorization from a different account", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    f.fake.setUserOpenId("ou_other");
+    const connector = (await f.state()).apps[0];
+    expect((await f.api("feishu/user-auth/start", { id: connector.id })).status).toBe(200);
+    await until(async () => (await f.state()).userAuth?.stage === "error");
+    expect((await f.state()).userAuth?.error).toContain("不一致");
+    expect((await f.state()).apps[0].userAuthorized).toBe(false);
+    expect(f.app.store.get("SELECT user_token FROM personal_feishu_apps")?.user_token).toBeNull();
+    expect((await f.state()).apps[0].ownerBound).toBe(true);
+  }, 60_000);
+
+  it("refreshes an expired user token exactly once before a user call", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const connector = (await f.state()).apps[0];
+    expect((await f.api("feishu/user-auth/start", { id: connector.id })).status).toBe(200);
+    await until(async () => (await f.state()).apps[0].userAuthorized);
+    const row = f.app.store.get("SELECT user_token FROM personal_feishu_apps")!;
+    const grant = JSON.parse(f.app.store.decrypt(String(row.user_token))) as { accessToken: string; expiresAt: number };
+    expect(grant.accessToken).toBe("user-access-1");
+    f.app.store.run("UPDATE personal_feishu_apps SET user_token=?", f.app.store.encrypt(JSON.stringify({ ...grant, expiresAt: Date.now() - 1000 })));
+    const connectorAfter = (await f.state()).apps[0];
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "userRead", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connectorAfter.id, connectorVersion: connectorAfter.version, tool: "feishu_read", parameters: { path: "/open-apis/drive/v1/files", as: "user" } }) }] },
+      { kind: "openai-text", text: "读取完成" },
+    );
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_drive", chatId: "oc_drive", senderOpenId: "ou_owner", content: JSON.stringify({ text: "看看我的云盘" }) }));
+    await until(() => f.fake.apiCalls.length >= 1);
+    expect(f.fake.apiCalls[0].authorization).toBe("Bearer user-access-2");
+    const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_drive'")?.task_id);
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
   }, 60_000);
 });

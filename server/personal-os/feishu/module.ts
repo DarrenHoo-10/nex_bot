@@ -1,14 +1,17 @@
 import { now, text, id, hash, type CoreStore, type Row } from "../store.ts";
 import type { AgentModule } from "../agents.ts";
 import type { TaskRuntime } from "../runtime.ts";
-import { feishuOrigins, FeishuApi, type Brand } from "./api.ts";
+import { connectorAccess } from "../connectors.ts";
+import { feishuOrigins, FeishuApi, FeishuApiError, missingScope, type Brand, type UserTokenGrant } from "./api.ts";
 import { wsTransportFactory, type FeishuTransport, type TransportFactory, type RegisterAppFn } from "./transport.ts";
+import { feishuTools, feishuToolNames, parseToolCall, queryString } from "./tools.ts";
 import manifest from "./lark-scopes.json" with { type: "json" };
 
 export type { RegisterAppFn };
 
 const baselineEvents = ["im.message.receive_v1", "im.chat.member.bot.added_v1", "im.chat.member.bot.deleted_v1"];
 const scopeManifest = manifest as { scopes: { tenant: string[]; user: string[] } };
+const userTokenInvalid = new Set([99991661, 99991663, 99991668, 99991671, 99991676, 99991677]);
 
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function pick(source: Record<string, unknown>, keys: string[]): string | undefined {
@@ -16,6 +19,12 @@ function pick(source: Record<string, unknown>, keys: string[]): string | undefin
   return undefined;
 }
 function safe(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 300); }
+function sleepAbort(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+  });
+}
 
 /** 飞书富文本（post）与文本消息的纯文本提取。 */
 function extractText(message: Record<string, unknown>): string {
@@ -67,7 +76,7 @@ interface RegisterJob {
   controller: AbortController;
 }
 
-export interface FeishuModuleOptions { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch }
+export interface FeishuModuleOptions { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch; grantTools?: (connectorId: string, version: number, botId: string, tools: string[]) => void; devicePollMs?: number }
 
 /**
  * 飞书连接器：一个自建应用接入一个助手。消息经官方长连接进出，
@@ -77,7 +86,10 @@ export class FeishuModule {
   private readonly api: FeishuApi;
   private readonly transportFactory: TransportFactory;
   private job: RegisterJob | undefined;
+  private userAuth?: { stage: "polling" | "done" | "error"; url?: string; expiresAt?: number; error?: string; controller: AbortController };
   private readonly transports = new Map<string, FeishuTransport>();
+  private readonly active = new Map<AbortController, string>();
+  private readonly refreshing = new Map<string, Promise<UserTokenGrant | null>>();
   private scanning = false;
   private closed = false;
 
@@ -89,8 +101,14 @@ export class FeishuModule {
   state() {
     return {
       ...(this.job ? { job: { stage: this.job.stage, ...(this.job.url ? { url: this.job.url } : {}), ...(this.job.expiresAt ? { expiresAt: this.job.expiresAt } : {}), ...(this.job.error ? { error: this.job.error } : {}) } } : {}),
-      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id ORDER BY a.created_at")
-        .map((row) => ({ id: String(row.id), appId: String(row.app_id), brand: String(row.brand), status: String(row.status), error: row.error === null ? null : String(row.error), ownerBound: !!row.owner_open_id, botId: String(row.bot_id), botName: String(this.store.get("SELECT name FROM bots WHERE id=?", String(row.bot_id))?.name ?? ""), enabled: row.enabled === 1, version: Number(row.version) })),
+      ...(this.userAuth ? { userAuth: { stage: this.userAuth.stage, ...(this.userAuth.url ? { url: this.userAuth.url } : {}), ...(this.userAuth.expiresAt ? { expiresAt: this.userAuth.expiresAt } : {}), ...(this.userAuth.error ? { error: this.userAuth.error } : {}) } } : {}),
+      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id ORDER BY a.created_at")
+        .map((row) => ({
+          id: String(row.id), appId: String(row.app_id), brand: String(row.brand), status: String(row.status), error: row.error === null ? null : String(row.error),
+          ownerBound: !!row.owner_open_id, botId: String(row.bot_id), botName: String(this.store.get("SELECT name FROM bots WHERE id=?", String(row.bot_id))?.name ?? ""),
+          enabled: row.enabled === 1, version: Number(row.version),
+          userAuthorized: !!row.user_token, userScopes: JSON.parse(String(row.user_scopes_json ?? "[]")) as string[], userExpiresAt: row.user_token_expires_at === null ? null : Number(row.user_token_expires_at),
+        })),
     };
   }
 
@@ -162,10 +180,12 @@ export class FeishuModule {
   private persistApp(input: { appId: string; appSecret: string; brand: Brand; ownerOpenId: string | null; botId: string }) {
     const connectorId = id();
     this.store.transaction(() => {
-      this.store.insert("personal_connectors", { id: connectorId, kind: "feishu", ...this.store.scope(), name: "飞书", url: feishuOrigins(input.brand).open, transport: "http", enabled: 1, version: 1, credential: null, tools_json: "[]", created_at: now() });
+      this.store.insert("personal_connectors", { id: connectorId, kind: "feishu", ...this.store.scope(), name: "飞书", url: feishuOrigins(input.brand).open, transport: "http", enabled: 1, version: 1, credential: null, tools_json: JSON.stringify(feishuTools), created_at: now() });
       this.store.insert("personal_feishu_apps", { connector_id: connectorId, app_id: input.appId, brand: input.brand, app_secret: this.store.encrypt(input.appSecret), owner_open_id: input.ownerOpenId, bot_id: input.botId, connection: "idle", created_at: now() });
       this.store.audit("feishu.app.save", "connector", connectorId, { appId: input.appId, brand: input.brand });
     });
+    // 工具目录自动授权给接收助手；写入仍逐次审批。
+    this.options.grantTools?.(connectorId, 1, input.botId, [...feishuToolNames]);
     this.changed();
     return connectorId;
   }
@@ -179,6 +199,169 @@ export class FeishuModule {
     this.store.run("UPDATE personal_feishu_apps SET bind_code=?,bind_expires_at=? WHERE connector_id=?", hash(code), now() + 10 * 60_000, app.connector_id);
     this.changed();
     return { code };
+  }
+
+  /** 主人身份授权：设备码流。授权账号必须与应用主人一致（未绑定时以它绑定）。 */
+  startUserAuth(data: Record<string, unknown>) {
+    const app = this.store.get("SELECT * FROM personal_feishu_apps WHERE connector_id=?", text(data.id, 100));
+    if (!app) throw new Error("应用不存在");
+    if (this.userAuth?.stage === "polling") throw new Error("已有进行中的授权，请先取消");
+    const controller = new AbortController();
+    this.userAuth = { stage: "polling", controller };
+    this.changed();
+    void this.userAuthFlow(String(app.connector_id), controller);
+    return { started: true };
+  }
+
+  cancelUserAuth() {
+    if (!this.userAuth) return;
+    this.userAuth.controller.abort();
+    this.userAuth = undefined;
+    this.changed();
+  }
+
+  private async userAuthFlow(connectorId: string, controller: AbortController) {
+    try {
+      const app = this.store.get("SELECT a.*,c.enabled FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.connector_id=?", connectorId);
+      if (!app) throw new Error("应用不存在");
+      const credentials = this.credentials(app);
+      const granted = JSON.parse(String(app.user_scopes_json ?? "[]")) as string[];
+      const request = await this.api.deviceAuthorization(credentials, [...new Set([...granted, ...scopeManifest.scopes.user])]);
+      if (controller.signal.aborted) return;
+      this.userAuth = { ...this.userAuth!, stage: "polling", url: request.verificationUriComplete ?? request.verificationUri, expiresAt: now() + request.expiresIn * 1000, controller };
+      this.changed();
+      const deadline = now() + request.expiresIn * 1000;
+      let waitMs = this.options.devicePollMs ?? request.interval * 1000;
+      while (now() < deadline) {
+        await sleepAbort(waitMs, controller.signal);
+        if (controller.signal.aborted) return;
+        const result = await this.api.tokenEndpoint(credentials, { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: request.deviceCode });
+        if (result.pending === "authorization_pending") continue;
+        if (result.pending === "slow_down") { waitMs = Math.min(waitMs + 5000, 60_000); continue; }
+        if (result.pending) throw new Error(`授权失败：${result.pending}`);
+        const grant = result.access!;
+        const info = await this.api.userInfo(credentials, grant.accessToken);
+        const owner = String(app.owner_open_id ?? "");
+        if (!owner) {
+          if (!info.openId) throw new Error("授权成功但无法确认账号身份");
+          this.store.run("UPDATE personal_feishu_apps SET owner_open_id=? WHERE connector_id=?", info.openId, connectorId);
+        } else if (info.openId !== owner) throw new Error("授权账号与应用主人不一致，已丢弃令牌");
+        this.store.run("UPDATE personal_feishu_apps SET user_token=?,user_scopes_json=?,user_token_expires_at=? WHERE connector_id=?", this.store.encrypt(JSON.stringify(grant)), JSON.stringify(grant.scope), grant.expiresAt, connectorId);
+        this.store.audit("feishu.user.auth", "connector", connectorId, { scopes: grant.scope.length });
+        this.userAuth = { stage: "done", controller };
+        this.changed();
+        return;
+      }
+      throw new Error("设备授权已过期，请重新发起");
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      this.userAuth = { stage: "error", controller, error: safe(error) };
+      this.changed();
+    }
+  }
+
+  private clearUserToken(connectorId: string) {
+    this.store.run("UPDATE personal_feishu_apps SET user_token=NULL,user_scopes_json='[]',user_token_expires_at=NULL WHERE connector_id=?", connectorId);
+    this.changed();
+  }
+
+  /** 过期前 5 分钟刷新；同一应用的刷新串行。refresh 失效即清除令牌。 */
+  private async userAccessToken(row: Row): Promise<string> {
+    const stored = row.user_token ? JSON.parse(this.store.decrypt(String(row.user_token))) as UserTokenGrant : null;
+    const connectorId = String(row.connector_id);
+    if (!stored?.accessToken || (stored.refreshExpiresAt !== undefined && stored.refreshExpiresAt <= now())) {
+      if (stored) this.clearUserToken(connectorId);
+      throw Object.assign(new Error("主人尚未完成飞书授权"), { missingUserAuth: true });
+    }
+    if (stored.expiresAt > now() + 5 * 60_000) return stored.accessToken;
+    let pending = this.refreshing.get(connectorId);
+    if (!pending) {
+      pending = (async () => {
+        const result = await this.api.tokenEndpoint(this.credentials(row), { grant_type: "refresh_token", refresh_token: stored.refreshToken });
+        if (result.pending || !result.access) { this.clearUserToken(connectorId); return null; }
+        const grant = { ...result.access, refreshToken: result.access.refreshToken || stored.refreshToken };
+        this.store.run("UPDATE personal_feishu_apps SET user_token=?,user_scopes_json=?,user_token_expires_at=? WHERE connector_id=?", this.store.encrypt(JSON.stringify(grant)), JSON.stringify(grant.scope), grant.expiresAt, connectorId);
+        return grant;
+      })().finally(() => this.refreshing.delete(connectorId));
+      this.refreshing.set(connectorId, pending);
+    }
+    const refreshed = await pending;
+    if (!refreshed) throw Object.assign(new Error("主人尚未完成飞书授权"), { missingUserAuth: true });
+    return refreshed.accessToken;
+  }
+
+  /** 通用工具是否由本模块执行（按连接器 kind 判断）。 */
+  handles(args: Record<string, unknown>): boolean {
+    if (args.action !== "connector.call" && args.action !== "connector.tools") return false;
+    const row = this.store.get("SELECT kind FROM personal_connectors WHERE id=?", typeof args.connectorId === "string" ? args.connectorId : "");
+    return row?.kind === "feishu";
+  }
+
+  cancelTask(taskId: string) { for (const [controller, active] of this.active) if (active === taskId) controller.abort(); }
+
+  private async callAs(row: Row, request: ReturnType<typeof parseToolCall>): Promise<Record<string, unknown>> {
+    // connectorAccess 返回的是连接器行；app_secret 在应用行里。
+    const app = this.store.get("SELECT * FROM personal_feishu_apps WHERE connector_id=?", String(row.id));
+    if (!app) throw new Error("飞书应用不存在");
+    const credentials = this.credentials(app);
+    const path = request.path + queryString(request.query);
+    if (request.as === "bot") return await this.api.request(credentials, request.method, path, request.body);
+    const attempt = async () => {
+      const fresh = this.store.get("SELECT * FROM personal_feishu_apps WHERE connector_id=?", String(row.id))!;
+      const token = await this.userAccessToken(fresh);
+      return await this.api.userRequest(credentials, token, request.method, path, request.body);
+    };
+    try { return await attempt(); }
+    catch (error) {
+      // user token 失效：刷新一次后重试；再失败按未授权返回。
+      if (error instanceof FeishuApiError && userTokenInvalid.has(error.code)) {
+        this.clearUserToken(String(row.connector_id));
+        return await attempt();
+      }
+      throw error;
+    }
+  }
+
+  /** connector.call/tools 的飞书实现。授权、版本失效检查复用连接器机制。 */
+  async execute(call: Row, args: Record<string, unknown>, authorize: () => Promise<void>) {
+    if (this.closed) throw new Error("连接器正在关闭");
+    const row = connectorAccess(this.store, String(call.bot_id), args);
+    if (args.action === "connector.tools") return { connectorId: row.id, connectorVersion: row.version, tools: feishuTools };
+    let request: ReturnType<typeof parseToolCall>;
+    try { request = parseToolCall(String(args.tool ?? ""), record(args.parameters)); }
+    catch (error) { return { text: `参数无效：${error instanceof Error ? error.message : "参数无效"}`, images: [], isError: true }; }
+    const controller = new AbortController();
+    this.active.set(controller, String(call.task_id ?? ""));
+    let dispatched = false;
+    try {
+      await authorize();
+      connectorAccess(this.store, String(call.bot_id), args);
+      if (controller.signal.aborted) throw new Error("已取消");
+      dispatched = true;
+      let result: Record<string, unknown>;
+      try {
+        result = await this.callAs(row, request);
+      } catch (error) {
+        if ((error as { missingUserAuth?: boolean }).missingUserAuth) return { text: JSON.stringify({ error: "missing_scope", layer: "user", hint: "请主人在连接器的飞书卡片完成「授权文档访问」后重试。" }), images: [], isError: true };
+        if (error instanceof FeishuApiError) {
+          const scope = missingScope(error);
+          if (scope?.layer === "app") return { text: JSON.stringify({ error: "missing_scope", layer: "app", scopes: error.scopes, hint: "应用未开通该权限，需在开发者后台开通。" }), images: [], isError: true };
+          if (scope?.layer === "user") return { text: JSON.stringify({ error: "missing_scope", layer: "user", scopes: error.scopes, hint: "主人尚未授权该权限，请重新发起「授权文档访问」。" }), images: [], isError: true };
+        }
+        throw error;
+      }
+      await authorize();
+      connectorAccess(this.store, String(call.bot_id), args);
+      const body = JSON.stringify(result);
+      return { text: body.length > 24_000 ? body.slice(0, 24_000) + "…（已截断）" : body, images: [] };
+    } catch (error) {
+      if (error instanceof FeishuApiError) return { text: JSON.stringify({ error: "api", code: error.code, msg: error.message }), images: [], isError: true };
+      if (dispatched) {
+        this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=? AND status='executing'", call.id);
+        throw new Error("飞书调用中断或授权已变化，结果未知；请核实，不会自动重放。");
+      }
+      throw new Error(`飞书调用失败，未发送请求：${safe(error)}`);
+    } finally { this.active.delete(controller); }
   }
 
   private credentials(row: Row) {
@@ -308,18 +491,21 @@ export class FeishuModule {
   }
 
   private async deliverReply(appId: string, mapping: Row, message: Row) {
-    const marked = this.store.run("INSERT OR IGNORE INTO personal_feishu_outbound(source_key,app_id,chat_id,created_at) VALUES(?,?,?,?)", `reply:${message.source_key}`, appId, String(mapping.chat_id), now());
+    if (this.closed) return;
+    let marked: { changes?: number | bigint };
+    try { marked = this.store.run("INSERT OR IGNORE INTO personal_feishu_outbound(source_key,app_id,chat_id,created_at) VALUES(?,?,?,?)", `reply:${message.source_key}`, appId, String(mapping.chat_id), now()); }
+    catch { return; } // 进程关闭竞态：放弃投递
     if (Number(marked.changes) === 0) return;
     try {
       const app = this.store.get("SELECT a.*,c.enabled FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.app_id=?", appId);
-      if (!app || app.enabled !== 1) { this.store.run("DELETE FROM personal_feishu_outbound WHERE source_key=?", `reply:${message.source_key}`); return; }
+      if (!app || app.enabled !== 1) { if (!this.closed) this.store.run("DELETE FROM personal_feishu_outbound WHERE source_key=?", `reply:${message.source_key}`); return; }
       const body = (message.role === "system" ? `出错了：${message.content}` : String(message.content)).slice(0, 20_000);
       const chunks = splitChunks(body);
       for (const [index, chunk] of chunks.entries()) await this.send(app, String(mapping.chat_id), chunk, index === 0 && mapping.chat_type === "group" ? String(mapping.message_id) : undefined);
       this.changed();
     } catch {
       // 首次发送失败保留重试机会：删除标记，下次变更再投递。
-      this.store.run("DELETE FROM personal_feishu_outbound WHERE source_key=? AND message_id IS NULL", `reply:${message.source_key}`);
+      if (!this.closed) this.store.run("DELETE FROM personal_feishu_outbound WHERE source_key=? AND message_id IS NULL", `reply:${message.source_key}`);
     }
   }
 
@@ -393,6 +579,8 @@ export class FeishuModule {
     this.closed = true;
     this.job?.controller.abort();
     this.job = undefined;
+    this.userAuth?.controller.abort();
+    this.userAuth = undefined;
     for (const transport of this.transports.values()) await transport.close().catch(() => {});
     this.transports.clear();
   }

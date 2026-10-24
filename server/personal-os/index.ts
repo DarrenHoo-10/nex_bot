@@ -49,7 +49,7 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const runtime = new TaskRuntime(store, changed);
   const connectors = new ConnectorModule(store, changed);
-  runtime.connectorExecutor = (call, args, authorize) => connectors.execute(call, args, authorize);
+  runtime.connectorExecutor = (call, args, authorize) => feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
     runtime.authorizeTask = (task) => identity.authorizeTask(task);
@@ -72,7 +72,10 @@ export async function createPersonalApp(options: AppOptions) {
   const routines = new RoutineModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
-  feishu = new FeishuModule(store, changed, agents, runtime, options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory });
+  feishu = new FeishuModule(store, changed, agents, runtime, {
+    ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
+    grantTools: (connectorId, version, botId, tools) => { connectors.grant({ id: connectorId, version, botId, tools }); },
+  });
   if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
   agents.onPublished = (botId) => {
     if (closing) return;
@@ -88,7 +91,7 @@ export async function createPersonalApp(options: AppOptions) {
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
-  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); connectors.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
+  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); connectors.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
   runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed, options.hostDevice !== false);
   function json(response: ServerResponse, status: number, value: unknown) {
@@ -325,6 +328,8 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/feishu/register/cancel") { feishu.cancelRegister(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/feishu/save") { json(response, 200, feishu.save(data)); return; }
       if (url.pathname === "/api/feishu/bind/start") { json(response, 200, feishu.bindStart(data)); return; }
+      if (url.pathname === "/api/feishu/user-auth/start") { json(response, 200, feishu.startUserAuth(data)); return; }
+      if (url.pathname === "/api/feishu/user-auth/cancel") { feishu.cancelUserAuth(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/feishu/toggle") { json(response, 200, await feishu.toggle(data)); return; }
       if (url.pathname === "/api/feishu/delete") { json(response, 200, await feishu.remove(data)); return; }
       if (url.pathname === "/api/attachments") { json(response, 200, files.upload(data, String(session.id))); return; }

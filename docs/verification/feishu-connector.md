@@ -1,7 +1,8 @@
 # Feishu connector — 2026-10-24
 
-Status: P1 (connection + conversation) implemented and fixture-verified; not
-yet accepted against a real Feishu tenant. Design:
+Status: P1 (connection + conversation) and P2 (generic tools + owner user
+authorization) implemented and fixture-verified; not yet accepted against a
+real Feishu tenant. Design:
 [`docs/plans/2026-10-24-feishu-connector.md`](../plans/2026-10-24-feishu-connector.md).
 
 ## What P1 covers
@@ -23,6 +24,28 @@ connection for the same app (checked via `event/v1/connection`) is refused
 (`identity.channelAuthorize`), so they execute without a live client session;
 disconnecting revokes that.
 
+## What P2 adds
+
+The connector row is created with a built-in two-tool catalog
+(`server/personal-os/feishu/tools.ts`): `feishu_read` (GET only,
+`readOnlyHint`) and `feishu_write` (POST/PUT only, `destructiveHint` — always
+approval). The catalog is auto-granted to the receiving assistant through the
+standard connector grant flow; execution goes through `runtime.connectorExecutor`
+dispatch on `kind='feishu'` and reuses `connectorAccess` (grant, version),
+post-call re-authorization, and the unknown-effect rule (transport failure
+after dispatch marks the call unknown and never replays). Parameters are
+validated server-side: path must match `/open-apis/…`, body ≤ 64KB, query
+string comes from `params`, responses truncate at 24KB. Scope errors return
+structured results: `missing_scope(layer=app|user, scopes)` parsed from
+`permission_violations`; user-token-invalid codes refresh once and retry.
+Owner user authorization uses the OAuth device flow (`device_authorization` +
+token polling with `authorization_pending`/`slow_down` handling), verifies the
+authorized open_id equals the app owner (or binds the owner when unbound, and
+discards the token otherwise), stores the encrypted grant (access + refresh +
+actual scopes) in the vault columns, refreshes 5 minutes before expiry with
+per-app serialization, and clears the token on refresh-failure codes. A
+usage skill ships at `skills/feishu/SKILL.md`.
+
 ## Isolated fixture
 
 `server/personal-os/testing/fake-feishu.ts` plays the OpenAPI subset
@@ -42,21 +65,27 @@ pnpm typecheck
 pnpm lint
 ```
 
-`feishu.test.ts` (7 cases) covers: register → connect → one p2p turn with an
+`feishu.test.ts` (12 cases) covers: register → connect → one p2p turn with an
 encrypted secret (state and store bytes never contain the secret); `message_id`
 dedupe; stranger and unmentioned-group rejection; group @ handling with a
 thread reply; approval card sent for a dangerous `agent.update` from a Feishu
 task, stranger click refused, owner click executes; stop button cancels; bind
 code flow for a pasted app (code stored hashed); toggle off stops delivery;
 delete removes app, mappings and connector; `busy` while another instance is
-online, then connects after re-enable.
+online, then connects after re-enable. P2: tools auto-granted, read executes
+without approval against the fake API (correct method and bearer);
+malformed paths rejected without touching the API; write held for approval
+(card only from the owner's click, then POST observed with the body); device
+flow authorizes the owner (pending polls honored, token stored encrypted) and
+user-identity reads carry the user bearer; authorization from a different
+account is discarded; an expired access token refreshes exactly once.
 
 ## Evidence
 
-- `pnpm exec vitest run server/personal-os/feishu.test.ts`: 7 passed.
-- `pnpm test:personal`: all suites green (feishu 7, connectors 7+2 variants,
-  app/memory/identity/service/workspaces unchanged).
-- `pnpm typecheck`, `pnpm lint` clean.
+- `pnpm exec vitest run server/personal-os/feishu.test.ts`: 12 passed.
+- `pnpm test:personal`: all suites green (feishu 12, connectors, app/memory/
+  identity/service/workspaces unchanged).
+- `pnpm typecheck`, `pnpm lint`, `pnpm build:core` clean.
 
 ## Real-tenant acceptance (outstanding)
 
@@ -74,3 +103,9 @@ surface as runtime errors (per design, no remediation flow in P1).
   prompt-rendering test with `no such column: rowid`).
 - The `until()` helper accepts async checks; sync-only checks that await inside
   fail esbuild with a misleading parser error.
+- `tool_calls.tool_name` stores the broker action (`connector.call`), not the
+  inner tool name — assertions must select by result content or status.
+- `connectorAccess` returns the connector row; the Feishu `app_secret` lives on
+  the app row and must be fetched separately before decrypting credentials.
+- The fake OpenAPI server must tolerate non-JSON bodies: the device
+  authorization request is form-encoded and crashed a JSON-only parser.

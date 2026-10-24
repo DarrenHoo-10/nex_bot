@@ -1,8 +1,8 @@
 # 飞书连接器技术方案（基础连接）
 
-状态：P1（连接与对话）已实现并通过隔离夹具验证，见
+状态：P1（连接与对话）与 P2（通用工具 + 主人授权）已实现并通过隔离夹具验证，见
 [`docs/verification/feishu-connector.md`](../verification/feishu-connector.md)；
-真实租户扫码验收未做。P2（通用工具 + user token）未实现。
+真实租户扫码验收未做。
 后端为 NexBot Core（`server/personal-os/`），UI 为个人版（`src/personal/`）。
 
 ## 1. 目标与范围
