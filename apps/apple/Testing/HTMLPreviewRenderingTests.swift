@@ -45,7 +45,8 @@ final class HTMLPreviewRenderingTests: XCTestCase {
         defer { host.isHidden = true }
         #endif
         defer { model.stop() }
-        try await wait { model.status.isEmpty }
+        // Ready and the first ResizeObserver measurement arrive independently.
+        try await wait { model.status.isEmpty && model.height > 300 }
         XCTAssertGreaterThan(model.height, 300)
         XCTAssertFalse(web.configuration.websiteDataStore.isPersistent)
         // A layout/fullscreen host may reparent this WKWebView, never reload it.
