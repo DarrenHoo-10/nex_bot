@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { basicActions } from "./policy.ts";
 import { connectorSchema } from "./connector-schema.ts";
+import { feishuSchema } from "./feishu/feishu-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
 import { continuitySchema } from "./continuity-schema.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
@@ -250,6 +251,10 @@ export class CoreStore {
         if (sessions.length === 1) this.run("UPDATE devices SET session_id=? WHERE id=?", sessions[0].id as string, device.id as string);
       }
       this.insert("schema_migrations", { version: 18, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=19")) this.transaction(() => {
+      this.db.exec(feishuSchema);
+      this.insert("schema_migrations", { version: 19, checksum: hash(feishuSchema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

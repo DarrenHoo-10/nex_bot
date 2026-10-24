@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Check, ChevronRight, LoaderCircle, Plug, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from "lucide-react";
 import { api, str, type ConnectorView, type State } from "./api";
+import { FeishuCard } from "./FeishuCard";
 
 export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Promise<void> }) {
   const [editing, setEditing] = useState<ConnectorView | "new" | null>(null);
@@ -26,7 +27,8 @@ export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Pr
     document.addEventListener("keydown", trap);
     return () => { document.removeEventListener("keydown", trap); if (previous?.isConnected) previous.focus(); };
   }, [editing]);
-  const connections = state.connectors ?? [];
+  const connections = (state.connectors ?? []).filter((item) => item.kind !== "feishu");
+  const feishu = <FeishuCard state={state} refresh={refresh}/>;
   const selected = connections.find((item) => item.id === selectedId) ?? connections[0];
   const action = async (key: string, operation: () => Promise<unknown>, success?: string) => {
     setBusy(key); setError(""); setNotice("");
@@ -43,6 +45,7 @@ export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Pr
   return <div className="connectors-page">
     <div className="page-intro"><div><span className="eyebrow">扩展 Agent 的能力</span><h1>连接器</h1><p>接入 MCP 服务，让 Agent 在对话中使用获准的工具。</p></div><button className="primary" onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div>
     {error && <div className="connector-feedback is-error" role="alert">{error}</div>}{notice && <div className="connector-feedback" role="status"><Check size={16}/>{notice}</div>}
+    {feishu}
     {!connections.length ? <div className="connector-empty"><span className="empty-icon"><Plug size={28}/></span><h2>把常用工具带进对话</h2><p>添加 MCP 服务地址，测试连接后，为需要的 Agent 选择工具。</p><button onClick={() => setEditing("new")}><Plus size={15}/>添加第一个连接器</button><small>支持 Streamable HTTP 与 SSE，可使用 Bearer Token 认证。</small></div> : <div className="connector-layout">
       <section className="connector-list" aria-label="连接器列表"><label className="sidebar-search"><Search size={15}/><input aria-label="搜索连接器" placeholder="搜索连接器" value={search} onChange={(event) => setSearch(event.target.value)}/></label>{connections.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item) => <button className={`connector-list-item ${selected?.id === item.id ? "is-selected" : ""}`} key={item.id} onClick={() => { setSelectedId(item.id); setGrantBot(""); setConfirmRemove(false); }}><span className="connector-icon"><Plug size={19}/></span><span><strong>{item.name}</strong><small>{!item.enabled ? "已停用" : item.error ? "需要检查" : item.checkedAt ? `${item.tools.length} 个工具` : "尚未测试"}</small></span><ChevronRight size={15}/></button>)}</section>
       {selected && <section className="connector-detail" aria-label="连接器详情"><div className="connector-detail-heading"><span className="connector-icon"><Plug size={22}/></span><div><h2>{selected.name}</h2><span className={`connection-status ${selected.enabled && selected.checkedAt && !selected.error ? "is-ready" : ""}`}>{!selected.enabled ? "已停用" : selected.error ? "连接异常" : selected.checkedAt ? "连接测试通过" : "等待测试"}</span></div><button className="text-button" disabled={!!busy} onClick={() => setEditing(selected)}>编辑</button></div>

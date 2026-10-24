@@ -1,5 +1,7 @@
 export interface ConnectorTool { name: string; description: string; inputSchema: Record<string, unknown> }
-export interface ConnectorView { id: string; name: string; url: string; transport: "http" | "sse"; enabled: boolean; version: number; hasToken: boolean; tools: ConnectorTool[]; checkedAt: number | null; error: string | null; grants: Array<{ botId: string; tools: string[] }> }
+export interface ConnectorView { id: string; name: string; url: string; transport: "http" | "sse"; enabled: boolean; version: number; hasToken: boolean; tools: ConnectorTool[]; checkedAt: number | null; error: string | null; grants: Array<{ botId: string; tools: string[] }>; kind?: string }
+export interface FeishuAppView { id: string; appId: string; brand: string; status: string; error: string | null; ownerBound: boolean; botId: string; botName: string; enabled: boolean; version: number }
+export interface FeishuState { job?: { stage: string; url?: string; expiresAt?: number; error?: string }; apps: FeishuAppView[] }
 export type RecordRow = Record<string, string | number | null>;
 export interface MemoryPluginState {
   providers: Array<{ id: string; name: string; protocol: string }>;
@@ -11,6 +13,7 @@ export interface PreviewItem { kind: "file" | "tool"; id?: string; path?: string
 export interface State {
   modelVisibility?: { models: string[] | null; version: number };
   connectors?: ConnectorView[];
+  feishu?: FeishuState;
   sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string };
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
   memories: RecordRow[]; delegations: RecordRow[]; devices: RecordRow[]; tasks: RecordRow[]; onlineDevices: string[];
