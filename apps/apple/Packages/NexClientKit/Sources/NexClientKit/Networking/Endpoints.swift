@@ -273,6 +273,12 @@ struct RoutineToggleBody: Encodable { let id: String; let version: Int; let enab
 struct RoutineRunBody: Encodable { let id: String; let clientId: String }
 struct ConnectorToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
 struct ConnectorGrantBody: Encodable { let id: String; let version: Int; let botId: String; let tools: [String] }
+struct FeishuBotBody: Encodable { let botId: String }
+struct FeishuIDBody: Encodable { let id: String }
+struct FeishuSaveBody: Encodable { let appId: String; let appSecret: String; let brand: String; let botId: String }
+struct FeishuToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
+struct EmptyPost: Encodable {}
+struct BindCodeResult: Decodable { let code: String }
 struct NameBody: Encodable { let name: String }
 struct IDBody: Encodable { let id: String }
 struct RootBody: Encodable { let root: String }
@@ -348,6 +354,23 @@ extension CoreClient {
         try await post("/api/connectors/toggle", body: ConnectorToggleBody(id: id, version: version, enabled: enabled))
     }
     public func deleteConnector(id: String, version: Int) async throws { try await post("/api/connectors/delete", body: IDVersion(id: id, version: version)) }
+
+    // Feishu
+    /// `POST /api/feishu/register/start`: begins the scan-to-create job (QR arrives via state).
+    public func feishuRegisterStart(botID: String) async throws { try await post("/api/feishu/register/start", body: FeishuBotBody(botId: botID)) }
+    public func feishuRegisterCancel() async throws { try await post("/api/feishu/register/cancel", body: EmptyPost()) }
+    /// `POST /api/feishu/save`: paste an existing app (owner binds later via code).
+    public func feishuSave(appID: String, secret: String, brand: String, botID: String) async throws -> String {
+        try await post("/api/feishu/save", body: FeishuSaveBody(appId: appID, appSecret: secret, brand: brand, botId: botID), as: IDResult.self).id
+    }
+    /// `POST /api/feishu/bind/start`: returns the 6-digit owner bind code.
+    public func feishuBindStart(id: String) async throws -> String { try await post("/api/feishu/bind/start", body: FeishuIDBody(id: id), as: BindCodeResult.self).code }
+    public func feishuUserAuthStart(id: String) async throws { try await post("/api/feishu/user-auth/start", body: FeishuIDBody(id: id)) }
+    public func feishuUserAuthCancel() async throws { try await post("/api/feishu/user-auth/cancel", body: EmptyPost()) }
+    public func feishuToggle(id: String, version: Int, enabled: Bool) async throws {
+        try await post("/api/feishu/toggle", body: FeishuToggleBody(id: id, version: version, enabled: enabled))
+    }
+    public func feishuDelete(id: String, version: Int) async throws { try await post("/api/feishu/delete", body: IDVersion(id: id, version: version)) }
 
     // Chat attachments and permission mode
     /// `POST /api/attachments`: uploads one file (base64 in JSON) for `botID`. At most 5 MiB and not empty; the 5-per-message

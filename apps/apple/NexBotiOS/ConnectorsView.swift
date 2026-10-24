@@ -21,7 +21,7 @@ struct ConnectorsView: View {
     @State private var editor: ConnectorEditorRequest?
     @State private var selection: ConnectorSelection?
 
-    private var connectors: [ConnectorView] { workspace.state?.connectors ?? [] }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { $0.kind != "feishu" } }
     private var filtered: [ConnectorView] {
         let q = query.trimmingCharacters(in: .whitespaces)
         return q.isEmpty ? connectors : connectors.filter { $0.name.localizedCaseInsensitiveContains(q) }
@@ -30,6 +30,7 @@ struct ConnectorsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             header
+            if workspace.state?.feishu != nil { FeishuSection(workspace: workspace) }
             if connectors.isEmpty { empty } else { list }
         }
         .sheet(item: $editor) { request in

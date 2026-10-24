@@ -20,7 +20,7 @@ struct SettingsConnectorsPane: View {
     @State private var scrollTarget: String?
     @State private var openTools: Set<String> = []
 
-    private var connectors: [ConnectorView] { workspace.state?.connectors ?? [] }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { $0.kind != "feishu" } }
     private var visible: [ConnectorView] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         return q.isEmpty ? connectors : connectors.filter { $0.name.lowercased().contains(q) }
@@ -34,6 +34,7 @@ struct SettingsConnectorsPane: View {
                     VStack(alignment: .leading, spacing: 0) {
                         header
                         if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 24) }
+                        if workspace.state?.feishu != nil { SettingsFeishuCard(workspace: workspace).padding(.top, 24) }
                         if workspace.state != nil, connectors.isEmpty { emptyState.padding(.top, 28) }
                         else if !connectors.isEmpty { twoPane.padding(.top, 24) }
                     }

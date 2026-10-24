@@ -87,6 +87,25 @@ account is discarded; an expired access token refreshes exactly once.
   identity/service/workspaces unchanged).
 - `pnpm typecheck`, `pnpm lint`, `pnpm build:core` clean.
 
+## Apple native clients
+
+Mac and iOS settings' 连接器 now show a Feishu card/section (scan-to-create
+QR, paste-existing sheet, bind code, owner device-flow authorization with QR,
+enable/disable, remove); feishu connector rows are hidden from the generic MCP
+editor and list. Kit additions (`NexClientKit`): `ConnectorView.kind`,
+`FeishuState`/`FeishuAppView`/`FeishuJob` parsed from the `feishu` snapshot
+block, and `feishu*` endpoints/actions; jobs are polled (1.5 s) while
+`needsPolling`. QR codes render via CoreImage `CIQRCodeGenerator`.
+
+- `swift test --package-path apps/apple/Packages/NexClientKit`: 106 passed
+  (3 new FeishuTests: state decoding incl. `kind`, endpoint paths/bodies,
+  no-app guards; register-while-connected refuses as on Core).
+- `xcodegen generate` + `xcodebuild -scheme NexBotMac -destination
+  'platform=macOS' build` and `-scheme NexBotiOS -destination
+  'generic/platform=iOS Simulator' build`: both succeeded.
+- Not yet covered: pixel-level rendering acceptance for the new panes
+  (follows the repo's Apple preview flow on a real run).
+
 ## Real-tenant acceptance (outstanding)
 
 Before shipping: one real scan on a test tenant to confirm the app is created,
