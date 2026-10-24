@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [Unified UI and role avatars: all-platform release](ui-roles-release.md)
+
 NexBot Core is a standalone Node backend. Desktop clients now include a local
 device executor; use the [client device executor recipe](client-device-executor.md)
 for its lifecycle, permissions and packaged verification, alongside the
