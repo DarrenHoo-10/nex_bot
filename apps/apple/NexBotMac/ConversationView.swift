@@ -346,7 +346,7 @@ private struct MessageList: View {
             }
             .overlay(alignment: .bottom) {
                 if !atBottom && conversation.messages.count > 3 && focusedID == nil {
-                    Button { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
+                    Button { atBottom = true; withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                             Text("回到底部").font(.system(size: 11))
@@ -360,10 +360,10 @@ private struct MessageList: View {
             }
             .onChange(of: tailKey) {
                 guard focusedID == nil else { return }
-                if atBottom || conversation.messages.last?.isFromUser == true { proxy.scrollTo("bottom", anchor: .bottom) }
+                if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: conversation.isSending) { _, sending in
-                if sending { atBottom = true; proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: conversation.sendRevision) {
+                atBottom = true; proxy.scrollTo("bottom", anchor: .bottom)
             }
             .task(id: loadKey) { await settleAtBottom(proxy) }
             .task(id: focusKey) { await scrollToFocused(proxy) }
@@ -625,7 +625,7 @@ private struct FoldedReply: View {
                 .font(.system(size: 12)).foregroundStyle(Theme.foreground).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if open { ChatMarkdown(source: content) }
+            if open { ChatMarkdown(source: content, pending: pending) }
         }
         .padding(.horizontal, 14).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -645,7 +645,7 @@ private struct StreamingReply: View {
                 Text(bot?.name ?? "Agent").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
                 FoldedReply(content: stream.text, recipient: peer?.name ?? "Agent", pending: true)
             } else {
-                ChatMarkdown(source: stream.text)
+                ChatMarkdown(source: stream.text, pending: true)
                 Text("正在回复…").font(.system(size: 11)).foregroundStyle(Theme.muted)
                 TypingDots()
             }

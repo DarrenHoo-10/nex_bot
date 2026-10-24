@@ -242,8 +242,10 @@ describe("Gmail connectors in isolated Core", () => {
   it("upgrades the previous schema while preserving existing MCP credentials", async () => {
     const f = await fixture();
     f.app.connectors.save({ name: "Existing MCP", url: "https://example.test/mcp", token: "synthetic-existing-mcp" });
-    f.app.store.db.exec("DROP INDEX personal_connector_account; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN provider; DELETE FROM schema_migrations WHERE version=22");
+    f.app.store.db.exec("DROP INDEX personal_connector_account; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN provider; DELETE FROM schema_migrations WHERE version=24");
+    expect(f.app.store.get("SELECT version FROM schema_migrations WHERE version=23")?.version).toBe(23);
     await f.restart();
+    expect(f.app.store.get("SELECT version FROM schema_migrations WHERE version=24")?.version).toBe(24);
     expect(f.current()).toMatchObject({ provider: "mcp", account: null, hasToken: true, name: "Existing MCP" });
     expect(f.app.store.decrypt(String(f.app.store.get("SELECT credential FROM personal_connectors")?.credential))).toBe("synthetic-existing-mcp");
   });

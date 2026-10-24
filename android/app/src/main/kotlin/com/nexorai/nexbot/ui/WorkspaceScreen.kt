@@ -7,7 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
-import android.webkit.JavascriptInterface
+import android.webkit.WebMessage
+import android.webkit.WebMessagePort
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -97,6 +98,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private var closed = false
     private var pendingBot: String? = null
     private var loaded = false
+    private var bridgePort: WebMessagePort? = null
     private data class Save(val id: String, val bytes: ByteArray)
     private var save: Save? = null
     var fileCallback: ValueCallback<Array<Uri>>? = null
@@ -114,7 +116,6 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         settings.setSupportMultipleWindows(false)
         if ((context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) WebView.setWebContentsDebuggingEnabled(true)
-        addJavascriptInterface(this@AndroidWorkspace, "NexAndroid")
         webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(view: WebView?, callback: ValueCallback<Array<Uri>>, params: FileChooserParams?): Boolean {
                 fileCallback?.onReceiveValue(null)
@@ -128,12 +129,16 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         }
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest): Boolean {
-                if (request.hasGesture()) runCatching { external(request.url.toString()) }
+                if (!request.isForMainFrame && (request.url.toString() == "$origin/html-preview.html" || request.url.toString().startsWith("data:text/html;base64,"))) return false
+                if (request.isForMainFrame && request.hasGesture()) runCatching { external(request.url.toString()) }
                     .onFailure { Toast.makeText(context, "无法打开链接", Toast.LENGTH_SHORT).show() }
                 return true
             }
-            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse {
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? {
                 val uri = request.url
+                // data: contains only inline bytes. WebView otherwise routes it
+                // through this interceptor and replaces the preview with a 403.
+                if (uri.scheme == "data") return null
                 val path = uri.path.orEmpty()
                 // Image previews come from Core with the native token; storage URLs never reach the page.
                 if (request.method == "GET" && "https://${uri.host}" == origin && WorkspaceTransport.isAttachmentPreview(path, uri.query)) {
@@ -145,7 +150,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                     } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
                 }
                 if (uri.scheme != "https" || "https://${uri.host}" != origin || request.method != "GET" ||
-                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path.startsWith("/assets/"))) {
+                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path == "/html-preview.html" || path.startsWith("/assets/"))) {
                     return response(403, "text/plain", ByteArrayInputStream(ByteArray(0)))
                 }
                 return try {
@@ -154,10 +159,30 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                         "html" -> "text/html"; "js" -> "application/javascript"; "css" -> "text/css"
                         "svg" -> "image/svg+xml"; "png" -> "image/png"; "webp" -> "image/webp"; else -> "application/octet-stream"
                     }
-                    response(200, mime, context.assets.open("workspace/$asset"))
+                    response(200, mime, context.assets.open("workspace/$asset"), path == "/html-preview.html")
                 } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
             }
             override fun onPageFinished(view: WebView?, url: String?) {
+                if (url != "$origin/index.html" || view == null) return
+                bridgePort?.close()
+                val channel = view.createWebMessageChannel()
+                bridgePort = channel[0]
+                channel[0].setWebMessageCallback(object : WebMessagePort.WebMessageCallback() {
+                    override fun onMessage(port: WebMessagePort, message: WebMessage) {
+                        if (closed || port !== bridgePort) return
+                        try {
+                            val data = JSONObject(message.data ?: return)
+                            val args = data.getJSONArray("args")
+                            when (data.getString("method")) {
+                                "request" -> request(args.getString(0), args.getString(1), args.getString(2), args.getString(3))
+                                "action" -> action(args.getString(0), args.getString(1), args.getString(2))
+                                "subscribe" -> subscribe(args.getString(0))
+                                "unsubscribe" -> unsubscribe(args.getString(0))
+                            }
+                        } catch (_: Exception) { /* Ignore malformed bridge messages. */ }
+                    }
+                })
+                view.postWebMessage(WebMessage("nex-workspace-port", arrayOf(channel[1])), Uri.parse(origin))
                 loaded = true
                 pendingBot?.let { selectBot(it) }
             }
@@ -166,9 +191,9 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     }
     init { updater.start(scope) }
 
-    private fun response(code: Int, mime: String, stream: java.io.InputStream) = WebResourceResponse(mime, "UTF-8", code, if (code == 200) "OK" else "Blocked", mapOf(
+    private fun response(code: Int, mime: String, stream: java.io.InputStream, preview: Boolean = false) = WebResourceResponse(mime, "UTF-8", code, if (code == 200) "OK" else "Blocked", mapOf(
         "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff",
-        "Content-Security-Policy" to "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+        "Content-Security-Policy" to if (preview) "sandbox allow-scripts" else "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",
     ), stream)
 
     private fun reply(id: String, result: JSONObject) {
@@ -177,7 +202,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private fun event(id: String, type: String, data: String = "") {
         if (!closed) web.evaluateJavascript("window.__nexEvent?.(${JSONObject.quote(id)},${JSONObject.quote(type)},${JSONObject.quote(data)})", null)
     }
-    @JavascriptInterface fun request(id: String, path: String, method: String, body: String) {
+    private fun request(id: String, path: String, method: String, body: String) {
         scope.launch {
             try {
                 val result = withContext(Dispatchers.IO) { transport.request(path, method, body) }
@@ -188,7 +213,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
             }
         }
     }
-    @JavascriptInterface fun action(id: String, name: String, value: String) {
+    private fun action(id: String, name: String, value: String) {
         scope.launch {
             try {
                 when (name) {
@@ -239,8 +264,8 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private fun external(url: String) {
         openWorkspaceExternal(context, url)
     }
-    @JavascriptInterface fun subscribe(id: String) { scope.launch { subscriptions.add(id); startStream(id) } }
-    @JavascriptInterface fun unsubscribe(id: String) { scope.launch { subscriptions.remove(id); streams.remove(id)?.cancel() } }
+    private fun subscribe(id: String) { scope.launch { subscriptions.add(id); startStream(id) } }
+    private fun unsubscribe(id: String) { scope.launch { subscriptions.remove(id); streams.remove(id)?.cancel() } }
     private fun startStream(id: String) {
         if (!active || streams[id]?.isActive == true) return
         streams[id] = scope.launch {
@@ -271,7 +296,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     }
     fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); web.onPause(); web.pauseTimers() }
     fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'))", null) }
-    fun close() { closed = true; updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.removeJavascriptInterface("NexAndroid"); web.destroy() }
+    fun close() { closed = true; bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
 }
 
 internal fun openWorkspaceExternal(context: Context, url: String) {

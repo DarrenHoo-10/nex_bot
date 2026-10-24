@@ -101,7 +101,7 @@ encrypted persistence, account/workspace isolation, duplicate/mismatched mailbox
 rejection, per-Agent grants, real worker reads without approval, single refresh,
 revoked credentials, cancellation during exchange/read/refresh, disconnect,
 redaction, malformed responses, redirect rejection, bounded email results and
-upgrade from schema 21. UI checks cover blocked popups, cancellation, denial and
+upgrade from schema 23. UI checks cover blocked popups, cancellation, denial and
 retry, actual broker reads, grants, enable/disable, reauthorization and disconnect.
 
 ## Verified results — 2026-10-24
@@ -194,3 +194,22 @@ No production deployment, published installer, physical-device browser handoff,
 live Google consent verification or real-account acceptance is claimed here.
 Google OAuth configuration and the matching Core update are required before
 connecting a real mailbox. Older Core instances show Gmail as unavailable.
+
+## Integration with main
+
+Main's existing migrations 22 (default capabilities) and 23 (remembered approval
+rules) are retained; Gmail uses migration 24. The upgrade test removes only the
+Gmail columns/index and migration 24, verifies migration 23 is present, then
+checks MCP credentials survive the upgrade. Android keeps main's isolated HTML
+preview navigation and MessagePort handshake alongside Gmail browser failures.
+The two new bridge tests now perform that handshake before issuing requests.
+
+Installing independent dependencies in this worktree resolved the earlier
+shared-checkout dependency limitation without modifying the main checkout.
+Post-merge lint, both TypeScript projects and locale checks passed; 41 backend
+cases and all eight Android bridge cases passed. The Core/UI build passed.
+NexClientKit passed 126 tests, and both native Apple application builds passed.
+Android's native suites and debug build passed again, as did the ten Windows
+shell scenario groups against the freshly rebuilt Core/UI. One earlier fixture
+launch received an OS-assigned port blocked by Fetch; a fresh isolated launch
+completed successfully.

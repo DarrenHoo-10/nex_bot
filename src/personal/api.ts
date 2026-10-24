@@ -15,6 +15,7 @@ export interface State {
   connectorCatalog?: ConnectorCatalogEntry[];
   sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string };
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
+  approvalRules?: Array<{ id: string; bot_id: string; label: string; active?: boolean }>;
   memories: RecordRow[]; delegations: RecordRow[]; devices: RecordRow[]; tasks: RecordRow[]; onlineDevices: string[];
   routines: RecordRow[]; occurrences: RecordRow[]; journal: RecordRow[]; usage?: RecordRow[];
   memoryEngine?: { provider: string; release: string; status: string; service: string; pending: number; failed: number; quarantined: number; forgetting: number; revision: string; error: string | null };

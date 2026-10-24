@@ -75,6 +75,15 @@ async function enter(options: KeyboardEventInit = {}) {
 }
 
 describe("Personal composer (Web, Electron and Android WebView)", () => {
+  it("sends a remembered approval only when Always allow is selected", async () => {
+    state.approvals = [{ id: "approval", bot_id: "agent", argument_hash: "digest", tool_name: "device.exec", arguments_json: '{"action":"device.exec","deviceId":"fixture","command":"fixture"}', authorization_snapshot_json: "{}", remember_label: "执行终端命令 · Fixture device" }];
+    await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise((resolve) => setTimeout(resolve, 200)); });
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>(".approval .actions button")];
+    expect(buttons.map((button) => button.textContent)).toEqual(["允许一次", "始终允许", "拒绝"]);
+    expect(buttons[1].title).toContain("Fixture device");
+    await act(async () => { buttons[1].click(); });
+    expect(fixture.api).toHaveBeenCalledWith("approvals", { id: "approval", hash: "digest", allow: true, remember: true });
+  });
   it("turns the send key into a stop key while the Agent works and the composer is empty", async () => {
     state = { ...state, connected: true, tasks: [{ id: "task-1", bot_id: "agent", status: "running", objective: "fixture" }] } as State;
     await act(async () => { sources[0].emit("change", sync); await new Promise((resolve) => setTimeout(resolve, 300)); });
@@ -175,7 +184,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(transcript().split("刚发出去").length - 1).toBe(1);
   });
 
-  it("follows tail growth until the reader scrolls up, then follows again at the bottom", async () => {
+  it("preserves scrollback until sending, then returns to and follows the bottom", async () => {
     const el = container.querySelector<HTMLDivElement>(".transcript")!;
     let top = 0;
     let height = 400;
@@ -196,13 +205,21 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(top).toBe(700);
     await type("在上面");
     await enter();
+    expect(top).toBe(900);
+    expect(container.querySelector(".scroll-pill")).toBeNull();
+    height = 1000;
     await act(async () => { follow(); });
-    expect(top).toBe(700);
+    expect(top).toBe(1000);
+    await act(async () => { el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 })); });
     top = 800;
-    await act(async () => { el.dispatchEvent(new Event("scroll")); });
     height = 1100;
     await act(async () => { follow(); });
-    expect(top).toBe(1100);
+    expect(top).toBe(800);
+    top = 1000;
+    await act(async () => { el.dispatchEvent(new Event("scroll")); });
+    height = 1200;
+    await act(async () => { follow(); });
+    expect(top).toBe(1200);
   });
 
   it("attaches a pasted screenshot and leaves a text paste alone", async () => {
@@ -226,11 +243,15 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(preview?.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
     expect(preview?.alt).toBe("截图.png");
     expect(container.querySelector(".attachment-draft")).toBeNull();
-    await act(async () => { preview!.closest("button")!.click(); });
-    const remove = document.querySelector<HTMLButtonElement>(".image-lightbox-delete");
-    expect(remove?.getAttribute("aria-label")).toBe("移除图片");
+    await type("保留草稿");
+    const remove = container.querySelector<HTMLButtonElement>(".attachment-tile-remove");
+    expect(remove?.getAttribute("aria-label")).toBe("移除 截图.png");
+    expect(remove?.closest(".attachment-image-preview")).toBeNull();
     await act(async () => { remove!.click(); });
     expect(container.querySelector(".attachment-image-draft")).toBeNull();
+    expect(document.querySelector(".image-lightbox")).toBeNull();
+    expect(composer().value).toBe("保留草稿");
+    expect(fixture.api.mock.calls.some(([route]) => route === "agents/input")).toBe(false);
     const text = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(text, "clipboardData", {
       value: { items: [{ kind: "string", type: "text/plain", getAsFile: () => null }], files: [] },
@@ -257,7 +278,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     const pending = container.querySelector(".attachment-image-draft.is-uploading");
     expect(pending).not.toBeNull();
     expect(pending?.textContent).toBe("");
-    expect(container.querySelector(".attachment-tile-remove")).toBeNull();
+    expect(container.querySelector(".attachment-tile-remove")?.getAttribute("aria-label")).toBe("取消上传 截图.png");
     expect(container.querySelector(".attachment-file-draft")).toBeNull();
     await act(async () => { for (let i = 0; i < 50 && !finish; i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); finish({ id: "file-1", botId: "agent", name: "截图.png", size: 4, mime: "image/png" }); await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(container.querySelector(".attachment-image-draft.is-uploading")).toBeNull();

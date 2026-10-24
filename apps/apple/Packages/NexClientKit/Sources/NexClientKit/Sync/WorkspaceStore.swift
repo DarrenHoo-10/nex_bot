@@ -52,6 +52,7 @@ public final class WorkspaceStore {
 
     public var bots: [Bot] { state?.bots ?? [] }
     public var approvals: [Approval] { state?.approvals ?? [] }
+    public func approvalRules(botID: String) -> [ApprovalRule] { state?.approvalRules.filter { $0.botID == botID } ?? [] }
     public var pendingApprovalCount: Int { approvals.count }
     public func bot(_ id: String) -> Bot? { state?.bots.first { $0.id == id } }
 
@@ -351,8 +352,13 @@ public final class WorkspaceStore {
     // MARK: Actions
 
     /// Approve or deny. Only the first decision wins; later ones throw Core's error text.
-    public func decide(_ approval: Approval, allow: Bool) async throws {
-        do { try await client.decide(approval: approval.id, hash: approval.argumentHash, allow: allow) } catch { throw report(error) }
+    public func decide(_ approval: Approval, allow: Bool, remember: Bool = false) async throws {
+        do { try await client.decide(approval: approval.id, hash: approval.argumentHash, allow: allow, remember: remember) } catch { throw report(error) }
+        await refresh()
+    }
+
+    public func revokeApprovalRule(_ rule: ApprovalRule) async throws {
+        do { try await client.revokeApprovalRule(id: rule.id, botID: rule.botID) } catch { throw report(error) }
         await refresh()
     }
 

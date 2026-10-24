@@ -181,6 +181,10 @@ The [rich tables fixture](rich-tables.md) checks Markdown tables and message-sco
 CSV/TSV previews, large-file virtualization, sorting, search, export and keyboard
 interaction in a disposable workspace.
 
+The [interactive HTML preview record](html-preview.md) covers the explicit
+cross-client rendering block, sandbox lifecycle, isolated browser and Android
+WebView checks, and the remaining macOS/iOS native acceptance boundary.
+
 The [people invitation fixture](people.md) checks hosted workspace sign-in,
 roles and device revocation through the real HTTP API with a stubbed email
 service. It does not drive the People settings UI through `control-omb`.

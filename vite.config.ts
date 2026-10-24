@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { DurationSequencer } from "./scripts/testing/duration-sequencer.ts";
+import { HTML_PREVIEW_CSP, htmlPreviewShell } from './shared/html-preview-shell.mjs';
 
 // The About dialog shows the shipped version; package.json is the one place
 // it is already maintained, so it is inlined at build time rather than
@@ -13,7 +14,16 @@ const { version } = JSON.parse(
 ) as { version: string };
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), {
+    name: 'html-preview-shell',
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.method !== 'GET' || request.url?.split('?')[0] !== '/html-preview.html') { next(); return; }
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_PREVIEW_CSP + "; sandbox allow-scripts; frame-ancestors 'self'" });
+        response.end(htmlPreviewShell());
+      });
+    },
+  }],
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },

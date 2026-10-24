@@ -15,6 +15,7 @@ struct DateDivider: View {
 struct ChatMarkdown: View {
     let source: String
     var fontSize: CGFloat = 16
+    var pending = false
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
     private var size: CGFloat { fontSize * scale }
 
@@ -22,6 +23,17 @@ struct ChatMarkdown: View {
     static let fileScheme = "nexbot-file"
 
     var body: some View {
+        VStack(alignment: .leading, spacing: size * 0.6) {
+            ForEach(Array(HTMLPreview.parts(source).enumerated()), id: \.offset) { _, part in
+                switch part {
+                case .markdown(let text): ordinary(text)
+                case .preview(let html, let complete): HTMLPreviewMessage(source: html, complete: complete, pending: pending)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func ordinary(_ source: String) -> some View {
         if let html = ChatDocument(source).staticHTML {
             StaticHTMLMessage(fragment: html, fontSize: size)
         } else {
@@ -233,9 +245,9 @@ struct StreamingRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let replyingTo {
-                FoldedReply(label: "正在回复给\(replyingTo)", folded: $folded) { ChatMarkdown(source: text) }
+                FoldedReply(label: "正在回复给\(replyingTo)", folded: $folded) { ChatMarkdown(source: text, pending: true) }
             } else {
-                ChatMarkdown(source: text)
+                ChatMarkdown(source: text, pending: true)
             }
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)

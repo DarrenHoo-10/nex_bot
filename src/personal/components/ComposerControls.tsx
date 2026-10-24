@@ -8,9 +8,10 @@ type Props = {
   onMode: (mode: string) => void; onFile: () => void; onModel: (model: string) => Promise<unknown>;
   visibleModels?: string[] | null; model: string; defaultModel: string; loadModels: () => Promise<{ models: string[]; hasMore: boolean }>;
   onExport: () => void; children: ReactNode;
+  approvalRules?: Array<{ id: string; label: string; active?: boolean }>; onRevokeRule?: (id: string) => void;
 };
 
-export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, children, model, defaultModel, loadModels, visibleModels }: Props) {
+export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, children, model, defaultModel, loadModels, visibleModels, approvalRules = [], onRevokeRule }: Props) {
   const [menu, setMenu] = useState<"add" | "permissions" | "models" | null>(null);
   const root = useRef<HTMLDivElement>(null), add = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null), id = useId();
@@ -53,6 +54,8 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
       <button ref={add} type="button" className="composer-add" aria-label="添加文件或指令" aria-haspopup="menu" aria-expanded={menu === "add"} aria-controls={menu === "add" ? `${id}-add` : undefined} disabled={disabled || uploading} onClick={() => setMenu(menu === "add" ? null : "add")}><Plus size={20}/></button>
         {menu === "permissions" && <div ref={menuRef} id={`${id}-permissions`} className="composer-popover permission-popover" popover="manual" role="menu" aria-label="选择操作权限" onKeyDown={navigate}>
           {[{ value: "standard", label: "标准权限", Icon: ShieldCheck }, { value: "full", label: "完全权限", Icon: ShieldAlert }].map(({ value, label, Icon }) => <button type="button" key={value} role="menuitemradio" aria-checked={mode === value} disabled={disabled} onClick={() => { close(); if (mode !== value) onMode(value); }}><Icon size={18}/><span>{label}</span>{mode === value && <Check size={17} className="menu-check"/>}</button>)}
+          {approvalRules.length > 0 && <div className="composer-menu-heading" role="presentation">始终允许</div>}
+          {approvalRules.map((rule) => <button type="button" role="menuitem" key={rule.id} disabled={disabled} aria-label={`撤销授权：${rule.label}`} onClick={() => { close(); onRevokeRule?.(rule.id); }}><span className="approval-rule-label">{rule.label}{rule.active === false && <small> · 已失效</small>}</span><small className="menu-value">撤销</small></button>)}
         </div>}
     </div>
     {menu === "add" && <div ref={menuRef} id={`${id}-add`} className="composer-popover composer-command-menu" popover="manual" role="menu" aria-label="添加与指令" onKeyDown={navigate}>

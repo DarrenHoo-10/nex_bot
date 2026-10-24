@@ -6,7 +6,6 @@ interface NativeWorkspace {
 }
 type Reply = { status?: number; body?: string; error?: string; value?: unknown };
 type NativeWindow = Window & {
-  NexAndroid?: NativeWorkspace;
   nex?: unknown;
   __nexReply?: (id: string, reply: Reply) => void;
   __nexEvent?: (id: string, event: string, data: string) => void;
@@ -14,9 +13,24 @@ type NativeWindow = Window & {
 
 /** Only the APK entry installs this adapter. Credentials stay in the native store. */
 export function installAndroidBridge() {
-  const host = window as NativeWindow, bridge = host.NexAndroid;
-  if (!bridge) throw new Error("Android workspace transport unavailable");
-  const native: NativeWorkspace = bridge;
+  const host = window as NativeWindow;
+  // Android transfers this port to the main frame at the exact bundled origin.
+  // No addJavascriptInterface object is exposed to arbitrary child frames.
+  let port: MessagePort | undefined;
+  const queued: string[] = [];
+  const send = (method: string, args: string[]) => {
+    const message = JSON.stringify({ method, args });
+    if (port) port.postMessage(message); else queued.push(message);
+  };
+  window.addEventListener('message', event => {
+    if (port || event.source !== null || event.data !== 'nex-workspace-port' || event.ports.length !== 1) return;
+    port = event.ports[0];
+    for (const message of queued.splice(0)) port.postMessage(message);
+  });
+  const native: NativeWorkspace = {
+    request: (...args) => send('request', args), action: (...args) => send('action', args),
+    subscribe: (...args) => send('subscribe', args), unsubscribe: (...args) => send('unsubscribe', args),
+  };
   let sequence = 0;
   const pending = new Map<string, { resolve(value: Reply): void; reject(error: Error): void }>();
   const streams = new Map<string, EventTarget>();

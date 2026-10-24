@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { androidViewportUnits } from "./android-viewport.mjs";
+import { shell } from './build-html-preview.mjs';
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const input = path.join(root, "android/app/build/ui-entry");
@@ -17,3 +18,4 @@ await build({ configFile: false, root, plugins: [androidViewportUnits(), react()
 const { readFileSync } = await import("node:fs");
 const output = path.join(root, "android/app/build/generated/workspaceAssets/workspace");
 writeFileSync(path.join(output, "index.html"), readFileSync(path.join(output, "android/app/build/ui-entry/index.html")));
+writeFileSync(path.join(output, 'html-preview.html'), shell);

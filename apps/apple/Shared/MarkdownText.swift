@@ -7,6 +7,7 @@ import NexMarkdown
 struct MarkdownText: View {
     let source: String
     var baseSize: CGFloat = 14
+    var pending = false
     /// Follows Dynamic Type on iOS and the text size setting on macOS.
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
     private var fontSize: CGFloat { baseSize * scale }
@@ -14,6 +15,17 @@ struct MarkdownText: View {
     init(source: String, fontSize: CGFloat = 14) { self.source = source; self.baseSize = fontSize }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: fontSize * 0.6) {
+            ForEach(Array(HTMLPreview.parts(source).enumerated()), id: \.offset) { _, part in
+                switch part {
+                case .markdown(let text): ordinary(text)
+                case .preview(let html, let complete): HTMLPreviewMessage(source: html, complete: complete, pending: pending)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func ordinary(_ source: String) -> some View {
         if let html = ChatDocument(source).staticHTML {
             StaticHTMLMessage(fragment: html, fontSize: fontSize)
         } else {
