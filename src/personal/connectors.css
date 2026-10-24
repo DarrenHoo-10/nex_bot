@@ -8,6 +8,16 @@
 .connector-catalog-rows { margin-top: 16px; }
 .rk-workspace .connector-catalog-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 16px; width: 100%; text-align: left; padding: 16px 10px; margin: 4px 0; border: 0; border-radius: 12px; background: transparent; }
 .rk-workspace .connector-catalog-row:hover { background: var(--secondary); }
+.rk-workspace .connector-catalog-item { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; margin: 4px 0; padding-right: 10px; border-radius: 12px; }
+.rk-workspace .connector-catalog-item:hover { background: var(--secondary); }
+.rk-workspace .connector-catalog-item > .connector-catalog-row { flex: 1 1 240px; width: auto; min-width: 0; margin: 0; }
+.rk-workspace .connector-catalog-item > .connector-catalog-row:hover { background: transparent; }
+.connector-catalog-item > .gmail-connect { flex: 0 1 auto; margin-left: auto; }
+.rk-workspace .connector-catalog-item > .gmail-connect.is-subtle > button { padding: 8px 18px; font-size: 13px; }
+.connector-catalog-item > .gmail-connect .gmail-authorization { text-align: right; }
+.connector-catalog-item > .gmail-connect .gmail-authorization > span { justify-content: flex-end; }
+.connector-catalog-item > .gmail-connect .gmail-authorization .actions { justify-content: flex-end; }
+.connector-catalog-item > .gmail-connect .connector-feedback { margin: 8px 0 12px; max-width: 280px; }
 .connector-catalog-copy { min-width: 0; }
 .connector-catalog-copy > strong { display: block; font-size: 17px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .connector-catalog-copy > span { display: block; margin-top: 5px; color: var(--muted-foreground); font-size: 13px; line-height: 1.5; }
@@ -89,6 +99,9 @@
   .connector-catalog-heading h1 { font-size: 20px; }
   .rk-workspace .connector-catalog-heading > button { font-size: 11px; padding: 8px 12px; }
   .rk-workspace .connector-catalog-row { grid-template-columns: 48px minmax(0, 1fr) auto; gap: 12px; padding: 14px 0; }
+  .rk-workspace .connector-catalog-item { gap: 0 12px; padding-right: 0; }
+  .rk-workspace .connector-catalog-item > .connector-catalog-row { flex-basis: 240px; }
+  .rk-workspace .connector-catalog-item > .gmail-connect.is-subtle > button { padding: 7px 14px; font-size: 12px; }
   .connector-catalog-row .connector-icon { width: 48px; height: 48px; border-radius: 13px; }
   .connector-catalog-row .connector-icon img { width: 38px; height: 38px; }
   .connector-catalog-copy > strong { font-size: 15px; }
