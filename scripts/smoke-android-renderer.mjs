@@ -16,6 +16,7 @@ const mobileSession = await login("auth/respond", { ...transaction, password: " 
 if (!mobileSession.token) throw new Error("Fixture mobile login failed");
 const assets = path.resolve("android/app/build/generated/workspaceAssets/workspace");
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-android-capture-"));
+mkdirSync(path.join(root, "profile"));
 const output = path.resolve(process.argv[2] || "release/android-workspace", "screenshots"); mkdirSync(output, { recursive: true });
 const server = createServer((req, res) => {
   if (req.url.startsWith("/api/")) {
@@ -29,9 +30,11 @@ const server = createServer((req, res) => {
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const preload = path.join(root, "preload.cjs"), entry = path.join(root, "main.cjs");
-writeFileSync(preload, `const fetchOriginal=window.fetch.bind(window), Events=window.EventSource;const streams=new Map();window.NexAndroid={request:async(id,path,method,body)=>{try{const r=await fetchOriginal(path,{method,headers:{'Content-Type':'application/json'},...(method==='GET'?{}:{body})});window.__nexReply(id,{status:r.status,body:await r.text()});}catch(e){window.__nexReply(id,{error:e.message});}},action:(id)=>window.__nexReply(id,{value:true}),subscribe:id=>{const s=new Events('/api/events');streams.set(id,s);for(const event of ['change','revoked'])s.addEventListener(event,e=>window.__nexEvent(id,event,e.data));},unsubscribe:id=>{streams.get(id)?.close();streams.delete(id);}};`);
+writeFileSync(preload, `if(window.top===window){const fetchOriginal=window.fetch.bind(window), Events=window.EventSource;const streams=new Map();const native={request:async(id,path,method,body)=>{try{const r=await fetchOriginal(path,{method,headers:{'Content-Type':'application/json'},...(method==='GET'?{}:{body})});window.__nexReply(id,{status:r.status,body:await r.text()});}catch(e){window.__nexReply(id,{error:e.message});}},action:(id)=>window.__nexReply(id,{value:true}),subscribe:id=>{const s=new Events('/api/events');streams.set(id,s);for(const event of ['change','revoked'])s.addEventListener(event,e=>window.__nexEvent(id,event,e.data));},unsubscribe:id=>{streams.get(id)?.close();streams.delete(id);}};window.addEventListener('DOMContentLoaded',()=>{const channel=new MessageChannel();channel.port1.onmessage=({data})=>{const{method,args}=JSON.parse(data);native[method](...args);};window.dispatchEvent(new MessageEvent('message',{data:'nex-workspace-port',source:null,ports:[channel.port2]}));},{once:true});}`);
 writeFileSync(entry, `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(path.join(root, "profile"))});app.whenReady().then(async()=>{const w=new BrowserWindow({show:false,width:412,height:915,webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:false,sandbox:false,offscreen:true,backgroundThrottling:false}});await w.loadURL(${JSON.stringify(origin)});});`);
-const child = spawn(createRequire(import.meta.url)("electron"), [entry, "--remote-debugging-port=0"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: {
+const stagedElectron = path.resolve("dist-personal/electron", process.platform === "darwin" ? "Electron.app/Contents/MacOS/Electron" : "electron.exe");
+const electron = existsSync(stagedElectron) ? stagedElectron : createRequire(import.meta.url)("electron");
+const child = spawn(electron, [entry, "--remote-debugging-port=0"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: {
   PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA,
   USERPROFILE: process.env.USERPROFILE, TEMP: os.tmpdir(), TMP: os.tmpdir(),
 } });

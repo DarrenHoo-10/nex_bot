@@ -37,5 +37,7 @@ android/gradlew.bat text eol=crlf
 android/core/src/test/resources/fixtures/** text eol=lf
 # Native build scripts and generated avatar metadata must survive Windows-to-Mac builds.
 apps/apple/Executor/*.sh text eol=lf
+# Apple's code-signing entitlement parser rejects CRLF even when plutil accepts it.
+apps/apple/**/*.entitlements text eol=lf
 apps/apple/Packages/NexClientKit/Sources/NexClientKit/Support/GraphicAvatarCatalog.swift text eol=lf
 apps/apple/Shared/Assets.xcassets/graphic-*.imageset/Contents.json text eol=lf
