@@ -248,6 +248,10 @@
 .rk-workspace .modal { border-radius: 20px; }
 .rk-workspace .preferences-nav button[aria-current="page"] { box-shadow: inset 0 1px 0 var(--surface-highlight); }
 
+/* Client windows already have their own frame; a floating card inside would be a second one. */
+.workspace-stage[data-shell="1"] { padding: 0; }
+.workspace-stage[data-shell="1"] > .app.rk-workspace { border: 0; border-radius: 0; box-shadow: none; }
+
 @media (min-width: 1251px) {
   .app.rk-workspace { grid-template-columns: 252px minmax(0, 1fr); }
   .app.rk-workspace.with-detail { grid-template-columns: 252px minmax(0, 1fr) 280px; }

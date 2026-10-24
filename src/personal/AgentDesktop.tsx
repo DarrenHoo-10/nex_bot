@@ -496,7 +496,7 @@ export function AgentDesktop() {
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   void lookRevision;
 
-  return <div className="workspace-stage" data-dark={dark ? "1" : "0"}>
+  return <div className="workspace-stage" data-dark={dark ? "1" : "0"} data-shell={desktop?.mode === "client" ? "1" : "0"}>
     <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
     <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
 
