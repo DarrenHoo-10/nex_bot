@@ -169,7 +169,7 @@ struct MessageRow: View {
         if message.isFromUser {
             ChatMarkdown(source: content)
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .padding(.leading, 40)
         } else if message.kind == "error" {
             Text(content).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)

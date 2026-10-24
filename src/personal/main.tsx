@@ -10,6 +10,7 @@ import "./identity.css";
 import "./settings.css";
 import "./home.css";
 import "../../electron/client/style.css";
+import "./atmosphere.css";
 async function boot() {
  const token = new URLSearchParams(location.hash.slice(1)).get("token");
  if (token) { await api("session", { token }); history.replaceState(null, "", location.pathname); }

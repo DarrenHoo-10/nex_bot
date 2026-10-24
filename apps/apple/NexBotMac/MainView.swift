@@ -34,7 +34,12 @@ struct MainView: View {
                     .frame(width: 310)
             }
         }
-        .background(Theme.background)
+        .background { WorkspaceSurface(kind: .reading) }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.border.opacity(0.8)))
+        .shadow(color: .black.opacity(0.09), radius: 24, y: 10)
+        .padding(16)
+        .background { WorkspaceSurface(kind: .stage) }
         .ignoresSafeArea(.container, edges: .top)
         .overlay { if ui.accountMenuOpen { accountMenuLayer } }
         .animation(.easeOut(duration: 0.15), value: ui.accountMenuOpen)
@@ -58,7 +63,7 @@ struct MainView: View {
                         toggleDark: { appearance = scheme == .dark ? "light" : "dark"; ui.accountMenuOpen = false },
                         logout: { ui.accountMenuOpen = false; ui.logoutConfirmOpen = true })
                 .frame(width: 236)
-                .padding(.leading, 12).padding(.bottom, 74)
+                .padding(.leading, 28).padding(.bottom, 90)
                 .transition(.opacity.combined(with: .offset(y: 6)))
         }
         .onExitCommand { ui.accountMenuOpen = false }

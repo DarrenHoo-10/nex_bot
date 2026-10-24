@@ -478,7 +478,7 @@ private struct MessageRow: View {
                         }
                     }
                     .padding(.horizontal, 18).padding(.vertical, 13)
-                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 meta
             }

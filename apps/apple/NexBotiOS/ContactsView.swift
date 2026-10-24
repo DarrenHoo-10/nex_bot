@@ -20,7 +20,7 @@ struct ContactsView: View {
                 header
                 content
             }
-            .background(Theme.background)
+            .background { WorkspaceSurface(kind: .sidebar) }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Navigation.Route.self) { route in
                 nav.destination(for: route, model: model, workspace: workspace)

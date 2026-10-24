@@ -60,6 +60,7 @@ import NexClientKit
                 case "appearance":
                     let w = arg.split(separator: " ").map(String.init)
                     if w.first == "companion", w.count == 3 { try await workspace.updateAppearance(botID: id, .companion(shape: w[1], color: w[2])) }
+                    else if w.first == "graphic", w.count == 2, AvatarCatalog.graphic(w[1]) != nil { try await workspace.updateAppearance(botID: id, .graphic(w[1])) }
                     else if w.first == "portrait", w.count == 2 { try await workspace.updateAppearance(botID: id, .portrait(w[1])) }
                 case "policysave": try await workspace.updatePolicy(botID: id, tools: arg.split(separator: ",").map(String.init))
                 case "routinesave":

@@ -5,6 +5,27 @@
 所有截图来自独立演示环境：演示账号、演示设备、合成聊天、本机模型与 MCP 服务。
 不包含真实账号、密码、API Key 或正式服务数据。页面中的 localhost 地址、模型名、时间和数量仅为演示值，请勿写死到产品中。
 
+## 通透环境风格（2026-10-24，开发预览）
+
+头像采用 [已选方案](avatar-concepts/README.md)：十二款新头像已统一加入开发版“角色”，不显示性别分组、编号或名称，并支持状态动效。“经典图库”入口已移除；原有二十款动态角色、经典头像资源、默认分配及当前已选形象全部保留。A/B/C 与 F-A 至 M-C 试稿未采用；尚未部署或发布。
+
+用户选定浅蓝、银白环境光与磨砂面板的方向。联系人、聊天、助手详情、菜单及设置沿用现有功能和信息结构。
+`src/personal/atmosphere.css` 集中定义浅色 / 深色材质、细边框、头像与输入框层次；不改第三方原始令牌。
+现有代码仍是此前的磨砂树脂头像实现，已不再是后续头像设计方向。
+保留 20 个形状 / 颜色搭配与全部状态表情、动效；已保存的经典头像继续正常显示。
+桌面使用内收圆角外框，1040px 及以下恢复铺满窗口；浮动侧栏使用足够不透明的背景。
+正文和输入框仍保持最多 800px 的阅读宽度，保留减少动态效果的偏好，并支持减少透明效果。
+
+此迭代尚未发布，下方已归档图片仍代表此前版本。新截图由以下隔离验收生成到
+`release/workspace-verification-avatars/`，包含 1440 × 960、2560 × 1440、390 × 844 以及深浅色状态：
+
+```sh
+node scripts/build-personal.mjs --core
+node scripts/smoke-personal-workspace.mjs
+```
+
+构建、类型检查和 36 项界面验收通过。验收脚本已跟随现有的附件列表、模型选择器及首页内登录卡片更新定位方式。
+
 ## 页面索引
 
 ### Android 0.2.0
@@ -44,6 +65,7 @@
 | 身份信息原位编辑 | [inspector-identity-edit-light.png](inspector-identity-edit-light.png) | 点击“关于”下方内容，在原位置输入并保存或取消 |
 | 账号菜单 | [account-menu-light.png](account-menu-light.png) | 左下头像或账号；设置、主题切换与退出 |
 | 助手形象选择 | [avatar-picker.png](avatar-picker.png) | 点击右侧助手头像；形状、颜色和状态预览 |
+| 角色选择（开发版） | [桌面](graphic-avatar-picker.png)、[窄屏](graphic-avatar-picker-mobile.png) | 十二款新角色与原有角色统一展示，无名称、编号和性别分组；经典图库入口移除，见 [隔离验收](../../docs/verification/graphic-avatars.md) |
 | 经典头像图库 | [avatar-collection.png](avatar-collection.png) | 1200 × 1160；20 张经典头像的独立总览，并非产品页面 |
 | MCP 连接器 | [connectors-light.png](connectors-light.png) | 账号菜单 → 设置 → 连接器；工具与 Agent 授权 |
 | 添加连接器 | [connector-add-light.png](connector-add-light.png) | 连接器 → 添加连接器 |

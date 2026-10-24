@@ -191,7 +191,7 @@ struct PersonAvatar: View {
 extension WorkspaceStore {
     /// What an Agent's avatar and status line show.
     func companionState(_ botID: String) -> CompanionState {
-        CompanionState(task: state?.unfinishedTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection == .connected)
+        CompanionState(task: state?.avatarTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection == .connected)
     }
     func appearance(_ bot: Bot) -> AgentAppearance { AgentAppearance.of(bot, firstID: bots.first?.id) }
 }

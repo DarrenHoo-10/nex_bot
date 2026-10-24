@@ -496,7 +496,8 @@ export function AgentDesktop() {
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   void lookRevision;
 
-  return <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
+  return <div className="workspace-stage" data-dark={dark ? "1" : "0"}>
+    <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
     <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
 
     <main>
@@ -712,6 +713,7 @@ export function AgentDesktop() {
 
     {dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}
     {draftPreview ? <ImageLightbox src={draftPreview.src} alt={draftPreview.label} deleteLabel="移除图片" onClose={() => setDraftPreview(undefined)} onDelete={() => removeDraftImage(draftPreview.src)}/> : null}
+    </div>
   </div>;
 }
 
