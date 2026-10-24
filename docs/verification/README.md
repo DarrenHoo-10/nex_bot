@@ -287,6 +287,10 @@ The [Personal workspace and MCP fixture](personal-workspace-connectors.md) check
 the three-column Personal UI and generic MCP discovery, grants, approvals and
 cancellation using an isolated Core and renderer.
 
+The [Gmail connector fixture](gmail-connectors.md) checks Google OAuth, mailbox
+isolation, encrypted refresh tokens, read-only Agent tools and connector settings
+against synthetic Google services and an isolated renderer.
+
 The [categorized settings record](settings-categories.md) covers the four
 settings categories and the blue account menu in the Personal UI.
 

@@ -88,6 +88,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var delegations: [Delegation]
     public var onlineDevices: [String]
     public var connectors: [ConnectorView]
+    public var connectorCatalog: [ConnectorCatalogEntry] = []
+    public var gmailAvailable: Bool { connectorCatalog.first { $0.id == "gmail" }?.available == true }
     public var memories: [Memory]
     public var journal: [JournalEntry]
     public var usage: [Usage]
@@ -128,6 +130,7 @@ public struct WorkspaceState: Codable, Sendable {
         let online = Set(onlineDevices)
         devices = rows("devices").map { Device(row: $0, online: online.contains($0.string("id") ?? "")) }
         connectors = rows("connectors").map(ConnectorView.init); memories = rows("memories").map(Memory.init)
+        connectorCatalog = rows("connectorCatalog").map(ConnectorCatalogEntry.init)
         journal = rows("journal").map(JournalEntry.init); usage = rows("usage").map(Usage.init)
         config = object("config").map(ModelConfig.init); node = object("node").map(NodeState.init)
         memoryEngine = object("memoryEngine").map(MemoryEngineStatus.init); memoryPlugin = object("memoryPlugin").map(MemoryPluginState.init)
@@ -178,6 +181,7 @@ public struct ToolStep: RowBacked {
 public struct AgentMessage: RowBacked {
     public let row: Row
     public init(row: Row) { self.row = row }
+    public var botID: String { row.string("bot_id") ?? "" }
     public var seq: Int { row.int("seq") ?? 0 }
     /// `user`, `assistant`, `peer` or `system`.
     public var role: String { row.string("role") ?? "" }

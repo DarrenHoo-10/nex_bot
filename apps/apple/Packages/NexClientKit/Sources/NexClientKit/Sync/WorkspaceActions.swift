@@ -88,6 +88,7 @@ extension WorkspaceStore {
     /// Adds (`existing == nil`) or edits a connector. `token` blank keeps the credential while URL and transport stay.
     @discardableResult
     public func saveConnector(existing: ConnectorView? = nil, name: String, url: String, transport: String, token: String = "", clearToken: Bool = false) async throws -> String {
+        guard existing?.isGmail != true else { throw missing("此连接器使用 Google 授权") }
         var draft = ConnectorDraft(name: name, url: url, transport: transport, token: token, clearToken: clearToken ? true : nil, enabled: existing?.enabled ?? true)
         if let existing { draft.id = existing.id; draft.version = (try? currentConnector(existing.id))?.version ?? existing.version }
         return try await act { try await client.saveConnector(draft) }
@@ -111,6 +112,26 @@ extension WorkspaceStore {
     public func removeConnector(_ connectorID: String) async throws {
         let c = try currentConnector(connectorID)
         try await act { try await client.deleteConnector(id: c.id, version: c.version) }
+    }
+
+    public func startGmailAuthorization(connectorID: String? = nil) async throws -> ConnectorOAuthAttempt {
+        guard !ended else { throw missing(Self.expiredMessage) }
+        let connector = try connectorID.map { try currentConnector($0) }
+        guard connector == nil || connector?.isGmail == true else { throw missing("连接器类型不匹配") }
+        return try await act(refresh: false) { try await client.startConnectorAuthorization(id: connector?.id, version: connector?.version) }
+    }
+    public func gmailAuthorizationStatus(id: String) async throws -> ConnectorOAuthStatus {
+        guard !ended else { throw missing(Self.expiredMessage) }
+        return try await act(refresh: false) { try await client.connectorAuthorizationStatus(id: id) }
+    }
+    public func cancelGmailAuthorization(id: String) async {
+        // Best effort after navigation/logout; do not turn a cleanup failure into UI feedback.
+        try? await client.cancelConnectorAuthorization(id: id)
+    }
+    public func disconnectGmail(_ connectorID: String) async throws -> String? {
+        let connector = try currentConnector(connectorID)
+        guard connector.isGmail else { throw missing("连接器类型不匹配") }
+        return try await act { try await client.disconnectConnector(id: connector.id, version: connector.version) }
     }
 
     // MARK: Devices and node

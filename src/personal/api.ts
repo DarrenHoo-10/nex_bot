@@ -1,5 +1,5 @@
-export interface ConnectorTool { name: string; description: string; inputSchema: Record<string, unknown> }
-export interface ConnectorView { id: string; name: string; url: string; transport: "http" | "sse"; enabled: boolean; version: number; hasToken: boolean; tools: ConnectorTool[]; checkedAt: number | null; error: string | null; grants: Array<{ botId: string; tools: string[] }> }
+import type { ConnectorCatalogEntry, ConnectorView } from "../../shared/personal-connectors";
+export type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors";
 export type RecordRow = Record<string, string | number | null>;
 export interface MemoryPluginState {
   providers: Array<{ id: string; name: string; protocol: string }>;
@@ -12,6 +12,7 @@ export interface State {
   imageModelSelection?: { models: string[]; version: number };
   modelVisibility?: { models: string[] | null; version: number };
   connectors?: ConnectorView[];
+  connectorCatalog?: ConnectorCatalogEntry[];
   sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string };
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
   memories: RecordRow[]; delegations: RecordRow[]; devices: RecordRow[]; tasks: RecordRow[]; onlineDevices: string[];

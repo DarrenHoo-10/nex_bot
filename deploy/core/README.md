@@ -58,6 +58,17 @@ the input in a script, log or shared file.
 
 ## Configuration
 
+Optional Gmail connections use `NEX_GOOGLE_CLIENT_ID`,
+`NEX_GOOGLE_CLIENT_SECRET` and `NEX_GOOGLE_REDIRECT_URI`, supplied privately to
+the Core process. Enable the Gmail API, configure Google's consent screen and
+create a Web application OAuth client. Register the exact callback
+`https://YOUR-CORE-HOST/api/connectors/oauth/google/callback` and use it as the
+redirect variable. After restarting, use Settings → Connectors → Gmail and grant
+tools to selected Agents. This version requests only `gmail.readonly` for search,
+message and thread reading. Never place these credentials in the checkout or
+release archive. See the repository's `docs/verification/gmail-connectors.md` for
+Google verification requirements, development setup and isolated test evidence.
+
 | Environment variable | Meaning |
 | --- | --- |
 | `NEX_CORE_DATA_DIR` | Private data directory; default `~/.nexbot/core` |

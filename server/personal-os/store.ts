@@ -276,6 +276,13 @@ export class CoreStore {
       this.db.exec(schema);
       this.insert('schema_migrations', { version: 21, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get('SELECT version FROM schema_migrations WHERE version=22')) this.transaction(() => {
+      const schema = `ALTER TABLE personal_connectors ADD COLUMN provider TEXT NOT NULL DEFAULT 'mcp' CHECK(provider IN ('mcp','gmail'));
+ALTER TABLE personal_connectors ADD COLUMN account TEXT;
+CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_id,owner_user_id,provider,account) WHERE provider!='mcp';`;
+      this.db.exec(schema);
+      this.insert('schema_migrations', { version: 22, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

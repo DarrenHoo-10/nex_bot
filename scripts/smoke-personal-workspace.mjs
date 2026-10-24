@@ -111,7 +111,7 @@ try {
   const documentNode = await command("DOM.getDocument");
   const uploadNode = await command("DOM.querySelector", { nodeId: documentNode.root.nodeId, selector: "input[type=file]" });
   await command("DOM.setFileInputFiles", { nodeId: uploadNode.nodeId, files: [uploadPath] });
-  await until(() => evaluate("document.querySelector('.attachment-draft')?.textContent.includes('项目说明.md')&&!document.querySelector('.send').disabled"), "upload available for attachment-only send");
+  await until(() => evaluate("document.querySelector('.attachment-drafts')?.textContent.includes('项目说明.md')&&!document.querySelector('.send').disabled"), "upload available for attachment-only send");
   await click(".composer-add");
   await textButton("权限", "document.querySelector('.composer-command-menu')");
   await textButton("完全权限", "document.querySelector('.permission-popover')");
@@ -122,7 +122,7 @@ try {
   await click(".send");
   await until(() => evaluate("document.querySelector('.transcript').textContent.includes('已读取你上传')"));
   if (!String(core.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='uploaded-read'")?.result_json).includes('COMPOSER_ATTACHMENT_FIXTURE')) throw new Error("Worker did not receive attachment");
-  if (!await evaluate("!!document.querySelector('.transcript a[download]')&&!document.querySelector('.attachment-draft')")) throw new Error("Attachment card/cleanup missing");
+  if (!await evaluate("!!document.querySelector('.transcript a[download]')&&!document.querySelector('.attachment-drafts')")) throw new Error("Attachment card/cleanup missing");
   await command("Page.reload");
   await until(async () => (await api("state")).bots.find(b=>b.id===bot.id).approval_setting==='full');
   await screenshot("composer-attachment-message-light");
@@ -288,8 +288,11 @@ try {
   cases.push("light-dark-theme", "mobile-drawer-and-no-horizontal-overflow");
   await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await click(".workspace-account-name"); await textButton("切换浅色模式", "document.querySelector('.account-menu')");
+  await click(`[data-connector='${connector.id}']`);
   await textButton("停用"); await until(() => evaluate("document.querySelector('.connection-status').textContent==='已停用'")); await textButton("启用");
-  await textButton("移除连接器"); await until(() => evaluate("[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='确认移除'&&!button.disabled)")); await textButton("确认移除"); await until(() => evaluate("!!document.querySelector('.connector-empty')"));
+  await until(() => evaluate("[...document.querySelectorAll('.connector-detail button')].some(button=>button.textContent.trim()==='移除连接器'&&!button.disabled)"));
+  await textButton("移除连接器"); await until(() => evaluate("[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='确认移除'&&!button.disabled)")); await textButton("确认移除"); await until(() => evaluate("!!document.querySelector('.connector-catalog')&&!document.querySelector('.connector-mcp-detail')"));
+  if ((await api("state")).connectors.length) throw new Error("Removed MCP connection persists");
   cases.push("MCP-disable-enable-remove");
   await screenshot("connectors-empty-light");
   await click(".workspace-account-name"); await textButton("设置", "document.querySelector('.account-menu')"); await textButton("设备", "document.querySelector('.preferences-nav')");
@@ -299,7 +302,10 @@ try {
   await geometry(); await screenshot("settings-account-light");
   const settingsNav = "document.querySelector('.preferences-nav')";
   await textButton("模型", settingsNav);
-  await input("input[name='model']", "fixture-settings-draft");
+  await click("[data-model-settings] [aria-label='默认模型']");
+  await input(".model-picker-popover input[aria-label='搜索模型']", "fixture-settings-draft");
+  await click(".model-picker-popover [role='option']");
+  await until(() => evaluate("document.querySelector('input[name=model]').value==='fixture-settings-draft'"), "custom model draft selected");
   await textButton("长期记忆", settingsNav); await textButton("模型", settingsNav);
   if (!await evaluate("document.querySelector('input[name=model]').value==='fixture-settings-draft'&&document.querySelectorAll('.preferences-panel:not([hidden])').length===1")) throw new Error("Category navigation lost draft or exposed multiple panels");
   await until(() => evaluate("!document.querySelector('[data-model-settings] button.primary').disabled"), "model form ready");
@@ -307,8 +313,10 @@ try {
   await until(() => evaluate("!!document.querySelector('.preferences-saved')"));
   if ((await api("state")).config.default_model !== "fixture-settings-draft") throw new Error("Settings did not persist to Core");
   await textButton("获取模型列表", "document.querySelector('[data-model-settings]')");
-  await until(() => evaluate("document.querySelector('select[name=model]')?.textContent.includes('fixture-reasoning')"));
-  await evaluate("(()=>{const el=document.querySelector('select[name=model]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(el,'fixture-reasoning');el.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await until(() => evaluate("document.querySelector('[data-model-settings]').textContent.includes('已获取 2 个模型')"), "refreshed model catalog");
+  await click("[data-model-settings] [aria-label='默认模型']");
+  await until(() => evaluate("[...document.querySelectorAll('.model-picker-popover [role=option]')].some(el=>el.textContent==='fixture-reasoning')"));
+  await evaluate("[...document.querySelectorAll('.model-picker-popover [role=option]')].find(el=>el.textContent==='fixture-reasoning').click()");
   await until(() => evaluate("!document.querySelector('[data-model-settings] button.primary').disabled"), "model form ready");
   await textButton("保存配置", "document.querySelector('[data-model-settings]')");
   await until(async () => (await api("state")).config.default_model === "fixture-reasoning");
@@ -333,7 +341,7 @@ try {
   await until(() => evaluate("!!document.querySelector('.account-logout-modal[open]')"));
   await textButton("退出登录", "document.querySelector('.account-logout-modal')");
   await until(() => evaluate("!!document.querySelector('.login-form')")); await screenshot("login-light");
-  if (!await evaluate("document.querySelector('h1').textContent==='登录 NexBot'&&document.querySelector('.login-signup').textContent==='没有账号？去注册'&&!/PERSONAL AI OS|连接你的 Agent/.test(document.body.innerText)")) throw new Error("Login copy is not simplified");
+  if (!await evaluate("document.querySelector('.login-card h1').textContent==='登录 NexBot'&&document.querySelector('.login-signup').textContent==='没有账号？去注册'&&!/PERSONAL AI OS|连接你的 Agent/.test(document.querySelector('.login-card').innerText)")) throw new Error("Login copy is not simplified");
   if (!await evaluate("document.querySelector('.login-signup a').href==='https://user.nexorai.com.cn/register/nexbot'")) throw new Error("Registration link is missing");
   cases.push("styled-logout-confirm-cancel-and-confirm", "simplified-login-registration-link");
   if (exceptions.length) throw new Error("Renderer exceptions: " + exceptions.join(","));

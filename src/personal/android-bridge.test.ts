@@ -47,3 +47,30 @@ it("delegates export and clipboard without exposing a session token", async () =
   expect(host.nex.token).toBeUndefined();
   expect(await host.nex.deviceState()).toEqual({ available: false });
 });
+
+it("opens Google authorization through the native browser and preserves failure for retry", async () => {
+  const url = "https://accounts.google.com/o/oauth2/v2/auth?state=synthetic";
+  const pending = host.nex.openExternal(url);
+  const [id, action, value] = native.action.mock.calls[0];
+  expect([action, value]).toEqual(["external", url]);
+  const failure = expect(pending).rejects.toThrow("无法打开浏览器，请重试");
+  host.__nexReply(id, { error: "无法打开浏览器，请重试" });
+  await failure;
+  const retry = host.nex.openExternal(url);
+  host.__nexReply(native.action.mock.calls[1][0], { value: true });
+  await retry;
+});
+
+it("routes Gmail OAuth over native authenticated transport without browser cookies", async () => {
+  for (const [path, method, body] of [
+    ["/api/connectors/oauth/start", "POST", '{"provider":"gmail"}'],
+    ["/api/connectors/oauth/status?id=synthetic", "GET", ""],
+    ["/api/connectors/oauth/cancel", "POST", '{"id":"synthetic"}'],
+  ]) {
+    const pending = host.fetch(path, { method, ...(body ? { body } : {}) });
+    const [id, route, verb, content] = native.request.mock.calls.at(-1)!;
+    expect([route, verb, content]).toEqual([path, method, body]);
+    host.__nexReply(id, { status: 200, body: '{"ok":true}' });
+    expect((await pending).ok).toBe(true);
+  }
+});

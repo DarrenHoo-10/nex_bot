@@ -128,7 +128,8 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         }
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest): Boolean {
-                if (request.hasGesture()) external(request.url.toString())
+                if (request.hasGesture()) runCatching { external(request.url.toString()) }
+                    .onFailure { Toast.makeText(context, "无法打开链接", Toast.LENGTH_SHORT).show() }
                 return true
             }
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse {
@@ -236,10 +237,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         }
     }
     private fun external(url: String) {
-        val uri = Uri.parse(url)
-        if (uri.scheme !in listOf("https", "http") || uri.host.isNullOrBlank() || !uri.userInfo.isNullOrEmpty()) return
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
-            .onFailure { Toast.makeText(context, "无法打开链接", Toast.LENGTH_SHORT).show() }
+        openWorkspaceExternal(context, url)
     }
     @JavascriptInterface fun subscribe(id: String) { scope.launch { subscriptions.add(id); startStream(id) } }
     @JavascriptInterface fun unsubscribe(id: String) { scope.launch { subscriptions.remove(id); streams.remove(id)?.cancel() } }
@@ -274,4 +272,11 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); web.onPause(); web.pauseTimers() }
     fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'))", null) }
     fun close() { closed = true; updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.removeJavascriptInterface("NexAndroid"); web.destroy() }
+}
+
+internal fun openWorkspaceExternal(context: Context, url: String) {
+    val uri = Uri.parse(url)
+    require(uri.scheme in listOf("https", "http") && !uri.host.isNullOrBlank() && uri.userInfo.isNullOrEmpty()) { "链接无效" }
+    try { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+    catch (_: Exception) { throw IllegalStateException("无法打开浏览器，请重试") }
 }

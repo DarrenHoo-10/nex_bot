@@ -97,6 +97,9 @@ public struct ConnectorGrant: Sendable, Hashable, Codable {
 public struct ConnectorView: RowBacked {
     public let row: Row
     public init(row: Row) { self.row = row }
+    public var provider: String { row.string("provider") ?? "mcp" }
+    public var isGmail: Bool { provider == "gmail" }
+    public var account: String? { row.string("account") }
     public var name: String { row.string("name") ?? "" }
     public var url: String { row.string("url") ?? "" }
     /// `http` (Streamable HTTP) or `sse`.
@@ -118,9 +121,10 @@ public struct ConnectorView: RowBacked {
     /// List subtitle: 已停用 / 需要检查 / N 个工具 / 尚未测试.
     public var subtitle: String { !enabled ? "已停用" : error != nil ? "需要检查" : checkedAt != nil ? "\(tools.count) 个工具" : "尚未测试" }
     /// Detail chip: 已停用 / 连接异常 / 连接测试通过 / 等待测试.
-    public var statusChip: String { !enabled ? "已停用" : error != nil ? "连接异常" : checkedAt != nil ? "连接测试通过" : "等待测试" }
+    public var statusChip: String { !enabled ? "已停用" : isGmail && !hasToken ? "需要重新授权" : error != nil ? "连接异常" : checkedAt != nil ? (isGmail ? "已连接" : "连接测试通过") : "等待测试" }
+    public var isReady: Bool { enabled && checkedAt != nil && error == nil && (!isGmail || hasToken) }
     /// `Bearer Token · 已加密保存` or `无需令牌`.
-    public var authLabel: String { hasToken ? "Bearer Token · 已加密保存" : "无需令牌" }
+    public var authLabel: String { isGmail ? "搜索和读取邮件" : hasToken ? "Bearer Token · 已加密保存" : "无需令牌" }
 }
 
 // MARK: - Devices and node
