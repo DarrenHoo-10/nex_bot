@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import { createPersonalApp } from "./index.ts";
 import { createWorkspaceService } from "./workspaces.ts";
 import { startFakeIdentity } from "./testing/fake-identity.ts";
-import type { Appearance } from "../../shared/personal-appearance.ts";
+import { graphicAvatarIds, type Appearance } from "../../shared/personal-appearance.ts";
 
 it("syncs appearance across sessions, rejects stale/invalid/foreign changes and persists through restart", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-appearance-fixture-"));
@@ -53,6 +53,28 @@ it("syncs appearance across sessions, rejects stale/invalid/foreign changes and 
     expect((await request("state", secondSession)).body.bots[0]).toMatchObject(synced);
     expect((await request("bots/appearance", secondSession, { ...update, version: 1, appearance: { kind: "portrait", id: "fox" } })).status).toBe(200);
     expect(JSON.parse((await request("state", owner.token)).body.bots[0].appearance_json!)).toEqual({ kind: "portrait", id: "fox" });
+    const classic = (await request("state", owner.token)).body.bots.find((item) => item.id === bot)!;
+    const added = await request("bots", owner.token, { name: "Graphic appearance fixture", instructions: "Synthetic avatar check" });
+    expect(added.status).toBe(200);
+    const graphicBot = added.body.id;
+    let graphicVersion = 0;
+    expect((await request("bots/appearance", owner.token, { id: graphicBot, version: 0, appearance: { kind: "graphic", id: "https://foreign.example.test/avatar.svg" } })).status).toBe(400);
+    for (const id of graphicAvatarIds) {
+      expect((await request("bots/appearance", owner.token, { id: graphicBot, version: graphicVersion, appearance: { kind: "graphic", id } })).status).toBe(200);
+      graphicVersion++;
+      const saved = (await request("state", secondSession)).body.bots.find((item) => item.id === graphicBot)!;
+      expect(JSON.parse(saved.appearance_json!)).toEqual({ kind: "graphic", id });
+      expect(saved.appearance_version).toBe(graphicVersion);
+    }
+    const graphic = (await request("state", secondSession)).body.bots.find((item) => item.id === graphicBot)!;
+    expect((await request("bots/appearance", secondSession, { id: graphicBot, version: 0, appearance: { kind: "graphic", id: "female-03" } })).status).toBe(400);
+    await app.close(); app = undefined;
+    app = await createWorkspaceService(options);
+    const afterRestart = (await request("state", secondSession)).body.bots;
+    expect(afterRestart.find((item) => item.id === graphicBot)).toMatchObject(graphic);
+    expect(afterRestart.find((item) => item.id === bot)).toMatchObject(classic);
+    expect((await request("bots/appearance", secondSession, { id: graphicBot, version: graphicVersion, appearance })).status).toBe(200);
+    expect(JSON.parse((await request("state", owner.token)).body.bots.find((item) => item.id === graphicBot)!.appearance_json!)).toEqual(appearance);
   } finally {
     await app?.close(); await legacy?.close(); await provider.close();
     if (path.dirname(root).toLowerCase() === os.tmpdir().toLowerCase() && path.basename(root).startsWith("nex-appearance-fixture-")) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
