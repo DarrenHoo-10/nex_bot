@@ -106,6 +106,23 @@ block, and `feishu*` endpoints/actions; jobs are polled (1.5 s) while
 - Not yet covered: pixel-level rendering acceptance for the new panes
   (follows the repo's Apple preview flow on a real run).
 
+## Production deployment — 2026-10-25
+
+Tokyo (`nexbot-core.service`) deployed from this branch as release
+`/data/nexbot/releases/feishu-connector-20261025` (linux-x64 archive
+`NexBot-Core-feishu-20261025-linux-x64.tar.gz`, SHA-256
+`330b3405dbaf6e729ceac1f4b765c80bb47cfb3a32cd6eac2819cbae26288403`, verified
+on the server before extraction; canvas swapped to
+`@napi-rs/canvas-linux-x64-gnu@1.0.10`). A new drop-in
+`zzzzzzzzzzzzzzzzzzzzzz-feishu-connector-release.conf` points ExecStart at the
+release with `--account-workspaces` preserved; the superseded conf was backed
+up in place (`.bak-20261025`). After `daemon-reload` + restart: unit active,
+ready JSON with the stable Core ID and `initialized:true`, local and public
+`https://bot.nexorai.com.cn/health` return 200. Migration 19 is additive; the
+previous release directory remains for rollback (re-point the drop-in and
+restart). Not yet done on production: real-tenant scan acceptance and a push
+of this branch (GitHub credentials expired; user must re-auth `gh`).
+
 ## Real-tenant acceptance (outstanding)
 
 Before shipping: one real scan on a test tenant to confirm the app is created,
