@@ -68,7 +68,7 @@ export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Pr
     document.addEventListener("keydown", trap);
     return () => { document.removeEventListener("keydown", trap); if (previous?.isConnected) previous.focus(); };
   }, [editing]);
-  const connections = (state.connectors ?? []).filter((item) => item.provider !== "gmail" || item.kind !== "feishu");
+  const connections = (state.connectors ?? []).filter((item) => item.provider !== "gmail");
   const feishu = <FeishuCard state={state} refresh={refresh}/>;
   const selected = connections.find((item) => item.id === selectedId);
   const accounts = connections.filter((item) => item.provider === "gmail");
@@ -116,6 +116,7 @@ export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Pr
   return <div className="connectors-page" ref={page}>
     {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation"><button className="connector-back" onClick={() => { setView("catalog"); setGrantBot(""); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button></div>}
     {error && <div className="connector-feedback is-error" role="alert">{error}</div>}{notice && <div className="connector-feedback" role="status"><Check size={16}/>{notice}</div>}
+    {view === "catalog" && feishu}
     {view === "catalog" && <section className="connector-catalog" aria-label="连接器列表">
       <label className="connector-search"><Search size={16}/><input aria-label="搜索连接器" placeholder="搜索连接器" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
       <div className="connector-catalog-rows">
