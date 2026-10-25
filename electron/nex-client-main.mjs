@@ -198,7 +198,15 @@ else {
     });
     ipcMain.handle("client:external", async (event, value) => { validate(event); const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid URL"); await shell.openExternal(url.href); });
     ipcMain.handle("client:quit", (event) => { validate(event); setTimeout(() => app.quit(), 50); });
-    ipcMain.handle("client:update-state", (event) => { validate(event); return updater?.state() ?? { status: "unsupported" }; });
+    const unsupportedUpdate = () => ({ status: "unsupported", current: app.isPackaged ? app.getVersion() : "开发版" });
+    ipcMain.handle("client:update-state", (event) => { validate(event); return updater?.state() ?? unsupportedUpdate(); });
+    ipcMain.handle("client:update-check", (event) => {
+      validate(event);
+      if (!updater) return unsupportedUpdate();
+      const target = origin ?? saved?.origin;
+      if (!target) throw new Error("请先连接服务");
+      return updater.check(target);
+    });
     ipcMain.handle("client:update-install", (event) => {
       validate(event);
       if (!updater || updater.status !== "ready") throw new Error("更新尚未就绪");

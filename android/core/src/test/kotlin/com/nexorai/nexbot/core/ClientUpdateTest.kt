@@ -27,7 +27,7 @@ class ClientUpdateTest {
         assertTrue(ClientUpdates.valid(UpdateOffer("0.3.0", 10, sha, "https://mirror.test/a.apk?Signature=x")))
     }
 
-    @Test fun `check asks for the android platform and ignores offers that are not newer`() {
+    @Test fun `check asks for the android platform and reports invalid offers as errors`() {
         MockWebServer().use { server ->
             val updates = ClientUpdates(server.url("/").toString(), OkHttpClient())
             server.enqueue(MockResponse().setBody("""{"platform":"android","current":"0.2.9","available":false}"""))
@@ -38,6 +38,12 @@ class ClientUpdateTest {
             server.enqueue(MockResponse().setBody("""{"available":true,"version":"0.3.0","size":4096,"sha256":"$sha","url":"https://mirror.test/nexbot-0.3.0-debug.apk"}"""))
             assertEquals(UpdateOffer("0.3.0", 4096, sha, "https://mirror.test/nexbot-0.3.0-debug.apk"), updates.check("android", "0.2.9"))
             server.enqueue(MockResponse().setBody("""{"available":true,"version":"0.2.8","size":4096,"sha256":"$sha","url":"https://mirror.test/old.apk"}"""))
+            assertFailsWith<IOException> { updates.check("android", "0.2.9") }
+            server.enqueue(MockResponse().setBody("{}"))
+            assertFailsWith<IOException> { updates.check("android", "0.2.9") }
+            server.enqueue(MockResponse().setResponseCode(503))
+            assertFailsWith<IOException> { updates.check("android", "0.2.9") }
+            server.enqueue(MockResponse().setBody("""{"available":false}"""))
             assertNull(updates.check("android", "0.2.9"))
         }
     }

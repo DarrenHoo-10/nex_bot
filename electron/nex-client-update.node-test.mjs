@@ -47,12 +47,30 @@ test("a tampered or truncated download is discarded and never offered", async ()
   }
 });
 
-test("no update, a bad offer or an unreachable Core leaves the client idle or in error without a file", async () => {
+test("only a successful no-update answer reports current; malformed answers report errors", async () => {
   const none = fixture({ available: false });
-  try { assert.equal((await none.updater.check("https://core.test")).status, "idle"); } finally { none.cleanup(); }
+  try { assert.equal((await none.updater.check("https://core.test")).status, "current"); assert.deepEqual(none.states, ["checking", "current"]); } finally { none.cleanup(); }
   const bad = fixture(offer({ file: "evil.exe" }));
-  // A malformed offer is ignored: nothing is downloaded and the client stays idle.
-  try { assert.equal((await bad.updater.check("https://core.test")).status, "idle"); assert.equal(bad.requests.length, 1); } finally { bad.cleanup(); }
+  try { assert.equal((await bad.updater.check("https://core.test")).status, "error"); assert.equal(bad.requests.length, 1); } finally { bad.cleanup(); }
+});
+
+test("a failed check can be retried and concurrent checks never duplicate requests", async () => {
+  const f = fixture({ available: false });
+  try {
+    f.updater.transport = async () => { throw new Error("offline"); };
+    assert.equal((await f.updater.check("https://core.test")).status, "error");
+    assert.equal(f.updater.state().error, "offline");
+    let respond;
+    let requests = 0;
+    f.updater.transport = () => { requests++; return new Promise(resolve => { respond = resolve; }); };
+    const first = f.updater.check("https://core.test");
+    assert.equal(f.updater.state().status, "checking");
+    assert.equal((await f.updater.check("https://core.test")).status, "checking");
+    assert.equal(requests, 1);
+    respond(new Response(JSON.stringify({ available: false })));
+    assert.equal((await first).status, "current");
+    assert.equal(f.updater.state().error, undefined);
+  } finally { f.cleanup(); }
 });
 
 test("the handoff starts the new portable with the same profile and removes only an old NexBot portable", () => {

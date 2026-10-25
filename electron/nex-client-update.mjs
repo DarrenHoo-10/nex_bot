@@ -22,13 +22,15 @@ export class ClientUpdater {
   async check(origin) {
     if (this.busy || this.status === "ready") return this.state();
     this.busy = true;
+    this.set("checking", { error: undefined });
     try {
       const url = new URL("/api/client/update", origin);
       url.searchParams.set("platform", "windows"); url.searchParams.set("version", this.version);
       const response = await this.transport(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const offer = await response.json();
-      if (!offer.available) { this.offer = undefined; this.set("idle", { error: undefined }); return this.state(); }
+      if (offer.available === false) { this.offer = undefined; this.set("current", { error: undefined, progress: undefined }); return this.state(); }
+      if (offer.available !== true) throw new Error("更新信息无效");
       if (!versionPattern.test(offer.version) || !portablePattern.test(offer.file) || !/^[a-f0-9]{64}$/.test(offer.sha256) || !Number.isSafeInteger(offer.size) || !String(offer.url).startsWith("https://")) throw new Error("更新信息无效");
       this.offer = offer;
       this.file = path.join(this.directory, offer.file);
@@ -37,7 +39,7 @@ export class ClientUpdater {
       this.set("ready", { progress: 1, error: undefined });
     } catch (error) {
       // A failed check or download is retried at the next check.
-      this.set(this.offer ? "error" : "idle", { error: this.offer ? (error instanceof Error ? error.message : "更新下载失败") : undefined });
+      this.set("error", { error: error instanceof Error ? error.message : "检查更新失败" });
     } finally { this.busy = false; }
     return this.state();
   }

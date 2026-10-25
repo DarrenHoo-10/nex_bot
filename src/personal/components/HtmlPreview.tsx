@@ -34,7 +34,7 @@ export function HtmlPreview({ source, pending, complete }: { source: string; pen
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close();
       if (event.key === 'Tab') {
-        const focusable = container.current?.querySelectorAll<HTMLElement>('button,iframe,summary');
+        const focusable = container.current?.querySelectorAll<HTMLElement>('button,iframe');
         const first = focusable?.[0], last = focusable?.[focusable.length - 1];
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -51,6 +51,5 @@ export function HtmlPreview({ source, pending, complete }: { source: string; pen
       <button type="button" ref={expand} onClick={() => setFullscreen(value => !value)} aria-label={fullscreen ? '退出全屏' : '全屏预览'}>{fullscreen ? '退出全屏' : '全屏'}</button>
     </div>
     {runnable && <iframe key={id} ref={iframe} title="HTML 交互预览" src="/html-preview.html" sandbox="allow-scripts" referrerPolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'" style={{ height: fullscreen ? undefined : height }} onLoad={() => iframe.current?.contentWindow?.postMessage({ channel: 'nex-html-init', id, source }, '*')}/>}
-    <details className="html-preview-source"><summary>源码</summary><pre><code>{source}</code></pre></details>
   </section>;
 }

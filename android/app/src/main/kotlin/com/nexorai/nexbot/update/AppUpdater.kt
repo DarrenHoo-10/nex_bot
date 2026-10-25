@@ -28,6 +28,7 @@ class AppUpdater(private val context: Context, origin: String, private val onSta
     private val current = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
     private var job: Job? = null
     private var ready: File? = null
+    private var checking = false
     @Volatile var state: JSONObject = JSONObject().put("status", "idle").put("current", current)
         private set
 
@@ -43,10 +44,16 @@ class AppUpdater(private val context: Context, origin: String, private val onSta
 
     fun stop() { job?.cancel(); job = null }
 
-    private suspend fun check() {
+    suspend fun check() {
+        if (checking || ready != null) return
+        checking = true
         try {
-            val offer = withContext(Dispatchers.IO) { updates.check("android", current) } ?: return
-            if (ready != null && state.optString("version") == offer.version) return
+            publish(JSONObject().put("status", "checking").put("current", current))
+            val offer = withContext(Dispatchers.IO) { updates.check("android", current) }
+            if (offer == null) {
+                publish(JSONObject().put("status", "current").put("current", current))
+                return
+            }
             publish(JSONObject().put("status", "downloading").put("current", current).put("version", offer.version))
             val file = withContext(Dispatchers.IO) {
                 dir.listFiles().orEmpty().filter { it.name != "nexbot-${offer.version}.apk" }.forEach { it.delete() }
@@ -60,6 +67,8 @@ class AppUpdater(private val context: Context, origin: String, private val onSta
         } catch (failure: Exception) {
             if (failure is CancellationException) throw failure
             if (ready == null) publish(JSONObject().put("status", "error").put("current", current).put("error", failure.message ?: "检查更新失败"))
+        } finally {
+            checking = false
         }
     }
 

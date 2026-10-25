@@ -90,6 +90,7 @@ export function installAndroidBridge() {
     minimize: () => action("background"),
     workspaceReady: () => action("ready"),
     updateState: () => action("updateState"),
+    checkUpdate: () => action("checkUpdate"),
     installUpdate: () => action("installUpdate"),
     onUpdateState: (callback: (state: unknown) => void) => {
       const listener = (event: Event) => callback((event as CustomEvent).detail);

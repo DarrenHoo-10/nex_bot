@@ -1,6 +1,7 @@
 ﻿import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AccountControls, useAccount } from "./auth";
-import { Check, Cpu, Eye, EyeOff, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
+import { Check, Cpu, Eye, EyeOff, Info, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
+import { AboutSettings } from "./AboutSettings";
 import { api, desktop, listModels, str, type State, type LocalDeviceState } from "./api";
 import { ConnectorsPage } from "./ConnectorsPage";
 import { ModelLimitsFields } from "./ModelLimitsFields";
@@ -16,7 +17,7 @@ export function Editor({ title, fields, onClose, onSubmit }: { title: string; fi
 export function Confirm({ title, detail, onClose, onConfirm }: { title: string; detail: string; onClose: () => void; onConfirm: () => Promise<unknown> }) {
   return <><h2>{title}</h2><p>{detail}</p><div className="actions"><button className="danger" onClick={() => void onConfirm()}>确认</button><button autoFocus onClick={onClose}>取消</button></div></>;
 }
-export type SettingsCategory = "account" | "model" | "memory" | "connectors" | "devices";
+export type SettingsCategory = "account" | "model" | "memory" | "connectors" | "devices" | "about";
 export function SettingsPage({ state, run, category, onCategory, refresh, setDialog, closeDialog }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; category: SettingsCategory; onCategory: (category: SettingsCategory) => void; refresh: () => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
   const sectionId = useId();
   const categories: Array<{ id: SettingsCategory; label: string; icon: typeof UserRound }> = [
@@ -25,6 +26,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
     { id: "memory", label: "长期记忆", icon: Sparkles },
     { id: "connectors", label: "连接器", icon: Plug },
     { id: "devices", label: "设备", icon: Cpu },
+    { id: "about", label: "关于", icon: Info },
   ];
   return <div className="preferences-page">
     <div className="preferences-heading"><h1>设置</h1></div>
@@ -50,6 +52,9 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
         </section>
         <section id={`${sectionId}-devices`} hidden={category !== "devices"} aria-label="设备" className="preferences-panel">
           <Devices state={state} run={run} setDialog={setDialog} closeDialog={closeDialog}/>
+        </section>
+        <section id={`${sectionId}-about`} hidden={category !== "about"} aria-label="关于" className="preferences-panel">
+          <AboutSettings/>
         </section>
       </div>
     </div>

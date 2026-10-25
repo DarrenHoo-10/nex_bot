@@ -28,8 +28,10 @@ final class ClientUpdateTests: XCTestCase {
         XCTAssertEqual(offer?.version, "0.2.5"); XCTAssertEqual(offer?.size, 4096)
         for bad: [String: Any] in [["url": "http://mirror.test/a.dmg"], ["sha256": "nope"], ["version": "0.2.4"], ["size": 0]] {
             answer = answer.merging(bad) { $1 }
-            let refused = try await client.clientUpdate(platform: "mac", current: "0.2.4")
-            XCTAssertNil(refused, "\(bad)")
+            do {
+                _ = try await client.clientUpdate(platform: "mac", current: "0.2.4")
+                XCTFail("Invalid offer must not be reported as up to date: \(bad)")
+            } catch { XCTAssertEqual((error as? CoreError)?.message, "更新信息无效") }
             answer = ["available": true, "version": "0.2.5", "size": 4096, "sha256": sha, "url": "https://mirror.test/NexBot-0.2.5-mac-arm64.dmg?Signature=x"]
         }
     }

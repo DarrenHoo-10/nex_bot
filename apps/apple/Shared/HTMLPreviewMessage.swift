@@ -17,9 +17,6 @@ struct HTMLPreviewMessage: View {
             toolbar
             if fullscreen { Color.clear.frame(height: model.height) }
             else if model.running { HTMLPreviewWebView(model: model).frame(height: model.height) }
-            DisclosureGroup("源码") {
-                ScrollView([.horizontal, .vertical]) { Text(source).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).padding(8) }.frame(maxHeight: 240)
-            }.font(.caption).padding(10)
         }
         .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border))

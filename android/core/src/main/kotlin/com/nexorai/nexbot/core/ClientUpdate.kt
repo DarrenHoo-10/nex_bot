@@ -31,14 +31,16 @@ class ClientUpdates(origin: String, private val http: OkHttpClient = downloadHtt
         http.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
             if (!response.isSuccessful) throw IOException("检查更新返回 HTTP ${response.code}")
             val body = Json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject
-            if (body["available"]?.jsonPrimitive?.booleanOrNull != true) return null
+            val available = body["available"]?.jsonPrimitive?.booleanOrNull ?: throw IOException("更新信息无效")
+            if (!available) return null
             val offer = UpdateOffer(
                 version = body["version"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 size = body["size"]?.jsonPrimitive?.longOrNull ?: 0,
                 sha256 = body["sha256"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 url = body["url"]?.jsonPrimitive?.contentOrNull.orEmpty(),
             )
-            return offer.takeIf { valid(it) && newer(it.version, current) }
+            if (!valid(offer) || !newer(offer.version, current)) throw IOException("更新信息无效")
+            return offer
         }
     }
 

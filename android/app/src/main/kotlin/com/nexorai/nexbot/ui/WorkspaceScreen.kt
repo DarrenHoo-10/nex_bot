@@ -223,6 +223,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                     "background" -> (context as? ComponentActivity)?.moveTaskToBack(true)
                     "ready" -> repository.state.value.selectedBotId?.let { selectBot(it) }
                     "updateState" -> { reply(id, JSONObject().put("value", updater.state)); return@launch }
+                    "checkUpdate" -> { updater.check(); reply(id, JSONObject().put("value", updater.state)); return@launch }
                     "installUpdate" -> updater.install()
                     "save" -> {
                         check(save == null) { "请先完成当前保存" }

@@ -73,6 +73,18 @@ try {
     cases.push("local-ui-with-remote-api");
     await first.evaluate("document.querySelector('.workspace-account-name').click();true");
     await first.evaluate("[...document.querySelectorAll('.account-menu button')].find(el=>el.textContent==='设置').click();true");
+    await first.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(el=>el.textContent==='关于').click();true");
+    await until(() => first.evaluate("window.nex.updateState().then(s=>!!s.current&&document.querySelector('section[aria-label=关于]')?.textContent.includes(s.current))"));
+    if (!await first.evaluate("typeof window.nex.checkUpdate==='function'")) throw new Error("Manual update bridge is missing");
+    const updateState = await first.evaluate("window.nex.updateState()");
+    if (updateState.status === "unsupported" && !await first.evaluate("window.nex.checkUpdate().then(s=>s.status==='unsupported'&&!!s.current)")) throw new Error("Unsupported builds lost their installed version");
+    cases.push("settings-about-installed-version-and-update-bridge");
+    const aboutScreenshot = process.argv.find(arg => arg.startsWith("--about-screenshot="))?.slice(19);
+    if (aboutScreenshot) {
+      mkdirSync(path.dirname(aboutScreenshot), { recursive: true });
+      const shot = await first.command("Page.captureScreenshot", { format: "png" });
+      writeFileSync(aboutScreenshot, Buffer.from(shot.data, "base64"));
+    }
     await first.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(el=>el.textContent==='模型').click();true");
     await first.evaluate(`(()=>{for(const [name,value] of [['endpoint',${JSON.stringify(catalogModel.origin + '/v1')}],['apiKey','synthetic-catalog-key']]){const el=document.querySelector('input[name='+name+']');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event('input',{bubbles:true}));}})()`);
     await first.evaluate("document.querySelector('[aria-label=默认模型]').click()");

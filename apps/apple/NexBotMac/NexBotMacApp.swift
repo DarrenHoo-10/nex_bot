@@ -7,11 +7,11 @@ enum InspectorTab: String, CaseIterable { case work = "工作", settings = "设�
 
 /// Categories of the Settings window. Raw values double as the `@AppStorage("nexbot.settingsCategory")` value.
 enum SettingsCategory: String, CaseIterable {
-    case account = "账号与登录设备", model = "模型", memory = "长期记忆", connectors = "连接器", devices = "设备"
+    case account = "账号与登录设备", model = "模型", memory = "长期记忆", connectors = "连接器", devices = "设备", about = "关于"
     static let storageKey = "nexbot.settingsCategory"
     var icon: String {
         switch self {
-        case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .connectors: "powerplug"; case .devices: "cpu"
+        case .account: "person"; case .model: "key"; case .memory: "sparkles"; case .connectors: "powerplug"; case .devices: "cpu"; case .about: "info.circle"
         }
     }
 }

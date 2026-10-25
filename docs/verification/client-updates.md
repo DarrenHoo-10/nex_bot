@@ -43,6 +43,45 @@ swaps them and relaunches. If the copy fails the old app relaunches unchanged.
 iOS cannot replace itself: after sign-in it shows "新版本 x 可用" once per
 version with a download link.
 
+`设置 → 关于` displays the installed client version and a manual `检查更新`
+action on Windows, Android, macOS and iOS. It uses the existing updater and
+shows checking, current, downloading/ready, and retryable error states. A
+browser identifies itself as `网页版`; it does not show a desktop version or
+installer action. Development Windows launches identify themselves as `开发版`
+instead of displaying Electron's runtime version. Unsupported installations
+keep their version visible without an unusable update control.
+
+Manual checks do not install automatically. Windows, Android and Mac offer
+`立即更新` only after download verification; iOS offers `下载更新`. Repeated
+checks cannot start concurrent installer downloads. Network errors and malformed
+update offers must not be reported as `已是最新版`.
+
+### Settings verification — 2026-10-25 (not published)
+
+- Six isolated `AboutSettings` component tests cover the actual version,
+  successful no-update response, checking/download/ready states, explicit install,
+  retry after failure, stale initial-state events, and web/unsupported installations.
+  Together with the existing input suite, 17 Vitest tests passed.
+- Five Windows updater tests passed, including integrity, reuse, retry and
+  concurrent-check suppression. Frontend TypeScript and changed-file lint passed.
+- The real development Electron client passed all 27 isolated shell-login checks,
+  including opening About, comparing the displayed version to the native bridge,
+  and checking unsupported-build responses. The first full run reached and passed
+  About, then timed out in the existing saved-key model-discovery check; the full
+  rerun passed. This is not a test against the user's profile or hosted account.
+- Android: `:core:test :app:testDebugUnitTest :app:compileDebugKotlin` passed
+  (51 core and 27 app tests). Core tests distinguish invalid/no-update answers
+  and verify retry after an HTTP failure. The shared UI assets compiled too.
+- On a fresh temporary Mac source tree, 132 NexClientKit tests passed, including
+  invalid-offer rejection. macOS Debug and iOS Simulator Debug compiled. The
+  temporary tree was removed after saving build logs locally.
+
+Evidence is kept locally under ignored `release/settings-updates/`, including
+the Windows About screenshot and Apple build logs. These checks do not install
+an update over a user's running client or exercise native About interaction on
+a physical iPhone. No new release version, production deploy, GitHub asset or
+OSS manifest is part of this settings implementation.
+
 Chat images are not served from OSS URLs. They stay encrypted in OSS and every
 client loads them through Core (`/api/attachments/<id>?preview=1`), so no client
 receives a storage URL.

@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("nex", {
   quit: () => ipcRenderer.invoke("client:quit"),
   closeWindow: () => ipcRenderer.invoke("client:quit"),
   updateState: () => ipcRenderer.invoke("client:update-state"),
+  checkUpdate: () => ipcRenderer.invoke("client:update-check"),
   installUpdate: () => ipcRenderer.invoke("client:update-install"),
   onUpdateState: (callback) => {
     if (typeof callback !== "function") return () => {};

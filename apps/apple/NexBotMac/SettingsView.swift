@@ -38,6 +38,7 @@ struct SettingsView: View {
                         pane(.memory) { scroll { SettingsMemoryPane(workspace: ws, active: category == .memory) } }
                         pane(.connectors) { SettingsConnectorsPane(workspace: ws) }
                         pane(.devices) { SettingsDevicesPane(workspace: ws) }
+                        pane(.about) { scroll { AboutSettingsPane(workspace: ws) } }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

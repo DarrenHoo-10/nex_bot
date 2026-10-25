@@ -31,6 +31,7 @@ struct SettingsView: View {
                 case .memory: SettingsMemoryView(workspace: workspace)
                 case .connectors: ConnectorsView(workspace: workspace)
                 case .devices: DevicesView(workspace: workspace)
+                case .about: AboutSettingsView(workspace: workspace)
                 }
             }
             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)

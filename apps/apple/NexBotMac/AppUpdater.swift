@@ -8,11 +8,12 @@ import NexClientKit
 @MainActor @Observable
 final class AppUpdater {
     static let shared = AppUpdater()
-    enum Status: Equatable { case idle, downloading(String), ready(String), failed(String) }
+    enum Status: Equatable { case idle, checking, current, downloading(String), ready(String), failed(String) }
     private(set) var status = Status.idle
     private(set) var installing = false
     @ObservationIgnored private var file: URL?
     @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private var checking = false
     let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
 
     func start(client: @escaping @MainActor () -> CoreClient) {
@@ -26,10 +27,14 @@ final class AppUpdater {
     }
     func stop() { loop?.cancel(); loop = nil }
 
-    private func check(_ client: CoreClient) async {
+    func check(_ client: CoreClient) async {
+        guard !checking, !installing else { return }
+        if case .ready = status { return }
+        checking = true
+        status = .checking
+        defer { checking = false }
         do {
-            guard let offer = try await client.clientUpdate(platform: "mac", current: current) else { return }
-            if case .ready(let version) = status, version == offer.version { return }
+            guard let offer = try await client.clientUpdate(platform: "mac", current: current) else { status = .current; return }
             status = .downloading(offer.version)
             let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("NexBotUpdates", isDirectory: true)
             let name = "NexBot-\(offer.version).dmg"
@@ -39,7 +44,7 @@ final class AppUpdater {
             file = try await client.downloadUpdate(offer, to: dir.appendingPathComponent(name))
             status = .ready(offer.version)
         } catch {
-            if case .ready = status { return }
+            if Task.isCancelled { status = .idle; return }
             status = .failed((error as? CoreError)?.message ?? "检查更新失败")
         }
     }

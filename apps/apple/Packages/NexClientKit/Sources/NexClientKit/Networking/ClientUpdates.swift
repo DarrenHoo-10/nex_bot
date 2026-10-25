@@ -35,10 +35,11 @@ extension CoreClient {
     /// `GET /api/client/update?platform=&version=`: the newer installer for this platform, or nil when current.
     public func clientUpdate(platform: String, current: String) async throws -> ClientUpdateOffer? {
         let answer: ClientUpdateAnswer = try await get("/api/client/update", query: [("platform", platform), ("version", current)])
-        guard answer.available, let version = answer.version, ClientUpdateOffer.newer(version, than: current),
+        guard answer.available else { return nil }
+        guard let version = answer.version, ClientUpdateOffer.newer(version, than: current),
               let size = answer.size, size > 0, size <= 512 * 1024 * 1024,
               let sha = answer.sha256, sha.count == 64, sha.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
-              let raw = answer.url, let url = URL(string: raw), url.scheme == "https", url.user == nil, url.password == nil else { return nil }
+              let raw = answer.url, let url = URL(string: raw), url.scheme == "https", url.user == nil, url.password == nil else { throw CoreError(kind: .http, message: "更新信息无效", status: 0) }
         return ClientUpdateOffer(version: version, size: size, sha256: sha, url: url)
     }
 
