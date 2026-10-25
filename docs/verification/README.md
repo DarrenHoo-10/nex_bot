@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [Chat, context and HTML: all-platform release (2026-10-25)](chat-release-20261025.md)
 - [Discoverable HTML rendering](html-render-tool.md)
 - [Chat send stability](chat-send-stability.md)
 - [Tool context follows total capacity](tool-context-budget.md)
