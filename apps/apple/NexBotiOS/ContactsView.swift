@@ -20,7 +20,7 @@ struct ContactsView: View {
                 header
                 content
             }
-            .background(Theme.background)
+            .background { WorkspaceSurface(kind: .sidebar) }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Navigation.Route.self) { route in
                 nav.destination(for: route, model: model, workspace: workspace)
@@ -241,10 +241,11 @@ struct ContactRow: View {
     /// Task phrase, else the last message, else the instructions, else 开始一段对话.
     private var preview: String {
         if !phrase.isEmpty { return phrase }
-        for text in [bot.lastMessage ?? "", bot.instructions] {
-            let flat = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        if let last = bot.lastMessage, !last.isEmpty {
+            let flat = AttachmentLink.preview(last)
             if !flat.isEmpty { return flat }
         }
-        return "开始一段对话"
+        let instructions = bot.instructions.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        return instructions.isEmpty ? "开始一段对话" : instructions
     }
 }

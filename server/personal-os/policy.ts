@@ -2,15 +2,18 @@ import { canonical, hash, optionalText, text, type CoreStore, type Row } from ".
 import { computerOperations } from "./computer.ts";
 import { dangerousEffect } from "./risk.ts";
 import { connectorAccess, type ConnectorTool } from "./connectors.ts";
+import { universalImageActions } from '../../shared/personal-capabilities.ts';
+import { approvalRuleScope } from "./approval-rules.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate"] as const;
 // Device binding, Agent policy and effect-specific approval remain independent.
 export const basicActions = [...actions];
 export function policyTools(policy: Row): string[] {
-  const parsed = JSON.parse(String(policy.policy_json)) as { tools?: unknown };
-  return Array.isArray(parsed.tools) ? parsed.tools.filter((value): value is string => typeof value === "string" && actions.includes(value as typeof actions[number])) : [];
+  const parsed = JSON.parse(String(policy.policy_json)) as { tools?: unknown; inheritDefaults?: boolean };
+  const configured = Array.isArray(parsed.tools) ? parsed.tools.filter((value): value is string => typeof value === "string" && actions.includes(value as typeof actions[number])) : [];
+  return [...new Set([...(parsed.inheritDefaults === true ? basicActions : configured), ...universalImageActions])];
 }
 export function evaluateTool(store: CoreStore, botId: string, args: Record<string, unknown>) {
   const action = text(args.action, 40);
@@ -18,10 +21,12 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
   if (!policy || !policyTools(policy).includes(action)) throw new Error("该 Agent 无权调用此能力");
   let local: Row | undefined;
   let connectorTool: ConnectorTool | undefined;
+  let resourceVersion = 0;
   if (action.startsWith("device.") && action !== "device.inventory") {
     const device = text(args.deviceId, 100);
     local = store.get("SELECT g.* FROM device_local_grants g JOIN devices d ON d.id=g.device_id WHERE d.id=? AND d.status='bound' AND d.workspace_id=? AND d.owner_user_id=? AND g.local_grant_id='shared' AND g.status='active'", device, store.workspace, store.owner);
     if (!local) throw new Error("设备未连接或未提供本地授权");
+    resourceVersion = Number(local.policy_version);
     const scope = JSON.parse(String(local.scope_json));
     if (action === "device.info" && !scope.info) throw new Error("此设备 Node 版本尚不支持系统信息，请更新客户端");
     if (action === "device.computer") {
@@ -63,13 +68,21 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     if (!Number.isSafeInteger(args.expectedVersion) || doc.version !== args.expectedVersion) throw new Error("记忆版本已变化");
   }
   else if (action === "memory.search" || action === "memory.reflect") text(args.query, action === "memory.reflect" ? 1000 : 200);
+  else if (action === 'image.generate') {
+    text(args.prompt, 16000);
+    if (args.modelId !== undefined) text(args.modelId, 200);
+  }
   else if (action === "skill.read") text(args.skillId, 80);
   else if (action === "connector.tools" || action === "connector.call") {
     const connector = connectorAccess(store, botId, args);
+    resourceVersion = Number(connector.version);
     connectorTool = (JSON.parse(String(connector.tools_json)) as ConnectorTool[]).find((tool) => tool.name === args.tool);
   }
   const full = store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", botId)?.mode === "full";
-  return { policy, local, approvalRequired: !full && dangerousEffect(args, connectorTool) };
+  const dangerous = dangerousEffect(args, connectorTool);
+  const scope = dangerous ? approvalRuleScope(args) : undefined;
+  const remembered = scope && store.get("SELECT id FROM agent_approval_rules WHERE bot_id=? AND action=? AND target_id=? AND operation=? AND policy_version=? AND resource_version=?", botId, scope.action, scope.target, scope.operation, policy.version, resourceVersion);
+  return { policy, local, resourceVersion, approvalRequired: !full && dangerous && !remembered };
 }
 export function directory(store: CoreStore) {
   const grantVersions = store.all("SELECT g.device_id,g.policy_version,g.status,g.scope_json,d.status device_status FROM device_local_grants g JOIN devices d ON d.id=g.device_id ORDER BY g.device_id");

@@ -38,7 +38,7 @@ struct InspectorView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(Theme.background)
+        .background { WorkspaceSurface(kind: .sidebar) }
     }
 
     private var profile: some View {

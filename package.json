@@ -112,6 +112,7 @@
     "ajv-formats": "3.0.1",
     "clsx": "^2.1.1",
     "croner": "10.0.1",
+    "hast-util-sanitize": "5.0.2",
     "jose": "6.2.10",
     "katex": "^0.16.47",
     "lucide-react": "^0.539.0",
@@ -126,6 +127,7 @@
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
+    "rehype-raw": "7.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "shiki": "^4.4.3",
@@ -136,6 +138,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.11",
+    "@types/hast": "3.0.5",
     "@types/node": "^26.2.0",
     "@types/novnc__novnc": "1.6.0",
     "@types/papaparse": "^5.5.2",

@@ -2,6 +2,7 @@ import { BrandMark } from "./components/BrandMark";
 import { LogOut } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, desktop } from "./api";
+import { HomePage, registerUrl } from "./HomePage";
 
 interface IdentityStatus {
   authenticated: boolean; initialized: boolean; canInitialize: boolean; coreId: string;
@@ -87,7 +88,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
     finally { loggingOut.current = false; }
   }
   if (status?.authenticated) return <Account.Provider value={{ status, logout: async () => { setConfirmLogout(true); } }}>{children}{confirmLogout && <LogoutConfirmation close={() => setConfirmLogout(false)} confirm={logout}/>}</Account.Provider>;
-  return <main className="login-screen"><section className="login-card"><BrandMark size={56}/><h1>登录 NexBot</h1>{loading ? <p role="status">正在检查登录状态…</p> : !status?.initialized && !status?.canInitialize ? <><p>暂时无法登录，请稍后重试。</p><button onClick={() => void refresh()}>重新检查</button></> : <form className="login-form" onSubmit={(event) => {
+  const card = <section className="login-card"><BrandMark size={56}/><h1>登录 NexBot</h1>{loading ? <p role="status">正在检查登录状态…</p> : !status?.initialized && !status?.canInitialize ? <><p>暂时无法登录，请稍后重试。</p><button onClick={() => void refresh()}>重新检查</button></> : <form className="login-form" onSubmit={(event) => {
     event.preventDefault(); const form = event.currentTarget, data = new FormData(form); setBusy(true); setError("");
     void (async () => {
       try {
@@ -98,5 +99,8 @@ export function LoginGate({ children }: { children: ReactNode }) {
       } catch (e) { setError(e instanceof Error ? e.message : "登录失败，请重试"); const password = form.elements.namedItem("password") as HTMLInputElement; password.value = ""; }
       finally { setBusy(false); }
     })();
-  }}><label className="field">邮箱<input name="email" type="email" required maxLength={254} autoComplete="username" disabled={busy} placeholder="输入你的邮箱"/></label><label className="field">密码<input name="password" type="password" required maxLength={4096} autoComplete="current-password" disabled={busy} placeholder="输入密码"/></label><button className="primary" disabled={busy}>{busy ? "正在登录…" : "登录"}</button></form>}{error ? <p className="login-error" role="alert">{error}</p> : null}<div className="login-signup">没有账号？<a href="https://user.nexorai.com.cn/register/nexbot" target="_blank" rel="noopener noreferrer" onClick={(event) => { if (desktop?.openExternal) { event.preventDefault(); void desktop.openExternal(event.currentTarget.href).catch(() => setError("无法打开注册页，请稍后重试")); } }}>去注册</a></div></section></main>;
+  }}><label className="field">邮箱<input name="email" type="email" required maxLength={254} autoComplete="username" disabled={busy} placeholder="输入你的邮箱"/></label><label className="field">密码<input name="password" type="password" required maxLength={4096} autoComplete="current-password" disabled={busy} placeholder="输入密码"/></label><button className="primary" disabled={busy}>{busy ? "正在登录…" : "登录"}</button></form>}{error ? <p className="login-error" role="alert">{error}</p> : null}<div className="login-signup">没有账号？<a href={registerUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => { if (desktop?.openExternal) { event.preventDefault(); void desktop.openExternal(event.currentTarget.href).catch(() => setError("无法打开注册页，请稍后重试")); } }}>去注册</a></div></section>;
+  // Browsers get the public homepage; desktop and Android shells keep the bare login screen.
+  if (!desktop) return loading && !status ? <main className="home-splash" aria-busy="true"><BrandMark size={48}/></main> : <HomePage login={card}/>;
+  return <main className="login-screen">{card}</main>;
 }

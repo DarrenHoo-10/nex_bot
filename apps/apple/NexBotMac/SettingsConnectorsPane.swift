@@ -19,8 +19,9 @@ struct SettingsConnectorsPane: View {
     @State private var confirmingRemove = false
     @State private var scrollTarget: String?
     @State private var openTools: Set<String> = []
+    @State private var showingGmail = false
 
-    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { $0.kind != "feishu" } }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && $0.kind != "feishu" } }
     private var visible: [ConnectorView] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         return q.isEmpty ? connectors : connectors.filter { $0.name.lowercased().contains(q) }
@@ -29,14 +30,18 @@ struct SettingsConnectorsPane: View {
 
     var body: some View {
         ZStack {
+            if showingGmail { GmailConnectorView(workspace: workspace, back: { showingGmail = false }) }
+            else {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
+                        GmailCatalogButton(workspace: workspace, open: { showingGmail = true }).padding(.top, 20)
                         if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 24) }
                         if workspace.state?.feishu != nil { SettingsFeishuCard(workspace: workspace).padding(.top, 24) }
                         if workspace.state != nil, connectors.isEmpty { emptyState.padding(.top, 28) }
                         else if !connectors.isEmpty { twoPane.padding(.top, 24) }
+                        if !connectors.isEmpty { twoPane.padding(.top, 24) }
                     }
                     .padding(.bottom, 34)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -44,6 +49,7 @@ struct SettingsConnectorsPane: View {
                 #if DEBUG
                 .onChange(of: scrollTarget) { _, id in if let id { proxy.scrollTo(id, anchor: .top) } }
                 #endif
+            }
             }
             if let editor {
                 ConnectorEditor(existing: editor.existing, close: { self.editor = nil }) { name, url, transport, token, clear in
@@ -64,7 +70,7 @@ struct SettingsConnectorsPane: View {
     // MARK: Header and empty state
 
     private var header: some View {
-        paneHeader("连接器", "接入 MCP 服务，让 Agent 在对话中使用获准的工具。") {
+        paneHeader("连接器", "") {
             MBButton(title: "添加连接器", kind: .brand, icon: "plus") { editor = Editor(id: "new", existing: nil) }
         }
     }

@@ -42,7 +42,7 @@ struct AgentDetailView: View {
             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Theme.background)
+        .background { WorkspaceSurface(kind: .sidebar) }
         .navigationTitle("助手详情")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)

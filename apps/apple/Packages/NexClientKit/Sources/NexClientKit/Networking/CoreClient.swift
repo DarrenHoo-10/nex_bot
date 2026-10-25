@@ -122,8 +122,10 @@ struct InputBody: Encodable {
         if !attachments.isEmpty { try c.encode(attachments, forKey: .init("attachments")) }
     }
 }
+struct DeleteMessageImageBody: Encodable { let botId: String; let messageId: String; let attachmentId: String }
 struct TaskBody: Encodable { let taskId: String }
-struct ApprovalBody: Encodable { let id: String; let hash: String; let allow: Bool }
+struct ApprovalBody: Encodable { let id: String; let hash: String; let allow: Bool; let remember: Bool }
+struct RevokeApprovalRuleBody: Encodable { let id: String; let botId: String }
 struct SessionBody: Encodable { let token: String }
 struct StartBody: Encodable { let account: String; let name: String }
 struct RevokeBody: Encodable { let sessionId: String }
@@ -156,13 +158,21 @@ extension CoreClient {
     public func sendInput(bot: String, text: String, clientID: String, attachments: [String] = []) async throws {
         try await post("/api/agents/input", body: InputBody(botId: bot, text: text, clientId: clientID, attachments: attachments))
     }
+    /// `POST /api/agents/messages/image/delete`: removes one image from a sent message. Text and other attachments stay;
+    /// when the image was the whole message, Core removes the message too.
+    public func deleteMessageImage(bot: String, messageID: String, attachmentID: String) async throws {
+        try await post("/api/agents/messages/image/delete", body: DeleteMessageImageBody(botId: bot, messageId: messageID, attachmentId: attachmentID))
+    }
     /// `POST /api/auth/refresh` with the current bearer: rotates the token and extends the session.
     /// 401 = session over; 409 = another refresh already rotated it; 429 = throttled.
     public func refreshSession() async throws -> LoginSession { try await post("/api/auth/refresh", body: EmptyBody()) }
     public func markRead(bot: String, seq: Int) async throws { try await post("/api/agents/read", body: BotSeq(botId: bot, seq: seq)) }
     public func cancel(task: String) async throws { try await post("/api/cancel", body: TaskBody(taskId: task)) }
-    public func decide(approval id: String, hash: String, allow: Bool) async throws {
-        try await post("/api/approvals", body: ApprovalBody(id: id, hash: hash, allow: allow))
+    public func decide(approval id: String, hash: String, allow: Bool, remember: Bool = false) async throws {
+        try await post("/api/approvals", body: ApprovalBody(id: id, hash: hash, allow: allow, remember: remember))
+    }
+    public func revokeApprovalRule(id: String, botID: String) async throws {
+        try await post("/api/approvals/revoke", body: RevokeApprovalRuleBody(id: id, botId: botID))
     }
     public func clientSessions() async throws -> ClientSessionList { try await get("/api/clients") }
     public func authStatus() async throws -> AccountStatus { try await get("/api/auth/status") }

@@ -4,6 +4,7 @@ import { BrandMark } from "./BrandMark";
 import { companionState } from "../avatars/appearance";
 import { AgentAvatar as Avatar } from "./AgentAvatar";
 import { str, taskPhrase, type State } from "../api";
+import { messagePreview } from "../message-media";
 
 import { ConversationSearch, type ConversationMatch } from "./ConversationSearch";
 
@@ -46,7 +47,7 @@ export function ContactSidebar(props: Props) {
         {search.trim() ? <ConversationSearch key={JSON.stringify([search.trim(),state.sync.coreId,state.sync.bootId,state.sync.privacyEpoch])} query={search.trim()} sync={state.sync} onSelect={props.onSearchResult}/> : <>{groups.map((group) => group.items.length ? <section key={group.title}><div className={`sidebar-section-title ${group.title === "我的 Agent" ? "is-default-group" : ""}`}><span>{group.title}</span></div>{group.items.map((bot) => {
           const task = state.tasks.find((item) => item.bot_id === bot.id && !ended.has(str(item.status)));
           return <button className={`contact-item ${selectedId === bot.id && page === "agent" ? "is-selected" : ""}`} key={str(bot.id)} data-agent={bot.id} aria-current={selectedId === bot.id && page === "agent" ? "page" : undefined} onClick={() => props.onSelect(str(bot.id))}>
-            <Avatar bot={bot} allBots={state.bots} size={40} animate={!!task} state={companionState(task, state.approvals.some((a) => a.bot_id === bot.id), props.connected)}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong><time>{time(bot.last_message_at)}</time></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? taskPhrase(task) : str(bot.last_message) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}</span></span>
+            <Avatar bot={bot} allBots={state.bots} size={40} animate={!!task} state={companionState(task, state.approvals.some((a) => a.bot_id === bot.id), props.connected)}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong><time>{time(bot.last_message_at)}</time></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? taskPhrase(task) : messagePreview(str(bot.last_message)) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}</span></span>
           </button>;
         })}</section> : null)}
         {!contacts.length && <div className="sidebar-empty">你的 Agent 会出现在这里{<button className="text-button" onClick={props.onCreate}>创建第一个 Agent</button>}</div>}</> }

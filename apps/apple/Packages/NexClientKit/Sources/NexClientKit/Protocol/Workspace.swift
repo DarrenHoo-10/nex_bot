@@ -57,6 +57,16 @@ public struct Approval: RowBacked {
     }
     public var expiresAt: Date? { dateFromMilliseconds(row.double("expires_at")) }
     public var title: String { ToolLabels.approvalTitle(toolName) }
+    /// Core supplies the scope only when it supports remembered approvals.
+    public var rememberLabel: String? { row.string("remember_label").flatMap { $0.isEmpty ? nil : $0 } }
+}
+
+public struct ApprovalRule: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var botID: String { row.string("bot_id") ?? "" }
+    public var label: String { row.string("label") ?? "" }
+    public var isActive: Bool { row["active"]?.boolValue ?? false }
 }
 
 /// A task row (`tasks[]`).
@@ -80,6 +90,7 @@ public struct WorkspaceState: Codable, Sendable {
     public var sync: SyncIdentity
     public var bots: [Bot]
     public var approvals: [Approval]
+    public var approvalRules: [ApprovalRule] = []
     public var tasks: [AgentTask]
     public var conversations: [Row]
     public var routines: [Routine]
@@ -88,6 +99,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var delegations: [Delegation]
     public var onlineDevices: [String]
     public var connectors: [ConnectorView]
+    public var connectorCatalog: [ConnectorCatalogEntry] = []
+    public var gmailAvailable: Bool { connectorCatalog.first { $0.id == "gmail" }?.available == true }
     /// Feishu connection state (job, user auth, apps). Nil on older Cores.
     public var feishu: FeishuState?
     public var memories: [Memory]
@@ -108,6 +121,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var lanEnabled: Bool
     /// Models the pickers offer for the current connection (`nil` models = all). Absent on older Cores.
     public var modelVisibility: ModelVisibility
+    /// `imageModelSelection`: the models offered for image generation (always a list; OpenAI-compatible connections only).
+    public var imageModelSelection: ModelVisibility = ModelVisibility(models: [])
 
     public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false, modelVisibility: ModelVisibility = ModelVisibility(), feishu: FeishuState? = nil) {
         self.sync = sync; self.bots = bots; self.approvals = approvals; self.tasks = tasks; self.conversations = conversations
@@ -122,12 +137,14 @@ public struct WorkspaceState: Codable, Sendable {
         func object(_ key: String) -> Row? { c.lenient(.init(key))?.objectValue }
         sync = try c.decode(SyncIdentity.self, forKey: .init("sync"))
         bots = rows("bots").map(Bot.init); approvals = rows("approvals").map(Approval.init); tasks = rows("tasks").map(AgentTask.init)
+        approvalRules = rows("approvalRules").map(ApprovalRule.init)
         conversations = rows("conversations"); routines = rows("routines").map(Routine.init); occurrences = rows("occurrences").map(RoutineOccurrence.init)
         delegations = rows("delegations").map(Delegation.init)
         onlineDevices = c.lenient(.init("onlineDevices"))?.arrayValue?.compactMap(\.stringValue) ?? []
         let online = Set(onlineDevices)
         devices = rows("devices").map { Device(row: $0, online: online.contains($0.string("id") ?? "")) }
         connectors = rows("connectors").map(ConnectorView.init); memories = rows("memories").map(Memory.init)
+        connectorCatalog = rows("connectorCatalog").map(ConnectorCatalogEntry.init)
         feishu = object("feishu").map(FeishuState.init)
         journal = rows("journal").map(JournalEntry.init); usage = rows("usage").map(Usage.init)
         config = object("config").map(ModelConfig.init); node = object("node").map(NodeState.init)
@@ -137,6 +154,8 @@ public struct WorkspaceState: Codable, Sendable {
         address = c.lenient(.init("address"))?.stringValue ?? ""; dataDir = c.lenient(.init("dataDir"))?.stringValue ?? ""
         runtime = c.lenient(.init("runtime"))?.stringValue ?? ""; lanEnabled = c.lenient(.init("lanEnabled"))?.boolValue ?? false
         modelVisibility = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("modelVisibility"))) ?? ModelVisibility()
+        imageModelSelection = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("imageModelSelection"))) ?? ModelVisibility(models: [])
+        if imageModelSelection.models == nil { imageModelSelection.models = [] }
     }
     /// Newest unfinished task of a bot (tasks arrive unfinished-first, newest first).
     public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.isUnfinished } }
@@ -177,6 +196,7 @@ public struct ToolStep: RowBacked {
 public struct AgentMessage: RowBacked {
     public let row: Row
     public init(row: Row) { self.row = row }
+    public var botID: String { row.string("bot_id") ?? "" }
     public var seq: Int { row.int("seq") ?? 0 }
     /// `user`, `assistant`, `peer` or `system`.
     public var role: String { row.string("role") ?? "" }

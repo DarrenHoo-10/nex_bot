@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+import { HTML_PREVIEW_CSP, htmlPreviewShell } from '../../shared/html-preview-shell.mjs';
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { networkInterfaces } from "node:os";
 import os from "node:os";
@@ -20,16 +22,24 @@ import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
 import { FeishuModule, type RegisterAppFn } from "./feishu/module.ts";
 import { sdkRegisterApp, wsTransportFactory, type TransportFactory } from "./feishu/transport.ts";
+import { GOOGLE_CALLBACK, type GmailConfiguration } from "./gmail-provider.ts";
+import type { AttachmentObjects } from './attachment-objects.ts';
+export { OssAttachmentObjects } from './attachment-objects.ts';
 import { ChatFiles } from "./chat-files.ts";
 import { requestBody as body } from "./http-body.ts";
 import { modelLimitScope, type ModelCatalogConfig } from "./model-limits.ts";
+import { ClientDownloadsSource, type ClientDownloadsOptions } from "./client-downloads.ts";
+import { approvalRuleLabel, approvalRuleScope, approvalRules, revokeApprovalRule } from "./approval-rules.ts";
+import { ClientUpdateSource, type OssReleaseMirror } from "./client-updates.ts";
 
-export interface AppOptions { modelCatalog?: ModelCatalogConfig; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch } }
+export interface AppOptions { gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch } }
 
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
   const store = new CoreStore(options.dir, options.key, options.token, options.modelCatalog);
+  store.attachmentObjects = options.attachmentObjects;
   const clients = new ClientIdentity(store, options.publicCoreId), sync = new ClientSync(store);
+  const downloads = new ClientDownloadsSource(options.clientDownloads), updates = new ClientUpdateSource(options.releaseMirror);
   const identity = options.identity === false ? undefined : new CoreIdentity(store, clients, options.identity?.fixtureOrigin);
   const authenticate = async (token: string) => {
     const session = identity ? await identity.authenticate(token) : clients.authenticate(token);
@@ -48,12 +58,13 @@ export async function createPersonalApp(options: AppOptions) {
     feishu?.scanApprovals();
   };
   const runtime = new TaskRuntime(store, changed);
-  const connectors = new ConnectorModule(store, changed);
+  const connectors = new ConnectorModule(store, changed, options.gmail);
   runtime.connectorExecutor = (call, args, authorize) => feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
     runtime.authorizeTask = (task) => identity.authorizeTask(task);
     identity.onSessionLost = (sessionId) => {
+      connectors.oauth.cancelSession(sessionId);
       for (const task of store.all("SELECT id FROM tasks WHERE authorized_session_id=? AND ended_at IS NULL", sessionId)) runtime.cancel(String(task.id), "登录失效或无法验证，任务已停止");
       if (!store.get("SELECT id FROM user_sessions WHERE protocol='native-v1' AND revoked_at IS NULL AND expires_at>?", Date.now())) {
         for (const worker of runtime.workers.values()) if (store.get("SELECT authorized_session_id FROM tasks WHERE id=?", worker.taskId)?.authorized_session_id === store.session) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
@@ -107,13 +118,15 @@ export async function createPersonalApp(options: AppOptions) {
     return {
       ...base,
       ...(view === "summary" ? { view: "summary", memories: base.memories.map(({ content: _content, ...memory }) => memory) } : {}),
-      connectors: connectors.list(),
+      connectors: connectors.list(), connectorCatalog: connectors.catalog(),
       feishu: feishu.state(),
       sync: sync.snapshot(),
       hostDeviceId: gateway.hostDeviceId,
       memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
       memoryPlugin: memoryPlugin.status(),
-      bots: agents.contacts().map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...store.get("SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?", bot.id), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      bots: agents.contacts().map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      approvalRules: approvalRules(store),
+      approvals: base.approvals.map((approval) => ({ ...approval, remember_label: approvalRuleLabel(store, approvalRuleScope(JSON.parse(String(approval.arguments_json)))) })),
       directory: directory(store),
       routines: routines.list(),
       occurrences: routines.occurrences(),
@@ -172,12 +185,24 @@ export async function createPersonalApp(options: AppOptions) {
     const requestOrigin = options.publicOrigin && request.headers.host === new URL(options.publicOrigin).host ? new URL(options.publicOrigin).origin : `http://${request.headers.host}`;
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
-    if (url.pathname === "/health") { json(response, 200, { app: "NexBot", backend: "personal-os", runtime: "pi/1.0.4", ...(options.accountWorkspaces ? { accountWorkspaces: true } : {}) }); return; }
+    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (url.pathname === '/html-preview.html' && request.method === 'GET') {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_PREVIEW_CSP + "; sandbox allow-scripts; frame-ancestors 'self'" });
+      response.end(htmlPreviewShell()); return;
+    }
+    if (url.pathname === "/health") { json(response, 200, { app: "NexBot", backend: "personal-os", runtime: "pi/1.0.4", attachmentStorage: options.attachmentObjects ? "oss" : "database", ...(options.accountWorkspaces ? { accountWorkspaces: true } : {}) }); return; }
     const mutating = request.method !== "GET" && request.method !== "HEAD";
     if (mutating && request.headers.origin && request.headers.origin !== requestOrigin) { json(response, 403, { error: "Invalid origin" }); return; }
     const cookieValue = (name: string) => request.headers.cookie?.split(";").map((v) => v.trim()).find((v) => v.startsWith(name + "="))?.slice(name.length + 1) ?? "";
     const token = request.headers.authorization?.replace(/^Bearer /, "") ?? cookieValue("nex");
+    if (url.pathname === GOOGLE_CALLBACK && request.method === "GET") {
+      let connected = false;
+      try { await connectors.oauth.callback(url.searchParams); connected = true; } catch { /* Details are available only to the initiating authenticated client. */ }
+      response.writeHead(connected ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gmail · NexBot</title><body style="font:16px system-ui;margin:80px auto;padding:24px;max-width:480px"><h1>${connected ? "Gmail 已连接" : "连接未完成"}</h1><p>请返回 NexBot${connected ? " 选择可使用邮件的 Agent。" : " 查看连接状态并重试。"}</p></body></html>`);
+      return;
+    }
+    if (url.pathname.startsWith("/api/connectors/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid connector request" }); return; }
     const socketAddress = (request.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
     // Behind a local reverse proxy every socket is loopback. Only when the operator declares that proxy trusted
     // do we read the last X-Forwarded-For hop it appended; otherwise the header is attacker-controlled.
@@ -187,9 +212,22 @@ export async function createPersonalApp(options: AppOptions) {
     const privateRemote = loopback || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(remoteAddress);
     const bootstrap = loopback ? clients.authenticate(cookieValue("nex-bootstrap")) : undefined;
     if (url.pathname.startsWith("/api/auth/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid login request" }); return; }
+    // The OSS mirror, when configured, replaces GitHub links: installers download reliably in China.
+    if (url.pathname === "/api/client/downloads" && request.method === "GET") { json(response, 200, { ...await downloads.current(), ...await updates.downloads(requestOrigin) }); return; }
+    if (url.pathname === "/api/client/update" && request.method === "GET") { json(response, 200, await updates.check(url.searchParams.get("platform") ?? "", url.searchParams.get("version") ?? "", requestOrigin)); return; }
+    const installer = /^\/api\/client\/installer\/(android|ios)\/([A-Za-z0-9._-]+)$/.exec(url.pathname);
+    if (installer && request.method === "GET") {
+      let found: Awaited<ReturnType<typeof updates.installer>>;
+      try { found = await updates.installer(installer[1], installer[2]); } catch { json(response, 502, { error: "安装包暂时无法下载" }); return; }
+      if (!found || !found.response.body) { json(response, 404, { error: "安装包不存在" }); return; }
+      response.writeHead(200, { "Content-Type": found.type, "Content-Length": found.entry.size, "Content-Disposition": `attachment; filename="${found.entry.file}"`, "Cache-Control": "no-store" });
+      Readable.fromWeb(found.response.body as import("node:stream/web").ReadableStream).on("error", () => response.destroy()).pipe(response);
+      return;
+    }
     if (url.pathname === "/api/client/identity" && request.method === "GET") { json(response, 200, identity ? { ...identity.publicConfiguration(), version: 1, coreId: clients.coreId(), loginMethods: ["password"] } : { version: 1, coreId: clients.coreId(), mode: "local-owner", loginMethods: ["one-time-code"] }); return; }
     if (identity && url.pathname === "/api/auth/status" && request.method === "GET") { json(response, 200, await identity.status(token, bootstrap)); return; }
     if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {
+      const session = identity.locallyAllowed(token); if (session) connectors.oauth.cancelSession(String(session.id));
       await identity.logout(token); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return;
     }
     if (identity && url.pathname === "/api/auth/refresh" && request.method === "POST") {
@@ -234,9 +272,13 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname.startsWith("/api/")) {
       const session = await authenticate(token);
       if (!session) { json(response, 401, { error: "Unauthorized" }); return; }
+      if (url.pathname.startsWith("/api/connectors/") && session.user_id !== store.owner) { json(response, 403, { error: "此账号没有管理连接器的权限" }); return; }
+      if (url.pathname === "/api/connectors/oauth/status" && request.method === "GET") { json(response, 200, connectors.oauth.status(text(url.searchParams.get("id"), 100), String(session.id))); return; }
       if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
-        const { row, bytes } = files.file(text(url.pathname.slice("/api/attachments/".length), 100));
-        response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
+        const { row, bytes } = await files.file(text(url.pathname.slice("/api/attachments/".length), 100));
+        if (!await authenticate(token)) { json(response, 401, { error: 'Unauthorized' }); return; }
+        const preview = url.searchParams.get('preview') === '1' && ['image/png', 'image/jpeg', 'image/webp'].includes(String(row.mime));
+        response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
       }
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
@@ -318,12 +360,17 @@ export async function createPersonalApp(options: AppOptions) {
         })); return;
       }
 
-      if (url.pathname === "/api/client/logout") { if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/client/logout") { connectors.oauth.cancelSession(String(session.id)); if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/connectors/oauth/start") {
+        if (data.provider !== "gmail") throw new Error("不支持此连接器");
+        json(response, 200, connectors.oauth.begin(data, requestOrigin, String(session.id), async () => { const current = await authenticate(token); if (!current || current.id !== session.id || current.user_id !== store.owner) throw new IdentityError(401, "登录已失效"); })); return;
+      }
+      if (url.pathname === "/api/connectors/oauth/cancel") { json(response, 200, connectors.oauth.cancel(text(data.id, 100), String(session.id))); return; }
       if (url.pathname === "/api/connectors/save") { json(response, 200, connectors.save(data)); return; }
       if (url.pathname === "/api/connectors/test") { json(response, 200, await connectors.test(data, async () => { if (!await authenticate(token)) throw new IdentityError(401, "登录已失效"); })); return; }
       if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
-      if (url.pathname === "/api/connectors/delete") { json(response, 200, connectors.remove(data)); return; }
+      if (url.pathname === "/api/connectors/delete") { json(response, 200, await connectors.remove(data)); return; }
       if (url.pathname === "/api/feishu/register/start") { json(response, 200, feishu.startRegister(data)); return; }
       if (url.pathname === "/api/feishu/register/cancel") { feishu.cancelRegister(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/feishu/save") { json(response, 200, feishu.save(data)); return; }
@@ -332,7 +379,15 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/feishu/user-auth/cancel") { feishu.cancelUserAuth(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/feishu/toggle") { json(response, 200, await feishu.toggle(data)); return; }
       if (url.pathname === "/api/feishu/delete") { json(response, 200, await feishu.remove(data)); return; }
-      if (url.pathname === "/api/attachments") { json(response, 200, files.upload(data, String(session.id))); return; }
+      if (url.pathname === '/api/models/images') {
+        if (session.user_id !== store.owner) { json(response, 403, { error: '此账号没有修改模型选择的权限' }); return; }
+        const result = store.saveImageModelSelection(data);
+        changed(); json(response, 200, result); return;
+      }
+      if (url.pathname === '/api/image-models/save' || url.pathname === '/api/image-models/delete') {
+        json(response, 410, { error: '请刷新页面，从现有模型列表选择生图模型' }); return;
+      }
+      if (url.pathname === "/api/attachments") { const file = files.upload(data, String(session.id)); await files.persist(file.id); if (!await authenticate(token)) { json(response, 401, { error: "Unauthorized" }); return; } json(response, 200, file); return; }
       if (url.pathname === "/api/agents/input") {
         const botId = text(data.botId, 100), clientId = text(data.clientId, 200), attachments = data.attachments ?? [];
         const links = files.references(botId, attachments, String(session.id));
@@ -341,6 +396,10 @@ export async function createPersonalApp(options: AppOptions) {
         json(response, 202, result); return;
       }
       if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq)); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/agents/messages/image/delete") {
+        const result = await files.deleteMessageImage(text(data.botId, 100), text(data.messageId, 100), text(data.attachmentId, 100));
+        changed(); json(response, 200, result); return;
+      }
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines/run") { routines.runNow(text(data.id, 100), text(data.clientId, 100)); json(response, 200, { ok: true }); return; }
@@ -377,7 +436,12 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/input") { const taskId = runtime.input(text(data.conversationId, 100), text(data.text), typeof data.clientId === "string" ? data.clientId : id(), String(session.id)); json(response, 202, { taskId }); return; }
       if (url.pathname === "/api/cancel") { runtime.cancel(text(data.taskId, 100)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/resume") { runtime.resume(text(data.taskId, 100)); json(response, 200, { ok: true }); return; }
-      if (url.pathname === "/api/approvals") { runtime.decide(text(data.id, 100), text(data.hash, 100), data.allow === true, String(session.id)); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/approvals") {
+        if (typeof data.allow !== "boolean" || (data.remember !== undefined && typeof data.remember !== "boolean")) throw new Error("审批选项无效");
+        runtime.decide(text(data.id, 100), text(data.hash, 100), data.allow, String(session.id), data.remember === true);
+        json(response, 200, { ok: true }); return;
+      }
+      if (url.pathname === "/api/approvals/revoke") { revokeApprovalRule(store, text(data.id, 100), text(data.botId, 100)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/memory") { const result = runtime.memory.write(text(data.botId, 100), data); changed(); json(response, 200, result); return; }
       if(url.pathname==='/api/memory/settings'){
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有修改记忆设置的权限'});return;}
@@ -444,9 +508,16 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.memory.personal.start();
   runtime.startRecovered();
   routines.start();
-  return { server, store, runtime, agents, routines, gateway, node, memoryPlugin, identity, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  let archiveJob: Promise<unknown> | undefined;
+  const archive = () => {
+    if (closing || !options.attachmentObjects || archiveJob) return;
+    archiveJob = files.migrate(() => closing).catch(() => { console.warn("Attachment archive migration will retry"); }).finally(() => { archiveJob = undefined; });
+  };
+  const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
+  archiveTimer?.unref(); archive();
+  return { server, store, runtime, agents, routines, gateway, node, memoryPlugin, identity, connectors, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
-    closing = true; clearInterval(heartbeat);
+    closing = true; clearInterval(heartbeat); clearInterval(archiveTimer); await archiveJob;
     await identity?.close();
     await heartbeatJob;
     routines.close();
@@ -454,6 +525,6 @@ export async function createPersonalApp(options: AppOptions) {
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();
-    await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); store.close();
+    await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); await Promise.allSettled(store.attachmentJobs.values()); store.close();
   } };
 }

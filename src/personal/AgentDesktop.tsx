@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import Markdown from "react-markdown";
+import { universalImageActions } from '../../shared/personal-capabilities';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type ReactNode } from "react";
+import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
+import Markdown, { type ExtraProps } from "react-markdown";
+import type { ComponentProps } from "react";
+import { ChatChart } from "./components/ChatChart";
+import { HtmlPreview } from "./components/HtmlPreview";
+import { htmlPreviewParts } from "../../shared/html-preview";
 import remarkGfm from "remark-gfm";
-import { ArrowUp, AtSign, Check, ChevronDown, Clock, Copy, CornerUpLeft, FileText, Info, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
+import rehypeRaw from "rehype-raw";
+import { rehypeStaticHTML } from "./static-html";
+import { ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Info, Loader2, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
+import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, ModelSettings, SettingsPage, type SettingsCategory } from "./panels";
@@ -14,8 +22,13 @@ import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
+import { MessageImages } from "./components/MessageImages";
+import { ImageLightbox } from "./components/ImageLightbox";
+import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
+import { ModelPicker } from "./components/ModelPicker";
 import { BotIdentity } from "./components/BotIdentity";
 import { copyText as writeCopyText } from "../lib/copy-text";
+import { imageFilesFromClipboard, optimisticOutgoing, withPendingOptimistic } from "./transcript-session";
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -35,13 +48,51 @@ const formatDay = (value: RecordRow[string]) => {
 
 function AgentPolicyEditor({ bot, close, save }: { bot: RecordRow; close: () => void; save: (tools: string[]) => Promise<unknown> }) {
   const [tools, setTools] = useState<string[]>(JSON.parse(str(bot.policy_json) || "{}").tools ?? []);
-  const labels: Record<string, string> = { "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看已授权连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
-  return <><div className="modal-heading"><h2>{bot.name} 的工具权限</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(event) => { event.preventDefault(); void save(tools); }}><div className="policy-grid">{Object.entries(labels).map(([action, label]) => <label className="check-field" key={action}><input type="checkbox" checked={tools.includes(action)} onChange={(event) => setTools((current) => event.target.checked ? [...current, action] : current.filter((tool) => tool !== action))}/>{label}</label>)}</div><div className="actions"><button className="primary">保存</button><button type="button" onClick={close}>取消</button></div></form></>;
+  const labels: Record<string, string> = { "image.models": "查看生图模型", "image.generate": "按需生成图片", "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看已授权连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
+  return <><div className="modal-heading"><h2>{bot.name} 的工具权限</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(event) => { event.preventDefault(); void save(tools); }}><div className="policy-grid">{Object.entries(labels).map(([action, label]) => <label className="check-field" key={action}><input type="checkbox" checked={universalImageActions.some(tool => tool === action) || tools.includes(action)} disabled={universalImageActions.some(tool => tool === action)} onChange={(event) => setTools((current) => event.target.checked ? [...current, action] : current.filter((tool) => tool !== action))}/>{label}</label>)}</div><div className="actions"><button className="primary">保存</button><button type="button" onClick={close}>取消</button></div></form></>;
 }
 
 const filePathPattern = /^(?:[\w.-]+[\\/])*[\w.-]+\.(?:md|txt|json|csv|yaml|yml|ts|tsx|js|jsx|mjs|py|sql|log|html|css|sh|ps1|toml|xml)$/i;
-function RichText({ value, onPreviewFile }: { value: string; onPreviewFile?: (path: string) => void }) {
-  return <div className="markdown"><Markdown remarkPlugins={[remarkGfm]} components={{ img: ({ alt }) => <span>{alt ?? "图片"}</span>, a: ({ href, children }) => <a href={href} className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => { if (href?.startsWith("/api/attachments/")) { if (desktop?.downloadAttachment) { e.preventDefault(); void desktop.downloadAttachment(href, e.currentTarget.textContent || "附件").catch(() => window.dispatchEvent(new CustomEvent("nex-download-error"))); } return; } e.preventDefault(); if (href && /^https?:\/\//.test(href)) void desktop?.openExternal(href); }}>{children}</a>, code: ({ className, children }) => { const raw = String(children ?? "").trim(); if (!className && onPreviewFile && filePathPattern.test(raw)) return <button type="button" className="file-chip" onClick={() => onPreviewFile(raw)} title={`在右侧面板预览 ${raw}`}><FileText size={11}/><span>{raw}</span></button>; return <code className={className}>{children}</code>; } }}>{value}</Markdown></div>;
+function MarkdownPre({ node, children, ...props }: ComponentProps<'pre'> & ExtraProps) {
+  const code = node?.children.length === 1 ? node.children[0] : undefined;
+  if (code?.type === 'element' && code.tagName === 'code' && Array.isArray(code.properties.className) && code.properties.className.includes('language-chart')) {
+    return <ChatChart source={code.children.map(child => child.type === 'text' ? child.value : '').join('')}/>;
+  }
+  return <pre {...props}>{children}</pre>;
+}
+const FilePreviewContext = createContext<((path: string) => void) | undefined>(undefined);
+const imageName = /\.(?:png|jpe?g|webp|gif)$/i;
+/** Images are always served by Core; clients never receive storage URLs. */
+function AttachmentImage({ id, alt }: { id: string; alt: string }) {
+  return <img className="generated-chat-image" src={`/api/attachments/${id}?preview=1`} alt={alt} loading="lazy"/>;
+}
+function MarkdownImage({ src, alt }: ComponentProps<'img'> & ExtraProps) {
+  const id = typeof src === "string" ? /^\/api\/attachments\/([a-zA-Z0-9-]+)$/.exec(src)?.[1] : undefined;
+  return id ? <AttachmentImage id={id} alt={alt ?? "生成图片"}/> : <span>{alt ?? "图片"}</span>;
+}
+function MarkdownLink({ href, children }: ComponentProps<'a'> & ExtraProps) {
+  const attachment = href ? /^\/api\/attachments\/([a-zA-Z0-9-]+)$/.exec(href)?.[1] : undefined, label = String(children ?? "");
+  const image = attachment && imageName.test(label) ? <AttachmentImage id={attachment} alt={label}/> : undefined;
+  return <>{image}<a href={href} target={href?.startsWith("http") ? "_blank" : undefined} rel="noopener noreferrer" className={href?.startsWith("/api/attachments/") ? "file-chip" : undefined} download={href?.startsWith("/api/attachments/") || undefined} onClick={(e) => {
+    if (href?.startsWith("/api/attachments/")) {
+      if (desktop?.downloadAttachment) { e.preventDefault(); void desktop.downloadAttachment(href, e.currentTarget.textContent || "附件").catch(() => window.dispatchEvent(new CustomEvent("nex-download-error"))); }
+      return;
+    }
+    if (href && /^https?:\/\//.test(href) && desktop?.openExternal) { e.preventDefault(); void desktop.openExternal(href); }
+  }}>{children}</a></>;
+}
+function MarkdownCode({ className, children }: ComponentProps<'code'> & ExtraProps) {
+  const onPreviewFile = useContext(FilePreviewContext), raw = String(children ?? "").trim();
+  if (!className && onPreviewFile && filePathPattern.test(raw)) return <button type="button" className="file-chip" onClick={() => onPreviewFile(raw)} title={`在右侧面板预览 ${raw}`}><FileText size={11}/><span>{raw}</span></button>;
+  return <code className={className}>{children}</code>;
+}
+// Stable component types preserve focused links/buttons across conversation
+// refreshes. Context supplies the latest preview callback without remounting.
+const markdownComponents = { pre: MarkdownPre, img: MarkdownImage, a: MarkdownLink, code: MarkdownCode };
+export function RichText({ value, onPreviewFile, pending = false }: { value: string; onPreviewFile?: (path: string) => void; pending?: boolean }) {
+  return <div className="markdown"><FilePreviewContext.Provider value={onPreviewFile}>{htmlPreviewParts(value).map((part, index) => part.kind === 'preview'
+    ? <HtmlPreview key={index} source={part.source} complete={part.complete} pending={pending}/>
+    : <Markdown key={index} remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeStaticHTML]} components={markdownComponents}>{part.source}</Markdown>)}</FilePreviewContext.Provider></div>;
 }
 
 export function AgentDesktop() {
@@ -53,25 +104,73 @@ export function AgentDesktop() {
   const [pinned, setPinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
   const [sidebarOpen, setSidebarOpen] = useState(desktop?.platform === "android" && window.innerWidth <= 720);
-  type Attachment = { id: string; name: string; size: number };
-  const [attachments, setAttachments] = useState<Attachment[]>([]), [uploading, setUploading] = useState(false);
-  const attachmentDrafts = useRef(new Map<string, Attachment[]>()), fileInput = useRef<HTMLInputElement>(null);
-  const setFiles = (target: string, files: Attachment[]) => { attachmentDrafts.current.set(target, files); if (selected.current === target) setAttachments(files); };
-  const upload = async (files: FileList | null) => {
-    if (!files?.length) return;
-    const target = botId;
-    if ((attachmentDrafts.current.get(target)?.length ?? 0) + files.length > 5) { setError("最多添加 5 个附件"); return; }
-    setUploading(true); setError("");
-    try {
-      for (const file of Array.from(files)) {
-        if (!file.size || file.size > 5 * 1024 * 1024) throw new Error("请选择 5 MB 以内的非空文件");
-        const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file); });
-        const uploaded = await api<Attachment>("attachments", { botId: target, name: file.name, data });
-        setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), uploaded]);
-      }
-    } catch (error) { setError(error instanceof Error ? error.message : "上传失败"); }
-    finally { setUploading(false); if (fileInput.current) fileInput.current.value = ""; }
+  type Attachment = { id: string; name: string; size: number; mime?: string; previewUrl?: string };
+  type PendingUpload = { key: string; file: File; error?: string; controller: AbortController };
+  const [attachments, setAttachments] = useState<Attachment[]>([]), [pending, setPending] = useState<PendingUpload[]>([]);
+  const [draftPreview, setDraftPreview] = useState<{ src: string; label: string }>();
+  const attachmentDrafts = useRef(new Map<string, Attachment[]>()), pendingDrafts = useRef(new Map<string, PendingUpload[]>()), fileInput = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<(files: FileList | readonly File[] | null) => Promise<void>>(async () => {});
+  const uploading = pending.length > 0;
+  const setFiles = (target: string, files: Attachment[]) => {
+    attachmentDrafts.current.set(target, files);
+    if (selected.current === target) setAttachments(files);
   };
+  const setPendingFiles = (target: string, files: PendingUpload[]) => {
+    pendingDrafts.current.set(target, files);
+    if (selected.current === target) setPending(files);
+  };
+  const readFile = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file); });
+  const uploadOne = async (target: string, item: PendingUpload) => {
+    try {
+      const data = await readFile(item.file);
+      if (item.controller.signal.aborted) return;
+      const uploaded = await api<Attachment>("attachments", { botId: target, name: item.file.name.trim() || "截图.png", data });
+      if (item.controller.signal.aborted) return;
+      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).filter((entry) => entry.key !== item.key));
+      const mime = item.file.type || uploaded.mime || "";
+      const previewUrl = mime.startsWith("image/") ? `data:${mime};base64,${data}` : undefined;
+      setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), { ...uploaded, mime: uploaded.mime || item.file.type, previewUrl }]);
+    } catch (error) {
+      if (item.controller.signal.aborted) return;
+      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: error instanceof Error ? error.message : "上传失败，请重试" } : entry));
+    }
+  };
+  const upload = async (files: FileList | readonly File[] | null) => {
+    const list = files ? Array.from(files) : [];
+    if (!list.length) return;
+    const target = botId, current = attachmentDrafts.current.get(target) ?? [], waiting = pendingDrafts.current.get(target) ?? [];
+    if (current.length + waiting.length + list.length > 5) { setError("最多添加 5 个附件"); if (fileInput.current) fileInput.current.value = ""; return; }
+    if (list.some((file) => !file.size || file.size > 5 * 1024 * 1024)) { setError("请选择 5 MB 以内的非空文件"); if (fileInput.current) fileInput.current.value = ""; return; }
+    setError("");
+    const items: PendingUpload[] = list.map((file) => ({ key: crypto.randomUUID(), file, controller: new AbortController() }));
+    setPendingFiles(target, [...waiting, ...items]);
+    await Promise.all(items.map((item) => uploadOne(target, item)));
+    if (fileInput.current) fileInput.current.value = "";
+  };
+  uploadRef.current = upload;
+  const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = imageFilesFromClipboard(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void upload(files);
+  };
+  const retryUpload = (item: PendingUpload) => {
+    const controller = new AbortController();
+    setPendingFiles(botId, (pendingDrafts.current.get(botId) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: undefined, controller } : entry));
+    void uploadOne(botId, { ...item, controller, error: undefined });
+  };
+  const removePending = (item: PendingUpload) => {
+    item.controller.abort();
+    setPendingFiles(botId, (pendingDrafts.current.get(botId) ?? []).filter((entry) => entry.key !== item.key));
+  };
+  const removeAttachment = (file: Attachment) => setFiles(botId, (attachmentDrafts.current.get(botId) ?? []).filter((entry) => entry.id !== file.id));
+  const removeDraftImage = (src: string) => {
+    const uploaded = (attachmentDrafts.current.get(botId) ?? []).find((file) => file.previewUrl === src);
+    if (uploaded) removeAttachment(uploaded);
+  };
+  useEffect(() => () => {
+    for (const list of pendingDrafts.current.values()) for (const item of list) item.controller.abort();
+  }, []);
   const [lookRevision, setLookRevision] = useState(0);
   const [motion] = useState(() => localStorage.getItem("nexbot.motion") !== "0");
   const [settledState, setSettledState] = useState<CompanionState>("idle");
@@ -88,10 +187,13 @@ export function AgentDesktop() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [focusedMessage,setFocusedMessage]=useState("");
   const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
-  const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
+  const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), transcriptInner = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
+  const previousScrollTop = useRef(0), touchY = useRef(0), feedRetry = useRef(false), loadedBot = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (desktop?.platform !== "android") return;
     const back = () => {
+      const preview = document.querySelector<HTMLButtonElement>('.html-preview-fullscreen [aria-label="退出全屏"]');
+      if (preview) { preview.click(); return; }
       const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
       if (modal) { modal.dispatchEvent(new Event("cancel", { cancelable: true })); return; }
       const popover = document.querySelector<HTMLElement>(":popover-open");
@@ -115,8 +217,21 @@ export function AgentDesktop() {
       window.removeEventListener("nex-download-error", downloadError);
     };
   }, [dialog, detail, page, sidebarOpen]);
-  const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>());
+  const stickToBottom = useRef(true), memoryVersions = useRef(new Map<string, string>()), messagesRef = useRef(messages);
+  messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
+  const [update, setUpdate] = useState<ClientUpdateState>();
+  useEffect(() => {
+    void desktop?.updateState?.().then(setUpdate).catch(() => {});
+    return desktop?.onUpdateState?.(setUpdate) ?? undefined;
+  }, []);
+  useEffect(() => desktop?.onClipboardImage?.((image) => {
+    const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
+    if (!bytes.byteLength || !image.type.startsWith("image/")) return;
+    const blob = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(blob).set(bytes);
+    void uploadRef.current([new File([blob], image.name.trim() || "截图.png", { type: image.type })]);
+  }), []);
   const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
   const offline = useCallback(() => { ++serial.current; loaded.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
@@ -160,14 +275,21 @@ export function AgentDesktop() {
       }
       while (true) {
         if (request !== serial.current || selected.current !== current) return;
-        if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setTimeout(() => void reload().catch(offline), 0); return; }
+        if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) {
+          const retry = !feedRetry.current;
+          feedRetry.current = true;
+          loaded.current = undefined;
+          if (retry) setTimeout(() => void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }), 0);
+          return;
+        }
         history = [...history, ...feed.messages];
         if (!feed.hasMore) break;
         feed = await api<Feed>(`${base}&after=${history.at(-1)!.seq}`);
       }
       if (request !== serial.current || selected.current !== current) return;
       loaded.current = { botId: current, messages: history, sync: feed.sync };
-      setMessages(history);
+      feedRetry.current = false;
+      setMessages((shown) => withPendingOptimistic(history, shown));
       setStreaming(feed.streaming.filter((s) => s.text));
       setHistoryLoading(false);
       const through = Number(history.at(-1)?.seq ?? 0);
@@ -182,32 +304,85 @@ export function AgentDesktop() {
     // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
     if (!selected.current) void reload().catch((e: Error) => setError(e.message));
     const events = new EventSource("/api/events"); let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch(offline); }, 150); };
-    const change = (event: MessageEvent) => { const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean }; if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) { loaded.current = undefined; setMessages([]); setStreaming([]); setState(undefined); setDialog(null); } refresh(); };
+    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }); }, 150); };
+    const change = (event: MessageEvent) => {
+      const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
+      // A reconnect can report reset. Drop the incremental cursor and refetch,
+      // but leave the rows on screen until the next page arrives.
+      if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) loaded.current = undefined;
+      refresh();
+    };
     const expired = () => { offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
-    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired"))); events.onerror = offline;
+    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired"))); events.onerror = () => refresh();
     window.addEventListener("nex-session-expired", expired);
     window.addEventListener("focus", refresh);
     const interval = setInterval(refresh, 10_000);
     return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); window.removeEventListener("nex-session-expired", expired); };
   }, [reload, offline]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
-  useEffect(() => { stickToBottom.current = !historyTarget.current; setShowScrollPill(false); setQuote(undefined); setMemoryNotice(""); setPreview(undefined); setMessages([]); setStreaming([]); setDraft(drafts.current.get(botId) ?? ""); setAttachments(attachmentDrafts.current.get(botId) ?? []); if (botId) { setHistoryLoading(true); localStorage.setItem("nexbot.selectedAgent", botId); void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); }); } }, [botId, reload]);
+  useEffect(() => {
+    const switched = loadedBot.current !== botId;
+    loadedBot.current = botId;
+    if (switched) {
+      stickToBottom.current = !historyTarget.current;
+      setShowScrollPill(false);
+      setQuote(undefined);
+      setMemoryNotice("");
+      setPreview(undefined);
+      setMessages([]);
+      setStreaming([]);
+      setDraft(drafts.current.get(botId) ?? "");
+      setAttachments(attachmentDrafts.current.get(botId) ?? []);
+      setPending(pendingDrafts.current.get(botId) ?? []);
+      setDraftPreview(undefined);
+    }
+    if (botId) {
+      if (switched) setHistoryLoading(true);
+      localStorage.setItem("nexbot.selectedAgent", botId);
+      void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); });
+    }
+  }, [botId, reload]);
   const openFilePreview = (targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); };
   const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(botId, value); setAtDismissed(false); setAtIndex(0); };
   const togglePin = (id: string) => setPinned((current) => { const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id]; localStorage.setItem("nexbot.pinnedAgents", JSON.stringify(next)); return next; });
   const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
+  const deleteMessageImage = async (messageId: string, image: MessageImage) => {
+    await api("agents/messages/image/delete", { botId, messageId, attachmentId: image.id });
+    loaded.current = undefined;
+    await reload();
+  };
   const send = (event: FormEvent) => {
     event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || !state?.bots.some((agent) => agent.id === target)) return;
     const prefix = quote ? `> ${quote.author}：${quote.text.replace(/\s+/g, " ").slice(0, 140)}\n\n` : "";
     const content = prefix + raw, attachmentIds = attachments.map((file) => file.id), requestKey = content + JSON.stringify(attachmentIds);
     if (!retry.current || retry.current.botId !== target || retry.current.text !== requestKey) retry.current = { botId: target, text: requestKey, id: crypto.randomUUID() };
     const clientId = retry.current.id;
-    if(historyTarget.current){historyTarget.current=undefined;setFocusedMessage("");loaded.current=undefined;setMessages([]);}
-    stickToBottom.current = true; setShowScrollPill(false); setSendingBotId(target);
-    void run(async () => { await api("agents/input", { botId: target, text: content, clientId, attachments: attachmentIds }); setFiles(target, []); drafts.current.delete(target); if (selected.current === target) { setDraft(""); setQuote(undefined); } retry.current = undefined; }).finally(() => setSendingBotId(undefined));
+    if (historyTarget.current) { historyTarget.current = undefined; setFocusedMessage(""); loaded.current = undefined; }
+    // Sending explicitly returns to the latest turn, even from scrollback.
+    stickToBottom.current = true;
+    setShowScrollPill(false);
+    scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "instant" });
+    const savedDraft = draft, savedQuote = quote;
+    drafts.current.delete(target);
+    if (selected.current === target) { setDraft(""); setQuote(undefined); }
+    setSendingBotId(target);
+    setMessages((shown) => shown.some((row) => row.id === `optimistic:${clientId}`) ? shown : [...shown, optimisticOutgoing(clientId, content)]);
+    void run(async () => {
+      try {
+        await api("agents/input", { botId: target, text: content, clientId, attachments: attachmentIds });
+        setFiles(target, []);
+        retry.current = undefined;
+      } catch (error) {
+        if (!drafts.current.has(target)) drafts.current.set(target, savedDraft);
+        if (selected.current === target) {
+          setDraft((current) => current || savedDraft);
+          setQuote((current) => current ?? savedQuote);
+        }
+        throw error;
+      }
+    }).finally(() => setSendingBotId(undefined));
   };
   const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && !terminal.includes(str(t.status))) ?? [];
   useEffect(() => {
@@ -225,7 +400,27 @@ export function AgentDesktop() {
   }, [botId, tasks[0]?.id]);
   const avatarState = !connected ? "offline" : tasks.length ? companionState(tasks[0], state?.approvals.some((a) => a.bot_id === botId), connected) : sendingBotId === botId ? "thinking" : settledState;
   const processing = connected && !streaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
-  useEffect(() => { if (stickToBottom.current && !historyTarget.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); }, [botId, messages.at(-1)?.id, streaming.map((s) => s.text).join(""), processing]);
+  const setFollowing = useCallback((next: boolean) => {
+    stickToBottom.current = next;
+    setShowScrollPill(!next && messagesRef.current.length > 3 && !historyTarget.current);
+  }, []);
+  const atEnd = () => {
+    const el = scroll.current;
+    return !el || el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_FOLLOW_THRESHOLD;
+  };
+  // Content growth used to unpin follow via the distance check, so streaming
+  // stopped at the send-time jump and the "回到底部" pill appeared. Follow now
+  // breaks only on an upward gesture and tracks height while it stays armed.
+  useBottomFollowResize(scroll, transcriptInner, stickToBottom, state ? `${botId}:${page}` : null);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const typing = event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement;
+      if (event.key === "PageUp" || ((event.key === "Home" || event.key === "ArrowUp") && !typing)) setFollowing(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setFollowing]);
+  useEffect(() => { setShowScrollPill(!stickToBottom.current && messages.length > 3 && !historyTarget.current); }, [messages]);
   useEffect(() => { const field = composerRef.current; if (field) { field.style.height = "auto"; field.style.height = `${Math.min(160, field.scrollHeight)}px`; } }, [draft, botId, page]);
   const descendantTasks = new Set(tasks.map((task) => task.id));
   for (let depth = 0; depth < 3; depth++) for (const link of state?.delegations ?? []) if (descendantTasks.has(link.parent_task_id)) descendantTasks.add(link.child_task_id);
@@ -262,7 +457,8 @@ export function AgentDesktop() {
     const current = loaded.current;
     if (!current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
     const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];
-    loaded.current = { ...current, messages: merged }; setMessages(merged);
+    loaded.current = { ...current, messages: merged };
+    setMessages((shown) => withPendingOptimistic(merged, shown));
   };
   if (!state) return <div className="boot"><BrandMark size={44}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接页</button> : null}</div>;
   const botUsage = state.usage?.find((u) => u.bot_id === botId);
@@ -300,7 +496,8 @@ export function AgentDesktop() {
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   void lookRevision;
 
-  return <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
+  return <div className="workspace-stage" data-dark={dark ? "1" : "0"} data-shell={desktop?.mode === "client" ? "1" : "0"}>
+    <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
     <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
 
     <main>
@@ -325,6 +522,7 @@ export function AgentDesktop() {
         </div>
       </header>
 
+      {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(e.message))}>立即更新</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ModelSettings state={state} run={run} active={modelChooserOpen}/>}</div> : null}
 
@@ -334,8 +532,8 @@ export function AgentDesktop() {
         <p>给它一个名字，身份与职责可以之后补充。消息、记忆和工作会持续保留。</p>
         <button className="primary" onClick={() => editBot()}><Plus size={16}/>创建 Agent</button>
       </div> : page === "agent" ? <>
-        <div className="transcript" ref={scroll} onScroll={(e) => { const el = e.currentTarget; const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90; stickToBottom.current = nearBottom; setShowScrollPill(!nearBottom && messages.length > 3); }}>
-          <div className="transcript-inner">
+        <div className="transcript" ref={scroll} onPointerDown={(event) => { const el = scroll.current; if (el && event.target === el && event.nativeEvent.offsetX >= el.clientWidth) setFollowing(false); }} onWheel={(event) => { if (event.deltaY < 0) setFollowing(false); else if (atEnd()) setFollowing(true); }} onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={(event) => { const y = event.touches[0]?.clientY ?? 0; if (y > touchY.current + 4) setFollowing(false); else if (atEnd()) setFollowing(true); }} onScroll={() => { const el = scroll.current; if (!el) return; const scrollTop = el.scrollTop; const resume = shouldResumeBottomFollow({ following: stickToBottom.current, previousScrollTop: previousScrollTop.current, scrollTop, distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight }); previousScrollTop.current = scrollTop; if (resume) setFollowing(true); }}>
+          <div className="transcript-inner" ref={transcriptInner}>
           {focusedMessage ? <button type="button" className="older" onClick={latestMessages}>返回最新消息</button> : null}
           {!focusedMessage && Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
           {!messages.length && !processing && historyLoading ? <div className="history-loading" role="status"><span className="spin"/>正在载入历史会话…</div> : !messages.length && !processing ? <div className="welcome ds-welcome">
@@ -354,7 +552,7 @@ export function AgentDesktop() {
             const curDay = formatDay(m.created_at);
             return <div key={str(m.id)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
               {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots); setQuote({ author, text: str(msg.content) }); composerRef.current?.focus(); }}/>
+              <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
             </div>;
           })}
           {streaming.map((s) => {
@@ -362,7 +560,7 @@ export function AgentDesktop() {
             return <article className={`message assistant ${link ? "a2a-reply" : ""}`} key={s.taskId}>
               <Avatar bot={bot} allBots={state.bots} size={34} state={avatarState}/>
               <div className="message-body">
-                {link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div><div className="bubble"><RichText value={s.text}/></div><span className="muted">正在回复…</span></>}
+                {link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div><div className="bubble"><RichText value={s.text} pending/></div><span className="muted">正在回复…</span></>}
               </div>
             </article>;
           })}
@@ -378,19 +576,50 @@ export function AgentDesktop() {
         </div>
 
         <div className="composer-area">
-          {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" onClick={() => { stickToBottom.current = true; setShowScrollPill(false); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
-          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>批准</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
+          {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ChevronDown size={14}/>回到底部</button> : null}
+          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
-          {tasks.length > 0 && <div className="task-status"><span className="task-status-dot"/><span>{tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span><button type="button" aria-label="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={12}/>停止任务</button></div>}
+          {tasks.length > 0 && <div className="task-status"><span className="task-status-dot"/><span>{tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span></div>}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}
           <input ref={fileInput} type="file" hidden multiple aria-label="上传附件" onChange={(event) => void upload(event.target.files)}/>
-          {attachments.length > 0 && <div className="attachment-drafts">{attachments.map((file) => <div className="attachment-draft" key={file.id}><FileText size={16}/><span>{file.name}</span><button type="button" aria-label={`移除 ${file.name}`} disabled={busy || uploading} onClick={() => setFiles(botId, attachments.filter((item) => item.id !== file.id))}><X size={14}/></button></div>)}</div>}
-          {uploading && <span role="status">正在上传…</span>}
           <form className="composer conversation-input" onSubmit={send}>
-            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
-              <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>
+            {(attachments.length > 0 || pending.length > 0) && <div className="attachment-drafts" role="list" aria-label="待发送附件">
+              {attachments.map((file) => file.previewUrl
+                ? <div className="attachment-image-draft" key={file.id} role="listitem">
+                    <button type="button" className="attachment-image-preview" aria-label={`查看图片 ${file.name}`} onClick={() => setDraftPreview({ src: file.previewUrl!, label: file.name })}>
+                      <img className="attachment-thumb-tile" src={file.previewUrl} alt={file.name}/>
+                    </button>
+                    <button type="button" className="attachment-tile-remove" aria-label={`移除 ${file.name}`} disabled={busy} onClick={() => removeAttachment(file)}><X size={14}/></button>
+                  </div>
+                : <div className="attachment-file-draft" key={file.id} role="listitem">
+                    <span className="attachment-file-draft-icon" aria-hidden="true"><FileText size={15}/></span>
+                    <span title={file.name}>{file.name}</span>
+                    <button type="button" className="attachment-file-remove" aria-label={`移除 ${file.name}`} disabled={busy} onClick={() => removeAttachment(file)}><X size={12}/></button>
+                  </div>)}
+              {pending.map((item) => item.error
+                ? <div className="attachment-image-draft is-error" key={item.key} role="listitem" aria-label={`${item.file.name} 上传失败`} title={`${item.file.name}：${item.error}，点击重试`}>
+                    <button type="button" className="attachment-thumb-tile is-error" aria-label={`上传失败：${item.file.name}，点击重试`} onClick={() => retryUpload(item)}><CircleAlert size={18}/></button>
+                    <button type="button" className="attachment-tile-remove" aria-label={`移除 ${item.file.name}`} onClick={() => removePending(item)}><X size={12}/></button>
+                  </div>
+                : item.file.type.startsWith("image/") || isImageFileName(item.file.name)
+                  ? <div className="attachment-image-draft is-uploading" key={item.key} role="listitem" aria-busy="true" aria-label={`${item.file.name} 正在上传`}>
+                      <span className="attachment-thumb-tile is-uploading" aria-hidden="true"><ImageIcon size={18}/></span>
+                      <button type="button" className="attachment-tile-remove" aria-label={`取消上传 ${item.file.name}`} onClick={() => removePending(item)}><X size={14}/></button>
+                    </div>
+                  : <div className="attachment-file-draft" key={item.key} role="listitem" aria-busy="true">
+                      <span className="attachment-file-draft-icon" aria-hidden="true"><FileText size={15}/></span>
+                      <span title={item.file.name}>{item.file.name}</span>
+                      <span className="attachment-upload-state" aria-hidden="true"><Loader2 size={13}/></span>
+                      <button type="button" className="attachment-file-remove" aria-label={`取消上传 ${item.file.name}`} onClick={() => removePending(item)}><X size={12}/></button>
+                    </div>)}
+            </div>}
+            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
+            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
+              {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
+              {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
+                ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
+                : <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
             </ComposerControls>
           </form>
         </div>
@@ -450,7 +679,7 @@ export function AgentDesktop() {
             <div className="ds-field-card ds-kv-list">
               <div className="ds-kv-row">
                 <span><Zap size={13}/>驱动模型</span>
-                <button type="button" className="ds-pill-btn" onClick={() => openSettings("model")}>{modelLabel}</button>
+                <ModelPicker key={JSON.stringify([botId, state.config?.provider_id, state.config?.endpoint])} label="驱动模型" triggerClassName="ds-pill-btn inspector-model-trigger" displayValue={modelLabel} value={str(bot.selected_model)} emptyLabel={`跟随默认（${str(state.config?.default_model) || "未设置"}）`} models={state.modelVisibility?.models} disabled={busy || !connected} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onChange={(model) => { void run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot.model_selection_version ?? 0) })); }}/>
               </div>
               <div className="ds-kv-row">
                 <span><Shield size={13}/>工具权限</span>
@@ -483,6 +712,8 @@ export function AgentDesktop() {
     </aside> : null}
 
     {dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}
+    {draftPreview ? <ImageLightbox src={draftPreview.src} alt={draftPreview.label} deleteLabel="移除图片" onClose={() => setDraftPreview(undefined)} onDelete={() => removeDraftImage(draftPreview.src)}/> : null}
+    </div>
   </div>;
 }
 
@@ -490,7 +721,7 @@ function A2AMarker({ direction, peer, bots, timestamp, select }: { direction: st
   return <div className="a2a-marker" data-a2a-direction={direction}><span>{direction === "sent" ? "已发消息给" : "消息来自"}</span><button className="a2a-contact" aria-label={`打开 ${peer?.name ?? "Agent"} 的消息`} disabled={!peer} onClick={() => { if (peer) select(str(peer.id)); }}><Avatar bot={peer} allBots={bots} size={20}/><span>{peer?.name ?? "Agent"}</span></button><time title={timestamp ? new Date(Number(timestamp)).toLocaleString("zh-CN") : undefined}>{formatTime(timestamp)}</time></div>;
 }
 function FoldedReply({ content, recipient, pending = false }: { content: string; recipient: string; pending?: boolean }) {
-  return <details className="bubble folded-content folded-reply"><summary><span className="reply-recipient">{pending ? "正在回复给" : "已回复给"}{recipient}</span><span aria-hidden="true">·</span><span className="expand-label">展开</span><span className="collapse-label">收起</span><ChevronDown size={13}/></summary><div className="folded-body" data-reply-content><RichText value={content}/></div></details>;
+  return <details className="bubble folded-content folded-reply"><summary><span className="reply-recipient">{pending ? "正在回复给" : "已回复给"}{recipient}</span><span aria-hidden="true">·</span><span className="expand-label">展开</span><span className="collapse-label">收起</span><ChevronDown size={13}/></summary><div className="folded-body" data-reply-content><RichText value={content} pending={pending}/></div></details>;
 }
 function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]) {
   if (m.role === "user") return "我";
@@ -498,18 +729,20 @@ function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]
   if (m.role === "peer") return str(bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id))?.name) || "同伴 Agent";
   return str(bot?.name) || "Agent";
 }
-function AgentMessage({ message: m, bot, bots, select, copiedId, onCopy, onQuote, onPreviewFile, onPreviewStep }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; select: (id: string) => void; copiedId: string; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void }) {
+function AgentMessage({ message: m, bot, bots, select, copiedId, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; select: (id: string) => void; copiedId: string; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void> }) {
   const direction = str(m.a2a_direction), peer = bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id));
   if (direction === "sent" || direction === "returned") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "received") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={34}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;
   const canAct = m.role === "user" || m.role === "assistant" || m.role === "peer";
   const steps = Array.isArray(m.tool_steps) ? m.tool_steps : [];
-  return <article className={`message ${m.role} ${m.kind}`}>
+  const { text, images } = parseMessageMedia(str(m.content));
+  return <article className={`message ${m.role} ${m.kind}`} data-message-id={str(m.id)}>
     <div className="message-body">
       {m.role === "peer" ? <div className="message-author"><Avatar bot={peer} allBots={bots} size={22}/>{peer?.name ?? "Agent"} · {m.kind === "request" ? "发来任务" : "返回结果"}</div> : null}
       {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length}><div className="step-list">{steps.map((step) => <button type="button" key={step.id} className="step-row" onClick={() => onPreviewStep(step)} title="点击在右侧面板查看详情"><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>)}</div></ToolActivityDisclosure> : null}
-      <div className="bubble"><RichText value={str(m.content)} onPreviewFile={onPreviewFile}/></div>
+      <MessageImages images={images} onDelete={(image) => onDeleteImage(str(m.id), image)}/>
+      {text ? <div className="bubble"><RichText value={text} onPreviewFile={onPreviewFile}/></div> : null}
       <div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time>{canAct ? <span className="message-tools"><button type="button" className="tool-link" onClick={() => onQuote(m)} title="引用回复"><CornerUpLeft size={11}/>引用</button><button type="button" className="tool-link" onClick={() => onCopy(str(m.id), str(m.content))} title="复制内容">{copiedId === str(m.id) ? <><Check size={11}/>已复制</> : <><Copy size={11}/>复制</>}</button></span> : null}</div>
     </div>
   </article>;

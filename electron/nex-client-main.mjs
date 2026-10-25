@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from "electron";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { isIP } from "node:net";
@@ -7,6 +7,9 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ClientDevice } from "./nex-client-device.mjs";
 import { installLocalUi } from "./nex-client-ui.mjs";
+import { installClipboardImagePaste } from "./nex-client-clipboard.mjs";
+import { ClientUpdater, portableHandoff } from "./nex-client-update.mjs";
+import { spawn } from "node:child_process";
 import { fetchModelCatalog } from "../shared/model-catalog.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -14,7 +17,7 @@ const profile = process.argv.find((a) => a.startsWith("--profile="))?.slice(10);
 app.setName(process.platform === "darwin" && profile ? "NexBot Client Fixture " + createHash("sha256").update(profile).digest("hex").slice(0, 12) : "NexBot Client");
 app.setPath("userData", profile ? path.resolve(profile) : path.join(app.getPath("appData"), "NexBotClient"));
 const defaultOrigin = process.env.NEX_CLIENT_DEFAULT_ORIGIN || "https://bot.nexorai.com.cn";
-let device, shuttingDown = false;
+let device, updater, shuttingDown = false;
 let window, saved, origin, connectionError = "", resuming = false, loginEpoch = 0, repointed = false;
 const cancelled = Object.assign(new Error("已取消"), { cancelled: true });
 const credentials = path.join(app.getPath("userData"), "connection.bin");
@@ -34,6 +37,17 @@ async function request(address, route, data, token) {
   const result = await response.json();
   if (!response.ok) throw Object.assign(new Error(result.error ?? "无法连接 Core"), { status: response.status });
   return result;
+}
+// The cookie has no expiry, so Chromium never writes the token to disk (it is restored from connection.bin).
+function setSessionCookie(address, token) {
+  return window.webContents.session.cookies.set({ url: address, name: "nex", value: token, httpOnly: true, sameSite: "strict", secure: address.startsWith("https:"), path: "/" });
+}
+// The device refreshes the login before it expires; keep the saved credential and the window on the rotated token.
+async function sessionRefreshed(next) {
+  if (!saved || next.sessionId !== saved.sessionId || next.coreId !== saved.coreId) return;
+  saved = { ...saved, token: next.token, expiresAt: next.expiresAt };
+  writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
+  if (origin === saved.origin) await setSessionCookie(saved.origin, saved.token);
 }
 async function login(settings) {
   await device?.stop();
@@ -70,9 +84,8 @@ async function login(settings) {
     writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
   }
   // Resuming keeps the HTTP cache and the Agent view preferences in localStorage; a new login starts clean.
-  // The cookie has no expiry, so Chromium never writes the token to disk (it is restored from connection.bin).
   if (!settings.resume) await window.webContents.session.clearStorageData({ storages: ["cookies", "localstorage", "indexdb", "websql", "filesystem", "serviceworkers", "cachestorage"] });
-  await window.webContents.session.cookies.set({ url: address, name: "nex", value: saved.token, httpOnly: true, sameSite: "strict", secure: address.startsWith("https:"), path: "/" });
+  await setSessionCookie(address, saved.token);
   origin = address;
   connectionError = "";
   resuming = false;
@@ -80,6 +93,7 @@ async function login(settings) {
   await device?.start(saved);
   if (epoch !== loginEpoch) throw cancelled;
   await window.loadURL(origin + "/");
+  void updater?.check(origin);
 }
 if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) app.quit();
 else {
@@ -106,11 +120,17 @@ else {
     const executorFile = path.join(resourceRoot, "client-executor", "client-node", "client-node.js");
     if (existsSync(executorFile)) {
       const { createClientNode } = await import(pathToFileURL(executorFile).href);
-      device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode,
+      device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode, sessionRefreshed,
       });
+    }
+    // Only the packaged portable can replace itself; development builds skip updates.
+    if (process.platform === "win32" && process.env.PORTABLE_EXECUTABLE_FILE) {
+      updater = new ClientUpdater({ version: app.getVersion(), directory: path.join(app.getPath("userData"), "updates"), changed: (state) => { if (!window?.isDestroyed()) window.webContents.send("nex:update-state", state); } });
+      setInterval(() => { const target = origin ?? saved?.origin; if (target) void updater.check(target); }, 6 * 60 * 60_000).unref();
     }
     const bundledUi = path.join(resourceRoot, "client-ui");
     installLocalUi(window.webContents.session, existsSync(bundledUi) ? bundledUi : path.join(root, "ui"), () => origin);
+    installClipboardImagePaste(window.webContents, clipboard, () => origin);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event, url) => { if (url !== connectionPage && (!origin || new URL(url).origin !== origin)) event.preventDefault(); });
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -167,6 +187,16 @@ else {
     });
     ipcMain.handle("client:external", async (event, value) => { validate(event); const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid URL"); await shell.openExternal(url.href); });
     ipcMain.handle("client:quit", (event) => { validate(event); setTimeout(() => app.quit(), 50); });
+    ipcMain.handle("client:update-state", (event) => { validate(event); return updater?.state() ?? { status: "unsupported" }; });
+    ipcMain.handle("client:update-install", (event) => {
+      validate(event);
+      if (!updater || updater.status !== "ready") throw new Error("更新尚未就绪");
+      // The running portable is locked, so a hidden PowerShell waits for this client to exit,
+      // starts the new version with the same profile and Core, then removes the old file.
+      const script = portableHandoff({ downloaded: updater.file, currentExe: process.env.PORTABLE_EXECUTABLE_FILE, pids: [process.pid, process.ppid], args: process.argv.filter((value) => /^--(profile|origin)=/.test(value)) });
+      spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      setTimeout(() => app.quit(), 50);
+    });
     resuming = !!saved;
     await window.loadURL(connectionPage);
     if (profile && process.env.NEX_CLIENT_SMOKE_OUTPUT) writeFileSync(process.env.NEX_CLIENT_SMOKE_OUTPUT, JSON.stringify({ pid: process.pid, profile: app.getPath("userData") }));

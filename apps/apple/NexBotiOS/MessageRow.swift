@@ -15,6 +15,7 @@ struct DateDivider: View {
 struct ChatMarkdown: View {
     let source: String
     var fontSize: CGFloat = 16
+    var pending = false
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
     private var size: CGFloat { fontSize * scale }
 
@@ -22,6 +23,17 @@ struct ChatMarkdown: View {
     static let fileScheme = "nexbot-file"
 
     var body: some View {
+        VStack(alignment: .leading, spacing: size * 0.6) {
+            ForEach(Array(HTMLPreview.parts(source).enumerated()), id: \.offset) { _, part in
+                switch part {
+                case .markdown(let text): ordinary(text)
+                case .preview(let html, let complete): HTMLPreviewMessage(source: html, complete: complete, pending: pending)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func ordinary(_ source: String) -> some View {
         if let html = ChatDocument(source).staticHTML {
             StaticHTMLMessage(fragment: html, fontSize: size)
         } else {
@@ -120,8 +132,24 @@ struct MessageRow: View {
             if message.role == "peer" && message.a2aDirection == nil { peerAuthor }
             if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps, onOpen: onOpenStep) }
             let split = parsed
-            if !split.body.isEmpty { bodyText(split.body) }
-            if !split.links.isEmpty { AttachmentCards(links: split.links, workspace: workspace, trailing: message.isFromUser) }
+            let images = split.links.filter(\.isImage), files = split.links.filter { !$0.isImage }
+            let conversation = workspace.conversation(for: message.botID)
+            if message.isFromUser {
+                if !images.isEmpty {
+                    AttachmentCards(links: images, workspace: workspace, conversation: conversation, messageID: message.id, trailing: true)
+                }
+                if !split.body.isEmpty { bodyText(split.body) }
+                if !files.isEmpty {
+                    AttachmentCards(links: files, workspace: workspace, conversation: conversation, messageID: message.id, trailing: true)
+                }
+            } else {
+                let pictures = AttachmentLink.embeddedImages(message.content)
+                let body = AttachmentLink.stripped(message.content)
+                if !pictures.isEmpty {
+                    AttachmentCards(links: pictures, workspace: workspace, conversation: conversation, messageID: message.id)
+                }
+                if !body.isEmpty { bodyText(body) }
+            }
             if let date = message.createdAt {
                 Text(TimeFormat.formatShortTime(date)).font(.system(size: 10)).foregroundStyle(Theme.muted)
                     .accessibilityLabel(TimeFormat.formatTime(date))
@@ -141,7 +169,7 @@ struct MessageRow: View {
         if message.isFromUser {
             ChatMarkdown(source: content)
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .padding(.leading, 40)
         } else if message.kind == "error" {
             Text(content).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
@@ -217,9 +245,9 @@ struct StreamingRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let replyingTo {
-                FoldedReply(label: "正在回复给\(replyingTo)", folded: $folded) { ChatMarkdown(source: text) }
+                FoldedReply(label: "正在回复给\(replyingTo)", folded: $folded) { ChatMarkdown(source: text, pending: true) }
             } else {
-                ChatMarkdown(source: text)
+                ChatMarkdown(source: text, pending: true)
             }
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)

@@ -20,8 +20,9 @@ struct ConnectorsView: View {
     @State private var query = ""
     @State private var editor: ConnectorEditorRequest?
     @State private var selection: ConnectorSelection?
+    @State private var showingGmail = false
 
-    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { $0.kind != "feishu" } }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && $0.kind != "feishu" } }
     private var filtered: [ConnectorView] {
         let q = query.trimmingCharacters(in: .whitespaces)
         return q.isEmpty ? connectors : connectors.filter { $0.name.localizedCaseInsensitiveContains(q) }
@@ -30,8 +31,9 @@ struct ConnectorsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             header
+            GmailCatalogButton(workspace: workspace, open: { showingGmail = true })
             if workspace.state?.feishu != nil { FeishuSection(workspace: workspace) }
-            if connectors.isEmpty { empty } else { list }
+            if !connectors.isEmpty { list }
         }
         .sheet(item: $editor) { request in
             ConnectorEditor(workspace: workspace, request: request) { id in
@@ -41,6 +43,7 @@ struct ConnectorsView: View {
         .navigationDestination(item: $selection) { item in
             ConnectorDetailView(workspace: workspace, connectorID: item.id, notice: item.notice)
         }
+        .navigationDestination(isPresented: $showingGmail) { GmailConnectorView(workspace: workspace) }
         .onDebugUI { cmd, arg in
             switch cmd {
             case "c-add":
@@ -55,9 +58,7 @@ struct ConnectorsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("扩展 Agent 的能力").font(.caption).foregroundStyle(Theme.muted)
             Text("连接器").font(.title3.weight(.bold))
-            Text("接入 MCP 服务，让 Agent 在对话中使用获准的工具。").font(.subheadline).foregroundStyle(Theme.muted)
             Button { editor = ConnectorEditorRequest() } label: {
                 Label("添加连接器", systemImage: "plus").font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.white).padding(.horizontal, 16).padding(.vertical, 10)

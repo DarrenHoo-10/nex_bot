@@ -89,7 +89,7 @@ struct DialogButton: View {
     var body: some View {
         Button(action: action) {
             Text(title).font(.system(size: 12, weight: kind == .secondary ? .regular : .semibold))
-                .foregroundStyle(kind == .secondary ? Theme.foreground : .white)
+                .foregroundStyle(kind == .secondary ? Theme.foreground : kind == .primary ? Theme.primaryForeground : .white)
                 .padding(.horizontal, 16).frame(height: 32)
                 .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay { if kind == .secondary { RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.border) } }

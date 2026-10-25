@@ -1,6 +1,7 @@
 import { CoreStore, hash, id, now, optionalText, text, type Row } from "./store.ts";
 import type { TaskRuntime } from "./runtime.ts";
 import { actions, policyTools } from "./policy.ts";
+import { universalImageActions } from '../../shared/personal-capabilities.ts';
 import { parseAppearance } from "../../shared/personal-appearance.ts";
 import { tokens } from './token-estimate.ts';
 import { relevance } from './assistant-memory.ts';
@@ -24,7 +25,7 @@ export class AgentModule {
       store.insert("agent_bootstrap", { id: 1, completed_at: now() });
     });
     runtime.onResult = (task, role, content, source) => {
-      if (store.get("SELECT task_id FROM agent_task_links WHERE task_id=?", task.id)) this.publish(String(task.bot_id), role, role === "system" ? "error" : "message", content, source, task.id);
+      if (source.startsWith("image:") || store.get("SELECT task_id FROM agent_task_links WHERE task_id=?", task.id)) this.publish(String(task.bot_id), role, role === "system" ? "error" : "message", content, source, task.id);
     };
     runtime.onSettled = (taskId) => {
       const task = store.get("SELECT * FROM tasks WHERE id=?", taskId);
@@ -85,14 +86,18 @@ export class AgentModule {
   }
   updatePolicy(data: Record<string, unknown>) {
     const botId = text(data.id, 100), version = Number(data.version);
-    const tools = data.tools;
-    if (!Array.isArray(tools) || tools.some((tool) => !actions.includes(tool))) throw new Error("工具清单无效");
+    if (!Array.isArray(data.tools) || data.tools.some((tool) => !actions.includes(tool))) throw new Error("工具清单无效");
+    const tools = [...new Set([...data.tools, ...universalImageActions])];
     this.store.transaction(() => {
       this.ensure(botId);
       if (!Number.isSafeInteger(version) || version < 1 || this.store.run("UPDATE bot_policies SET policy_json=?,approval_mode='allow_scoped',version=version+1 WHERE bot_id=? AND version=?", JSON.stringify({ tools: [...new Set(tools)] }), botId, version).changes !== 1) throw new Error("权限已变化，请刷新");
-      this.store.audit("agent.policy.update", "bot", botId, { version: version + 1, tools: data.tools });
+      this.store.audit("agent.policy.update", "bot", botId, { version: version + 1, tools });
     });
     this.runtime.changed();
+  }
+  policyView(botId: string) {
+    const policy = this.store.get('SELECT version policy_version,policy_json FROM bot_policies WHERE bot_id=?', botId);
+    return policy && { ...policy, policy_json: JSON.stringify({ ...JSON.parse(String(policy.policy_json)), tools: policyTools(policy) }) };
   }
   updateApprovalMode(data: Record<string, unknown>) {
     const botId = text(data.id, 100), mode = data.mode;
@@ -189,7 +194,8 @@ export class AgentModule {
         // A new Agent never receives more capabilities than the Agent that created it.
         const creator = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", String(call.bot_id));
         const granted = creator ? policyTools(creator) : [];
-        this.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: actions.filter((tool) => granted.includes(tool)) }), botId);
+        const inheritDefaults = creator && JSON.parse(String(creator.policy_json)).inheritDefaults === true;
+        this.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: actions.filter((tool) => granted.includes(tool)), ...(inheritDefaults ? { inheritDefaults: true } : {}) }), botId);
         this.ensure(botId);
         if (expertise.length) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify(expertise), botId);
         const result = { created: true, botId, name, instructions, expertise };
@@ -324,7 +330,7 @@ export class AgentModule {
           }
         }
       }
-      if (projected.role === "assistant" && projected.kind === "message" && projected.task_id && projected.content !== "[已遗忘]" && !this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", String(projected.task_id))) {
+      if (projected.role === "assistant" && projected.kind === "message" && !String(projected.source_key).startsWith("image:") && projected.task_id && projected.content !== "[已遗忘]" && !this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", String(projected.task_id))) {
         const calls = this.store.all("SELECT id,tool_name,target_id,arguments_json,result_json,status,created_at FROM tool_calls WHERE task_id=? ORDER BY created_at,rowid", String(projected.task_id));
         if (calls.length) {
           projected = {

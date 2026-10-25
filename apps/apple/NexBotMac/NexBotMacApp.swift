@@ -64,7 +64,17 @@ final class ExecutorAppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 struct NexBotMacApp: App {
-    @State private var model = AppModel()
+    @State private var model = NexBotMacApp.makeModel()
+    /// DEBUG fixture runs may keep the session in memory (`NEXBOT_FIXTURE_MEMORY_CREDENTIALS=1`):
+    /// the Keychain refuses access while the screen is locked (-25308).
+    private static func makeModel() -> AppModel {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NEXBOT_FIXTURE_MEMORY_CREDENTIALS"] == "1", LaunchOptions.current.profile?.hasPrefix("fixture-") == true {
+            return AppModel(options: .current, store: InMemoryCredentialStore(), deviceName: AppModel.defaultDeviceName())
+        }
+        #endif
+        return AppModel()
+    }
     @State private var ui = UIState()
     @State private var preferences = ContactPreferences()
     @NSApplicationDelegateAdaptor(ExecutorAppDelegate.self) private var appDelegate
@@ -83,6 +93,7 @@ struct NexBotMacApp: App {
                     device.attach(model)
                     #if DEBUG
                     LocalDeviceDebug.start(device: device, model: model)
+                    MBDebug.start()
                     #endif
                     await model.start()
                 }
@@ -180,7 +191,7 @@ struct PersonAvatar: View {
 extension WorkspaceStore {
     /// What an Agent's avatar and status line show.
     func companionState(_ botID: String) -> CompanionState {
-        CompanionState(task: state?.unfinishedTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection == .connected)
+        CompanionState(task: state?.avatarTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection == .connected)
     }
     func appearance(_ bot: Bot) -> AgentAppearance { AgentAppearance.of(bot, firstID: bots.first?.id) }
 }

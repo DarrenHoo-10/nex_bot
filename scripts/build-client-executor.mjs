@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { cpSync, mkdirSync, copyFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { htmlPreviewShell } from "../shared/html-preview-shell.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(root, "dist-personal/client-executor");
@@ -32,4 +33,5 @@ copyFileSync(pdfRequire.resolve("@napi-rs/canvas/LICENSE"), path.join(output, "c
 const ui = path.join(root, "dist-personal/client-ui");
 await viteBuild({ configFile: false, root, plugins: [react()], build: { outDir: ui, emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
 copyFileSync(path.join(ui, "personal.html"), path.join(ui, "index.html"));
+writeFileSync(path.join(ui, "html-preview.html"), htmlPreviewShell());
 console.log("Client executor and matching UI prepared:", output);

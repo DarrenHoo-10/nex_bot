@@ -83,7 +83,7 @@ struct ContactsList: View {
             Hairline().padding(.horizontal, 12)
             accountCard
         }
-        .background(Theme.sidebar)
+        .background { WorkspaceSurface(kind: .sidebar) }
         .modifier(AgentSheetsHost(workspace: workspace))
         #if DEBUG
         .task { await runAgentDebugCommands(workspace: workspace, ui: ui, preferences: preferences) }
@@ -188,7 +188,10 @@ struct ContactRow: View {
 
     /// Port of the web contact preview: last message, else the instructions, else 开始一段对话.
     static func preview(_ bot: Bot) -> String {
-        if let text = bot.lastMessage, !text.isEmpty { return text.replacingOccurrences(of: "\n", with: " ") }
+        if let text = bot.lastMessage, !text.isEmpty {
+            let preview = AttachmentLink.preview(text)
+            if !preview.isEmpty { return preview }
+        }
         if !bot.instructions.isEmpty { return bot.instructions.replacingOccurrences(of: "\n", with: " ") }
         return "开始一段对话"
     }

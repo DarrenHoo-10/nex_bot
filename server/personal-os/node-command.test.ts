@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { DeviceNode, windowsCommandEnvironment } from "./node.ts";
+import { DeviceNode, windowsCommandEnvironment, decodeCommandOutput } from "./node.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -92,4 +92,21 @@ it("drains both output pipes even after the captured output limit is reached", a
   const result = await DeviceNode.prototype.command.call(node, command, root, 20_000);
   expect(result).toMatchObject({ code: 0, timedOut: false, stdout: "o".repeat(50_000), stderr: "e".repeat(10_000) });
   expect(node.commands.size).toBe(0);
+}, 30_000);
+
+it("decodes UTF-8 and Windows code page lines without replacement characters", () => {
+  const gbk = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x0a]);
+  const mixed = Buffer.concat([Buffer.from("中文\n", "utf8"), gbk, Buffer.from("tail", "utf8")]);
+  expect(decodeCommandOutput(mixed, true)).toBe("中文\n中文\ntail");
+  expect(decodeCommandOutput(Buffer.from("中文", "utf8"), false)).toBe("中文");
+});
+
+it.runIf(process.platform === "win32")("returns Chinese PowerShell output and errors readably", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "nex-node-utf8-"));
+  roots.push(root);
+  const node = { commands: new Set() } as DeviceNode;
+  const result = await DeviceNode.prototype.command.call(node, "Write-Output '中文输出'; Get-Item '不存在的文件'", root, 20_000) as { stdout: string; stderr: string };
+  expect(result.stdout.trim()).toBe("中文输出");
+  expect(result.stderr).toContain("不存在的文件");
+  expect(result.stderr).not.toContain("\uFFFD");
 }, 30_000);

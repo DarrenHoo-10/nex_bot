@@ -21,6 +21,8 @@ public final class ConversationStore {
     /// Last send or load error text (Core's message).
     public private(set) var sendError: String?
     public private(set) var isSending = false
+    /// Changes at send initiation, even when a fast request finishes in the same UI update.
+    public private(set) var sendRevision = 0
     /// Composer text. Survives resets; discarded only when the session ends.
     public var draft = ""
     /// Files attached to the next message (up to 5), in the order they were added. Survive resets like ``draft``.
@@ -42,6 +44,7 @@ public final class ConversationStore {
     @ObservationIgnored private var readPosition = 0
     /// Same text keeps the same clientId, so a retry after a network error is never a duplicate.
     @ObservationIgnored private(set) var pending: (text: String, attachmentIDs: [String], clientID: String)?
+    @ObservationIgnored private var uploads: [String: Task<ChatAttachment, Error>] = [:]
 
     init(botID: String, workspace: WorkspaceStore) { self.botID = botID; self.workspace = workspace }
 
@@ -61,7 +64,11 @@ public final class ConversationStore {
         loadedSync = nil; readPosition = 0
     }
 
-    func discardDraft() { draft = ""; attachments = []; pending = nil; sendError = nil }
+    func discardDraft() {
+        for upload in uploads.values { upload.cancel() }
+        uploads.removeAll()
+        draft = ""; attachments = []; pending = nil; sendError = nil
+    }
 
     /// Uploads a file for the next message. A file over 5 MiB or empty, or a sixth file, sets ``sendError`` ("文件不能超过 5 MB" /
     /// "最多添加 5 个附件") and adds nothing. A failed upload stays in ``attachments`` as `.failed` until removed.
@@ -69,18 +76,27 @@ public final class ConversationStore {
         guard attachments.count < ChatAttachment.maxCount else { sendError = ChatAttachment.tooManyMessage; return }
         guard !data.isEmpty, data.count <= ChatAttachment.maxBytes else { sendError = ChatAttachment.tooLargeMessage; return }
         sendError = nil
-        let local = PendingAttachment(id: UUID().uuidString, name: name, size: data.count, state: .uploading)
+        let picture = AttachmentLink(id: "", name: name).isImage
+        let local = PendingAttachment(id: UUID().uuidString, name: name, size: data.count, state: .uploading, preview: picture ? data : nil)
         attachments.append(local)
+        let upload = Task { try await workspace.client.uploadAttachment(botID: botID, name: name, data: data) }
+        uploads[local.id] = upload
+        defer { uploads[local.id] = nil }
         do {
-            let uploaded = try await workspace.client.uploadAttachment(botID: botID, name: name, data: data)
+            let uploaded = try await upload.value
             update(local.id, .ready(uploaded))
         } catch {
+            guard attachments.contains(where: { $0.id == local.id }) else { return }
             update(local.id, .failed(workspace.report(error).message))
         }
     }
 
     /// Drops a pending file (uploaded files simply stay unreferenced on Core and expire).
-    public func removeAttachment(_ attachment: PendingAttachment) { attachments.removeAll { $0.id == attachment.id } }
+    public func removeAttachment(_ attachment: PendingAttachment) {
+        guard !isSending else { return }
+        uploads.removeValue(forKey: attachment.id)?.cancel()
+        attachments.removeAll { $0.id == attachment.id }
+    }
 
     private func update(_ id: String, _ state: PendingAttachment.State) {
         guard let i = attachments.firstIndex(where: { $0.id == id }) else { return }
@@ -116,12 +132,13 @@ public final class ConversationStore {
         guard (!text.isEmpty || !ids.isEmpty), !isSending, !isUploadingAttachments else { return false }
         if pending?.text != text || pending?.attachmentIDs != ids { pending = (text, ids, UUID().uuidString) }
         let clientID = pending!.clientID
+        if focusedMessageID != nil { workspace.leaveHistory(botID) }
+        sendRevision += 1
         isSending = true; sendError = nil
         defer { isSending = false }
         do {
             try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID, attachments: ids)
             pending = nil
-            if focusedMessageID != nil { workspace.leaveHistory(botID, reload: false) }
             attachments.removeAll { $0.attachment.map { ids.contains($0.id) } ?? false }
             if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
             await workspace.refresh()
@@ -135,6 +152,17 @@ public final class ConversationStore {
     /// Downloads a sent file; see ``WorkspaceStore/downloadAttachment(id:)``.
     public func download(_ link: AttachmentLink) async throws -> (data: Data, filename: String) {
         try await workspace.downloadAttachment(id: link.id)
+    }
+
+    /// Deletes one image from a sent message. Text and other attachments stay; an image-only message disappears.
+    public func deleteImage(_ link: AttachmentLink, messageID: String) async throws {
+        try await workspace.client.deleteMessageImage(bot: botID, messageID: messageID, attachmentID: link.id)
+        await workspace.refresh()
+    }
+
+    /// Image bytes of a sent or generated picture, served by Core (clients never receive storage URLs).
+    public func image(_ link: AttachmentLink) async throws -> Data {
+        try await workspace.downloadAttachment(id: link.id).data
     }
 
     /// Cancels the bot's unfinished task.

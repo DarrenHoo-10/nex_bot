@@ -1,5 +1,10 @@
 # Verifying OpenMausBot
 
+- [Image attachments and the context estimate](image-context-estimate.md)
+- [Unified UI and role avatars: all-platform release](ui-roles-release.md)
+- [Gmail Connect from the connector catalog](gmail-catalog-connect.md)
+- [Flat layout in client windows](client-frame-flat.md)
+
 NexBot Core is a standalone Node backend. Desktop clients now include a local
 device executor; use the [client device executor recipe](client-device-executor.md)
 for its lifecycle, permissions and packaged verification, alongside the
@@ -181,6 +186,10 @@ The [rich tables fixture](rich-tables.md) checks Markdown tables and message-sco
 CSV/TSV previews, large-file virtualization, sorting, search, export and keyboard
 interaction in a disposable workspace.
 
+The [interactive HTML preview record](html-preview.md) covers the explicit
+cross-client rendering block, sandbox lifecycle, isolated browser and Android
+WebView checks, and the remaining macOS/iOS native acceptance boundary.
+
 The [people invitation fixture](people.md) checks hosted workspace sign-in,
 roles and device revocation through the real HTTP API with a stubbed email
 service. It does not drive the People settings UI through `control-omb`.
@@ -272,6 +281,8 @@ for every terminal write or MCP call to gating only dangerous effects.
 
 The [current inspector and contact motion record](inspector-cleanup.md) covers
 compact routines, direct avatar/identity editing and active sidebar animation.
+The [avatar platform parity record](avatar-platform-parity.md) covers the accepted
+graphic roles, native macOS/iOS adaptation and Android bundle verification.
 See [settings and model discovery](settings-model-discovery.md),
 [login/logout](login-refresh.md), [invite registration](invite-registration.md),
 and the [Mac UI references](../../doc/ui/README.md) for related changes.
@@ -286,6 +297,10 @@ Windows client, isolated Linux archive verification and production rollout.
 The [Personal workspace and MCP fixture](personal-workspace-connectors.md) checks
 the three-column Personal UI and generic MCP discovery, grants, approvals and
 cancellation using an isolated Core and renderer.
+
+The [Gmail connector fixture](gmail-connectors.md) checks Google OAuth, mailbox
+isolation, encrypted refresh tokens, read-only Agent tools and connector settings
+against synthetic Google services and an isolated renderer.
 
 The [categorized settings record](settings-categories.md) covers the four
 settings categories and the blue account menu in the Personal UI.
@@ -354,3 +369,27 @@ The [Windows chart client record](windows-chart-client.md) covers the 0.9.6 Wind
 
 The [composer image / IME / model / copy fix](composer-image-ime-model-copy.md) covers image
 attachments, IME Enter guarding, inline model choice and message copy/selection across clients.
+
+The [image-model selection fixture](image-models.md) checks personal Core model
+settings, on-demand image generation, encrypted chat attachments, cancellation,
+and responsive image previews with synthetic providers.
+
+The [Mac Markdown checks](native-markdown.md) cover GFM tables, tasks, nested
+blocks, inline formatting and streaming parse regressions.
+The [static HTML message checks](static-html.md) cover the shared web/Windows/
+Android renderer, Mac/iOS HTML isolation, APK verification and UI deployment.
+The [chat chart checks](chat-charts.md) cover bar, histogram, line and pie data,
+the shared cross-platform renderer, isolated interactions and deployment.
+
+The [private OSS attachment fixture](attachment-oss.md) covers encrypted cloud
+storage, existing-attachment migration, authenticated cross-device downloads and
+rollback hydration.
+
+The [public web homepage record](web-homepage.md) covers the signed-out browser
+homepage and its client download links.
+
+The [Mac and iOS parity record](apple-model-paste-parity.md) covers the native
+model picker, model settings order, 生图模型, the stop key and pasted images.
+
+The [client update record](client-updates.md) covers the OSS installer mirror,
+the update API and the Windows portable updater.

@@ -24,6 +24,7 @@ struct ConversationView: View {
     @State private var dropTargeted = false
     @State private var memoryBaseline: [String: String]?
     @State private var memoryNotice = ""
+    @State private var imagePreview: ChatImagePreview?
 
     private var dropHighlight: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.brand, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
@@ -36,7 +37,6 @@ struct ConversationView: View {
     private var isActive: Bool { activeState == .key && scenePhase == .active }
     private var pendingApprovals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
-    private var connected: Bool { workspace.connection == .connected }
 
     /// `version:updated_at` of every memory this agent can see; a change makes the 已更新记忆 pill appear.
     private var memorySignatures: [String: String] {
@@ -49,18 +49,19 @@ struct ConversationView: View {
             header
             Hairline()
             if workspace.state != nil && workspace.state?.config == nil { noModelBanner }
-            MessageList(workspace: workspace, conversation: conv, bot: bot)
+            MessageList(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             VStack(spacing: 10) {
                 ForEach(pendingApprovals) { ApprovalCard(workspace: workspace, approval: $0) }
                 ForEach(workspace.state?.peersAwaitingApproval(for: botID) ?? [], id: \.self) { peerID in waitingLine(peerID) }
                 if !tasks.isEmpty { statusLine(conv) }
-                Composer(workspace: workspace, conversation: conv, bot: bot)
+                Composer(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             }
             .frame(maxWidth: Theme.readingWidth)
             .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 24)
             .frame(maxWidth: .infinity)
         }
         .overlay { if dropTargeted { dropHighlight } }
+        .overlay { if let imagePreview { ChatImageViewer(preview: imagePreview) { self.imagePreview = nil } } }
         .dropDestination(for: URL.self) { urls, _ in
             guard bot != nil, !conv.isSending, workspace.connection == .connected else { return false }
             Task { await conv.addFiles(urls.filter(\.isFileURL)) }
@@ -182,27 +183,14 @@ struct ConversationView: View {
     }
 
     private func statusLine(_ conv: ConversationStore) -> some View {
+        // Text only, as on the web: the composer's send key turns into the stop key.
         let stopping = tasks.contains { $0.status == "cancelling" }
-        let allStopping = tasks.allSatisfy { $0.status == "cancelling" }
         return HStack(spacing: 8) {
             Circle().fill(tasks.first?.status == "awaiting_approval" ? Theme.approval : Theme.success).frame(width: 6, height: 6)
             Text(stopping ? "正在停止…" : "Agent 正在工作 · \(ToolLabels.taskPhrase(tasks.first))").font(.system(size: 11)).foregroundStyle(Theme.muted)
             Spacer()
-            Button { stopAll() } label: {
-                HStack(spacing: 5) {
-                    RoundedRectangle(cornerRadius: 2).strokeBorder(Theme.foreground, lineWidth: 1.2).frame(width: 9, height: 9)
-                    Text("停止任务").font(.system(size: 11))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).disabled(allStopping || !connected).help("停止当前任务 (⌘.)").accessibilityLabel("停止任务")
         }
         .padding(.horizontal, 4)
-    }
-
-    private func stopAll() {
-        let ids = tasks.filter { $0.status != "cancelling" }.map(\.id)
-        Task { for id in ids { try? await workspace.cancelTask(id) } }
     }
 }
 
@@ -236,9 +224,14 @@ private struct MessageList: View {
     let workspace: WorkspaceStore
     let conversation: ConversationStore
     let bot: Bot?
+    let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @Environment(ContactPreferences.self) private var preferences
     @State private var atBottom = true
+    /// False until a freshly loaded transcript has been placed at its end. Until then the
+    /// top row must not page in older history: on a cold start the lazy stack first lays
+    /// out from the top, and loading older messages there left the view on unmeasured rows.
+    @State private var settled = false
 
     private var botID: String { conversation.botID }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
@@ -251,6 +244,7 @@ private struct MessageList: View {
 
     /// Changes when a search-result view finishes loading, so the target is scrolled to once per opening and not on each poll.
     private var focusKey: String { "\(focusedID ?? "")|\(conversation.isLoaded)" }
+    private var loadKey: String { "\(botID)|\(conversation.isLoaded)" }
 
     private var tailKey: String {
         "\(conversation.messages.last?.seq ?? 0)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")"
@@ -264,6 +258,20 @@ private struct MessageList: View {
             guard !Task.isCancelled, let seq = conversation.messages.first(where: { $0.id == id })?.seq else { return }
             proxy.scrollTo(seq, anchor: .center)
         }
+    }
+
+    /// Scrolls to the end once rows exist and again after they are measured, then allows older pages.
+    private func settleAtBottom(_ proxy: ScrollViewProxy) async {
+        settled = false
+        guard conversation.isLoaded else { return }
+        if focusedID == nil {
+            for delay in [0, 60, 300] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+        }
+        settled = true
     }
 
     var body: some View {
@@ -284,7 +292,7 @@ private struct MessageList: View {
                             else { Button("加载更早的消息") { loadOlder(proxy) }.buttonStyle(.link) }
                             Spacer()
                         }
-                        .onAppear { loadOlder(proxy) }
+                        .onAppear { if settled { loadOlder(proxy) } }
                         .id("older")
                     }
                     let messages = conversation.messages
@@ -293,7 +301,7 @@ private struct MessageList: View {
                         if let day, day != Self.dayLabel(index > 0 ? messages[index - 1].createdAt : nil) {
                             DayDivider(label: day)
                         }
-                        MessageRow(message: message, bot: bot, workspace: workspace)
+                        MessageRow(message: message, bot: bot, workspace: workspace, onOpenImage: onOpenImage)
                             .overlay {
                                 if message.id == focusedID {
                                     RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
@@ -338,7 +346,7 @@ private struct MessageList: View {
             }
             .overlay(alignment: .bottom) {
                 if !atBottom && conversation.messages.count > 3 && focusedID == nil {
-                    Button { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
+                    Button { atBottom = true; withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                             Text("回到底部").font(.system(size: 11))
@@ -352,12 +360,12 @@ private struct MessageList: View {
             }
             .onChange(of: tailKey) {
                 guard focusedID == nil else { return }
-                if atBottom || conversation.messages.last?.isFromUser == true { proxy.scrollTo("bottom", anchor: .bottom) }
+                if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: conversation.isSending) { _, sending in
-                if sending { atBottom = true; proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: conversation.sendRevision) {
+                atBottom = true; proxy.scrollTo("bottom", anchor: .bottom)
             }
-            .onChange(of: conversation.isLoaded) { if focusedID == nil { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .task(id: loadKey) { await settleAtBottom(proxy) }
             .task(id: focusKey) { await scrollToFocused(proxy) }
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -434,6 +442,7 @@ private struct MessageRow: View {
     let message: AgentMessage
     let bot: Bot?
     let workspace: WorkspaceStore
+    let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @State private var hover = false
     @State private var hideActions: Task<Void, Never>?
@@ -452,13 +461,25 @@ private struct MessageRow: View {
                 .frame(maxWidth: .infinity).textSelection(.enabled)
         } else if message.isFromUser {
             let parsed = AttachmentLink.parse(message.content)
+            let images = parsed.links.filter(\.isImage), files = parsed.links.filter { !$0.isImage }
             VStack(alignment: .trailing, spacing: 6) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if !parsed.body.isEmpty { ChatMarkdown(source: parsed.body, hug: true) }
-                    ForEach(parsed.links) { AttachmentCard(link: $0, conversation: workspace.conversation(for: botID)) }
+                if !images.isEmpty {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        ForEach(images) { link in
+                            AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
+                        }
+                    }
                 }
-                .padding(.horizontal, 18).padding(.vertical, 13)
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                if !parsed.body.isEmpty || !files.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !parsed.body.isEmpty { ChatMarkdown(source: parsed.body, hug: true) }
+                        ForEach(files) { link in
+                            AttachmentCard(link: link, conversation: workspace.conversation(for: botID))
+                        }
+                    }
+                    .padding(.horizontal, 18).padding(.vertical, 13)
+                    .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
                 meta
             }
             .padding(.leading, 80)
@@ -483,7 +504,16 @@ private struct MessageRow: View {
                     if message.kind == "error" {
                         Text(message.content).font(.system(size: 14)).foregroundStyle(Theme.danger).textSelection(.enabled)
                     } else {
-                        ChatMarkdown(source: message.content)
+                        let images = AttachmentLink.embeddedImages(message.content)
+                        let body = AttachmentLink.stripped(message.content)
+                        if !images.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(images) { link in
+                                    AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
+                                }
+                            }
+                        }
+                        if !body.isEmpty { ChatMarkdown(source: body) }
                     }
                 }
                 meta
@@ -595,7 +625,7 @@ private struct FoldedReply: View {
                 .font(.system(size: 12)).foregroundStyle(Theme.foreground).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if open { ChatMarkdown(source: content) }
+            if open { ChatMarkdown(source: content, pending: pending) }
         }
         .padding(.horizontal, 14).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -615,7 +645,7 @@ private struct StreamingReply: View {
                 Text(bot?.name ?? "Agent").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
                 FoldedReply(content: stream.text, recipient: peer?.name ?? "Agent", pending: true)
             } else {
-                ChatMarkdown(source: stream.text)
+                ChatMarkdown(source: stream.text, pending: true)
                 Text("正在回复…").font(.system(size: 11)).foregroundStyle(Theme.muted)
                 TypingDots()
             }

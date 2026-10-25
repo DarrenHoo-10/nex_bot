@@ -5,6 +5,7 @@ import { createPersonalApp, type AppOptions } from "./index.ts";
 import { hash } from "./store.ts";
 import { IdentityError, type UpstreamSession } from "./identity-provider.ts";
 import { requestBody } from "./http-body.ts";
+import { GOOGLE_CALLBACK } from "./gmail-provider.ts";
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
 
@@ -56,6 +57,12 @@ export async function createWorkspaceService(options: AppOptions) {
     primary.setRequestRouter(async (request, response) => {
       if (closing) throw new IdentityError(503, "服务正在重启，请稍后重试");
       const route = new URL(request.url ?? "/", primary.origin).pathname;
+      if (route === GOOGLE_CALLBACK && request.method === "GET") {
+        const state = new URL(request.url!, primary.origin).searchParams.get("state") ?? "";
+        const target = apps().find((app) => app.connectors.oauth.ownsState(state));
+        if (!target || target === primary) return false;
+        await target.handleRequest(request, response); return true;
+      }
       // All password challenges belong to the endpoint, regardless of old cookies.
       if (["/api/auth/start", "/api/auth/respond"].includes(route) || !route.startsWith("/api/")) return false;
       let token = request.headers.authorization?.replace(/^Bearer /, "") ?? request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("nex="))?.slice(4) ?? "";

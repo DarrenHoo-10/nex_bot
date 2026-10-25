@@ -15,12 +15,13 @@ import {
 import { link, open, unlink } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { DATA_DIR } from "./config.ts";
+import { IMAGE_MAX_BYTES } from "../shared/image-generation.ts";
 
 export const ATTACHMENTS_DIR = join(DATA_DIR, "attachments");
 
 /** The spec's ceiling: a screenshot bigger than this is rejected before it
  * is ever buffered, matching the composer's existing size discipline. */
-export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export { IMAGE_MAX_BYTES };
 
 /** Shared documents are deliberately smaller than Cloudflare's transport
  * ceiling. This is a local inbox, not unbounded remote storage. */

@@ -1,9 +1,11 @@
 import { isIP } from "node:net";
 import { RemoteMcpClient, McpHttpError } from "../mcp-http.ts";
 import { id, now, text, type CoreStore, type Row } from "./store.ts";
+import { ConnectorOAuth } from "./connector-oauth.ts";
+import { GmailProvider, GmailProviderError, validateGmailArguments, type GmailConfiguration } from "./gmail-provider.ts";
+import type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors.ts";
+export type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors.ts";
 
-export interface ConnectorTool { name: string; description: string; inputSchema: Record<string, unknown>; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean } }
-export interface ConnectorView { id: string; name: string; url: string; transport: "http" | "sse"; enabled: boolean; version: number; hasToken: boolean; tools: ConnectorTool[]; checkedAt: number | null; error: string | null; grants: Array<{ botId: string; tools: string[] }> }
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 function redactValue(value: unknown, redact: (text: string) => string): unknown {
   if (typeof value === "string") return redact(value);
@@ -23,11 +25,13 @@ export function connectorAccess(store: CoreStore, botId: string, args: Record<st
   const connectorId = text(args.connectorId, 100);
   const row = store.get("SELECT c.*,g.tools_json allowed_tools FROM personal_connectors c JOIN personal_connector_grants g ON g.connector_id=c.id WHERE c.id=? AND g.bot_id=? AND c.enabled=1 AND c.workspace_id=? AND c.owner_user_id=?", connectorId, botId, store.workspace, store.owner);
   if (!row) throw new Error("连接器未启用或未授权给当前 Agent");
+  if (row.provider === "gmail" && !row.credential) throw new Error("Gmail 授权已失效，请重新连接");
   if (args.action === "connector.call") {
     const name = text(args.tool, 200);
     if (!(JSON.parse(String(row.allowed_tools)) as string[]).includes(name) || !(JSON.parse(String(row.tools_json)) as ConnectorTool[]).some((tool) => tool.name === name)) throw new Error("该 Agent 未获准使用这个工具");
     if (!object(args.parameters ?? {}) || JSON.stringify(args.parameters ?? {}).length > 32_000) throw new Error("连接器参数无效或过大");
     if (args.connectorVersion !== row.version) throw new Error("连接器配置或工具目录已变化，请重新读取工具目录");
+    if (row.provider === "gmail") validateGmailArguments(name, (args.parameters ?? {}) as Record<string, unknown>);
   }
   return row;
 }
@@ -37,7 +41,9 @@ export class ConnectorModule {
   private readonly active = new Map<AbortController, { connectorId: string; taskId?: string }>();
   private readonly pending = new Set<Promise<unknown>>();
   private closed = false;
-  constructor(readonly store: CoreStore, readonly changed: () => void) {}
+  readonly oauth: ConnectorOAuth;
+  constructor(readonly store: CoreStore, readonly changed: () => void, gmail?: GmailConfiguration) { this.oauth = new ConnectorOAuth(store, changed, gmail ? new GmailProvider(gmail) : undefined); }
+  catalog() { return [{ id: "gmail" as const, name: "Gmail", available: !!this.oauth.provider }]; }
   private row(connectorId: string) {
     const row = this.store.get("SELECT * FROM personal_connectors WHERE id=? AND workspace_id=? AND owner_user_id=?", connectorId, this.store.workspace, this.store.owner);
     if (!row) throw new Error("连接器不存在");
@@ -45,13 +51,14 @@ export class ConnectorModule {
   }
   list(): ConnectorView[] {
     return this.store.all("SELECT * FROM personal_connectors WHERE workspace_id=? AND owner_user_id=? ORDER BY created_at,id", this.store.workspace, this.store.owner).map((row) => ({
-      id: String(row.id), name: String(row.name), url: String(row.url), transport: row.transport as "http" | "sse", enabled: row.enabled === 1, version: Number(row.version), hasToken: !!row.credential,
+      id: String(row.id), provider: row.provider as "mcp" | "gmail", account: row.account as string | null, name: String(row.name), url: String(row.url), transport: row.transport as "http" | "sse", enabled: row.enabled === 1, version: Number(row.version), hasToken: !!row.credential,
       tools: JSON.parse(String(row.tools_json)), checkedAt: row.checked_at as number | null, error: row.error as string | null,
       grants: this.store.all("SELECT bot_id,tools_json FROM personal_connector_grants WHERE connector_id=?", row.id).map((grant) => ({ botId: String(grant.bot_id), tools: JSON.parse(String(grant.tools_json)) as string[] })),
     }));
   }
   save(data: Record<string, unknown>) {
     const previous = data.id ? this.row(text(data.id, 100)) : undefined;
+    if (previous && previous.provider !== "mcp") throw new Error("Gmail 连接请使用 Google 重新授权");
     if (previous && previous.version !== data.version) throw new Error("连接器已被修改，请刷新后重试");
     const name = text(data.name, 80), url = connectorUrl(data.url), transport = data.transport === "sse" ? "sse" : "http";
     if (data.token !== undefined && (typeof data.token !== "string" || data.token.length > 4096 || /[\r\n\0]/.test(data.token))) throw new Error("令牌格式无效");
@@ -96,10 +103,11 @@ export class ConnectorModule {
     this.store.run("UPDATE personal_connectors SET enabled=?,version=version+1 WHERE id=?", data.enabled ? 1 : 0, row.id);
     this.changed(); return { ok: true };
   }
-  remove(data: Record<string, unknown>) {
+  async remove(data: Record<string, unknown>) {
     const row = this.row(text(data.id, 100));
     if (row.version !== data.version) throw new Error("连接器已变化，请刷新后重试");
-    this.abortConnector(String(row.id)); this.store.run("DELETE FROM personal_connectors WHERE id=?", row.id); this.changed(); return { ok: true };
+    this.abortConnector(String(row.id)); this.store.run("DELETE FROM personal_connectors WHERE id=?", row.id); this.changed();
+    return row.provider === "gmail" ? this.oauth.disconnect(row) : { ok: true };
   }
   private async session<T>(row: Row, taskId: string | undefined, operation: (client: RemoteMcpClient, signal: AbortSignal, redact: (value: string) => string) => Promise<T>): Promise<T> {
     if (this.closed) throw new Error("连接器正在关闭");
@@ -121,6 +129,21 @@ export class ConnectorModule {
   async test(data: Record<string, unknown>, authorize: () => Promise<void> = async () => {}) {
     const row = this.row(text(data.id, 100));
     if (row.version !== data.version) throw new Error("连接器已变化，请刷新后测试");
+    if (row.provider === "gmail") {
+      try {
+        await this.oauth.withCredential(row, undefined, authorize, async (provider, credential, signal) => {
+          if (await provider.account(credential, signal) !== row.account) throw new Error("邮箱身份已变化，请重新连接");
+        });
+        const updated = this.store.run("UPDATE personal_connectors SET checked_at=?,error=NULL,version=version+1 WHERE id=? AND version=?", now(), row.id, row.version);
+        if (!updated.changes) throw new Error("连接器已变化，请重新测试");
+        this.changed(); return { ok: true, count: this.oauth.provider!.tools.length };
+      } catch (error) {
+        await authorize();
+        const message = error instanceof GmailProviderError ? error.message : "Gmail 连接失败或配置已变化，请重试";
+        this.store.run("UPDATE personal_connectors SET error=? WHERE id=? AND version=?", message, row.id, row.version);
+        this.changed(); throw new Error(message);
+      }
+    }
     try {
       const tools = await this.session(row, undefined, async (client, signal, redact) => {
         const tools: ConnectorTool[] = []; let cursor: string | undefined;
@@ -152,13 +175,17 @@ export class ConnectorModule {
     }
   }
   directory(botId: string) {
-    return this.list().filter((item) => item.enabled && item.grants.some((grant) => grant.botId === botId && grant.tools.length)).map((item) => ({ id: item.id, name: item.name, version: item.version, tools: item.grants.find((grant) => grant.botId === botId)!.tools }));
+    return this.list().filter((item) => item.enabled && (item.provider === "mcp" || item.hasToken) && item.grants.some((grant) => grant.botId === botId && grant.tools.length)).map((item) => ({ id: item.id, name: item.account ? `${item.name} (${item.account})` : item.name, version: item.version, tools: item.grants.find((grant) => grant.botId === botId)!.tools }));
   }
   async execute(call: Row, args: Record<string, unknown>, authorize: () => Promise<void>) {
     if (args.action === "connector.list") return { connectors: this.directory(String(call.bot_id)) };
     const row = connectorAccess(this.store, String(call.bot_id), args);
     const tools = JSON.parse(String(row.tools_json)) as ConnectorTool[], allowed = JSON.parse(String(row.allowed_tools)) as string[];
     if (args.action === "connector.tools") return { connectorId: row.id, connectorVersion: row.version, tools: tools.filter((tool) => allowed.includes(tool.name)) };
+    if (row.provider === "gmail") {
+      const result = await this.oauth.withCredential(row, String(call.task_id), async () => { await authorize(); connectorAccess(this.store, String(call.bot_id), args); }, (provider, credential, signal) => provider.call(String(args.tool), (args.parameters ?? {}) as Record<string, unknown>, credential, signal));
+      return { text: JSON.stringify(result), structured: result, isError: false };
+    }
     let dispatched = false;
     try {
       return await this.session(row, String(call.task_id), async (client, signal, redact) => {
@@ -182,7 +209,7 @@ export class ConnectorModule {
       throw new Error("连接器连接失败或授权已变化，未发送工具调用。");
     }
   }
-  cancelTask(taskId: string) { for (const [controller, active] of this.active) if (active.taskId === taskId) controller.abort(); }
-  private abortConnector(connectorId: string) { for (const [controller, active] of this.active) if (active.connectorId === connectorId) controller.abort(); }
-  async close() { this.closed = true; for (const controller of this.active.keys()) controller.abort(); await Promise.allSettled(this.pending); }
+  cancelTask(taskId: string) { this.oauth.cancelTask(taskId); for (const [controller, active] of this.active) if (active.taskId === taskId) controller.abort(); }
+  private abortConnector(connectorId: string) { this.oauth.abortConnector(connectorId); for (const [controller, active] of this.active) if (active.connectorId === connectorId) controller.abort(); }
+  async close() { this.closed = true; for (const controller of this.active.keys()) controller.abort(); await this.oauth.close(); await Promise.allSettled(this.pending); }
 }

@@ -1,0 +1,115 @@
+{
+  "updated": "2026-10-24",
+  "status": "approved-development-implementation",
+  "approval": {
+    "date": "2026-10-24",
+    "scope": "User confirmed the implemented role picker and avatar motion: one role section, no visible gender headings, numbers or names, no classic gallery entry, and preserved existing saved avatars."
+  },
+  "approvedCharacterIdentities": ["female-03", "female-04", "female-05", "female-06", "female-07", "female-12", "male-01", "male-02", "male-03", "male-04", "male-05", "male-06"],
+  "approvedFeminine": [
+    {
+      "id": "03",
+      "expression": "挑眉坏笑",
+      "source": "sources/selected-03-04-07.png",
+      "sourceWidth": 1958,
+      "sourceHeight": 803,
+      "viewport": {
+        "x": 54,
+        "y": 73,
+        "size": 598
+      }
+    },
+    {
+      "id": "04",
+      "expression": "开怀大笑",
+      "source": "sources/selected-03-04-07.png",
+      "sourceWidth": 1958,
+      "sourceHeight": 803,
+      "viewport": {
+        "x": 677,
+        "y": 73,
+        "size": 598
+      }
+    },
+    {
+      "id": "05",
+      "expression": "好奇",
+      "source": "sources/selected-05-06-12.png",
+      "sourceWidth": 1536,
+      "sourceHeight": 1024,
+      "viewport": {
+        "x": 1040,
+        "y": 14,
+        "size": 432
+      }
+    },
+    {
+      "id": "06",
+      "expression": "眨眼",
+      "source": "sources/selected-05-06-12.png",
+      "sourceWidth": 1536,
+      "sourceHeight": 1024,
+      "viewport": {
+        "x": 66,
+        "y": 497,
+        "size": 430
+      }
+    },
+    {
+      "id": "07",
+      "expression": "歪头好奇",
+      "source": "sources/selected-03-04-07.png",
+      "sourceWidth": 1958,
+      "sourceHeight": 803,
+      "viewport": {
+        "x": 1300,
+        "y": 73,
+        "size": 598
+      }
+    },
+    {
+      "id": "12",
+      "expression": "惊喜",
+      "source": "sources/selected-05-06-12.png",
+      "sourceWidth": 1536,
+      "sourceHeight": 1024,
+      "viewport": {
+        "x": 1040,
+        "y": 498,
+        "size": 430
+      }
+    }
+  ],
+  "approvedMasculine": {
+    "collection": "masculine",
+    "ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M04",
+      "M05",
+      "M06"
+    ],
+    "source": "masculine-01-review.png",
+    "approved": true,
+    "reason": "User chose to use the previously retained feminine and masculine sets and add them without deleting or replacing existing running avatars."
+  },
+  "rejectedIdentityStudy": {
+    "collection": "distinct-character-identities",
+    "ids": ["F-A", "F-B", "F-C", "M-A", "M-B", "M-C"],
+    "source": "identity-review-v2.png",
+    "approved": false,
+    "criteria": "Distinct permanent face proportions, feature placement, and silhouettes with comparable natural expressions. Color, emotion, occupational labels, or accessories alone do not establish identity.",
+    "status": "rejected",
+    "reason": "User rejected this set as ugly. Exaggerated anatomy and literal portrait features lost the appeal of the retained graphic art direction. Withdrawn from the current review."
+  },
+  "unusedAbcStudy": {
+    "collection": "graphic-characters-abc",
+    "ids": ["A", "B", "C"],
+    "source": "character-abc-review.png",
+    "approved": false,
+    "criteria": "Retain the appealing abstract graphic style while developing recognizable character identities through feature design and composition. Do not force exaggerated anatomy or rely solely on changing expressions."
+  },
+  "supersedes": "Retain the selected twelve graphic designs and existing saved avatars. Latest UI direction unifies the picker under roles, removes the classic gallery, and shows no gender headings, numbers or names.",
+  "notes": "Add state-driven whole-character motion with per-character timing. Preserve companion/portrait definitions, defaults and selected appearances. Saved classic portraits still render although the gallery is no longer offered. Source PNGs are unchanged. No production data is changed."
+}

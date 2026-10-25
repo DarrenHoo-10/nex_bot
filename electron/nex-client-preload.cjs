@@ -16,4 +16,26 @@ contextBridge.exposeInMainWorld("nex", {
   preferences: () => Promise.resolve({ openAtLogin: false, notifications: false }),
   quit: () => ipcRenderer.invoke("client:quit"),
   closeWindow: () => ipcRenderer.invoke("client:quit"),
+  updateState: () => ipcRenderer.invoke("client:update-state"),
+  installUpdate: () => ipcRenderer.invoke("client:update-install"),
+  onUpdateState: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    const listener = (_event, state) => { if (state && typeof state.status === "string") callback(state); };
+    ipcRenderer.on("nex:update-state", listener);
+    return () => ipcRenderer.removeListener("nex:update-state", listener);
+  },
+  onClipboardImage: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    const listener = (_event, payload) => {
+      if (!payload || typeof payload.name !== "string" || typeof payload.type !== "string" || !payload.bytes) return;
+      let bytes = payload.bytes;
+      if (!(bytes instanceof Uint8Array)) {
+        try { bytes = new Uint8Array(bytes); } catch { return; }
+      }
+      if (!bytes.byteLength) return;
+      callback({ name: payload.name, type: payload.type, bytes });
+    };
+    ipcRenderer.on("nex:clipboard-image", listener);
+    return () => ipcRenderer.removeListener("nex:clipboard-image", listener);
+  },
 });

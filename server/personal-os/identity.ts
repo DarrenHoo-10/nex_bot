@@ -3,6 +3,9 @@ import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
 import { ClientIdentity } from "./clients.ts";
 import { identityBase, IdentityError, NexUserProvider, NEX_USER_ORIGIN, type UpstreamSession } from "./identity-provider.ts";
 
+/** Longest a Core login lives without a refresh; the upstream session can end it sooner. */
+export const SESSION_MAX_MS = 7 * 24 * 60 * 60_000;
+
 interface LoginSecret { account: string; name: string; nonce: string; version: number; purpose: "login" | "link"; operator?: string }
 export class CoreIdentity {
   private readonly controller = new AbortController();
@@ -100,7 +103,7 @@ export class CoreIdentity {
   private issueVerified(upstream: UpstreamSession, secret: LoginSecret, operator?: Row, transactionId?: string, expiresAtLimit = Infinity) {
     const config = this.configuration()!;
     const sessionId = id();
-    const token = randomBytes(32).toString("base64url"), expiresAt = Math.min(upstream.expiresAt, now() + 8 * 60 * 60_000);
+    const token = randomBytes(32).toString("base64url"), expiresAt = Math.min(upstream.expiresAt, now() + SESSION_MAX_MS);
     const ref = `identity-session:${sessionId}`;
     this.store.transaction(() => {
       const current = this.configuration();
@@ -201,7 +204,7 @@ export class CoreIdentity {
    * which means a revoked account cannot refresh its way past local
    * revocation, and an outage fails closed with 503 instead of extending.
    * Expiry still follows the original rule: never beyond the upstream session
-   * and never beyond eight hours from now.
+   * and never beyond `SESSION_MAX_MS` from now.
    */
   async refresh(token: string) {
     const session = await this.authenticate(token);
@@ -211,7 +214,7 @@ export class CoreIdentity {
     const upstream = JSON.parse(this.store.decrypt(String(encrypted.ciphertext))) as UpstreamSession;
     const upstreamExpiry = Number(upstream.expiresAt);
     if (!Number.isSafeInteger(upstreamExpiry)) throw new IdentityError(409, "账号会话信息不完整，请重新登录");
-    const at = now(), expiresAt = Math.min(upstreamExpiry, at + 8 * 60 * 60_000);
+    const at = now(), expiresAt = Math.min(upstreamExpiry, at + SESSION_MAX_MS);
     if (expiresAt <= at) throw new IdentityError(401, "登录已失效，请重新登录");
     const next = randomBytes(32).toString("base64url");
     const rotated = this.store.transaction(() => {

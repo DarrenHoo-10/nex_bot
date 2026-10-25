@@ -10,6 +10,8 @@ settings:
     CODE_SIGN_STYLE: Manual
     GENERATE_INFOPLIST_FILE: YES
 packages:
+  NexClientKit:
+    path: ../Packages/NexClientKit
   NexMarkdown:
     path: ../Packages/NexMarkdown
 targetTemplates:
@@ -18,17 +20,29 @@ targetTemplates:
     sources:
       - path: RenderHost.swift
       - path: ../Shared/StaticHTMLMessage.swift
+      - path: ../Shared/HTMLPreviewMessage.swift
+      - path: ../Shared/AgentAvatar.swift
+      - path: ../Shared/GraphicAvatarBody.swift
+      - path: ../Shared/RoleAvatarOptions.swift
+      - path: ../Shared/Theme.swift
+      - path: ../Shared/WorkspaceSurface.swift
+      - path: ../Shared/Assets.xcassets
     dependencies:
+      - package: NexClientKit
       - package: NexMarkdown
     settings:
       base:
         PRODUCT_MODULE_NAME: NexRenderFixture
+        ASSETCATALOG_COMPILER_APPICON_NAME: ''
         PRODUCT_BUNDLE_IDENTIFIER: com.nexbot.renderfixture
   tests:
     type: bundle.unit-test
     sources:
       - path: ChartRenderingTests.swift
+      - path: HTMLPreviewRenderingTests.swift
+      - path: AvatarRenderingTests.swift
     dependencies:
+      - package: NexClientKit
       - package: NexMarkdown
     settings:
       base:

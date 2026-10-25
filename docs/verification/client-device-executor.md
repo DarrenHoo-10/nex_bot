@@ -23,21 +23,29 @@ device runtime and the matching UI; it does not run another Agent or Core.
   can access anything that OS user can access. Core uses [effect-based approvals](effect-approvals.md):
   ordinary reads and document saves are automatic; dangerous effects need approval.
 - Restarting with the same login restores the device identity. Pause stops the
-  runtime and is retained across restart/login until Resume is chosen. A new
-  login creates a fresh device binding while preserving that workspace's pause
-  preference. Switching accounts does not inherit another workspace's pause.
+  runtime and is retained across restart/login until Resume is chosen. Signing
+  in again to the same account workspace keeps the same device; a device revoked
+  by logout or remotely is registered again only by a new login. Switching
+  accounts does not inherit another workspace's device or pause.
 - Quitting closes the socket and stops owned commands. Logging out additionally
   revokes the device. Remote device revocation never silently creates a
   replacement; sign in again to establish a new binding.
 - A main-process session check runs every 15 seconds independently of the UI.
-  Failure closes the executor; a later successful check can reconnect it.
+  A rejected login (401/403) closes the executor; network and server errors
+  keep it running and the next check retries.
   Network requests time out after 15 seconds, so remote login revocation is not
   instantaneous. Explicit local logout stops execution immediately.
+- Core logins last at most 7 days (`SESSION_MAX_MS`), never beyond the upstream
+  account session. Within 30 minutes of expiry the same check calls
+  `/api/auth/refresh`, saves the rotated token to `connection.bin` and updates the
+  window cookie; the device identity and executor stay up. A failed refresh keeps
+  the current token and retries at most once a minute until it expires.
 
 ## Architecture and platform contract
 
 `electron/nex-client-device.mjs` owns lifecycle and session checks. Its storage
-binding scope hashes origin, Core ID and session ID. The separate local-control preference scope
+binding scope hashes origin, Core ID and the per-workspace `sync.coreId`
+(older Cores: session ID); a binding from the per-login scope is moved over once. The separate local-control preference scope
 uses the authenticated snapshot's persistent **per-workspace** `sync.coreId`,
 not the shared public service ID or a display name/email. Older servers without
 this workspace identity fall back to session-scoped preferences. Binding metadata,

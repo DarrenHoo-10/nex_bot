@@ -1,28 +1,33 @@
 import SwiftUI
 import NexClientKit
 
-/// 显示的模型 (web `ModelVisibility.tsx`): choose which models the pickers offer for the saved connection.
-/// `selection == nil` shows the whole provider directory; an array is a shortlist. The edit echoes the version it started from.
+/// 显示的模型 (web `ModelVisibility.tsx`): choose which models the pickers offer.
+/// `selection == nil` shows the whole provider directory; an array is a shortlist.
+/// For the saved connection every change saves at once (``ModelSelectionAutosave``). For a connection still being
+/// edited (`draft`), the choice is reported through `onSelection` and saved with the connection.
 struct ModelVisibilitySection: View {
     let workspace: WorkspaceStore
+    /// Models fetched with 获取模型列表 in the connection form.
+    var fetched: [String] = []
+    var draft = false
+    var onSelection: ([String]?) -> Void = { _ in }
 
     @State private var catalog: [String] = []
-    @State private var selection: [String]?
-    @State private var version = 0
-    @State private var busy = false
+    @State private var draftSelection: [String]?
+    @State private var autosave: ModelSelectionAutosave?
     @State private var loading = false
     @State private var notice = ""
     @State private var error = ""
     @State private var custom = ""
     @State private var onlySelected = false
-    @State private var dirty = false
     @State private var loaded = false
 
     private var stored: ModelVisibility { workspace.state?.modelVisibility ?? ModelVisibility() }
     private var defaultModel: String { workspace.state?.config?.defaultModel ?? "" }
+    private var selection: [String]? { draft ? draftSelection : (autosave?.selection ?? stored.models) }
     private var all: [String] {
         var seen = Set<String>()
-        return (catalog + (selection ?? []) + [defaultModel]).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
+        return (catalog + fetched + (selection ?? []) + (draft ? [] : [defaultModel])).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
     }
     private var selected: Set<String> { Set(selection ?? all) }
 
@@ -33,12 +38,11 @@ struct ModelVisibilitySection: View {
                 Spacer()
                 StatusChip(text: selection == nil ? "全部显示" : "已选 \(selection?.count ?? 0) 个", tone: .neutral)
             }
-            Text("选择聊天与记忆的模型列表里显示哪些模型。").font(.footnote).foregroundStyle(Theme.muted)
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], alignment: .leading, spacing: 8) {
                 Button("全部显示") { edit(nil) }.buttonStyle(PillButtonStyle())
                 Button("清空选择") { edit([]) }.buttonStyle(PillButtonStyle())
                 Button(onlySelected ? "查看全部" : "只看已选") { onlySelected.toggle() }.buttonStyle(PillButtonStyle())
-                Button(loading ? "获取中…" : "刷新目录") { Task { await load(force: true) } }.buttonStyle(PillButtonStyle()).disabled(loading)
+                if !draft { Button(loading ? "获取中…" : "刷新目录") { Task { await load(force: true) } }.buttonStyle(PillButtonStyle()).disabled(loading) }
             }
             ModelMultiList(models: onlySelected ? selected.sorted() : all, selected: selected, onToggle: toggle)
             HStack(spacing: 8) {
@@ -49,17 +53,19 @@ struct ModelVisibilitySection: View {
                     .accessibilityLabel("添加模型 ID")
                 Button("添加", action: addCustom).buttonStyle(PillButtonStyle()).disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            if !error.isEmpty { InlineBanner(text: error) }
-            HStack(spacing: 12) {
-                PrimaryButton(title: busy ? "保存中…" : "保存显示模型", busy: busy, brand: true, action: save).disabled(!dirty || busy)
-                if !notice.isEmpty { Text(notice).font(.footnote).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
+            let status = draft ? "随模型连接一起保存" : (autosave?.busy == true ? "保存中…" : notice)
+            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
+            if let failure = [error, autosave?.error ?? ""].first(where: { !$0.isEmpty }) { InlineBanner(text: failure) }
+        }
+        .onAppear {
+            guard !draft, autosave == nil else { return }
+            autosave = ModelSelectionAutosave(initial: stored) { [workspace] models, version in
+                try await workspace.saveModelVisibility(models: models, version: version)
             }
         }
-        .padding(14).cardStyle()
-        .disabled(busy)
-        .onAppear { selection = stored.models; version = stored.version }
-        .onChange(of: stored) { if !dirty { selection = stored.models; version = stored.version } }
-        .task { if !loaded { loaded = true; await load(force: false) } }
+        .onChange(of: stored) { autosave?.sync(stored) }
+        .onChange(of: selection, initial: true) { onSelection(selection) }
+        .task { if !loaded, !draft { loaded = true; await load(force: false) } }
         .onDebugUI { cmd, arg in
             switch cmd {
             case "mv-all": edit(nil)
@@ -67,18 +73,18 @@ struct ModelVisibilitySection: View {
             case "mv-only": onlySelected.toggle()
             case "mv-toggle": toggle(arg)
             case "mv-add": custom = arg; addCustom()
-            case "mv-save": save()
             case "mv-refresh": Task { await load(force: true) }
-            case "mv-status": mbLogUI("visibility selection=\(selection?.joined(separator: ",") ?? "all") version=\(version) dirty=\(dirty) notice=\(notice) error=\(error) catalog=\(catalog.count)")
+            case "mv-status": mbLogUI("visibility selection=\(selection?.joined(separator: ",") ?? "all") stored=\(stored.models?.joined(separator: ",") ?? "all")@\(stored.version) busy=\(autosave?.busy ?? false) error=\(autosave?.error ?? error) catalog=\(catalog.count)")
             default: break
             }
         }
     }
 
-    private func edit(_ value: [String]?) { selection = value; dirty = true; notice = "" }
+    private func edit(_ value: [String]?) {
+        if draft { draftSelection = value } else { autosave?.set(value) }
+    }
 
     private func toggle(_ id: String) {
-        guard !busy else { return }
         var next = selected
         if next.contains(id) { next.remove(id) } else { next.insert(id) }
         edit(next.sorted())
@@ -102,17 +108,73 @@ struct ModelVisibilitySection: View {
             notice = result.hasMore ? "服务仍有未返回的模型，可手动添加。" : ""
         }
     }
+}
 
-    private func save() {
-        guard dirty, !busy else { return }
-        busy = true; error = ""
-        let models = selection, base = version
-        Task {
-            defer { busy = false }
-            do {
-                let result = try await workspace.saveModelVisibility(models: models, version: base)
-                version = result.version; selection = result.models; dirty = false; notice = "已保存"
-            } catch { self.error = coreMessage(error) }
+/// 生图模型 (web `ImageModelSettings.tsx`): the models image generation may use, saved at once.
+/// Only OpenAI-compatible connections can generate images.
+struct ImageModelSection: View {
+    let workspace: WorkspaceStore
+
+    @State private var catalog: [String] = []
+    @State private var autosave: ModelSelectionAutosave?
+    @State private var loading = false
+    @State private var notice = ""
+    @State private var error = ""
+    @State private var loaded = false
+
+    private var config: ModelConfig? { workspace.state?.config }
+    private var supported: Bool { config?.providerID == "openai" }
+    private var stored: ModelVisibility { workspace.state?.imageModelSelection ?? ModelVisibility(models: []) }
+    private var selection: [String] { autosave?.selection ?? stored.models ?? [] }
+    private var all: [String] {
+        var seen = Set<String>()
+        return (catalog + selection + (workspace.state?.modelVisibility.models ?? []) + [config?.defaultModel ?? ""])
+            .filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("生图模型").font(.subheadline.weight(.semibold))
+                Spacer()
+                StatusChip(text: supported ? "已选 \(selection.count) 个" : config != nil ? "当前模型连接不支持生图" : "请先连接模型", tone: .neutral)
+            }
+            if supported {
+                ModelMultiList(models: all, selected: Set(selection), maxHeight: 260, onToggle: { autosave?.toggle($0, all: all) })
+                    .disabled(loading)
+                let status = loading ? "获取中…" : autosave?.busy == true ? "保存中…" : notice
+                if !status.isEmpty { Text(status).font(.caption).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
+                if let failure = [error, autosave?.error ?? ""].first(where: { !$0.isEmpty }) {
+                    InlineBanner(text: failure)
+                    if !error.isEmpty { Button("重试获取") { Task { await load() } }.buttonStyle(PillButtonStyle()).disabled(loading) }
+                }
+            }
         }
+        .padding(14).cardStyle()
+        .onAppear {
+            guard autosave == nil else { return }
+            autosave = ModelSelectionAutosave(initial: stored) { [workspace] models, version in
+                try await workspace.saveImageModelSelection(models: models ?? [], version: version)
+            }
+        }
+        .onChange(of: stored) { autosave?.sync(stored) }
+        .task(id: supported) { if supported, !loaded { loaded = true; await load() } }
+        .onDebugUI { cmd, arg in
+            switch cmd {
+            case "ig-toggle": autosave?.toggle(arg, all: all)
+            case "ig-status": mbLogUI("images selection=\(selection.joined(separator: ",")) stored=\(stored.models?.joined(separator: ",") ?? "")@\(stored.version) busy=\(autosave?.busy ?? false) error=\(autosave?.error ?? error) supported=\(supported)")
+            default: break
+            }
+        }
+    }
+
+    private func load() async {
+        guard !loading, let source = workspace.savedModelSource() else { return }
+        loading = true; error = ""
+        defer { loading = false }
+        let loader = ModelCatalogLoader()
+        await loader.load(source, force: false)
+        if let failure = loader.error { error = failure; return }
+        if let result = loader.catalog { catalog = result.models; notice = result.hasMore ? "模型列表未全部返回" : "" }
     }
 }

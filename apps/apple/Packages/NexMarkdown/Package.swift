@@ -14,7 +14,7 @@ let package = Package(
             .product(name: "cmark-gfm", package: "swift-cmark"),
             .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
             .product(name: "SwiftSoup", package: "SwiftSoup"),
-        ], resources: [.copy("Resources/chat-charts.js")]),
+        ], resources: [.copy("Resources/chat-charts.js"), .copy("Resources/html-preview.html")]),
         .testTarget(name: "NexMarkdownTests", dependencies: ["NexMarkdown"]),
     ],
     swiftLanguageModes: [.v6]

@@ -11,6 +11,7 @@ import { startFakeModel } from "../server/runtime/pi/p0/fake-model.ts";
 import { startFakeMcp } from "../server/personal-os/testing/fake-mcp.ts";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "nex-design-preview-"));
+const previewAvatars = process.argv.includes("--avatars");
 const { createPersonalApp } = await import(pathToFileURL(path.resolve("dist-personal/server/core/index.js")).href);
 let core, identity, model, mcp, child;
 try {
@@ -25,6 +26,7 @@ try {
   const research = await api("bots", { name: "研究伙伴", instructions: "寻找依据，整理资料，帮你看清问题。" });
   const writer = await api("bots", { name: "写作搭档", instructions: "一起梳理想法，把文字写得清楚自然。" });
   for (const [id, shape, color] of [[bot.id, "soft", "teal"], [research.id, "bud", "plum"], [writer.id, "bean", "clay"]]) await api("bots/appearance", { id, version: 0, appearance: { kind: "companion", shape, color } });
+  if (previewAvatars) await api("bots/appearance", { id: bot.id, version: 1, appearance: { kind: "graphic", id: "female-06" } });
   const connector = await api("connectors/save", { name: "示例知识库", url: mcp.origin + "/mcp", transport: "http" });
   await api("connectors/test", { id: connector.id, version: 1 });
   const configured = (await api("state")).connectors[0];
@@ -35,7 +37,7 @@ try {
   core.agents.publish(writer.id, "assistant", "message", "有了想法，随时来找我一起写。", "writer-reply");
   core.runtime.memory.write(bot.id, { title: "交流偏好（示例）", content: "先说结论，再给具体步骤；优先使用中文。" });
   // Delay each request at consumption time, so real thinking/done states remain visible.
-  for (let i = 0; i < 100; i++) model.scripts.push({ kind: "openai-text", text: "收到。这是独立设计预览，消息由本机演示模型回复。\n\n你可以继续发消息，观察思考与完成的表情；也可以打开右侧的**更换头像**，尝试 20 个角色组合、状态动效和经典图库。\n\n在右侧切换 **工作 / 资料 / 设置**，查看新的信息组织方式。", get waitFor() { return new Promise(resolve => setTimeout(resolve, 2400)); } });
+  for (let i = 0; i < 100; i++) model.scripts.push({ kind: "openai-text", text: "收到。我们先梳理重点，再逐项推进。", get waitFor() { return new Promise(resolve => setTimeout(resolve, 2400)); } });
   const profile = path.join(root, "renderer"); mkdirSync(profile);
   const entry = path.join(root, "preview.cjs"), icon = path.resolve("electron/client/nexbot-icon.png");
   writeFileSync(entry, `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(profile)});app.setName('NexBot 设计预览');app.whenReady().then(async()=>{const w=new BrowserWindow({show:false,width:1440,height:960,minWidth:390,minHeight:600,title:'NexBot · 设计预览（独立演示数据）',icon:${JSON.stringify(icon)},autoHideMenuBar:true,webPreferences:{sandbox:true,contextIsolation:true}});w.removeMenu();w.on('page-title-updated',e=>e.preventDefault());w.webContents.setWindowOpenHandler(()=>({action:'deny'}));await w.webContents.session.cookies.set({url:${JSON.stringify(core.origin)},name:'nex',value:${JSON.stringify(session.token)},httpOnly:true,sameSite:'strict',path:'/'});await w.loadURL(${JSON.stringify(core.origin)});w.show();});app.on('window-all-closed',()=>app.quit());`);

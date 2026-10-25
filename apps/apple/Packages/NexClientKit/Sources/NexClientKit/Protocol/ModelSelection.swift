@@ -85,6 +85,10 @@ extension CoreClient {
     public func saveModelVisibility(provider: String, endpoint: String, models: [String]?, version: Int) async throws -> ModelVisibility {
         try await post("/api/models/visibility", body: ModelVisibilityBody(provider: provider, endpoint: endpoint, models: models, version: version))
     }
+    /// `POST /api/models/images` (owner only, OpenAI-compatible connections): the image generation models. Returns the stored value.
+    public func saveImageModelSelection(provider: String, endpoint: String, models: [String], version: Int) async throws -> ModelVisibility {
+        try await post("/api/models/images", body: ModelVisibilityBody(provider: provider, endpoint: endpoint, models: models, version: version))
+    }
     /// `POST /api/memory/summary` (owner only).
     public func memorySummary() async throws -> MemorySummary { try await post("/api/memory/summary", body: EmptyBody()) }
     /// `POST /api/memory/settings` (owner only). `model == nil` keeps the stored memory model; `""` follows the default model.

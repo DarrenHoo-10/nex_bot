@@ -11,6 +11,8 @@ test("local UI overrides only approved static GETs on the authenticated Core ori
     mkdirSync(path.join(directory, "assets"));
     writeFileSync(path.join(directory, "index.html"), "<head></head><body>local</body>");
     writeFileSync(path.join(directory, "assets/app.js"), "localScript");
+    const preview = '<head></head><body>preview</body>';
+    writeFileSync(path.join(directory, "html-preview.html"), preview);
     writeFileSync(path.join(directory, "private.json"), "must not serve");
     const handlers = new Map(), forwarded = [];
     let origin;
@@ -21,6 +23,10 @@ test("local UI overrides only approved static GETs on the authenticated Core ori
     origin = "https://core.example";
     assert.match(await (await get(origin + "/")).text(), /nexbot-ui-source/);
     assert.equal(await (await get(origin + "/assets/app.js")).text(), "localScript");
+    const previewResponse = await get(origin + "/html-preview.html");
+    assert.equal(await previewResponse.text(), preview);
+    assert.equal(previewResponse.headers.get('Content-Security-Policy'), "sandbox allow-scripts; frame-ancestors 'self'");
+    assert.equal(await (await get(origin + '/html-preview.html', { method: 'POST' })).text(), 'remote');
     for (const url of [origin + "/api/state", origin + "/api/events", origin + "/private.json", origin + "/assets/unknown.js", "https://other.example/", "http://core.example/"]) assert.equal(await (await get(url)).text(), "remote");
     const post = await get(origin + "/api/bots", { method: "POST", body: "synthetic-body", headers: { "Content-Type": "text/plain" } });
     assert.equal(await post.text(), "remote");

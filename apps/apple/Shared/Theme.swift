@@ -1,22 +1,28 @@
 import SwiftUI
 
-/// Design tokens of the NexBot web UI (`src/personal/vendor/rakazo/tokens.css`), shared by the Mac and iOS apps.
+/// Design tokens of the NexBot web UI (`src/personal/atmosphere.css`), shared by the Mac and iOS apps.
 /// Every color follows the system light/dark appearance.
 enum Theme {
-    static let background = dynamic(light: 0xFAFAF8, dark: 0x0B0C0E)
-    static let foreground = dynamic(light: 0x1A1A1A, dark: 0xECECEE)
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x141518)
+    static let background = dynamic(light: 0xFBFDFF, dark: 0x151E2A)
+    static let foreground = dynamic(light: 0x202B3C, dark: 0xE5EDF7)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x202D3E)
     /// Fills: search field, user bubble, secondary buttons.
-    static let secondary = dynamic(light: 0xF0F0ED, dark: 0x18191E)
-    static let muted = dynamic(light: 0x6C6C70, dark: 0x85858A)
-    static let border = dynamic(light: 0xE8E8E4, dark: 0x1E2026)
-    static let sidebar = dynamic(light: 0xFAFAF8, dark: 0x0B0C0E)
+    static let secondary = dynamic(light: 0xEAF0F6, dark: 0x253347)
+    static let muted = dynamic(light: 0x647287, dark: 0xA0B0C5)
+    static let border = dynamic(light: 0xDFE6EE, dark: 0x34465A)
+    static let sidebar = dynamic(light: 0xEEF6FC, dark: 0x1D2C40)
     /// Selected contact row and hovered menu items.
-    static let sidebarAccent = dynamic(light: 0xFFFFFF, dark: 0x1A1B20)
+    static let sidebarAccent = dynamic(light: 0xFFFFFF, dark: 0x2B3D53)
     /// Primary actions (批准, unread badge): near-black in light mode, near-white in dark mode.
-    static let primary = dynamic(light: 0x1A1A1A, dark: 0xF1F1EF)
-    static let primaryForeground = dynamic(light: 0xFFFFFF, dark: 0x111215)
+    static let primary = dynamic(light: 0x26384B, dark: 0xE5EDF7)
+    static let primaryForeground = dynamic(light: 0xFFFFFF, dark: 0x151E2A)
     /// Brand blue of the NexBot mark: the login button, links and the selected settings category.
+    static let identityAccent = dynamic(light: 0x227B79, dark: 0x8BC9BF)
+    static let chatUser = dynamic(light: 0xEAF2FF, dark: 0x293E59)
+    static let atmosphereBase = dynamic(light: 0xE4EDF5, dark: 0x0E1827)
+    static let atmosphereBlue = dynamic(light: 0xB8D9F2, dark: 0x274867)
+    static let atmosphereBlush = dynamic(light: 0xEEDEDC, dark: 0x3E354B)
+    static let atmosphereLight = dynamic(light: 0xFFFFFF, dark: 0x263A50)
     static let brand = Color(hex: 0x4B6BFB)
     static let brandSoft = dynamic(light: 0xE9EEFF, dark: 0x1B2340)
     static let approval = Color(hex: 0xD79A37)

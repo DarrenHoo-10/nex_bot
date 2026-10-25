@@ -5,6 +5,8 @@ import SwiftUI
 struct ComposerTextEditor: NSViewRepresentable {
     @Binding var text: String
     var focused: FocusState<Bool>.Binding
+    /// Called with a picture pasted from the clipboard (PNG bytes and a file name).
+    var onPasteImage: (Data, String) -> Void = { _, _ in }
     var onKey: (UInt16) -> Bool
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -31,6 +33,7 @@ struct ComposerTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let editor = scroll.documentView as? ComposerNSTextView else { return }
         editor.onKey = onKey
+        editor.onPasteImage = onPasteImage
         editor.onFocus = { focused.wrappedValue = $0 }
         // Replacing marked text during an update cancels the candidate session.
         if editor.string != text && !editor.hasMarkedText() { editor.string = text }
@@ -57,6 +60,27 @@ struct ComposerTextEditor: NSViewRepresentable {
 final class ComposerNSTextView: NSTextView {
     var onKey: (UInt16) -> Bool = { _ in false }
     var onFocus: (Bool) -> Void = { _ in }
+    var onPasteImage: (Data, String) -> Void = { _, _ in }
+
+    /// ⌘V with a picture on the clipboard attaches it (as the web composer does); text pastes as usual.
+    /// The clipboard ⌘V reads (a private pasteboard in checks).
+    var pasteboard: NSPasteboard = .general
+    override func paste(_ sender: Any?) {
+        let board = pasteboard
+        let files = (board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        let pictures = files.filter { ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"].contains($0.pathExtension.lowercased()) }
+        if !pictures.isEmpty {
+            for url in pictures { if let data = try? Data(contentsOf: url) { onPasteImage(data, url.lastPathComponent) } }
+            return
+        }
+        if files.isEmpty, board.availableType(from: [.png, .tiff]) != nil, let image = NSImage(pasteboard: board),
+           let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            let stamp = Date().formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).second(.twoDigits))
+            onPasteImage(png, "粘贴的图片 \(stamp.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")).png")
+            return
+        }
+        super.paste(sender)
+    }
     private var imeEndedAt: TimeInterval = -.infinity
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {

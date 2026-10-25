@@ -1,4 +1,4 @@
-import { IMAGE_MAX_BYTES } from "./attachments.ts";
+import { IMAGE_MAX_BYTES } from "../shared/image-generation.ts";
 
 export interface DecodedGeneratedImage {
   bytes: Buffer;

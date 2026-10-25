@@ -253,10 +253,25 @@ extension Notification.Name { static let mbDebug = Notification.Name("nexbot.mac
                 guard let text = try? String(contentsOfFile: path, encoding: .utf8), !text.isEmpty else { continue }
                 try? "".write(toFile: path, atomically: true, encoding: .utf8)
                 for line in text.split(separator: "\n") {
+                    if line.hasPrefix("snap ") { snapshot(to: String(line.dropFirst(5))); continue }
                     NotificationCenter.default.post(name: .mbDebug, object: nil, userInfo: ["line": String(line)])
                 }
             }
         }
+    }
+}
+
+extension MBDebug {
+    /// `snap <prefix>`: draws every visible app window (popovers included) to `<prefix>-<n>.png`.
+    /// Works while the screen is locked, unlike screencapture.
+    static func snapshot(to prefix: String) {
+        for (index, window) in NSApp.windows.enumerated() where window.isVisible {
+            guard let view = window.contentView?.superview ?? window.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(prefix)-\(index).png"))
+        }
+        mbLog("snap \(prefix) windows=\(NSApp.windows.filter(\.isVisible).map { "\(type(of: $0)):\(Int($0.frame.width))x\(Int($0.frame.height))" })")
     }
 }
 

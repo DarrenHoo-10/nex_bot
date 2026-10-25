@@ -5,6 +5,15 @@ import NexClientKit
 enum AgentAppearance: Equatable {
     case companion(shape: String, color: String)
     case portrait(String)
+    case graphic(String)
+
+    var request: AppearanceChoice {
+        switch self {
+        case .companion(let shape, let color): .companion(shape: shape, color: color)
+        case .portrait(let id): .portrait(id)
+        case .graphic(let id): .graphic(id)
+        }
+    }
 
     static let shapes = ["soft", "bean", "pebble", "bud"]
     static let colors = ["teal", "ink", "blue", "clay", "plum"]
@@ -17,6 +26,7 @@ enum AgentAppearance: Equatable {
             if value["kind"] as? String == "companion", let shape = value["shape"] as? String, let color = value["color"] as? String,
                shapes.contains(shape), colors.contains(color) { return .companion(shape: shape, color: color) }
             if value["kind"] as? String == "portrait", let id = value["id"] as? String, portraits.contains(id) { return .portrait(id) }
+            if value["kind"] as? String == "graphic", let id = value["id"] as? String, AvatarCatalog.graphic(id) != nil { return .graphic(id) }
         }
         if bot.id.isEmpty || bot.id == firstID { return .companion(shape: "soft", color: "teal") }
         var seed: UInt32 = 0
@@ -57,7 +67,7 @@ enum CompanionState: String {
     }
 }
 
-/// The Agent avatar of the web UI: a colored companion with eyes, or one of the classic portraits.
+/// Shared artwork and motion for both native clients, preserving saved classic portraits.
 struct AgentAvatar: View {
     let appearance: AgentAppearance
     var state: CompanionState = .idle
@@ -65,6 +75,8 @@ struct AgentAvatar: View {
     /// Plays the web companion keyframes for the current state (idle blink, thinking glance, working bob, one done hop).
     /// Off by default; also off when the system Reduce Motion setting is on. Callers apply their own preference.
     var animated = false
+    @State private var doneExpired = false
+    private var displayedState: CompanionState { state == .done && doneExpired ? .idle : state }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -73,9 +85,14 @@ struct AgentAvatar: View {
                 Image("portrait-\(id)").resizable().scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.29, style: .continuous))
             case .companion(let shape, let color):
-                CompanionBody(shape: shape, color: Self.color(color), state: state, size: size, animated: animated)
+                CompanionBody(shape: shape, color: Self.color(color), state: displayedState, size: size, animated: animated)
+            case .graphic(let id):
+                if let graphic = AvatarCatalog.graphic(id) {
+                    GraphicAvatarBody(graphic: graphic, state: displayedState, size: size, animated: animated)
+                        .id(id)
+                }
             }
-            if state != .idle {
+            if displayedState != .idle {
                 Circle().fill(badgeColor)
                     .frame(width: max(7, size * 0.2), height: max(7, size * 0.2))
                     .overlay(Circle().stroke(Theme.background, lineWidth: 2))
@@ -83,6 +100,13 @@ struct AgentAvatar: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+        .task(id: state) {
+            doneExpired = false
+            if state == .done {
+                do { try await Task.sleep(for: .seconds(4)); doneExpired = true }
+                catch { /* View or state changed. */ }
+            }
+        }
     }
 
     private var badgeColor: Color {
@@ -109,8 +133,10 @@ private struct CompanionBody: View {
     let shape: String, color: Color, state: CompanionState, size: CGFloat
     var animated = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     /// The `done` hop plays once, from the moment this body appears or the state becomes done.
     @State private var doneStart = Date()
+    @State private var visible = false
 
     /// Port of identity.css `companion-blink 7s`, `companion-look 2.8s`, `companion-work 1.8s` and `companion-done .55s`.
     struct Motion {
@@ -146,15 +172,19 @@ private struct CompanionBody: View {
         return m
     }
 
-    private var playing: Bool { animated && !reduceMotion && [.idle, .thinking, .working, .done].contains(state) }
+    private var playing: Bool { animated && visible && !reduceMotion && scenePhase == .active && [.idle, .thinking, .working, .done].contains(state) }
 
     var body: some View {
-        if playing {
-            TimelineView(.animation) { context in content(motion(at: context.date)) }
-                .onChange(of: state) { doneStart = Date() }
-        } else {
-            content(Motion())
+        Group {
+            if playing {
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in content(motion(at: context.date)) }
+                    .onChange(of: state) { doneStart = Date() }
+            } else {
+                content(Motion())
+            }
         }
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
     }
 
     /// CSS `inset` (vertical, horizontal) and `border-radius` (TL, TR, BR, BL) per shape, as fractions.
@@ -172,7 +202,9 @@ private struct CompanionBody: View {
         let w = size * (1 - 2 * g.h), h = size * (1 - 2 * g.v), r = min(w, h)
         let outline = UnevenRoundedRectangle(topLeadingRadius: r * g.radii[0], bottomLeadingRadius: r * g.radii[3], bottomTrailingRadius: r * g.radii[2], topTrailingRadius: r * g.radii[1], style: .continuous)
         ZStack(alignment: .topLeading) {
-            outline.fill(color)
+            outline.fill(LinearGradient(colors: [color, color.opacity(0.94), color], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .overlay(outline.fill(LinearGradient(colors: [.white.opacity(0.22), .clear, .black.opacity(0.13)], startPoint: .topLeading, endPoint: .bottomTrailing)))
+                .overlay(outline.strokeBorder(.white.opacity(0.18), lineWidth: max(0.5, size * 0.012)))
             // Highlight: inset 7% 16%, height 34%.
             Ellipse().fill(LinearGradient(colors: [.white.opacity(0.08), .clear], startPoint: .top, endPoint: .bottom))
                 .frame(width: w * 0.68, height: h * 0.34).offset(x: w * 0.16, y: h * 0.07)

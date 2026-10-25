@@ -13,6 +13,8 @@ export class DeviceGateway {
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   hostDeviceId?: string;
   private readonly alive = new Set<WebSocket>();
+  /** Calls to one device run one at a time; parallel tool calls wait their turn instead of failing. */
+  private readonly queues = new Map<string, Promise<unknown>>();
   private readonly heartbeatTimer: NodeJS.Timeout;
   heartbeat() {
     for (const ws of this.sockets.values()) {
@@ -116,16 +118,26 @@ export class DeviceGateway {
       this.changed();
     });
   }
-  async execute(call: Row, args: Record<string, unknown>) {
+  execute(call: Row, args: Record<string, unknown>) {
+    const deviceId = String(call.target_id);
+    const previous = this.queues.get(deviceId) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(() => this.executeNow(call, args));
+    const settled = run.catch(() => {});
+    this.queues.set(deviceId, settled);
+    void settled.then(() => { if (this.queues.get(deviceId) === settled) this.queues.delete(deviceId); });
+    return run;
+  }
+  private async executeNow(call: Row, args: Record<string, unknown>) {
     const deviceId = String(call.target_id), ws = this.sockets.get(deviceId), local = this.store.get("SELECT * FROM device_local_grants WHERE device_id=? AND local_grant_id='shared' AND status='active'", deviceId);
-    if (!ws || ws.readyState !== WebSocket.OPEN || !local) throw new Error("设备离线或没有本地授权");
+    if (!ws || ws.readyState !== WebSocket.OPEN || !local) throw new Error(!ws || ws.readyState !== WebSocket.OPEN ? "设备离线，请确认设备上的 NexBot 已登录并在线" : "设备没有本地授权，请在设备上开启本机控制");
     if (local.policy_version !== JSON.parse(String(call.authorization_snapshot_json)).localPolicyVersion) throw new Error("设备本地权限版本已变化，旧批准无效");
     if (call.tool_name === "device.exec" && !JSON.parse(String(local.scope_json)).exec) throw new Error("设备未启用终端能力");
     if (call.tool_name === "device.computer" && !JSON.parse(String(local.scope_json)).computer) throw new Error("设备未启用屏幕控制");
     const old = this.store.get("SELECT * FROM device_calls WHERE id=?", call.id);
     if (old?.result_json) return JSON.parse(String(old.result_json));
     if (old?.status === "unknown") { this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=?", call.id); throw new Error("设备执行结果未知，禁止重放"); }
-    if (this.store.get("SELECT id FROM device_calls WHERE device_id=? AND status IN ('delivered','running','unknown') AND id!=?", deviceId, call.id)) throw new Error("设备存在运行中或不确定的调用");
+    if (this.store.get("SELECT id FROM device_calls WHERE device_id=? AND status='unknown' AND id!=?", deviceId, call.id)) throw new Error("设备上有一次结果未知的调用，需在设备上核实后才能继续执行");
+    if (this.store.get("SELECT id FROM device_calls WHERE device_id=? AND status IN ('delivered','running') AND id!=?", deviceId, call.id)) throw new Error("设备仍在执行上一项调用，请稍后重试");
     const deadline = now() + DEVICE_LEASE_MS, grantId = id();
     if (!old) this.store.transaction(() => {
       this.store.insert("device_grants", { id: grantId, ...this.store.scope(), bot_id: call.bot_id, device_id: deviceId, local_grant_id: "shared", local_policy_version: local.policy_version, scope_json: local.scope_json, status: "active", created_at: now(), expires_at: deadline });

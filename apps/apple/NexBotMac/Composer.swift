@@ -17,9 +17,11 @@ struct Composer: View {
     let workspace: WorkspaceStore
     @Bindable var conversation: ConversationStore
     let bot: Bot?
+    let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @FocusState private var focused: Bool
     @State private var menuError: String?
+    @State private var revokingRule = false
     @State private var mentionIndex = 0
     @State private var mentionDismissed = false
 
@@ -29,6 +31,22 @@ struct Composer: View {
     private var quote: QuoteDraft? { agentUI.quotes[botID] }
     private var hasModel: Bool { workspace.state?.config != nil }
     private var canSend: Bool { conversation.canSend && hasModel && bot != nil }
+    private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
+    private var showStop: Bool {
+        !tasks.isEmpty && conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && conversation.attachments.isEmpty
+    }
+    @State private var stopping = false
+
+    private func stopAll() {
+        guard !stopping else { return }
+        stopping = true; menuError = nil
+        Task {
+            defer { stopping = false }
+            for task in tasks where task.status != "cancelling" {
+                do { try await workspace.cancelTask(task.id) } catch { menuError = message(of: error) }
+            }
+        }
+    }
     private var height: CGFloat {
         let lines = conversation.draft.split(separator: "\n", omittingEmptySubsequences: false).count
         return min(104, max(22, CGFloat(min(lines, 5)) * 19 + 3))
@@ -44,7 +62,7 @@ struct Composer: View {
         VStack(spacing: 8) {
             if let quote { quoteBar(quote) }
             if !mentions.isEmpty { mentionMenu }
-            if !conversation.attachments.isEmpty { AttachmentChips(conversation: conversation) }
+            if !conversation.attachments.isEmpty { AttachmentChips(conversation: conversation, onOpenImage: onOpenImage) }
             if let menuError { errorLine(menuError) }
             field
         }
@@ -66,7 +84,9 @@ struct Composer: View {
     }
 
     private var textInput: some View {
-        ComposerTextEditor(text: $conversation.draft, focused: $focused) { key in
+        ComposerTextEditor(text: $conversation.draft, focused: $focused, onPasteImage: { data, name in
+            Task { await conversation.addAttachment(name: name, data: data) }
+        }) { key in
             switch key {
             case 125: return moveMention(1) == .handled
             case 126: return moveMention(-1) == .handled
@@ -107,14 +127,27 @@ struct Composer: View {
             .popover(isPresented: anyMenuOpen, arrowEdge: .top) { menuContent }
 
             Spacer(minLength: 0)
-            Button(action: send) {
-                Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(canSend ? Theme.primaryForeground : .white)
-                    .frame(width: 34, height: 34)
-                    .background(canSend ? Theme.primary : Color(hex: 0x9A9A9E), in: Circle())
+            // While the agent works and nothing is typed, the send key stops it (web composer).
+            if showStop {
+                Button(action: stopAll) {
+                    Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.primaryForeground)
+                        .frame(width: 34, height: 34)
+                        .background(Theme.primary, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(stopping || tasks.allSatisfy { $0.status == "cancelling" })
+                .help("停止任务").accessibilityLabel("停止任务")
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(canSend ? Theme.primaryForeground : .white)
+                        .frame(width: 34, height: 34)
+                        .background(canSend ? Theme.primary : Color(hex: 0x9A9A9E), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送消息")
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送消息")
         }
     }
 
@@ -159,10 +192,39 @@ struct Composer: View {
     }
 
     private var permissionMenu: some View {
-        ComposerMenu(label: "选择操作权限", entries: ApprovalMode.allCases.map { option in
-            .row(.init(id: option.rawValue, icon: option == .full ? "exclamationmark.shield" : "checkmark.shield", title: option.title,
-                       checked: mode == option, radio: true, action: { close(); setMode(option) }))
-        }, initialID: mode.rawValue, width: 216, close: close)
+        VStack(alignment: .leading, spacing: 0) {
+            ComposerMenu(label: "选择操作权限", entries: ApprovalMode.allCases.map { option in
+                .row(.init(id: option.rawValue, icon: option == .full ? "exclamationmark.shield" : "checkmark.shield", title: option.title,
+                           checked: mode == option, radio: true, action: { close(); setMode(option) }))
+            }, initialID: mode.rawValue, width: 300, close: close)
+            let rules = workspace.approvalRules(botID: botID)
+            if !rules.isEmpty {
+                Divider()
+                Text("始终允许").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(12)
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(rules) { rule in
+                            HStack(spacing: 8) {
+                                Text(rule.label + (rule.isActive ? "" : " · 已失效")).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 0)
+                                Button("撤销") { revokeRule(rule) }
+                                    .disabled(revokingRule).accessibilityLabel("撤销授权：\(rule.label)")
+                            }
+                        }
+                    }.padding(.horizontal, 12).padding(.bottom, 12)
+                }.frame(maxHeight: 180)
+            }
+        }.frame(width: 300)
+    }
+
+    private func revokeRule(_ rule: ApprovalRule) {
+        guard !revokingRule else { return }
+        revokingRule = true; menuError = nil
+        Task {
+            defer { revokingRule = false }
+            do { try await workspace.revokeApprovalRule(rule) }
+            catch { menuError = message(of: error) }
+        }
     }
 
     private var modelMenu: some View {
