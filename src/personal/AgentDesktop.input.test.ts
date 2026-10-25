@@ -7,6 +7,11 @@ import type { State } from "./api";
 const fixture = vi.hoisted(() => ({ api: vi.fn() }));
 vi.mock("./api", async (original) => ({ ...await original<typeof import("./api")>(), api: fixture.api }));
 vi.mock("./auth", () => ({ useAccount: () => ({ status: {}, logout: vi.fn() }), AccountControls: () => null }));
+vi.mock("../../shared/html-preview", async (original) => {
+  const actual = await original<typeof import("../../shared/html-preview")>();
+  return { ...actual, htmlPreviewParts: vi.fn(actual.htmlPreviewParts) };
+});
+import { htmlPreviewParts } from "../../shared/html-preview";
 import { AgentDesktop } from "./AgentDesktop";
 
 let root: Root, container: HTMLDivElement;
@@ -23,8 +28,9 @@ class FakeEventSource {
   emit(type: string, data: unknown) { this.listeners.get(type)?.(new MessageEvent(type, { data: JSON.stringify(data) })); }
 }
 class FakeResizeObserver {
+  readonly targets: Element[] = [];
   constructor(public callback: ResizeObserverCallback) { observers.push(this); }
-  observe() {}
+  observe(target: Element) { this.targets.push(target); }
   unobserve() {}
   disconnect() {}
 }
@@ -75,6 +81,40 @@ async function enter(options: KeyboardEventInit = {}) {
 }
 
 describe("Personal composer (Web, Electron and Android WebView)", () => {
+  it("reuses unchanged rich history while typing, sending and syncing", async () => {
+    const content = "## 已有结果\n\n| 项目 | 状态 |\n| --- | --- |\n| 设备 | 在线 |";
+    const history = [{ id: "rich-history", role: "assistant", kind: "message", content, created_at: 1, seq: 1 }];
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "state") return { ...state };
+      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
+      return {};
+    });
+    await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 200)); });
+    const parses = () => vi.mocked(htmlPreviewParts).mock.calls.filter(([text]) => text === content).length;
+    const before = parses(); expect(before).toBeGreaterThan(0);
+    await type("补充一句"); await enter();
+    await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 200)); });
+    expect(parses()).toBe(before);
+    expect(container.textContent).toContain("已有结果");
+  });
+
+  it("keeps the processing row until the finished task's reply is ready to commit", async () => {
+    state = { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "running" }] };
+    await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
+    expect(container.querySelector(".processing-message")).not.toBeNull();
+    state = { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded" }] };
+    let finishFeed!: (value: unknown) => void;
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "state") return state;
+      if (route.startsWith("agents/messages")) return new Promise(resolve => { finishFeed = resolve; });
+      return {};
+    });
+    await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
+    expect(container.querySelector(".processing-message")).not.toBeNull();
+    await act(async () => { finishFeed({ sync, messages: [{ id: "answer", role: "assistant", kind: "message", content: "完整回复", created_at: 1, seq: 1 }], streaming: [], hasMore: false }); });
+    expect(container.querySelector(".processing-message")).toBeNull();
+    expect(container.textContent).toContain("完整回复");
+  });
   it("sends a remembered approval only when Always allow is selected", async () => {
     state.approvals = [{ id: "approval", bot_id: "agent", argument_hash: "digest", tool_name: "device.exec", arguments_json: '{"action":"device.exec","deviceId":"fixture","command":"fixture"}', authorization_snapshot_json: "{}", remember_label: "执行终端命令 · Fixture device" }];
     await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise((resolve) => setTimeout(resolve, 200)); });
@@ -178,10 +218,14 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(transcript().split("刚发出去").length - 1).toBe(1);
     expect(composer().value).toBe("");
     expect(container.querySelector(".boot")).toBeNull();
+    const optimisticElement = container.querySelector('[data-message-id^="optimistic:"]');
+    expect(container.querySelector(".processing-caption")?.textContent).toBe("正在发送…");
+    expect(container.querySelector(".task-status")).not.toBeNull();
     await act(async () => { releaseInput(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(transcript()).toContain("更早的问题");
     expect(transcript().split("刚发出去").length - 1).toBe(1);
+    expect(container.querySelector('[data-message-id="sent"]')).toBe(optimisticElement);
   });
 
   it("preserves scrollback until sending, then returns to and follows the bottom", async () => {
@@ -193,6 +237,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     Object.defineProperty(el, "scrollTop", { configurable: true, get: () => top, set: (value: number) => { top = value; } });
     el.scrollTo = ((options?: ScrollToOptions) => { if (options && typeof options.top === "number") top = options.top; }) as typeof el.scrollTo;
     const follow = () => observers.at(-1)!.callback([], observers.at(-1) as unknown as ResizeObserver);
+    expect(observers.at(-1)!.targets).toContain(el);
     top = 300;
     await act(async () => { el.dispatchEvent(new Event("scroll")); });
     height = 700;

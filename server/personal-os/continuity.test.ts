@@ -7,6 +7,7 @@ import { createPersonalApp } from './index.ts';
 import { startFakePersonalMemory } from './testing/fake-personal-memory.ts';
 import { hash } from './store.ts';
 import { assistantCompletion } from './assistant-model.ts';
+import { ChatFiles } from './chat-files.ts';
 
 type Fixture={root:string;fake:Awaited<ReturnType<typeof startFakePersonalMemory>>;app:Awaited<ReturnType<typeof createPersonalApp>>;bot:string};
 const fixtures:Fixture[]=[];
@@ -25,6 +26,76 @@ async function wait(check:()=>boolean,app:Awaited<ReturnType<typeof fixture>>['a
 }
 afterEach(async()=>{for(const {app,fake,root} of fixtures.splice(0)){await app.close();await fake.close();if(path.dirname(root)!==os.tmpdir()||!path.basename(root).startsWith('nex-continuity-'))throw new Error('Unsafe cleanup');rmSync(root,{recursive:true,force:true});}});
 describe('Continuous personal assistant and memory',()=>{
+  it('keeps inventory, images and long results through tool continuations and the next user turn while they fit',async()=>{
+    const {app,fake,bot}=await fixture();
+    app.runtime.deviceDirectory=()=>Array.from({length:25},(_,i)=>({id:`fixture-${i}`,name:`INVENTORY-${i}`,online:true,description:'x'.repeat(250)}));
+    const note=app.runtime.memory.write(bot,{title:'当前资料',content:'LONG-RESULT-BEGIN '+ '资料'.repeat(8500)+' LONG-RESULT-END'});
+    const files=new ChatFiles(app.store);
+    const image=files.upload({botId:bot,name:'synthetic.png',data:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(900000,65)]).toString('base64')},app.store.session);
+    fake.scripts.push({action:'device.inventory',args:{}},{action:'attachment.read',args:{attachmentId:image.id}},{action:'memory.read',args:{documentId:note.documentId}},...Array.from({length:4},()=>({action:'agent.directory',args:{}})),'已核对');
+    const task=app.agents.send(bot,`保留所有资料，只讨论。\n![合成图片](/api/attachments/${image.id})`,'tool-capacity').taskId;
+    files.bind([image.id],bot,'tool-capacity');
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
+    const next=app.agents.send(bot,'继续比较刚才的列表和资料','tool-capacity-next').taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',next)?.status==='succeeded',app);
+    const request=JSON.stringify(fake.requests.at(-1));
+    expect(request).toContain('INVENTORY-24');expect(request).toContain('LONG-RESULT-END');expect(request).toContain('data:image/png;base64,');
+    expect(request).not.toContain('较早工具输出已收起');
+    expect(fake.requests.every(row=>row.stream)).toBe(true);
+    expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
+  },60000);
+  it('summarizes an older result only under real pressure, retaining exact user input, recent results and paired calls',async()=>{
+    const {app,fake,bot}=await fixture();
+    const first=app.runtime.memory.write(bot,{title:'前期资料',content:'OLDER-DETAIL '+ '资料'.repeat(9000)});
+    const second=app.runtime.memory.write(bot,{title:'最新资料',content:'RECENT-DETAIL '+ '信息'.repeat(9000)});
+    fake.scripts.push({action:'memory.read',args:{documentId:first.documentId}},{action:'memory.read',args:{documentId:second.documentId}},'完成比较');
+    const task=app.agents.send(bot,'USER-EXACT：只比较，不修改；保留编号 12345。','pressure').taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);
+    const last=fake.requests.filter(row=>row.stream).at(-1)!;
+    const messages=last.messages as Array<{role:string;content:string;tool_call_id?:string;tool_calls?:Array<{id:string}>}>;
+    expect(JSON.stringify(last)).toContain('USER-EXACT：只比较，不修改；保留编号 12345。');
+    expect(JSON.stringify(last)).toContain('RECENT-DETAIL');expect(JSON.stringify(last)).toContain('工具结果摘要');
+    for(const result of messages.filter(m=>m.role==='tool'))expect(messages.some(m=>m.tool_calls?.some(call=>call.id===result.tool_call_id))).toBe(true);
+    const checkpoint=app.store.get('SELECT first_entry FROM context_checkpoints WHERE first_entry=last_entry')!;
+    expect(app.agents.search(bot,'entry:'+checkpoint.first_entry)[0].content).toContain('OLDER-DETAIL');
+  },60000);
+  it('leaves original results intact when a pressure summary is incomplete',async()=>{
+    const {app,fake,bot}=await fixture();
+    const first=app.runtime.memory.write(bot,{title:'前期资料',content:'FAILURE-ORIGINAL '+ '资料'.repeat(9000)});
+    const second=app.runtime.memory.write(bot,{title:'最新资料',content:'FAILURE-RECENT '+ '信息'.repeat(9000)});
+    fake.scripts.push({action:'memory.read',args:{documentId:first.documentId}},{action:'memory.read',args:{documentId:second.documentId}});
+    fake.setOverride(body=>body.stream?undefined:{choices:[{message:{content:'partial'},finish_reason:'length'}],usage:{prompt_tokens:50,completion_tokens:10}});
+    const task=app.agents.send(bot,'保留原文，摘要失败不得丢弃内容','pressure-failure').taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='failed',app);
+    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toContain('未完整结束');
+    expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
+    const session=app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!;
+    const entries=app.runtime.projection.load(String(session.id))!;
+    expect(entries.some(entry=>entry.type==='context_edit')).toBe(false);
+    expect(JSON.stringify(entries)).toContain('FAILURE-ORIGINAL');expect(JSON.stringify(entries)).toContain('FAILURE-RECENT');
+    expect(fake.requests.filter(row=>row.stream)).toHaveLength(2);
+  },60000);
+  it('pages an oversized result explicitly and retrieves original ranges without re-executing the source tool',async()=>{
+    const {app,fake,bot}=await fixture();
+    const files=new ChatFiles(app.store),file=files.upload({botId:bot,name:'large.txt',data:Buffer.from('PAGE-BEGIN '+ '资料'.repeat(20000)+' PAGE-END').toString('base64')},app.store.session);
+    fake.scripts.push({action:'attachment.read',args:{attachmentId:file.id}},'原文已分页');
+    const task=app.agents.send(bot,`读这份资料 [large.txt](/api/attachments/${file.id})`,'page-source').taskId;
+    files.bind([file.id],bot,'page-source');
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
+    const messages=fake.requests.filter(row=>row.stream).at(-1)!.messages as Array<{role:string;content:string}>;
+    const page=JSON.parse(messages.find(m=>m.role==='tool')!.content);
+    expect(page.notice).toContain('并非完整结果');expect(page.page.nextOffset).toBeGreaterThan(0);
+    const original=String(app.agents.search(bot,page.query)[0].content);
+    const offset=original.indexOf('PAGE-END');expect(offset).toBeGreaterThan(page.page.nextOffset);
+    fake.scripts.push({action:'memory.search',args:{query:page.query,offset,limit:100}},...Array.from({length:4},()=>({action:'agent.directory',args:{}})),'已取回末尾');
+    const next=app.agents.send(bot,'取回原文末尾','page-retrieve').taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',next)?.status==='succeeded',app);
+    expect(JSON.stringify(fake.requests.filter(row=>row.stream).at(-1))).toContain('PAGE-END');
+    expect(app.store.all("SELECT id FROM tool_calls WHERE tool_name='attachment.read'")).toHaveLength(1);
+    expect(app.agents.search(app.store.createBot('另一助手'),page.query,{offset,limit:100})).toEqual([]);
+    expect(()=>app.agents.search(bot,page.query,{offset:-1,limit:100})).toThrow('offset');
+    expect(()=>app.agents.search(bot,page.query,{limit:100001})).toThrow('limit');
+  },60000);
   it('uses the unified memory model for every assistant and preserves it across toggles and restart',async()=>{
     const {app,bot,fake}=await fixture(),memory=app.runtime.memory.personal;
     memory.saveGlobal({version:0,enabled:true,model:'fixture-memory'});
@@ -84,7 +155,8 @@ describe('Continuous personal assistant and memory',()=>{
     const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
     app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
     app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
-    app.store.db.exec('DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DELETE FROM schema_migrations WHERE version>=16;');
+    // Rewind only the schemas removed here; connector migration 24 stays applied.
+    app.store.db.exec('DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DELETE FROM schema_migrations WHERE version BETWEEN 16 AND 23;');
     const {CoreStore}=await import('./store.ts');
     const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
     try {

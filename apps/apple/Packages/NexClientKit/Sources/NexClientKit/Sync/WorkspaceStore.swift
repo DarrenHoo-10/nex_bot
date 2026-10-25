@@ -309,10 +309,9 @@ public final class WorkspaceStore {
         let next = try await client.state(view: .summary)
         guard request == serial else { return }
         if let old = sync, !old.sameGeneration(as: next.sync) { for c in conversations.values { c.reset() } }
-        state = next; sync = next.sync; connection = .connected
-
         if let current, let conv {
             if !next.bots.contains(where: { $0.id == current }) {
+                state = next; sync = next.sync; connection = .connected
                 conv.focusedMessageID = nil; conv.reset(); selectedBotID = next.bots.first?.id; notice = nil
                 if selectedBotID != nil { scheduleRefresh(after: 0) }
                 return
@@ -341,7 +340,9 @@ public final class WorkspaceStore {
             conv.commit(history, sync: feed.sync, streaming: feed.streaming, hasOlder: fresh ? firstCount >= 100 : nil)
             if conv.focusedMessageID == nil { Task { await conv.markReadIfNeeded() } }
         }
-        if request == serial { notice = nil }
+        // Publish task status and the matching transcript in one MainActor turn.
+        // Otherwise a finished task hides the typing row while its reply is still loading.
+        if request == serial { state = next; sync = next.sync; connection = .connected; notice = nil }
     }
 
     private static func capture(_ client: CoreClient, bot: String?, after: Int?, around: String?) async -> Result<Feed, CoreError>? {

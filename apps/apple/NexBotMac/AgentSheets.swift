@@ -83,11 +83,11 @@ struct PolicyEditorSheet: View {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], alignment: .leading, spacing: 8) {
                 ForEach(PolicyCatalog.uiOrder) { action in
                     Button {
-                        if selected.contains(action.id) { selected.remove(action.id) } else { selected.insert(action.id) }
+                        if (PolicyCatalog.universalActions.contains(action.id) || selected.contains(action.id)) { selected.remove(action.id) } else { selected.insert(action.id) }
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: selected.contains(action.id) ? "checkmark.square.fill" : "square")
-                                .font(.system(size: 14)).foregroundStyle(selected.contains(action.id) ? Theme.brand : Theme.muted)
+                            Image(systemName: (PolicyCatalog.universalActions.contains(action.id) || selected.contains(action.id)) ? "checkmark.square.fill" : "square")
+                                .font(.system(size: 14)).foregroundStyle((PolicyCatalog.universalActions.contains(action.id) || selected.contains(action.id)) ? Theme.brand : Theme.muted)
                             Text(action.label).font(.system(size: 12)).foregroundStyle(Theme.foreground).multilineTextAlignment(.leading)
                             Spacer(minLength: 0)
                         }
@@ -96,8 +96,9 @@ struct PolicyEditorSheet: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(PolicyCatalog.universalActions.contains(action.id))
                     .accessibilityLabel(action.label)
-                    .accessibilityValue(selected.contains(action.id) ? "已选择" : "未选择")
+                    .accessibilityValue((PolicyCatalog.universalActions.contains(action.id) || selected.contains(action.id)) ? "已选择" : "未选择")
                 }
             }
             Text(PolicyCatalog.footnote).font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)

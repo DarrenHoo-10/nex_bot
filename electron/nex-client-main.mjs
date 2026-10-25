@@ -115,7 +115,18 @@ else {
       saved = { ...saved, origin: targetOrigin }; repointed = true;
       writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
     }
-    window = new BrowserWindow({ width: 1240, height: 880, minWidth: 760, minHeight: 600, title: "NexBot", icon: path.join(root, "electron", "client", "nexbot-icon.png"), autoHideMenuBar: true, webPreferences: { preload: path.join(root, "electron", "nex-client-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, partition: `nex-client-${randomBytes(12).toString("hex")}` } });
+    window = new BrowserWindow({ width: 1240, height: 880, minWidth: 760, minHeight: 600, title: "NexBot", icon: path.join(root, "electron", "client", "nexbot-icon.png"), autoHideMenuBar: true,
+      ...(process.platform === "win32" ? { titleBarStyle: "hidden", titleBarOverlay: { color: "#00000000", symbolColor: "#536174", height: 64 } } : {}),
+      webPreferences: { preload: path.join(root, "electron", "nex-client-preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, partition: `nex-client-${randomBytes(12).toString("hex")}` } });
+    if (process.platform === "win32") {
+      // Shell-owned chrome also works with older Core UI and the offline login page.
+      const chromeCss = readFileSync(path.join(root, "electron", "client", "window-chrome.css"), "utf8");
+      window.webContents.on("dom-ready", () => { void window.webContents.insertCSS(chromeCss).catch(() => {}); });
+      ipcMain.on("client:chrome-theme", (event, dark) => {
+        try { validate(event); } catch { return; }
+        if (typeof dark === "boolean") window.setTitleBarOverlay({ color: "#00000000", symbolColor: dark ? "#dce5f1" : "#536174" });
+      });
+    }
     const resourceRoot = app.isPackaged ? process.resourcesPath : path.join(root, "dist-personal");
     const executorFile = path.join(resourceRoot, "client-executor", "client-node", "client-node.js");
     if (existsSync(executorFile)) {

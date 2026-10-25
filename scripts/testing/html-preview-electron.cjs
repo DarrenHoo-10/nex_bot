@@ -60,6 +60,14 @@ app.whenReady().then(async () => {
     assert.equal(frames().length, 0); assert.equal(await evaluate('typeof window.escaped'), 'undefined'); cases.push('ordinary-html-and-forged-markup-remain-inert');
     await set(fence(source)); await until(() => frames().length === 1); await window.loadURL(config.origin); await until(() => evaluate('!!window.fixture')); await set(fence(source)); await until(() => frames().length === 1);
     assert.equal(await frames()[0].executeJavaScript('window.state'), 1); cases.push('history-source-reload');
+    const funnel = '<style>body{margin:0;padding:20px;font:16px system-ui;color:#152536}svg{width:100%;max-width:640px;display:block;margin:auto}text{fill:white;text-anchor:middle;font-size:17px}</style><h2>转化漏斗（示例数据）</h2><svg viewBox="0 0 440 340" role="img" aria-label="从上到下逐层变窄的转化漏斗"><polygon points="20,0 420,0 380,60 60,60" fill="#287bbb"/><text x="220" y="36">访问 · 10,000</text><polygon points="60,68 380,68 340,128 100,128" fill="#258eb5"/><text x="220" y="104">注册 · 4,200</text><polygon points="100,136 340,136 310,196 130,196" fill="#269f9c"/><text x="220" y="172">试用 · 1,800</text><polygon points="130,204 310,204 290,264 150,264" fill="#328c72"/><text x="220" y="240">付费 · 760</text><polygon points="150,272 290,272 275,332 165,332" fill="#4b785d"/><text x="220" y="308">复购 · 310</text></svg>';
+    await evaluate(`window.fixture.render(${JSON.stringify(funnel)})`);
+    await until(async () => { try { return frames().length === 1 && await frames()[0].executeJavaScript('document.querySelectorAll("polygon").length===5'); } catch { return false; } });
+    assert.equal(await frames()[0].executeJavaScript('document.documentElement.scrollWidth<=innerWidth'), true);
+    assert.deepEqual(await frames()[0].executeJavaScript('[...document.querySelectorAll("polygon")].map(p=>p.getBBox().width)'), [400,320,240,180,140]);
+    await until(() => frames()[0].executeJavaScript('document.documentElement.scrollHeight<=innerHeight'));
+    cases.push('html-render-message-displays-vertical-funnel');
+    writeFileSync(path.join(config.output, 'funnel.png'), (await wc.capturePage()).toPNG());
     writeFileSync(path.join(config.directory, 'result.json'), JSON.stringify({ passed: true, cases }));
   } catch (error) { writeFileSync(path.join(config.directory, 'result.json'), JSON.stringify({ passed: false, error: error.stack, cases, logs: logs.slice(-8) })); }
   finally { window.destroy(); app.quit(); }

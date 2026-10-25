@@ -827,15 +827,17 @@ main > header {
 }
 .scroll-pill {
   display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
   margin: 0 auto 10px;
-  font-size: 11px;
-  font-weight: 550;
-  color: var(--accent);
+  color: var(--bt-fg);
   background: var(--bt-card);
-  border: 1px solid var(--bt-border-strong);
-  border-radius: 999px;
-  padding: 5px 14px;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  border: 1px solid var(--bt-border);
+  border-radius: 50%;
+  padding: 0;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
 }
 .task-status {
   display: flex;

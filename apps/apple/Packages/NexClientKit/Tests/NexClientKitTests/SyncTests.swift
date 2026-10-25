@@ -9,16 +9,17 @@ final class SyncTests: XCTestCase {
     /// A configurable Core with a message log per bot.
     final class Fake: @unchecked Sendable {
         let lock = NSLock()
-        var sync = syncJSON(), seqs = Array(1...3), stateDelay = 0.0
+        var sync = syncJSON(), seqs = Array(1...3), stateDelay = 0.0, feedDelay = 0.0
+        var tasks: [[String: Any]] = []
         func handler(_ r: RecordedRequest) -> StubResponse {
             lock.withLock {
                 switch r.path {
-                case "/api/state": return .json(stateJSON(sync: sync), delay: stateDelay)
+                case "/api/state": return .json(stateJSON(sync: sync, tasks: tasks), delay: stateDelay)
                 case "/api/agents/messages":
                     let q = Dictionary(uniqueKeysWithValues: r.query.split(separator: "&").map { p -> (String, String) in let kv = p.split(separator: "="); return (String(kv[0]), String(kv[1])) })
                     if let a = q["after"].flatMap(Int.init) {
                         let page = Array(seqs.filter { $0 > a }.prefix(200))
-                        return .json(feedJSON(page, sync: sync, hasMore: page.count == 200))
+                        return .json(feedJSON(page, sync: sync, hasMore: page.count == 200), delay: feedDelay)
                     }
                     if let b = q["before"].flatMap(Int.init) { return .json(feedJSON(Array(seqs.filter { $0 < b }.suffix(100)), sync: sync)) }
                     return .json(feedJSON(Array(seqs.suffix(100)), sync: sync))
@@ -26,6 +27,28 @@ final class SyncTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testTaskCompletionWaitsForMatchingFeedBeforePublishing() async throws {
+        let core = StubCore(), fake = Fake()
+        fake.tasks = [["id": "t1", "bot_id": "b1", "status": "running"]]
+        core.handle(fake.handler)
+        let store = makeStore(core); store.select("b1")
+        await store.refresh()
+        let conv = store.conversation(for: "b1")
+        XCTAssertEqual(conv.activeTask?.id, "t1")
+        fake.lock.withLock {
+            fake.tasks = [["id": "t1", "bot_id": "b1", "status": "succeeded"]]
+            fake.seqs.append(4); fake.feedDelay = 0.3
+        }
+        let refresh = Task { await store.refresh() }
+        for _ in 0..<100 where core.recorded("/api/state").count < 2 { try await Task.sleep(for: .milliseconds(2)) }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(conv.activeTask?.id, "t1", "Do not remove the processing row before the reply is available")
+        XCTAssertEqual(conv.messages.last?.seq, 3)
+        await refresh.value
+        XCTAssertEqual(conv.activeTask?.status, "succeeded")
+        XCTAssertEqual(conv.messages.last?.seq, 4)
     }
 
     func testInitialLoadAndReadReceiptOncePerSeq() async throws {

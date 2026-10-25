@@ -12,7 +12,7 @@ const directory = mkdtempSync(path.join(os.tmpdir(), 'nex-html-preview-'));
 const localUi = process.argv.includes('--local-ui');
 const output = path.resolve('release/html-preview', ...(localUi ? ['local-ui'] : [])); mkdirSync(output, { recursive: true });
 const ui = path.join(directory, 'ui'); mkdirSync(ui);
-await build({ entryPoints: ['scripts/testing/html-preview-fixture.tsx'], outfile: path.join(ui, 'fixture.js'), bundle: true, format: 'iife', jsx: 'automatic', platform: 'browser', define: { __APP_VERSION__: '"fixture"' }, loader: { '.svg': 'dataurl' } });
+await build({ entryPoints: ['scripts/testing/html-preview-fixture.tsx'], outfile: path.join(ui, 'fixture.js'), bundle: true, format: 'iife', jsx: 'automatic', platform: 'browser', define: { __APP_VERSION__: '"fixture"' }, loader: { '.svg': 'dataurl', '.png': 'dataurl' } });
 writeFileSync(path.join(ui, 'index.html'), '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/fixture.css"><link rel="stylesheet" href="/layout.css"><div id="root"></div><script src="/fixture.js"></script>');
 writeFileSync(path.join(ui, 'layout.css'), 'body{margin:0;padding:16px;background:#f7f8fa;font:14px system-ui}main{max-width:1000px;margin:auto}h1{font-size:18px}*{box-sizing:border-box}pre{overflow:auto}');
 writeFileSync(path.join(ui, 'html-preview.html'), htmlPreviewShell());

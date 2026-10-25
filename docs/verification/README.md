@@ -1,6 +1,10 @@
 # Verifying OpenMausBot
 
+- [Discoverable HTML rendering](html-render-tool.md)
+- [Chat send stability](chat-send-stability.md)
+- [Tool context follows total capacity](tool-context-budget.md)
 - [Image attachments and the context estimate](image-context-estimate.md)
+- [Windows client integrated title bar](windows-client-titlebar.md)
 - [Unified UI and role avatars: all-platform release](ui-roles-release.md)
 - [Gmail Connect from the connector catalog](gmail-catalog-connect.md)
 - [Flat layout in client windows](client-frame-flat.md)

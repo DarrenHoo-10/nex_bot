@@ -1,7 +1,8 @@
 import { CoreStore, hash, id, now, optionalText, text, type Row } from "./store.ts";
+import { entryPage, entryText } from './context-tools.ts';
 import type { TaskRuntime } from "./runtime.ts";
 import { actions, policyTools } from "./policy.ts";
-import { universalImageActions } from '../../shared/personal-capabilities.ts';
+import { universalActions } from '../../shared/personal-capabilities.ts';
 import { parseAppearance } from "../../shared/personal-appearance.ts";
 import { tokens } from './token-estimate.ts';
 import { relevance } from './assistant-memory.ts';
@@ -34,7 +35,7 @@ export class AgentModule {
     };
     runtime.onDelegation = (link, completed) => this.delegation(link, completed);
     runtime.agentHistory = (botId, taskId) => this.context(botId, taskId);
-    runtime.historySearch = (botId, query) => this.search(botId, query);
+    runtime.historySearch = (botId, query, page) => this.search(botId, query, page);
   }
   ensure(botId: string) {
     const bot = this.store.get("SELECT id FROM bots WHERE id=? AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner);
@@ -87,7 +88,7 @@ export class AgentModule {
   updatePolicy(data: Record<string, unknown>) {
     const botId = text(data.id, 100), version = Number(data.version);
     if (!Array.isArray(data.tools) || data.tools.some((tool) => !actions.includes(tool))) throw new Error("工具清单无效");
-    const tools = [...new Set([...data.tools, ...universalImageActions])];
+    const tools = [...new Set([...data.tools, ...universalActions])];
     this.store.transaction(() => {
       this.ensure(botId);
       if (!Number.isSafeInteger(version) || version < 1 || this.store.run("UPDATE bot_policies SET policy_json=?,approval_mode='allow_scoped',version=version+1 WHERE bot_id=? AND version=?", JSON.stringify({ tools: [...new Set(tools)] }), botId, version).changes !== 1) throw new Error("权限已变化，请刷新");
@@ -270,13 +271,18 @@ export class AgentModule {
     const note=this.store.get('SELECT content,version FROM assistant_working_notes WHERE bot_id=?',botId);
     return JSON.stringify({ checkpoint:checkpoint?.id??null,workingNote:note??null,otherRecentWork:recent,recalledHistory:recalled,history:'通过 memory.search 搜索早期原文；query="message:<id>" 可展开消息，query="entry:<id>" 可展开运行记录。' });
   }
-  search(botId: string, query: string) {
+  search(botId: string, query: string): Row[];
+  search(botId: string, query: string, page?: { offset?: number; limit?: number }): Array<Row | ReturnType<typeof entryPage>>;
+  search(botId: string, query: string, page?: { offset?: number; limit?: number }) {
     if(query.startsWith('message:')) return this.store.all('SELECT id,role,content,created_at FROM agent_messages WHERE bot_id=? AND id=?',botId,query.slice(8));
     if(query.startsWith('entry:')) {
       const entryId=query.slice(6);
       for(const session of this.store.all('SELECT id FROM runtime_sessions WHERE bot_id=?',botId)) {
         const entry=this.runtime.projection.load(String(session.id))?.find(entry=>entry.type!=='session'&&entry.id===entryId);
-        if(entry)return [{id:entryId,content:JSON.stringify(entry)}];
+        if(entry){
+          const content=entryText(entry);
+          return [page ? entryPage(entryId,content,page.offset,page.limit) : {id:entryId,content}];
+        }
       }
       return [];
     }

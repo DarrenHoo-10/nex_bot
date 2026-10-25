@@ -18,7 +18,7 @@ struct PolicyEditorSheet: View {
                 Section {
                     ForEach(PolicyCatalog.uiOrder) { action in
                         Toggle(isOn: Binding(
-                            get: { granted.contains(action.id) },
+                            get: { PolicyCatalog.universalActions.contains(action.id) || granted.contains(action.id) },
                             set: { if $0 { granted.insert(action.id) } else { granted.remove(action.id) } }
                         )) {
                             VStack(alignment: .leading, spacing: 1) {
@@ -26,7 +26,7 @@ struct PolicyEditorSheet: View {
                                 Text(action.id).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted)
                             }
                         }
-                        .tint(Theme.success)
+                        .tint(Theme.success).disabled(PolicyCatalog.universalActions.contains(action.id))
                     }
                 } footer: {
                     VStack(alignment: .leading, spacing: 8) {

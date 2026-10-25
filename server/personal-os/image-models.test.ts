@@ -163,12 +163,12 @@ it('grants image capability to old restricted and new agents while preserving ot
   expect(evaluateTool(f.app.store, peer, { action: 'image.generate', prompt: 'bird' }).approvalRequired).toBe(false);
   expect(evaluateTool(f.app.store, peer, { action: 'image.models' }).approvalRequired).toBe(false);
   expect(() => evaluateTool(f.app.store, peer, { action: 'memory.search', query: 'private' })).toThrow('无权');
-  expect(JSON.parse(String(f.app.agents.policyView(peer)!.policy_json)).tools).toEqual(['attachment.read', 'image.models', 'image.generate']);
+  expect(JSON.parse(String(f.app.agents.policyView(peer)!.policy_json)).tools).toEqual(['attachment.read', 'image.models', 'image.generate', 'html.render']);
   const version = f.app.store.get('SELECT version FROM bot_policies WHERE bot_id=?', peer)!.version;
   expect((await f.request('bots/policy', { id: peer, version, tools: [] })).status).toBe(200);
   const state = await (await f.request('state')).json() as { bots: { id: string; policy_json: string }[]; directory: { id: string; capabilities: string[] }[] };
-  expect(JSON.parse(state.bots.find(bot => bot.id === peer)!.policy_json).tools).toEqual(['image.models', 'image.generate']);
-  expect(state.directory.find(bot => bot.id === peer)!.capabilities).toEqual(['image.models', 'image.generate']);
+  expect(JSON.parse(state.bots.find(bot => bot.id === peer)!.policy_json).tools).toEqual(['image.models', 'image.generate', 'html.render']);
+  expect(state.directory.find(bot => bot.id === peer)!.capabilities).toEqual(['image.models', 'image.generate', 'html.render']);
   const fresh = f.app.store.createBot('New');
   expect(evaluateTool(f.app.store, fresh, { action: 'image.generate', prompt: 'bird' }).approvalRequired).toBe(false);
   f.app.store.run("UPDATE bots SET status='archived' WHERE id=?", peer);

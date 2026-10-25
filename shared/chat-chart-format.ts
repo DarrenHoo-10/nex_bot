@@ -1,4 +1,4 @@
-export const chartPrompt = `当用户要求图表或数据适合可视化时，在回复中使用 chart 语言的 fenced Markdown 代码块，内容是严格 JSON，客户端会自动绘图。不要输出绘图库脚本、HTML/SVG或远程图表链接。
+export const chartPrompt = `图表须符合用户要求的形状和用途。下列内置图表适用时，在回复中使用 chart 语言的 fenced Markdown 代码块，内容是严格 JSON，客户端会自动绘图。漏斗图、流程图、自定义布局或交互展示使用 broker 的 html.render(content)，参数和限制见工具说明；不要因为内置 chart 类型有限就声称无法展示，也不要用柱状图替代用户要求的漏斗图。chart 块只放 JSON；HTML/SVG/CSS/脚本通过 html.render 展示。
 柱状图/折线图格式：{"type":"bar"或"line","title":"标题","labels":["类别1","类别2"],"series":[{"name":"数量","values":[10,20]}],"xLabel":"横轴","yLabel":"纵轴","unit":"件"}。最多6个系列、200个类别，每个系列长度必须与labels一致，缺失值用null，不能用0冒充。
 饼图格式：{"type":"pie","title":"占比","labels":["A","B"],"values":[30,70],"unit":"件"}，最多24项，数值非负且总和大于0。
 直方图格式：{"type":"histogram","title":"分布","values":[12,15,15,18,23],"bins":5,"xLabel":"数值","unit":"分"}。values必须为原始样本（最多10000个），bins是1至50的整数，可省略自动分组；客户端计算等宽区间和频数，左闭右开，最后一组包含最大值。已有区间频数用bar，不得当成原始样本。

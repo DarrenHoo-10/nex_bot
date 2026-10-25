@@ -53,7 +53,7 @@ struct ConversationView: View {
             VStack(spacing: 10) {
                 ForEach(pendingApprovals) { ApprovalCard(workspace: workspace, approval: $0) }
                 ForEach(workspace.state?.peersAwaitingApproval(for: botID) ?? [], id: \.self) { peerID in waitingLine(peerID) }
-                if !tasks.isEmpty { statusLine(conv) }
+                if !tasks.isEmpty || conv.isSending { statusLine(conv) }
                 Composer(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             }
             .frame(maxWidth: Theme.readingWidth)
@@ -187,7 +187,7 @@ struct ConversationView: View {
         let stopping = tasks.contains { $0.status == "cancelling" }
         return HStack(spacing: 8) {
             Circle().fill(tasks.first?.status == "awaiting_approval" ? Theme.approval : Theme.success).frame(width: 6, height: 6)
-            Text(stopping ? "正在停止…" : "Agent 正在工作 · \(ToolLabels.taskPhrase(tasks.first))").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            Text(tasks.isEmpty ? "正在发送…" : stopping ? "正在停止…" : "Agent 正在工作 · \(ToolLabels.taskPhrase(tasks.first))").font(.system(size: 11)).foregroundStyle(Theme.muted)
             Spacer()
         }
         .padding(.horizontal, 4)
@@ -247,7 +247,7 @@ private struct MessageList: View {
     private var loadKey: String { "\(botID)|\(conversation.isLoaded)" }
 
     private var tailKey: String {
-        "\(conversation.messages.last?.seq ?? 0)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")"
+        "\(conversation.messages.last?.seq ?? 0)|\(conversation.streaming.map { $0.text.count }.reduce(0, +))|\(workspace.approvals.count)|\(conversation.activeTask?.id ?? "")|\(processing)"
     }
 
     /// Centers the searched message. Row heights are estimated until laid out, so the jump is repeated once they are known.
@@ -317,7 +317,7 @@ private struct MessageList: View {
                     if processing {
                         VStack(alignment: .leading, spacing: 6) {
                             TypingDots().accessibilityLabel("\(bot?.name ?? "Agent") 正在处理消息")
-                            if let first = tasks.first { Text(ToolLabels.taskPhrase(first)).font(.system(size: 11)).foregroundStyle(Theme.muted) }
+                            Text(tasks.isEmpty ? "正在发送…" : ToolLabels.taskPhrase(tasks.first)).font(.system(size: 11)).foregroundStyle(Theme.muted)
                         }
                         .padding(.bottom, 14)
                     }
@@ -347,15 +347,12 @@ private struct MessageList: View {
             .overlay(alignment: .bottom) {
                 if !atBottom && conversation.messages.count > 3 && focusedID == nil {
                     Button { atBottom = true; withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
-                            Text("回到底部").font(.system(size: 11))
-                        }
-                        .foregroundStyle(Theme.foreground).padding(.horizontal, 12).frame(height: 28)
-                        .background(Theme.card, in: Capsule()).overlay(Capsule().strokeBorder(Theme.border))
-                        .shadow(color: .black.opacity(0.1), radius: 6, y: 2).contentShape(Capsule())
+                        Image(systemName: "arrow.down").font(.system(size: 20, weight: .regular))
+                            .foregroundStyle(Theme.foreground).frame(width: 40, height: 40)
+                            .background(Theme.card, in: Circle()).overlay(Circle().strokeBorder(Theme.border))
+                            .shadow(color: .black.opacity(0.04), radius: 3, y: 1).contentShape(Circle())
                     }
-                    .buttonStyle(.plain).padding(.bottom, 10)
+                    .buttonStyle(.plain).accessibilityLabel("回到底部").padding(.bottom, 10)
                 }
             }
             .onChange(of: tailKey) {

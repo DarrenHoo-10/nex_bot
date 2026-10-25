@@ -54,6 +54,9 @@ export function useBottomFollowResize(
       followBottomGrowth(scroller, followingRef.current);
     });
     observer.observe(transcript);
+    // Composer rows and attachment chips change the viewport height without
+    // resizing the transcript. Keep the same bottom anchor in that case too.
+    observer.observe(scroller);
     return () => observer.disconnect();
   }, [followingRef, observeKey, scrollRef, transcriptRef]);
 }

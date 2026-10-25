@@ -17,6 +17,7 @@ export interface WorkerEvent {
   purpose?: "answer" | "compact";
   modelStatus?: "succeeded" | "failed" | "cancelled";
   firstEntry?: string; lastEntry?: string; contextTokens?: number;
+  summaryMaxTokens?: number;
   cacheRead?: number; cacheWrite?: number;
 }
 export interface WorkerReply { type: "start" | "reply" | "steer" | "stop"; config?: WorkerConfig; requestId?: string; result?: unknown; error?: string; input?: RuntimeInput }

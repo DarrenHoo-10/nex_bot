@@ -39,6 +39,7 @@ public struct PolicyAction: Sendable, Hashable, Identifiable {
 
 /// Tool actions offered by the shared permission editor.
 public enum PolicyCatalog {
+    public static let universalActions: Set<String> = ["image.models", "image.generate", "html.render"]
     /// Order of the server's `actions` list (`policy.ts`).
     public static let serverOrder: [String] = [
         "memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget",
@@ -46,7 +47,7 @@ public enum PolicyCatalog {
         "routine.list", "routine.save", "routine.toggle", "routine.run",
         "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer",
         "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call",
-        "attachment.read", "image.models", "image.generate",
+        "attachment.read", "image.models", "image.generate", "html.render",
     ]
     /// Order of the web checkbox grid, with Chinese labels.
     public static let uiOrder: [PolicyAction] = [
@@ -76,6 +77,7 @@ public enum PolicyCatalog {
         .init(id: "attachment.read", label: "读取对话附件"),
         .init(id: "image.models", label: "查看生图模型"),
         .init(id: "image.generate", label: "按需生成图片"),
+        .init(id: "html.render", label: "展示交互内容"),
         .init(id: "skill.list", label: "查看通用技能目录"),
         .init(id: "skill.read", label: "阅读通用技能说明"),
     ]

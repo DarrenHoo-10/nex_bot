@@ -27,6 +27,7 @@ struct ChatView: View {
     private var bot: Bot? { workspace.bot(botID) }
     private var approvals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
+    private var processing: Bool { (!tasks.isEmpty || conversation.isSending) && conversation.streaming.isEmpty && approvals.isEmpty }
     private var hasModel: Bool { workspace.state?.config != nil }
     private var modelName: String { workspace.bot(botID)?.selectedModel ?? workspace.state?.config?.defaultModel.nonEmpty ?? "未连接模型" }
     private var firstPeer: Bot? { workspace.bots.first { $0.id != botID } }
@@ -72,12 +73,12 @@ struct ChatView: View {
                             }
                             .id(message.id)
                     }
-                    if conv.isLoaded && conv.messages.isEmpty && conv.streaming.isEmpty { welcome }
+                    if conv.isLoaded && conv.messages.isEmpty && conv.streaming.isEmpty && !processing { welcome }
                     ForEach(conv.streaming, id: \.taskId) { part in
                         StreamingRow(text: part.text, replyingTo: replyingTo(taskID: part.taskId))
                     }
-                    if !tasks.isEmpty && conv.streaming.isEmpty && approvals.isEmpty {
-                        ThinkingIndicator(name: bot?.name ?? "Agent", phrase: tasks[0].phrase)
+                    if processing {
+                        ThinkingIndicator(name: bot?.name ?? "Agent", phrase: tasks.first?.phrase ?? "正在发送…")
                     }
                     ForEach(approvals) { approval in
                         ApprovalCard(approval: approval, botName: bot?.name ?? "") { allow, remember in await decide(approval, allow: allow, remember: remember) }
@@ -105,18 +106,19 @@ struct ChatView: View {
             .overlay(alignment: .bottom) {
                 if !atBottom && conv.messages.count > 3 && focusedID == nil {
                     Button { scrollToBottom(proxy) } label: {
-                        Label("回到底部", systemImage: "arrow.down").font(.footnote.weight(.medium))
-                            .padding(.horizontal, 14).padding(.vertical, 8)
-                            .background(Theme.card, in: Capsule()).overlay(Capsule().stroke(Theme.border))
-                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                        Image(systemName: "arrow.down").font(.system(size: 20, weight: .regular))
+                            .frame(width: 44, height: 44)
+                            .background(Theme.card, in: Circle()).overlay(Circle().stroke(Theme.border))
+                            .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
                     }
-                    .buttonStyle(.plain).foregroundStyle(Theme.foreground).padding(.bottom, 10)
+                    .buttonStyle(.plain).accessibilityLabel("回到底部").foregroundStyle(Theme.foreground).padding(.bottom, 10)
                     .transition(.opacity)
                 }
             }
             .onChange(of: conv.messages.last?.seq) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
             .onChange(of: conv.streaming) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
             .onChange(of: approvals.count) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
+            .onChange(of: processing) { if focusedID == nil && atBottom { proxy.scrollTo(bottomID, anchor: .bottom) } }
             .onChange(of: conv.sendRevision) {
                 atBottom = true; proxy.scrollTo(bottomID, anchor: .bottom)
             }

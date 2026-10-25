@@ -5,6 +5,14 @@ export function optimisticOutgoing(clientId: string, content: string, createdAt 
   return { id: `optimistic:${clientId}`, role: "user", kind: "message", content, created_at: createdAt, seq: 0 };
 }
 
+/** The receipt replaces data, not the already visible message element. */
+export function transcriptMessageKey(message: RecordRow): string {
+  const source = String(message.source_key ?? "");
+  return message.role === "user" && source.startsWith("agent-input:")
+    ? `optimistic:${source.slice(source.lastIndexOf(":") + 1)}`
+    : String(message.id);
+}
+
 /**
  * Keep unsent local rows when a refetch replaces the list. The server copy is
  * the row whose source key ends with this send's client id (attachment links

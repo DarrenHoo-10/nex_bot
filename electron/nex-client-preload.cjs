@@ -1,4 +1,15 @@
 const { contextBridge, ipcRenderer } = require("electron");
+if (process.platform === "win32" && process.isMainFrame) {
+  window.addEventListener("DOMContentLoaded", () => {
+    let previous;
+    const syncTheme = () => {
+      const dark = document.querySelector(".workspace-stage")?.getAttribute("data-dark") === "1";
+      if (dark !== previous) { previous = dark; ipcRenderer.send("client:chrome-theme", dark); }
+    };
+    new MutationObserver(syncTheme).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-dark"] });
+    syncTheme();
+  });
+}
 contextBridge.exposeInMainWorld("nex", {
   mode: "client",
   deviceState: () => ipcRenderer.invoke("client:device-state"),
