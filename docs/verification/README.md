@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [About, updates and preview controls: all-platform release (2026-10-25)](settings-updates-release-20261025.md)
 - [Client updates and Settings → About](client-updates.md)
 - [Chat, context and HTML: all-platform release (2026-10-25)](chat-release-20261025.md)
 - [Discoverable HTML rendering](html-render-tool.md)

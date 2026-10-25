@@ -58,6 +58,9 @@ update offers must not be reported as `已是最新版`.
 
 ### Settings verification — 2026-10-25 (not published)
 
+This describes the implementation check before release. It subsequently shipped
+with [0.9.15 and all-platform packages](settings-updates-release-20261025.md).
+
 - Six isolated `AboutSettings` component tests cover the actual version,
   successful no-update response, checking/download/ready states, explicit install,
   retry after failure, stale initial-state events, and web/unsupported installations.
