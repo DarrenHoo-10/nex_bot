@@ -109,20 +109,26 @@ block, and `feishu*` endpoints/actions; jobs are polled (1.5 s) while
 
 ## Production deployment — 2026-10-25
 
-Tokyo (`nexbot-core.service`) deployed from this branch as release
-`/data/nexbot/releases/feishu-connector-20261025` (linux-x64 archive
-`NexBot-Core-feishu-20261025-linux-x64.tar.gz`, SHA-256
-`330b3405dbaf6e729ceac1f4b765c80bb47cfb3a32cd6eac2819cbae26288403`, verified
-on the server before extraction; canvas swapped to
-`@napi-rs/canvas-linux-x64-gnu@1.0.10`). A new drop-in
-`zzzzzzzzzzzzzzzzzzzzzz-feishu-connector-release.conf` points ExecStart at the
-release with `--account-workspaces` preserved; the superseded conf was backed
-up in place (`.bak-20261025`). After `daemon-reload` + restart: unit active,
-ready JSON with the stable Core ID and `initialized:true`, local and public
-`https://bot.nexorai.com.cn/health` return 200. Migration 19 is additive; the
-previous release directory remains for rollback (re-point the drop-in and
-restart). Not yet done on production: real-tenant scan acceptance and a push
-of this branch (GitHub credentials expired; user must re-auth `gh`).
+Current release: `/data/nexbot/releases/feishu-merged-20261025` (archive
+`NexBot-Core-feishu-merged-20261025-linux-x64.tar.gz`, SHA-256
+`a75cf24af6218d1eeadfae64d2a1ff1424f3dc5f8f6198c961a4f156f27e2d33`, verified on
+the server; canvas `@napi-rs/canvas-linux-x64-gnu@1.0.10`). This is the merged
+build (main's Gmail/image work + Feishu at migration 25). Data dir backed up to
+`backups/pre-feishu-merged-20261025.tar.gz` first. After the drop-in switch and
+restart: unit active, ready JSON with the stable Core ID, health 200 locally and
+on `https://bot.nexorai.com.cn`, and all five databases (main + 4 account
+workspaces) show max migration 25 with `personal_feishu_apps` present, zero
+errors in the journal.
+
+Incident note: the first deploy (`feishu-connector-20261025`, built from this
+branch before the main merge) placed the Feishu tables at migration 19. Its
+process ran without applying anything (19 was already main's image_models on
+production, checksums matched main), so `personal_feishu_apps` never existed
+and the UI surfaced "no such table: personal_feishu_apps". The merged build
+renumbers Feishu to 25 and applies cleanly on top of production's 24. Rollback:
+re-point the drop-in at any earlier release directory and restart.
+
+Outstanding: real-tenant scan acceptance.
 
 ## Real-tenant acceptance (outstanding)
 
