@@ -44,7 +44,15 @@ export function AccountControls() {
   </section>;
 }
 
+function isHomeRoute() { return !desktop && ["#home", "#top", "#features", "#platforms", "#start", "#login"].includes(window.location.hash); }
+
 export function LoginGate({ children }: { children: ReactNode }) {
+  const [home, setHome] = useState(isHomeRoute);
+  useEffect(() => {
+    const navigate = () => setHome(isHomeRoute());
+    window.addEventListener("hashchange", navigate);
+    return () => window.removeEventListener("hashchange", navigate);
+  }, []);
   const [status, setStatus] = useState<IdentityStatus>(), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [confirmLogout, setConfirmLogout] = useState(false);
   const generation = useRef(0);
@@ -87,7 +95,12 @@ export function LoginGate({ children }: { children: ReactNode }) {
     }
     finally { loggingOut.current = false; }
   }
-  if (status?.authenticated) return <Account.Provider value={{ status, logout: async () => { setConfirmLogout(true); } }}>{children}{confirmLogout && <LogoutConfirmation close={() => setConfirmLogout(false)} confirm={logout}/>}</Account.Provider>;
+  if (status?.authenticated) return <Account.Provider value={{ status, logout: async () => { setConfirmLogout(true); } }}>
+    {/* Keep the workspace mounted so returning home preserves drafts and the selected conversation. */}
+    <div style={{ display: home ? "none" : "contents" }}>{children}</div>
+    {home && <HomePage signedIn login={<section className="login-card"><BrandMark size={56}/><h1>NexBot</h1><a className="home-button is-primary" href="#workspace">进入工作台</a></section>}/>}
+    {confirmLogout && <LogoutConfirmation close={() => setConfirmLogout(false)} confirm={logout}/>}
+  </Account.Provider>;
   const card = <section className="login-card"><BrandMark size={56}/><h1>登录 NexBot</h1>{loading ? <p role="status">正在检查登录状态…</p> : !status?.initialized && !status?.canInitialize ? <><p>暂时无法登录，请稍后重试。</p><button onClick={() => void refresh()}>重新检查</button></> : <form className="login-form" onSubmit={(event) => {
     event.preventDefault(); const form = event.currentTarget, data = new FormData(form); setBusy(true); setError("");
     void (async () => {
@@ -95,7 +108,9 @@ export function LoginGate({ children }: { children: ReactNode }) {
         const transaction = await api<LoginTransaction>("auth/start", { account: data.get("email"), name: desktop?.mode === "client" ? "NexBot Client" : "主设备" });
         const session = await api<LoginSession>("auth/respond", { ...transaction, password: data.get("password") });
         form.reset();
-        await desktop?.rememberLogin?.(session); await refresh();
+        await desktop?.rememberLogin?.(session);
+        if (!desktop) { history.replaceState(null, "", `${location.pathname}${location.search}#workspace`); setHome(false); }
+        await refresh();
       } catch (e) { setError(e instanceof Error ? e.message : "登录失败，请重试"); const password = form.elements.namedItem("password") as HTMLInputElement; password.value = ""; }
       finally { setBusy(false); }
     })();

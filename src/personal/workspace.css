@@ -31,6 +31,9 @@
 .contact-sidebar { min-width: 0; background: var(--background); display: flex; flex-direction: column; border-right: 1px solid var(--sidebar-border); padding: 0 12px; overflow: hidden; }
 .workspace-brand { display: flex; align-items: center; gap: 9px; height: 64px; flex-shrink: 0; padding: 0 7px; }
 .workspace-brand strong { font-size: 16px; letter-spacing: -.6px; flex: 1; font-weight: 650; }
+.workspace-home-link { display: flex; align-items: center; gap: inherit; flex: 1; min-width: 0; color: inherit; text-decoration: none; border-radius: 6px; }
+.workspace-home-link:hover { opacity: .8; }
+.workspace-home-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; }
 .sidebar-search { display: flex; align-items: center; min-width: 0; gap: 8px; height: 36px; border: 1px solid var(--sidebar-border); padding: 0 10px; border-radius: 8px; color: var(--muted-foreground); background: var(--secondary); }
 .rk-workspace .sidebar-search input { background: transparent; border: 0; width: 100%; min-width: 0; outline: none; padding: 0; height: 100%; font-size: 12px; }
 .contact-groups { flex: 1; overflow: auto; padding: 0 0 20px; }

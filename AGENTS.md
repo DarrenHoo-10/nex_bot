@@ -77,9 +77,19 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    current version gets none; downloading each offered installer matches the
    manifest size and SHA-256. A finished background command is not success: read
    its result before moving on.
-6. **README and records.** Update the README download table and version line to the
-   new tag, add a `docs/verification/<topic>.md` record with the evidence and
-   limits, and link it from `docs/verification/README.md`.
+6. **README, homepage and records.** Every release must update both the README
+   and the public website homepage together. Keep each platform's displayed
+   version, download entry, release link and installation note consistent with
+   its latest published installer; platforms not rebuilt retain their latest
+   verified release. The homepage must consume the shared download manifest for
+   every published platform, including Mac and iPhone, rather than link to source
+   build instructions. Verify the deployed homepage's actual download links and
+   versions against the published files; updating only the README or only the
+   release page is incomplete. Add a `docs/verification/<topic>.md` record with
+   the evidence and limits, and link it from `docs/verification/README.md`.
+
+   只要有发版，README 和网站主页必须一起更新，并核对线上实际版本号与下载链接；
+   不能只更新发布页或其中一处。未重发的平台保留其最新已验证版本。
 
 ## Product UI copy
 

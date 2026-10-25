@@ -6,11 +6,11 @@ import type { Appearance } from "./avatars/appearance";
 
 const repo = "https://github.com/DarrenHoo-10/nex_bot";
 export const registerUrl = "https://user.nexorai.com.cn/register/nexbot";
-const links = { releases: `${repo}/releases`, apple: `${repo}/tree/main/apps/apple` };
+const links = { releases: `${repo}/releases` };
 
 interface ClientDownload { url: string; version: string; publishedAt: string }
-interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload }
-/** Core resolves the newest GitHub release; until it answers (or on an older Core) the cards open the release list. */
+interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload; mac?: ClientDownload; ios?: ClientDownload }
+/** Core resolves the shared release manifest; unavailable platforms fall back to the release list. */
 function useClientDownloads() {
   const [downloads, setDownloads] = useState<ClientDownloads>({});
   useEffect(() => {
@@ -36,16 +36,17 @@ const features = [
   { icon: ShieldCheck, title: "关键操作你来定", text: "删除、覆盖、发消息等操作先请你批准，随时可以停止。" },
 ];
 
-function platforms({ windows, android }: ClientDownloads) {
+function platforms({ windows, android, mac, ios }: ClientDownloads) {
   return [
     { icon: Laptop, name: "Windows", detail: windows ? `${windows.version} · x64 便携版，免安装` : "x64 便携版，免安装", note: "可让助手操作这台电脑", href: windows?.url ?? links.releases, action: windows ? "下载 EXE" : "前往 GitHub 下载" },
     { icon: Smartphone, name: "Android", detail: android ? `${android.version} · Android 8.0 及以上` : "Android 8.0 及以上", note: "查看消息、发送任务、处理审批", href: android?.url ?? links.releases, action: android ? "下载 APK" : "前往 GitHub 下载" },
+    { icon: Laptop, name: "Mac", detail: mac ? `${mac.version} · Apple 芯片，macOS 14 及以上` : "Apple 芯片，macOS 14 及以上", note: "临时签名，尚未公证", href: mac?.url ?? links.releases, action: mac ? "下载 DMG" : "前往 GitHub 下载" },
+    { icon: Smartphone, name: "iPhone", detail: ios ? `${ios.version} · iOS 17 及以上` : "iOS 17 及以上", note: "未签名 IPA，需自行签名安装", href: ios?.url ?? links.releases, action: ios ? "下载 IPA" : "前往 GitHub 下载" },
     { icon: Globe, name: "网页版", detail: "浏览器直接使用", note: "对话和管理助手，无需安装", href: "#login", action: "立即登录" },
-    { icon: MonitorSmartphone, name: "Mac 与 iPhone", detail: "原生客户端", note: "需从源码构建", href: links.apple, action: "构建说明" },
   ];
 }
-function releaseNote({ windows, android }: ClientDownloads) {
-  const published = [windows?.publishedAt, android?.publishedAt].filter(Boolean).sort().at(-1);
+function releaseNote({ windows, android, mac, ios }: ClientDownloads) {
+  const published = [windows?.publishedAt, android?.publishedAt, mac?.publishedAt, ios?.publishedAt].filter(Boolean).sort().at(-1);
   const date = published ? new Date(published).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" }) : "";
   return `${date ? `最新预览版发布于 ${date}。` : "安装包发布在 GitHub。"}Windows 包尚无发布者签名，Android 包为测试签名。`;
 }
@@ -100,13 +101,13 @@ function ProductPreview() {
   </div>;
 }
 
-export function HomePage({ login }: { login: ReactNode }) {
+export function HomePage({ login, signedIn = false }: { login: ReactNode; signedIn?: boolean }) {
   const downloads = useClientDownloads();
   return <div className="home">
     <header className="home-nav">
       <a className="home-logo" href="#top"><BrandMark size={30}/><strong>NexBot</strong></a>
       <nav aria-label="主导航"><a href="#features">功能</a><a href="#platforms">下载</a><a href="#start">上手</a></nav>
-      <div className="home-nav-actions"><a href="#login" onClick={toLogin}>登录</a><a className="home-button is-dark" href={registerUrl} {...external(registerUrl)}>注册</a></div>
+      <div className="home-nav-actions">{signedIn ? <a className="home-button is-dark" href="#workspace">进入工作台</a> : <><a href="#login" onClick={toLogin}>登录</a><a className="home-button is-dark" href={registerUrl} {...external(registerUrl)}>注册</a></>}</div>
     </header>
     <main id="top">
       <section className="home-hero">
@@ -115,7 +116,7 @@ export function HomePage({ login }: { login: ReactNode }) {
           <h1>把 AI 助手<br/>放进你的日常工作</h1>
           <p className="home-lede">为不同事情创建专属助手。在电脑、手机和网页上接着聊，让助手处理文件、调用工具，按计划完成例行任务。</p>
           <div className="home-cta">
-            <a className="home-button is-primary" href={registerUrl} {...external(registerUrl)}>注册账号<ArrowRight size={16}/></a>
+            <a className="home-button is-primary" href={signedIn ? "#workspace" : registerUrl} {...external(signedIn ? "#workspace" : registerUrl)}>{signedIn ? "进入工作台" : "注册账号"}<ArrowRight size={16}/></a>
             <a className="home-button" href="#platforms"><Download size={16}/>下载客户端</a>
           </div>
           <ul className="home-proof"><li>Windows</li><li>Android</li><li>Mac</li><li>iPhone</li><li>网页</li></ul>
@@ -129,8 +130,8 @@ export function HomePage({ login }: { login: ReactNode }) {
       </section>
       <section id="platforms" className="home-section">
         <div className="home-section-head"><p className="home-eyebrow">下载</p><h2>在常用的设备上使用</h2><p>{releaseNote(downloads)}</p></div>
-        <div className="home-platforms">{platforms(downloads).map(({ icon: Icon, name, detail, note, href, action }) => <a key={name} href={href} {...external(href)} onClick={href === "#login" ? toLogin : undefined}>
-          <span className="home-icon"><Icon size={19}/></span><strong>{name}</strong><span>{detail}</span><small>{note}</small><b>{action}<ArrowRight size={14}/></b>
+        <div className="home-platforms">{platforms(downloads).map(({ icon: Icon, name, detail, note, href, action }) => <a key={name} href={signedIn && href === "#login" ? "#workspace" : href} {...external(href)} onClick={!signedIn && href === "#login" ? toLogin : undefined}>
+          <span className="home-icon"><Icon size={19}/></span><strong>{name}</strong><span>{detail}</span><small>{note}</small><b>{signedIn && href === "#login" ? "进入工作台" : action}<ArrowRight size={14}/></b>
         </a>)}</div>
         <p className="home-release-link"><a href={links.releases} {...external(links.releases)}>查看全部版本与校验文件</a></p>
       </section>
@@ -140,7 +141,7 @@ export function HomePage({ login }: { login: ReactNode }) {
       </section>
       <section className="home-closing">
         <h2>交给助手的第一件事，现在就可以开始</h2>
-        <div className="home-cta"><a className="home-button is-primary" href="#login" onClick={toLogin}>登录网页版<ArrowRight size={16}/></a><a className="home-button is-ghost" href={registerUrl} {...external(registerUrl)}>注册账号</a></div>
+        <div className="home-cta"><a className="home-button is-primary" href={signedIn ? "#workspace" : "#login"} onClick={signedIn ? undefined : toLogin}>{signedIn ? "进入工作台" : "登录网页版"}<ArrowRight size={16}/></a>{!signedIn && <a className="home-button is-ghost" href={registerUrl} {...external(registerUrl)}>注册账号</a>}</div>
       </section>
     </main>
     <footer className="home-footer"><span><BrandMark size={20}/>NexBot · NexorAI</span><nav><a href={links.releases} {...external(links.releases)}>版本发布</a><a href={registerUrl} {...external(registerUrl)}>注册</a><a href={repo} {...external(repo)}>GitHub</a></nav></footer>
