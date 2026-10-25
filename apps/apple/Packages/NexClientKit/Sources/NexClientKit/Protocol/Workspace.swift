@@ -101,6 +101,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var connectors: [ConnectorView]
     public var connectorCatalog: [ConnectorCatalogEntry] = []
     public var gmailAvailable: Bool { connectorCatalog.first { $0.id == "gmail" }?.available == true }
+    /// Feishu connection state (job, user auth, apps). Nil on older Cores.
+    public var feishu: FeishuState?
     public var memories: [Memory]
     public var journal: [JournalEntry]
     public var usage: [Usage]
@@ -122,12 +124,12 @@ public struct WorkspaceState: Codable, Sendable {
     /// `imageModelSelection`: the models offered for image generation (always a list; OpenAI-compatible connections only).
     public var imageModelSelection: ModelVisibility = ModelVisibility(models: [])
 
-    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false, modelVisibility: ModelVisibility = ModelVisibility()) {
+    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false, modelVisibility: ModelVisibility = ModelVisibility(), feishu: FeishuState? = nil) {
         self.sync = sync; self.bots = bots; self.approvals = approvals; self.tasks = tasks; self.conversations = conversations
         self.routines = routines; self.occurrences = occurrences; self.devices = devices; self.delegations = delegations; self.onlineDevices = onlineDevices
         self.connectors = connectors; self.memories = memories; self.journal = journal; self.usage = usage; self.config = config; self.node = node
         self.memoryEngine = memoryEngine; self.memoryPlugin = memoryPlugin; self.directory = directory; self.hostDeviceID = hostDeviceID
-        self.address = address; self.dataDir = dataDir; self.runtime = runtime; self.lanEnabled = lanEnabled; self.modelVisibility = modelVisibility
+        self.address = address; self.dataDir = dataDir; self.runtime = runtime; self.lanEnabled = lanEnabled; self.modelVisibility = modelVisibility; self.feishu = feishu
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -143,6 +145,7 @@ public struct WorkspaceState: Codable, Sendable {
         devices = rows("devices").map { Device(row: $0, online: online.contains($0.string("id") ?? "")) }
         connectors = rows("connectors").map(ConnectorView.init); memories = rows("memories").map(Memory.init)
         connectorCatalog = rows("connectorCatalog").map(ConnectorCatalogEntry.init)
+        feishu = object("feishu").map(FeishuState.init)
         journal = rows("journal").map(JournalEntry.init); usage = rows("usage").map(Usage.init)
         config = object("config").map(ModelConfig.init); node = object("node").map(NodeState.init)
         memoryEngine = object("memoryEngine").map(MemoryEngineStatus.init); memoryPlugin = object("memoryPlugin").map(MemoryPluginState.init)

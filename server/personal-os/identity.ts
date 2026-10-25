@@ -14,6 +14,8 @@ export class CoreIdentity {
   onSessionLost?: (sessionId: string) => void;
   /** Server-owned routing after successful upstream password/session verification. */
   routeVerified?: (session: UpstreamSession, name: string) => Promise<ReturnType<CoreIdentity["acceptVerified"]>>;
+  /** Core-owned work whose authorization anchor is a live channel (e.g. a connected Feishu app), not a client session. */
+  channelAuthorize?: (task: Row) => Promise<boolean> | boolean;
   private closed = false;
   private revoking?: Promise<void>;
   constructor(readonly store: CoreStore, readonly clients: ClientIdentity, readonly fixtureOrigin?: string) {
@@ -242,6 +244,8 @@ export class CoreIdentity {
       // Core-owned routines have no browser principal. They still need a live
       // associated owner session; one client's logout does not revoke another.
       for (const candidate of this.store.all("SELECT * FROM user_sessions WHERE protocol='native-v1' AND external_identity_id=? AND workspace_id=? AND user_id=? AND revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC", this.configuration()!.external_identity_id, this.store.workspace, this.store.owner, now())) if (this.clients.authenticateTokenSession(String(candidate.id)) && await this.verify(candidate)) return true;
+      // A channel task keeps working while its channel is connected; disconnecting the channel revokes it.
+      if (this.channelAuthorize && await this.channelAuthorize(task)) return true;
       return false;
     }
     const session = this.clients.authenticateTokenSession(sessionId);

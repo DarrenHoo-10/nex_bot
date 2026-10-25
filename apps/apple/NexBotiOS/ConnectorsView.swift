@@ -22,7 +22,7 @@ struct ConnectorsView: View {
     @State private var selection: ConnectorSelection?
     @State private var showingGmail = false
 
-    private var connectors: [ConnectorView] { workspace.state?.connectors.filter { !$0.isGmail } ?? [] }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && $0.kind != "feishu" } }
     private var filtered: [ConnectorView] {
         let q = query.trimmingCharacters(in: .whitespaces)
         return q.isEmpty ? connectors : connectors.filter { $0.name.localizedCaseInsensitiveContains(q) }
@@ -32,6 +32,7 @@ struct ConnectorsView: View {
         VStack(alignment: .leading, spacing: 20) {
             header
             GmailCatalogButton(workspace: workspace, open: { showingGmail = true })
+            if workspace.state?.feishu != nil { FeishuSection(workspace: workspace) }
             if !connectors.isEmpty { list }
         }
         .sheet(item: $editor) { request in

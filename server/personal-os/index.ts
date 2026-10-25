@@ -20,6 +20,8 @@ import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
+import { FeishuModule, type RegisterAppFn } from "./feishu/module.ts";
+import { sdkRegisterApp, wsTransportFactory, type TransportFactory } from "./feishu/transport.ts";
 import { GOOGLE_CALLBACK, type GmailConfiguration } from "./gmail-provider.ts";
 import type { AttachmentObjects } from './attachment-objects.ts';
 export { OssAttachmentObjects } from './attachment-objects.ts';
@@ -30,7 +32,7 @@ import { ClientDownloadsSource, type ClientDownloadsOptions } from "./client-dow
 import { approvalRuleLabel, approvalRuleScope, approvalRules, revokeApprovalRule } from "./approval-rules.ts";
 import { ClientUpdateSource, type OssReleaseMirror } from "./client-updates.ts";
 
-export interface AppOptions { gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string } }
+export interface AppOptions { gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch } }
 
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
@@ -45,6 +47,7 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const streams = new Map<ServerResponse, string>();
   let closing = false;
+  let feishu!: FeishuModule;
   const changed = () => {
     if (closing) return;
     sync.prune(); const snapshot = sync.snapshot();
@@ -52,10 +55,11 @@ export async function createPersonalApp(options: AppOptions) {
       if (!(identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
       else response.write(`id: ${snapshot.cursor}\nevent: change\ndata: ${JSON.stringify(snapshot)}\n\n`);
     }
+    feishu?.scanApprovals();
   };
   const runtime = new TaskRuntime(store, changed);
   const connectors = new ConnectorModule(store, changed, options.gmail);
-  runtime.connectorExecutor = (call, args, authorize) => connectors.execute(call, args, authorize);
+  runtime.connectorExecutor = (call, args, authorize) => feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
     runtime.authorizeTask = (task) => identity.authorizeTask(task);
@@ -79,8 +83,14 @@ export async function createPersonalApp(options: AppOptions) {
   const routines = new RoutineModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
+  feishu = new FeishuModule(store, changed, agents, runtime, {
+    ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
+    grantTools: (connectorId, version, botId, tools) => { connectors.grant({ id: connectorId, version, botId, tools }); },
+  });
+  if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
   agents.onPublished = (botId) => {
     if (closing) return;
+    feishu.onPublished(botId);
     const unread = agents.contacts().reduce((count, bot) => count + Number(bot.unread_count), 0);
     process.send?.({ type: "inbox", unread, botId, name: store.get("SELECT name FROM bots WHERE id=?", botId)?.name });
   };
@@ -92,7 +102,7 @@ export async function createPersonalApp(options: AppOptions) {
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
-  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); connectors.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
+  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); connectors.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
   runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed, options.hostDevice !== false);
   function json(response: ServerResponse, status: number, value: unknown) {
@@ -109,6 +119,7 @@ export async function createPersonalApp(options: AppOptions) {
       ...base,
       ...(view === "summary" ? { view: "summary", memories: base.memories.map(({ content: _content, ...memory }) => memory) } : {}),
       connectors: connectors.list(), connectorCatalog: connectors.catalog(),
+      feishu: feishu.state(),
       sync: sync.snapshot(),
       hostDeviceId: gateway.hostDeviceId,
       memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
@@ -360,7 +371,15 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, await connectors.remove(data)); return; }
-      if (url.pathname === '/api/models/images') {
+      if (url.pathname === "/api/feishu/register/start") { json(response, 200, feishu.startRegister(data)); return; }
+      if (url.pathname === "/api/feishu/register/cancel") { feishu.cancelRegister(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/feishu/save") { json(response, 200, feishu.save(data)); return; }
+      if (url.pathname === "/api/feishu/bind/start") { json(response, 200, feishu.bindStart(data)); return; }
+      if (url.pathname === "/api/feishu/user-auth/start") { json(response, 200, feishu.startUserAuth(data)); return; }
+      if (url.pathname === "/api/feishu/user-auth/cancel") { feishu.cancelUserAuth(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/feishu/toggle") { json(response, 200, await feishu.toggle(data)); return; }
+      if (url.pathname === "/api/feishu/delete") { json(response, 200, await feishu.remove(data)); return; }
+      if (url.pathname === "/api/models/images") {
         if (session.user_id !== store.owner) { json(response, 403, { error: '此账号没有修改模型选择的权限' }); return; }
         const result = store.saveImageModelSelection(data);
         changed(); json(response, 200, result); return;
@@ -465,7 +484,7 @@ export async function createPersonalApp(options: AppOptions) {
   try { if (options.listen !== false) await listen(options.port ?? 0); }
   catch (error) {
     if (!options.strictPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE" && options.host !== "0.0.0.0") await listen(0);
-    else { clearInterval(heartbeat); await identity?.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); gateway.close(); store.close(); throw error; }
+    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); gateway.close(); store.close(); throw error; }
   }
   const address = server.address();
   if (options.listen === false && options.serviceOrigin) origin = options.serviceOrigin;
@@ -502,7 +521,7 @@ export async function createPersonalApp(options: AppOptions) {
     await identity?.close();
     await heartbeatJob;
     routines.close();
-    await connectors.close(); await memoryPlugin.close();
+    await feishu.close(); await connectors.close(); await memoryPlugin.close();
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();

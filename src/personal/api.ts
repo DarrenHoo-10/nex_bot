@@ -1,5 +1,7 @@
 import type { ConnectorCatalogEntry, ConnectorView } from "../../shared/personal-connectors";
 export type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors";
+export interface FeishuAppView { id: string; appId: string; brand: string; status: string; error: string | null; ownerBound: boolean; botId: string; botName: string; enabled: boolean; version: number; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null }
+export interface FeishuState { job?: { stage: string; url?: string; expiresAt?: number; error?: string }; userAuth?: { stage: string; url?: string; expiresAt?: number; error?: string }; apps: FeishuAppView[] }
 export type RecordRow = Record<string, string | number | null>;
 export interface MemoryPluginState {
   providers: Array<{ id: string; name: string; protocol: string }>;
@@ -13,6 +15,7 @@ export interface State {
   modelVisibility?: { models: string[] | null; version: number };
   connectors?: ConnectorView[];
   connectorCatalog?: ConnectorCatalogEntry[];
+  feishu?: FeishuState;
   sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string };
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
   approvalRules?: Array<{ id: string; bot_id: string; label: string; active?: boolean }>;
