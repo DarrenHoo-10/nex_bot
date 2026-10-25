@@ -102,6 +102,8 @@ public struct ConnectorView: RowBacked {
     public var account: String? { row.string("account") }
     public var name: String { row.string("name") ?? "" }
     public var url: String { row.string("url") ?? "" }
+    /// `mcp` (generic remote) or `feishu` (managed card; hidden from the MCP editor).
+    public var kind: String { row.string("kind") ?? "mcp" }
     /// `http` (Streamable HTTP) or `sse`.
     public var transport: String { row.string("transport") == "sse" ? "sse" : "http" }
     public var transportLabel: String { transport == "sse" ? "SSE" : "Streamable HTTP" }

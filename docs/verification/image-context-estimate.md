@@ -28,8 +28,8 @@ contains this code, so no client was rebuilt or published.
 
 All checks used synthetic data and owned fixtures.
 
-- Tests: `token-estimate.test.ts` covers the three image shapes. A new
-  `chat-composer.test.ts` case uploads a 900 KB image through a real worker with a
+- Tests: `server/personal-os/token-estimate.test.ts` covers the three image shapes. A new
+  `server/personal-os/chat-composer.test.ts` case uploads a 900 KB image through a real worker with a
   64k window and a fake model; it fails on the previous code (task `failed`) and
   passes with the fix, and the final model request contains the whole image.
   Lint and typecheck pass.
@@ -46,7 +46,7 @@ All checks used synthetic data and owned fixtures.
 - No real provider request with a real photo after the deploy; the flat 2000 tokens
   is an estimate, and provider receipts remain the usage authority.
 - The full `server/personal-os` suite has failures unrelated to this change:
-  `continuity.test.ts` "migrates mixed old switches…" fails identically on the
+  `server/personal-os/continuity.test.ts` "migrates mixed old switches…" fails identically on the
   previous commit (`duplicate column name: provider`), and a few tests failed once
   under full parallel load and passed on rerun.
 

@@ -155,8 +155,8 @@ describe('Continuous personal assistant and memory',()=>{
     const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
     app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
     app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
-    // Rewind only the schemas removed here; connector migration 24 stays applied.
-    app.store.db.exec('DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DELETE FROM schema_migrations WHERE version BETWEEN 16 AND 23;');
+    app.store.db.exec('DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
+    app.store.db.exec('ALTER TABLE personal_connectors DROP COLUMN provider; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN kind;');
     const {CoreStore}=await import('./store.ts');
     const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
     try {

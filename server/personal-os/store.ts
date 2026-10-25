@@ -6,6 +6,7 @@ import { basicActions } from "./policy.ts";
 import { isLegacyDefaultTools } from "./policy-defaults.ts";
 import type { AttachmentObjects } from './attachment-objects.ts';
 import { connectorSchema } from "./connector-schema.ts";
+import { feishuSchema } from "./feishu/feishu-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
 import { continuitySchema } from "./continuity-schema.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
@@ -300,6 +301,10 @@ ALTER TABLE personal_connectors ADD COLUMN account TEXT;
 CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_id,owner_user_id,provider,account) WHERE provider!='mcp';`;
       this.db.exec(schema);
       this.insert('schema_migrations', { version: 24, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=25")) this.transaction(() => {
+      this.db.exec(feishuSchema);
+      this.insert("schema_migrations", { version: 25, checksum: hash(feishuSchema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

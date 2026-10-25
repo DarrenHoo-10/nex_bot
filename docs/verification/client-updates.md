@@ -17,7 +17,7 @@ newer version, size, SHA-256 and a one-hour signed OSS URL. The public
 
 OSS refuses to serve `.apk` and `.ipa` from its default domain
 (`ApkDownloadForbidden`), so Android and iOS get a Core URL instead:
-`/api/client/installer/<android|ios>/<file>` streams the current manifest's
+`/api/client/installer/<android>/<file>` (or `<ios>`) streams the current manifest's
 file from OSS and returns 404 for any other file name.
 
 The packaged Windows portable (`electron/nex-client-update.mjs`) checks after

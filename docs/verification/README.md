@@ -6,8 +6,10 @@
 - [Image attachments and the context estimate](image-context-estimate.md)
 - [Windows client integrated title bar](windows-client-titlebar.md)
 - [Unified UI and role avatars: all-platform release](ui-roles-release.md)
+- [Graphic role gallery and motion](graphic-avatars.md)
 - [Gmail Connect from the connector catalog](gmail-catalog-connect.md)
 - [Flat layout in client windows](client-frame-flat.md)
+- [Feishu connector](feishu-connector.md)
 
 NexBot Core is a standalone Node backend. Desktop clients now include a local
 device executor; use the [client device executor recipe](client-device-executor.md)
