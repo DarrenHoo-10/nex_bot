@@ -379,7 +379,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/feishu/user-auth/cancel") { feishu.cancelUserAuth(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/feishu/toggle") { json(response, 200, await feishu.toggle(data)); return; }
       if (url.pathname === "/api/feishu/delete") { json(response, 200, await feishu.remove(data)); return; }
-      if (url.pathname === '/api/models/images') {
+      if (url.pathname === "/api/models/images") {
         if (session.user_id !== store.owner) { json(response, 403, { error: '此账号没有修改模型选择的权限' }); return; }
         const result = store.saveImageModelSelection(data);
         changed(); json(response, 200, result); return;
