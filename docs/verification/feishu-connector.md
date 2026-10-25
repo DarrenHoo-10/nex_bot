@@ -65,7 +65,7 @@ pnpm typecheck
 pnpm lint
 ```
 
-`feishu.test.ts` (12 cases) covers: register → connect → one p2p turn with an
+`server/personal-os/feishu.test.ts` (12 cases) covers: register → connect → one p2p turn with an
 encrypted secret (state and store bytes never contain the secret); `message_id`
 dedupe; stranger and unmentioned-group rejection; group @ handling with a
 thread reply; approval card sent for a dangerous `agent.update` from a Feishu
@@ -82,7 +82,8 @@ account is discarded; an expired access token refreshes exactly once.
 
 ## Evidence
 
-- `pnpm exec vitest run server/personal-os/feishu.test.ts`: 12 passed.
+- `pnpm exec vitest run server/personal-os/feishu.test.ts`: 12 passed
+  (`server/personal-os/feishu.test.ts`; Swift: `apps/apple/Packages/NexClientKit/Tests/NexClientKitTests/FeishuTests.swift`).
 - `pnpm test:personal`: all suites green (feishu 12, connectors, app/memory/
   identity/service/workspaces unchanged).
 - `pnpm typecheck`, `pnpm lint`, `pnpm build:core` clean.
