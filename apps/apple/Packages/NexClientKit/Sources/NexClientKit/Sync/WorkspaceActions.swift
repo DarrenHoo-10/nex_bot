@@ -188,8 +188,8 @@ extension WorkspaceStore {
     /// Saves the model connection. `contextWindow` / `maxOutputTokens` are tri-state: ``LimitSetting/preserve`` (default) keeps
     /// the saved override for this provider + endpoint + model, `.automatic` clears it, `.manual(n)` sets it.
     public func saveModel(provider: String, model: String, endpoint: String, apiKey: String = "",
-                          contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve) async throws {
-        try await act { try await client.saveModel(ModelSettings(provider: provider, model: model, endpoint: endpoint, apiKey: apiKey.isEmpty ? nil : apiKey, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens)) }
+                          contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve, contextBudget: LimitSetting = .preserve) async throws {
+        try await act { try await client.saveModel(ModelSettings(provider: provider, model: model, endpoint: endpoint, apiKey: apiKey.isEmpty ? nil : apiKey, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, contextBudget: contextBudget)) }
     }
     /// Saved overrides and the cached catalog answer for a model (read only, no state refresh, no network lookup).
     public func modelLimits(provider: String, endpoint: String, model: String) async throws -> ModelLimitInfo {

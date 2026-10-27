@@ -408,7 +408,7 @@ export async function createPersonalApp(options: AppOptions) {
         const scope = modelLimitScope(data);
         const refresh = url.pathname.endsWith("/refresh") ? await store.modelLimits.catalog.refresh({ force: data.force === true }) : undefined;
         if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
-        const automatic = store.modelLimits.resolve(scope, { contextWindow: null, maxOutputTokens: null });
+        const automatic = store.modelLimits.resolve(scope, { contextWindow: null, maxOutputTokens: null, contextBudget: null });
         json(response, 200, { ...store.modelLimitSettings(scope), automatic, refresh }); return;
       }
       if (url.pathname === "/api/models/visibility") {

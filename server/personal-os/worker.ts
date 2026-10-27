@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { createAgentSession, DefaultResourceLoader, defineTool, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type FileEntry } from "@earendil-works/pi-coding-agent";
 import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply } from "./contracts.ts";
 import { modelConnectionError } from "./model-errors.ts";
-import { modelInputBudget } from "./model-limits.ts";
+import { modelInputBudget, workingContextBudget } from "./model-limits.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
 import { dropStaleSystemEntries, entryPage, entryText, systemPromptText } from './context-tools.ts';
 import { applyRequestPrompt } from './request-prompt.ts';
@@ -21,6 +21,12 @@ let purpose: "answer" | "compact" = "answer";
 let config: WorkerConfig;
 let manager: SessionManager;
 let started = false;
+// The turn-start digest of older tool results runs on the first model boundary of a worker only.
+let hygieneDone = false;
+// A user turn begins at an input, a replayed user row of earlier history, or a user message.
+const isTurnStart = (entry: FileEntry) => (entry.type === "custom_message" && (entry.customType === "nex.input" || entry.customType === "nex.history" && String(entry.content).includes('"role":"user"'))) || (entry.type === "message" && entry.message.role === "user");
+// Tool results above this many text tokens (images excluded) are digested once their turn is no longer the latest completed one.
+const DIGEST_TOKENS = 1500;
 function send(event: WorkerEvent) { process.send?.(event); }
 function snapshot(): FileEntry[] {
   const header = manager.getHeader();
@@ -125,16 +131,20 @@ async function main(value: WorkerConfig) {
     // The volatile block is injected at the request boundary but still takes window space.
     const volatileTokens=tokens(config.volatilePrompt),promptTokens=tokens(config.systemPrompt)+volatileTokens;
     const count=()=>tokens(messages)+overhead+volatileTokens;
-    // 80% is the normal trigger; reserve enough output space on small windows.
-    const threshold=Math.min(Math.floor(config.contextWindow*.8),inputBudget);
-    // Calibration scales only the count compared with the soft threshold. Capacity checks
+    // The working budget, not the window, is the normal trigger: reduction starts at the budget and,
+    // once started, continues down to half of it (hysteresis) so it does not run on every turn.
+    // inputBudget stays the hard limit (window minus output room).
+    const workingBudget=workingContextBudget(config.contextBudget,inputBudget),target=Math.floor(workingBudget*.5);
+    // Calibration scales only the count compared with the budget lines. Capacity checks
     // (summarizer windows, paging budgets, the window check at fetch) stay on the raw count().
     // A skewed receipt must never strand a request that only reduction could make sendable, so
-    // the raw count reaching 90% of the window starts reduction too. At calibration 1 this is
-    // the former raw trigger.
+    // the raw count reaching 90% of the window starts reduction too and keeps it going.
     const calibration=Number.isFinite(config.calibration)&&config.calibration!>0?config.calibration!:1;
     const ceiling=Math.floor(config.contextWindow*.9);
-    const over=()=>count()*calibration>=threshold||count()>=ceiling;
+    const over=()=>count()*calibration>=workingBudget||count()>=ceiling;
+    const above=()=>count()*calibration>target||count()>=ceiling;
+    // Only a request that cannot fit the input budget is an error; missing the working target is not.
+    const unfit=()=>count()*calibration>=inputBudget||count()>=ceiling;
     // The summarizer shares this window and needs room for its instruction and
     // output. Every compact request targets half of it; the carried summary and
     // a single capped item can still exceed that softly without reaching the limit.
@@ -145,8 +155,8 @@ async function main(value: WorkerConfig) {
     };
     type ToolResult=Extract<(typeof messages)[number],{role:'toolResult'}>;
     // Replace one tool body with a short summary; the original entry stays intact.
-    const summarizeResult=async(entry:FileEntry,message:ToolResult)=>{
-      const source=[{ref:`entry:${entry.id}`,role:message.role,status:message.isError?'failed':'succeeded',content:message.content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part)}];
+    const summarizeResult=async(entry:FileEntry,message:ToolResult,imageMarker='[图片]')=>{
+      const source=[{ref:`entry:${entry.id}`,role:message.role,status:message.isError?'failed':'succeeded',content:message.content.map(part=>isImagePart(part)?{type:'text',text:imageMarker}:part)}];
       // Alone with a 1024-token answer, a body may use most of the window.
       if(tokens(source)>Math.floor(config.contextWindow*.8)){page(entry);return;}
       const result=await rpc({type:'compact',entries:snapshot(),inputs:[...projected],text:JSON.stringify(source),firstEntry:entry.id,lastEntry:entry.id,contextTokens:count(),summaryMaxTokens:1024}) as {summary:string;checkpoint:string};
@@ -154,10 +164,54 @@ async function main(value: WorkerConfig) {
       const content=[{type:'text' as const,text:`工具结果摘要（${message.isError?'失败':'完成'}），原文 entry:${entry.id}：\n${result.summary}`}];
       if(tokens(content)<tokens(message.content))manager.appendContextEdit(entry.id,{content});
     };
-    if(over()){
+    // Steady-state hygiene, independent of budget pressure: when a new turn starts, results of turns
+    // older than the latest completed one no longer sit in context in full. Large bodies get their own
+    // summary and images become text markers; originals stay retrievable as entry:<id>. The current
+    // turn and the latest completed turn (for follow-ups such as "continue comparing that list") are kept.
+    if(!hygieneDone){
+      hygieneDone=true;
+      const items=manager.buildSessionProjection().entries,entries=items.map(item=>item.sourceEntry);
+      const starts=entries.flatMap((entry,index)=>isTurnStart(entry)?[index]:[]);
+      // Inputs that arrived together after the last model output belong to the current turn.
+      const lastOutput=entries.findLastIndex(entry=>entry.type==='message'&&(entry.message.role==='assistant'||entry.message.role==='toolResult'));
+      const current=starts.find(index=>index>lastOutput)??starts.at(-1);
+      const previous=current===undefined?undefined:starts.findLast(index=>index<current);
+      if(previous!==undefined&&previous>0){
+        const older=new Set(entries.slice(0,previous).map(entry=>entry.id));
+        const edited=new Set(manager.getBranch().flatMap(entry=>entry.type==='context_edit'?[entry.targetId]:[]));
+        const calls=new Map<string,Record<string,unknown>>();
+        for(const item of items)for(const message of item.messages)if(message.role==='assistant')for(const part of message.content)if(part.type==='toolCall')calls.set(part.id,part.arguments);
+        // attachment.read results carry the attachment only in the call; other images have no durable id.
+        const imageMarker=(toolCallId:string)=>{const call=calls.get(toolCallId),id=call?.action==='attachment.read'?call.attachmentId:undefined;return typeof id==='string'&&id?`[图片 attachment:${id}]`:'[图片]';};
+        let changed=false;
+        try{
+          for(const item of items){
+            const entry=item.sourceEntry,message=item.messages[0];
+            if(!older.has(entry.id)||entry.type!=='message'||message?.role!=='toolResult'||edited.has(entry.id)||tokens(message.content.filter(part=>!isImagePart(part)))<=DIGEST_TOKENS)continue;
+            const before=manager.getBranch().length;
+            await summarizeResult(entry,message,imageMarker(message.toolCallId));
+            if(manager.getBranch().length!==before){changed=true;await rpc({type:'snapshot',entries:snapshot()});}
+          }
+        }catch(error){
+          // A failed digest must not fail the user's turn; originals stay and pressure handling reports real problems.
+          if(signal?.aborted)throw error;
+        }
+        for(const item of manager.buildSessionProjection().entries){
+          const entry=item.sourceEntry,message=item.messages[0];
+          if(!older.has(entry.id)||!message||(message.role!=='user'&&message.role!=='toolResult'&&message.role!=='custom')||!Array.isArray(message.content)||!message.content.some(part=>isImagePart(part)))continue;
+          const marker=message.role==='toolResult'?imageMarker(message.toolCallId):'[图片]';
+          manager.appendContextEdit(entry.id,{content:message.content.map(part=>isImagePart(part)?{type:'text' as const,text:marker}:part) as never});
+          changed=true;
+        }
+        if(changed){await rpc({type:'snapshot',entries:snapshot()});messages=clean(manager.buildSessionContext().messages);}
+      }
+    }
+    // Decided once per call: a reduction that starts runs every stage down to the target.
+    const reducing=over();
+    if(reducing){
       // A single oversized text result cannot be sent to the summarizer either.
       // Page only when under pressure and unable to fit, keeping the raw entry.
-      const resultBudget=threshold-overhead-promptTokens-tokens(broker.parameters)-tokens(broker.description)-4096;
+      const resultBudget=inputBudget-overhead-promptTokens-tokens(broker.parameters)-tokens(broker.description)-4096;
       for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
         const message=projectedMessages[0];
         if(sourceEntry.type!=='message'||message?.role!=='toolResult'||tokens(message.content)<=resultBudget)continue;
@@ -166,13 +220,13 @@ async function main(value: WorkerConfig) {
       await rpc({type:'snapshot',entries:snapshot()});
       messages=clean(manager.buildSessionContext().messages);
     }
-    if(over()){
+    if(reducing&&above()){
       const entries=manager.buildContextEntries();
       // Use the same conservative estimator for both trigger and retained tail.
       // Cuts are only at user turns, never between a tool call and its result.
-      const starts=entries.flatMap((entry,index)=>(entry.type==='custom_message'&&(entry.customType==='nex.input'||entry.customType==='nex.history'&&String(entry.content).includes('"role":"user"')))||(entry.type==='message'&&entry.message.role==='user')?[index]:[]);
+      const starts=entries.flatMap((entry,index)=>isTurnStart(entry)?[index]:[]);
       let index=starts.at(-1)??0;
-      const tailBudget=Math.max(0,Math.min(20000,Math.floor(config.contextWindow*.6)-overhead-promptTokens-tokens(broker.parameters)-tokens(broker.description)-4096));
+      const tailBudget=Math.max(0,Math.floor(workingBudget*.3)-overhead-promptTokens-tokens(broker.parameters)-tokens(broker.description)-4096);
       for(const candidate of starts.slice(0,-1).reverse()) {
         if(tokens(entries.slice(candidate))>tailBudget)break;
         index=candidate;
@@ -224,7 +278,7 @@ async function main(value: WorkerConfig) {
         }
       }
     }
-    if(over()){
+    if(reducing&&above()){
       // Preserve the user's exact inputs, the newest tool-call group, and any
       // explicitly retrieved originals in this turn. Only older result bodies
       // become useful summaries; their call/result metadata remains paired.
@@ -235,7 +289,7 @@ async function main(value: WorkerConfig) {
       const edited=new Set(manager.getBranch().flatMap(entry=>entry.type==='context_edit'?[entry.targetId]:[]));
       const retrieved=new Set(projectedEntries.slice(turnStart+1).flatMap(item=>item.messages.flatMap(message=>message.role==='assistant'?message.content.flatMap(part=>part.type==='toolCall'&&part.arguments.action==='memory.search'&&String(part.arguments.query).startsWith('entry:')?[part.id]:[]):[])));
       for(const item of projectedEntries.slice(0,latestIndex)){
-        if(!over())break;
+        if(!above())break;
         const entry=item.sourceEntry,message=item.messages[0];
         if(entry.type!=='message'||message?.role!=='toolResult'||edited.has(entry.id)||retrieved.has(message.toolCallId)||tokens(message.content)<2048)continue;
         await summarizeResult(entry,message);
@@ -243,7 +297,7 @@ async function main(value: WorkerConfig) {
         messages=clean(manager.buildSessionContext().messages);
       }
     }
-    if(over())throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${count()}${calibration===1?'':`，校准后 ${Math.round(count()*calibration)}`} / ${threshold} Token）。原文已保留，请分段读取或增大模型窗口。`);
+    if(unfit())throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${count()}${calibration===1?'':`，校准后 ${Math.round(count()*calibration)}`} / ${inputBudget} Token）。原文已保留，请分段读取或增大模型窗口。`);
     return transform?transform(messages,signal):messages;
   };
   session.subscribe((event) => {

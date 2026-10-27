@@ -7,6 +7,8 @@ export interface WorkerConfig {
   taskId: string; conversationId: string; runtimeId: string; generation: number; dir: string;
   provider: string; endpoint: string; model: string; apiKey: string; systemPrompt: string; volatilePrompt: string;
   contextWindow: number; maxOutputTokens: number;
+  // Working context budget in tokens (resolved and clamped by Core); reduction starts here, not at the window.
+  contextBudget?: number;
   // Real/estimated token ratio of this model; scales the count that starts context reduction, never a capacity check. 1 when unknown.
   calibration?: number;
   entries?: FileEntry[]; inputs: RuntimeInput[];

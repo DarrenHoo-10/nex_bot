@@ -29,8 +29,10 @@ final class ModelForm {
     var limits: ModelLimitInfo?
     var contextText = "" { didSet { if contextText != oldValue { saved = false } } }
     var outputText = "" { didSet { if outputText != oldValue { saved = false } } }
+    var budgetText = "" { didSet { if budgetText != oldValue { saved = false } } }
     var contextEdited = false
     var outputEdited = false
+    var budgetEdited = false
     var limitsLoading = false
     var limitsError: String?
     /// Scope the loaded `limits` belong to.
@@ -40,7 +42,7 @@ final class ModelForm {
     /// A different model: show that model's saved overrides, never the previous model's edits.
     func resetLimits() {
         limits = nil; limitsScope = nil; limitsError = nil; limitsLoading = false
-        contextText = ""; outputText = ""; contextEdited = false; outputEdited = false
+        contextText = ""; outputText = ""; budgetText = ""; contextEdited = false; outputEdited = false; budgetEdited = false
     }
 
     /// Applies an answer for `scope`; ignored when the form moved on. Fields the user edited are kept.
@@ -49,6 +51,7 @@ final class ModelForm {
         limits = info; limitsScope = scope
         if !contextEdited { contextText = info.manual.contextWindow.map(String.init) ?? "" }
         if !outputEdited { outputText = info.manual.maxOutputTokens.map(String.init) ?? "" }
+        if !budgetEdited { budgetText = info.manual.contextBudget.map(String.init) ?? "" }
     }
 
     init(config: ModelConfig?) {
@@ -223,6 +226,8 @@ struct SettingsModelView: View {
                        automatic: form.limits?.automatic.contextWindow, source: form.limits?.automatic.source.contextWindow, name: "context")
             limitField("最大输出 Token", text: $form.outputText, edited: { form.outputEdited = true },
                        automatic: form.limits?.automatic.maxOutputTokens, source: form.limits?.automatic.source.maxOutputTokens, name: "output")
+            limitField("工作上下文（Token）", text: $form.budgetText, edited: { form.budgetEdited = true },
+                       automatic: form.limits?.automatic.contextBudget, source: form.limits?.automatic.source.contextBudget, name: "budget")
             Text((form.limits?.status ?? .matched).text).font(.caption).foregroundStyle(Theme.muted)
             if let error = form.limitsError { Text(error).font(.caption).foregroundStyle(Theme.danger) }
         }
@@ -296,9 +301,10 @@ struct SettingsModelView: View {
             let ready = form.limitsScope == form.scopeKey
             let context = ready ? try ModelLimits.parse(form.contextText, field: .contextWindow) : LimitSetting.preserve
             let output = ready ? try ModelLimits.parse(form.outputText, field: .maxOutputTokens) : LimitSetting.preserve
+            let budget = ready ? try ModelLimits.parse(form.budgetText, field: .contextBudget) : LimitSetting.preserve
             let wasSaved = connectionSaved, draft = visible
             try await workspace.saveModel(provider: form.provider, model: form.model.trimmingCharacters(in: .whitespaces), endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey,
-                                          contextWindow: context, maxOutputTokens: output)
+                                          contextWindow: context, maxOutputTokens: output, contextBudget: budget)
             // A new connection's 显示的模型 were a draft until the connection existed.
             if !wasSaved, let draft { try await workspace.saveModelVisibility(models: draft) }
             form.showKey = false; form.saved = true

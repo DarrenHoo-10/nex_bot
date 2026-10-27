@@ -314,6 +314,12 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
       this.db.exec(schema);
       this.insert("schema_migrations", { version: 26, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=27")) this.transaction(() => {
+      // Working context budget override (nullable: default is min(64k, input budget)); see model-limits.ts.
+      const schema = "ALTER TABLE model_limit_overrides ADD COLUMN context_budget INTEGER;";
+      if (!this.all("PRAGMA table_info(model_limit_overrides)").some((column) => column.name === "context_budget")) this.db.exec(schema);
+      this.insert("schema_migrations", { version: 27, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -382,7 +388,7 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
   modelLimitSettings(input: Record<string, unknown>) {
     const scope = modelLimitScope(input);
     const row = this.get("SELECT * FROM model_limit_overrides WHERE provider=? AND endpoint=? AND model=?", scope.provider, scope.endpoint, scope.model);
-    const manual: ModelLimitOverrides = { contextWindow: row?.context_window == null ? null : Number(row.context_window), maxOutputTokens: row?.max_output_tokens == null ? null : Number(row.max_output_tokens) };
+    const manual: ModelLimitOverrides = { contextWindow: row?.context_window == null ? null : Number(row.context_window), maxOutputTokens: row?.max_output_tokens == null ? null : Number(row.max_output_tokens), contextBudget: row?.context_budget == null ? null : Number(row.context_budget) };
     return this.modelLimits.resolve(scope, manual);
   }
   saveConfig(value: Record<string, unknown>) {
@@ -396,12 +402,13 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
     const manual = {
       contextWindow: value.contextWindow === undefined ? previous.contextWindow : parseModelLimit(value.contextWindow, "contextWindow"),
       maxOutputTokens: value.maxOutputTokens === undefined ? previous.maxOutputTokens : parseModelLimit(value.maxOutputTokens, "maxOutputTokens"),
+      contextBudget: value.contextBudget === undefined ? previous.contextBudget : parseModelLimit(value.contextBudget, "contextBudget"),
     };
     validateModelLimits(this.modelLimits.resolve(scope, manual));
     const secret = typeof value.apiKey === "string" && value.apiKey.trim() ? text(value.apiKey, 8192) : undefined;
     if (!secret && !this.get("SELECT id FROM secrets WHERE id='model-key'")) throw new Error("请配置 API Key");
     this.transaction(() => {
-      this.run("INSERT INTO model_limit_overrides VALUES(?,?,?,?,?) ON CONFLICT(provider,endpoint,model) DO UPDATE SET context_window=excluded.context_window,max_output_tokens=excluded.max_output_tokens", scope.provider, scope.endpoint, scope.model, manual.contextWindow, manual.maxOutputTokens);
+      this.run("INSERT INTO model_limit_overrides(provider,endpoint,model,context_window,max_output_tokens,context_budget) VALUES(?,?,?,?,?,?) ON CONFLICT(provider,endpoint,model) DO UPDATE SET context_window=excluded.context_window,max_output_tokens=excluded.max_output_tokens,context_budget=excluded.context_budget", scope.provider, scope.endpoint, scope.model, manual.contextWindow, manual.maxOutputTokens, manual.contextBudget);
       if (secret) this.run("INSERT INTO secrets VALUES('model-key',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", this.encrypt(secret));
       this.run("INSERT INTO model_connections(id,workspace_id,owner_user_id,display_name,provider_id,endpoint,credential_ref,default_model,status,created_at) VALUES('default',?,?,?,?,?,'model-key',?,'active',?) ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,endpoint=excluded.endpoint,default_model=excluded.default_model,version=version+1", this.workspace, this.owner, "Default", provider, endpoint.toString().replace(/\/$/, ""), model, now());
       this.run("UPDATE bots SET model_connection_id='default' WHERE model_connection_id IS NULL");
@@ -419,7 +426,7 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
     const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model: (botId && this.botModelSelection(botId)?.selected_model) || row.default_model });
     const limits = this.modelLimitSettings(scope);
     validateModelLimits(limits);
-    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };
+    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };
   }
   createBot(name: string, instructions?: unknown) {
     const botId = id();

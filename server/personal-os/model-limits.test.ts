@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { createPersonalApp } from "./index.ts";
 import { CoreStore } from "./store.ts";
-import { matchModelLimits, modelInputBudget, parseModelLimit } from "./model-limits.ts";
+import { matchModelLimits, modelInputBudget, parseModelLimit, workingContextBudget } from "./model-limits.ts";
 import { trimModelsDevCatalog } from "../model-catalog/trim.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 
@@ -44,6 +44,55 @@ it("retains per-model overrides across model, endpoint, protocol switches and re
     store.saveConfig({ ...config, contextWindow: "", maxOutputTokens: "" });
     expect(store.modelConfig()).toMatchObject({ contextWindow: 256000, maxOutputTokens: 32000 });
   } finally { store.db.close(); }
+});
+
+it("resolves the working context budget: default min(64k, input budget), manual value clamped, null clears", () => {
+  expect(workingContextBudget(null, 320000)).toBe(64000);
+  expect(workingContextBudget(null, 51200)).toBe(51200);
+  expect(workingContextBudget(null, 5000)).toBe(5000);
+  expect(workingContextBudget(100000, 320000)).toBe(100000);
+  expect(workingContextBudget(500000, 320000)).toBe(320000);
+  expect(workingContextBudget(1024, 320000)).toBe(8000);
+  expect(workingContextBudget(1024, 5000)).toBe(5000);
+  expect(parseModelLimit("2048", "contextBudget")).toBe(2048);
+  for (const value of [0, 1023, 123.5, "1e5", true, 10_000_001]) expect(() => parseModelLimit(value, "contextBudget")).toThrow("工作上下文");
+  const root = directory(), key = randomBytes(32);
+  let store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
+  try {
+    store.saveConfig({ ...config, contextWindow: 400000, maxOutputTokens: 4096 });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 400000, contextBudget: 64000 });
+    expect(store.modelLimitSettings(config)).toMatchObject({ manual: { contextBudget: null }, contextBudget: 64000, source: { contextBudget: "default" } });
+    store.saveConfig({ ...config, contextBudget: "120000" });
+    expect(store.modelConfig().contextBudget).toBe(120000);
+    // Omitted keeps the saved value; an invalid value changes nothing; the budget never exceeds the input budget.
+    store.saveConfig(config);
+    expect(store.modelLimitSettings(config)).toMatchObject({ manual: { contextBudget: 120000 }, source: { contextBudget: "manual" } });
+    expect(() => store.saveConfig({ ...config, contextBudget: 100 })).toThrow("工作上下文");
+    expect(store.modelConfig().contextBudget).toBe(120000);
+    store.saveConfig({ ...config, contextWindow: 100000 });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 100000, contextBudget: modelInputBudget(100000, 4096) });
+    store.db.close(); store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
+    expect(store.modelLimitSettings(config).manual.contextBudget).toBe(120000);
+    store.saveConfig({ ...config, contextWindow: 400000, contextBudget: null });
+    expect(store.modelConfig().contextBudget).toBe(64000);
+    expect(store.modelLimitSettings(config).manual.contextBudget).toBeNull();
+  } finally { store.db.close(); }
+});
+
+it("round-trips the working context budget through the authenticated model routes", async () => {
+  const token = "synthetic-token";
+  const app = await createPersonalApp({ dir: directory(), key: randomBytes(32), token, identity: false, hostDevice: false, memoryRuntime: false, modelCatalog: { fetchDisabled: true, readSnapshot: () => undefined } });
+  const request = (route: string, data: unknown) => fetch(app.origin + "/api/" + route, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(data) });
+  try {
+    const scope = { provider: config.provider, endpoint: config.endpoint, model: config.model };
+    expect((await request("config", { ...config, contextWindow: 400000, maxOutputTokens: 4096, contextBudget: 90000 })).ok).toBe(true);
+    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: 90000 }, contextBudget: 90000, source: { contextBudget: "manual" }, automatic: { contextBudget: 64000, source: { contextBudget: "default" } } });
+    const rejected = await request("config", { ...config, contextBudget: 12 });
+    expect(rejected.ok).toBe(false);
+    expect(JSON.stringify(await rejected.json())).toContain("工作上下文");
+    expect((await request("config", { ...config, contextBudget: null })).ok).toBe(true);
+    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: null }, contextBudget: 64000 });
+  } finally { await app.close(); }
 });
 
 it("matches exact models, refuses conflicts and does not strip arbitrary suffixes", () => {

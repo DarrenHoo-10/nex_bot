@@ -116,9 +116,11 @@ public struct ModelSettings: Sendable, Hashable, Encodable {
     public var contextWindow: LimitSetting
     /// Max output token override; independent of ``contextWindow`` (it may even exceed it).
     public var maxOutputTokens: LimitSetting
-    public init(provider: String, model: String, endpoint: String, apiKey: String? = nil, contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve) {
+    /// Working context override (the token budget that triggers context reduction); omitted by default.
+    public var contextBudget: LimitSetting
+    public init(provider: String, model: String, endpoint: String, apiKey: String? = nil, contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve, contextBudget: LimitSetting = .preserve) {
         self.provider = provider; self.model = model; self.endpoint = endpoint; self.apiKey = apiKey
-        self.contextWindow = contextWindow; self.maxOutputTokens = maxOutputTokens
+        self.contextWindow = contextWindow; self.maxOutputTokens = maxOutputTokens; self.contextBudget = contextBudget
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
@@ -131,7 +133,7 @@ public struct ModelSettings: Sendable, Hashable, Encodable {
             case .manual(let n): try c.encode(n, forKey: .init(key))
             }
         }
-        try put(contextWindow, "contextWindow"); try put(maxOutputTokens, "maxOutputTokens")
+        try put(contextWindow, "contextWindow"); try put(maxOutputTokens, "maxOutputTokens"); try put(contextBudget, "contextBudget")
     }
 }
 
