@@ -16,8 +16,9 @@ import { skillList, skillRead } from "./skills.ts";
 import { computerReads } from "./computer.ts";
 import { assistantCompletion, tokens } from './assistant-model.ts';
 import { chartPrompt } from '../../shared/chat-chart-format.ts';
+import type { ModelScope } from './calibration.ts';
 
-interface Running { child: ChildProcess; taskId: string; runId: string; runtimeId: string; generation: number; timer?: NodeJS.Timeout; finished: boolean; streaming: string; controller:AbortController }
+interface Running { child: ChildProcess; taskId: string; runId: string; runtimeId: string; generation: number; model: ModelScope; timer?: NodeJS.Timeout; finished: boolean; streaming: string; controller:AbortController }
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 export class TaskRuntime {
   readonly memory: MemoryModule;
@@ -141,7 +142,8 @@ export class TaskRuntime {
     const entry = existsSync(source) ? source : fileURLToPath(new URL("./worker.js", import.meta.url));
     // Model results/errors are acknowledged over IPC, never diagnostic pipes.
     const child = fork(entry, [], { execArgv: entry.endsWith(".ts") ? ["--experimental-strip-types"] : [], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: workerDir, TMP: workerDir, HOME: workerDir, USERPROFILE: workerDir, PI_CODING_AGENT_DIR: path.join(workerDir, "pi"), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "ignore", "ignore", "ipc"] });
-    const worker: Running = { child, taskId, runId, runtimeId, generation, finished: false, streaming: "",controller:new AbortController() }; this.workers.set(taskId, worker);
+    const scope: ModelScope = { provider: model.provider, endpoint: model.endpoint, model: model.model };
+    const worker: Running = { child, taskId, runId, runtimeId, generation, model: scope, finished: false, streaming: "",controller:new AbortController() }; this.workers.set(taskId, worker);
     child.on("message", (event: WorkerEvent) => { void this.event(worker, event).catch((error: unknown) => { if (event.requestId) this.reply(worker, event.requestId, undefined, error instanceof Error ? error.message : "Core error"); else this.fail(worker, error); }); });
     child.once("error", (error) => this.fail(worker, error));
     child.once("close", () => {
@@ -166,7 +168,7 @@ export class TaskRuntime {
       const groups=new Map<string,Row[]>();for(const row of rows){const key=String(row.task_id);groups.set(key,[...(groups.get(key)??[]),row]);}
       for(const group of groups.values()){const size=tokens(group);if(size>remaining)break;remaining-=size;history.unshift(...group.reverse().map(row=>({ref:'message:'+row.id,role:String(row.role),content:String(row.content)})));}
     }
-    const config: WorkerConfig = { taskId, conversationId: String(task.conversation_id), runtimeId, generation, dir: workerDir, ...model, entries,history, inputs: this.store.pending(taskId).map((r) => this.inputRecord(r)), ...this.promptParts(taskId) };
+    const config: WorkerConfig = { taskId, conversationId: String(task.conversation_id), runtimeId, generation, dir: workerDir, ...model, calibration: this.store.calibration.ratio(scope), entries,history, inputs: this.store.pending(taskId).map((r) => this.inputRecord(r)), ...this.promptParts(taskId) };
     child.send({ type: "start", config });
     this.changed();
   }
@@ -258,7 +260,12 @@ ${chartPrompt}
     }
     if (event.type === "snapshot" && event.invokeId) {
       this.store.run('UPDATE model_invocations SET cache_read=?,cache_write=? WHERE id=? AND run_id=?',event.cacheRead??null,event.cacheWrite??null,event.invokeId,worker.runId);
-      if (event.inputTokens !== undefined && event.outputTokens !== undefined) this.store.run("UPDATE model_invocations SET status=?,input_tokens=?,output_tokens=?,usage_known=?,finished_at=? WHERE id=? AND run_id=? AND status='in_flight'", event.modelStatus ?? "succeeded", event.inputTokens, event.outputTokens, event.modelStatus && event.modelStatus !== "succeeded" && event.inputTokens === 0 && event.outputTokens === 0 ? 0 : 1, now(), event.invokeId, worker.runId);
+      if (event.inputTokens !== undefined && event.outputTokens !== undefined) {
+        const known = !(event.modelStatus && event.modelStatus !== "succeeded" && event.inputTokens === 0 && event.outputTokens === 0);
+        const receipt = this.store.run("UPDATE model_invocations SET status=?,input_tokens=?,output_tokens=?,usage_known=?,finished_at=? WHERE id=? AND run_id=? AND status='in_flight'", event.modelStatus ?? "succeeded", event.inputTokens, event.outputTokens, known ? 1 : 0, now(), event.invokeId, worker.runId);
+        // Only a completed request's receipt calibrates, and each receipt only once.
+        if (receipt.changes && known && (event.modelStatus ?? "succeeded") === "succeeded" && event.estimatedTokens !== undefined) this.store.calibration.record(worker.model, event.inputTokens, event.estimatedTokens);
+      }
       else this.store.run("UPDATE model_invocations SET status='succeeded',finished_at=? WHERE id=? AND run_id=? AND status='in_flight'", now(), event.invokeId, worker.runId);
     }
     if (event.type === "request" && event.requestId) {

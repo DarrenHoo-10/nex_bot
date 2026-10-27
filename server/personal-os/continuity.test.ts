@@ -198,11 +198,13 @@ describe('Continuous personal assistant and memory',()=>{
     const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
     app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
     app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
-    app.store.db.exec('DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
+    app.store.db.exec('DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
     app.store.db.exec('ALTER TABLE personal_connectors DROP COLUMN provider; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN kind;');
     const {CoreStore}=await import('./store.ts');
     const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
     try {
+      expect(reopened.get('SELECT version FROM schema_migrations WHERE version=26')?.version).toBe(26);
+      expect(reopened.get('SELECT COUNT(*) n FROM model_calibration')?.n).toBe(0);
       expect(reopened.get('SELECT enabled FROM workspace_memory_settings')?.enabled).toBe(0);
       expect(reopened.all('SELECT enabled FROM assistant_memory_settings').every(row=>row.enabled===0)).toBe(true);
       expect(reopened.get('SELECT model,daily_budget FROM assistant_memory_settings WHERE bot_id=?',bot)).toMatchObject({model:'fixture-memory',daily_budget:80000});
@@ -304,6 +306,61 @@ describe('Continuous personal assistant and memory',()=>{
     const resultIndex=messages.findIndex(row=>row.role==='tool');expect(resultIndex).toBeGreaterThan(0);
     expect(messages.slice(0,resultIndex).some(row=>row.tool_calls?.some(call=>call.id===messages[resultIndex].tool_call_id))).toBe(true);
     expect(app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+  },60000);
+  const turn=async(app:Fixture['app'],bot:string,text:string,key:string,status='succeeded')=>{
+    const task=app.agents.send(bot,text,key).taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status===status,app);
+    // A failed task is reported by wait() as an error while its worker is still closing.
+    while(app.runtime.workers.size)await new Promise(resolve=>setTimeout(resolve,20));
+    return task;
+  };
+  const streamed=(fake:Fixture['fake'])=>fake.requests.filter(row=>row.stream);
+  it('stores the projection as rows and calibrates the model from each completed receipt',async()=>{
+    const {app,fake,bot}=await fixture();
+    fake.setUsageScale(.5);
+    await turn(app,bot,'第一轮：只讨论。','calibrate-one');await turn(app,bot,'第二轮：继续。','calibrate-two');
+    const runtime=String(app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!.id),projection=app.runtime.projection;
+    const stored=projection.load(runtime)!;
+    expect(stored[0].type).toBe('session');
+    expect(projection.db.prepare('SELECT seq FROM projection_entries WHERE runtime_id=? ORDER BY seq').all(runtime).map(row=>row.seq)).toEqual(stored.map((_,index)=>index));
+    expect(projection.db.prepare('SELECT COUNT(*) n FROM projections').get()?.n).toBe(0);
+    const config=app.store.modelConfig(),row=app.store.get('SELECT * FROM model_calibration')!;
+    expect(row).toMatchObject({provider:config.provider,endpoint:config.endpoint,model:config.model});
+    expect(Number(row.samples)).toBe(streamed(fake).length);expect(Number(row.ratio)).toBeGreaterThan(.45);expect(Number(row.ratio)).toBeLessThan(.55);
+    expect(app.store.calibration.ratio(config)).toBe(Number(row.ratio));
+    // The receipt's input is what the provider reported, i.e. half the offline estimate of the request.
+    const last=streamed(fake).at(-1)!,input=Number(app.store.get('SELECT input_tokens FROM model_invocations ORDER BY created_at DESC LIMIT 1')!.input_tokens);
+    expect(input).toBeGreaterThan(tokens(last)*.45);expect(input).toBeLessThan(tokens(last)*.55);
+  },60000);
+  // Three 10500-character turns put the raw estimate between the 51,200-token trigger and 90% of the 64,000-token window.
+  const ballast='合成资料'.repeat(2625);
+  it('starts reduction on the calibrated count: a raw estimate above the trigger waits, one near the window still reduces',async()=>{
+    const control=await fixture();
+    for(const n of [0,1,2])await turn(control.app,control.bot,`第${n}轮 ${ballast}`,'control-'+n);
+    expect(control.app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+    const {app,fake,bot}=await fixture();
+    fake.setUsageScale(.5);app.store.calibration.record(app.store.modelConfig(),1000,2000);
+    for(const n of [0,1,2])await turn(app,bot,`第${n}轮 ${ballast}`,'calibrated-'+n);
+    const last=streamed(fake).at(-1)!,raw=tokens(last);
+    expect(raw).toBeGreaterThan(51200);expect(raw).toBeLessThan(64000*.9);
+    expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
+    expect(app.runtime.projection.load(String(app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!.id))!.some(entry=>entry.type==='compaction'||entry.type==='context_edit')).toBe(false);
+    expect(JSON.stringify(last)).toContain('第0轮');
+    expect(fake.requests.every(row=>row.stream)).toBe(true);
+    // The raw estimate would no longer fit the window soon: reduction starts however low the ratio reads.
+    await turn(app,bot,`第3轮 ${ballast}`,'calibrated-3');
+    expect(app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+    expect(tokens(streamed(fake).at(-1))).toBeLessThan(64000-256);
+  },180000);
+  it('keeps the raw estimate for capacity: a request that reduction cannot fit is refused however the ratio reads',async()=>{
+    const {app,fake,bot}=await fixture();
+    app.store.saveConfig({provider:'openai',endpoint:fake.origin+'/v1',model:'fixture-chat',contextWindow:40000,maxOutputTokens:4096});
+    fake.setUsageScale(.3);app.store.calibration.record(app.store.modelConfig(),1000,10000);
+    expect(app.store.calibration.ratio(app.store.modelConfig())).toBe(.3);
+    // About 55,000 raw tokens in one input: 16,500 calibrated, far below the 32,000 trigger, but above the 40,000 window.
+    const task=await turn(app,bot,'合成资料'.repeat(8000),'oversize','failed');
+    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toContain('仍超过输入预算');
+    expect(fake.requests).toHaveLength(0);expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
   },60000);
   type Wire={role:string;content:unknown;tool_calls?:unknown};
   const isVolatile=(message:Wire)=>message.role==='user'&&typeof message.content==='string'&&message.content.startsWith('<system-reminder>');

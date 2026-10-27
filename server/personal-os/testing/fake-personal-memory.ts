@@ -1,9 +1,12 @@
 import { createServer } from 'node:http';
+import { tokens } from '../token-estimate.ts';
 
 // Synthetic responses exercise the complete provider boundary, not model quality.
 export async function startFakePersonalMemory() {
   const requests: Array<Record<string, unknown>>=[];
   const scripts:Array<{action:string;args:Record<string,unknown>}|string>=[];
+  // Streamed answers report the input a provider would count: the offline estimate of the request times this scale.
+  let usageScale=1;
   let override: ((body: Record<string, unknown>)=>Promise<unknown>|unknown)|undefined;
   const server=createServer(async(req,res)=>{
     if(req.url==='/v1/models'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[{id:'fixture-chat'},{id:'fixture-memory'}]}));return;}
@@ -31,10 +34,10 @@ export async function startFakePersonalMemory() {
     res.setHeader('Content-Type','text/event-stream');
     const script=scripts.shift();
     const delta=script&&typeof script!=='string'?{role:'assistant',tool_calls:[{index:0,id:'call-'+requests.length,type:'function',function:{name:'broker',arguments:JSON.stringify({action:script.action,...script.args})}}]}:{role:'assistant',content:typeof script==='string'?script:answer};
-    for(const frame of [{choices:[{index:0,delta,finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:script&&typeof script!=='string'?'tool_calls':'stop'}],usage:{prompt_tokens:400,completion_tokens:20,prompt_tokens_details:{cached_tokens:100}}}])res.write(`data: ${JSON.stringify({id:'synthetic',object:'chat.completion.chunk',...frame})}\n\n`);
+    for(const frame of [{choices:[{index:0,delta,finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:script&&typeof script!=='string'?'tool_calls':'stop'}],usage:{prompt_tokens:Math.max(400,Math.ceil(tokens(body)*usageScale)),completion_tokens:20,prompt_tokens_details:{cached_tokens:100}}}])res.write(`data: ${JSON.stringify({id:'synthetic',object:'chat.completion.chunk',...frame})}\n\n`);
     res.end('data: [DONE]\n\n');
   });
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
   const address=server.address();if(!address||typeof address==='string')throw new Error('Fixture failed');
-  return {origin:`http://127.0.0.1:${address.port}`,requests,scripts,setOverride(fn:typeof override){override=fn;},async close(){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
+  return {origin:`http://127.0.0.1:${address.port}`,requests,scripts,setOverride(fn:typeof override){override=fn;},setUsageScale(value:number){usageScale=value;},async close(){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
 }

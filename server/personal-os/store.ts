@@ -9,6 +9,7 @@ import { connectorSchema } from "./connector-schema.ts";
 import { feishuSchema } from "./feishu/feishu-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
 import { continuitySchema } from "./continuity-schema.ts";
+import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 export type Row = Record<string, string | number | null>;
@@ -58,6 +59,7 @@ export class CoreStore {
   readonly workspace = "personal";
   readonly session = "desktop-owner";
   readonly modelLimits: ModelLimits;
+  readonly calibration = new ModelCalibration(this);
   constructor(dir: string, readonly key: Buffer, token: string, catalog?: ModelCatalogConfig) {
     if (key.length !== 32) throw new Error("Invalid credential vault key");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -305,6 +307,12 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
     if (!this.get("SELECT version FROM schema_migrations WHERE version=25")) this.transaction(() => {
       this.db.exec(feishuSchema);
       this.insert("schema_migrations", { version: 25, checksum: hash(feishuSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=26")) this.transaction(() => {
+      // Per-model ratio of real input tokens to the offline estimate; see calibration.ts.
+      const schema = "CREATE TABLE IF NOT EXISTS model_calibration(provider TEXT NOT NULL,endpoint TEXT NOT NULL,model TEXT NOT NULL,ratio REAL NOT NULL,samples INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(provider,endpoint,model)) STRICT;";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 26, checksum: hash(schema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

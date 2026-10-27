@@ -7,6 +7,8 @@ export interface WorkerConfig {
   taskId: string; conversationId: string; runtimeId: string; generation: number; dir: string;
   provider: string; endpoint: string; model: string; apiKey: string; systemPrompt: string; volatilePrompt: string;
   contextWindow: number; maxOutputTokens: number;
+  // Real/estimated token ratio of this model; scales the count that starts context reduction, never a capacity check. 1 when unknown.
+  calibration?: number;
   entries?: FileEntry[]; inputs: RuntimeInput[];
   history?: Array<{ref:string;role:string;content:string}>;
 }
@@ -20,5 +22,7 @@ export interface WorkerEvent {
   firstEntry?: string; lastEntry?: string; contextTokens?: number;
   summaryMaxTokens?: number;
   cacheRead?: number; cacheWrite?: number;
+  // The worker's own estimate of the request this receipt (inputTokens) belongs to.
+  estimatedTokens?: number;
 }
 export interface WorkerReply { type: "start" | "reply" | "steer" | "stop"; config?: WorkerConfig; requestId?: string; result?: unknown; error?: string; input?: RuntimeInput }

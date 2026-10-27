@@ -15,6 +15,8 @@ let session: AgentSession | undefined;
 const replies = new Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
 const projected = new Set<string>();
 let activeInvoke: string | undefined;
+// Estimate of the payload most recently sent; reported with its receipt so Core can calibrate.
+let requestEstimate: number | undefined;
 let purpose: "answer" | "compact" = "answer";
 let config: WorkerConfig;
 let manager: SessionManager;
@@ -125,6 +127,14 @@ async function main(value: WorkerConfig) {
     const count=()=>tokens(messages)+overhead+volatileTokens;
     // 80% is the normal trigger; reserve enough output space on small windows.
     const threshold=Math.min(Math.floor(config.contextWindow*.8),inputBudget);
+    // Calibration scales only the count compared with the soft threshold. Capacity checks
+    // (summarizer windows, paging budgets, the window check at fetch) stay on the raw count().
+    // A skewed receipt must never strand a request that only reduction could make sendable, so
+    // the raw count reaching 90% of the window starts reduction too. At calibration 1 this is
+    // the former raw trigger.
+    const calibration=Number.isFinite(config.calibration)&&config.calibration!>0?config.calibration!:1;
+    const ceiling=Math.floor(config.contextWindow*.9);
+    const over=()=>count()*calibration>=threshold||count()>=ceiling;
     // The summarizer shares this window and needs room for its instruction and
     // output. Every compact request targets half of it; the carried summary and
     // a single capped item can still exceed that softly without reaching the limit.
@@ -144,7 +154,7 @@ async function main(value: WorkerConfig) {
       const content=[{type:'text' as const,text:`工具结果摘要（${message.isError?'失败':'完成'}），原文 entry:${entry.id}：\n${result.summary}`}];
       if(tokens(content)<tokens(message.content))manager.appendContextEdit(entry.id,{content});
     };
-    if(count()>=threshold){
+    if(over()){
       // A single oversized text result cannot be sent to the summarizer either.
       // Page only when under pressure and unable to fit, keeping the raw entry.
       const resultBudget=threshold-overhead-promptTokens-tokens(broker.parameters)-tokens(broker.description)-4096;
@@ -156,7 +166,7 @@ async function main(value: WorkerConfig) {
       await rpc({type:'snapshot',entries:snapshot()});
       messages=clean(manager.buildSessionContext().messages);
     }
-    if(count()>=threshold){
+    if(over()){
       const entries=manager.buildContextEntries();
       // Use the same conservative estimator for both trigger and retained tail.
       // Cuts are only at user turns, never between a tool call and its result.
@@ -214,7 +224,7 @@ async function main(value: WorkerConfig) {
         }
       }
     }
-    if(count()>=threshold){
+    if(over()){
       // Preserve the user's exact inputs, the newest tool-call group, and any
       // explicitly retrieved originals in this turn. Only older result bodies
       // become useful summaries; their call/result metadata remains paired.
@@ -225,7 +235,7 @@ async function main(value: WorkerConfig) {
       const edited=new Set(manager.getBranch().flatMap(entry=>entry.type==='context_edit'?[entry.targetId]:[]));
       const retrieved=new Set(projectedEntries.slice(turnStart+1).flatMap(item=>item.messages.flatMap(message=>message.role==='assistant'?message.content.flatMap(part=>part.type==='toolCall'&&part.arguments.action==='memory.search'&&String(part.arguments.query).startsWith('entry:')?[part.id]:[]):[])));
       for(const item of projectedEntries.slice(0,latestIndex)){
-        if(count()<threshold)break;
+        if(!over())break;
         const entry=item.sourceEntry,message=item.messages[0];
         if(entry.type!=='message'||message?.role!=='toolResult'||edited.has(entry.id)||retrieved.has(message.toolCallId)||tokens(message.content)<2048)continue;
         await summarizeResult(entry,message);
@@ -233,13 +243,13 @@ async function main(value: WorkerConfig) {
         messages=clean(manager.buildSessionContext().messages);
       }
     }
-    if(count()>=threshold)throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${count()} / ${threshold} Token）。原文已保留，请分段读取或增大模型窗口。`);
+    if(over())throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${count()}${calibration===1?'':`，校准后 ${Math.round(count()*calibration)}`} / ${threshold} Token）。原文已保留，请分段读取或增大模型窗口。`);
     return transform?transform(messages,signal):messages;
   };
   session.subscribe((event) => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") send({ type: "delta", text: event.assistantMessageEvent.delta });
     if (event.type === "message_end" && event.message.role === "assistant") {
-      send({ type: "snapshot", invokeId: activeInvoke, inputTokens: event.message.usage.input + event.message.usage.cacheRead + event.message.usage.cacheWrite, cacheRead:event.message.usage.cacheRead,cacheWrite:event.message.usage.cacheWrite,outputTokens: event.message.usage.output, modelStatus: event.message.stopReason === "error" ? "failed" : event.message.stopReason === "aborted" ? "cancelled" : "succeeded" });
+      send({ type: "snapshot", invokeId: activeInvoke, inputTokens: event.message.usage.input + event.message.usage.cacheRead + event.message.usage.cacheWrite, estimatedTokens: requestEstimate, cacheRead:event.message.usage.cacheRead,cacheWrite:event.message.usage.cacheWrite,outputTokens: event.message.usage.output, modelStatus: event.message.stopReason === "error" ? "failed" : event.message.stopReason === "aborted" ? "cancelled" : "succeeded" });
     }
   });
   const originalFetch = globalThis.fetch, endpoint = new URL(config.endpoint);
@@ -249,6 +259,7 @@ async function main(value: WorkerConfig) {
     // A rejected request has no invoice. Never let the SDK's error event
     // overwrite the preceding successful request's receipt or usage.
     activeInvoke = undefined;
+    requestEstimate = undefined;
     httpFailure = undefined;
     requestFailure = undefined;
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -266,6 +277,7 @@ async function main(value: WorkerConfig) {
         // projections/compaction from restoring an obsolete contact identity.
         applyRequestPrompt(config.provider, payload, permit);
         const estimated=tokens(payload);
+        requestEstimate=estimated;
         const available=Math.floor(config.contextWindow-estimated-256);
         if(available<256)throw new Error('当前请求超出上下文窗口，原文已保留');
         if(config.provider==='anthropic')payload.max_tokens=Math.min(Number(payload.max_tokens??config.maxOutputTokens),available);
