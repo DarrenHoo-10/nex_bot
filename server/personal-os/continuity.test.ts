@@ -202,12 +202,14 @@ describe('Continuous personal assistant and memory',()=>{
     const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
     app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
     app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
-    app.store.db.exec('ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
+    app.store.db.exec('DROP TABLE maintenance_runs; DROP INDEX assistant_usage_maintain; ALTER TABLE assistant_usage DROP COLUMN conversation_id; ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
     app.store.db.exec('ALTER TABLE personal_connectors DROP COLUMN provider; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN kind;');
     const {CoreStore}=await import('./store.ts');
     const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
     try {
-      expect(reopened.get('SELECT version FROM schema_migrations WHERE version=27')?.version).toBe(27);
+      expect(reopened.get('SELECT version FROM schema_migrations WHERE version=28')?.version).toBe(28);
+      expect(reopened.get('SELECT COUNT(*) n FROM maintenance_runs')?.n).toBe(0);
+      expect(reopened.get("SELECT COUNT(*) n FROM pragma_table_info('assistant_usage') WHERE name='conversation_id'")?.n).toBe(1);
       expect(reopened.get("SELECT COUNT(*) n FROM pragma_table_info('model_limit_overrides') WHERE name='context_budget'")?.n).toBe(1);
       expect(reopened.get('SELECT COUNT(*) n FROM model_calibration')?.n).toBe(0);
       expect(reopened.get('SELECT enabled FROM workspace_memory_settings')?.enabled).toBe(0);

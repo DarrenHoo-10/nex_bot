@@ -4,7 +4,10 @@ export interface RuntimeInput { id: string; text: string; hash: string; seq: num
 // systemPrompt is the stable system message; volatilePrompt is injected per request before the newest model turn.
 export interface ModelPermit { invokeId: string; systemPrompt: string; volatilePrompt: string }
 export interface WorkerConfig {
-  taskId: string; conversationId: string; runtimeId: string; generation: number; dir: string;
+  // 'answer' (default) runs a task. 'maintain' only reduces the stored projection ahead of the next turn:
+  // no input, no answering model, no tools; it saves through `snapshot`, reports `done` and exits. It has no task.
+  mode?: "answer" | "maintain";
+  taskId?: string; conversationId: string; runtimeId: string; generation: number; dir: string;
   provider: string; endpoint: string; model: string; apiKey: string; systemPrompt: string; volatilePrompt: string;
   contextWindow: number; maxOutputTokens: number;
   // Working context budget in tokens (resolved and clamped by Core); reduction starts here, not at the window.

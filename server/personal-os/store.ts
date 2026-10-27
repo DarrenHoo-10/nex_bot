@@ -320,6 +320,19 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
       if (!this.all("PRAGMA table_info(model_limit_overrides)").some((column) => column.name === "context_budget")) this.db.exec(schema);
       this.insert("schema_migrations", { version: 27, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=28")) this.transaction(() => {
+      // Background context maintenance has no task, so it is not a task_run (whose task is required and
+      // referenced by tool calls and model invocations): its own run table, one active run per conversation.
+      // Maintenance summaries are told apart in assistant_usage by purpose 'maintain' and the conversation.
+      const schema = `CREATE TABLE IF NOT EXISTS maintenance_runs(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,bot_id TEXT NOT NULL,runtime_session_id TEXT NOT NULL,model_id TEXT NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('digest','budget')),status TEXT NOT NULL CHECK(status IN ('active','ended','failed','interrupted')),estimate INTEGER NOT NULL,error TEXT,started_at INTEGER NOT NULL,ended_at INTEGER,CHECK((status='active')=(ended_at IS NULL))) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS maintenance_one_active ON maintenance_runs(conversation_id) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS maintenance_runs_conversation ON maintenance_runs(conversation_id,started_at);
+ALTER TABLE assistant_usage ADD COLUMN conversation_id TEXT;
+CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversation_id,purpose,created_at);`;
+      const hasColumn = this.all("PRAGMA table_info(assistant_usage)").some((column) => column.name === "conversation_id");
+      this.db.exec(hasColumn ? schema.replace("ALTER TABLE assistant_usage ADD COLUMN conversation_id TEXT;\n", "") : schema);
+      this.insert("schema_migrations", { version: 28, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

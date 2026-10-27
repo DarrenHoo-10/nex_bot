@@ -39,7 +39,7 @@ export class AssistantMemory {
   }
   globalSettings() { return this.store.get('SELECT enabled,model,version FROM workspace_memory_settings WHERE id=1')!; }
   summary() {
-    const totals = this.store.get("SELECT COALESCE(SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)),0) tokens,COALESCE(SUM(CASE WHEN u.input_tokens IS NULL OR u.output_tokens IS NULL THEN 1 ELSE 0 END),0) unknown FROM assistant_usage u JOIN bots b ON b.id=u.bot_id WHERE b.workspace_id=? AND b.owner_user_id=? AND u.purpose<>'compact'", this.store.workspace, this.store.owner)!;
+    const totals = this.store.get("SELECT COALESCE(SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)),0) tokens,COALESCE(SUM(CASE WHEN u.input_tokens IS NULL OR u.output_tokens IS NULL THEN 1 ELSE 0 END),0) unknown FROM assistant_usage u JOIN bots b ON b.id=u.bot_id WHERE b.workspace_id=? AND b.owner_user_id=? AND u.purpose NOT IN ('compact','maintain')", this.store.workspace, this.store.owner)!;
     return { ...this.globalSettings(), totalTokens: Number(totals.tokens), incomplete: Number(totals.unknown)>0 };
   }
   saveGlobal(data: Record<string, unknown>) {
