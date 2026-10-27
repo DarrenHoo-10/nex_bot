@@ -105,11 +105,12 @@ struct SettingsModelPane: View {
             case "save": save()
             case "limits":
                 let l = limits.limits
-                mbLog("limits ctx=\(limits.context) out=\(limits.output) auto=\(l?.automatic.contextWindow ?? -1)/\(l?.automatic.maxOutputTokens ?? -1) manual=\(l?.manual.contextWindow.map(String.init) ?? "nil")/\(l?.manual.maxOutputTokens.map(String.init) ?? "nil") src=\(l?.source.contextWindow.rawValue ?? "-")/\(l?.source.maxOutputTokens.rawValue ?? "-") status=\(l?.status.rawValue ?? "-") err=\(limits.error) saved=\(saved) saveError=\(error ?? "")")
+                mbLog("limits ctx=\(limits.context) out=\(limits.output) budget=\(limits.budget) autoBudget=\(l?.automatic.contextBudget ?? -1) manualBudget=\(l?.manual.contextBudget.map(String.init) ?? "nil") auto=\(l?.automatic.contextWindow ?? -1)/\(l?.automatic.maxOutputTokens ?? -1) manual=\(l?.manual.contextWindow.map(String.init) ?? "nil")/\(l?.manual.maxOutputTokens.map(String.init) ?? "nil") src=\(l?.source.contextWindow.rawValue ?? "-")/\(l?.source.maxOutputTokens.rawValue ?? "-") status=\(l?.status.rawValue ?? "-") err=\(limits.error) saved=\(saved) saveError=\(error ?? "")")
             case "setlimits":
                 let p = cmd.arg.components(separatedBy: "|")
                 limits.context = p.first ?? ""; limits.userEdited(context: true)
                 limits.output = p.count > 1 ? p[1] : ""; limits.userEdited(context: false)
+                limits.budget = p.count > 2 ? p[2] : ""; limits.userEditedBudget()
                 dirty = true; saved = false
             case "lookup": limits.retry += 1
             default: break

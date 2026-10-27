@@ -86,6 +86,8 @@ public struct ModelLimitInfo: Decodable, Sendable, Hashable {
     /// Effective values (manual wins over automatic).
     public var contextWindow: Int
     public var maxOutputTokens: Int
+    /// Effective working context (clamped by Core to the model's input budget); `nil` from a Core that predates it.
+    public var contextBudget: Int?
     public var manual: Manual
     public var source: ModelLimitSources
     public var status: ModelLimitStatus
@@ -106,6 +108,7 @@ public struct ModelLimitInfo: Decodable, Sendable, Hashable {
         }
         contextWindow = c.lenient(.init("contextWindow"))?.intValue ?? ModelLimits.defaultContextWindow
         maxOutputTokens = c.lenient(.init("maxOutputTokens"))?.intValue ?? ModelLimits.defaultMaxOutputTokens
+        contextBudget = c.lenient(.init("contextBudget"))?.intValue
         let m = c.lenient(.init("manual"))
         manual = Manual(contextWindow: m?["contextWindow"]?.intValue, maxOutputTokens: m?["maxOutputTokens"]?.intValue, contextBudget: m?["contextBudget"]?.intValue)
         source = sources(c.lenient(.init("source")))

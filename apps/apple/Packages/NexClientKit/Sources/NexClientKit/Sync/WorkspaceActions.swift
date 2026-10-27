@@ -51,6 +51,13 @@ extension WorkspaceStore {
         let b = try currentBot(botID)
         try await act { try await client.updateApprovalMode(id: botID, mode: mode, version: b.approvalModeVersion) }
     }
+    /// 新话题: the agent's next message opens a new conversation episode. Returns whether Core marked the boundary.
+    /// Core refuses while the conversation is working ("请等待当前任务结束后再开启新话题").
+    @discardableResult
+    public func startNewTopic(botID: String) async throws -> Bool {
+        _ = try currentBot(botID)
+        return try await act { try await client.newTopic(bot: botID) }
+    }
     /// Downloads a sent attachment (`AttachmentLink.id`). The suggested file name comes from Core.
     public func downloadAttachment(id: String) async throws -> (data: Data, filename: String) {
         try await act(refresh: false) { try await client.downloadAttachment(id: id) }
@@ -185,7 +192,7 @@ extension WorkspaceStore {
 
     // MARK: Settings
 
-    /// Saves the model connection. `contextWindow` / `maxOutputTokens` are tri-state: ``LimitSetting/preserve`` (default) keeps
+    /// Saves the model connection. `contextWindow` / `maxOutputTokens` / `contextBudget` are tri-state: ``LimitSetting/preserve`` (default) keeps
     /// the saved override for this provider + endpoint + model, `.automatic` clears it, `.manual(n)` sets it.
     public func saveModel(provider: String, model: String, endpoint: String, apiKey: String = "",
                           contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve, contextBudget: LimitSetting = .preserve) async throws {

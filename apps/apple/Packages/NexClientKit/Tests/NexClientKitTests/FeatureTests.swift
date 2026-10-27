@@ -196,12 +196,58 @@ final class CoreFeatureTests: XCTestCase {
         XCTAssertGreaterThan(core.recorded("/api/state").count, before)
     }
 
-    func limitsJSON(manualContext: Any = NSNull(), refresh: String? = nil) -> [String: Any] {
-        var j: [String: Any] = ["manual": ["contextWindow": manualContext, "maxOutputTokens": NSNull()], "contextWindow": 400_000, "maxOutputTokens": 128_000,
-                                "matched": "openai/gpt-5", "status": "matched", "source": ["contextWindow": "manual", "maxOutputTokens": "models.dev"], "updatedAt": 1_760_000_000_000,
-                                "automatic": ["contextWindow": 272_000, "maxOutputTokens": 128_000, "source": ["contextWindow": "models.dev", "maxOutputTokens": "models.dev"]]]
+    /// Shape of Core's `/api/models/limits`; `withBudget: false` is a Core that predates `contextBudget`.
+    func limitsJSON(manualContext: Any = NSNull(), manualBudget: Any = NSNull(), withBudget: Bool = true, refresh: String? = nil) -> [String: Any] {
+        var manual: [String: Any] = ["contextWindow": manualContext, "maxOutputTokens": NSNull()]
+        var source: [String: Any] = ["contextWindow": "manual", "maxOutputTokens": "models.dev"]
+        var automatic: [String: Any] = ["contextWindow": 272_000, "maxOutputTokens": 128_000]
+        var automaticSource: [String: Any] = ["contextWindow": "models.dev", "maxOutputTokens": "models.dev"]
+        var j: [String: Any] = ["contextWindow": 400_000, "maxOutputTokens": 128_000, "matched": "openai/gpt-5", "status": "matched", "updatedAt": 1_760_000_000_000]
+        if withBudget {
+            manual["contextBudget"] = manualBudget
+            source["contextBudget"] = manualBudget is NSNull ? "default" : "manual"
+            automatic["contextBudget"] = 64_000; automaticSource["contextBudget"] = "default"
+            j["contextBudget"] = manualBudget is NSNull ? 64_000 : manualBudget
+        }
+        automatic["source"] = automaticSource
+        j["manual"] = manual; j["source"] = source; j["automatic"] = automatic
         if let refresh { j["refresh"] = refresh }
         return j
+    }
+
+    func testModelLimitsContextBudgetDecoding() throws {
+        func decode(_ json: [String: Any]) throws -> ModelLimitInfo { try JSONDecoder().decode(ModelLimitInfo.self, from: JSONSerialization.data(withJSONObject: json)) }
+        let auto = try decode(limitsJSON())
+        XCTAssertNil(auto.manual.contextBudget); XCTAssertEqual(auto.contextBudget, 64_000)
+        XCTAssertEqual(auto.automatic.contextBudget, 64_000); XCTAssertEqual(auto.automatic.source.contextBudget, .default); XCTAssertEqual(auto.source.contextBudget, .default)
+        let manual = try decode(limitsJSON(manualBudget: 48_000))
+        XCTAssertEqual(manual.manual.contextBudget, 48_000); XCTAssertEqual(manual.contextBudget, 48_000)
+        XCTAssertEqual(manual.source.contextBudget, .manual); XCTAssertEqual(manual.automatic.contextBudget, 64_000)
+        let old = try decode(limitsJSON(withBudget: false))
+        XCTAssertNil(old.manual.contextBudget); XCTAssertNil(old.contextBudget)
+        XCTAssertEqual(old.automatic.contextBudget, ModelLimits.defaultContextBudget); XCTAssertEqual(old.automatic.source.contextBudget, .default)
+        XCTAssertEqual(old.contextWindow, 400_000); XCTAssertEqual(old.manual.contextWindow, nil)
+    }
+
+    func testContextBudgetParsingAndEncoding() async throws {
+        XCTAssertEqual(try ModelLimits.parse("", field: .contextBudget), .automatic)
+        XCTAssertEqual(try ModelLimits.parse(" 48000 ", field: .contextBudget), .manual(48_000))
+        XCTAssertEqual(try ModelLimits.parse("1024", field: .contextBudget), .manual(1_024))
+        for text in ["1023", "10000001", "1.5", "abc", "-5"] {
+            XCTAssertThrowsError(try ModelLimits.parse(text, field: .contextBudget)) { XCTAssertEqual(($0 as? CoreError)?.message, "工作上下文须为 1,024 至 10,000,000 的整数") }
+        }
+        let core = StubCore(); core.handle { _ in .json(["ok": true]) }
+        let c = core.client()
+        try await c.saveModel(ModelSettings(provider: "openai", model: "m", endpoint: "https://x.test/v1", apiKey: "k"))
+        XCTAssertFalse(core.recorded("/api/config")[0].json.keys.contains("contextBudget"), "preserve omits the field")
+        try await c.saveModel(ModelSettings(provider: "openai", model: "m", endpoint: "https://x.test/v1", contextBudget: .automatic))
+        let cleared = core.recorded("/api/config")[1]
+        XCTAssertTrue(String(data: cleared.body, encoding: .utf8)!.contains(#""contextBudget":null"#))
+        XCTAssertFalse(cleared.json.keys.contains("contextWindow")); XCTAssertFalse(cleared.json.keys.contains("maxOutputTokens"))
+        let store = WorkspaceStore(client: c, timing: fastTiming)
+        try await store.saveModel(provider: "anthropic", model: "m", endpoint: "https://x.test", contextBudget: .manual(48_000))
+        let manual = core.recorded("/api/config")[2].json
+        XCTAssertEqual(manual["contextBudget"] as? Int, 48_000); XCTAssertFalse(manual.keys.contains("contextWindow"))
     }
 
     func testModelLimitsDecodingAndRequests() async throws {

@@ -186,6 +186,8 @@ struct Composer: View {
                        action: { ui.composerMenu = .permissions })),
             .row(.init(id: "model", icon: "slider.horizontal.3", title: "模型", key: "model", value: chatModel.isEmpty ? defaultModel : chatModel,
                        enabled: config != nil, action: { ui.composerMenu = .models })),
+            .row(.init(id: "topic", icon: "plus.bubble", title: "新话题", key: "topic",
+                       enabled: !conversation.messages.isEmpty, action: { close(); startNewTopic() })),
             .row(.init(id: "export", icon: "arrow.down.to.line", title: "导出对话", key: "export", value: "Markdown",
                        enabled: !conversation.messages.isEmpty, action: { close(); exportConversation() })),
         ], initialID: "file", width: 340, close: close)
@@ -254,6 +256,14 @@ struct Composer: View {
 
     private func chooseFiles() {
         FilePanels.pickFiles { urls in Task { await conversation.addFiles(urls) } }
+    }
+
+    private func startNewTopic() {
+        menuError = nil
+        Task {
+            do { try await workspace.startNewTopic(botID: botID) }
+            catch { menuError = message(of: error) }
+        }
     }
 
     private func exportConversation() {

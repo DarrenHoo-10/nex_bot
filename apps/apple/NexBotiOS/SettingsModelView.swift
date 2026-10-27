@@ -161,6 +161,7 @@ struct SettingsModelView: View {
             case "m-save": Task { await save() }
             case "m-context": form.contextEdited = true; form.contextText = arg
             case "m-output": form.outputEdited = true; form.outputText = arg
+            case "m-budget": form.budgetEdited = true; form.budgetText = arg
             case "m-lookup": Task { await lookup(force: true) }
             default: break
             }
