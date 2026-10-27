@@ -108,6 +108,7 @@ export class MemoryModule {
   }
   expand(botId: string, ref: string) {
     if(ref.startsWith('message:')) return {ref,sourceClass:'original',content:this.personal.source(botId,ref.slice(8)).content};
+    if(ref.startsWith('episode:')) return {ref,sourceClass:'synthesized',content:this.personal.source(botId,ref).content};
     const source = this.store.get("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.id=? AND s.status='active' AND (b.bot_id=? OR b.scope='workspace')", ref, botId);
     if (!source) throw new Error("来源已撤回或不可见");
     const payload = this.ledger.source(source); if (!payload) throw new Error("来源已变化");

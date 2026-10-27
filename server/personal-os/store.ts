@@ -9,6 +9,7 @@ import { connectorSchema } from "./connector-schema.ts";
 import { feishuSchema } from "./feishu/feishu-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
 import { continuitySchema } from "./continuity-schema.ts";
+import { episodeSchema } from "./episodes-schema.ts";
 import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
@@ -332,6 +333,11 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       const hasColumn = this.all("PRAGMA table_info(assistant_usage)").some((column) => column.name === "conversation_id");
       this.db.exec(hasColumn ? schema.replace("ALTER TABLE assistant_usage ADD COLUMN conversation_id TEXT;\n", "") : schema);
       this.insert("schema_migrations", { version: 28, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=29")) this.transaction(() => {
+      // Episode archives, their index, one-shot new-topic marks and the memory pump's cursor over archives.
+      this.db.exec(this.all("PRAGMA table_info(assistant_memory_settings)").some((column) => column.name === "episode_cursor") ? episodeSchema.replace("ALTER TABLE assistant_memory_settings ADD COLUMN episode_cursor INTEGER NOT NULL DEFAULT 0;\n", "") : episodeSchema);
+      this.insert("schema_migrations", { version: 29, checksum: hash(episodeSchema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

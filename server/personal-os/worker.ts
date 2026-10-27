@@ -7,7 +7,7 @@ import { modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
 import { brokerDescription, brokerParameters } from "./broker-tool.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
-import { CONTEXT_OVERHEAD, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryText, foldable, hygieneScope, imageCandidates, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, triggerLine } from './context-tools.ts';
+import { CONTEXT_OVERHEAD, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryText, episodeStart, foldable, hygieneScope, imageCandidates, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, triggerLine } from './context-tools.ts';
 import { applyRequestPrompt } from './request-prompt.ts';
 
 let session: AgentSession | undefined;
@@ -22,6 +22,8 @@ let manager: SessionManager;
 let started = false;
 // The turn-start digest of older tool results runs on the first model boundary of a worker only.
 let hygieneDone = false;
+// The episode boundary is closed at the first model boundary of a worker only.
+let episodeDone = false;
 // Set while a background maintenance run is reducing; a stop request aborts it.
 let maintenance: AbortController | undefined;
 function send(event: WorkerEvent) { process.send?.(event); }
@@ -92,7 +94,8 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
   // The summarizer shares this window and needs room for its instruction and
   // output. Every compact request targets half of it; the carried summary and
   // a single capped item can still exceed that softly without reaching the limit.
-  const summaryBudget=Math.floor(config.contextWindow*.5),itemBudget=Math.floor(summaryBudget*.8);
+  // Summarizer requests go to the tidy-up model, so its window, not the chat model's, sizes them.
+  const tidyWindow=config.tidyWindow??config.contextWindow,summaryBudget=Math.floor(tidyWindow*.5),itemBudget=Math.floor(summaryBudget*.8);
   const page=(entry:FileEntry)=>{
     const limit=Math.max(1,Math.min(12000,Math.floor(inputBudget*.1)));
     manager.appendContextEdit(entry.id,{content:[{type:'text',text:JSON.stringify({notice:'工具原文超过本次输入容量，以下为分页内容，并非完整结果。用 memory.search(query,offset,limit) 继续读取。',query:`entry:${entry.id}`,...entryPage(entry.id,entryText(entry),0,limit)})}]});
@@ -102,12 +105,71 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
   const summarizeResult=async(entry:FileEntry,message:ToolResult,imageMarker='[图片]')=>{
     const source=[{ref:`entry:${entry.id}`,role:message.role,status:message.isError?'failed':'succeeded',content:message.content.map(part=>isImagePart(part)?{type:'text',text:imageMarker}:part)}];
     // Alone with a 1024-token answer, a body may use most of the window.
-    if(tokens(source)>Math.floor(config.contextWindow*.8)){page(entry);return;}
-    const result=await rpc({type:'compact',entries:snapshot(),inputs:[...projected],text:JSON.stringify(source),firstEntry:entry.id,lastEntry:entry.id,contextTokens:count(),summaryMaxTokens:1024}) as {summary:string;checkpoint:string};
+    if(tokens(source)>Math.floor(tidyWindow*.8)){page(entry);return;}
+    const result=await rpc({type:'compact',summaryKind:'result',entries:snapshot(),inputs:[...projected],text:JSON.stringify(source),firstEntry:entry.id,lastEntry:entry.id,contextTokens:count(),summaryMaxTokens:1024}) as {summary:string;checkpoint:string};
     if(signal?.aborted)throw new Error('压缩已取消');
     const content=[{type:'text' as const,text:`工具结果摘要（${message.isError?'失败':'完成'}），原文 entry:${entry.id}：\n${result.summary}`}];
     if(tokens(content)<tokens(message.content))manager.appendContextEdit(entry.id,{content});
   };
+  type SourceItem={ref:string;role:string;content:unknown};
+  type Folded={summary:string;checkpoint:string;episode?:string};
+  // What the summarizer reads for a run of context entries: inputs, a leading summary and the projected
+  // messages. It reads text; image bytes stay in the original entry.
+  const sourceOf=(earlier:FileEntry[])=>{
+    const textOnly=(content:unknown)=>Array.isArray(content)?content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part):content;
+    const projection=new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages]));
+    return earlier.flatMap<SourceItem>((entry,index)=>{
+      const ref=`entry:${entry.id}`;
+      if(entry.type==='custom_message')return [{ref,role:'user',content:textOnly(entry.content)}];
+      if(entry.type==='compaction'&&index===0)return [{ref,role:'summary',content:entry.summary}];
+      if(entry.type==='message'&&entry.message.role!=='system')return (projection.get(entry.id)??[]).map(message=>({ref,role:message.role,content:'content' in message?textOnly(message.content):JSON.stringify(message)}));
+      return [];
+    });
+  };
+  // Summarize in tidy-model-window-sized batches, carrying the running summary forward; an item too large
+  // for any batch is cut with its reference. The last request has the given kind (an episode archive is
+  // produced by the final request, which reads the running summary instead of re-reading earlier batches).
+  const foldBatches=async(source:SourceItem[],finalKind:'history'|'episode',episode?:WorkerEvent['episode'])=>{
+    const items=source.map(item=>tokens(item)<=itemBudget?item:{...item,content:JSON.stringify(item.content).slice(0,Math.floor(itemBudget/1.5))+`…[已截断，原文 ${item.ref}]`});
+    let result:Folded|undefined;
+    for(let start=0;start<items.length;){
+      const batch:SourceItem[]=result?[{ref:`checkpoint:${result.checkpoint}`,role:'summary',content:result.summary}]:[];
+      let size=tokens(batch),end=start;
+      while(end<items.length&&(end===start||size+tokens(items[end])<=summaryBudget)){size+=tokens(items[end]);batch.push(items[end++]);}
+      const last=end>=items.length;
+      result=await rpc({type:'compact',summaryKind:last?finalKind:'history',...(last&&episode?{episode}:{}),entries:snapshot(),inputs:[...projected],text:JSON.stringify(batch),firstEntry:items[0].ref.slice(6),lastEntry:items[end-1].ref.slice(6),contextTokens:count()}) as Folded;
+      if(signal?.aborted)throw new Error('压缩已取消');
+      start=end;
+    }
+    if(!result)throw new Error('压缩来源缺失');
+    return result;
+  };
+  // Episode boundary. When Core says the input of this run opens a new episode (a 6 h gap or an explicit new
+  // topic), everything before that input is archived in one structured summary, and a compaction keeps only
+  // the short "上一段要点", leaving the new episode a clean working context. Archiving never fails the turn:
+  // invalid output, a failed summarizer call or a missing source leaves the episode open and the turn goes on.
+  // Only a cancellation propagates. Answers only: a maintenance run has no input and so no boundary.
+  const closeEpisode=async()=>{
+    if(episodeDone||maintain||!config.episode)return;
+    episodeDone=true;
+    try{
+      const opening=manager.getBranch().find(entry=>entry.type==='custom_message'&&entry.customType==='nex.input'&&(entry.details as {inputId?:string}|undefined)?.inputId===config.episode!.inputId);
+      if(!opening)return;
+      const entries=manager.buildContextEntries(),index=entries.findIndex(entry=>entry.id===opening.id),earlier=entries.slice(0,Math.max(index,0));
+      if(index<=0||!foldable(earlier,new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages]))))return;
+      const source=sourceOf(earlier);
+      if(!source.length)return;
+      const time=(entry:FileEntry|undefined)=>{const value=entry&&entry.type!=='session'?Date.parse(entry.timestamp):NaN;return Number.isFinite(value)?value:Date.now();};
+      const all=snapshot(),firstId=episodeStart(all,earlier[0]);
+      const result=await foldBatches(source,'episode',{firstEntry:firstId,lastEntry:earlier.at(-1)!.id,startedAt:time(all.find(entry=>entry.type!=='session'&&entry.id===firstId)),endedAt:time(earlier.at(-1))});
+      manager.appendCompaction(result.summary,opening.id,count(),{checkpoint:result.checkpoint,sourceFirst:earlier[0].id,sourceLast:earlier.at(-1)!.id,episode:result.episode});
+      await rpc({type:'snapshot',entries:snapshot()});
+      messages=clean(manager.buildSessionContext().messages);
+    }catch(error){
+      if(signal?.aborted)throw error;
+    }
+  };
+  await closeEpisode();
   // Steady-state hygiene, independent of budget pressure: when a new turn starts, results of turns
   // older than the latest completed one no longer sit in context in full. Large bodies get their own
   // summary and images become text markers; originals stay retrievable as entry:<id>. The current
@@ -180,32 +242,11 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
         await rpc({type:'snapshot',entries:snapshot()});
       }
       messages=clean(manager.buildSessionContext().messages);
-      // The summarizer reads text; image bytes stay in the original entry.
-      const textOnly=(content:unknown)=>Array.isArray(content)?content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part):content;
-      const projection=new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages]));
-      const source=earlier.flatMap<{ref:string;role:string;content:unknown}>((entry,index)=>{
-        const ref=`entry:${entry.id}`;
-        if(entry.type==='custom_message')return [{ref,role:'user',content:textOnly(entry.content)}];
-        if(entry.type==='compaction'&&index===0)return [{ref,role:'summary',content:entry.summary}];
-        if(entry.type==='message'&&entry.message.role!=='system')return (projection.get(entry.id)??[]).map(message=>({ref,role:message.role,content:'content' in message?textOnly(message.content):JSON.stringify(message)}));
-        return [];
-      });
+      const source=sourceOf(earlier);
       // Core persists source snapshot and checkpoint before the worker changes
       // projection. Failure leaves the preceding projection intact.
       if(source.length){
-        // Summarize in window-sized batches, carrying the running summary
-        // forward; an item too large for any batch is cut with its reference.
-        const items=source.map(item=>tokens(item)<=itemBudget?item:{...item,content:JSON.stringify(item.content).slice(0,Math.floor(itemBudget/1.5))+`…[已截断，原文 ${item.ref}]`});
-        let result:{summary:string;checkpoint:string}|undefined;
-        for(let start=0;start<items.length;){
-          const batch:Array<{ref:string;role:string;content:unknown}>=result?[{ref:`checkpoint:${result.checkpoint}`,role:'summary',content:result.summary}]:[];
-          let size=tokens(batch),end=start;
-          while(end<items.length&&(end===start||size+tokens(items[end])<=summaryBudget)){size+=tokens(items[end]);batch.push(items[end++]);}
-          result=await rpc({type:'compact',entries:snapshot(),inputs:[...projected],text:JSON.stringify(batch),firstEntry:items[0].ref.slice(6),lastEntry:items[end-1].ref.slice(6),contextTokens:count()}) as {summary:string;checkpoint:string};
-          if(signal?.aborted)throw new Error('压缩已取消');
-          start=end;
-        }
-        if(!result)throw new Error('压缩来源缺失');
+        const result=await foldBatches(source,'history');
         manager.appendCompaction(result.summary,first.id,count(),{checkpoint:result.checkpoint,sourceFirst:earlier[0].id,sourceLast:earlier.at(-1)!.id});
         await rpc({type:'snapshot',entries:snapshot()});
         messages=clean(manager.buildSessionContext().messages);

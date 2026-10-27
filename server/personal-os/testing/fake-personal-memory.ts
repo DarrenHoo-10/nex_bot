@@ -18,7 +18,13 @@ export async function startFakePersonalMemory() {
     const input=messages.at(-1)?.content??'';
     let answer='已收到，继续沿用已有约束。';
     if(!body.stream){
-      if(instruction.includes('你整理连续对话'))answer='工作笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。历史：已经讨论上下文连续性及登录问题。原文见随附 entry 引用。';
+      // Episode archive: structured JSON citing real entries of the input. History summary: {workingNote, history}.
+      // A single tool result digest (no JSON in the instruction) stays plain text.
+      if(instruction.includes('建立段落档案')){
+        const refs=[...new Set((input.match(/entry:[0-9a-f]+/g)??[]))].slice(0,2);
+        answer=JSON.stringify({title:'合成段落档案',brief:'上一段要点：已完成合成讨论，未部署。待办：验证长期记忆。',topics:['合成主题'],decisions:[{decision:'只讨论，不部署',reason:'用户要求保持只读'}],operations:[{operation:'memory.read 读取合成资料',outcome:'success',identifiers:['DOC-SYNTH-1'],detail:'读取成功'},{operation:'device.exec 保存文件',outcome:'failure',identifiers:['/tmp/synthetic.txt'],detail:'设备离线'}],openItems:['验证长期记忆'],refs,workingNote:'段落笔记：只讨论，不部署；待验证长期记忆。'});
+      }else if(instruction.includes('"workingNote"'))answer=JSON.stringify({workingNote:'Core 笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。',history:'历史：已经讨论上下文连续性及登录问题。原文见随附 entry 引用。'});
+      else if(instruction.includes('你整理连续对话'))answer='工作笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。历史：已经讨论上下文连续性及登录问题。原文见随附 entry 引用。';
       else if(instruction.includes('从新增原文提取')){
         const rows=JSON.parse(input) as Array<{id:string;role:string;text:string}>;
         answer=JSON.stringify({items:rows.map(row=>({kind:row.role==='assistant'?'experience':'fact',title:'合成偏好与决定',content:row.text,sources:[row.id]}))});

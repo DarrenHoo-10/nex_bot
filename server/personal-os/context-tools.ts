@@ -78,6 +78,28 @@ export function branchOf(entries: FileEntry[]): Entry[] {
   return path.reverse();
 }
 
+/**
+ * The entry an episode really starts at, given the first entry of its context. A summary compaction
+ * leads the context after a turn summary or a maintenance fold: the walk follows its sourceFirst back to
+ * the original entry. A compaction that closed a previous episode (details.episode) ends the walk at its
+ * first kept entry, which is where the next episode begins.
+ */
+export function episodeStart(entries: FileEntry[], leading: FileEntry): string {
+  const byId = new Map(entries.flatMap((entry) => entry.type === 'session' ? [] : [[entry.id, entry] as const]));
+  let current: FileEntry = leading;
+  for (let step = 0; step < 64 && current.type === 'compaction'; step++) {
+    const details = current.details as { sourceFirst?: string; episode?: string } | undefined;
+    if (details?.episode) return current.firstKeptEntryId;
+    const next = details?.sourceFirst ? byId.get(details.sourceFirst) : undefined;
+    if (!next) break;
+    current = next;
+  }
+  // The prompt's system messages precede the first input; they are no part of the episode.
+  let index = entries.findIndex((entry) => entry.type !== 'session' && entry.id === current.id);
+  while (index >= 0 && index < entries.length - 1 && isSystem(entries[index])) index++;
+  return index < 0 ? current.id : (entries[index] as Entry).id;
+}
+
 /** The compaction-aware entries that make up the model context (SDK buildContextEntries). */
 export function contextEntries(entries: FileEntry[]): Entry[] {
   const path = branchOf(entries);
