@@ -89,8 +89,8 @@ in one request.
   and one compaction; originals stayed retrievable by `entry:<id>`.
 - Server typecheck, changed-file oxlint and `git diff --check` passed.
 
-Not deployed; the Tokyo conversation will compact on its next turn once a
-release with this change is live.
+Deployed to Tokyo on 2026-10-27; see the
+[release record](backlog-compaction-release-20261027.md).
 
 ## Limits and delivery
 
