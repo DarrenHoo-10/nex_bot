@@ -278,7 +278,7 @@ export class AgentModule {
     if(query.startsWith('entry:')) {
       const entryId=query.slice(6);
       for(const session of this.store.all('SELECT id FROM runtime_sessions WHERE bot_id=?',botId)) {
-        const entry=this.runtime.projection.load(String(session.id))?.find(entry=>entry.type!=='session'&&entry.id===entryId);
+        const entry=this.runtime.projection.entry(String(session.id),entryId);
         if(entry){
           const content=entryText(entry);
           return [page ? entryPage(entryId,content,page.offset,page.limit) : {id:entryId,content}];

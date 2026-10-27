@@ -436,6 +436,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.app.store.all("SELECT * FROM transcript WHERE content LIKE '%雪鹭%' OR content LIKE '%周二%'")).toHaveLength(0);
     expect(f.app.store.all("SELECT payload,result FROM a2a_messages").every((row) => !JSON.stringify(row).includes("雪鹭"))).toBe(true);
     expect(f.app.runtime.projection.db.prepare("SELECT COUNT(*) n FROM projections").get()?.n).toBe(0);
+    expect(f.app.runtime.projection.db.prepare("SELECT COUNT(*) n FROM projection_entries").get()?.n).toBe(0);
     expect(memory.read(peer, String(retained.documentId)).content).toBe("同伴喜欢盆栽");
     expect(() => f.app.store.run("UPDATE conversation_inputs SET content_json='{}' WHERE task_id=?", task)).toThrow("immutable");
     await f.app.close(); f.owned.apps.splice(f.owned.apps.indexOf(f.app), 1);
