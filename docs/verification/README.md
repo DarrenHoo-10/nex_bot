@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [Long conversations: context and memory (2026-10-28)](long-context-memory.md)
 - [Backlog compaction: Core release (2026-10-27)](backlog-compaction-release-20261027.md)
 - [Homepage navigation and complete download links (2026-10-25)](homepage-release-20261025.md)
 - [About, updates and preview controls: all-platform release (2026-10-25)](settings-updates-release-20261025.md)
