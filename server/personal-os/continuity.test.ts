@@ -8,6 +8,7 @@ import { startFakePersonalMemory } from './testing/fake-personal-memory.ts';
 import { hash } from './store.ts';
 import { assistantCompletion } from './assistant-model.ts';
 import { ChatFiles } from './chat-files.ts';
+import { tokens } from './token-estimate.ts';
 
 type Fixture={root:string;fake:Awaited<ReturnType<typeof startFakePersonalMemory>>;app:Awaited<ReturnType<typeof createPersonalApp>>;bot:string};
 const fixtures:Fixture[]=[];
@@ -96,6 +97,47 @@ describe('Continuous personal assistant and memory',()=>{
     expect(()=>app.agents.search(bot,page.query,{offset:-1,limit:100})).toThrow('offset');
     expect(()=>app.agents.search(bot,page.query,{limit:100001})).toThrow('limit');
   },60000);
+  // History accepted under a larger window (or earlier projection rules) must
+  // compact when it suddenly far exceeds the summarizer's own window.
+  async function backlog(app:Fixture['app'],bot:string,fake:Fixture['fake'],turns:Array<Array<{action:string;args:Record<string,unknown>}|string>>){
+    app.store.saveConfig({provider:'openai',endpoint:fake.origin+'/v1',model:'fixture-chat',contextWindow:400000,maxOutputTokens:4096});
+    for(const [index,script] of turns.entries()){
+      fake.scripts.push(...script);
+      const task=app.agents.send(bot,`积压第 ${index} 轮`,`backlog-${index}`).taskId;
+      await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
+    }
+    expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
+    app.store.saveConfig({provider:'openai',endpoint:fake.origin+'/v1',model:'fixture-chat',contextWindow:64000,maxOutputTokens:4096});
+    const summarizer=fake.requests.length;
+    const task=app.agents.send(bot,'BACKLOG-NEXT：继续','backlog-next').taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);
+    const compact=fake.requests.slice(summarizer).filter(row=>!row.stream);
+    for(const row of compact)expect(tokens(row.messages)+Number(row.max_tokens)).toBeLessThan(64000);
+    return compact;
+  }
+  it('summarizes dominant old tool results before compacting a backlog larger than the window',async()=>{
+    const {app,fake,bot}=await fixture();
+    const notes=Array.from({length:5},(_,i)=>app.runtime.memory.write(bot,{title:`积压资料 ${i}`,content:`BACKLOG-RESULT-${i} `+'资料'.repeat(6000)}));
+    const compact=await backlog(app,bot,fake,notes.map((note,i)=>[{action:'memory.read',args:{documentId:note.documentId}},`已读 ${i}`]));
+    expect(compact.filter(row=>JSON.stringify(row).includes('"status\\":\\"succeeded\\"')).length).toBeGreaterThanOrEqual(3);
+    // Long-term memory recall may quote the notes in the system prompt.
+    const last=JSON.stringify((fake.requests.filter(row=>row.stream).at(-1)!.messages as Array<{role:string}>).filter(message=>message.role!=='system'));
+    expect(last).toContain('BACKLOG-NEXT');expect(last).not.toContain('BACKLOG-RESULT-0');
+    const session=app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!;
+    const entries=app.runtime.projection.load(String(session.id))!;
+    const edit=entries.find(entry=>entry.type==='context_edit')!;
+    expect(JSON.stringify(edit)).toContain('工具结果摘要');
+    expect(app.agents.search(bot,'entry:'+(edit as {targetId:string}).targetId)[0].content).toMatch(/BACKLOG-RESULT-\d/);
+  },90000);
+  it('compacts a backlog of long turns in window-sized batches carrying the running summary',async()=>{
+    const {app,fake,bot}=await fixture();
+    const compact=await backlog(app,bot,fake,Array.from({length:5},(_,i)=>[`BACKLOG-REPLY-${i} `+'回答'.repeat(5000)]));
+    expect(compact.length).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(compact[0])).toContain('BACKLOG-REPLY-0');expect(JSON.stringify(compact[0])).not.toContain('"role\\":\\"summary\\"');
+    expect(JSON.stringify(compact.at(-1))).toContain('"role\\":\\"summary\\"');
+    const last=JSON.stringify(fake.requests.filter(row=>row.stream).at(-1));
+    expect(last).toContain('工作笔记');expect(last).toContain('BACKLOG-NEXT');expect(last).not.toContain('BACKLOG-REPLY-0');
+  },90000);
   it('uses the unified memory model for every assistant and preserves it across toggles and restart',async()=>{
     const {app,bot,fake}=await fixture(),memory=app.runtime.memory.personal;
     memory.saveGlobal({version:0,enabled:true,model:'fixture-memory'});

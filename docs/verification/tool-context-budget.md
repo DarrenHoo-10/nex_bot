@@ -25,7 +25,13 @@ When the estimate reaches that budget:
    summarizer.
 2. Older complete turns are summarized at user-turn boundaries, retaining source
    references. Previously summarized or paged results use their projected bodies
-   as summary input. Tool-call/result pairs are never split.
+   as summary input. Tool-call/result pairs are never split. Before that, each
+   older tool result above an eighth of the window gets its own short summary.
+   The turn summary is then sent in batches of at most half the window, each
+   carrying the running summary forward; a single item too large for a batch is
+   cut with its `entry:<id>` reference. A backlog far larger than the window —
+   history accepted while the 1500-token folding still hid old results — no
+   longer fails with “待整理内容超出模型窗口”.
 3. If still over budget, older substantial tool-result bodies receive short
    summaries preserving operation status, key data, errors and pending issues.
    User inputs, the newest tool-call group and originals explicitly retrieved
@@ -59,6 +65,32 @@ processes; no verification mutations targeted the running user app.
 - Server TypeScript check, changed-file lint and `git diff --check` passed.
 - `node scripts/build-personal.mjs --core` passed. Vite reported its existing
   large-chunk advisory.
+
+### Backlog compaction — 2026-10-27
+
+Production conversation `b9568ec9` (about 1.47M estimated non-system tokens, ten
+`broker` results of 90k–190k each, never compacted) failed its first turn after
+the folding removal: the whole older history went to the 500k-window summarizer
+in one request.
+
+- Two new `continuity.test.ts` cases build history under a 400k window, then
+  send a turn at 64k: one with five dominant tool results, one with five long
+  replies. Both failed on the previous worker with the production error and pass
+  now; every summarizer request stays below the window, and the long-reply case
+  uses at least two batches with the carried summary.
+- `pnpm exec vitest run server/personal-os/continuity.test.ts server/personal-os/token-estimate.test.ts server/personal-os/model-limits.test.ts`
+  — 29 passed. The full `server/personal-os` run has one failure,
+  `app.test.ts` “reads generic bundled skills…”, which fails identically
+  without this change.
+- A throwaway production-scale check (isolated Core, synthetic provider, real
+  worker): ten attachment results totalling 1,072,575 estimated tokens, then a
+  turn at 500k / 128k output. It completed in 2.7 s with 11 summarizer calls
+  (largest 121,340 tokens), a final request of 4,852 tokens, ten context edits
+  and one compaction; originals stayed retrievable by `entry:<id>`.
+- Server typecheck, changed-file oxlint and `git diff --check` passed.
+
+Not deployed; the Tokyo conversation will compact on its next turn once a
+release with this change is live.
 
 ## Limits and delivery
 

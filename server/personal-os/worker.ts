@@ -121,6 +121,25 @@ async function main(value: WorkerConfig) {
     const count=()=>tokens(messages)+overhead;
     // 80% is the normal trigger; reserve enough output space on small windows.
     const threshold=Math.min(Math.floor(config.contextWindow*.8),inputBudget);
+    // The summarizer shares this window and needs room for its instruction and
+    // output. Every compact request targets half of it; the carried summary and
+    // a single capped item can still exceed that softly without reaching the limit.
+    const summaryBudget=Math.floor(config.contextWindow*.5),itemBudget=Math.floor(summaryBudget*.8);
+    const page=(entry:FileEntry)=>{
+      const limit=Math.max(1,Math.min(12000,Math.floor(inputBudget*.1)));
+      manager.appendContextEdit(entry.id,{content:[{type:'text',text:JSON.stringify({notice:'工具原文超过本次输入容量，以下为分页内容，并非完整结果。用 memory.search(query,offset,limit) 继续读取。',query:`entry:${entry.id}`,...entryPage(entry.id,entryText(entry),0,limit)})}]});
+    };
+    type ToolResult=Extract<(typeof messages)[number],{role:'toolResult'}>;
+    // Replace one tool body with a short summary; the original entry stays intact.
+    const summarizeResult=async(entry:FileEntry,message:ToolResult)=>{
+      const source=[{ref:`entry:${entry.id}`,role:message.role,status:message.isError?'failed':'succeeded',content:message.content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part)}];
+      // Alone with a 1024-token answer, a body may use most of the window.
+      if(tokens(source)>Math.floor(config.contextWindow*.8)){page(entry);return;}
+      const result=await rpc({type:'compact',entries:snapshot(),inputs:[...projected],text:JSON.stringify(source),firstEntry:entry.id,lastEntry:entry.id,contextTokens:count(),summaryMaxTokens:1024}) as {summary:string;checkpoint:string};
+      if(signal?.aborted)throw new Error('压缩已取消');
+      const content=[{type:'text' as const,text:`工具结果摘要（${message.isError?'失败':'完成'}），原文 entry:${entry.id}：\n${result.summary}`}];
+      if(tokens(content)<tokens(message.content))manager.appendContextEdit(entry.id,{content});
+    };
     if(count()>=threshold){
       // A single oversized text result cannot be sent to the summarizer either.
       // Page only when under pressure and unable to fit, keeping the raw entry.
@@ -128,9 +147,7 @@ async function main(value: WorkerConfig) {
       for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
         const message=projectedMessages[0];
         if(sourceEntry.type!=='message'||message?.role!=='toolResult'||tokens(message.content)<=resultBudget)continue;
-        const limit=Math.max(1,Math.min(12000,Math.floor(inputBudget*.1)));
-        const page=entryPage(sourceEntry.id,entryText(sourceEntry),0,limit);
-        manager.appendContextEdit(sourceEntry.id,{content:[{type:'text',text:JSON.stringify({notice:'工具原文超过本次输入容量，以下为分页内容，并非完整结果。用 memory.search(query,offset,limit) 继续读取。',query:`entry:${sourceEntry.id}`,...page})}]});
+        page(sourceEntry);
       }
       await rpc({type:'snapshot',entries:snapshot()});
       messages=clean(manager.buildSessionContext().messages);
@@ -149,6 +166,18 @@ async function main(value: WorkerConfig) {
       const first=entries[index];
       const earlier=entries.slice(0,index);
       if(first && earlier.length){
+        // A backlog (for example, history accepted under earlier projection
+        // rules) can far exceed the window. Dominant tool bodies get their own
+        // summaries first so the turn summary keeps the rest of the history.
+        const edited=new Set(manager.getBranch().flatMap(entry=>entry.type==='context_edit'?[entry.targetId]:[]));
+        const before=new Set(earlier.map(entry=>entry.id));
+        for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
+          const message=projectedMessages[0];
+          if(!before.has(sourceEntry.id)||sourceEntry.type!=='message'||message?.role!=='toolResult'||edited.has(sourceEntry.id)||tokens(message.content)<=summaryBudget/4)continue;
+          await summarizeResult(sourceEntry,message);
+          await rpc({type:'snapshot',entries:snapshot()});
+        }
+        messages=clean(manager.buildSessionContext().messages);
         // The summarizer reads text; image bytes stay in the original entry.
         const textOnly=(content:unknown)=>Array.isArray(content)?content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part):content;
         const projection=new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages]));
@@ -162,8 +191,19 @@ async function main(value: WorkerConfig) {
         // Core persists source snapshot and checkpoint before the worker changes
         // projection. Failure leaves the preceding projection intact.
         if(source.length){
-          const result=await rpc({type:'compact',entries:snapshot(),inputs:[...projected],text:JSON.stringify(source),firstEntry:source[0]?.ref.slice(6)??earlier[0].id,lastEntry:source.at(-1)?.ref.slice(6)??earlier.at(-1)!.id,contextTokens:count()}) as {summary:string;checkpoint:string};
-          if(signal?.aborted)throw new Error('压缩已取消');
+          // Summarize in window-sized batches, carrying the running summary
+          // forward; an item too large for any batch is cut with its reference.
+          const items=source.map(item=>tokens(item)<=itemBudget?item:{...item,content:JSON.stringify(item.content).slice(0,Math.floor(itemBudget/1.5))+`…[已截断，原文 ${item.ref}]`});
+          let result:{summary:string;checkpoint:string}|undefined;
+          for(let start=0;start<items.length;){
+            const batch:Array<{ref:string;role:string;content:unknown}>=result?[{ref:`checkpoint:${result.checkpoint}`,role:'summary',content:result.summary}]:[];
+            let size=tokens(batch),end=start;
+            while(end<items.length&&(end===start||size+tokens(items[end])<=summaryBudget)){size+=tokens(items[end]);batch.push(items[end++]);}
+            result=await rpc({type:'compact',entries:snapshot(),inputs:[...projected],text:JSON.stringify(batch),firstEntry:items[0].ref.slice(6),lastEntry:items[end-1].ref.slice(6),contextTokens:count()}) as {summary:string;checkpoint:string};
+            if(signal?.aborted)throw new Error('压缩已取消');
+            start=end;
+          }
+          if(!result)throw new Error('压缩来源缺失');
           manager.appendCompaction(result.summary,first.id,count(),{checkpoint:result.checkpoint,sourceFirst:earlier[0].id,sourceLast:earlier.at(-1)!.id});
           await rpc({type:'snapshot',entries:snapshot()});
           messages=clean(manager.buildSessionContext().messages);
@@ -184,12 +224,7 @@ async function main(value: WorkerConfig) {
         if(count()<threshold)break;
         const entry=item.sourceEntry,message=item.messages[0];
         if(entry.type!=='message'||message?.role!=='toolResult'||edited.has(entry.id)||retrieved.has(message.toolCallId)||tokens(message.content)<2048)continue;
-        const source=[{ref:`entry:${entry.id}`,role:message.role,status:message.isError?'failed':'succeeded',content:message.content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part)}];
-        const result=await rpc({type:'compact',entries:snapshot(),inputs:[...projected],text:JSON.stringify(source),firstEntry:entry.id,lastEntry:entry.id,contextTokens:count(),summaryMaxTokens:1024}) as {summary:string;checkpoint:string};
-        if(signal?.aborted)throw new Error('压缩已取消');
-        const content=[{type:'text' as const,text:`工具结果摘要（${message.isError?'失败':'完成'}），原文 entry:${entry.id}：\n${result.summary}`}];
-        if(tokens(content)>=tokens(message.content))continue;
-        manager.appendContextEdit(entry.id,{content});
+        await summarizeResult(entry,message);
         await rpc({type:'snapshot',entries:snapshot()});
         messages=clean(manager.buildSessionContext().messages);
       }
