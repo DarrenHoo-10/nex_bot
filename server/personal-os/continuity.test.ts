@@ -9,6 +9,7 @@ import { hash } from './store.ts';
 import { assistantCompletion } from './assistant-model.ts';
 import { ChatFiles } from './chat-files.ts';
 import { tokens } from './token-estimate.ts';
+import { systemPromptText } from './context-tools.ts';
 
 type Fixture={root:string;fake:Awaited<ReturnType<typeof startFakePersonalMemory>>;app:Awaited<ReturnType<typeof createPersonalApp>>;bot:string};
 const fixtures:Fixture[]=[];
@@ -303,6 +304,55 @@ describe('Continuous personal assistant and memory',()=>{
     const resultIndex=messages.findIndex(row=>row.role==='tool');expect(resultIndex).toBeGreaterThan(0);
     expect(messages.slice(0,resultIndex).some(row=>row.tool_calls?.some(call=>call.id===messages[resultIndex].tool_call_id))).toBe(true);
     expect(app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+  },60000);
+  type Wire={role:string;content:unknown;tool_calls?:unknown};
+  const isVolatile=(message:Wire)=>message.role==='user'&&typeof message.content==='string'&&message.content.startsWith('<system-reminder>');
+  const answerRequests=(fake:Fixture['fake'])=>fake.requests.filter(row=>row.stream).map(row=>row.messages as Wire[]);
+  const systemEntries=(app:Fixture['app'],bot:string,prompt=true)=>app.runtime.projection.load(String(app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!.id))!.filter(entry=>entry.type==='message'&&entry.message.role==='system'&&!!systemPromptText(entry)===prompt);
+  it('keeps every request a byte-identical prefix of the next one; the volatile block is outside the system message and the projection',async()=>{
+    const {app,fake,bot}=await fixture();
+    fake.scripts.push({action:'agent.directory',args:{}},'第一轮完成','第二轮完成');
+    const first=app.agents.send(bot,'第一轮：只讨论。','prefix-one').taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',first)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const second=app.agents.send(bot,'第二轮：继续。','prefix-two').taskId;
+    await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',second)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
+    const requests=answerRequests(fake);expect(requests).toHaveLength(3);
+    const volatile=requests.map(messages=>messages.filter(isVolatile));
+    for(const [index,messages] of requests.entries()){
+      // One system message holding only the stable prompt, one volatile block.
+      const systems=messages.filter(m=>m.role==='system'||m.role==='developer');
+      expect(systems).toHaveLength(1);expect(messages[0]).toBe(systems[0]);
+      expect(String(systems[0].content)).toContain('长期记忆（只包含');expect(String(systems[0].content)).not.toContain('<system-reminder>');expect(String(systems[0].content)).not.toContain('当前 Core 时间');
+      expect(volatile[index]).toHaveLength(1);expect(String(volatile[index][0].content)).toContain('当前 Core 时间');expect(String(volatile[index][0].content)).toContain('设备实时目录');
+    }
+    expect(requests[0].at(-2)).toBe(volatile[0][0]);expect(requests[0].at(-1)).toMatchObject({role:'user'});
+    // Tool continuation: after the tool result; user turn: right before the new input.
+    expect(requests[1].at(-1)).toBe(volatile[1][0]);expect(requests[1].at(-2)).toMatchObject({role:'tool'});
+    expect(requests[2].at(-2)).toBe(volatile[2][0]);expect(JSON.stringify(requests[2].at(-1))).toContain('第二轮：继续。');
+    // Volatile text changes per request; everything else is a byte-identical prefix of the next request.
+    expect(new Set(volatile.map(([m])=>m.content)).size).toBe(3);
+    const stable=requests.map(messages=>messages.filter(m=>!isVolatile(m)));
+    for(const [index,messages] of stable.slice(1).entries())expect(JSON.stringify(messages.slice(0,stable[index].length))).toBe(JSON.stringify(stable[index]));
+    expect(stable[2].length).toBeGreaterThan(stable[1].length);
+    // The projection never stores the volatile block and keeps one system entry.
+    const stored=app.runtime.projection.load(String(app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!.id))!;
+    expect(JSON.stringify(stored)).not.toContain('当前 Core 时间');expect(systemEntries(app,bot)).toHaveLength(1);
+  },60000);
+  it('appends a new system entry only when the stable prompt changes and drops stale ones on the next load',async()=>{
+    const {app,fake,bot}=await fixture();
+    const turn=async(text:string)=>{const task=app.agents.send(bot,text,'system-'+text).taskId;await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);};
+    await turn('一');await turn('二');
+    const unchanged=systemEntries(app,bot);expect(unchanged).toHaveLength(1);
+    app.runtime.memory.write(bot,{title:'新账本记忆',content:'让稳定前缀变化'});
+    await turn('三');
+    const changed=systemEntries(app,bot);expect(changed).toHaveLength(2);
+    expect(String((changed[1] as {message:{content:string}}).message.content)).toContain('新账本记忆');
+    await turn('四');
+    expect(systemEntries(app,bot)).toHaveLength(1);
+    // The SDK's own tool declarations do not grow with each run either.
+    expect(systemEntries(app,bot,false).length).toBeLessThanOrEqual(2);
+    expect(answerRequests(fake).every(messages=>messages.filter(m=>m.role==='system').length===1)).toBe(true);
   },60000);
   it('keeps a scoped working note even when long-term memory is off',async()=>{
     const {app,fake,bot}=await fixture();

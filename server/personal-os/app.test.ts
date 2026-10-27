@@ -716,6 +716,34 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.fake.requests[0].body).toContain("NexBot Personal AI OS");
     expect(JSON.parse(f.fake.requests[0].body).system).toContain("Anthropic 私人秘书");
   }, 40_000);
+  it("sends only the stable prompt as Anthropic system and appends the volatile block after the history, keeping the prefix byte-stable", async () => {
+    const f = await fixture();
+    f.app.store.saveConfig({ provider: "anthropic", endpoint: f.fake.origin, model: "fixture-anthropic", apiKey: "synthetic-anthropic-key" });
+    f.fake.scripts.push({ kind: "anthropic-tool", id: "toolu_prefix", name: "broker", args: JSON.stringify({ action: "agent.directory" }) }, { kind: "anthropic-text", text: "第一轮完成" }, { kind: "anthropic-text", text: "第二轮完成" });
+    type Part = { type: string; text?: string; cache_control?: unknown };
+    type Wire = { role: string; content: string | Part[] };
+    for (const text of ["第一轮：只讨论", "第二轮：继续"]) {
+      const task = f.app.runtime.input(f.conversation, text, id());
+      await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
+      await wait(() => !f.app.runtime.workers.size);
+    }
+    const bodies = f.fake.requests.map((r) => JSON.parse(r.body) as { system: string; messages: Wire[] });
+    expect(bodies).toHaveLength(3);
+    const isVolatile = (part: Part) => part.type === "text" && part.text?.startsWith("<system-reminder>");
+    const strip = (messages: Wire[]) => JSON.parse(JSON.stringify(messages, (key, value) => key === "cache_control" ? undefined : value)).map((m: Wire) => ({ ...m, content: Array.isArray(m.content) ? m.content.filter((part) => !isVolatile(part)) : m.content }));
+    for (const body of bodies) {
+      expect(typeof body.system === "string" ? body.system : JSON.stringify(body.system)).not.toContain("<system-reminder>");
+      const last = body.messages.at(-1)!, volatile = (last.content as Part[]).filter(isVolatile);
+      expect(last.role).toBe("user"); expect(volatile).toHaveLength(1); expect((last.content as Part[]).at(-1)).toBe(volatile[0]);
+      expect(body.messages.slice(0, -1).flatMap((m) => Array.isArray(m.content) ? m.content : []).some(isVolatile)).toBe(false);
+      expect(volatile[0].text).toContain("当前 Core 时间");
+    }
+    // Tool results stay first in their message; the volatile text follows them.
+    expect((bodies[1].messages.at(-1)!.content as Part[])[0].type).toBe("tool_result");
+    expect(new Set(bodies.map((b) => b.system)).size).toBe(1);
+    const stripped = bodies.map((b) => strip(b.messages));
+    for (let i = 1; i < 3; i++) expect(JSON.stringify(stripped[i].slice(0, stripped[i - 1].length))).toBe(JSON.stringify(stripped[i - 1]));
+  }, 60_000);
   it("runs the fixed SDK, persists input/reply, deduplicates lost ACK, and hides credentials", async () => {
     const f = await fixture();
     f.fake.scripts.push({ kind: "openai-text", text: "你好，已连接固定运行时" });

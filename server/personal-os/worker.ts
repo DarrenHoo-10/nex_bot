@@ -8,7 +8,8 @@ import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply 
 import { modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
-import { entryPage, entryText } from './context-tools.ts';
+import { dropStaleSystemEntries, entryPage, entryText, systemPromptText } from './context-tools.ts';
+import { applyRequestPrompt } from './request-prompt.ts';
 
 let session: AgentSession | undefined;
 const replies = new Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
@@ -57,7 +58,7 @@ async function main(value: WorkerConfig) {
   const cwd = path.join(config.dir, "work"), agentDir = path.join(config.dir, "pi");
   mkdirSync(cwd, { recursive: true }); mkdirSync(agentDir, { recursive: true });
   writeFileSync(path.join(agentDir, "auth.json"), "{}", { mode: 0o600 });
-  manager = SessionManager.inMemory(cwd, undefined, config.entries);
+  manager = SessionManager.inMemory(cwd, undefined, config.entries && dropStaleSystemEntries(config.entries));
   if(!config.entries?.length)for(const item of config.history??[])manager.appendCustomMessageEntry('nex.history',JSON.stringify({historical:true,...item}),false);
   const settled = manager.getEntries().at(-1);
   if (settled?.type === "custom" && settled.customType === "nex.settled") {
@@ -85,7 +86,8 @@ async function main(value: WorkerConfig) {
   }
   // Public projection API: structured system messages are replayed by the SDK.
   // continue() deliberately skips AgentSession.prompt's prompt preparation.
-  manager.appendMessage({ role: "system", content: config.systemPrompt, timestamp: Date.now() });
+  // Only the stable prompt is projected, and only when it changed; the volatile block is injected per request.
+  if (systemPromptText(manager.getBranch().findLast((e) => !!systemPromptText(e))) !== config.systemPrompt) manager.appendMessage({ role: "system", content: config.systemPrompt, timestamp: Date.now() });
   for (const input of config.inputs) project(input, false);
   const runtime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const api = config.provider === "anthropic" ? "anthropic-messages" : "openai-completions";
@@ -118,7 +120,9 @@ async function main(value: WorkerConfig) {
     };
     messages=clean(messages);
     const overhead=2500;
-    const count=()=>tokens(messages)+overhead;
+    // The volatile block is injected at the request boundary but still takes window space.
+    const volatileTokens=tokens(config.volatilePrompt),promptTokens=tokens(config.systemPrompt)+volatileTokens;
+    const count=()=>tokens(messages)+overhead+volatileTokens;
     // 80% is the normal trigger; reserve enough output space on small windows.
     const threshold=Math.min(Math.floor(config.contextWindow*.8),inputBudget);
     // The summarizer shares this window and needs room for its instruction and
@@ -143,7 +147,7 @@ async function main(value: WorkerConfig) {
     if(count()>=threshold){
       // A single oversized text result cannot be sent to the summarizer either.
       // Page only when under pressure and unable to fit, keeping the raw entry.
-      const resultBudget=threshold-overhead-tokens(config.systemPrompt)-tokens(broker.parameters)-tokens(broker.description)-4096;
+      const resultBudget=threshold-overhead-promptTokens-tokens(broker.parameters)-tokens(broker.description)-4096;
       for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
         const message=projectedMessages[0];
         if(sourceEntry.type!=='message'||message?.role!=='toolResult'||tokens(message.content)<=resultBudget)continue;
@@ -158,7 +162,7 @@ async function main(value: WorkerConfig) {
       // Cuts are only at user turns, never between a tool call and its result.
       const starts=entries.flatMap((entry,index)=>(entry.type==='custom_message'&&(entry.customType==='nex.input'||entry.customType==='nex.history'&&String(entry.content).includes('"role":"user"')))||(entry.type==='message'&&entry.message.role==='user')?[index]:[]);
       let index=starts.at(-1)??0;
-      const tailBudget=Math.max(0,Math.min(20000,Math.floor(config.contextWindow*.6)-overhead-tokens(config.systemPrompt)-tokens(broker.parameters)-tokens(broker.description)-4096));
+      const tailBudget=Math.max(0,Math.min(20000,Math.floor(config.contextWindow*.6)-overhead-promptTokens-tokens(broker.parameters)-tokens(broker.description)-4096));
       for(const candidate of starts.slice(0,-1).reverse()) {
         if(tokens(entries.slice(candidate))>tailBudget)break;
         index=candidate;
@@ -260,13 +264,7 @@ async function main(value: WorkerConfig) {
         // Refresh at the final request boundary, including continuation after a
         // tool/approval. Replacing old Core system messages also prevents SDK
         // projections/compaction from restoring an obsolete contact identity.
-        if (config.provider === "anthropic") payload.system = permit.systemPrompt;
-        else {
-          if (!Array.isArray(payload.messages)) throw new Error("Invalid model messages");
-          const messages = payload.messages as Array<{ role: string }>;
-          const role = messages.find((m) => m.role === "system" || m.role === "developer")?.role ?? "system";
-          payload.messages = [{ role, content: permit.systemPrompt }, ...messages.filter((m) => m.role !== "system" && m.role !== "developer")];
-        }
+        applyRequestPrompt(config.provider, payload, permit);
         const estimated=tokens(payload);
         const available=Math.floor(config.contextWindow-estimated-256);
         if(available<256)throw new Error('当前请求超出上下文窗口，原文已保留');

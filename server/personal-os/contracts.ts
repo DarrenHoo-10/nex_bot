@@ -1,10 +1,11 @@
 import type { FileEntry } from "@earendil-works/pi-coding-agent";
 
 export interface RuntimeInput { id: string; text: string; hash: string; seq: number }
-export interface ModelPermit { invokeId: string; systemPrompt: string }
+// systemPrompt is the stable system message; volatilePrompt is injected per request before the newest model turn.
+export interface ModelPermit { invokeId: string; systemPrompt: string; volatilePrompt: string }
 export interface WorkerConfig {
   taskId: string; conversationId: string; runtimeId: string; generation: number; dir: string;
-  provider: string; endpoint: string; model: string; apiKey: string; systemPrompt: string;
+  provider: string; endpoint: string; model: string; apiKey: string; systemPrompt: string; volatilePrompt: string;
   contextWindow: number; maxOutputTokens: number;
   entries?: FileEntry[]; inputs: RuntimeInput[];
   history?: Array<{ref:string;role:string;content:string}>;
