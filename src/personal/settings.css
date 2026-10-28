@@ -151,3 +151,5 @@
 .rk-workspace .markdown input[type="checkbox"] { display: inline-block; width: 14px; height: 14px; min-height: 0; margin: 0 6px 0 0; padding: 0; vertical-align: middle; box-shadow: none; }
 .rk-workspace .markdown .task-list-item { list-style: none; }
 .rk-workspace .markdown a:not(.file-chip) { color: var(--foreground); text-decoration: underline; }
+.core-memory textarea { width: 100%; min-height: 110px; padding: 10px 12px; border: 1px solid var(--input); border-radius: 8px; background: var(--card); color: var(--foreground); font-size: 13px; font-weight: 400; line-height: 1.7; resize: vertical; box-shadow: none; }
+.core-memory form + form { margin-top: 26px; }
