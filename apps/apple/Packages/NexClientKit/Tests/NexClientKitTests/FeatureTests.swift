@@ -234,7 +234,7 @@ final class CoreFeatureTests: XCTestCase {
         XCTAssertEqual(try ModelLimits.parse(" 48000 ", field: .contextBudget), .manual(48_000))
         XCTAssertEqual(try ModelLimits.parse("1024", field: .contextBudget), .manual(1_024))
         for text in ["1023", "10000001", "1.5", "abc", "-5"] {
-            XCTAssertThrowsError(try ModelLimits.parse(text, field: .contextBudget)) { XCTAssertEqual(($0 as? CoreError)?.message, "工作上下文须为 1,024 至 10,000,000 的整数") }
+            XCTAssertThrowsError(try ModelLimits.parse(text, field: .contextBudget)) { XCTAssertEqual(($0 as? CoreError)?.message, "压缩阈值须为 1,024 至 10,000,000 的整数") }
         }
         let core = StubCore(); core.handle { _ in .json(["ok": true]) }
         let c = core.client()

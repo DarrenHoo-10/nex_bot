@@ -227,7 +227,7 @@ struct SettingsModelView: View {
                        automatic: form.limits?.automatic.contextWindow, source: form.limits?.automatic.source.contextWindow, name: "context")
             limitField("最大输出 Token", text: $form.outputText, edited: { form.outputEdited = true },
                        automatic: form.limits?.automatic.maxOutputTokens, source: form.limits?.automatic.source.maxOutputTokens, name: "output")
-            limitField("工作上下文（Token）", text: $form.budgetText, edited: { form.budgetEdited = true },
+            limitField("压缩阈值（Token）", text: $form.budgetText, edited: { form.budgetEdited = true },
                        automatic: form.limits?.automatic.contextBudget, source: form.limits?.automatic.source.contextBudget, name: "budget")
             Text((form.limits?.status ?? .matched).text).font(.caption).foregroundStyle(Theme.muted)
             if let error = form.limitsError { Text(error).font(.caption).foregroundStyle(Theme.danger) }

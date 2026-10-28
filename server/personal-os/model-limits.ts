@@ -13,12 +13,20 @@ export function modelInputBudget(contextWindow: number, maxOutputTokens: number)
   return Math.max(1, Math.floor(Math.min(contextWindow * 0.8, contextWindow - reserve - Math.min(2048, contextWindow * 0.05))));
 }
 
-/** Working context budget (tokens kept in the model context): the manual value or min(64k, inputBudget), always within [min(8k, inputBudget), inputBudget]. */
-export const DEFAULT_WORKING_BUDGET = 64_000;
+/**
+ * Soft compaction threshold S (the "压缩阈值" setting; `context_budget`): the manual value or 256k, never above
+ * 80% of the window nor above inputBudget (the hard limit H) minus 2k, and not below min(8k, that cap).
+ * Below S nothing is ever reduced; above H the next request does not fit. A reduction runs down to T = 0.4 × S.
+ */
+export const DEFAULT_WORKING_BUDGET = 256_000;
 export const MIN_WORKING_BUDGET = 8_000;
-export function workingContextBudget(contextBudget: number | null | undefined, inputBudget: number): number {
-  const wanted = typeof contextBudget === "number" && Number.isFinite(contextBudget) ? contextBudget : Math.min(DEFAULT_WORKING_BUDGET, inputBudget);
-  return Math.min(inputBudget, Math.max(Math.min(MIN_WORKING_BUDGET, inputBudget), Math.floor(wanted)));
+export const SOFT_WINDOW_SHARE = 0.8;
+export const SOFT_HEADROOM = 2048;
+export const TARGET_SHARE = 0.4;
+export function workingContextBudget(contextBudget: number | null | undefined, inputBudget: number, contextWindow?: number): number {
+  const wanted = typeof contextBudget === "number" && Number.isFinite(contextBudget) ? contextBudget : DEFAULT_WORKING_BUDGET;
+  const headroom = Math.max(1, inputBudget - SOFT_HEADROOM), cap = contextWindow === undefined ? headroom : Math.min(headroom, Math.floor(contextWindow * SOFT_WINDOW_SHARE));
+  return Math.min(cap, Math.max(Math.min(MIN_WORKING_BUDGET, cap), Math.floor(wanted)));
 }
 
 export function validateModelLimits(limits: { contextWindow: number; maxOutputTokens: number }) {
@@ -38,7 +46,7 @@ export function modelLimitScope(input: Record<string, unknown>) {
 export function parseModelLimit(value: unknown, field: keyof ModelLimitOverrides): number | null {
   if (value === null || value === undefined || value === "") return null;
   const number = typeof value === "string" && /^\d+$/.test(value.trim()) ? Number(value) : value;
-  if (typeof number !== "number" || !Number.isSafeInteger(number) || number < (field === "maxOutputTokens" ? 1 : 1024) || number > 10_000_000) throw new Error(field === "contextWindow" ? "上下文窗口须为 1,024 至 10,000,000 的整数" : field === "contextBudget" ? "工作上下文须为 1,024 至 10,000,000 的整数" : "最大输出 Token 须为 1 至 10,000,000 的整数");
+  if (typeof number !== "number" || !Number.isSafeInteger(number) || number < (field === "maxOutputTokens" ? 1 : 1024) || number > 10_000_000) throw new Error(field === "contextWindow" ? "上下文窗口须为 1,024 至 10,000,000 的整数" : field === "contextBudget" ? "压缩阈值须为 1,024 至 10,000,000 的整数" : "最大输出 Token 须为 1 至 10,000,000 的整数");
   return number;
 }
 
@@ -74,7 +82,7 @@ export class ModelLimits {
     const output = match.model?.limit?.output;
     const detectedOutput = output && Number.isSafeInteger(output) && output > 0 && output <= (match.model?.limit?.context ?? 0) ? output : undefined;
     const maxOutputTokens = manual.maxOutputTokens ?? detectedOutput ?? DEFAULT_MODEL_LIMITS.maxOutputTokens;
-    const contextBudget = workingContextBudget(manual.contextBudget, modelInputBudget(contextWindow, maxOutputTokens));
+    const contextBudget = workingContextBudget(manual.contextBudget, modelInputBudget(contextWindow, maxOutputTokens), contextWindow);
     return { manual, contextWindow, maxOutputTokens, contextBudget, matched: match.matched ?? null,
       status: match.ambiguous ? "ambiguous" : match.model ? "matched" : "unknown",
       source: { contextWindow: manual.contextWindow !== null ? "manual" : match.model ? "models.dev" : "default", maxOutputTokens: manual.maxOutputTokens !== null ? "manual" : detectedOutput ? "models.dev" : "default", contextBudget: manual.contextBudget !== null ? "manual" : "default" },
