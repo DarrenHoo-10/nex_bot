@@ -113,6 +113,16 @@ production host, SSH, Mac or real provider was touched.
 - Mutation check: with the worker's `cacheRetention` set to `"short"` the
   `server/personal-os/cache-retention.test.ts` ttl assertion fails.
 
+### After merging main (memory stop-loss, 2026-10-29)
+
+Main had added migration 30 (`assistant_memory_steps`), so `compaction_failures` is
+migration 31. Its daily-budget error is now a `BudgetSpent` with the same message, so a
+spent memory budget is not recorded as a compaction target failure. On the merged tree:
+`pnpm exec vitest run server/personal-os src/personal scripts/testing/verification-docs.test.ts`
+— 406 passed, 1 failed, 3 skipped (49 files); the failure is the pre-existing
+`server/personal-os/app.test.ts` “reads generic bundled skills…”. `pnpm exec tsc -b`,
+`pnpm exec tsc -p tsconfig.server.json`, `pnpm lint` and `git diff --check` passed.
+
 ## Limits
 
 - No real provider was called: cache hit rates, the 1 h tier's acceptance by a gateway,
@@ -120,7 +130,8 @@ production host, SSH, Mac or real provider was touched.
   marker is sent to any Anthropic-protocol endpoint, including gateways that may reject it.
 - OpenAI-compatible endpoints (including Claude through one) get no cache marker; their
   caching is the provider's.
-- Web, Mac and iOS labels were not looked at; the Apple files were edited as text and
-  not built here.
+- Web, Mac and iOS labels were not looked at. The Apple apps were built on the Mac in a
+  temporary directory after the merge below: NexClientKit `swift test` 151 passed,
+  `NexBotMac` and `NexBotiOS` (dedicated simulator, deleted afterwards) BUILD SUCCEEDED.
 - The idle clock is the end of the last model request, not the last user message; a
   conversation with a long answer counts from the end of that answer.
