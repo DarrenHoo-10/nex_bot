@@ -38,12 +38,24 @@ describe('request prompt injection', () => {
     const tool = { type: 'tool_result', tool_use_id: 't1', content: 'r1' };
     const part = { type: 'text', text: prompt.volatilePrompt };
     const input = run('anthropic', [{ role: 'user', content: [cached] }]);
-    expect(input.system).toBe('STABLE');
+    expect(input.system).toEqual([{ type: 'text', text: 'STABLE' }]);
     expect(input.messages).toEqual([{ role: 'user', content: [cached, part] }]);
     const continued = [{ role: 'user', content: 'u1' }, { role: 'assistant', content: [{ type: 'tool_use', id: 't1' }] }, { role: 'user', content: [tool] }];
     expect(run('anthropic', continued).messages.at(-1)).toEqual({ role: 'user', content: [tool, part] });
     expect(run('anthropic', [{ role: 'user', content: 'plain' }]).messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'plain' }, part] }]);
     expect(run('anthropic', [{ role: 'user', content: 'u' }, { role: 'assistant', content: [{ type: 'text', text: 'a' }] }]).messages.at(-1)).toEqual({ role: 'user', content: [part] });
+  });
+  it('replaces only the text of the Anthropic system blocks and keeps the SDK cache marker on them', () => {
+    const long = { type: 'ephemeral', ttl: '1h' };
+    const send = (system: unknown) => { const payload: { system?: unknown; messages: unknown[] } = { system, messages: [{ role: 'user', content: 'u' }] }; applyRequestPrompt('anthropic', payload, prompt); return payload.system; };
+    // The array form the SDK produced stays, with its cache_control (and the 1 h ttl) untouched.
+    expect(send([{ type: 'text', text: 'OLD', cache_control: long }])).toEqual([{ type: 'text', text: 'STABLE', cache_control: long }]);
+    // With the Claude Code identity block first (OAuth), the identity and its marker stay and the prompt block is replaced.
+    const identity = { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude.", cache_control: long };
+    expect(send([identity, { type: 'text', text: 'OLD', cache_control: long }])).toEqual([identity, { type: 'text', text: 'STABLE', cache_control: long }]);
+    // A plain string system and a missing one still end up with the prompt.
+    expect(send('OLD')).toBe('STABLE');
+    expect(send(undefined)).toEqual([{ type: 'text', text: 'STABLE' }]);
   });
   it('rejects a payload without messages', () => {
     expect(() => applyRequestPrompt('openai', {}, prompt)).toThrow('Invalid model messages');
