@@ -67,7 +67,7 @@ export class AssistantMemory {
     if (Number(data.version) !== Number(old.version)) throw new Error('记忆设置已变化，请刷新');
     if (typeof data.enabled !== 'boolean') throw new Error('记忆开关无效');
     const budget = Number(data.dailyBudget ?? 100000);
-    if (!Number.isSafeInteger(budget) || budget < 0 || budget > 100000000) throw new Error('每日预算须为 0 至 100000000，0 表示不限');
+    if (!Number.isSafeInteger(budget) || budget < 0 || budget > 100000000) throw new Error('每日预算须为 0 至 100000000，0 表示按上限 500000');
     const model = typeof data.model === 'string' ? data.model.trim() : '';
     if (model.length > 200) throw new Error('模型 ID 过长');
     if (data.enabled) this.store.modelConfig(botId);
