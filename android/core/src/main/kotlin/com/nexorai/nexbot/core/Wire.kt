@@ -286,3 +286,7 @@ data class UploadedAttachment(
 
 @Serializable
 data class OkReply(val ok: Boolean = false)
+
+/** `POST /api/agents/topic`: whether the open conversation was marked; absent counts as not marked. */
+@Serializable
+data class TopicReply(val marked: Boolean = false)

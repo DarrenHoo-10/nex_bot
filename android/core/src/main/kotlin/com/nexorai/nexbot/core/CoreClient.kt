@@ -162,6 +162,13 @@ class CoreClient(
         post("/api/bots/approval-mode", jsonBody("id" to botId, "mode" to mode, "version" to version), OkReply.serializer())
     }
 
+    /**
+     * The Agent's next message opens a new conversation episode. Core refuses
+     * while the conversation is still working; that refusal is thrown as is.
+     */
+    suspend fun newTopic(botId: String): Boolean =
+        post("/api/agents/topic", jsonBody("botId" to botId), TopicReply.serializer()).marked
+
     /** Download an already-sent attachment; the bearer is added like any call. */
     suspend fun download(path: String): ByteArray {
         require(path.startsWith("/api/attachments/")) { "not an attachment path" }

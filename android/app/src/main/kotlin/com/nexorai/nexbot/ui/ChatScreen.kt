@@ -183,6 +183,16 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
         }
     }
 
+    fun startNewTopic() {
+        scope.launch {
+            try {
+                repository.startNewTopic()
+            } catch (failure: Exception) {
+                toast(failure.message ?: "操作失败")
+            }
+        }
+    }
+
     fun downloadAttachment(path: String, name: String) {
         scope.launch {
             try {
@@ -466,6 +476,14 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
                                     onClick = {
                                         addMenu = false
                                         permissionMenu = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { CommandRow("新话题", "topic") },
+                                    enabled = state.messages.isNotEmpty() && !state.busy,
+                                    onClick = {
+                                        addMenu = false
+                                        startNewTopic()
                                     },
                                 )
                                 DropdownMenuItem(
