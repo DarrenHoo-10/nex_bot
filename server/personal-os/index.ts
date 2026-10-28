@@ -31,8 +31,9 @@ import { modelLimitScope, type ModelCatalogConfig } from "./model-limits.ts";
 import { ClientDownloadsSource, type ClientDownloadsOptions } from "./client-downloads.ts";
 import { approvalRuleLabel, approvalRuleScope, approvalRules, revokeApprovalRule } from "./approval-rules.ts";
 import { ClientUpdateSource, type OssReleaseMirror } from "./client-updates.ts";
+import type { RetrievalDefaults } from "./retrieval-config.ts";
 
-export interface AppOptions { gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch } }
+export interface AppOptions { /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch } }
 
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
@@ -58,6 +59,7 @@ export async function createPersonalApp(options: AppOptions) {
     feishu?.scanApprovals();
   };
   const runtime = new TaskRuntime(store, changed);
+  runtime.memory.retrieval.config.defaults = options.retrieval ?? {};
   const connectors = new ConnectorModule(store, changed, options.gmail);
   runtime.connectorExecutor = (call, args, authorize) => feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
@@ -79,6 +81,10 @@ export async function createPersonalApp(options: AppOptions) {
   const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
 
   const agents = new AgentModule(store, runtime);
+  runtime.memory.retrieval.resolveEntry = (botId, entryId) => {
+    const [entry] = agents.search(botId, `entry:${entryId}`) as Array<{ id?: string; content?: unknown }>;
+    return entry && typeof entry.content === "string" ? { id: entryId, content: entry.content } : undefined;
+  };
   const files = new ChatFiles(store);
   const routines = new RoutineModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
@@ -286,6 +292,10 @@ export async function createPersonalApp(options: AppOptions) {
         streams.set(response, token); response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); request.once("close", () => streams.delete(response)); return;
       }
       if (url.pathname === "/api/clients" && request.method === "GET") { json(response, 200, { sessions: clients.list(), currentSessionId: session.id }); return; }
+      if (url.pathname === "/api/memory/retrieval" && request.method === "GET") {
+        if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取记忆检索设置的权限" }); return; }
+        json(response, 200, runtime.memory.retrieval.config.view()); return;
+      }
       if (url.pathname === "/api/state") {
         const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
         json(response, 200, stateBody(view, requestOrigin)); return;
@@ -448,6 +458,11 @@ export async function createPersonalApp(options: AppOptions) {
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有修改记忆设置的权限'});return;}
         if(data.botId){throw new Error('记忆已改为统一开关，请更新客户端后设置');}
         json(response,200,runtime.memory.personal.saveGlobal(data));return;
+      }
+      if(url.pathname==='/api/memory/retrieval'){
+        if(session.user_id!==store.owner){json(response,403,{error:'此账号没有修改记忆检索设置的权限'});return;}
+        const saved=await runtime.memory.retrieval.config.save(data,async()=>{const current=await authenticate(token);if(!current||current.user_id!==store.owner)throw new IdentityError(401,'登录已失效，请重新登录');});
+        changed();json(response,200,saved);return;
       }
       if(url.pathname==='/api/memory/summary'){
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有读取记忆用量的权限'});return;}

@@ -202,13 +202,18 @@ describe('Continuous personal assistant and memory',()=>{
     const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
     app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
     app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
-    app.store.db.exec('DROP TABLE assistant_memory_steps; DROP TABLE conversation_episodes; DROP TABLE conversation_episode_search; DROP TABLE conversation_topic_marks; ALTER TABLE assistant_memory_settings DROP COLUMN episode_cursor; DROP TABLE maintenance_runs; DROP INDEX assistant_usage_maintain; ALTER TABLE assistant_usage DROP COLUMN conversation_id; ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
+    app.store.db.exec('DROP TABLE memory_vectors; DROP TABLE memory_retrieval_settings; DROP TABLE assistant_memory_steps; DROP TABLE conversation_episodes; DROP TABLE conversation_episode_search; DROP TABLE conversation_topic_marks; ALTER TABLE assistant_memory_settings DROP COLUMN episode_cursor; DROP TABLE maintenance_runs; DROP INDEX assistant_usage_maintain; ALTER TABLE assistant_usage DROP COLUMN conversation_id; ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
     app.store.db.exec('ALTER TABLE personal_connectors DROP COLUMN provider; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN kind;');
     const {CoreStore}=await import('./store.ts');
     const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
     try {
       expect(reopened.get('SELECT version FROM schema_migrations WHERE version=29')?.version).toBe(29);
       expect(reopened.get('SELECT version FROM schema_migrations WHERE version=30')?.version).toBe(30);
+      expect(reopened.get('SELECT version FROM schema_migrations WHERE version=31')?.version).toBe(31);
+      expect(reopened.get('SELECT version FROM schema_migrations WHERE version=32')?.version).toBe(32);
+      expect(reopened.get('SELECT COUNT(*) n FROM memory_vectors')?.n).toBe(0);
+      expect(reopened.get('SELECT COUNT(*) n FROM memory_retrieval_settings')?.n).toBe(0);
+      for (const name of ['assistant_memory_search','conversation_episode_search','memory_search']) expect(String(reopened.get('SELECT sql FROM sqlite_master WHERE name=?',name)?.sql)).toContain("tokenize='trigram'");
       expect(reopened.get('SELECT COUNT(*) n FROM assistant_memory_steps')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM conversation_episodes')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM conversation_episode_search')?.n).toBe(0);
@@ -266,7 +271,7 @@ describe('Continuous personal assistant and memory',()=>{
     expect(JSON.stringify(fake.requests)).not.toContain('旧历史不得自动导入');
     expect(memory.rows(bot).map(row=>row.kind)).toEqual(expect.arrayContaining(['fact','observation','understanding']));
     expect(memory.monitor(bot).totals).toMatchObject({input_tokens:1200,output_tokens:240,cache_read:300,unknown_calls:0});
-    const recalled=memory.recall(bot,'项目方案');expect(recalled.length).toBeGreaterThan(0);
+    const recalled=await memory.recall(bot,'项目方案');expect(recalled.length).toBeGreaterThan(0);
     expect(app.runtime.memory.expand(bot,recalled[0].refs[0]).content).toContain('讨论完整方案');
     const other=app.store.createBot('另一助手');expect(()=>app.runtime.memory.expand(other,recalled[0].refs[0])).toThrow();
   });
@@ -284,7 +289,7 @@ describe('Continuous personal assistant and memory',()=>{
     let release!:()=>void;fake.setOverride(async()=>{await new Promise<void>(resolve=>{release=resolve;});return undefined;});
     const job=memory.flush();await wait(()=>!!release,app);
     memory.save(bot,{version:1,enabled:false,dailyBudget:100000});release();await job;
-    expect(memory.rows(bot)).toHaveLength(0);expect(memory.settings(bot).cursor_seq).toBe(0);expect(memory.recall(bot,'偏好')).toEqual([]);
+    expect(memory.rows(bot)).toHaveLength(0);expect(memory.settings(bot).cursor_seq).toBe(0);expect(await memory.recall(bot,'偏好')).toEqual([]);
   });
   it('does not store incomplete summaries, counts unknown usage, and handles Anthropic cache totals',async()=>{
     const {app,fake,bot}=await fixture();
@@ -575,7 +580,7 @@ describe('Continuous personal assistant and memory',()=>{
     app.agents.publish(bot,'user','message','更正：这个项目改为方案乙','new');app.store.run('UPDATE assistant_memory_settings SET next_attempt=0 WHERE bot_id=?',bot);await memory.flush();
     expect(app.store.get('SELECT version FROM assistant_memories WHERE id=?',observation.id)?.version).toBe(2);
     expect(memory.rows(bot).filter(row=>row.kind==='understanding')).toHaveLength(0);
-    expect(JSON.stringify(memory.recall(bot,'项目方案'))).toContain('改为方案乙');
+    expect(JSON.stringify(await memory.recall(bot,'项目方案'))).toContain('改为方案乙');
   });
   describe('background step backoff and budget cap',()=>{
     const MIN=60000,HOUR=60*MIN;

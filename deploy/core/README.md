@@ -76,6 +76,13 @@ Google verification requirements, development setup and isolated test evidence.
 | `NEX_CORE_PORT` | HTTP port, default `8799` |
 | `NEX_CORE_PUBLIC_ORIGIN` | Exact external HTTPS root origin behind a reverse proxy |
 | `NEX_CORE_VAULT_KEY` | Optional Base64 encoding of a 32-byte vault key |
+| `NEX_EMBEDDINGS_BASE_URL`, `NEX_EMBEDDINGS_MODEL` | Optional server default embedding service for memory retrieval (OpenAI-compatible `{base}/embeddings`); both are required for it to apply |
+| `NEX_EMBEDDINGS_DIMENSIONS`, `NEX_EMBEDDINGS_API_KEY` | Optional dimensions sent to that service, and its API key |
+| `NEX_RERANK_BASE_URL`, `NEX_RERANK_MODEL` | Optional server default reranker (`{base}/rerank`); the model is required for the `cohere` format and optional for `tei` |
+| `NEX_RERANK_FORMAT`, `NEX_RERANK_API_KEY` | `cohere` (default; SiliconFlow, Jina, Cohere) or `tei`, and the reranker's API key |
+
+The retrieval variables are defaults: a user's own settings (Settings → Model → 记忆检索) win, and
+with neither, memory recall uses keyword search alone.
 
 The corresponding command options are `--data-dir=`, `--host=`, `--port=` and
 `--public-origin=`. Otherwise Core creates a private `vault-key.bin` in the data

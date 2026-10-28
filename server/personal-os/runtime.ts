@@ -639,14 +639,17 @@ ${chartPrompt}
       }
       else if (call.tool_name === "memory.search") {
         const query = text(args.query, 200);
-        const semantic = await this.memory.recall(String(call.bot_id), query);
+        // One hybrid retrieval (BM25 + vectors + rerank, with graceful degradation) serves the memories, documents and
+        // archives of a text query; entry:/message:/episode:/memory: name a single record and skip ranking.
+        const found = await this.memory.retrieval.retrieve(String(call.bot_id), query, { taskId: String(call.task_id) });
+        const semantic = await this.memory.recall(String(call.bot_id), query, undefined, found);
         // Authorization is rechecked after the asynchronous provider boundary.
         if (evaluateTool(this.store, String(call.bot_id), args).policy.version !== JSON.parse(String(call.authorization_snapshot_json)).policyVersion) throw new Error("记忆权限已变化");
         const page = args.offset !== undefined || args.limit !== undefined ? { offset: args.offset as number | undefined, limit: args.limit as number | undefined } : undefined;
         if (page && !query.startsWith('entry:')) throw new Error('分页仅支持 entry:<id> 原文查询');
         // Plain text queries also search the archives of closed episodes (ranked, bounded); entry:/message:/episode: expand one record.
         const plain = !/^(entry|message|episode):/.test(query);
-        result = { documents: this.memory.search(String(call.bot_id), query), messages: this.historySearch?.(String(call.bot_id), query, page) ?? [], episodes: plain ? this.episodes.search(String(call.bot_id), query) : [], semantic };
+        result = { documents: this.memory.search(String(call.bot_id), query, found), messages: this.historySearch?.(String(call.bot_id), query, page) ?? [], episodes: plain ? this.episodes.search(String(call.bot_id), query, undefined, undefined, found) : [], semantic };
         this.memory.consume(String(call.task_id), semantic.facts.flatMap((fact) => fact.refs), (result as { documents: Row[] }).documents.map((doc) => String(doc.id)));
       }
       else if (call.tool_name === "memory.read") { result = this.memory.read(String(call.bot_id), text(args.documentId, 100)); this.memory.consume(String(call.task_id), [], [text(args.documentId, 100)]); }

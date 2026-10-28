@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import { CoreStore, canonical, hash, id, now, text, type Row } from "./store.ts";
 import { Episodes } from "./episodes.ts";
+import { dropVectors } from "./retrieval-index.ts";
 
 export interface ForgetPlan { sources: string[]; documents: string[]; messages: string[]; tasks: string[]; bots: string[]; banks: string[]; hashes: string[]; selectorHash: string; revision: string }
 const redacted = "[已遗忘]";
@@ -97,6 +98,7 @@ export class MemoryPrivacy {
         this.store.run("UPDATE memory_content SET content='' WHERE document_id=?", document);
         this.store.run("UPDATE memory_document_versions SET content='',title=? WHERE document_id=?", redacted, document);
         this.store.run("DELETE FROM memory_search WHERE document_id=?", document);
+        dropVectors(this.store, "document", document);
         this.store.run("UPDATE memory_publications SET revoked_at=? WHERE document_id=? OR source_id IN (SELECT id FROM memory_source_registry WHERE source_kind='document' AND original_id=?)", now(), document, document);
       }
       for (const message of plan.messages) this.store.run("UPDATE agent_messages SET content=? WHERE id=?", redacted, message);
@@ -135,6 +137,7 @@ export class MemoryPrivacy {
           if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>plan.messages.includes(ref.id)||archives.has(ref.id)))){
             this.store.run('DELETE FROM assistant_memory_versions WHERE id=?',memory.id);
             this.store.run('DELETE FROM assistant_memory_search WHERE memory_id=?',memory.id);
+            dropVectors(this.store,'memory',String(memory.id));
             this.store.run('DELETE FROM assistant_memories WHERE id=?',memory.id);
           }
         }

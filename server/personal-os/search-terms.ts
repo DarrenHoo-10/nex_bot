@@ -1,5 +1,5 @@
-// Keyword matching shared by assistant memory recall and the episode archive. Dependency-free on purpose,
-// so modules that need only the terms do not import each other.
+// Keyword scoring still used by the raw-history recall in agents.ts (which the memory redesign removes) and by
+// consolidation's choice of related observations. Memory and archive retrieval uses retrieval-index.ts instead.
 export function searchTerms(query: string) {
   const q = query.toLocaleLowerCase();
   const terms = new Set(q.match(/[a-z0-9_.-]{2,}|[㐀-鿿]{2,}/g) ?? []);
@@ -11,8 +11,4 @@ export function searchTerms(query: string) {
 export function relevance(query: string, value: string) {
   const s = value.toLocaleLowerCase();
   return searchTerms(query).reduce((sum, term) => sum + (s.includes(term) ? Math.min(8, term.length) : 0), 0);
-}
-/** An FTS5 MATCH expression for the terms of a query: every term quoted, any of them may match. */
-export function matchExpression(query: string, limit = 64) {
-  return searchTerms(query).slice(0, limit).map((term) => '"' + term.replaceAll('"', '""') + '"').join(' OR ');
 }

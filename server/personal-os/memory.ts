@@ -3,9 +3,13 @@ import { MemoryLedger } from "./memory-ledger.ts";
 import { policyTools } from "./policy.ts";
 import { MemoryPrivacy, type ForgetPlan } from "./memory-privacy.ts";
 import { AssistantMemory } from './assistant-memory.ts';
+import { dropVectors, lexicalHits } from './retrieval-index.ts';
+import type { Retrieval, RetrievalResult } from './retrieval.ts';
 
 export class MemoryModule {
   readonly personal: AssistantMemory;
+  /** Hybrid retrieval over memories, episode archives and documents (and its embedding / rerank settings). */
+  get retrieval(): Retrieval { return this.personal.retrieval; }
   readonly ledger: MemoryLedger;
   readonly privacy: MemoryPrivacy;
   constructor(readonly store: CoreStore, changed: () => void = () => {}, readonly fence: (plan: ForgetPlan) => void = () => {}) {
@@ -26,9 +30,11 @@ export class MemoryModule {
     if (!row) throw new Error("记忆不存在或不属于该 Agent / 共享工作区");
     return row;
   }
-  search(botId: string, query: string) {
-    const needle = "%" + text(query, 200).replace(/[\\%_]/g, "\\$&") + "%";
-    return this.store.all("SELECT d.id,d.title,d.scope,d.bot_id,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status='active' AND (d.scope='workspace' OR d.bot_id=?) AND (d.title LIKE ? ESCAPE '\\' OR c.content LIKE ? ESCAPE '\\') ORDER BY d.updated_at DESC LIMIT 10", this.store.workspace, this.store.owner, botId, needle, needle);
+  /** Documents matching a query, best first: those of a hybrid retrieval the caller already made, else BM25. */
+  search(botId: string, query: string, found?: RetrievalResult): Row[] {
+    const needle = text(query, 200);
+    const rows = found ? found.candidates.filter((item) => item.kind === 'document').map((item) => item.row) : lexicalHits(this.store, botId, needle, ['document']).map((hit) => hit.row);
+    return rows.slice(0, 10).map((row) => ({ id: row.id, title: row.title, scope: row.scope, bot_id: row.bot_id, version: row.version, content: row.content }));
   }
   prompt(botId: string) {
     if(this.personal.settings(botId).version && !this.personal.enabled(botId)) return '长期记忆已关闭；连续对话和原文历史检索仍可使用。';
@@ -60,6 +66,7 @@ export class MemoryModule {
       this.store.run("INSERT INTO memory_content VALUES(?,?) ON CONFLICT(document_id) DO UPDATE SET content=excluded.content", documentId, content);
       this.store.run("DELETE FROM memory_search WHERE document_id=?", documentId);
       this.store.run("INSERT INTO memory_search(document_id,title,content) VALUES(?,?,?)", documentId, title, content);
+      dropVectors(this.store, "document", documentId);
       const result = { documentId, version: expectedVersion + 1, saved: true };
       this.store.insert("memory_document_versions", { document_id: documentId, version: result.version, title, content, content_hash: contentHash });
       if (old) this.ledger.retractDocument(documentId);
@@ -76,6 +83,7 @@ export class MemoryModule {
     this.store.transaction(() => {
       if (this.store.run("UPDATE memory_documents SET status='deleted',version=version+1,updated_at=? WHERE id=? AND version=? AND status='active'", now(), documentId, expectedVersion).changes !== 1) throw new Error("记忆版本已变化");
       this.store.run("DELETE FROM memory_search WHERE document_id=?", documentId);
+      dropVectors(this.store, "document", documentId);
       this.ledger.retractDocument(documentId);
       this.store.audit("memory.delete", "memory", documentId, { expectedVersion });
     });
@@ -124,10 +132,10 @@ export class MemoryModule {
     this.store.run("INSERT OR IGNORE INTO memory_source_edges VALUES(?,?)", copy.id, ref);
     return result;
   }
-  async recall(botId: string, query: string, taskId?: string) {
+  async recall(botId: string, query: string, taskId?: string, found?: RetrievalResult) {
     if(this.personal.settings(botId).version){
       if(!this.personal.enabled(botId))return {status:'disabled',facts:[]};
-      return {status:'available',facts:this.personal.recall(botId,query,Math.min(2000,Math.floor(this.store.modelConfig(botId).contextWindow*.05)),taskId)};
+      return {status:'available',facts:await this.personal.recall(botId,query,Math.min(2000,Math.floor(this.store.modelConfig(botId).contextWindow*.05)),taskId,found)};
     }
     return this.ledger.client ? this.ledger.recall(botId,query) : {status:'disabled',facts:[]};
   }

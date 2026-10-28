@@ -1,7 +1,8 @@
 import { CoreStore, hash, id, now, type Row } from './store.ts';
 import { jsonObject } from './assistant-model.ts';
 import { tokens } from './token-estimate.ts';
-import { matchExpression, relevance, searchTerms } from './search-terms.ts';
+import { dropVectors, indexBody, lexicalHits } from './retrieval-index.ts';
+import type { RetrievalResult } from './retrieval.ts';
 
 // An episode is a stretch of one conversation about one thing. A conversation is continuous for the user, so
 // episodes are cut by time (a long gap since the previous user input) or by the user starting a new topic.
@@ -130,13 +131,14 @@ export class Episodes {
         open_items: JSON.stringify(archive.openItems), refs_json: JSON.stringify(archive.refs), tokens: tokens(summary), created_at: created,
         brief: archive.brief, detail_json: JSON.stringify({ topics: archive.topics, decisions: archive.decisions, operations: archive.operations }),
       });
-      this.store.run('INSERT INTO conversation_episode_search VALUES(?,?)', key, searchTerms(archive.title + ' ' + summary).join(' '));
+      this.store.run('INSERT INTO conversation_episode_search(episode_id,body) VALUES(?,?)', key, indexBody(archive.title, summary));
       this.store.run('DELETE FROM conversation_topic_marks WHERE conversation_id=?', args.conversationId);
       return key;
     });
   }
   remove(episodeId: string) {
     this.store.run('DELETE FROM conversation_episode_search WHERE episode_id=?', episodeId);
+    dropVectors(this.store, 'episode', episodeId);
     this.store.run('DELETE FROM conversation_episodes WHERE id=?', episodeId);
   }
 
@@ -152,21 +154,19 @@ export class Episodes {
     };
   }
 
-  /** Archives of one assistant matching a query, best first. */
-  private ranked(botId: string, query: string) {
-    const expression = matchExpression(query);
-    if (!expression) return [];
-    return this.store.all('SELECT e.* FROM conversation_episode_search s JOIN conversation_episodes e ON e.id=s.episode_id WHERE conversation_episode_search MATCH ? AND e.bot_id=? ORDER BY rank LIMIT 50', expression, botId)
-      .map((row) => ({ row, score: relevance(query, row.title + '\n' + row.summary) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score || Number(b.row.ended_at) - Number(a.row.ended_at))
-      .map((item) => item.row);
+  /**
+   * Archives of one assistant matching a query, best first: the archives of a hybrid retrieval the caller already
+   * made (`found`), else BM25 over the archive index (no network; callers here are synchronous).
+   */
+  private ranked(botId: string, query: string, found?: RetrievalResult) {
+    if (found) return found.candidates.filter((item) => item.kind === 'episode').map((item) => item.row);
+    return lexicalHits(this.store, botId, query, ['episode']).map((hit) => hit.row);
   }
   /** Text search for memory.search: ranked archives, each clipped, within a token budget. */
-  search(botId: string, query: string, limit = 5, budget = 3000) {
+  search(botId: string, query: string, limit = 5, budget = 3000, retrieved?: RetrievalResult) {
     const found: Array<ReturnType<Episodes['summary']>> = [];
     let remaining = budget;
-    for (const row of this.ranked(botId, query)) {
+    for (const row of this.ranked(botId, query, retrieved)) {
       if (found.length >= limit || remaining < 150) break;
       const item = this.summary(row, Math.min(remaining, 800));
       found.push(item); remaining -= tokens(item);
@@ -174,9 +174,9 @@ export class Episodes {
     return found;
   }
   /** The archives that fit the current input best, for the volatile reminder: a few, bounded in tokens in all. */
-  related(botId: string, query: string, budget = RECALL_TOKENS, limit = RECALL_EPISODES) {
+  related(botId: string, query: string, budget = RECALL_TOKENS, limit = RECALL_EPISODES, retrieved?: RetrievalResult) {
     // The list is serialized with separators of its own: keep a margin under the budget.
-    return this.search(botId, query, limit, budget - 100);
+    return this.search(botId, query, limit, budget - 100, retrieved);
   }
   private summary(row: Row, limit: number) {
     return { ref: `episode:${row.id}`, title: row.title, endedAt: row.ended_at, summary: clipTokens(String(row.summary), Math.max(100, limit - 100)), openItems: JSON.parse(String(row.open_items)) as string[] };

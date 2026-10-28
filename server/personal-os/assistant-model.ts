@@ -33,7 +33,8 @@ export async function assistantCompletion(store: CoreStore, args: { botId: strin
   store.transaction(() => {
     // Memory work (task_id IS NULL) is budgeted per assistant per day; background context maintenance has no task
     // either but has its own per-conversation cap, so it neither consumes nor is blocked by the memory budget.
-    const used = Number(store.get(`SELECT ${spent} n FROM assistant_usage WHERE bot_id=? AND task_id IS NULL AND purpose<>'maintain' AND created_at>=?`, args.botId, start.getTime())!.n);
+    // Embedding and rerank calls (retrieval.ts) are tracked in the same table but have their own, separate cap.
+    const used = Number(store.get(`SELECT ${spent} n FROM assistant_usage WHERE bot_id=? AND task_id IS NULL AND purpose NOT IN ('maintain','embed','rerank') AND created_at>=?`, args.botId, start.getTime())!.n);
     if (args.dailyBudget !== undefined && used + reserved > effectiveDailyBudget(args.dailyBudget)) throw new Error(MEMORY_BUDGET_EXHAUSTED);
     if (args.maintainBudget !== undefined && maintainUsage(store, args.conversationId ?? '') + reserved > args.maintainBudget) throw new Error('今日后台整理预算已用完');
     store.insert('assistant_usage', { id: invoice, bot_id: args.botId, task_id: args.taskId ?? null, conversation_id: args.conversationId ?? null, purpose: args.purpose, model: model.model, status: 'running', reserved_tokens: reserved, created_at: now() });

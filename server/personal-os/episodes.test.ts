@@ -388,7 +388,7 @@ describe('Episode archives', () => {
       expect(Number(memory.settings(bot).episode_cursor)).toBe(Number(episode.created_at));
       expect(app.runtime.memory.expand(bot, ref).content).toBe(episodeText(episode));
       expect(() => app.runtime.memory.expand(app.store.createBot('另一助手'), ref)).toThrow();
-      const recalled = memory.recall(bot, '合成段落档案 验证长期记忆');
+      const recalled = await memory.recall(bot, '合成段落档案 验证长期记忆');
       expect(recalled.flatMap(item => item.refs)).toContain(ref);
       // The archive is read once.
       const before = fake.requests.length;
@@ -397,7 +397,7 @@ describe('Episode archives', () => {
       // A changed archive no longer supports the memory: it is hidden, not served.
       app.store.run("UPDATE conversation_episodes SET summary=summary||'（被篡改）' WHERE id=?", episode.id);
       expect(memory.rows(bot).some(item => item.id === row.id)).toBe(false);
-      expect(memory.recall(bot, '合成段落档案 验证长期记忆').flatMap(item => item.refs)).not.toContain(ref);
+      expect((await memory.recall(bot, '合成段落档案 验证长期记忆')).flatMap(item => item.refs)).not.toContain(ref);
     }, 90000);
 
     it('rejects a retain whose archive changed while the model was working, and reads it again later', async () => {
