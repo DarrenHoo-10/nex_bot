@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { createPersonalApp } from "./index.ts";
 import { CoreStore } from "./store.ts";
-import { matchModelLimits, modelInputBudget, parseModelLimit, workingContextBudget } from "./model-limits.ts";
+import { hardInputLimit, matchModelLimits, modelInputBudget, parseModelLimit, workingContextBudget } from "./model-limits.ts";
 import { trimModelsDevCatalog } from "../model-catalog/trim.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 
@@ -47,7 +47,7 @@ it("retains per-model overrides across model, endpoint, protocol switches and re
 });
 
 it("resolves the soft compaction threshold: default 256k, never above 80% of the window or the input budget minus 2k, null clears", () => {
-  // modelInputBudget(400000, 4096) = 320000, (1,000,000) = 800000, (128000) = 102400.
+  // The second argument is the hard limit H (hardInputLimit); the window argument adds the 80% share.
   expect(workingContextBudget(null, 320000)).toBe(256000);
   expect(workingContextBudget(null, 320000, 400000)).toBe(256000);
   expect(workingContextBudget(null, 51200)).toBe(49152);
@@ -78,13 +78,32 @@ it("resolves the soft compaction threshold: default 256k, never above 80% of the
     expect(() => store.saveConfig({ ...config, contextBudget: 100 })).toThrow("压缩阈值");
     expect(store.modelConfig().contextBudget).toBe(120000);
     store.saveConfig({ ...config, contextWindow: 100000 });
-    expect(store.modelConfig()).toMatchObject({ contextWindow: 100000, contextBudget: modelInputBudget(100000, 4096) - 2048 });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 100000, contextBudget: 80000 });
     store.db.close(); store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
     expect(store.modelLimitSettings(config).manual.contextBudget).toBe(120000);
     store.saveConfig({ ...config, contextWindow: 400000, contextBudget: null });
     expect(store.modelConfig().contextBudget).toBe(256000);
     expect(store.modelLimitSettings(config).manual.contextBudget).toBeNull();
   } finally { store.db.close(); }
+});
+
+it.each([
+  // window, max output, H = window − min(output, 21k, window/4) − min(2048, 5% of window), S = min(256k, 80% of window, H − 2k)
+  [200_000, 64_000, 176_952, 160_000],
+  [1_000_000, 32_000, 976_952, 256_000],
+  [128_000, 16_000, 109_952, 102_400],
+  [128_000, 32_000, 104_952, 102_400],
+  [64_000, 4_096, 57_856, 51_200],
+  [32_000, 32_000, 22_400, 20_352],
+])("derives H and S from a %i window with %i output tokens", (window, output, hard, soft) => {
+  expect(hardInputLimit(window, output)).toBe(hard);
+  expect(workingContextBudget(null, hardInputLimit(window, output), window)).toBe(soft);
+  // S never reaches H, and the old input budget (which caps at 80% of the window) is never above H.
+  expect(soft).toBeLessThanOrEqual(hard - 2048);
+  expect(modelInputBudget(window, output)).toBeLessThanOrEqual(hard);
+  // The model settings resolve to the same S.
+  const root = directory(), key = randomBytes(32), store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
+  try { store.saveConfig({ ...config, contextWindow: window, maxOutputTokens: output }); expect(store.modelConfig().contextBudget).toBe(soft); } finally { store.db.close(); }
 });
 
 it("round-trips the compaction threshold through the authenticated model routes", async () => {
@@ -94,7 +113,7 @@ it("round-trips the compaction threshold through the authenticated model routes"
   try {
     const scope = { provider: config.provider, endpoint: config.endpoint, model: config.model };
     expect((await request("config", { ...config, contextWindow: 400000, maxOutputTokens: 4096, contextBudget: 90000 })).ok).toBe(true);
-    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: 90000 }, contextBudget: 90000, source: { contextBudget: "manual" }, automatic: { contextBudget: 202752, source: { contextBudget: "default" } } });
+    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: 90000 }, contextBudget: 90000, source: { contextBudget: "manual" }, automatic: { contextBudget: 204800, source: { contextBudget: "default" } } });
     const rejected = await request("config", { ...config, contextBudget: 12 });
     expect(rejected.ok).toBe(false);
     expect(JSON.stringify(await rejected.json())).toContain("压缩阈值");

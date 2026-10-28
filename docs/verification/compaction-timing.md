@@ -6,11 +6,18 @@ Implements [the compaction timing plan](../plans/compaction-timing.md) on branch
 
 ## Behaviour
 
-- **Lines.** H is the input budget (`modelInputBudget`, unchanged). S is the
+- **Lines.** H is `hardInputLimit(window, maxOutput) = window − min(maxOutput, 21k, window/4) −
+  min(2048, 5% of window)` in `server/personal-os/model-limits.ts`: the reserve `modelInputBudget`
+  uses, without its 80% cap. `modelInputBudget` remains only for the SDK's own settings; the
+  paging limit, the single-result paging budget, `unfit()` and the final “仍超过输入预算” error
+  all use H. The fetch-boundary window check is unchanged. S is the
   compaction threshold: the `context_budget` setting, default 256k, never above 80% of
   the window nor above H minus 2k (`workingContextBudget` in
   `server/personal-os/model-limits.ts`). T is 0.4 × S. Calibrated estimates decide S
   and T; the raw estimate decides H, and the raw 90%-of-window net still counts as over H.
+  Window / max output → H, S: 200k/64k → 176,952, 160,000; 1M/32k → 976,952, 256,000;
+  128k/16k → 109,952, 102,400 (128k/32k → 104,952, 102,400); the table test is in
+  `server/personal-os/model-limits.test.ts`.
 - **At or below S** nothing is summarized, digested or edited, and no maintenance is
   scheduled: the request prefix stays byte-stable. The unconditional turn-start digest
   of old tool results is gone, and so is "old digest candidates exist" as a maintenance
@@ -91,15 +98,16 @@ production host, SSH, Mac or real provider was touched.
 ### Commands and results
 
 - `pnpm exec vitest run server/personal-os src/personal scripts/testing/verification-docs.test.ts`
-  (run in the background, about 13 minutes): 394 passed, 2 failed, 3 skipped (49 files).
-  The two failures: `server/personal-os/app.test.ts` “reads generic bundled skills…”
-  (the accepted pre-existing one) and `server/personal-os/image-models.test.ts`
-  “does not publish an image when stopped during object storage upload”, a 25 s timeout
-  under load that passes alone (9 of 9). The earlier full run had the known
-  `server/personal-os/gmail-connectors.test.ts` “bad port” flake instead.
-- After a last small change to the episode-archive skip rule: `server/personal-os/episodes.test.ts`,
-  `server/personal-os/compaction-timing.test.ts`, `server/personal-os/maintenance.test.ts`
-  and `scripts/testing/verification-docs.test.ts` together: 64 passed.
+  (run in the background, about 12 minutes), after H became `hardInputLimit`: 399 passed,
+  3 failed, 3 skipped (49 files). The failures: `server/personal-os/app.test.ts` “reads
+  generic bundled skills…” (the accepted pre-existing one), and two `FETCH_BAD_PORT` /
+  “bad port” flakes (the fixture's random port landed on a browser-restricted one):
+  `server/personal-os/continuity.test.ts` “compacts repeatedly…” and
+  `server/personal-os/identity.test.ts` “keeps the device name…”. Run again,
+  `server/personal-os/identity.test.ts` passes alone (16 of 16), and `server/personal-os/continuity.test.ts`
+  with `server/personal-os/compaction-timing.test.ts` passes (44 of 44). Earlier full runs hit the same
+  flake in `server/personal-os/gmail-connectors.test.ts` and a load timeout in
+  `server/personal-os/image-models.test.ts` (passes alone, 9 of 9).
 - `pnpm exec tsc -b`, `pnpm exec tsc -p tsconfig.server.json`, `pnpm lint` and
   `git diff --check`: no findings.
 - Mutation check: with the worker's `cacheRetention` set to `"short"` the

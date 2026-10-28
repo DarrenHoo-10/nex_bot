@@ -1,6 +1,6 @@
 import type { FileEntry } from '@earendil-works/pi-coding-agent';
 import { isImagePart, tokens } from './token-estimate.ts';
-import { TARGET_SHARE, modelInputBudget, workingContextBudget } from './model-limits.ts';
+import { TARGET_SHARE, hardInputLimit, workingContextBudget } from './model-limits.ts';
 import { brokerDeclaration, brokerDescription, brokerParameters } from './broker-tool.ts';
 
 /** Text retrieval never turns image bytes back into a huge text token bill. */
@@ -178,17 +178,17 @@ export const imageCandidates = <T extends ProjectedItem>(items: T[], older: Set<
   return older.has(item.sourceEntry.id) && !!message && ['user', 'toolResult', 'custom'].includes(message.role) && Array.isArray(message.content) && message.content.some((part) => isImagePart(part));
 });
 
-export interface ReductionLimits { inputBudget: number; soft: number; target: number; ceiling: number; calibration: number }
+export interface ReductionLimits { hard: number; soft: number; target: number; ceiling: number; calibration: number }
 /**
- * The lines the reduction pipeline works against. inputBudget is the hard limit H: a request above it does not
+ * The lines the reduction pipeline works against. hard is the hard limit H (hardInputLimit): a request above it does not
  * fit and is reduced in the turn. soft is the threshold S: above it (and idle for MAINTAIN_IDLE_MS) the
  * background reduces; at or below it nothing is ever reduced. A reduction runs down to target T = 0.4 × S.
  * The calibrated count is what S, T and H are compared with; the raw count reaching 90% of the window is a
  * safety net that counts as over H whatever the calibration reads.
  */
 export function reductionLimits(config: { contextWindow: number; maxOutputTokens: number; contextBudget?: number; calibration?: number }): ReductionLimits {
-  const inputBudget = modelInputBudget(config.contextWindow, config.maxOutputTokens), soft = workingContextBudget(config.contextBudget, inputBudget, config.contextWindow);
-  return { inputBudget, soft, target: Math.floor(soft * TARGET_SHARE), ceiling: Math.floor(config.contextWindow * .9), calibration: Number.isFinite(config.calibration) && config.calibration! > 0 ? config.calibration! : 1 };
+  const hard = hardInputLimit(config.contextWindow, config.maxOutputTokens), soft = workingContextBudget(config.contextBudget, hard, config.contextWindow);
+  return { hard, soft, target: Math.floor(soft * TARGET_SHARE), ceiling: Math.floor(config.contextWindow * .9), calibration: Number.isFinite(config.calibration) && config.calibration! > 0 ? config.calibration! : 1 };
 }
 /** Tokens a history compaction may keep as full recent turns. */
 export const tailBudgetFor = (limits: ReductionLimits, promptTokens: number) => Math.max(0, Math.floor(limits.soft * .3) - CONTEXT_OVERHEAD - promptTokens - tokens(brokerParameters) - tokens(brokerDescription) - 4096);

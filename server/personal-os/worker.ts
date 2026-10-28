@@ -90,13 +90,13 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
   // The volatile block is injected at the request boundary but still takes window space.
   const volatileTokens=tokens(config.volatilePrompt),promptTokens=tokens(config.systemPrompt)+volatileTokens;
   const count=()=>tokens(messages)+overhead+volatileTokens;
-  // Lines: inputBudget H is the hard limit, soft S the compaction threshold, target T = 0.4 × S.
-  const limits=reductionLimits(config),{inputBudget,soft,target,calibration,ceiling}=limits;
+  // Lines: hard (H) is the real "does not fit" limit, soft S the compaction threshold, target T = 0.4 × S.
+  const limits=reductionLimits(config),{hard,soft,target,calibration,ceiling}=limits;
   // Calibration scales the count compared with those lines. Capacity checks (summarizer windows, paging
   // budgets, the window check at fetch) stay on the raw count(). A skewed receipt must never strand a request
   // that only reduction could make sendable, so the raw count reaching 90% of the window counts as over H.
   const level=()=>count()*calibration;
-  const unfit=()=>level()>=inputBudget||count()>=ceiling;
+  const unfit=()=>level()>=hard||count()>=ceiling;
   const aboveTarget=()=>level()>target||count()>=ceiling;
   const aboveSoft=()=>level()>soft||count()>=ceiling;
   const cancelled=()=>!!signal?.aborted||stopped;
@@ -111,7 +111,7 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
   // Summarizer requests go to the tidy-up model, so its window, not the chat model's, sizes them.
   const tidyWindow=config.tidyWindow??config.contextWindow,summaryBudget=Math.floor(tidyWindow*.5),itemBudget=Math.floor(summaryBudget*.8);
   const page=(entry:FileEntry)=>{
-    const limit=Math.max(1,Math.min(12000,Math.floor(inputBudget*.1)));
+    const limit=Math.max(1,Math.min(12000,Math.floor(hard*.1)));
     manager.appendContextEdit(entry.id,{content:[{type:'text',text:JSON.stringify({notice:'工具原文超过本次输入容量，以下为分页内容，并非完整结果。用 memory.search(query,offset,limit) 继续读取。',query:`entry:${entry.id}`,...entryPage(entry.id,entryText(entry),0,limit)})}]});
   };
   type ToolResult=Extract<(typeof messages)[number],{role:'toolResult'}>;
@@ -197,7 +197,7 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
   };
   // 0. A single oversized text result cannot be sent to the summarizer either: page it, keeping the raw entry.
   const pageOversized=async()=>{
-    const resultBudget=inputBudget-overhead-promptTokens-tokens(brokerParameters)-tokens(brokerDescription)-4096;
+    const resultBudget=hard-overhead-promptTokens-tokens(brokerParameters)-tokens(brokerDescription)-4096;
     let paged=false;
     for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
       const message=projectedMessages[0];
@@ -301,7 +301,7 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
     if(!maintain&&unfit())await guard(trimCurrentTurn);
   }
   refresh();
-  return {messages,count,unfit,calibration,inputBudget};
+  return {messages,count,unfit,calibration,hard};
 }
 // Background maintenance: the reduction a turn would start with, run ahead of the turn.
 async function runMaintenance(){
@@ -375,7 +375,7 @@ async function main(value: WorkerConfig) {
     // Only a request that cannot fit the input budget is an error: after the reductions that could be made
     // (failed ones are skipped and leave their originals), or when there was nothing to reduce. Being above the
     // soft threshold or the target is not.
-    if(state.unfit())throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${state.count()}${state.calibration===1?'':`，校准后 ${Math.round(state.count()*state.calibration)}`} / ${state.inputBudget} Token）。原文已保留，请分段读取或增大模型窗口。`);
+    if(state.unfit())throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${state.count()}${state.calibration===1?'':`，校准后 ${Math.round(state.count()*state.calibration)}`} / ${state.hard} Token）。原文已保留，请分段读取或增大模型窗口。`);
     return transform?transform(state.messages,signal):state.messages;
   };
   // Anthropic prompt caching: ask for the 1 h tier (cache_control ttl "1h" on the system prompt, the history and the

@@ -150,7 +150,7 @@ describe('Failures never fail the turn, and are not retried at once', () => {
 });
 
 describe('A request that does not fit is reduced in the turn', () => {
-  // H = 56,000, S = 53,952, T = 21,580. Turn one reads four results (18k tokens), turn two is plain, turn three reads three more after a 7k-token input.
+  // H = 63,856 (window 70,000), S = 56,000 (80%), T = 22,400. Turn one reads four results (18k tokens), turn two is plain, turn three reads three more after a 7k-token input.
   const setup = async (fixtureExtra: Record<string, unknown> = { contextWindow: 70000 }) => {
     const f = await fixture(fixtureExtra);
     const first = Array.from({ length: 4 }, (_, i) => bigDoc(f.app, f.bot, `SYNC-A${i}`)), second = Array.from({ length: 3 }, (_, i) => bigDoc(f.app, f.bot, `SYNC-B${i}`));
@@ -183,7 +183,7 @@ describe('A request that does not fit is reduced in the turn', () => {
     expect(stored(app, bot).some(entry => entry.type === 'compaction')).toBe(false);
     // The request that went out fits the input budget, above the target; the current turn is complete.
     const sent = streamed(fake).at(-1)!, request = withoutSystem(sent);
-    expect(tokens(sent)).toBeLessThan(56000);
+    expect(tokens(sent)).toBeLessThan(63856);
     for (const label of ['SYNC-B0', 'SYNC-B1', 'SYNC-B2']) expect(request).toContain(label);
     expect(request).not.toContain('SYNC-A0'); expect(request).toContain('工具结果摘要');
   }, 180000);

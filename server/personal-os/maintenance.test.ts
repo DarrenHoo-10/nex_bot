@@ -114,12 +114,12 @@ describe('Background maintenance of the projection', () => {
       expect(verdict).toMatchObject({ work: false, reason: null });
     });
     it('finds work above the soft threshold: a large older result to digest, or older turns to fold; a digested result is not work again', () => {
-      // S of a 64,000-token window is 49,152. Older results of ~13,500 tokens each push the context above it.
+      // S of a 64,000-token window is 51,200. Older results of ~13,500 tokens each push the context above it.
       const bulky = '资料'.repeat(6000);
       const { manager, entries } = build([{ text: '读取', result: bulky }, { text: '再读', result: bulky }, { text: '再读', result: bulky }, { text: '继续' }]);
       const verdict = maintenanceWork(entries, params);
       expect(verdict.estimate).toBeGreaterThan(verdict.trigger);
-      expect(verdict).toMatchObject({ work: true, reason: 'budget', trigger: 49152 });
+      expect(verdict).toMatchObject({ work: true, reason: 'budget', trigger: 51200 });
       // Old results of any size are no reason below S.
       expect(maintenanceWork(build([{ text: '读取', result: big }, { text: '继续' }]).entries, params).work).toBe(false);
       // The latest completed turn is never reduced: the same bulk in the latest turn alone has no work.
@@ -133,7 +133,7 @@ describe('Background maintenance of the projection', () => {
       const turns = Array.from({ length: 50 }, (_, index) => ({ text: `第${index}轮`, reply: '回答'.repeat(300) }));
       const { entries } = build(turns);
       const verdict = maintenanceWork(entries, params);
-      expect(verdict).toMatchObject({ work: true, reason: 'budget', trigger: 49152 });
+      expect(verdict).toMatchObject({ work: true, reason: 'budget', trigger: 51200 });
       expect(verdict.estimate).toBeGreaterThan(verdict.trigger);
       // The calibrated count is what is compared; a roomier threshold moves the line.
       expect(maintenanceWork(entries, { ...params, calibration: .5 }).work).toBe(false);

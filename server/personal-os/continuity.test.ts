@@ -310,8 +310,8 @@ describe('Continuous personal assistant and memory',()=>{
   });
   it('checks tool continuations and preserves paired tool calls during compaction',async()=>{
     const {app,fake,bot}=await fixture();
-    const note=app.runtime.memory.write(bot,{title:'合成资料',content:'资料'.repeat(9500)});
-    const first=app.agents.send(bot,'保留初始约束。'+'旧材料'.repeat(3000),'tool-setup').taskId;
+    const note=app.runtime.memory.write(bot,{title:'合成资料',content:'资料'.repeat(10000)});
+    const first=app.agents.send(bot,'保留初始约束。'+'旧材料'.repeat(5000),'tool-setup').taskId;
     await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',first)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
     fake.scripts.push({action:'memory.read',args:{documentId:note.documentId}},'已读取资料');
     const task=app.agents.send(bot,'读取资料，遵守初始约束','tool-followup').taskId;
@@ -348,22 +348,29 @@ describe('Continuous personal assistant and memory',()=>{
     const last=streamed(fake).at(-1)!,input=Number(app.store.get('SELECT input_tokens FROM model_invocations ORDER BY created_at DESC LIMIT 1')!.input_tokens);
     expect(input).toBeGreaterThan(tokens(last)*.45);expect(input).toBeLessThan(tokens(last)*.55);
   },60000);
-  // Three 10500-character turns put the raw estimate between the 51,200-token input budget (H) and 90% of the 64,000-token window.
+  // Three 10500-character turns put the raw estimate just below H and 90% of the 64,000-token window.
   const ballast='合成资料'.repeat(2625);
-  it('starts reduction on the calibrated count: a raw estimate above the trigger waits, one near the window still reduces',async()=>{
+  it('starts reduction on the calibrated count: a low ratio does not delay it past the raw 90% net, a high one brings it forward',async()=>{
+    // H of the 64,000-token window is 57,856. Without a ratio three of these turns (~54,000 raw) still fit.
     const control=await fixture();
     for(const n of [0,1,2])await turn(control.app,control.bot,`第${n}轮 ${ballast}`,'control-'+n);
-    expect(control.app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+    expect(control.app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
+    // Receipts that read 30% above the estimate: the calibrated count reaches H first.
+    const high=await fixture();
+    high.fake.setUsageScale(1.3);high.app.store.calibration.record(high.app.store.modelConfig(),2600,2000);
+    for(const n of [0,1,2])await turn(high.app,high.bot,`第${n}轮 ${ballast}`,'high-'+n);
+    expect(high.app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+    expect(tokens(streamed(high.fake).at(-1))).toBeLessThan(64000-256);
     const {app,fake,bot}=await fixture();
     fake.setUsageScale(.5);app.store.calibration.record(app.store.modelConfig(),1000,2000);
     for(const n of [0,1,2])await turn(app,bot,`第${n}轮 ${ballast}`,'calibrated-'+n);
     const last=streamed(fake).at(-1)!,raw=tokens(last);
-    expect(raw).toBeGreaterThan(51200);expect(raw).toBeLessThan(64000*.9);
+    expect(raw).toBeGreaterThan(48000);expect(raw).toBeLessThan(64000*.9);
     expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
     expect(app.runtime.projection.load(String(app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!.id))!.some(entry=>entry.type==='compaction'||entry.type==='context_edit')).toBe(false);
     expect(JSON.stringify(last)).toContain('第0轮');
     expect(fake.requests.every(row=>row.stream)).toBe(true);
-    // The raw estimate would no longer fit the window soon: reduction starts however low the ratio reads.
+    // The raw estimate reaches 90% of the window: reduction starts however low the ratio reads.
     await turn(app,bot,`第3轮 ${ballast}`,'calibrated-3');
     expect(app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
     expect(tokens(streamed(fake).at(-1))).toBeLessThan(64000-256);
@@ -406,22 +413,22 @@ describe('Continuous personal assistant and memory',()=>{
     expect(app.runtime.projection.load(runtimeOf(app,bot))!.some(entry=>entry.type==='compaction'||entry.type==='context_edit')).toBe(false);
     expectStablePrefixes(fake);
   },120000);
-  it('resolves the soft threshold: default min(256k, input budget − 2k), an explicit value wins within that cap',async()=>{
+  it('resolves the soft threshold: default min(256k, 80% of the window, H − 2k), an explicit value wins within that cap',async()=>{
     const {app,fake}=await fixture();
     configure(app,fake,{contextWindow:400000});
     expect(app.store.modelConfig().contextBudget).toBe(256000);
     configure(app,fake,{contextWindow:64000});
-    expect(app.store.modelConfig().contextBudget).toBe(49152);
+    expect(app.store.modelConfig().contextBudget).toBe(51200);
     configure(app,fake,{contextWindow:400000,contextBudget:200000});
     expect(app.store.modelConfig().contextBudget).toBe(200000);
     configure(app,fake,{contextWindow:400000,contextBudget:900000});
-    expect(app.store.modelConfig().contextBudget).toBe(317952);
+    expect(app.store.modelConfig().contextBudget).toBe(320000);
     configure(app,fake,{contextWindow:1000000,contextBudget:null});
     expect(app.store.modelConfig().contextBudget).toBe(256000);
   });
   it('reduces only a request that would not fit: it grows unreduced up to the input budget, then drops to the target, and the next turn adds no reduction',async()=>{
     const {app,fake,bot}=await fixture();
-    // H = 48,000, S = 30,000, T = 12,000: requests grow through S unreduced; only the one that would not fit is reduced.
+    // H = 53,856, S = 30,000, T = 12,000: requests grow through S unreduced; only the one that would not fit is reduced.
     configure(app,fake,{contextWindow:60000,contextBudget:30000});
     expect(app.store.modelConfig().contextBudget).toBe(30000);
     const notes=Array.from({length:10},(_,i)=>bigDoc(app,bot,`STAGE-${i}`));
@@ -432,7 +439,7 @@ describe('Continuous personal assistant and memory',()=>{
     // Requests grow with each result, crossing the soft threshold without any reduction; only the one that would not fit is reduced.
     expect(first).toBeGreaterThan(1);
     expect(sizes.slice(0,first).some(size=>size>30000)).toBe(true);
-    for(const size of sizes.slice(0,first))expect(size).toBeLessThan(48000+2000);
+    for(const size of sizes.slice(0,first))expect(size).toBeLessThan(53856+2000);
     // The reduction goes down to the target (40% of S), not merely below the limit; the newest result is never summarized.
     expect(sizes[first]).toBeLessThan(sizes[first-1]-8000);
     const edits=app.runtime.projection.load(runtimeOf(app,bot))!.filter(entry=>entry.type==='context_edit');
@@ -440,7 +447,7 @@ describe('Continuous personal assistant and memory',()=>{
     const after=app.store.all('SELECT * FROM context_checkpoints').length;
     await turn(app,bot,'继续','stage-two');
     expect(app.store.all('SELECT * FROM context_checkpoints').length).toBe(after);
-    expect(tokens(streamed(fake).at(-1))).toBeLessThan(48000);
+    expect(tokens(streamed(fake).at(-1))).toBeLessThan(53856);
   },120000);
   it('never digests tool results of older turns while the context is at or below the soft threshold',async()=>{
     const {app,fake,bot}=await fixture();
