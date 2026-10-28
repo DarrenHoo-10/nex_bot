@@ -1,7 +1,7 @@
 # Long conversations: context and memory (2026-10-28)
 
-Implements [the long-context plan](../plans/long-context-and-memory.md) on branch
-`claude/stoic-rubin-0b1920` (`037b6006`…`c76dcd5f`). Not merged or deployed.
+Implements [the long-context plan](../plans/long-context-and-memory.md); released on 2026-10-28 ([release record](long-context-release-20261028.md)). Originally on branch
+`claude/stoic-rubin-0b1920` (`037b6006`…`c76dcd5f`).
 
 ## Behaviour
 
