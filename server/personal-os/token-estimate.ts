@@ -19,3 +19,10 @@ export function tokens(value: unknown): number {
   const wide = (s.match(/[^\x00-\x7f]/g) ?? []).length;
   return Math.ceil((s.length - wide) / 3 + wide * 1.5) + images * IMAGE_TOKENS;
 }
+/** The longest head of `value` that fits `limit` tokens (no marker added). */
+export function clipTokens(value: string, limit: number): string {
+  if (tokens(value) <= limit) return value;
+  let low = 0, high = value.length;
+  while (low < high) { const middle = (low + high + 1) >> 1; if (tokens(value.slice(0, middle)) <= limit) low = middle; else high = middle - 1; }
+  return value.slice(0, low);
+}

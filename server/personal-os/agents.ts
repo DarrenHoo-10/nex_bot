@@ -4,8 +4,6 @@ import type { TaskRuntime } from "./runtime.ts";
 import { actions, policyTools } from "./policy.ts";
 import { universalActions } from '../../shared/personal-capabilities.ts';
 import { parseAppearance } from "../../shared/personal-appearance.ts";
-import { tokens } from './token-estimate.ts';
-import { relevance } from './assistant-memory.ts';
 
 // The contact and its inbox survive any number of execution contexts. Pi
 // sessions belong to work, and never define the identity visible to the owner.
@@ -267,21 +265,11 @@ export class AgentModule {
   context(botId: string, taskId: string) {
     const conversation = this.store.get('SELECT conversation_id FROM tasks WHERE id=?',taskId)?.conversation_id;
     const checkpoint = this.store.get('SELECT id,summary FROM context_checkpoints WHERE bot_id=? AND conversation_id=? ORDER BY created_at DESC LIMIT 1',botId,conversation ?? null);
-    // Full recent turns live in the persistent Pi projection. Only other work
-    // needs an index here; never duplicate or mechanically clip current turns.
-    const history = this.store.all("SELECT m.id,m.role,m.content FROM agent_messages m LEFT JOIN tasks t ON t.id=m.task_id WHERE m.bot_id=? AND (t.conversation_id IS NULL OR t.conversation_id!=?) ORDER BY m.seq DESC",botId,conversation ?? null);
-    let remaining=2000; const recent: Row[]=[];
-    for(const row of history){ const size=tokens(row);if(size>remaining)continue;recent.unshift(row);remaining-=size; }
-    const query=String(this.store.get("SELECT content FROM agent_messages WHERE bot_id=? AND role='user' ORDER BY seq DESC LIMIT 1",botId)?.content??'');
-    const references=query.match(/(?:message|entry):[a-zA-Z0-9-]+/g)??[];
-    const recalled:Row[]=[];let budget=2500;
-    const matches=references.flatMap(ref=>this.search(botId,ref));
-    if(/之前|上次|此前|以前|原来|早先|previous|earlier/i.test(query))matches.push(...this.store.all("SELECT id,content,role FROM agent_messages WHERE bot_id=? AND task_id IS NOT ? AND content!='[已遗忘]'",botId,taskId).map(row=>({...row,score:relevance(query,String(row.content))})).filter(row=>row.score>0).sort((a,b)=>b.score-a.score));
-    for(const row of matches){const size=tokens(row);if(size>budget||recalled.some(prior=>prior.id===row.id))continue;recalled.push(row);budget-=size;}
-    const note=this.store.get('SELECT content,version FROM assistant_working_notes WHERE bot_id=?',botId);
-    // Archives of closed episodes that fit the current input (bounded); the volatile reminder is their only place in the prompt.
-    const relatedEpisodes=this.runtime.episodes.related(botId,query);
-    return JSON.stringify({ checkpoint:checkpoint?.id??null,workingNote:note??null,otherRecentWork:recent,recalledHistory:recalled,relatedEpisodes,history:'通过 memory.search 搜索早期原文；query="message:<id>" 可展开消息，query="entry:<id>" 可展开运行记录，query="episode:<id>" 可展开已结束段落的档案；普通文字查询也会搜索段落档案。' });
+    // Full recent turns live in the persistent Pi projection. Of everything else only this conversation's working
+    // note is here: other conversations, earlier messages and archives are recalled once per task for the user's
+    // input (task-recall.ts) or searched by the model on demand.
+    const note=this.store.get('SELECT content,version FROM conversation_working_notes WHERE conversation_id=?',conversation ?? null);
+    return JSON.stringify({ checkpoint:checkpoint?.id??null,workingNote:note??null,history:'通过 memory.search 搜索早期原文；query="message:<id>" 可展开消息，query="entry:<id>" 可展开运行记录，query="episode:<id>" 可展开已结束段落的档案；普通文字查询也会搜索段落档案。' });
   }
   search(botId: string, query: string): Row[];
   search(botId: string, query: string, page?: { offset?: number; limit?: number }): Array<Row | ReturnType<typeof entryPage>>;
@@ -359,6 +347,7 @@ export class AgentModule {
               try {
                 const a = JSON.parse(String(c.arguments_json || "{}")) as Record<string, unknown>;
                 if (c.tool_name === "memory.write" || c.tool_name === "memory.search" || c.tool_name === "memory.reflect") summary = String(a.title || a.query || summary).slice(0, 80);
+                else if (c.tool_name === "memory.core.update") summary = "核心记忆";
                 else if (c.tool_name === "device.read" || c.tool_name === "device.list") summary = String(a.path || ".").slice(0, 120);
                 else if (c.tool_name === "device.exec") summary = String(a.command || "").slice(0, 80);
                 else if (c.tool_name === "device.computer") summary = String(a.operation || "").slice(0, 60);

@@ -11,6 +11,8 @@ import { appearanceSchema } from "./appearance-schema.ts";
 import { continuitySchema } from "./continuity-schema.ts";
 import { episodeSchema } from "./episodes-schema.ts";
 import { trigramSchema, vectorSchema } from "./retrieval-schema.ts";
+import { recallSchema, WORKING_NOTE_TOKENS } from "./recall-schema.ts";
+import { clipTokens, tokens } from "./token-estimate.ts";
 import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
@@ -356,6 +358,20 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       // Embeddings of the memory pool and the user's embedding/rerank settings; see retrieval.ts.
       this.db.exec(vectorSchema);
       this.insert("schema_migrations", { version: 32, checksum: hash(vectorSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=33")) this.transaction(() => {
+      // Core memory, the once-per-task recall cache and per-conversation working notes; see recall-schema.ts.
+      this.db.exec(recallSchema);
+      // Each assistant's working note moves to its most recently active conversation (a delegated child conversation
+      // is not one). The old table stays for rollback. A note over the 1000-token cap cannot be summarized here, so
+      // it is cut at the cap and says so; the full text remains in the old table.
+      for (const note of this.all("SELECT * FROM assistant_working_notes")) {
+        const target = this.get("SELECT c.id FROM conversations c WHERE c.bot_id=? AND c.status='open' AND c.id NOT IN (SELECT child_conversation_id FROM a2a_messages) ORDER BY COALESCE((SELECT MAX(i.created_at) FROM conversation_inputs i WHERE i.conversation_id=c.id),c.created_at) DESC,c.created_at DESC,c.rowid DESC LIMIT 1", note.bot_id);
+        if (!target) continue;
+        const marker = "\n（已截断；完整内容在旧工作笔记表）", content = tokens(note.content) > WORKING_NOTE_TOKENS ? clipTokens(String(note.content), WORKING_NOTE_TOKENS - tokens(marker)).trimEnd() + marker : String(note.content);
+        this.run("INSERT OR IGNORE INTO conversation_working_notes(conversation_id,bot_id,content,task_id,version,updated_at) VALUES(?,?,?,?,?,?)", target.id, note.bot_id, content, note.task_id, note.version, note.updated_at);
+      }
+      this.insert("schema_migrations", { version: 33, checksum: hash(recallSchema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

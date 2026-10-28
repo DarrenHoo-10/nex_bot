@@ -19,7 +19,8 @@ export function policyTools(policy: Row): string[] {
 export function evaluateTool(store: CoreStore, botId: string, args: Record<string, unknown>) {
   const action = text(args.action, 40);
   const policy = store.get("SELECT p.* FROM bot_policies p JOIN bots b ON b.id=p.bot_id WHERE b.id=? AND b.status='active' AND b.workspace_id=? AND b.owner_user_id=?", botId, store.workspace, store.owner);
-  if (!policy || !policyTools(policy).includes(action)) throw new Error("该 Agent 无权调用此能力");
+  // memory.core.update is the same kind of private memory write as memory.write: one grant covers both.
+  if (!policy || !(policyTools(policy).includes(action) || (action === "memory.core.update" && policyTools(policy).includes("memory.write")))) throw new Error("该 Agent 无权调用此能力");
   let local: Row | undefined;
   let connectorTool: ConnectorTool | undefined;
   let resourceVersion = 0;
@@ -62,6 +63,10 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     text(args.title, 200); text(args.content, 20_000);
     if (args.scope !== undefined && args.scope !== "bot" && args.scope !== "context") throw new Error("自动记忆写入仅限自身私有范围；共享内容请由用户在记忆面板明确发布");
     if(args.scope==='context')text(args.content,6000);
+  } else if (action === "memory.core.update") {
+    if (args.scope !== undefined && args.scope !== "bot") throw new Error(args.scope === "workspace" ? "共享核心记忆请由用户在记忆设置中编辑，模型只能更新自己的核心记忆" : "核心记忆范围无效");
+    if (!args.patch || typeof args.patch !== "object" || Array.isArray(args.patch) || JSON.stringify(args.patch).length > 20_000) throw new Error("核心记忆补丁无效");
+    if (!Number.isSafeInteger(args.expectedVersion) || Number(args.expectedVersion) < 0) throw new Error("核心记忆版本无效");
   } else if (action === "memory.read") text(args.documentId, 100);
   else if (action === "memory.delete" || action === "memory.forget") {
     const doc = store.get("SELECT * FROM memory_documents WHERE id=? AND status='active' AND scope='bot' AND bot_id=? AND workspace_id=? AND owner_user_id=?", text(args.documentId, 100), botId, store.workspace, store.owner);

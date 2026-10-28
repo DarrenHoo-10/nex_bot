@@ -296,6 +296,10 @@ export async function createPersonalApp(options: AppOptions) {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取记忆检索设置的权限" }); return; }
         json(response, 200, runtime.memory.retrieval.config.view()); return;
       }
+      if (url.pathname === "/api/memory/core" && request.method === "GET") {
+        if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取核心记忆的权限" }); return; }
+        json(response, 200, runtime.memory.core.view(text(url.searchParams.get("botId"), 100))); return;
+      }
       if (url.pathname === "/api/state") {
         const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
         json(response, 200, stateBody(view, requestOrigin)); return;
@@ -463,6 +467,13 @@ export async function createPersonalApp(options: AppOptions) {
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有修改记忆检索设置的权限'});return;}
         const saved=await runtime.memory.retrieval.config.save(data,async()=>{const current=await authenticate(token);if(!current||current.user_id!==store.owner)throw new IdentityError(401,'登录已失效，请重新登录');});
         changed();json(response,200,saved);return;
+      }
+      if(url.pathname==='/api/memory/core'){
+        if(session.user_id!==store.owner){json(response,403,{error:'此账号没有修改核心记忆的权限'});return;}
+        // The owner replaces one scope's two lists; the same version check and 1500-token cap as the model's patch.
+        const botId=text(data.botId,100);
+        runtime.memory.core.replace(data.scope==='workspace'?'workspace':'bot',botId,{about:data.about,topics:data.topics},data.version);
+        changed();json(response,200,runtime.memory.core.view(botId));return;
       }
       if(url.pathname==='/api/memory/summary'){
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有读取记忆用量的权限'});return;}

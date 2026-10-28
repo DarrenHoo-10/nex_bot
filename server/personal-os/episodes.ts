@@ -14,9 +14,6 @@ import type { RetrievalResult } from './retrieval.ts';
 export const EPISODE_GAP_MS = 6 * 60 * 60_000;
 /** The short summary that stays in the next episode's context. */
 export const BRIEF_TOKENS = 300;
-/** Recall puts at most this many archive summaries, this many tokens in all, into the volatile reminder. */
-export const RECALL_EPISODES = 3;
-export const RECALL_TOKENS = 1500;
 
 export interface EpisodeArchive {
   title: string; brief: string; topics: string[];
@@ -172,11 +169,6 @@ export class Episodes {
       found.push(item); remaining -= tokens(item);
     }
     return found;
-  }
-  /** The archives that fit the current input best, for the volatile reminder: a few, bounded in tokens in all. */
-  related(botId: string, query: string, budget = RECALL_TOKENS, limit = RECALL_EPISODES, retrieved?: RetrievalResult) {
-    // The list is serialized with separators of its own: keep a margin under the budget.
-    return this.search(botId, query, limit, budget - 100, retrieved);
   }
   private summary(row: Row, limit: number) {
     return { ref: `episode:${row.id}`, title: row.title, endedAt: row.ended_at, summary: clipTokens(String(row.summary), Math.max(100, limit - 100)), openItems: JSON.parse(String(row.open_items)) as string[] };

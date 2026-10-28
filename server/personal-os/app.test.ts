@@ -463,6 +463,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(empty.store.get("SELECT instructions FROM bots WHERE id=?", botId)?.instructions).toBe("");
     expect(JSON.parse(String(empty.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toContain("device.exec");
     empty.runtime.memory.write(botId, { title: "独立记忆", content: "沿用稳定身份" });
+    empty.runtime.memory.core.replace("bot", botId, { about: ["沿用稳定身份"], topics: [] }, 0);
     empty.agents.updateProfile({ id: botId, name: "另一个任意名字", instructions: "", version: 1 });
     expect(empty.runtime.memory.prompt(botId)).toContain("沿用稳定身份");
     empty.agents.archive({ id: botId, version: 2 });
@@ -774,14 +775,15 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(reopened.store.get("SELECT argument_hash FROM tool_calls WHERE id=?", source.id)?.argument_hash).toBe(source.argument_hash);
     expect(() => reopened.runtime.memory.read(String(f.bots[0].id), String(secret.documentId))).toThrow();
     expect(reopened.runtime.memory.prompt(String(f.bots[0].id))).not.toContain("OTHER_AGENT_SECRET");
-    expect(reopened.runtime.memory.prompt(String(f.bots[0].id))).toContain("偏好中文与 Python");
+    expect(reopened.runtime.memory.list(String(f.bots[0].id)).map((doc) => doc.content)).toContain("偏好中文与 Python");
     expect(f.fake.requests.at(-1)?.body).not.toContain("OTHER_AGENT_SECRET");
     expect(reopened.store.all("PRAGMA foreign_key_check")).toEqual([]);
   }, 50_000);
   it("routes a durable A2A child task, returns one result, keeps private contexts separate", async () => {
     const f = await fixture();
-    f.app.runtime.memory.write(String(f.bots[0].id), { title: "Parent secret", content: "PARENT_PRIVATE", scope: "bot" });
-    f.app.runtime.memory.write(String(f.bots[1].id), { title: "Child memory", content: "RESEARCH_PRIVATE", scope: "bot" });
+    // Core memory is what every request of an assistant carries; each assistant sees only its own.
+    f.app.runtime.memory.core.replace("bot", String(f.bots[0].id), { about: ["PARENT_PRIVATE"], topics: [] }, 0);
+    f.app.runtime.memory.core.replace("bot", String(f.bots[1].id), { about: ["RESEARCH_PRIVATE"], topics: [] }, 0);
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "delegate-one", name: "broker", args: JSON.stringify({ action: "agent.delegate", botId: f.bots[1].id, message: "分析材料 A 的优点" }) }] }, { kind: "openai-text", text: "材料 A 的优点是稳定" }, { kind: "openai-text", text: "Beta 已完成：材料 A 稳定" });
     const task = f.app.runtime.input(f.conversation, "让 Beta 分析材料 A", "delegate-client");
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
@@ -965,11 +967,12 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   it("supports three-layer prompt cache ordering, routine preemption, steward agent management, tool trajectories, and preview API", async () => {
     const f = await fixture();
     const botId = String(f.bots[1].id);
-    // 1. Append-only memory ledger ordering + <system-reminder> dynamic tail
-    f.app.runtime.memory.write(botId, { title: "第一条记忆", content: "最早创建的记忆", scope: "bot" });
-    f.app.runtime.memory.write(botId, { title: "第二条记忆", content: "后来追加的记忆", scope: "bot" });
+    // 1. Core memory lines keep their order (a new line goes last) + <system-reminder> dynamic tail
+    f.app.runtime.memory.core.update(botId, { patch: { about: { add: ["最早创建的记忆"] } }, expectedVersion: 0 });
+    f.app.runtime.memory.core.update(botId, { patch: { about: { add: ["后来追加的记忆"] } }, expectedVersion: 1 });
     const promptText = f.app.runtime.memory.prompt(botId);
-    expect(promptText.indexOf("第一条记忆")).toBeLessThan(promptText.indexOf("第二条记忆"));
+    expect(promptText.indexOf("最早创建的记忆")).toBeGreaterThan(0);
+    expect(promptText.indexOf("最早创建的记忆")).toBeLessThan(promptText.indexOf("后来追加的记忆"));
 
     // 2. Priority delivery: user input preempts an active background routine task
     const routine = f.app.routines.save({ botId, name: "后台巡检", prompt: "执行后台例行巡检", scheduleKind: "once", runAt: Date.now() + 60_000 });

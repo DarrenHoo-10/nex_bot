@@ -3,17 +3,21 @@ import { MemoryLedger } from "./memory-ledger.ts";
 import { policyTools } from "./policy.ts";
 import { MemoryPrivacy, type ForgetPlan } from "./memory-privacy.ts";
 import { AssistantMemory } from './assistant-memory.ts';
-import { dropVectors, lexicalHits } from './retrieval-index.ts';
+import { dropVectors, lexicalHits, sourceRow } from './retrieval-index.ts';
+import { CoreMemory } from './core-memory.ts';
 import type { Retrieval, RetrievalResult } from './retrieval.ts';
 
 export class MemoryModule {
   readonly personal: AssistantMemory;
+  /** The always-loaded core memory (an assistant's and the workspace's). */
+  readonly core: CoreMemory;
   /** Hybrid retrieval over memories, episode archives and documents (and its embedding / rerank settings). */
   get retrieval(): Retrieval { return this.personal.retrieval; }
   readonly ledger: MemoryLedger;
   readonly privacy: MemoryPrivacy;
   constructor(readonly store: CoreStore, changed: () => void = () => {}, readonly fence: (plan: ForgetPlan) => void = () => {}) {
     this.personal=new AssistantMemory(store,changed);
+    this.core=new CoreMemory(store);
     this.privacy = new MemoryPrivacy(store);
     // Replay before capture/backfill or opening history to the renderer.
     const replayed: ForgetPlan[] = [];
@@ -40,11 +44,15 @@ export class MemoryModule {
     if(this.personal.settings(botId).version && !this.personal.enabled(botId)) return '长期记忆已关闭；连续对话和原文历史检索仍可使用。';
     const policy = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", botId);
     if (!policy || !policyTools(policy).includes("memory.search")) return "长期记忆检索已禁用";
-    // Order the top active memory ledger oldest-first (append-only) so adding
-    // new memories extends the tail without invalidating LLM prefix KV-caches.
-    // rowid breaks created_at ties by insertion order; the random id is not an order.
-    const rows = this.store.all("SELECT * FROM (SELECT d.id,d.title,d.scope,d.bot_id,d.version,d.created_at,c.content,d.rowid FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status='active' AND (d.scope='workspace' OR d.bot_id=?) ORDER BY d.updated_at DESC LIMIT 15) ORDER BY CASE WHEN scope='workspace' THEN 0 ELSE 1 END,created_at ASC,rowid ASC", this.store.workspace, this.store.owner, botId);
-    return rows.map((m) => `[${m.scope === "workspace" ? "共享" : "私有"}记忆 id=${m.id} v=${m.version}] ${m.title}\n${String(m.content).slice(0, 1200)}`).join("\n\n").slice(0, 12_000);
+    // Only the small core memory is always loaded; its text changes only when a line does, so the prompt prefix
+    // stays cacheable. Documents, facts and archives are recalled per task or searched on demand.
+    return this.core.render(botId);
+  }
+  /** Whether a topic reference names a memory, document or archive this assistant can open. */
+  refExists(botId: string, ref: string): boolean {
+    const [kind, ident] = ref.split(':');
+    if (kind === 'episode') return !!sourceRow(this.store, 'episode', botId, ident);
+    return !!sourceRow(this.store, 'memory', botId, ident) || !!sourceRow(this.store, 'document', botId, ident);
   }
   write(botId: string, data: Record<string, unknown>, callId?: string) {
     const scope = data.scope === "workspace" ? "workspace" : "bot";

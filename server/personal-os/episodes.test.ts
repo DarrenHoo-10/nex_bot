@@ -61,7 +61,8 @@ const runtimeOf = (app: App, bot: string) => String(app.store.get('SELECT id FRO
 const stored = (app: App, bot: string) => app.runtime.projection.load(runtimeOf(app, bot))!;
 const episodes = (app: App) => app.store.all('SELECT * FROM conversation_episodes ORDER BY created_at');
 const episodeCompaction = (entries: FileEntry[]) => entries.find(entry => entry.type === 'compaction' && (entry.details as { episode?: string } | undefined)?.episode);
-const note = (app: App, bot: string) => app.store.get('SELECT * FROM assistant_working_notes WHERE bot_id=?', bot);
+const note = (app: App, bot: string) => app.store.get('SELECT * FROM conversation_working_notes WHERE bot_id=?', bot);
+const conversationOf = (app: App, bot: string) => String(app.store.get('SELECT id FROM conversations WHERE bot_id=?', bot)!.id);
 const post = (app: App, route: string, data: unknown, token = 'synthetic-token') => fetch(app.origin + '/api/agents/' + route, { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 /** The volatile reminder of a request: the one user message that carries it. */
 const volatileOf = (request: Record<string, unknown>) => String((request.messages as Wire).find(message => message.role === 'user' && String(message.content).includes('<system-reminder>'))?.content);
@@ -440,8 +441,9 @@ describe('Episode archives', () => {
   });
 
   describe('recall', () => {
-    it('puts the most relevant archives into the volatile reminder only, bounded', async () => {
+    it('puts the archives that fit the input into the volatile reminder only, once per task; an unrelated input recalls nothing', async () => {
       const f = await fixture(), { app, fake, bot } = f;
+      app.runtime.memory.personal.saveGlobal({ version: 0, enabled: true });
       fake.scripts.push('第一段回答', '第二段回答', '第三段回答');
       await turn(app, bot, 'RECALL-ONE：旧内容', 'recall-1');
       advance(7 * HOUR);
@@ -451,28 +453,29 @@ describe('Episode archives', () => {
       const request = streamed(fake).at(-1)!, wire = request.messages as Wire;
       const volatile = wire.filter(message => message.role === 'user' && String(message.content).includes('<system-reminder>'));
       expect(volatile).toHaveLength(1);
-      expect(String(volatile[0].content)).toContain('"relatedEpisodes"');
-      expect(String(volatile[0].content)).toContain('episode:' + episode.id);
+      expect(String(volatile[0].content)).toContain('按本次输入召回的相关记忆');
+      expect(String(volatile[0].content)).toContain('[episode:' + episode.id + ']');
+      expect(String(volatile[0].content)).not.toContain('relatedEpisodes');
       // Not in the stable prompt, nor anywhere else in the request.
       const stable = wire.filter(message => message.role === 'system').map(message => String(message.content)).join('\n');
-      expect(stable).not.toContain('relatedEpisodes'); expect(stable).not.toContain('episode:' + episode.id); expect(stable).not.toContain('合成段落档案');
-      expect(wire.filter(message => String(message.content).includes('"relatedEpisodes"'))).toHaveLength(1);
+      expect(stable).not.toContain('episode:' + episode.id); expect(stable).not.toContain('合成段落档案');
+      expect(wire.filter(message => String(message.content).includes('[episode:' + episode.id + ']'))).toHaveLength(1);
       // A turn that has nothing to do with it recalls nothing.
       await turn(app, bot, '今天午餐吃什么', 'recall-4');
-      expect(volatileOf(streamed(fake).at(-1)!)).toContain('"relatedEpisodes":[]');
+      expect(volatileOf(streamed(fake).at(-1)!)).not.toContain('按本次输入召回的相关记忆');
     }, 90000);
 
-    it('puts at most 3 archives and 1500 tokens into it', async () => {
-      const { app, bot } = await fixture();
+    it('recalls an archive by its brief, cut at 400 tokens with a pointer to the original, within the budget', async () => {
+      const { app, fake, bot } = await fixture();
+      app.runtime.memory.personal.saveGlobal({ version: 0, enabled: true });
       for (let index = 0; index < 6; index++) app.runtime.episodes.save({ botId: bot, conversationId: 'c', firstEntry: 'f' + index, lastEntry: 'l' + index, startedAt: index, endedAt: index + 1, archive: { title: `项目记录${index}`, brief: '项目进展 ' + '详细内容'.repeat(900), topics: ['项目'], decisions: [], operations: [], openItems: [], refs: [] } });
-      const related = app.runtime.episodes.related(bot, '项目进展');
-      expect(related.length).toBeGreaterThan(0); expect(related.length).toBeLessThanOrEqual(3);
-      expect(tokens(related)).toBeLessThanOrEqual(1500);
-      // The same list is what the volatile context carries for the latest user message.
-      app.agents.publish(bot, 'user', 'message', '项目进展如何', 'recall-bound');
-      const context = JSON.parse(app.agents.context(bot, 'no-task')) as { relatedEpisodes: Array<{ ref: string }> };
-      expect(context.relatedEpisodes.map(item => item.ref)).toEqual(related.map(item => item.ref));
-      expect(tokens(context.relatedEpisodes)).toBeLessThanOrEqual(1500);
+      const task = await turn(app, bot, '项目进展如何', 'recall-bound');
+      const row = app.store.get('SELECT * FROM task_recall WHERE task_id=?', task)!, block = String(row.block);
+      expect(block).toContain('（原文见 episode:');
+      // No reranker is configured here, so the smaller budget applies.
+      expect(Number(row.tokens)).toBeLessThanOrEqual(1000); expect(tokens(block)).toBe(Number(row.tokens));
+      for (const line of block.split('\n').slice(1)) expect(tokens(line)).toBeLessThanOrEqual(400);
+      expect(volatileOf(streamed(fake).at(-1)!)).toContain(block);
     });
   });
 
@@ -502,9 +505,9 @@ describe('Episode archives', () => {
 
     it('takes non-JSON output whole as the summary and leaves the note unchanged', async () => {
       const f = await fixture(folding), { app, fake, bot } = f;
-      app.store.run('INSERT INTO assistant_working_notes(bot_id,content,task_id,version,updated_at) VALUES(?,?,?,?,?)', bot, 'EXISTING-NOTE', 'earlier-task', 3, 1);
       fake.setOverride(body => (!body.stream && instructionOf(body).includes('"workingNote"') && !instructionOf(body).includes('建立段落档案')) ? reply('PLAIN-SUMMARY：纯文本摘要，不是 JSON') : undefined);
       await turn(app, bot, 'PLAIN-ONE：第一轮', 'plain-1');
+      app.store.run('INSERT INTO conversation_working_notes(conversation_id,bot_id,content,task_id,version,updated_at) VALUES(?,?,?,?,?,?)', conversationOf(app, bot), bot, 'EXISTING-NOTE', 'earlier-task', 3, 1);
       const task = await turn(app, bot, 'PLAIN-TWO：第二轮', 'plain-2');
       expect(String(app.store.get('SELECT summary FROM context_checkpoints WHERE task_id=?', task)!.summary)).toContain('PLAIN-SUMMARY：纯文本摘要，不是 JSON');
       expect(note(app, bot)).toMatchObject({ content: 'EXISTING-NOTE', version: 3, task_id: 'earlier-task' });
@@ -526,7 +529,7 @@ describe('Episode archives', () => {
         if (body.stream || !instructionOf(body).includes('"workingNote"') || instructionOf(body).includes('建立段落档案')) return undefined;
         // The model's write lands while the summarizer is working.
         writes++;
-        app.store.run('UPDATE assistant_working_notes SET content=?,version=version+1,updated_at=? WHERE bot_id=?', 'MODEL-NOTE-V2', Date.now(), bot);
+        app.store.run('UPDATE conversation_working_notes SET content=?,version=version+1,updated_at=? WHERE bot_id=?', 'MODEL-NOTE-V2', Date.now(), bot);
         return history;
       });
       const second = await turn(app, bot, 'CONFLICT-TWO：第二轮', 'conflict-2');

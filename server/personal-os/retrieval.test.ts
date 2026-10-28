@@ -599,7 +599,7 @@ describe('callers', () => {
     expect(app.runtime.episodes.search(bot, '部署流程', 5, 3000, found).map((item) => item.title)).toEqual(['上线复盘']);
     // Without a prior retrieval the synchronous callers use BM25 alone.
     expect(app.runtime.memory.search(bot, '上线前检查').map((doc) => doc.title)).toEqual(['上线手册']);
-    expect(app.runtime.episodes.related(bot, '推迟了一小时').map((item) => item.title)).toEqual(['上线复盘']);
+    expect(app.runtime.episodes.search(bot, '推迟了一小时').map((item) => item.title)).toEqual(['上线复盘']);
     expect(app.runtime.memory.search(bot, '部署流程')).toEqual([]);
     // A recall that retrieves for itself sees only memories.
     expect((await app.runtime.memory.recall(bot, '部署流程')).facts).toHaveLength(1);

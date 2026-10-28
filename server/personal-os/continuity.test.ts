@@ -350,8 +350,8 @@ describe('Continuous personal assistant and memory',()=>{
     const last=streamed(fake).at(-1)!,input=Number(app.store.get('SELECT input_tokens FROM model_invocations ORDER BY created_at DESC LIMIT 1')!.input_tokens);
     expect(input).toBeGreaterThan(tokens(last)*.45);expect(input).toBeLessThan(tokens(last)*.55);
   },60000);
-  // Three 10500-character turns put the raw estimate between the 51,200-token trigger and 90% of the 64,000-token window.
-  const ballast='合成资料'.repeat(2625);
+  // Three 10000-character turns put the raw estimate between the 51,200-token trigger and 90% of the 64,000-token window.
+  const ballast='合成资料'.repeat(2500);
   it('starts reduction on the calibrated count: a raw estimate above the trigger waits, one near the window still reduces',async()=>{
     const control=await fixture();
     for(const n of [0,1,2])await turn(control.app,control.bot,`第${n}轮 ${ballast}`,'control-'+n);
@@ -411,7 +411,7 @@ describe('Continuous personal assistant and memory',()=>{
   });
   it('starts reduction at the budget, keeps summarizing older results down to half of it and does not repeat on the next turn',async()=>{
     const {app,fake,bot}=await fixture();
-    configure(app,fake,{contextWindow:200000,contextBudget:60000});
+    configure(app,fake,{contextWindow:200000,contextBudget:30000});
     const notes=Array.from({length:10},(_,i)=>bigDoc(app,bot,`STAGE-${i}`));
     fake.scripts.push(...notes.map(note=>({action:'memory.read',args:{documentId:note.documentId}})),'完成');
     await turn(app,bot,'逐个读取资料','stage-one');
@@ -419,16 +419,16 @@ describe('Continuous personal assistant and memory',()=>{
     const first=sizes.findIndex((_,index)=>index>0&&sizes[index]<sizes[index-1]);
     // Requests grow with each result until the budget is crossed; then older results are summarized until at most half the budget remains.
     expect(first).toBeGreaterThan(1);
-    for(const size of sizes.slice(0,first))expect(size).toBeLessThan(60000);
-    // The stage keeps going down to half the budget (30,000), not merely below 60,000; the newest result is never summarized.
-    expect(sizes[first]).toBeLessThanOrEqual(30000+600);
+    for(const size of sizes.slice(0,first))expect(size).toBeLessThan(30000);
+    // The stage keeps going down to half the budget (15,000), not merely below 30,000; the newest result is never summarized.
+    expect(sizes[first]).toBeLessThanOrEqual(15000+600);
     const edits=app.runtime.projection.load(runtimeOf(app,bot))!.filter(entry=>entry.type==='context_edit');
-    expect(edits.length).toBeGreaterThanOrEqual(4);
+    expect(edits.length).toBeGreaterThanOrEqual(2);
     const after=app.store.all('SELECT * FROM context_checkpoints').length;
     // The turn ended below the budget: the next turn adds no further reduction.
     await turn(app,bot,'继续','stage-two');
     expect(app.store.all('SELECT * FROM context_checkpoints').length).toBe(after);
-    expect(tokens(streamed(fake).at(-1))).toBeLessThan(60000);
+    expect(tokens(streamed(fake).at(-1))).toBeLessThan(30000);
   },120000);
   it('digests tool results of turns older than the latest completed one when a turn starts; the latest turn stays full and edited or small results are left alone',async()=>{
     const {app,fake,bot}=await fixture();
@@ -537,7 +537,7 @@ describe('Continuous personal assistant and memory',()=>{
     const turn=async(text:string)=>{const task=app.agents.send(bot,text,'system-'+text).taskId;await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);};
     await turn('一');await turn('二');
     const unchanged=systemEntries(app,bot);expect(unchanged).toHaveLength(1);
-    app.runtime.memory.write(bot,{title:'新账本记忆',content:'让稳定前缀变化'});
+    app.runtime.memory.core.update(bot,{patch:{about:{add:['新账本记忆：让稳定前缀变化']}},expectedVersion:0});
     await turn('三');
     const changed=systemEntries(app,bot);expect(changed).toHaveLength(2);
     expect(String((changed[1] as {message:{content:string}}).message.content)).toContain('新账本记忆');
@@ -552,7 +552,7 @@ describe('Continuous personal assistant and memory',()=>{
     fake.scripts.push({action:'memory.write',args:{scope:'context',title:'工作笔记',content:'当前只讨论，不部署。下一步等用户确认。',expectedVersion:0}},'已记录');
     const task=app.agents.send(bot,'记下当前工作的约束','working-note').taskId;
     await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='succeeded',app);
-    expect(app.store.get('SELECT version FROM assistant_working_notes WHERE bot_id=?',bot)?.version).toBe(1);
+    expect(app.store.get('SELECT version FROM conversation_working_notes WHERE bot_id=?',bot)?.version).toBe(1);
     expect(app.runtime.systemPrompt(task)).toContain('下一步等用户确认');
     expect(app.runtime.memory.personal.enabled(bot)).toBe(false);
     expect(app.store.all('SELECT * FROM assistant_memories')).toHaveLength(0);

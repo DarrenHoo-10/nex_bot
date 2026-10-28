@@ -144,12 +144,16 @@ export class AssistantMemory {
       used += size; selected.push(row);
       if (selected.length >= 12) break;
     }
-    if (taskId) for (const row of selected) for (const ref of sourceRefs(row)) {
+    if (taskId) this.use(botId, taskId, selected);
+    return selected.map(row => ({ ref: `personal:${row.id}`, refs: sourceRefs(row).map(ref => ref.id.startsWith('episode:') ? ref.id : `message:${ref.id}`), text: String(row.content), scope: 'bot', sourceClass: ['observation','understanding'].includes(String(row.kind)) ? 'synthesized' : row.kind === 'experience' ? 'agent_inferred' : 'user_stated', kind: row.kind, updatedAt: row.updated_at }));
+  }
+  /** Records that a task saw these memories, so forgetting one of their sources reaches the task (privacy closure). */
+  use(botId: string, taskId: string, rows: Row[]) {
+    for (const row of rows) for (const ref of sourceRefs(row)) {
       this.store.run('INSERT OR IGNORE INTO assistant_memory_uses VALUES(?,?)',taskId,ref.id);
       const source = this.source(botId, ref.id);
       if (source.task_id && source.task_id !== taskId) this.store.run('INSERT OR IGNORE INTO memory_task_dependencies VALUES(?,?)', taskId, source.task_id);
     }
-    return selected.map(row => ({ ref: `personal:${row.id}`, refs: sourceRefs(row).map(ref => ref.id.startsWith('episode:') ? ref.id : `message:${ref.id}`), text: String(row.content), scope: 'bot', sourceClass: ['observation','understanding'].includes(String(row.kind)) ? 'synthesized' : row.kind === 'experience' ? 'agent_inferred' : 'user_stated', kind: row.kind, updatedAt: row.updated_at }));
   }
   pause(botId?: string) { if (!botId || this.activeBot === botId) this.controller?.abort();for(const [controller,request] of this.requests)if(!botId||request.botId===botId)controller.abort(); }
   async reflect(botId:string,query:string,taskId?:string) {

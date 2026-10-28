@@ -1,5 +1,5 @@
 import { CoreStore, hash, id, now, type Row } from './store.ts';
-import { tokens } from './token-estimate.ts';
+import { clipTokens, tokens } from './token-estimate.ts';
 import { RetrievalConfig, type EmbeddingSettings } from './retrieval-config.ts';
 import { embedTexts } from './embeddings.ts';
 import { rerankDocuments } from './rerank.ts';
@@ -66,12 +66,7 @@ export interface RetrieveOptions {
   limit?: number;
 }
 
-export function clipTokens(value: string, limit: number) {
-  if (tokens(value) <= limit) return value;
-  let low = 0, high = value.length;
-  while (low < high) { const middle = (low + high + 1) >> 1; if (tokens(value.slice(0, middle)) <= limit) low = middle; else high = middle - 1; }
-  return value.slice(0, low);
-}
+export { clipTokens };
 
 export class Retrieval {
   readonly config: RetrievalConfig;
