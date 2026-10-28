@@ -25,7 +25,7 @@ its `daily_budget` of 10,000,000 did not stop it.
 
 - `pnpm exec vitest run server/personal-os`: 311 passed, 2 failed, 3 skipped. The failures were
   `server/personal-os/app.test.ts` "reads generic bundled skills…" (fails on `76da59c8` as well) and
-  a `client-transport.test.ts` "bad port" that passed when re-run alone. Memory and continuity
+  a `server/personal-os/client-transport.test.ts` "bad port" that passed when re-run alone. Memory and continuity
   suites after the wording fix: 51 passed. New tests cover both failure shapes (invalid JSON,
   `finish_reason:'length'`), the 10 min / 1 h / 6 h schedule, reset on success, independent steps,
   `next_attempt`, and the 500,000 cap.
