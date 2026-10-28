@@ -51,7 +51,7 @@ Implements [the compaction timing plan](../plans/compaction-timing.md) on branch
   and retried once; if that fails too the whole fold fails and nothing partial is
   installed.
 - **Failure records.** `compaction_failures(runtime_id, target, attempts, next_at,
-  last_error, updated_at)` (migration 30, `server/personal-os/compaction-failures.ts`);
+  last_error, updated_at)` (migration 31, `server/personal-os/compaction-failures.ts`; migration 30 is the memory step backoff table released on main);
   `target` is `entry:<id>` or `range:<first>..<last>`. Backoff 30 min after the first
   failure, 6 h after the second, never from the third. Maintenance skips targets in
   backoff and is not scheduled when every candidate is blocked; two failed runs in a row
@@ -88,7 +88,7 @@ production host, SSH, Mac or real provider was touched.
   ends below T, digests alone suffice, abort on input, slot, daily cap, shutdown),
   `server/personal-os/continuity.test.ts` (≤ S multi-turn: zero summarizer calls and a
   byte-stable prefix; > H: reduces to T; capacity error only when every reduction failed
-  and the request still does not fit; migration 30; images stay below S),
+  and the request still does not fit; migration 31; images stay below S),
   `server/personal-os/model-limits.test.ts` (S, the 256k default and caps),
   `server/personal-os/request-prompt.test.ts` (cache marker kept),
   `server/personal-os/episodes.test.ts` (turns that need a reduction are now bulky

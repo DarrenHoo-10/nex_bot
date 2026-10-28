@@ -340,10 +340,17 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.insert("schema_migrations", { version: 29, checksum: hash(episodeSchema), applied_at: now() });
     });
     if (!this.get("SELECT version FROM schema_migrations WHERE version=30")) this.transaction(() => {
+      // Failure/backoff state of the background memory steps (retain, consolidate, understanding): one row per
+      // assistant and step, present only while the step's latest attempts failed; a success deletes it.
+      const schema = "CREATE TABLE IF NOT EXISTS assistant_memory_steps(bot_id TEXT NOT NULL REFERENCES bots(id),step TEXT NOT NULL,failures INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,error TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(bot_id,step)) STRICT;";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 30, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=31")) this.transaction(() => {
       // Compaction targets (a tool result, or the range of a history batch) whose summary failed, with the retry backoff; see compaction-failures.ts.
       const schema = "CREATE TABLE IF NOT EXISTS compaction_failures(runtime_id TEXT NOT NULL,target TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL,last_error TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(runtime_id,target)) STRICT;";
       this.db.exec(schema);
-      this.insert("schema_migrations", { version: 30, checksum: hash(schema), applied_at: now() });
+      this.insert("schema_migrations", { version: 31, checksum: hash(schema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPersonalApp } from './index.ts';
 import { startFakePersonalMemory } from './testing/fake-personal-memory.ts';
 import { hash } from './store.ts';
-import { assistantCompletion } from './assistant-model.ts';
+import { assistantCompletion, effectiveDailyBudget } from './assistant-model.ts';
 import { ChatFiles } from './chat-files.ts';
 import { tokens } from './token-estimate.ts';
 import { systemPromptText } from './context-tools.ts';
@@ -205,13 +205,15 @@ describe('Continuous personal assistant and memory',()=>{
     const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
     app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
     app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
-    app.store.db.exec('DROP TABLE conversation_episodes; DROP TABLE conversation_episode_search; DROP TABLE conversation_topic_marks; ALTER TABLE assistant_memory_settings DROP COLUMN episode_cursor; DROP TABLE compaction_failures; DROP TABLE maintenance_runs; DROP INDEX assistant_usage_maintain; ALTER TABLE assistant_usage DROP COLUMN conversation_id; ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
+    app.store.db.exec('DROP TABLE compaction_failures; DROP TABLE assistant_memory_steps; DROP TABLE conversation_episodes; DROP TABLE conversation_episode_search; DROP TABLE conversation_topic_marks; ALTER TABLE assistant_memory_settings DROP COLUMN episode_cursor; DROP TABLE maintenance_runs; DROP INDEX assistant_usage_maintain; ALTER TABLE assistant_usage DROP COLUMN conversation_id; ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
     app.store.db.exec('ALTER TABLE personal_connectors DROP COLUMN provider; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN kind;');
     const {CoreStore}=await import('./store.ts');
     const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
     try {
       expect(reopened.get('SELECT version FROM schema_migrations WHERE version=29')?.version).toBe(29);
       expect(reopened.get('SELECT version FROM schema_migrations WHERE version=30')?.version).toBe(30);
+      expect(reopened.get('SELECT version FROM schema_migrations WHERE version=31')?.version).toBe(31);
+      expect(reopened.get('SELECT COUNT(*) n FROM assistant_memory_steps')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM compaction_failures')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM conversation_episodes')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM conversation_episode_search')?.n).toBe(0);
@@ -572,5 +574,130 @@ describe('Continuous personal assistant and memory',()=>{
     expect(app.store.get('SELECT version FROM assistant_memories WHERE id=?',observation.id)?.version).toBe(2);
     expect(memory.rows(bot).filter(row=>row.kind==='understanding')).toHaveLength(0);
     expect(JSON.stringify(memory.recall(bot,'项目方案'))).toContain('改为方案乙');
+  });
+  describe('background step backoff and budget cap',()=>{
+    const MIN=60000,HOUR=60*MIN;
+    const marker={retain:'从新增原文提取',consolidate:'合并同一事项',understanding:'维护三个文档'};
+    const instructionOf=(body:Record<string,unknown>)=>String((body.messages as Array<{role:string;content:string}>).find(message=>message.role==='system')?.content??'');
+    const calls=(fake:Fixture['fake'],step:keyof typeof marker)=>fake.requests.filter(request=>!request.stream&&instructionOf(request).includes(marker[step])).length;
+    const state=(app:Fixture['app'],bot:string,step:string)=>app.store.get('SELECT * FROM assistant_memory_steps WHERE bot_id=? AND step=?',bot,step);
+    const usage={prompt_tokens:400,completion_tokens:80};
+    const invalidJson={choices:[{message:{content:'这不是 JSON'},finish_reason:'stop'}],usage};
+    const truncated={choices:[{message:{content:'{"documents":['},finish_reason:'length'}],usage};
+    // Time is the only thing faked, so the local model server and its sockets behave normally.
+    const clock=()=>{
+      const start=new Date();start.setDate(start.getDate()+1);start.setHours(1,0,0,0);
+      vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(start);
+      return {start:start.getTime(),advance:(ms:number)=>vi.setSystemTime(Date.now()+ms)};
+    };
+    it.each([['invalid JSON',invalidJson],['a truncated answer',truncated]])('retries a failing understanding after 10 min, 1 h, then 6 h (%s), keeps retaining meanwhile, and a success resets it',async(_name,bad)=>{
+      const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal,time=clock();
+      try {
+        let failing=true;fake.setOverride(body=>failing&&instructionOf(body).includes(marker.understanding)?bad:undefined);
+        memory.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:100000});
+        app.agents.publish(bot,'user','message','这个项目先讨论完整方案，再实现','m1');
+        await memory.flush();
+        expect(calls(fake,'understanding')).toBe(1);
+        expect(state(app,bot,'understanding')).toMatchObject({failures:1,next_at:time.start+10*MIN});
+        expect(memory.settings(bot).last_error).toContain('understanding');
+        // Retain and consolidate are healthy, so the pass stays on its 30 s cadence.
+        expect(memory.settings(bot).next_attempt).toBe(time.start+30000);
+        // The old loop retried every minute; now nothing is called for 9 minutes while new facts are still retained and consolidated.
+        for(let minute=1;minute<=9;minute++){
+          time.advance(MIN);
+          if(minute===2)app.agents.publish(bot,'user','message','另外约定每周五汇报','m2');
+          await memory.flush();
+        }
+        expect(calls(fake,'understanding')).toBe(1);
+        expect(calls(fake,'retain')).toBe(2);expect(calls(fake,'consolidate')).toBe(2);
+        expect(memory.rows(bot).filter(row=>row.kind==='observation').length).toBeGreaterThan(0);
+        time.advance(MIN);await memory.flush();
+        expect(calls(fake,'understanding')).toBe(2);
+        expect(state(app,bot,'understanding')).toMatchObject({failures:2,next_at:time.start+10*MIN+HOUR});
+        // At most two attempts in the first hour.
+        for(let n=0;n<10;n++){time.advance(5*MIN);await memory.flush();}
+        expect(Date.now()-time.start).toBe(60*MIN);
+        expect(calls(fake,'understanding')).toBe(2);
+        time.advance(10*MIN);await memory.flush();
+        expect(calls(fake,'understanding')).toBe(3);
+        expect(state(app,bot,'understanding')).toMatchObject({failures:3,next_at:Date.now()+6*HOUR});
+        const third=Date.now();
+        for(let n=0;n<11;n++){time.advance(30*MIN);await memory.flush();}
+        expect(Date.now()-third).toBe(5.5*HOUR);
+        expect(calls(fake,'understanding')).toBe(3);
+        expect(memory.rows(bot).filter(row=>row.kind==='understanding')).toHaveLength(0);
+        // A success writes the document and forgets the failures.
+        failing=false;time.advance(30*MIN);await memory.flush();
+        expect(calls(fake,'understanding')).toBe(4);
+        expect(state(app,bot,'understanding')).toBeUndefined();
+        expect(memory.rows(bot).filter(row=>row.kind==='understanding').length).toBeGreaterThan(0);
+        expect(memory.settings(bot).last_error).toBeNull();
+        // The next failure starts again at 10 minutes.
+        app.agents.publish(bot,'user','message','新的约定：先评审再合并','m3');
+        failing=true;time.advance(31*MIN);await memory.flush();
+        expect(calls(fake,'understanding')).toBe(5);
+        expect(state(app,bot,'understanding')).toMatchObject({failures:1,next_at:Date.now()+10*MIN});
+      } finally {vi.useRealTimers();}
+    },60000);
+    it('backs off a failing consolidate and a failing retain independently, so the other keeps working',async()=>{
+      const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal,time=clock();
+      try {
+        let mode:'consolidate'|'retain'='consolidate';
+        fake.setOverride(body=>instructionOf(body).includes(marker[mode])?invalidJson:undefined);
+        memory.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:100000});
+        app.agents.publish(bot,'user','message','这个项目先讨论完整方案，再实现','m1');
+        await memory.flush();
+        expect(calls(fake,'consolidate')).toBe(1);
+        expect(state(app,bot,'consolidate')).toMatchObject({failures:1,next_at:time.start+10*MIN});
+        expect(memory.rows(bot).filter(row=>row.kind==='fact')).toHaveLength(1);
+        expect(calls(fake,'understanding')).toBe(0);
+        // Consolidate waits; retain keeps taking new messages.
+        app.agents.publish(bot,'user','message','另外约定每周五汇报','m2');
+        time.advance(MIN);await memory.flush();
+        expect(calls(fake,'retain')).toBe(2);expect(calls(fake,'consolidate')).toBe(1);
+        // Retain now fails, but consolidate is due again and still runs on the facts it already has.
+        mode='retain';app.agents.publish(bot,'user','message','第三条约定','m3');
+        time.advance(10*MIN);await memory.flush();
+        expect(calls(fake,'retain')).toBe(3);expect(calls(fake,'consolidate')).toBe(2);
+        expect(state(app,bot,'retain')).toMatchObject({failures:1,next_at:Date.now()+10*MIN});
+        expect(state(app,bot,'consolidate')).toBeUndefined();
+        expect(memory.rows(bot).filter(row=>row.kind==='observation').length).toBeGreaterThan(0);
+        expect(memory.settings(bot).last_error).toContain('retain');
+      } finally {vi.useRealTimers();}
+    },60000);
+    it('is next due when the earliest backoff ends once every step is waiting',async()=>{
+      const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal;
+      memory.save(bot,{version:0,enabled:true,dailyBudget:100000});
+      const at=Date.now();
+      for(const [step,wait] of [['retain',2*HOUR],['consolidate',HOUR],['understanding',6*HOUR]] as const)app.store.run('INSERT INTO assistant_memory_steps VALUES(?,?,?,?,?,?)',bot,step,2,at+wait,step+': 失败',at);
+      app.agents.publish(bot,'user','message','等待中的消息','m1');
+      await memory.flush();
+      expect(fake.requests).toHaveLength(0);
+      expect(memory.settings(bot).next_attempt).toBe(at+HOUR);
+      expect(memory.settings(bot).last_error).not.toBeNull();
+      // Changed settings are a fresh start.
+      memory.save(bot,{version:1,enabled:true,dailyBudget:100000});
+      expect(app.store.all('SELECT * FROM assistant_memory_steps')).toHaveLength(0);
+    });
+    it('enforces the daily memory budget at 500,000 tokens whatever is saved',async()=>{
+      expect([effectiveDailyBudget(10_000_000),effectiveDailyBudget(0),effectiveDailyBudget(100)]).toEqual([500_000,500_000,100]);
+      const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal,time=clock();
+      try {
+        memory.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:10_000_000});
+        expect(memory.settings(bot).daily_budget).toBe(10_000_000);
+        expect(memory.monitor(bot).settings.effective_daily_budget).toBe(500_000);
+        app.store.run('INSERT INTO assistant_usage(id,bot_id,purpose,model,status,reserved_tokens,input_tokens,output_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)','used',bot,'understanding','fixture','succeeded',2000,400_000,99_000,Date.now());
+        app.agents.publish(bot,'user','message','记住项目约束','m1');
+        await memory.flush();
+        expect(fake.requests).toHaveLength(0);
+        expect(memory.settings(bot).last_error).toContain('预算');
+        // Running out of the day's budget waits, but is not counted as the step's failure.
+        expect(state(app,bot,'retain')).toMatchObject({failures:0,next_at:time.start+10*MIN});
+        // Below the cap the same setting works.
+        app.store.run('DELETE FROM assistant_usage');
+        time.advance(11*MIN);await memory.flush();
+        expect(calls(fake,'retain')).toBe(1);
+      } finally {vi.useRealTimers();}
+    });
   });
 });
