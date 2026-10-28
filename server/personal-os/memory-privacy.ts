@@ -125,6 +125,8 @@ export class MemoryPrivacy {
         this.store.run("DELETE FROM memory_syntheses WHERE bot_id=?", bot);
         this.store.run('DELETE FROM context_checkpoints WHERE bot_id=?',bot);
         this.store.run('DELETE FROM assistant_working_notes WHERE bot_id=?',bot);
+        // Compaction failure records name entries of this assistant's runtimes.
+        this.store.run('DELETE FROM compaction_failures WHERE runtime_id IN (SELECT id FROM runtime_sessions WHERE bot_id=?)',bot);
         // Episode archives and their index are derived data like checkpoints: all of the reached assistant's go,
         // and with them every memory that rests on one.
         const archives=this.episodes.forgetBot(bot);

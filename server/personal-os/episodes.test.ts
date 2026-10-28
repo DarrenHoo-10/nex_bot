@@ -27,7 +27,7 @@ async function fixture(extra: Record<string, unknown> = {}) {
   app.store.saveConfig({ provider: 'openai', endpoint: fake.origin + '/v1', model: 'fixture-chat', apiKey: 'synthetic-only', contextWindow: 64000, maxOutputTokens: 4096, ...extra });
   const bot = app.store.createBot('合成个人助手'); clearInterval(app.runtime.memory.personal.timer);
   // Background maintenance would add summarizer calls of its own; these tests look at the turn path.
-  app.runtime.maintenanceDelay = 600_000;
+  app.runtime.maintenanceIdle = 600_000;
   const result = { root, fake, app, bot }; fixtures.push(result); return result;
 }
 async function wait(check: () => boolean, app: App, limit = 25000) {
@@ -65,6 +65,8 @@ const note = (app: App, bot: string) => app.store.get('SELECT * FROM assistant_w
 const post = (app: App, route: string, data: unknown, token = 'synthetic-token') => fetch(app.origin + '/api/agents/' + route, { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 /** The volatile reminder of a request: the one user message that carries it. */
 const volatileOf = (request: Record<string, unknown>) => String((request.messages as Wire).find(message => message.role === 'user' && String(message.content).includes('<system-reminder>'))?.content);
+// ~28,000 tokens: two of them in one conversation exceed the 51,200-token input budget of the 64,000-token window, which is what makes a turn reduce.
+const bulk = (label: string) => `${label} ` + '合成资料'.repeat(4700);
 const reply = (content: string) => ({ choices: [{ message: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
 /** One memory pump run (it waits 30 s between runs of the same assistant). */
 const pump = async (app: App) => { app.store.run('UPDATE assistant_memory_settings SET next_attempt=0'); await app.runtime.memory.personal.flush(); };
@@ -477,13 +479,13 @@ describe('Episode archives', () => {
   });
 
   describe('working note maintained by Core', () => {
-    // A tight working budget makes the second turn fold the first into a turn summary.
-    const folding = { contextBudget: 8000 };
+    // Two bulky turns exceed the input budget: the second turn folds the first into a turn summary.
+    const folding = {};
     const history = { choices: [{ message: { content: JSON.stringify({ workingNote: 'CORE-NOTE：沿用的约束', history: 'HISTORY-ONLY：旧回合摘要' }) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } };
     it('writes workingNote of a turn summary into the note (version + 1) and uses history as the summary', async () => {
       const f = await fixture(folding), { app, fake, bot } = f;
-      await turn(app, bot, 'NOTE-ONE：第一轮', 'note-1');
-      const task = await turn(app, bot, 'NOTE-TWO：第二轮', 'note-2');
+      await turn(app, bot, bulk('NOTE-ONE：第一轮'), 'note-1');
+      const task = await turn(app, bot, bulk('NOTE-TWO：第二轮'), 'note-2');
       const requests = historyRequests(fake);
       expect(requests.length).toBeGreaterThan(0);
       expect(note(app, bot)).toMatchObject({ content: 'Core 笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。', version: 1, task_id: task });
@@ -492,7 +494,7 @@ describe('Episode archives', () => {
       expect(episodes(app)).toHaveLength(0);
       // The next compaction is shown the current note, writes version 2 and keeps the model's other writes safe.
       expect(String(requests[0].messages && (requests[0].messages as Wire).at(-1)!.content)).toContain('"现有工作笔记":""');
-      await turn(app, bot, 'NOTE-THREE：第三轮', 'note-3');
+      await turn(app, bot, bulk('NOTE-THREE：第三轮'), 'note-3');
       const latest = historyRequests(fake).at(-1)!;
       expect(String((latest.messages as Wire).at(-1)!.content)).toContain('Core 笔记');
       expect(note(app, bot)).toMatchObject({ version: 2 });
@@ -504,13 +506,13 @@ describe('Episode archives', () => {
       const f = await fixture(folding), { app, fake, bot } = f;
       app.store.run('INSERT INTO assistant_working_notes(bot_id,content,task_id,version,updated_at) VALUES(?,?,?,?,?)', bot, 'EXISTING-NOTE', 'earlier-task', 3, 1);
       fake.setOverride(body => (!body.stream && instructionOf(body).includes('"workingNote"') && !instructionOf(body).includes('建立段落档案')) ? reply('PLAIN-SUMMARY：纯文本摘要，不是 JSON') : undefined);
-      await turn(app, bot, 'PLAIN-ONE：第一轮', 'plain-1');
-      const task = await turn(app, bot, 'PLAIN-TWO：第二轮', 'plain-2');
+      await turn(app, bot, bulk('PLAIN-ONE：第一轮'), 'plain-1');
+      const task = await turn(app, bot, bulk('PLAIN-TWO：第二轮'), 'plain-2');
       expect(String(app.store.get('SELECT summary FROM context_checkpoints WHERE task_id=?', task)!.summary)).toContain('PLAIN-SUMMARY：纯文本摘要，不是 JSON');
       expect(note(app, bot)).toMatchObject({ content: 'EXISTING-NOTE', version: 3, task_id: 'earlier-task' });
       // JSON without a history is not that shape either.
       fake.setOverride(body => (!body.stream && instructionOf(body).includes('"workingNote"') && !instructionOf(body).includes('建立段落档案')) ? reply(JSON.stringify({ workingNote: 'IGNORED', summary: 'x' })) : undefined);
-      const third = await turn(app, bot, 'PLAIN-THREE：第三轮', 'plain-3');
+      const third = await turn(app, bot, bulk('PLAIN-THREE：第三轮'), 'plain-3');
       expect(String(app.store.get('SELECT summary FROM context_checkpoints WHERE task_id=?', third)!.summary)).toContain('IGNORED');
       expect(note(app, bot)).toMatchObject({ content: 'EXISTING-NOTE', version: 3 });
     }, 120000);
@@ -519,7 +521,7 @@ describe('Episode archives', () => {
       const f = await fixture(folding), { app, fake, bot } = f;
       // The model's own write path through memory.write(scope=context) is unchanged.
       fake.scripts.push({ action: 'memory.write', args: { scope: 'context', title: '工作笔记', content: 'MODEL-NOTE-V1', expectedVersion: 0 } }, '第一轮完成');
-      const first = await turn(app, bot, 'CONFLICT-ONE：第一轮', 'conflict-1');
+      const first = await turn(app, bot, bulk('CONFLICT-ONE：第一轮'), 'conflict-1');
       expect(note(app, bot)).toMatchObject({ content: 'MODEL-NOTE-V1', version: 1, task_id: first });
       let writes = 0;
       fake.setOverride(body => {
@@ -529,13 +531,13 @@ describe('Episode archives', () => {
         app.store.run('UPDATE assistant_working_notes SET content=?,version=version+1,updated_at=? WHERE bot_id=?', 'MODEL-NOTE-V2', Date.now(), bot);
         return history;
       });
-      const second = await turn(app, bot, 'CONFLICT-TWO：第二轮', 'conflict-2');
+      const second = await turn(app, bot, bulk('CONFLICT-TWO：第二轮'), 'conflict-2');
       expect(writes).toBeGreaterThan(0);
       expect(note(app, bot)).toMatchObject({ content: 'MODEL-NOTE-V2', version: 2 });
       expect(String(app.store.get('SELECT summary FROM context_checkpoints WHERE task_id=?', second)!.summary)).toContain('HISTORY-ONLY：旧回合摘要');
       // Without a conflict Core's update lands with version + 1.
       fake.setOverride(undefined);
-      const third = await turn(app, bot, 'CONFLICT-THREE：第三轮', 'conflict-3');
+      const third = await turn(app, bot, bulk('CONFLICT-THREE：第三轮'), 'conflict-3');
       expect(note(app, bot)).toMatchObject({ version: 3, task_id: third });
       expect(String(note(app, bot)!.content)).toContain('Core 笔记');
     }, 120000);
@@ -543,8 +545,8 @@ describe('Episode archives', () => {
     it('does not create a note from an empty workingNote', async () => {
       const f = await fixture(folding), { app, fake, bot } = f;
       fake.setOverride(body => (!body.stream && instructionOf(body).includes('"workingNote"') && !instructionOf(body).includes('建立段落档案')) ? reply(JSON.stringify({ workingNote: '  ', history: 'EMPTY-NOTE-HISTORY' })) : undefined);
-      await turn(app, bot, 'EMPTY-ONE：第一轮', 'empty-1');
-      const task = await turn(app, bot, 'EMPTY-TWO：第二轮', 'empty-2');
+      await turn(app, bot, bulk('EMPTY-ONE：第一轮'), 'empty-1');
+      const task = await turn(app, bot, bulk('EMPTY-TWO：第二轮'), 'empty-2');
       expect(String(app.store.get('SELECT summary FROM context_checkpoints WHERE task_id=?', task)!.summary)).toContain('EMPTY-NOTE-HISTORY');
       expect(note(app, bot)).toBeUndefined();
     }, 120000);
@@ -554,12 +556,13 @@ describe('Episode archives', () => {
       const doc = app.runtime.memory.write(bot, { title: '长资料', content: 'DIGEST-BODY ' + '资料'.repeat(1500) });
       fake.scripts.push({ action: 'memory.read', args: { documentId: doc.documentId } }, '第一轮完成', '第二轮完成', '第三轮完成');
       await turn(app, bot, 'DIGEST-ONE：读取资料', 'digest-1');
-      await turn(app, bot, 'DIGEST-TWO：继续', 'digest-2');
-      await turn(app, bot, 'DIGEST-THREE：继续', 'digest-3');
+      await turn(app, bot, bulk('DIGEST-TWO：继续'), 'digest-2');
+      await turn(app, bot, bulk('DIGEST-THREE：继续'), 'digest-3');
       const digests = summarizers(fake).filter(request => !instructionOf(request).includes('"workingNote"'));
       expect(digests.length).toBeGreaterThan(0);
-      for (const request of digests) { expect(String((request.messages as Wire).at(-1)!.content)).not.toContain('现有工作笔记'); expect(instructionOf(request)).toContain('你整理连续对话'); }
-      expect(note(app, bot)).toBeUndefined();
+      for (const request of digests) { expect(String((request.messages as Wire).at(-1)!.content)).not.toContain('现有工作笔记'); expect(instructionOf(request)).toContain('只摘要这一个工具结果') }
+      // Only the turn summaries (JSON) touch the note; a digest never does, and it is never shown one.
+      expect(Number(note(app, bot)?.version ?? 0)).toBeLessThanOrEqual(historyRequests(fake).length);
     }, 120000);
   });
 
@@ -583,15 +586,16 @@ describe('Episode archives', () => {
     });
 
     it('sends every summarizer request to it: digests, turn summaries and episode archives', async () => {
-      const f = await fixture({ contextBudget: 8000 }), { app, fake, bot } = f;
-      configure(app, fake, { contextBudget: 8000 });
+      const f = await fixture(), { app, fake, bot } = f;
+      configure(app, fake);
       app.runtime.memory.personal.save(bot, { version: 0, enabled: false, model: 'fixture-memory' });
       const doc = app.runtime.memory.write(bot, { title: '长资料', content: 'TIDY-BODY ' + '资料'.repeat(1500) });
       fake.scripts.push({ action: 'memory.read', args: { documentId: doc.documentId } }, '第一轮完成', '第二轮完成', '第三轮完成', '第四轮完成');
       await turn(app, bot, 'TIDY-ONE：读取资料', 'tidy-1');
-      await turn(app, bot, 'TIDY-TWO：继续', 'tidy-2');
+      await turn(app, bot, bulk('TIDY-TWO：继续'), 'tidy-2');
+      await turn(app, bot, bulk('TIDY-THREE：继续'), 'tidy-3');
       advance(7 * HOUR);
-      await turn(app, bot, 'TIDY-THREE：新话题', 'tidy-3');
+      await turn(app, bot, 'TIDY-FOUR：新话题', 'tidy-4');
       const kinds = new Set(summarizers(fake).map(request => instructionOf(request).includes('建立段落档案') ? 'episode' : instructionOf(request).includes('"workingNote"') ? 'history' : 'digest'));
       expect(kinds).toEqual(new Set(['digest', 'history', 'episode']));
       for (const request of summarizers(fake)) expect(request.model).toBe('fixture-memory');
@@ -626,10 +630,10 @@ describe('Episode archives', () => {
 
   describe('archive requests', () => {
     it('reads the existing summary instead of the originals it covers, in window-sized batches', async () => {
-      const f = await fixture({ contextBudget: 8000 }), { app, fake, bot } = f;
-      // Two turns, the second folds the first into a turn summary ...
-      await turn(app, bot, 'REUSE-ONE：最早的内容', 'reuse-1');
-      await turn(app, bot, 'REUSE-TWO：随后的内容', 'reuse-2');
+      const f = await fixture(), { app, fake, bot } = f;
+      // Two bulky turns, the second folds the first into a turn summary ...
+      await turn(app, bot, bulk('REUSE-ONE：最早的内容'), 'reuse-1');
+      await turn(app, bot, bulk('REUSE-TWO：随后的内容'), 'reuse-2');
       expect(stored(app, bot).some(entry => entry.type === 'compaction')).toBe(true);
       // ... so the archive of the episode starts from that summary and reads only what came after it.
       advance(7 * HOUR);
@@ -642,7 +646,7 @@ describe('Episode archives', () => {
       expect(tokens(request.messages) + Number(request.max_tokens)).toBeLessThan(64000);
       const [episode] = episodes(app);
       // The first entry is the very first one of the episode, found through the summary's source range.
-      const first = stored(app, bot).find(entry => entry.type === 'custom_message' && entry.content === 'REUSE-ONE：最早的内容')!;
+      const first = stored(app, bot).find(entry => entry.type === 'custom_message' && String(entry.content).startsWith('REUSE-ONE：最早的内容'))!;
       expect(episode.first_entry).toBe(first.id);
     }, 180000);
 

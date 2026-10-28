@@ -7,7 +7,7 @@ import { modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
 import { brokerDescription, brokerParameters } from "./broker-tool.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
-import { CONTEXT_OVERHEAD, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryText, episodeStart, foldable, hygieneScope, imageCandidates, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, triggerLine } from './context-tools.ts';
+import { CONTEXT_OVERHEAD, OUTPUT_TRUNCATED, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryTarget, entryText, episodeStart, foldBlocked, foldable, historySource, hygieneScope, imageCandidates, rangeTarget, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, type SourceItem } from './context-tools.ts';
 import { applyRequestPrompt } from './request-prompt.ts';
 
 let session: AgentSession | undefined;
@@ -20,12 +20,17 @@ let purpose: "answer" | "compact" = "answer";
 let config: WorkerConfig;
 let manager: SessionManager;
 let started = false;
-// The turn-start digest of older tool results runs on the first model boundary of a worker only.
-let hygieneDone = false;
 // The episode boundary is closed at the first model boundary of a worker only.
 let episodeDone = false;
 // Set while a background maintenance run is reducing; a stop request aborts it.
 let maintenance: AbortController | undefined;
+// Set by a stop request or a disconnect: pending Core replies are rejected, which must not read as a failed summary.
+let stopped = false;
+type Folded = { summary: string; checkpoint: string; episode?: string };
+// Reduction targets Core is backing off from: skipped in the background; a request that does not fit tries each once more.
+let retryable = new Set<string>();
+// Targets that failed in this process: never tried again by it, whatever the path.
+const failedHere = new Set<string>();
 function send(event: WorkerEvent) { process.send?.(event); }
 function snapshot(): FileEntry[] {
   const header = manager.getHeader();
@@ -60,9 +65,16 @@ function toolContent(result: unknown): Array<{ type: "text"; text: string } | { 
   return [{ type: "text", text: JSON.stringify(images ? metadata : result) }, ...(images ?? []).filter((image) => ["image/png", "image/jpeg", "image/webp"].includes(image.mimeType) && typeof image.data === "string").map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }))];
 }
 /**
- * The reduction pipeline of one model boundary: turn-start digests of older tool results, then, when over
- * the trigger line, paging of oversized results, a turn summary and result summaries, down to the target.
- * Used by every answering request and, with maintain, by background maintenance (no input, no answer).
+ * The reduction pipeline of one model boundary. A request is reduced only when it does not fit (its count reaches
+ * the input budget H) or, for background maintenance, when the context is above the soft threshold S; at or
+ * below S nothing is ever summarized or digested. A reduction runs down to the target T = 0.4 × S in this order,
+ * and all its edits are made before the next model request, so the provider's cache is invalidated once:
+ * 1. large tool results of turns older than the latest completed one get individual digests, largest first;
+ * 2. if still above T, older history is folded into a summary (batched, carrying the previous summary);
+ * 3. old images become text markers (only as part of a reduction that happens anyway);
+ * 4. only for a request that still does not fit: results of earlier tool calls of the current turn.
+ * Oversized single results are paged. A failed step is skipped and the original stays: nothing here fails the turn;
+ * the caller refuses the request only if it still does not fit. Cancellation propagates.
  */
 async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
   // Re-project at EVERY model boundary, including tool continuations. The
@@ -78,19 +90,21 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
   // The volatile block is injected at the request boundary but still takes window space.
   const volatileTokens=tokens(config.volatilePrompt),promptTokens=tokens(config.systemPrompt)+volatileTokens;
   const count=()=>tokens(messages)+overhead+volatileTokens;
-  // The working budget, not the window, is the normal trigger: reduction starts at the budget and,
-  // once started, continues down to half of it (hysteresis) so it does not run on every turn.
-  // inputBudget stays the hard limit (window minus output room).
-  const limits=reductionLimits(config),{inputBudget,target,calibration,ceiling}=limits;
-  // Calibration scales only the count compared with the budget lines. Capacity checks
-  // (summarizer windows, paging budgets, the window check at fetch) stay on the raw count().
-  // A skewed receipt must never strand a request that only reduction could make sendable, so
-  // the raw count reaching 90% of the window starts reduction too and keeps it going.
-  // Background maintenance starts earlier, leaving room for the next turn's input.
-  const line=triggerLine(limits,maintain),over=()=>count()*calibration>=line||count()>=ceiling;
-  const above=()=>count()*calibration>target||count()>=ceiling;
-  // Only a request that cannot fit the input budget is an error; missing the working target is not.
-  const unfit=()=>count()*calibration>=inputBudget||count()>=ceiling;
+  // Lines: inputBudget H is the hard limit, soft S the compaction threshold, target T = 0.4 × S.
+  const limits=reductionLimits(config),{inputBudget,soft,target,calibration,ceiling}=limits;
+  // Calibration scales the count compared with those lines. Capacity checks (summarizer windows, paging
+  // budgets, the window check at fetch) stay on the raw count(). A skewed receipt must never strand a request
+  // that only reduction could make sendable, so the raw count reaching 90% of the window counts as over H.
+  const level=()=>count()*calibration;
+  const unfit=()=>level()>=inputBudget||count()>=ceiling;
+  const aboveTarget=()=>level()>target||count()>=ceiling;
+  const aboveSoft=()=>level()>soft||count()>=ceiling;
+  const cancelled=()=>!!signal?.aborted||stopped;
+  // A target Core is backing off from waits for the background; a request that does not fit tries it once more.
+  const skip=(name:string)=>failedHere.has(name)||(maintain&&retryable.has(name));
+  const refresh=()=>{messages=clean(manager.buildSessionContext().messages);};
+  const save=async()=>{await rpc({type:'snapshot',entries:snapshot()});refresh();};
+  const guard=async(step:()=>Promise<void>)=>{try{await step();}catch(error){if(cancelled())throw error;}};
   // The summarizer shares this window and needs room for its instruction and
   // output. Every compact request targets half of it; the carried summary and
   // a single capped item can still exceed that softly without reaching the limit.
@@ -111,33 +125,45 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
     const content=[{type:'text' as const,text:`工具结果摘要（${message.isError?'失败':'完成'}），原文 entry:${entry.id}：\n${result.summary}`}];
     if(tokens(content)<tokens(message.content))manager.appendContextEdit(entry.id,{content});
   };
-  type SourceItem={ref:string;role:string;content:unknown};
-  type Folded={summary:string;checkpoint:string;episode?:string};
-  // What the summarizer reads for a run of context entries: inputs, a leading summary and the projected
-  // messages. It reads text; image bytes stay in the original entry.
-  const sourceOf=(earlier:FileEntry[])=>{
-    const textOnly=(content:unknown)=>Array.isArray(content)?content.map(part=>isImagePart(part)?{type:'text',text:'[图片]'}:part):content;
-    const projection=new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages]));
-    return earlier.flatMap<SourceItem>((entry,index)=>{
-      const ref=`entry:${entry.id}`;
-      if(entry.type==='custom_message')return [{ref,role:'user',content:textOnly(entry.content)}];
-      if(entry.type==='compaction'&&index===0)return [{ref,role:'summary',content:entry.summary}];
-      if(entry.type==='message'&&entry.message.role!=='system')return (projection.get(entry.id)??[]).map(message=>({ref,role:message.role,content:'content' in message?textOnly(message.content):JSON.stringify(message)}));
-      return [];
-    });
+  // attachment.read results carry the attachment only in the call; other images have no durable id.
+  const imageMarkers=(items:ReturnType<typeof manager.buildSessionProjection>['entries'])=>{
+    const calls=new Map<string,Record<string,unknown>>();
+    for(const item of items)for(const message of item.messages)if(message.role==='assistant')for(const part of message.content)if(part.type==='toolCall')calls.set(part.id,part.arguments);
+    return (toolCallId:string)=>{const call=calls.get(toolCallId),id=call?.action==='attachment.read'?call.attachmentId:undefined;return typeof id==='string'&&id?`[图片 attachment:${id}]`:'[图片]';};
   };
+  const projectionOf=()=>new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages]));
   // Summarize in tidy-model-window-sized batches, carrying the running summary forward; an item too large
   // for any batch is cut with its reference. The last request has the given kind (an episode archive is
   // produced by the final request, which reads the running summary instead of re-reading earlier batches).
+  // A batch's output cap grows with its input; a batch whose summary hits the cap is split in half and retried once.
+  // If that fails too the whole fold fails and the caller installs nothing: no partial compaction.
   const foldBatches=async(source:SourceItem[],finalKind:'history'|'episode',episode?:WorkerEvent['episode'])=>{
     const items=source.map(item=>tokens(item)<=itemBudget?item:{...item,content:JSON.stringify(item.content).slice(0,Math.floor(itemBudget/1.5))+`…[已截断，原文 ${item.ref}]`});
+    const firstEntry=items[0]?.ref.slice(6);
+    const carried=(done:Folded):SourceItem=>({ref:`checkpoint:${done.checkpoint}`,role:'summary',content:done.summary});
+    // One request for the items [from,to) after the carried summary. The failure is remembered by its range.
+    const request=async(carry:Folded|undefined,from:number,to:number,kind:'history'|'episode')=>{
+      const batch:SourceItem[]=[...(carry?[carried(carry)]:[]),...items.slice(from,to)];
+      try{
+        return await rpc({type:'compact',summaryKind:kind,...(kind==='episode'&&episode?{episode}:{}),entries:snapshot(),inputs:[...projected],text:JSON.stringify(batch),firstEntry,lastEntry:items[to-1].ref.slice(6),contextTokens:count(),summaryMaxTokens:Math.min(8192,Math.max(2048,Math.ceil(tokens(batch)*.1)))}) as Folded;
+      }catch(error){
+        if(!cancelled())failedHere.add(rangeTarget(firstEntry!,items[to-1].ref.slice(6)));
+        throw error;
+      }
+    };
     let result:Folded|undefined;
     for(let start=0;start<items.length;){
-      const batch:SourceItem[]=result?[{ref:`checkpoint:${result.checkpoint}`,role:'summary',content:result.summary}]:[];
-      let size=tokens(batch),end=start;
-      while(end<items.length&&(end===start||size+tokens(items[end])<=summaryBudget)){size+=tokens(items[end]);batch.push(items[end++]);}
-      const last=end>=items.length;
-      result=await rpc({type:'compact',summaryKind:last?finalKind:'history',...(last&&episode?{episode}:{}),entries:snapshot(),inputs:[...projected],text:JSON.stringify(batch),firstEntry:items[0].ref.slice(6),lastEntry:items[end-1].ref.slice(6),contextTokens:count()}) as Folded;
+      const carry=result?tokens(carried(result)):0;
+      let size=carry,end=start;
+      while(end<items.length&&(end===start||size+tokens(items[end])<=summaryBudget)){size+=tokens(items[end]);end++;}
+      const kind=end>=items.length?finalKind:'history';
+      try{result=await request(result,start,end,kind);}
+      catch(error){
+        if(cancelled()||!(error instanceof Error)||error.message!==OUTPUT_TRUNCATED||end-start<2)throw error;
+        const middle=start+Math.ceil((end-start)/2),half=await request(result,start,middle,'history');
+        if(signal?.aborted)throw new Error('压缩已取消');
+        result=await request(half,middle,end,kind);
+      }
       if(signal?.aborted)throw new Error('压缩已取消');
       start=end;
     }
@@ -156,72 +182,53 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
       const opening=manager.getBranch().find(entry=>entry.type==='custom_message'&&entry.customType==='nex.input'&&(entry.details as {inputId?:string}|undefined)?.inputId===config.episode!.inputId);
       if(!opening)return;
       const entries=manager.buildContextEntries(),index=entries.findIndex(entry=>entry.id===opening.id),earlier=entries.slice(0,Math.max(index,0));
-      if(index<=0||!foldable(earlier,new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages]))))return;
-      const source=sourceOf(earlier);
-      if(!source.length)return;
+      if(index<=0||!foldable(earlier,projectionOf()))return;
+      const source=historySource(earlier,projectionOf());
+      // An archive is not held back by the backoff of a history fold that happens to start at the same entry.
+      if(!source.length||foldBlocked(source,failedHere))return;
       const time=(entry:FileEntry|undefined)=>{const value=entry&&entry.type!=='session'?Date.parse(entry.timestamp):NaN;return Number.isFinite(value)?value:Date.now();};
       const all=snapshot(),firstId=episodeStart(all,earlier[0]);
       const result=await foldBatches(source,'episode',{firstEntry:firstId,lastEntry:earlier.at(-1)!.id,startedAt:time(all.find(entry=>entry.type!=='session'&&entry.id===firstId)),endedAt:time(earlier.at(-1))});
       manager.appendCompaction(result.summary,opening.id,count(),{checkpoint:result.checkpoint,sourceFirst:earlier[0].id,sourceLast:earlier.at(-1)!.id,episode:result.episode});
-      await rpc({type:'snapshot',entries:snapshot()});
-      messages=clean(manager.buildSessionContext().messages);
+      await save();
     }catch(error){
-      if(signal?.aborted)throw error;
+      if(cancelled())throw error;
     }
   };
-  await closeEpisode();
-  // Steady-state hygiene, independent of budget pressure: when a new turn starts, results of turns
-  // older than the latest completed one no longer sit in context in full. Large bodies get their own
-  // summary and images become text markers; originals stay retrievable as entry:<id>. The current
-  // turn and the latest completed turn (for follow-ups such as "continue comparing that list") are kept.
-  // A maintenance run has no input of its own and keeps the latest completed turn, as the next turn will.
-  if(!hygieneDone){
-    hygieneDone=true;
-    const items=manager.buildSessionProjection().entries,older=hygieneScope(items,maintain);
-    if(older){
-      const edited=editedTargets(manager.getBranch());
-      const calls=new Map<string,Record<string,unknown>>();
-      for(const item of items)for(const message of item.messages)if(message.role==='assistant')for(const part of message.content)if(part.type==='toolCall')calls.set(part.id,part.arguments);
-      // attachment.read results carry the attachment only in the call; other images have no durable id.
-      const imageMarker=(toolCallId:string)=>{const call=calls.get(toolCallId),id=call?.action==='attachment.read'?call.attachmentId:undefined;return typeof id==='string'&&id?`[图片 attachment:${id}]`:'[图片]';};
-      let changed=false;
-      try{
-        for(const item of digestCandidates(items,older,edited)){
-          const entry=item.sourceEntry,message=item.messages[0];
-          if(message?.role!=='toolResult')continue;
-          const before=manager.getBranch().length;
-          await summarizeResult(entry,message,imageMarker(message.toolCallId));
-          if(manager.getBranch().length!==before){changed=true;await rpc({type:'snapshot',entries:snapshot()});}
-        }
-      }catch(error){
-        // A failed digest must not fail the user's turn; originals stay and pressure handling reports real problems.
-        if(signal?.aborted)throw error;
-      }
-      for(const item of imageCandidates(manager.buildSessionProjection().entries,older)){
-        const entry=item.sourceEntry,message=item.messages[0];
-        if(!message||(message.role!=='user'&&message.role!=='toolResult'&&message.role!=='custom')||!Array.isArray(message.content))continue;
-        const marker=message.role==='toolResult'?imageMarker(message.toolCallId):'[图片]';
-        manager.appendContextEdit(entry.id,{content:message.content.map(part=>isImagePart(part)?{type:'text' as const,text:marker}:part) as never});
-        changed=true;
-      }
-      if(changed){await rpc({type:'snapshot',entries:snapshot()});messages=clean(manager.buildSessionContext().messages);}
-    }
-  }
-  // Decided once per call: a reduction that starts runs every stage down to the target.
-  const reducing=over();
-  if(reducing){
-    // A single oversized text result cannot be sent to the summarizer either.
-    // Page only when under pressure and unable to fit, keeping the raw entry.
+  // 0. A single oversized text result cannot be sent to the summarizer either: page it, keeping the raw entry.
+  const pageOversized=async()=>{
     const resultBudget=inputBudget-overhead-promptTokens-tokens(brokerParameters)-tokens(brokerDescription)-4096;
+    let paged=false;
     for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
       const message=projectedMessages[0];
       if(sourceEntry.type!=='message'||message?.role!=='toolResult'||tokens(message.content)<=resultBudget)continue;
-      page(sourceEntry);
+      page(sourceEntry);paged=true;
     }
-    await rpc({type:'snapshot',entries:snapshot()});
-    messages=clean(manager.buildSessionContext().messages);
-  }
-  if(reducing&&above()){
+    if(paged)await save();
+  };
+  // 1. Individual digests of large results of turns older than the latest completed one (it and the current turn
+  // stay complete: "continue comparing that list" needs the detail). A maintenance run has no input of its own
+  // and keeps the latest completed turn, as the next turn will.
+  const digestOlder=async()=>{
+    const items=manager.buildSessionProjection().entries,older=hygieneScope(items,maintain);
+    if(!older)return;
+    const marker=imageMarkers(items);
+    for(const item of digestCandidates(items,older,editedTargets(manager.getBranch()),skip)){
+      if(!aboveTarget())break;
+      const entry=item.sourceEntry,message=item.messages[0];
+      if(message?.role!=='toolResult')continue;
+      const before=manager.getBranch().length;
+      try{
+        await summarizeResult(entry,message,marker(message.toolCallId));
+        if(manager.getBranch().length!==before)await save();
+      }catch(error){
+        if(cancelled())throw error;
+        failedHere.add(entryTarget(entry.id));
+      }
+    }
+  };
+  // 2. Older history folded into a summary at a turn boundary.
+  const foldHistory=async()=>{
     const entries=manager.buildContextEntries();
     // Use the same conservative estimator for both trigger and retained tail.
     // Cuts are only at user turns, never between a tool call and its result.
@@ -229,49 +236,71 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
     const first=entries[index];
     const earlier=entries.slice(0,index);
     // A leading summary alone is not folded into a summary of itself.
-    if(first && foldable(earlier,new Map(manager.buildSessionProjection().entries.map(item=>[item.sourceEntry.id,item.messages])))){
-      // A backlog (for example, history accepted under earlier projection
-      // rules) can far exceed the window. Dominant tool bodies get their own
-      // summaries first so the turn summary keeps the rest of the history.
-      const edited=new Set(manager.getBranch().flatMap(entry=>entry.type==='context_edit'?[entry.targetId]:[]));
-      const before=new Set(earlier.map(entry=>entry.id));
-      for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
-        const message=projectedMessages[0];
-        if(!before.has(sourceEntry.id)||sourceEntry.type!=='message'||message?.role!=='toolResult'||edited.has(sourceEntry.id)||tokens(message.content)<=summaryBudget/4)continue;
-        await summarizeResult(sourceEntry,message);
-        await rpc({type:'snapshot',entries:snapshot()});
-      }
-      messages=clean(manager.buildSessionContext().messages);
-      const source=sourceOf(earlier);
-      // Core persists source snapshot and checkpoint before the worker changes
-      // projection. Failure leaves the preceding projection intact.
-      if(source.length){
-        const result=await foldBatches(source,'history');
-        manager.appendCompaction(result.summary,first.id,count(),{checkpoint:result.checkpoint,sourceFirst:earlier[0].id,sourceLast:earlier.at(-1)!.id});
-        await rpc({type:'snapshot',entries:snapshot()});
-        messages=clean(manager.buildSessionContext().messages);
-      }
+    if(!first||!foldable(earlier,projectionOf()))return;
+    if(foldBlocked(historySource(earlier,projectionOf()),maintain?[...retryable,...failedHere]:failedHere))return;
+    // A backlog (for example, history accepted under earlier projection
+    // rules) can far exceed the window. Dominant tool bodies get their own
+    // summaries first so the turn summary keeps the rest of the history.
+    const edited=editedTargets(manager.getBranch());
+    const before=new Set(earlier.map(entry=>entry.id));
+    for(const {sourceEntry,messages:projectedMessages} of manager.buildSessionProjection().entries){
+      const message=projectedMessages[0];
+      if(!before.has(sourceEntry.id)||sourceEntry.type!=='message'||message?.role!=='toolResult'||edited.has(sourceEntry.id)||tokens(message.content)<=summaryBudget/4||skip(entryTarget(sourceEntry.id)))continue;
+      try{await summarizeResult(sourceEntry,message);await save();}
+      catch(error){if(cancelled())throw error;failedHere.add(entryTarget(sourceEntry.id));}
     }
-  }
-  if(reducing&&above()){
-    // Preserve the user's exact inputs, the newest tool-call group, and any
-    // explicitly retrieved originals in this turn. Only older result bodies
-    // become useful summaries; their call/result metadata remains paired.
+    const source=historySource(earlier,projectionOf());
+    // Core persists source snapshot and checkpoint before the worker changes
+    // projection. Failure leaves the preceding projection intact.
+    if(!source.length)return;
+    const result=await foldBatches(source,'history');
+    manager.appendCompaction(result.summary,first.id,count(),{checkpoint:result.checkpoint,sourceFirst:earlier[0].id,sourceLast:earlier.at(-1)!.id});
+    await save();
+  };
+  // 3. Images of older turns become text markers; the original entries keep the bytes.
+  const markOldImages=async()=>{
+    const items=manager.buildSessionProjection().entries,older=hygieneScope(items,maintain);
+    if(!older)return;
+    const marker=imageMarkers(items);
+    let changed=false;
+    for(const item of imageCandidates(items,older)){
+      const entry=item.sourceEntry,message=item.messages[0];
+      if(!message||(message.role!=='user'&&message.role!=='toolResult'&&message.role!=='custom')||!Array.isArray(message.content))continue;
+      const text=message.role==='toolResult'?marker(message.toolCallId):'[图片]';
+      manager.appendContextEdit(entry.id,{content:message.content.map(part=>isImagePart(part)?{type:'text' as const,text}:part) as never});
+      changed=true;
+    }
+    if(changed)await save();
+  };
+  // 4. Last resort for a request that still does not fit: preserve the user's exact inputs, the newest
+  // tool-call group, and any explicitly retrieved originals in this turn. Only older result bodies
+  // become useful summaries; their call/result metadata remains paired.
+  const trimCurrentTurn=async()=>{
     const projectedEntries=manager.buildSessionProjection().entries;
     const latestCall=projectedEntries.findLast(item=>item.messages.some(message=>message.role==='assistant'&&message.content.some(part=>part.type==='toolCall')));
     const latestIndex=latestCall?projectedEntries.indexOf(latestCall):projectedEntries.length;
     const turnStart=projectedEntries.findLastIndex(item=>item.sourceEntry.type==='custom_message'&&item.sourceEntry.customType==='nex.input'||item.messages.some(message=>message.role==='user'));
-    const edited=new Set(manager.getBranch().flatMap(entry=>entry.type==='context_edit'?[entry.targetId]:[]));
+    const edited=editedTargets(manager.getBranch());
     const retrieved=new Set(projectedEntries.slice(turnStart+1).flatMap(item=>item.messages.flatMap(message=>message.role==='assistant'?message.content.flatMap(part=>part.type==='toolCall'&&part.arguments.action==='memory.search'&&String(part.arguments.query).startsWith('entry:')?[part.id]:[]):[])));
-    for(const item of projectedEntries.slice(0,maintain?Math.min(latestIndex,Math.max(turnStart,0)):latestIndex)){
-      if(!above())break;
+    for(const item of projectedEntries.slice(0,latestIndex)){
+      if(!aboveTarget())break;
       const entry=item.sourceEntry,message=item.messages[0];
-      if(entry.type!=='message'||message?.role!=='toolResult'||edited.has(entry.id)||retrieved.has(message.toolCallId)||tokens(message.content)<2048)continue;
-      await summarizeResult(entry,message);
-      await rpc({type:'snapshot',entries:snapshot()});
-      messages=clean(manager.buildSessionContext().messages);
+      if(entry.type!=='message'||message?.role!=='toolResult'||edited.has(entry.id)||retrieved.has(message.toolCallId)||tokens(message.content)<2048||skip(entryTarget(entry.id)))continue;
+      try{await summarizeResult(entry,message);await save();}
+      catch(error){if(cancelled())throw error;failedHere.add(entryTarget(entry.id));}
     }
+  };
+  await closeEpisode();
+  // Decided once per call: a reduction that starts runs every stage down to the target.
+  // A request is reduced only when it does not fit; maintenance only when the context is above the soft threshold.
+  if(maintain?aboveSoft():unfit()){
+    await guard(pageOversized);
+    await guard(digestOlder);
+    if(aboveTarget())await guard(foldHistory);
+    await guard(markOldImages);
+    if(!maintain&&unfit())await guard(trimCurrentTurn);
   }
+  refresh();
   return {messages,count,unfit,calibration,inputBudget};
 }
 // Background maintenance: the reduction a turn would start with, run ahead of the turn.
@@ -284,6 +313,7 @@ async function runMaintenance(){
 
 async function main(value: WorkerConfig) {
   config = value;
+  retryable = new Set(config.blocked ?? []);
   mkdirSync(config.dir, { recursive: true });
   const cwd = path.join(config.dir, "work"), agentDir = path.join(config.dir, "pi");
   mkdirSync(cwd, { recursive: true }); mkdirSync(agentDir, { recursive: true });
@@ -342,10 +372,19 @@ async function main(value: WorkerConfig) {
   const transform=session.agent.transformContext;
   session.agent.transformContext=async (_messages,signal)=>{
     const state=await reduceContext(signal,false);
-    // Only a request that cannot fit the input budget is an error; missing the working target is not.
+    // Only a request that cannot fit the input budget is an error: after the reductions that could be made
+    // (failed ones are skipped and leave their originals), or when there was nothing to reduce. Being above the
+    // soft threshold or the target is not.
     if(state.unfit())throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${state.count()}${state.calibration===1?'':`，校准后 ${Math.round(state.count()*state.calibration)}`} / ${state.inputBudget} Token）。原文已保留，请分段读取或增大模型窗口。`);
     return transform?transform(state.messages,signal):state.messages;
   };
+  // Anthropic prompt caching: ask for the 1 h tier (cache_control ttl "1h" on the system prompt, the history and the
+  // tools) so a conversation that comes back within the idle window of background maintenance still hits the cache.
+  // The SDK reads this from the request options (or, only as a fallback, from PI_CACHE_RETENTION); other protocols have no marker to set.
+  if (config.provider === "anthropic") {
+    const stream = session.agent.streamFunction;
+    session.agent.streamFunction = (requestModel, context, options) => stream(requestModel, context, { ...options, cacheRetention: "long" });
+  }
   session.subscribe((event) => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") send({ type: "delta", text: event.assistantMessageEvent.delta });
     if (event.type === "message_end" && event.message.role === "assistant") {
@@ -428,6 +467,6 @@ process.on("message", (message: WorkerReply) => {
     if (message.error) pending?.reject(new Error(message.error)); else pending?.resolve(message.result);
   }
   if (message.type === "steer" && message.input) project(message.input, true);
-  if (message.type === "stop") { session?.agent.abort(); maintenance?.abort(); for (const p of replies.values()) p.reject(new Error("Cancelled")); }
+  if (message.type === "stop") { stopped = true; session?.agent.abort(); maintenance?.abort(); for (const p of replies.values()) p.reject(new Error("Cancelled")); }
 });
-process.once("disconnect", () => { session?.agent.abort(); maintenance?.abort(); for (const p of replies.values()) p.reject(new Error("Core disconnected")); process.exit(0); });
+process.once("disconnect", () => { stopped = true; session?.agent.abort(); maintenance?.abort(); for (const p of replies.values()) p.reject(new Error("Core disconnected")); process.exit(0); });

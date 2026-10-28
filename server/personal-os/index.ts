@@ -508,6 +508,7 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.memory.ledger.start();
   runtime.memory.personal.start();
   runtime.startRecovered();
+  runtime.scheduleStartupMaintenance();
   routines.start();
   let archiveJob: Promise<unknown> | undefined;
   const archive = () => {

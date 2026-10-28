@@ -339,6 +339,12 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.db.exec(this.all("PRAGMA table_info(assistant_memory_settings)").some((column) => column.name === "episode_cursor") ? episodeSchema.replace("ALTER TABLE assistant_memory_settings ADD COLUMN episode_cursor INTEGER NOT NULL DEFAULT 0;\n", "") : episodeSchema);
       this.insert("schema_migrations", { version: 29, checksum: hash(episodeSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=30")) this.transaction(() => {
+      // Compaction targets (a tool result, or the range of a history batch) whose summary failed, with the retry backoff; see compaction-failures.ts.
+      const schema = "CREATE TABLE IF NOT EXISTS compaction_failures(runtime_id TEXT NOT NULL,target TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL,last_error TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(runtime_id,target)) STRICT;";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 30, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
