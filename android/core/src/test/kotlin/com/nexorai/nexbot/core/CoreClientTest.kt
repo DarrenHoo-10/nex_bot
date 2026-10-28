@@ -10,6 +10,7 @@ import org.junit.Before
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -141,6 +142,36 @@ class CoreClientTest {
         assertTrue(body.contains("\"id\":\"bot-1\""))
         assertTrue(body.contains("\"mode\":\"full\""))
         assertTrue(body.contains("\"version\":3"))
+    }
+
+    @Test
+    fun `a new topic posts only the bot id and returns marked`() = runBlocking {
+        server.enqueue(json("""{"marked":true}"""))
+        server.enqueue(json("""{"marked":false}"""))
+        server.enqueue(json("""{"ok":true}"""))
+        client.useToken("tok")
+        assertTrue(client.newTopic("bot-1"))
+        val recorded = server.takeRequest()
+        assertEquals("POST", recorded.method)
+        assertEquals("/api/agents/topic", recorded.path)
+        assertEquals("""{"botId":"bot-1"}""", recorded.body.readUtf8())
+        assertEquals("Bearer tok", recorded.getHeader("Authorization"))
+        assertFalse(client.newTopic("bot-1"))
+        assertFalse(client.newTopic("bot-1"), "a reply without marked counts as not marked")
+    }
+
+    @Test
+    fun `a new topic while the conversation works surfaces Core's refusal`() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(400)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"error":"请等待当前任务结束后再开启新话题"}"""),
+        )
+        val failure = assertFailsWith<CoreException> { client.newTopic("bot-1") }
+        assertEquals(400, failure.status)
+        assertEquals("请等待当前任务结束后再开启新话题", failure.message)
+        assertEquals(1, server.requestCount)
     }
 
     @Test

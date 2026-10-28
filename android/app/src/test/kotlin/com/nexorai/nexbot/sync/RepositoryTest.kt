@@ -2,6 +2,7 @@ package com.nexorai.nexbot.sync
 
 import com.nexorai.nexbot.core.ApprovalRow
 import com.nexorai.nexbot.core.CoreClient
+import com.nexorai.nexbot.core.CoreException
 import com.nexorai.nexbot.data.ConnectionStore
 import com.nexorai.nexbot.data.StoredConnection
 import com.nexorai.nexbot.notifications.Notifier
@@ -24,6 +25,7 @@ import org.junit.After
 import org.junit.Before
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -264,6 +266,35 @@ class RepositoryTest {
         }
         assertNotNull(ids[0])
         assertEquals(ids[0], ids[1])
+        repo.close()
+    }
+
+    @Test
+    fun `a new topic posts the selected bot and passes Core's refusal on`() = runBlocking {
+        val repo = readyRepo()
+        fixture.enqueue(json(messagesBody(listOf(message("m1", 1, "assistant", "hello")))))
+        fixture.enqueue(json(stateBody(bots = listOf(bot("bot-1", "Ada")))))
+        fixture.enqueue(json(messagesBody(emptyList())))
+        repo.selectBot("bot-1")
+        await(repo) { it.messages.size == 1 }
+        delay(300)
+        drainRequests()
+
+        fixture.enqueue(json("""{"marked":true}"""))
+        assertTrue(repo.startNewTopic())
+        val request = requestsFor("/api/agents/topic").single()
+        assertEquals("""{"botId":"bot-1"}""", request.body.readUtf8())
+        delay(300)
+        drainRequests()
+
+        fixture.enqueue(
+            MockResponse()
+                .setResponseCode(400)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"error":"请等待当前任务结束后再开启新话题"}"""),
+        )
+        val failure = assertFailsWith<CoreException> { repo.startNewTopic() }
+        assertEquals("请等待当前任务结束后再开启新话题", failure.message)
         repo.close()
     }
 

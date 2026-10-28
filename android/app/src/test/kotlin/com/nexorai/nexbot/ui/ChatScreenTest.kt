@@ -1,6 +1,8 @@
 package com.nexorai.nexbot.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -74,6 +76,16 @@ class ChatScreenTest {
         compose.onNodeWithText("标准权限").assertIsDisplayed()
         compose.onNodeWithContentDescription("添加").performClick()
         compose.onNodeWithText("文件").assertIsDisplayed()
+        compose.onNodeWithText("新话题").assertIsDisplayed().assertIsEnabled()
         compose.onNodeWithText("导出对话").assertIsDisplayed()
+    }
+
+    @Test
+    fun `new topic is unavailable on an empty conversation`() {
+        val repository = Repository(store = MemoryStore())
+        compose.setContent { NexTheme { ChatScreen(state().copy(messages = emptyList(), approvals = emptyList()), repository) } }
+
+        compose.onNodeWithContentDescription("添加").performClick()
+        compose.onNodeWithText("新话题").assertIsNotEnabled()
     }
 }
