@@ -9,6 +9,7 @@ import { ModelPicker } from "./components/ModelPicker";
 import { ModelVisibility } from "./ModelVisibility";
 import { MemoryDashboard } from './MemoryDashboard';
 import { ImageModelSettings } from './ImageModelSettings';
+import { RetrievalSettings } from './RetrievalSettings';
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
   const [pending, setPending] = useState(false);
@@ -42,6 +43,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
           <div className="preferences-panel-heading"><h2>模型</h2></div>
           <ModelSettings state={state} run={run} refresh={refresh} active={category === "model"}/>
           <ImageModelSettings key={JSON.stringify(["image", state.config?.provider_id, state.config?.endpoint])} state={state} refresh={refresh} active={category === "model"}/>
+          <RetrievalSettings active={category === "model"}/>
         </section>
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="长期记忆" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>长期记忆</h2></div>

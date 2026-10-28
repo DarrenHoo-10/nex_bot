@@ -15,6 +15,8 @@
 .rk-workspace .preferences-section { padding: 25px 0; margin: 0; border: 0; border-bottom: 1px solid var(--input); border-radius: 0; background: transparent; box-shadow: none; }
 .rk-workspace .preferences-section:last-child { border-bottom: 0; }
 .rk-workspace .preferences-page h3 { font-size: 14px; line-height: 1.5; margin: 0; font-weight: 600; }
+.rk-workspace .preferences-page h4 { font-size: 13px; line-height: 1.5; margin: 0; font-weight: 600; }
+.retrieval-model + .retrieval-model { margin-top: 30px; }
 .preferences-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .rk-workspace .preferences-status { display: inline-flex; padding: 4px 8px; border-radius: 6px; background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-weight: 500; white-space: nowrap; }
 .rk-workspace .preferences-description { margin: 10px 0 18px; color: var(--muted-foreground); font-size: 12px; line-height: 1.8; }
