@@ -10,11 +10,17 @@ struct MainView: View {
     @Environment(\.colorScheme) private var scheme
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
 
+    private static let panel = RoundedRectangle(cornerRadius: 22, style: .continuous)
+    private var panelOpen: Bool {
+        ui.inspectorVisible && workspace.selectedBotID.map { workspace.bot($0) != nil } == true
+    }
+
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 14) {
             ContactsList(workspace: workspace)
-                .frame(width: 260)
-            Hairline(vertical: true)
+                .frame(width: ui.railOpen ? 252 : 74)
+                .clipShape(Self.panel)
+                .glass(Self.panel)
             VStack(spacing: 0) {
                 UpdateBanner()
                 NoticeBanner(workspace: workspace)
@@ -27,19 +33,19 @@ struct MainView: View {
                     }
                 }
             }
-            .frame(minWidth: 380, maxWidth: .infinity)
-            if ui.inspectorVisible, let id = workspace.selectedBotID, workspace.bot(id) != nil {
-                Hairline(vertical: true)
+            .frame(minWidth: 340, maxWidth: .infinity)
+            if panelOpen, let id = workspace.selectedBotID {
                 InspectorView(workspace: workspace, botID: id)
-                    .frame(width: 310)
+                    .frame(width: 296)
+                    .clipShape(Self.panel)
+                    .glass(Self.panel)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .background { WorkspaceSurface(kind: .reading) }
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.border.opacity(0.8)))
-        .shadow(color: .black.opacity(0.09), radius: 24, y: 10)
-        .padding(16)
+        .padding(14)
         .background { WorkspaceSurface(kind: .stage) }
+        .animation(.timingCurve(0.3, 0.7, 0.2, 1, duration: 0.36), value: ui.railOpen)
+        .animation(.timingCurve(0.3, 0.7, 0.2, 1, duration: 0.36), value: panelOpen)
         .ignoresSafeArea(.container, edges: .top)
         .overlay { if ui.accountMenuOpen { accountMenuLayer } }
         .animation(.easeOut(duration: 0.15), value: ui.accountMenuOpen)
@@ -90,11 +96,10 @@ struct NoticeBanner: View {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text(notice).font(.system(size: 12)).foregroundStyle(Theme.muted)
-                Spacer()
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(Theme.secondary)
-            .overlay(alignment: .bottom) { Hairline() }
+            .padding(.horizontal, 16).padding(.vertical, 7)
+            .glass(Capsule(), strong: true, lift: .card)
+            .padding(.bottom, 8)
             .accessibilityIdentifier("connection-notice")
         }
     }
@@ -107,7 +112,7 @@ func message(of error: Error) -> String {
 
 #if DEBUG
 /// DEBUG-only automation: when NEXBOT_DEBUG_COMMAND_FILE is set, the file is polled and consumed line by line.
-/// Commands: `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector [work|settings]` (no argument toggles the column), `logout` (opens the confirmation), `attach <path>[|<path>...]`, `unattach`, `addmenu`, `permmenu`, `modelmenu`, `closemenu`, `setmodel <id|->`, `mode full|standard`, `export <path>`, `download <id>|<path>`, `state` (results in `$NEXBOT_DEBUG_COMMAND_FILE.b.log`; the model pane takes `md limits|setlimits ctx|out|lookup|open|list`, the model list `mp search <q>|down|up|home|end|return|pick <id>|state`, the visibility editor `mv ...` and the memory pane `mm on|off|toggle|open|pick <id>|state` on `.b`), `search <text>` (sidebar field), `searchopen <text>|<n>`, `latest`, `accountmenu`, `settings [account|model|memory|connectors|devices]`, `dark`, `light`, `system`.
+/// Commands: `rail [open|close]` (the left sidebar; no argument toggles it), `snapshot <path>` (the main window as PNG), `window <width> <height>`, `select <agent name>`, `send <text>`, `approve`, `deny`, `stop`, `inspector [work|settings]` (no argument toggles the column), `logout` (opens the confirmation), `attach <path>[|<path>...]`, `unattach`, `addmenu`, `permmenu`, `modelmenu`, `closemenu`, `setmodel <id|->`, `mode full|standard`, `export <path>`, `download <id>|<path>`, `state` (results in `$NEXBOT_DEBUG_COMMAND_FILE.b.log`; the model pane takes `md limits|setlimits ctx|out|lookup|open|list`, the model list `mp search <q>|down|up|home|end|return|pick <id>|state`, the visibility editor `mv ...` and the memory pane `mm on|off|toggle|open|pick <id>|state` on `.b`), `search <text>` (sidebar field), `searchopen <text>|<n>`, `latest`, `accountmenu`, `settings [account|model|memory|connectors|devices]`, `dark`, `light`, `system`.
 @MainActor func runDebugCommands(workspace: WorkspaceStore, ui: UIState) async {
     guard let path = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_COMMAND_FILE"] else { return }
     while !Task.isCancelled {
@@ -128,6 +133,17 @@ func message(of error: Error) -> String {
                 case "settings": ui.openInspector(.settings)
                 default: ui.inspectorVisible.toggle()
                 }
+            case "rail": ui.railOpen = arg == "open" ? true : arg == "close" ? false : !ui.railOpen
+            case "window":
+                let size = arg.split(separator: " ").compactMap { Double($0) }
+                if size.count == 2, let window = NSApp.windows.filter({ $0.isVisible && $0.contentView != nil }).max(by: { $0.frame.width < $1.frame.width }) {
+                    window.setContentSize(NSSize(width: size[0], height: size[1]))
+                }
+            case "snapshot":
+                guard let window = NSApp.windows.filter({ $0.isVisible && $0.contentView != nil }).max(by: { $0.frame.width < $1.frame.width }),
+                      let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]),
+                      let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { mbLog("snapshot ERR no image"); break }
+                do { try png.write(to: URL(fileURLWithPath: arg)); mbLog("snapshot \(arg) \(image.width)x\(image.height)") } catch { mbLog("snapshot ERR \(error)") }
             case "accountmenu": ui.accountMenuOpen.toggle()
             case "logoutcancel": ui.logoutConfirmOpen = false
             case "logout": ui.accountMenuOpen = false; ui.logoutConfirmOpen = true

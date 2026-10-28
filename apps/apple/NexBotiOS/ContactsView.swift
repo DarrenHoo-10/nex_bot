@@ -20,7 +20,7 @@ struct ContactsView: View {
                 header
                 content
             }
-            .background { WorkspaceSurface(kind: .sidebar) }
+            .background { WorkspaceSurface(kind: .stage) }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Navigation.Route.self) { route in
                 nav.destination(for: route, model: model, workspace: workspace)
@@ -105,7 +105,7 @@ struct ContactsView: View {
                 ContactRow(bot: bot, workspace: workspace)
             }
             .buttonStyle(.plain)
-            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)).plainRow()
+            .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12)).plainRow()
             .swipeActions(edge: .leading) {
                 pinButton(bot).tint(Theme.brand)
             }
@@ -146,7 +146,7 @@ struct ContactsView: View {
             Text("NexBot").font(.headline.weight(.bold))
             Spacer()
             Button { showCreate = true } label: {
-                Image(systemName: "plus").font(.system(size: 17, weight: .medium)).frame(width: 36, height: 36)
+                Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36).glass(Circle(), lift: .card)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("添加 Agent")
@@ -171,7 +171,7 @@ struct ContactsView: View {
         }
         .font(.subheadline)
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private var approvalBanner: some View {
@@ -222,7 +222,7 @@ struct ContactRow: View {
                     }
                 }
                 HStack(alignment: .center) {
-                    Text(preview).font(.footnote).foregroundStyle(phrase.isEmpty ? Theme.muted : Theme.brand).lineLimit(1)
+                    Text(preview).font(.footnote).foregroundStyle(phrase.isEmpty ? Theme.muted : Theme.identityAccent).lineLimit(1)
                     Spacer(minLength: 4)
                     if bot.unreadCount > 0 {
                         Text(bot.unreadCount > 99 ? "99+" : "\(bot.unreadCount)")
@@ -234,7 +234,9 @@ struct ContactRow: View {
                 }
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 10)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Theme.glassStrong, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.glassEdge))
         .contentShape(Rectangle())
     }
 

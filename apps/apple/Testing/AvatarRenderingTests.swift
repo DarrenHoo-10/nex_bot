@@ -12,7 +12,8 @@ final class AvatarRenderingTests: XCTestCase {
         let old = Bot(row: ["id": "b", "appearance_json": "{\"kind\":\"portrait\",\"id\":\"fox\"}"])
         XCTAssertEqual(AgentAppearance.of(old, firstID: "b"), .portrait("fox"))
         let invalid = Bot(row: ["id": "b", "appearance_json": "{\"kind\":\"graphic\",\"id\":\"missing\"}"])
-        XCTAssertEqual(AgentAppearance.of(invalid, firstID: "b"), .companion(shape: "soft", color: "teal"))
+        XCTAssertEqual(AgentAppearance.of(invalid, firstID: "b"), .graphic("secretary-01"))
+        if case .companion = AgentAppearance.of(Bot(row: ["id": "c"]), firstID: "b") {} else { XCTFail("Other agents keep a companion default") }
     }
 
     func testCompletionPlaysOnceAndStatesHaveDistinctMotion() throws {

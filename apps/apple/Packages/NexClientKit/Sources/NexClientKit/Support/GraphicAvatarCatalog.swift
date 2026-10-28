@@ -22,6 +22,9 @@ extension AvatarCatalog {
         .init(id: "male-04", description: "蓝色配色、短发眨眼", assetName: "graphic-male-01-06", sheetWidth: 1536, sheetHeight: 1024, x: 68, y: 502, width: 425, height: 427, tempo: 5.2, tilt: 4, lift: -3),
         .init(id: "male-05", description: "粉色配色、短发浅笑", assetName: "graphic-male-01-06", sheetWidth: 1536, sheetHeight: 1024, x: 547, y: 502, width: 430, height: 426, tempo: 5.5, tilt: -4, lift: -2),
         .init(id: "male-06", description: "红色配色、短发欢笑", assetName: "graphic-male-01-06", sheetWidth: 1536, sheetHeight: 1024, x: 1040, y: 502, width: 428, height: 427, tempo: 4.8, tilt: 4, lift: -3),
+        .init(id: "secretary-01", description: "松青配色、黑发抱笔记本", assetName: "graphic-secretary-01-03", sheetWidth: 1536, sheetHeight: 512, x: 81, y: 24, width: 340, height: 340, tempo: 5.6, tilt: -3, lift: -2),
+        .init(id: "secretary-02", description: "松青配色、马尾眨眼", assetName: "graphic-secretary-01-03", sheetWidth: 1536, sheetHeight: 512, x: 583, y: 70, width: 340, height: 340, tempo: 4.7, tilt: 4, lift: -3),
+        .init(id: "secretary-03", description: "松青配色、银发蕾丝头饰", assetName: "graphic-secretary-01-03", sheetWidth: 1536, sheetHeight: 512, x: 1100, y: 24, width: 340, height: 340, tempo: 6, tilt: -4, lift: -2),
     ]
     public static func graphic(_ id: String) -> GraphicAvatarDescriptor? { graphics.first { $0.id == id } }
 }

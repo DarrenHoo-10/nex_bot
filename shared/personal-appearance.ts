@@ -1,7 +1,7 @@
 export const companionShapes = ["soft", "bean", "pebble", "bud"] as const;
 export const companionColors = ["teal", "ink", "blue", "clay", "plum"] as const;
 export const portraitIds = ["fox", "owl", "cat", "bear", "rabbit", "dog", "panda", "koala", "tiger", "deer", "penguin", "seal", "otter", "octopus", "frog", "robot", "astronaut", "star", "cloud", "sprout"] as const;
-export const graphicAvatarIds = ["female-03", "female-04", "female-05", "female-06", "female-07", "female-12", "male-01", "male-02", "male-03", "male-04", "male-05", "male-06"] as const;
+export const graphicAvatarIds = ["female-03", "female-04", "female-05", "female-06", "female-07", "female-12", "male-01", "male-02", "male-03", "male-04", "male-05", "male-06", "secretary-01", "secretary-02", "secretary-03"] as const;
 export type GraphicAvatarId = typeof graphicAvatarIds[number];
 export type Appearance = { kind: "companion"; shape: typeof companionShapes[number]; color: typeof companionColors[number] } | { kind: "portrait"; id: typeof portraitIds[number] } | { kind: "graphic"; id: GraphicAvatarId };
 export function parseAppearance(value: unknown): Appearance {

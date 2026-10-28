@@ -1,5 +1,5 @@
 import { universalActions } from '../../shared/personal-capabilities';
-import { createContext, memo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
@@ -9,7 +9,7 @@ import { htmlPreviewParts } from "../../shared/html-preview";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Info, Loader2, Pin, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Pin, Play, Plus, PanelLeft, PanelRight, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
 import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
@@ -19,9 +19,11 @@ import { AgentAvatar as Avatar } from "./components/AgentAvatar";
 import { ContactSidebar } from "./components/ContactSidebar";
 import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
-import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
+import { appearanceOf, colors, companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
+import { DocumentCard } from "./components/DocumentCard";
+import { replyLayout } from "./long-reply";
 import { MessageImages } from "./components/MessageImages";
 import { ImageLightbox } from "./components/ImageLightbox";
 import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
@@ -37,6 +39,7 @@ const formatShortTime = (value: RecordRow[string]) => {
   const date = new Date(Number(value)), now = new Date();
   return date.toDateString() === now.toDateString() ? date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 };
+const formatClock = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "";
 const formatDay = (value: RecordRow[string]) => {
   if (!value) return "";
   const date = new Date(Number(value)), now = new Date();
@@ -104,6 +107,9 @@ export function AgentDesktop() {
   const [pinned, setPinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
   const [sidebarOpen, setSidebarOpen] = useState(desktop?.platform === "android" && window.innerWidth <= 720);
+  const [rail, setRail] = useState(() => localStorage.getItem("nexbot.rail") !== "0"), [wide, setWide] = useState(() => window.matchMedia("(min-width: 721px)").matches);
+  useEffect(() => { const query = window.matchMedia("(min-width: 721px)"), change = () => setWide(query.matches); query.addEventListener("change", change); return () => query.removeEventListener("change", change); }, []);
+  const toggleRail = () => setRail((open) => { localStorage.setItem("nexbot.rail", open ? "0" : "1"); return !open; });
   type Attachment = { id: string; name: string; size: number; mime?: string; previewUrl?: string };
   type PendingUpload = { key: string; file: File; error?: string; controller: AbortController };
   const [attachments, setAttachments] = useState<Attachment[]>([]), [pending, setPending] = useState<PendingUpload[]>([]);
@@ -422,7 +428,16 @@ export function AgentDesktop() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setFollowing]);
   useEffect(() => { setShowScrollPill(!stickToBottom.current && messages.length > 3 && !historyTarget.current); }, [messages]);
-  useEffect(() => { const field = composerRef.current; if (field) { field.style.height = "auto"; field.style.height = `${Math.min(160, field.scrollHeight)}px`; } }, [draft, botId, page]);
+  useEffect(() => {
+    const field = composerRef.current;
+    if (!field) return;
+    // The field wraps with its width, so it is re-fitted when the window or the side panels move it.
+    const fit = () => { field.style.height = "auto"; field.style.height = `${Math.min(160, field.scrollHeight)}px`; };
+    fit();
+    const settle = setTimeout(fit, 400);
+    window.addEventListener("resize", fit);
+    return () => { clearTimeout(settle); window.removeEventListener("resize", fit); };
+  }, [draft, botId, page, detail, rail]);
   const descendantTasks = new Set(tasks.map((task) => task.id));
   for (let depth = 0; depth < 3; depth++) for (const link of state?.delegations ?? []) if (descendantTasks.has(link.parent_task_id)) descendantTasks.add(link.child_task_id);
   const waitingPeers = state?.approvals.filter((approval) => approval.bot_id !== botId && descendantTasks.has(approval.task_id)) ?? [];
@@ -495,31 +510,30 @@ export function AgentDesktop() {
   const enabledTools: string[] = (() => { try { return JSON.parse(str(bot?.policy_json) || "{}").tools ?? []; } catch { return []; } })();
   const modelLabel = str(bot?.selected_model) || str(state.config?.default_model) || "未连接模型";
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
+  const panelOpen = page === "agent" && detail && !!bot, railClosed = !rail && wide;
+  const recentRuns = state.occurrences.filter((o) => o.bot_id === botId).slice(0, 10), routines = state.routines.filter((r) => r.bot_id === botId);
+  const look = appearanceOf(bot, str(state.bots[0]?.id)), accent = look.kind === "companion" ? colors[look.color].value : undefined;
+  const heroState = !connected ? companionLabels.offline : tasks.length ? taskPhrase(tasks[0]) : avatarState === "idle" ? "在线" : companionLabels[avatarState];
   void lookRevision;
 
   return <div className="workspace-stage" data-dark={dark ? "1" : "0"} data-shell={desktop?.mode === "client" ? "1" : "0"}>
-    <div className={`app rk-workspace ${page === "agent" && detail && bot ? "with-detail" : ""}`} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
-    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
+    <div className={`app rk-workspace ${panelOpen ? "with-detail" : ""}`} data-left={railClosed ? "closed" : "open"} data-right={panelOpen ? "open" : "closed"} data-page={page} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"} style={accent ? { "--bot-color": accent } as CSSProperties : undefined}>
+    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
 
     <main>
       <header>
-        <button className="icon-button mobile-menu" aria-label="展开联系人列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={19}/></button>
-        <div className={`contact-heading ${page === "agent" && bot ? "clickable" : ""}`} onClick={() => { if (page === "agent" && bot) setDetail((current) => !current); }} title={page === "agent" && bot ? "点击展开或收起 Agent 资料" : undefined}>
-          {page === "agent" && bot ? <>
-            <Avatar bot={bot} allBots={state.bots} size={40} state={avatarState} animate/>
-            <div>
-              <div className="contact-title-row">
-                <strong>{bot.name}</strong>
-                <span className="ds-model-pill"><Zap size={10}/>{modelLabel}</span>
-              </div>
+        <div className="header-side"><button className="icon-button mobile-menu" aria-label="展开联系人列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={19}/></button></div>
+        {page === "agent" && bot
+          ? <button type="button" className="contact-heading clickable who glass" inert={panelOpen} title="打开 Agent 资料" onClick={() => setDetail(true)}>
+              <Avatar bot={bot} allBots={state.bots} size={30} state={avatarState} animate/>
+              <strong>{bot.name}</strong>
               <span className={tasks.length ? "active-phrase" : ""}>{tasks.length ? `${taskPhrase(tasks[0])}${tasks.length > 1 ? ` · ${tasks.length} 项工作正在进行` : ""}` : companionLabels[avatarState]}</span>
-            </div>
-          </> : <strong>{page === "settings" ? "设置" : "你的 Agent"}</strong>}
-        </div>
+            </button>
+          : <div className="contact-heading who"><strong>{page === "settings" ? "设置" : "你的 Agent"}</strong></div>}
         <div className="header-actions">
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
-          {page === "agent" && bot && messages.length > 0 ? <button type="button" className="bt-round" title="复制对话记录" onClick={() => exportTranscript()}>{exported ? <Check size={16}/> : <Share2 size={16}/>}</button> : null}
-          {page === "agent" && bot ? <button aria-label="助手详情" title="Agent 资料" className={`bt-round ${detail ? "selected" : ""}`} onClick={() => setDetail(!detail)}><Info size={17}/></button> : null}
+          {page === "agent" && bot && messages.length > 0 ? <button type="button" className="bt-round glass" title="复制对话记录" aria-label="复制对话记录" onClick={() => exportTranscript()}>{exported ? <Check size={16}/> : <Share2 size={16}/>}</button> : null}
+          {page === "agent" && bot ? <button aria-label="助手详情" aria-pressed={panelOpen} title="Agent 资料" className={`bt-round glass ${panelOpen ? "selected" : ""}`} onClick={() => setDetail(!detail)}><PanelRight size={17}/></button> : null}
         </div>
       </header>
 
@@ -549,24 +563,25 @@ export function AgentDesktop() {
               {peers.length ? <button type="button" onClick={() => { changeDraft(`@${peers[0].name} `); composerRef.current?.focus(); }}><AtSign size={13}/>让 {peers[0].name} 协作</button> : null}
             </div>
           </div> : messages.map((m, idx) => {
-            const prevDay = idx > 0 ? formatDay(messages[idx - 1].created_at) : "";
-            const curDay = formatDay(m.created_at);
+            const prev = messages[idx - 1], next = messages[idx + 1], curDay = formatDay(m.created_at);
+            const prevDay = prev ? formatDay(prev.created_at) : "";
+            const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
             return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
               {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
+              <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
             </div>;
           })}
           {streaming.map((s) => {
             const link = state.delegations.find((d) => d.child_task_id === s.taskId), peer = state.bots.find((b) => b.id === link?.sender_bot_id);
-            return <article className={`message assistant ${link ? "a2a-reply" : ""}`} key={s.taskId}>
-              <Avatar bot={bot} allBots={state.bots} size={34} state={avatarState}/>
+            return <article className={`message assistant streaming ${link ? "a2a-reply" : ""}`} key={s.taskId}>
+              <Avatar bot={bot} allBots={state.bots} size={26} state={avatarState}/>
               <div className="message-body">
                 {link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div><div className="bubble"><RichText value={s.text} pending/></div><span className="muted">正在回复…</span></>}
               </div>
             </article>;
           })}
           {processing ? <article className="message assistant processing-message">
-            <Avatar bot={bot} allBots={state.bots} size={34} state={avatarState}/>
+            <Avatar bot={bot} allBots={state.bots} size={26} state={avatarState}/>
             <div className="message-body">
               <div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div>
               <div className="bubble processing-dots" role="status" aria-label={`${bot?.name ?? "Agent"} 正在处理消息`}><span aria-hidden="true"/><span aria-hidden="true"/><span aria-hidden="true"/></div>
@@ -576,15 +591,16 @@ export function AgentDesktop() {
           </div>
         </div>
 
-        <div className="composer-area">
+        <div className="composer-dock">
           {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" aria-label="回到底部" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ArrowDown size={22} strokeWidth={1.5} aria-hidden="true"/></button> : null}
+        <div className="composer-area">
           {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
           {(tasks.length > 0 || sendingBotId === botId) && <div className="task-status"><span className="task-status-dot"/><span>{tasks.length === 0 ? "正在发送…" : tasks.some((task) => task.status === "cancelling") ? "正在停止…" : (tasks[0].status === "needs_reconciliation" ? "设备未返回确认，等待核对结果" : `Agent 正在工作 · ${taskPhrase(tasks[0])}`)}</span></div>}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}
           <input ref={fileInput} type="file" hidden multiple aria-label="上传附件" onChange={(event) => void upload(event.target.files)}/>
-          <form className="composer conversation-input" onSubmit={send}>
+          <form className="composer conversation-input glass" onSubmit={send}>
             {(attachments.length > 0 || pending.length > 0) && <div className="attachment-drafts" role="list" aria-label="待发送附件">
               {attachments.map((file) => file.previewUrl
                 ? <div className="attachment-image-draft" key={file.id} role="listitem">
@@ -624,22 +640,18 @@ export function AgentDesktop() {
             </ComposerControls>
           </form>
         </div>
+        </div>
       </> : <SettingsPage state={state} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
     </main>
 
-    {page === "agent" && detail && bot ? <aside className="inspector ds-drawer"><div className="inspector-heading"><span>助手详情</span><button aria-label="收起助手详情" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
+    {page === "agent" && bot ? <aside className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="收起助手详情" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
       <div className="profile-top">
         <div className="ds-drawer-top-actions">
           <button type="button" className={`bt-round ${pinned.includes(str(bot.id)) ? "selected" : ""}`} title={pinned.includes(str(bot.id)) ? "取消置顶" : "置顶联系人"} onClick={() => togglePin(str(bot.id))}><Pin size={15}/></button>
-
         </div>
-        <button type="button" className="profile-avatar-button" title="更换头像" aria-label={`更换 ${bot.name} 的头像`} onClick={editAvatar}><Avatar bot={bot} allBots={state.bots} size={64} state={avatarState} animate/></button>
+        <button type="button" className="profile-avatar-button" title="更换头像" aria-label={`更换 ${bot.name} 的头像`} onClick={editAvatar}><span className="hero-halo"><Avatar bot={bot} allBots={state.bots} size={96} state={avatarState} animate/></span></button>
         <strong>{bot.name}</strong>
-        <div className="ds-drawer-badges">
-          <span className="ds-role-badge" style={{ color: botLook.ink.solid, background: botLook.ink.soft }}>个人 Agent</span>
-        </div>
-
-
+        <span className="hero-state" data-state={avatarState}><i/>{heroState}</span>
       </div>
 
       <div className="inspector-tabs">
@@ -652,18 +664,21 @@ export function AgentDesktop() {
         {tab === "profile" ? <>
 
           {tasks.length > 0 && <h2>正在处理</h2>}
-          {tasks.map((t) => <section className="task ds-field-card" key={str(t.id)}><span className="tag">{taskPhrase(t)}</span><p>{t.objective || "Agent 工作"}</p><div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></section>)}
+          {tasks.map((t) => <section className="entry" key={str(t.id)}><span className="ic live"><Loader2 size={14}/></span><div><b>{t.objective || "Agent 工作"}</b><span>{taskPhrase(t)}</span>{t.created_at ? <time>{formatClock(t.created_at)}</time> : null}<div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></div></section>)}
 
-          {state.occurrences.some((o) => o.bot_id === botId) && <h2>最近执行</h2>}
-          {state.occurrences.filter((o) => o.bot_id === botId).slice(0, 10).map((o) => <section className="task ds-field-card" key={str(o.id)}><strong>{o.name}</strong><small>{statuses[str(o.status)]} · {formatTime(o.scheduled_at)}</small></section>)}
+          {recentRuns.length > 0 && <h2>最近执行</h2>}
+          {recentRuns.map((o, index) => { const day = formatDay(o.scheduled_at), status = str(o.status), Icon = status === "succeeded" ? Check : status === "running" ? Loader2 : status === "pending" ? Clock : CircleAlert; return <div key={str(o.id)}>
+            {day && (!index || formatDay(recentRuns[index - 1].scheduled_at) !== day) ? <h3 className="day-label">{day}</h3> : null}
+            <section className="entry"><span className={`ic ${status === "succeeded" ? "" : status === "running" ? "live" : status === "pending" ? "mem" : "warn"}`}><Icon size={14}/></span><div><b>{o.name}</b><span>{statuses[status]}</span>{o.scheduled_at ? <time>{formatClock(o.scheduled_at)}</time> : null}</div></section>
+          </div>; })}
 
-          <h2>例行任务<button aria-label="添加例行任务" onClick={() => editRoutine()}><Plus size={16}/></button></h2>
-          {state.routines.some((r) => r.bot_id === botId) ? <div className="routine-list" aria-label="例行任务列表">
-            {state.routines.filter((r) => r.bot_id === botId).map((r) => <div className="routine-row" key={str(r.id)}>
+          <h2>例行任务{routines.length ? <button aria-label="添加例行任务" onClick={() => editRoutine()}><Plus size={16}/></button> : null}</h2>
+          {routines.length ? <div className="routine-list" aria-label="例行任务列表">
+            {routines.map((r) => <div className="routine-row" key={str(r.id)}>
               <button type="button" className="routine-summary" onClick={() => editRoutine(r)} title={`${r.name} · ${routineLabel(r)} · ${r.prompt}`}><strong>{r.name}</strong><span>{routineLabel(r)} · {r.prompt}</span></button>
               <button type="button" role="switch" aria-checked={!!r.enabled} aria-label={`${r.name}`} disabled={busy} className={`routine-toggle ${r.enabled ? "on" : ""}`} onClick={() => void run(() => api("routines/toggle", { id: r.id, version: r.version, enabled: !r.enabled }))}><span/></button>
             </div>)}
-          </div> : null}
+          </div> : <div className="empty-row">暂无例行任务<button type="button" className="bt-round" aria-label="添加例行任务" onClick={() => editRoutine()}><Plus size={14}/></button></div>}
 
         </> : null}
         {tab === "settings" ? <>
@@ -730,23 +745,31 @@ function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]
   if (m.role === "peer") return str(bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id))?.name) || "同伴 Agent";
   return str(bot?.name) || "Agent";
 }
-function AgentMessage({ message: m, bot, bots, select, copiedId, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; select: (id: string) => void; copiedId: string; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void> }) {
+function AgentMessage({ message: m, bot, bots, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
   const direction = str(m.a2a_direction), peer = bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id));
   if (direction === "sent" || direction === "returned") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "received") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
-  if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={34}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;
+  if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;
   const canAct = m.role === "user" || m.role === "assistant" || m.role === "peer";
   const steps = Array.isArray(m.tool_steps) ? m.tool_steps : [];
   const { text, images } = parseMessageMedia(str(m.content));
-  return <article className={`message ${m.role} ${m.kind}`} data-message-id={str(m.id)}>
+  const assistant = m.role === "assistant", document = assistant && !!text && replyLayout(text).document;
+  return <article className={`message ${m.role} ${m.kind} ${joined ? "joined" : ""} ${groupEnd ? "group-end" : ""} ${document ? "has-doc" : ""}`} data-message-id={str(m.id)}>
+    {assistant ? groupEnd ? <Avatar bot={bot} allBots={bots} size={26}/> : <span className="message-gutter" aria-hidden="true"/> : null}
     <div className="message-body">
       {m.role === "peer" ? <div className="message-author"><Avatar bot={peer} allBots={bots} size={22}/>{peer?.name ?? "Agent"} · {m.kind === "request" ? "发来任务" : "返回结果"}</div> : null}
-      {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length}><div className="step-list">{steps.map((step) => <button type="button" key={step.id} className="step-row" onClick={() => onPreviewStep(step)} title="点击在右侧面板查看详情"><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>)}</div></ToolActivityDisclosure> : null}
+      {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length} steps={steps}><div className="step-list">{steps.map((step) => <button type="button" key={step.id} className="step-row" onClick={() => onPreviewStep(step)} title="点击在右侧面板查看详情"><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>)}</div></ToolActivityDisclosure> : null}
       <MessageImages images={images} onDelete={(image) => onDeleteImage(str(m.id), image)}/>
-      {text ? <div className="bubble"><RichText value={text} onPreviewFile={onPreviewFile}/></div> : null}
-      <div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time>{canAct ? <span className="message-tools"><button type="button" className="tool-link" onClick={() => onQuote(m)} title="引用回复"><CornerUpLeft size={11}/>引用</button><button type="button" className="tool-link" onClick={() => onCopy(str(m.id), str(m.content))} title="复制内容">{copiedId === str(m.id) ? <><Check size={11}/>已复制</> : <><Copy size={11}/>复制</>}</button></span> : null}</div>
+      {text ? document ? <DocumentCard onExpand={onDetach}><RichText value={text} onPreviewFile={onPreviewFile}/></DocumentCard> : <div className="bubble"><RichText value={text} onPreviewFile={onPreviewFile}/></div> : null}
+      <div className="message-meta">{groupEnd || !assistant ? <time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time> : null}{canAct ? <span className="message-tools"><button type="button" className="tool-link" onClick={() => onQuote(m)} title="引用回复"><CornerUpLeft size={11}/>引用</button><button type="button" className="tool-link" onClick={() => onCopy(str(m.id), str(m.content))} title="复制内容">{copiedId === str(m.id) ? <><Check size={11}/>已复制</> : <><Copy size={11}/>复制</>}</button></span> : null}</div>
     </div>
   </article>;
+}
+/** Consecutive replies from the same assistant within five minutes read as one group. */
+function sameGroup(a: RecordRow | undefined, b: RecordRow) {
+  const plain = (m: RecordRow) => m.role === "assistant" && !str(m.a2a_direction);
+  const gap = Number(b.created_at) - Number(a?.created_at);
+  return !!a && plain(a) && plain(b) && str(a.sender_bot_id) === str(b.sender_bot_id) && gap >= 0 && gap <= 5 * 60_000;
 }
 function routineLabel(row: RecordRow) { return row.schedule_kind === "daily" ? `每天 ${row.local_time} · ${row.time_zone}` : row.schedule_kind === "interval" ? `每 ${Number(row.interval_ms) / 60_000} 分钟` : "一次性任务"; }
 function RoutineEditor({ botId, existing, close, save, runNow }: { botId: string; existing?: RecordRow; close: () => void; runNow?: () => Promise<void>; save: (data: Record<string, unknown>) => Promise<void> }) {

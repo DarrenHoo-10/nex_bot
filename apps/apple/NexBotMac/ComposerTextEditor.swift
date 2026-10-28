@@ -7,6 +7,8 @@ struct ComposerTextEditor: NSViewRepresentable {
     var focused: FocusState<Bool>.Binding
     /// Called with a picture pasted from the clipboard (PNG bytes and a file name).
     var onPasteImage: (Data, String) -> Void = { _, _ in }
+    /// Called with the height of the laid-out text, so the composer can grow with wrapped and multi-line text.
+    var onContentHeight: (CGFloat) -> Void = { _ in }
     var onKey: (UInt16) -> Bool
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -34,9 +36,11 @@ struct ComposerTextEditor: NSViewRepresentable {
         guard let editor = scroll.documentView as? ComposerNSTextView else { return }
         editor.onKey = onKey
         editor.onPasteImage = onPasteImage
+        editor.onContentHeight = onContentHeight
         editor.onFocus = { focused.wrappedValue = $0 }
         // Replacing marked text during an update cancels the candidate session.
         if editor.string != text && !editor.hasMarkedText() { editor.string = text }
+        DispatchQueue.main.async { [weak editor] in editor?.reportContentHeight() }
         if focused.wrappedValue && editor.window?.firstResponder !== editor {
             DispatchQueue.main.async { [weak editor] in
                 guard let editor else { return }
@@ -53,6 +57,7 @@ struct ComposerTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? NSTextView else { return }
             parent.text = editor.string
+            (editor as? ComposerNSTextView)?.reportContentHeight()
         }
     }
 }
@@ -61,6 +66,23 @@ final class ComposerNSTextView: NSTextView {
     var onKey: (UInt16) -> Bool = { _ in false }
     var onFocus: (Bool) -> Void = { _ in }
     var onPasteImage: (Data, String) -> Void = { _, _ in }
+    var onContentHeight: (CGFloat) -> Void = { _ in }
+    private var reportedHeight: CGFloat = -1
+
+    /// The laid-out text height; reported only when it changes, and again after a width change re-wraps the text.
+    func reportContentHeight() {
+        guard let container = textContainer, let layout = layoutManager else { return }
+        layout.ensureLayout(for: container)
+        let height = ceil(layout.usedRect(for: container).height)
+        guard height != reportedHeight else { return }
+        reportedHeight = height
+        onContentHeight(height)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        DispatchQueue.main.async { [weak self] in self?.reportContentHeight() }
+    }
 
     /// ⌘V with a picture on the clipboard attaches it (as the web composer does); text pastes as usual.
     /// The clipboard ⌘V reads (a private pasteboard in checks).

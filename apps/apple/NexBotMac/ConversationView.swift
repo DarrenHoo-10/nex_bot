@@ -47,7 +47,6 @@ struct ConversationView: View {
         let conv = conversation
         VStack(spacing: 0) {
             header
-            Hairline()
             if workspace.state != nil && workspace.state?.config == nil { noModelBanner }
             MessageList(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             VStack(spacing: 10) {
@@ -57,7 +56,7 @@ struct ConversationView: View {
                 Composer(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             }
             .frame(maxWidth: Theme.readingWidth)
-            .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 24)
+            .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 14)
             .frame(maxWidth: .infinity)
         }
         .overlay { if dropTargeted { dropHighlight } }
@@ -85,6 +84,7 @@ struct ConversationView: View {
 
     // MARK: Header
 
+    /// The floating capsule (avatar, name, status) appears only while the inspector is closed and opens it; round glass buttons sit on the right.
     private var header: some View {
         let state = workspace.companionState(botID)
         let subtitle: String = {
@@ -92,50 +92,42 @@ struct ConversationView: View {
             let phrase = ToolLabels.taskPhrase(first)
             return tasks.count > 1 ? "\(phrase) · \(tasks.count) 项工作正在进行" : phrase
         }()
-        return HStack(spacing: 12) {
-            HStack(spacing: 12) {
-                if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 40, animated: preferences.motionEnabled) }
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text(bot?.name ?? "NexBot").font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                        HStack(spacing: 4) {
-                            Image(systemName: "bolt.fill").font(.system(size: 8))
-                            Text(bot?.selectedModel ?? workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型").font(.system(size: 10)).lineLimit(1)
-                        }
-                        .foregroundStyle(Theme.muted)
-                        .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.secondary, in: Capsule())
+        let covered = ui.inspectorVisible
+        return ZStack {
+            Button { ui.inspectorVisible = true } label: {
+                HStack(spacing: 9) {
+                    if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 30, animated: preferences.motionEnabled) }
+                    Text(bot?.name ?? "NexBot").font(.system(size: 13.5, weight: .semibold)).lineLimit(1)
+                    Text(subtitle).font(.system(size: 11.5, weight: tasks.isEmpty ? .regular : .medium))
+                        .foregroundStyle(tasks.isEmpty ? Theme.muted : Theme.identityAccent).lineLimit(1).frame(maxWidth: 220, alignment: .leading)
+                }
+                .padding(.leading, 6).padding(.trailing, 16).padding(.vertical, 5)
+                .glass(Capsule())
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("打开 Agent 资料").accessibilityLabel("\(bot?.name ?? "Agent") 资料")
+            .opacity(covered ? 0 : 1).offset(y: covered ? -8 : 0)
+            .allowsHitTesting(!covered).accessibilityHidden(covered)
+            .animation(.easeOut(duration: 0.25), value: covered)
+
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                if !memoryNotice.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles").font(.system(size: 10))
+                        Text("已更新记忆：\(memoryNotice)").font(.system(size: 11.5)).lineLimit(1)
                     }
-                    Text(subtitle).font(.system(size: 12)).foregroundStyle(tasks.isEmpty ? Theme.muted : Theme.brand).lineLimit(1)
+                    .foregroundStyle(Theme.identityAccent).padding(.horizontal, 12).frame(height: 28)
+                    .glass(Capsule(), strong: true, lift: .card).frame(maxWidth: 240)
                 }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { ui.inspectorVisible.toggle() }
-            .help("点击展开或收起 Agent 资料")
-            Spacer()
-            if !memoryNotice.isEmpty {
-                HStack(spacing: 5) {
-                    Image(systemName: "sparkles").font(.system(size: 10))
-                    Text("已更新记忆：\(memoryNotice)").font(.system(size: 11)).lineLimit(1)
+                if !conversation.messages.isEmpty {
+                    RoundGlassButton(symbol: exported ? "checkmark" : "square.and.arrow.up", label: "复制对话记录", action: share)
                 }
-                .foregroundStyle(Theme.brand).padding(.horizontal, 10).frame(height: 26)
-                .background(Theme.brandSoft, in: Capsule()).frame(maxWidth: 260)
+                RoundGlassButton(symbol: "sidebar.right", label: "Agent 资料", selected: ui.inspectorVisible) { ui.inspectorVisible.toggle() }
             }
-            if !conversation.messages.isEmpty {
-                Button(action: share) {
-                    Image(systemName: exported ? "checkmark" : "square.and.arrow.up").font(.system(size: 15))
-                        .foregroundStyle(exported ? Theme.success : Theme.muted)
-                        .frame(width: 32, height: 32).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).help("复制对话记录").accessibilityLabel("复制对话记录")
-            }
-            Button { ui.inspectorVisible.toggle() } label: {
-                Image(systemName: ui.inspectorVisible ? "info.circle.fill" : "info.circle").font(.system(size: 16))
-                    .foregroundStyle(ui.inspectorVisible ? Theme.brand : Theme.muted)
-                    .frame(width: 32, height: 32).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).help("Agent 资料").accessibilityLabel("Agent 资料")
         }
-        .padding(.horizontal, 28).frame(height: 64)
+        .padding(.horizontal, 2).frame(height: 64)
     }
 
     private func share() {
@@ -162,9 +154,9 @@ struct ConversationView: View {
                     .frame(maxHeight: 360)
             }
         }
-        .padding(.horizontal, 28).padding(.vertical, 8)
-        .background(Theme.approvalSoft)
-        .overlay(alignment: .bottom) { Hairline() }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(Theme.approvalSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.bottom, 8)
     }
 
     // MARK: Approval and task lines
@@ -187,10 +179,10 @@ struct ConversationView: View {
         let stopping = tasks.contains { $0.status == "cancelling" }
         return HStack(spacing: 8) {
             Circle().fill(tasks.first?.status == "awaiting_approval" ? Theme.approval : Theme.success).frame(width: 6, height: 6)
-            Text(tasks.isEmpty ? "正在发送…" : stopping ? "正在停止…" : "Agent 正在工作 · \(ToolLabels.taskPhrase(tasks.first))").font(.system(size: 11)).foregroundStyle(Theme.muted)
-            Spacer()
+            Text(tasks.isEmpty ? "正在发送…" : stopping ? "正在停止…" : "Agent 正在工作 · \(ToolLabels.taskPhrase(tasks.first))").font(.system(size: 12)).foregroundStyle(Theme.muted)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 14).padding(.vertical, 5)
+        .glass(Capsule(), lift: .none)
     }
 }
 
@@ -297,29 +289,37 @@ private struct MessageList: View {
                     }
                     let messages = conversation.messages
                     ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                        let previous = index > 0 ? messages[index - 1] : nil
+                        let next = index + 1 < messages.count ? messages[index + 1] : nil
                         let day = Self.dayLabel(message.createdAt)
-                        if let day, day != Self.dayLabel(index > 0 ? messages[index - 1].createdAt : nil) {
+                        if let day, day != Self.dayLabel(previous?.createdAt) {
                             DayDivider(label: day)
                         }
-                        MessageRow(message: message, bot: bot, workspace: workspace, onOpenImage: onOpenImage)
+                        let joined = MessageGrouping.joins(previous, message)
+                        MessageRow(message: message, bot: bot, workspace: workspace, joined: joined,
+                                   groupEnd: MessageGrouping.ends(message, next: next), onOpenImage: onOpenImage)
                             .overlay {
                                 if message.id == focusedID {
                                     RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
                                         .padding(-6).allowsHitTesting(false)
                                 }
                             }
-                            .padding(.bottom, 22)
+                            .padding(.top, joined ? 4 : 14)
                             .id(message.seq)
                     }
                     ForEach(conversation.streaming, id: \.taskId) { stream in
                         StreamingReply(workspace: workspace, bot: bot, stream: stream)
                     }
                     if processing {
-                        VStack(alignment: .leading, spacing: 6) {
-                            TypingDots().accessibilityLabel("\(bot?.name ?? "Agent") 正在处理消息")
-                            Text(tasks.isEmpty ? "正在发送…" : ToolLabels.taskPhrase(tasks.first)).font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        AssistantFrame(workspace: workspace, bot: bot, showAvatar: true, avatarLift: 0) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                TypingDots().accessibilityLabel("\(bot?.name ?? "Agent") 正在处理消息")
+                                    .padding(.horizontal, 16).padding(.vertical, 14)
+                                    .cardSurface(Bubble.assistant(tail: true))
+                                Text(tasks.isEmpty ? "正在发送…" : ToolLabels.taskPhrase(tasks.first)).font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.leading, 6)
+                            }
                         }
-                        .padding(.bottom, 14)
+                        .padding(.top, 14)
                     }
                     if let error = conversation.sendError {
                         Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -330,10 +330,18 @@ private struct MessageList: View {
                         .onDisappear { atBottom = false }
                 }
                 .frame(maxWidth: Theme.readingWidth)
-                .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 8)
+                .padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 20)
                 .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
+            // The transcript fades out at both edges instead of ending in a hard line.
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 22)
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: 26)
+                }
+            }
             .overlay {
                 if !conversation.isLoaded {
                     VStack(spacing: 10) {
@@ -347,10 +355,9 @@ private struct MessageList: View {
             .overlay(alignment: .bottom) {
                 if !atBottom && conversation.messages.count > 3 && focusedID == nil {
                     Button { atBottom = true; withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
-                        Image(systemName: "arrow.down").font(.system(size: 20, weight: .regular))
-                            .foregroundStyle(Theme.foreground).frame(width: 40, height: 40)
-                            .background(Theme.card, in: Circle()).overlay(Circle().strokeBorder(Theme.border))
-                            .shadow(color: .black.opacity(0.04), radius: 3, y: 1).contentShape(Circle())
+                        Image(systemName: "arrow.down").font(.system(size: 16, weight: .regular))
+                            .foregroundStyle(Theme.foreground).frame(width: 36, height: 36)
+                            .glass(Circle(), strong: true, lift: .card).contentShape(Circle())
                     }
                     .buttonStyle(.plain).accessibilityLabel("回到底部").padding(.bottom, 10)
                 }
@@ -430,8 +437,32 @@ private struct MessageList: View {
 private struct DayDivider: View {
     let label: String
     var body: some View {
-        Text(label).font(.system(size: 12)).foregroundStyle(Theme.muted)
-            .frame(maxWidth: .infinity).padding(.vertical, 14)
+        Text(label).font(.system(size: 11, weight: .medium).monospacedDigit()).foregroundStyle(Theme.muted)
+            .frame(maxWidth: .infinity).padding(.top, 18).padding(.bottom, 4)
+    }
+}
+
+/// Layout of an assistant reply: the avatar on the last message of a group (an empty gutter before it) and the body.
+private struct AssistantFrame<Content: View>: View {
+    let workspace: WorkspaceStore
+    let bot: Bot?
+    var showAvatar: Bool
+    /// Raises the avatar above the time row so it sits beside the bubble.
+    var avatarLift: CGFloat = 22
+    var state: CompanionState = .idle
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            if showAvatar, let bot {
+                AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 26).padding(.bottom, avatarLift)
+            } else {
+                Color.clear.frame(width: 26, height: 1)
+            }
+            content()
+        }
+        .padding(.trailing, 34)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -439,14 +470,21 @@ private struct MessageRow: View {
     let message: AgentMessage
     let bot: Bot?
     let workspace: WorkspaceStore
+    /// Continues the previous reply's group: a small gap and no avatar above it.
+    var joined = false
+    /// Last message of its group: it carries the avatar and the time.
+    var groupEnd = true
     let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
+    @Environment(\.colorScheme) private var scheme
     @State private var hover = false
     @State private var hideActions: Task<Void, Never>?
     @State private var copied = false
 
     private var peer: Bot? { workspace.bot(message.a2aPeerID ?? message.senderBotID ?? "") }
     private var botID: String { bot?.id ?? "" }
+    private var accentHex: UInt32 { bot.map { workspace.appearance($0).accentHex } ?? Theme.defaultAccent }
+    private var actionsVisible: Bool { hover || copied || AgentUI.shared.alwaysShowActions }
 
     var body: some View {
         if let direction = message.a2aDirection, ["sent", "returned", "received"].contains(direction) {
@@ -457,69 +495,109 @@ private struct MessageRow: View {
             Text(message.content).font(.system(size: 12)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity).textSelection(.enabled)
         } else if message.isFromUser {
-            let parsed = AttachmentLink.parse(message.content)
-            let images = parsed.links.filter(\.isImage), files = parsed.links.filter { !$0.isImage }
-            VStack(alignment: .trailing, spacing: 6) {
-                if !images.isEmpty {
-                    VStack(alignment: .trailing, spacing: 8) {
-                        ForEach(images) { link in
-                            AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
-                        }
-                    }
-                }
-                if !parsed.body.isEmpty || !files.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if !parsed.body.isEmpty { ChatMarkdown(source: parsed.body, hug: true) }
-                        ForEach(files) { link in
-                            AttachmentCard(link: link, conversation: workspace.conversation(for: botID))
-                        }
-                    }
-                    .padding(.horizontal, 18).padding(.vertical, 13)
-                    .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-                meta
-            }
-            .padding(.leading, 80)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .contentShape(Rectangle())
-            .onHover(perform: updateHover)
-            .onDisappear { hideActions?.cancel() }
+            userRow
+        } else if message.role == "assistant" {
+            AssistantFrame(workspace: workspace, bot: bot, showAvatar: groupEnd) { assistantBody }
+                .contentShape(Rectangle())
+                .onHover(perform: updateHover)
+                .onDisappear { hideActions?.cancel() }
         } else {
-            VStack(alignment: .leading, spacing: 8) {
-                if message.role == "peer" {
-                    HStack(spacing: 6) {
-                        if let peer { AgentAvatar(appearance: workspace.appearance(peer), size: 22) }
-                        Text("\(peer?.name ?? "Agent") · \(message.kind == "request" ? "发来任务" : "返回结果")").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            assistantBody
+                .padding(.leading, 34).padding(.trailing, 34)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onHover(perform: updateHover)
+                .onDisappear { hideActions?.cancel() }
+        }
+    }
+
+    // MARK: User
+
+    private var userRow: some View {
+        let parsed = AttachmentLink.parse(message.content)
+        let images = parsed.links.filter(\.isImage), files = parsed.links.filter { !$0.isImage }
+        return VStack(alignment: .trailing, spacing: 6) {
+            if !images.isEmpty {
+                VStack(alignment: .trailing, spacing: 8) {
+                    ForEach(images) { link in
+                        AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
                     }
                 }
-                if !message.toolSteps.isEmpty {
-                    ToolSteps(steps: message.toolSteps) { step in
-                        AgentUI.shared.previewStep(step, botID: botID, workspace: workspace, ui: ui)
-                    }
+            }
+            if !parsed.body.isEmpty {
+                ChatMarkdown(source: parsed.body, hug: true)
+                    .environment(\.chatInk, .white).environment(\.chatOnAccent, true)
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .background(userBubbleGradient(accentHex: accentHex, dark: scheme == .dark), in: Bubble.user)
+                    .shadow(color: Color(hex: accentHex).opacity(0.26), radius: 9, y: 6)
+            }
+            ForEach(files) { link in
+                AttachmentCard(link: link, conversation: workspace.conversation(for: botID))
+            }
+            meta
+        }
+        .padding(.leading, 56)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .contentShape(Rectangle())
+        .onHover(perform: updateHover)
+        .onDisappear { hideActions?.cancel() }
+    }
+
+    // MARK: Assistant and peer
+
+    private var assistantBody: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if message.role == "peer" {
+                HStack(spacing: 6) {
+                    if let peer { AgentAvatar(appearance: workspace.appearance(peer), size: 22) }
+                    Text("\(peer?.name ?? "Agent") · \(message.kind == "request" ? "发来任务" : "返回结果")").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.muted)
                 }
-                if !message.content.isEmpty {
-                    if message.kind == "error" {
-                        Text(message.content).font(.system(size: 14)).foregroundStyle(Theme.danger).textSelection(.enabled)
-                    } else {
-                        let images = AttachmentLink.embeddedImages(message.content)
-                        let body = AttachmentLink.stripped(message.content)
-                        if !images.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(images) { link in
-                                    AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
-                                }
+                .padding(.leading, 4)
+            }
+            if !message.toolSteps.isEmpty {
+                ToolSteps(steps: message.toolSteps) { step in
+                    AgentUI.shared.previewStep(step, botID: botID, workspace: workspace, ui: ui)
+                }
+            }
+            if !message.content.isEmpty {
+                if message.kind == "error" {
+                    Text(message.content).font(.system(size: 14)).foregroundStyle(Theme.danger).textSelection(.enabled)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .cardSurface(Bubble.assistant(tail: groupEnd))
+                } else {
+                    let images = AttachmentLink.embeddedImages(message.content)
+                    let body = AttachmentLink.stripped(message.content)
+                    if !images.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(images) { link in
+                                AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
                             }
                         }
-                        if !body.isEmpty { ChatMarkdown(source: body) }
                     }
+                    if !body.isEmpty { replyCard(body) }
                 }
-                meta
             }
-            .padding(.trailing, 40)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onHover(perform: updateHover)
-            .onDisappear { hideActions?.cancel() }
+            if message.role != "assistant" || groupEnd { meta }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if message.role == "assistant" && !groupEnd && canAct {
+                actions.padding(.horizontal, 8).padding(.vertical, 2)
+                    .glass(Capsule(), strong: true, lift: .card)
+                    .offset(y: 8).padding(.trailing, 8)
+                    .opacity(actionsVisible ? 1 : 0).allowsHitTesting(actionsVisible)
+            }
+        }
+    }
+
+    /// A long reply (headings, or many lines) becomes a document card; anything else a card bubble.
+    @ViewBuilder private func replyCard(_ body: String) -> some View {
+        if message.role == "assistant", ReplyLayout.of(body).document {
+            DocumentCard(outline: ReplyLayout.outline(body), tail: groupEnd) { ChatMarkdown(source: body) }
+        } else {
+            ChatMarkdown(source: body, hug: true)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .cardSurface(Bubble.assistant(tail: groupEnd && message.role == "assistant"))
+                .overlay { if message.role == "peer" { Bubble.assistant(tail: false).strokeBorder(Theme.border) } }
         }
     }
 
@@ -534,29 +612,32 @@ private struct MessageRow: View {
 
     private var canAct: Bool { ["user", "assistant", "peer"].contains(message.role) }
 
+    private var actions: some View {
+        HStack(spacing: 10) {
+            Button(action: quote) {
+                HStack(spacing: 3) { Image(systemName: "arrowshape.turn.up.left").font(.system(size: 9)); Text("引用") }.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("引用回复")
+            Button(action: copy) {
+                HStack(spacing: 3) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 9))
+                    Text(copied ? "已复制" : "复制")
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("复制内容")
+        }
+        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+    }
+
     /// Short time plus the hover actions 引用 and 复制.
     private var meta: some View {
         HStack(spacing: 10) {
-            if let at = message.createdAt { Text(TimeFormat.formatShortTime(at)).help(TimeFormat.formatTime(at)) }
-            if canAct {
-                HStack(spacing: 10) {
-                    Button(action: quote) {
-                        HStack(spacing: 3) { Image(systemName: "arrowshape.turn.up.left").font(.system(size: 9)); Text("引用") }.contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain).help("引用回复")
-                    Button(action: copy) {
-                        HStack(spacing: 3) {
-                            Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 9))
-                            Text(copied ? "已复制" : "复制")
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain).help("复制内容")
-                }
-                .opacity(hover || copied || AgentUI.shared.alwaysShowActions ? 1 : 0)
-            }
+            if let at = message.createdAt { Text(TimeFormat.formatShortTime(at)).font(.system(size: 10.5).monospacedDigit()).help(TimeFormat.formatTime(at)) }
+            if canAct { actions.opacity(actionsVisible ? 1 : 0) }
         }
-        .font(.system(size: 10)).foregroundStyle(Theme.muted)
+        .font(.system(size: 10.5)).foregroundStyle(Theme.muted)
+        .padding(.horizontal, 4).frame(minHeight: 18)
     }
 
     private func quote() {
@@ -581,7 +662,7 @@ private struct MessageRow: View {
                     Text(peer?.name ?? "Agent").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.foreground)
                 }
                 .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Theme.secondary, in: Capsule()).contentShape(Capsule())
+                .background(Theme.wash, in: Capsule()).contentShape(Capsule())
             }
             .buttonStyle(.plain).disabled(peer == nil).accessibilityLabel("打开 \(peer?.name ?? "Agent") 的消息")
             if let at = message.createdAt {
@@ -593,13 +674,13 @@ private struct MessageRow: View {
     }
 
     private var repliedCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(bot?.name ?? "Agent").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
-            FoldedReply(content: message.content, recipient: peer?.name ?? "Agent", pending: false)
-            if let at = message.createdAt { Text(TimeFormat.formatTime(at)).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+        AssistantFrame(workspace: workspace, bot: bot, showAvatar: true) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(bot?.name ?? "Agent").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.muted).padding(.leading, 4)
+                FoldedReply(content: message.content, recipient: peer?.name ?? "Agent", pending: false)
+                if let at = message.createdAt { Text(TimeFormat.formatTime(at)).font(.system(size: 10.5)).foregroundStyle(Theme.muted).padding(.horizontal, 4) }
+            }
         }
-        .padding(.trailing, 40)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -637,18 +718,30 @@ private struct StreamingReply: View {
     var body: some View {
         let link = workspace.state?.delegations.first { $0.childTaskID == stream.taskId }
         let peer = link.flatMap { workspace.bot($0.senderBotID) }
-        VStack(alignment: .leading, spacing: 8) {
+        Group {
             if link != nil {
-                Text(bot?.name ?? "Agent").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
-                FoldedReply(content: stream.text, recipient: peer?.name ?? "Agent", pending: true)
+                AssistantFrame(workspace: workspace, bot: bot, showAvatar: true, avatarLift: 0, state: bot.map { workspace.companionState($0.id) } ?? .idle) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(bot?.name ?? "Agent").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.muted).padding(.leading, 4)
+                        FoldedReply(content: stream.text, recipient: peer?.name ?? "Agent", pending: true)
+                    }
+                }
             } else {
-                ChatMarkdown(source: stream.text, pending: true)
-                Text("正在回复…").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                TypingDots()
+                AssistantFrame(workspace: workspace, bot: bot, showAvatar: true, state: bot.map { workspace.companionState($0.id) } ?? .idle) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ChatMarkdown(source: stream.text, hug: true, pending: true)
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .cardSurface(Bubble.assistant(tail: true))
+                        HStack(spacing: 8) {
+                            Text("正在回复…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                            TypingDots()
+                        }
+                        .padding(.horizontal, 6)
+                    }
+                }
             }
         }
-        .padding(.trailing, 40).padding(.bottom, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 14)
         .accessibilityIdentifier("streaming-bubble")
     }
 }
@@ -667,22 +760,19 @@ private struct TypingDots: View {
     }
 }
 
-/// "› 执行记录 · N 项操作", expanding to the individual steps. A step opens its record in the inspector.
+/// The tool-activity capsule (icons, `N 项操作`, red `· M 项失败`), expanding to the individual steps. A step opens its record in the inspector.
 private struct ToolSteps: View {
     let steps: [ToolStep]
     let open: (ToolStep) -> Void
     @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button { expanded.toggle() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).rotationEffect(.degrees(expanded ? 90 : 0))
-                    Text("执行记录 · \(steps.count) 项操作").font(.system(size: 11))
-                }
-                .foregroundStyle(Theme.muted).contentShape(Rectangle())
+        VStack(alignment: .leading, spacing: 8) {
+            Button { withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() } } label: {
+                ToolCapsuleLabel(summary: ToolActivity.summary(steps), expanded: expanded)
             }
             .buttonStyle(.plain)
+            .accessibilityAddTraits(.isButton)
             if expanded {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(steps) { step in
@@ -697,13 +787,15 @@ private struct ToolSteps: View {
                                 Text(ToolLabels.statusText(step.status)).font(.system(size: 11))
                                     .foregroundStyle(["failed", "rejected", "cancelled"].contains(step.status) ? Theme.danger : Theme.muted)
                             }
-                            .foregroundStyle(Theme.foreground).padding(.vertical, 4).contentShape(Rectangle())
+                            .foregroundStyle(Theme.foreground).padding(.vertical, 5).padding(.horizontal, 4).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain).help("点击在右侧面板查看详情")
                     }
                 }
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .frame(maxWidth: 560, alignment: .leading)
+                .cardSurface(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .transition(.opacity)
             }
         }
     }

@@ -3,8 +3,8 @@ import XCTest
 
 final class GraphicAvatarTests: XCTestCase {
     func testAllApprovedGraphicsUseTheCoreWireFormat() throws {
-        XCTAssertEqual(AvatarCatalog.graphics.count, 12)
-        XCTAssertEqual(Set(AvatarCatalog.graphics.map(\.id)).count, 12)
+        XCTAssertEqual(AvatarCatalog.graphics.count, 15)
+        XCTAssertEqual(Set(AvatarCatalog.graphics.map(\.id)).count, 15)
         for graphic in AvatarCatalog.graphics {
             let bytes = try JSONEncoder().encode(AppearanceChoice.graphic(graphic.id))
             let body = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: String])

@@ -19,7 +19,7 @@ enum AgentAppearance: Equatable {
     static let colors = ["teal", "ink", "blue", "clay", "plum"]
     static let portraits = ["fox", "owl", "cat", "bear", "rabbit", "dog", "panda", "koala", "tiger", "deer", "penguin", "seal", "otter", "octopus", "frog", "robot", "astronaut", "star", "cloud", "sprout"]
 
-    /// Port of `appearanceOf`: a saved look, else teal/soft for the first Agent, else a stable look seeded by the id.
+    /// Port of `appearanceOf`: a saved look, else the secretary portrait for the first Agent, else a stable look seeded by the id.
     static func of(_ bot: Bot, firstID: String?) -> AgentAppearance {
         if let raw = bot.row.string("appearance_json"), let data = raw.data(using: .utf8),
            let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -28,7 +28,7 @@ enum AgentAppearance: Equatable {
             if value["kind"] as? String == "portrait", let id = value["id"] as? String, portraits.contains(id) { return .portrait(id) }
             if value["kind"] as? String == "graphic", let id = value["id"] as? String, AvatarCatalog.graphic(id) != nil { return .graphic(id) }
         }
-        if bot.id.isEmpty || bot.id == firstID { return .companion(shape: "soft", color: "teal") }
+        if bot.id.isEmpty || bot.id == firstID { return .graphic("secretary-01") }
         var seed: UInt32 = 0
         for unit in bot.id.utf16 { seed = seed &* 31 &+ UInt32(unit) }
         return .companion(shape: shapes[Int(seed % 4)], color: colors[Int(seed / 4 % 5)])

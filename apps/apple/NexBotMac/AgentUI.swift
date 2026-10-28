@@ -207,7 +207,7 @@ extension View {
     /// Card-style surface used by the inspector groups.
     func fieldCard(padding: CGFloat = 12) -> some View {
         self.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Theme.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

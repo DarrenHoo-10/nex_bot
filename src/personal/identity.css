@@ -28,39 +28,8 @@
 
 /* A consistent reading column, even on a maximized desktop window. */
 .rk-workspace { --identity-accent: #23756d; }
-.rk-workspace .contact-sidebar { background: color-mix(in srgb, var(--secondary) 45%, var(--background)); }
-.rk-workspace .workspace-brand { height: 76px; }
-.rk-workspace .contact-item { padding: 12px 10px; border: 1px solid transparent; }
-.rk-workspace .contact-item.is-selected { background: var(--card); border-color: var(--border); }
-.rk-workspace .contact-item-heading strong { font-size: 14px; }
-.rk-workspace .contact-item-preview { font-size: 12px; }
-.rk-workspace > main > header { min-height: 76px; padding: 0 26px; }
-.rk-workspace .contact-heading > div > span { display: block; font-size: 12px; }
-.rk-workspace .transcript { padding: 26px 32px 12px; }
-.transcript-inner { display: flow-root; width: 100%; max-width: 800px; margin: 0 auto; min-height: 100%; }
-.rk-workspace .message { margin: 16px 0 24px; }
-.rk-workspace .message.assistant .message-body { max-width: 100%; width: 100%; }
-.rk-workspace .message.assistant .bubble { background: transparent; padding: 4px 0; border-radius: 0; }
-.rk-workspace .message .bubble { font-size: 15px; line-height: 1.85; }
-.rk-workspace .message.user .bubble { background: var(--secondary); color: var(--foreground); padding: 12px 18px; border-radius: 18px 18px 5px 18px; }
-.rk-workspace .message-meta { opacity: 1; font-size: 10px; }
-.rk-workspace .message-tools { opacity: 0; }
-.rk-workspace .message-tools button { font-size: 11px; }
-.rk-workspace .composer-area { width: 100%; max-width: 864px; align-self: center; box-sizing: border-box; padding: 14px 32px 24px; }
-.rk-workspace .composer.conversation-input { border-radius: 22px; padding: 10px; background: var(--card); box-shadow: 0 5px 24px #00000005; }
-.rk-workspace .composer.conversation-input:focus-within { border-color: var(--identity-accent); box-shadow: 0 0 0 3px #23756d0b; }
-.rk-workspace .composer textarea { font-size: 15px; }
-.rk-workspace .composer .send:not(:disabled) { background: var(--identity-accent); color: white; }
 .rk-workspace .welcome { min-height: 360px; }
-.rk-workspace .inspector.ds-drawer { background: var(--background); }
-.rk-workspace .profile-top { padding: 28px 20px 22px; grid-template-columns: 64px minmax(0, 1fr); column-gap: 12px; min-height: 110px; align-content: center; }
-.rk-workspace .profile-top > strong { padding-right: 0; font-size: 15px; }
-.rk-workspace .ds-drawer-top-actions { top: 4px; right: 8px; }
-.rk-workspace .ds-drawer-quick-links button { font-size: 11px; }
-.rk-workspace .inspector-tabs button { font-size: 13px; }
-.rk-workspace .inspector-tabs button.selected { color: var(--identity-accent); border-bottom-color: var(--identity-accent); }
 .rk-workspace .workspace-activity { padding: 16px; border-radius: 12px; background: var(--secondary); margin: 0 0 24px; }
-.rk-workspace .inspector-content h2 { font-size: 13px; margin-top: 26px; }
 .rk-workspace .agent-configuration { border: 0; margin: 22px 0 0; padding: 0; }
 .rk-workspace .agent-configuration > div { padding-top: 10px; }
 
@@ -130,10 +99,6 @@
 .rk-workspace .graphic-avatar-option:hover { background: var(--secondary); }
 .rk-workspace .graphic-avatar-option[aria-pressed="true"] { border-color: var(--identity-accent); background: color-mix(in srgb, var(--identity-accent) 7%, var(--card)); }
 @media (max-width: 720px) {
-  .rk-workspace > main > header { min-height: 68px; padding: 0 12px; }
-  .rk-workspace .transcript { padding: 20px 18px 8px; }
-  .rk-workspace .composer-area { padding: 10px 12px 18px; }
-  .rk-workspace .message-tools { opacity: 1; }
   .identity-editor-body { grid-template-columns: 1fr; grid-template-rows: none; gap: 18px; margin-top: 18px; height: auto; max-height: min(560px, calc(100dvh - 260px)); overflow-y: auto; }
   .identity-options { min-height: auto; overflow: visible; padding: 2px; }
   .graphic-picker-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -151,11 +116,8 @@
 .companion-avatar[data-avatar^="bean-"] .companion-body { inset: 14% 5%; }
 .companion-avatar[data-avatar^="pebble-"] .companion-body { inset: 4% 12%; }
 .rk-workspace[data-dark="1"] { --identity-accent: #6bb6a7; }
-.rk-workspace[data-dark="1"] .composer .send:not(:disabled) { color: #123d35; }
 
 /* Assistant details: direct profile actions and a compact, independently toggled schedule list. */
-.rk-workspace .profile-avatar-button { grid-column: 1; grid-row: 1 / 3; align-self: center; width: 64px; height: 64px; padding: 0; border: 0; border-radius: 20px; background: transparent; }
-.rk-workspace .profile-avatar-button:hover { background: var(--muted); }
 .rk-workspace .profile-avatar-button:focus-visible, .rk-workspace .routine-summary:focus-visible, .rk-workspace .routine-toggle:focus-visible, .rk-workspace .bot-identity-link:focus-visible { outline: 2px solid #3566ed; outline-offset: 3px; }
 .rk-workspace .bot-identity-link { display: block; width: 100%; padding: 4px 0; border: 0; background: transparent; color: var(--muted-foreground); text-align: left; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rk-workspace .bot-identity-link:hover { color: var(--foreground); }
@@ -171,8 +133,6 @@
 .rk-workspace .routine-summary:hover strong { color: #3566ed; }
 .rk-workspace .routine-toggle { display: flex; align-items: center; justify-content: flex-start; box-sizing: border-box; flex: 0 0 34px; width: 34px; height: 21px; border: 0; border-radius: 12px; background: var(--muted-foreground); padding: 3px; }
 .rk-workspace .routine-toggle span { display: block; width: 15px; height: 15px; border-radius: 50%; background: #fff; transform: translateX(0); transition: transform 150ms ease; }
-.rk-workspace .routine-toggle.on { background: #3566ed; }
+.rk-workspace .routine-toggle.on { background: var(--identity-accent); }
 .rk-workspace .routine-toggle.on span { transform: translateX(13px); }
 .rk-workspace .routine-toggle:disabled { opacity: .5; cursor: wait; }
-
-.rk-workspace .profile-top > strong { grid-row: 1 / 3; align-self: center; }

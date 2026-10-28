@@ -7,7 +7,7 @@ export const shapes = { soft: { name: "软方", radius: "27% 35% 27% 35%" }, bea
 export function appearanceOf(bot?: RecordRow, firstId?: string): Appearance {
   try { if (bot?.appearance_json) return parseAppearance(JSON.parse(String(bot.appearance_json))); } catch { /* old or future format: safe default */ }
   try { const old = JSON.parse(localStorage.getItem("nexbot.avatarPortraits.v1") || "{}")[String(bot?.id)]; if (old) return parseAppearance({ kind: "portrait", id: old }); } catch { /* storage may be unavailable */ }
-  if (!bot?.id || bot.id === firstId) return { kind: "companion", shape: "soft", color: "teal" };
+  if (!bot?.id || bot.id === firstId) return { kind: "graphic", id: "secretary-01" };
   let seed = 0; for (const ch of String(bot.id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   return { kind: "companion", shape: companionShapes[seed % 4], color: companionColors[Math.floor(seed / 4) % 5] };
 }

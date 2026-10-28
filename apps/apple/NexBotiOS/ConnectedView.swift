@@ -43,8 +43,8 @@ struct NoticeBanner: View {
             ProgressView()
             Text(text).font(.footnote).foregroundStyle(Theme.muted)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(Theme.secondary)
+        .padding(.horizontal, 14).padding(.vertical, 7)
+        .glass(Capsule(), strong: true, lift: .card)
+        .frame(maxWidth: .infinity).padding(.vertical, 4)
     }
 }

@@ -12,8 +12,7 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-size: 14px; color: var(--foreground); background: var(--background);
 }
-.app.rk-workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100dvh; width: 100%; min-width: 0; overflow: hidden; }
-.app.rk-workspace.with-detail { grid-template-columns: 260px minmax(0, 1fr) 310px; }
+.app.rk-workspace { height: 100dvh; width: 100%; min-width: 0; overflow: hidden; }
 .rk-workspace button { color: var(--foreground); border-color: var(--input); box-shadow: none; font: inherit; }
 .rk-workspace button:not(:disabled) { cursor: pointer; }
 .rk-workspace button:disabled { cursor: not-allowed; opacity: .45; }
@@ -28,7 +27,7 @@
 .rk-workspace .danger-link { color: var(--destructive); }
 
 /* Contacts */
-.contact-sidebar { min-width: 0; background: var(--background); display: flex; flex-direction: column; border-right: 1px solid var(--sidebar-border); padding: 0 12px; overflow: hidden; }
+.contact-sidebar { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .workspace-brand { display: flex; align-items: center; gap: 9px; height: 64px; flex-shrink: 0; padding: 0 7px; }
 .workspace-brand strong { font-size: 16px; letter-spacing: -.6px; flex: 1; font-weight: 650; }
 .workspace-home-link { display: flex; align-items: center; gap: inherit; flex: 1; min-width: 0; color: inherit; text-decoration: none; border-radius: 6px; }
@@ -79,34 +78,11 @@
 .rk-workspace .mobile-menu, .rk-workspace .sidebar-dismiss, .sidebar-scrim { display: none; }
 
 /* Conversation */
-.rk-workspace > main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--background); overflow: hidden; }
-.rk-workspace > main > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; padding: 0 28px; border-bottom: 1px solid var(--border); background: transparent; }
-.rk-workspace .contact-heading { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
-.rk-workspace .contact-heading > div { min-width: 0; }
-.rk-workspace .contact-title-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.rk-workspace .contact-title-row > strong { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rk-workspace .contact-heading > div > span { display: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 430px; font-size: 11px; line-height: 18px; color: var(--muted-foreground); margin-top: 3px; }
-.rk-workspace .ds-model-pill { display: none; color: var(--muted-foreground); background: var(--secondary); border: 0; font-size: 10px; max-width: 175px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border-radius: 5px; }
-.rk-workspace .header-actions { display: flex; gap: 5px; align-items: center; }
-.rk-workspace .transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: 22px 28px 24px; scroll-behavior: auto; }
-.rk-workspace .message { display: flex; gap: 12px; padding: 0; margin: 12px 0 18px; width: 100%; max-width: none; }
-.rk-workspace .message-body { min-width: 0; flex: initial; width: fit-content; max-width: 87%; }
-.rk-workspace .message .bubble { background: var(--secondary); box-shadow: none; border: 0; border-radius: 18px; padding: 13px 17px; max-width: none; color: var(--foreground); font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
-.rk-workspace .message.user { justify-content: flex-end; }
-.rk-workspace .message.user .message-body { flex: initial; width: fit-content; max-width: 86%; }
-.rk-workspace .message.user .bubble { background: var(--primary); color: var(--primary-foreground); border-radius: 18px; padding: 13px 17px; }
-.rk-workspace .ds-bot-author, .rk-workspace .message-author { font-size: 12px; font-weight: 600; color: var(--foreground) !important; margin-bottom: 3px; }
-.rk-workspace .message-meta { opacity: 0; display: flex; align-items: center; gap: 9px; margin-top: 6px; color: var(--muted-foreground); font-size: 10px; }
-.rk-workspace .message-tools button { background: none; color: var(--muted-foreground); border: 0; padding: 3px; font-size: 10px; }
-.rk-workspace .message:hover .message-meta, .rk-workspace .message:focus-within .message-meta { opacity: 1; }
-.rk-workspace .message-tools { opacity: 0; transition: opacity .15s; }.rk-workspace .message:hover .message-tools, .rk-workspace .message:focus-within .message-tools { opacity: 1; }
+.rk-workspace > main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .rk-workspace .markdown > :first-child { margin-top: 0; }.rk-workspace .markdown > :last-child { margin-bottom: 0; }
 .rk-workspace .markdown pre { background: var(--secondary); border: 1px solid var(--border); border-radius: 8px; padding: 14px; overflow: auto; max-width: 100%; color: var(--foreground); }
 .rk-workspace .markdown code { font-size: 12px; }.rk-workspace .markdown table { display: block; overflow-x: auto; max-width: 100%; border-collapse: collapse; }
 .rk-workspace .markdown td, .rk-workspace .markdown th { padding: 8px 12px; border: 1px solid var(--input); }
-.rk-workspace .day-divider { display: flex; align-items: center; gap: 15px; justify-content: center; color: var(--muted-foreground); font-size: 10px; margin: 4px 0 22px; }
-.rk-workspace .day-divider::before, .rk-workspace .day-divider::after { display: none; content: ""; height: 1px; width: 42px; background: var(--border); }
-.rk-workspace .day-divider span { background: none; padding: 0; }
 .rk-workspace .a2a-marker { font-size: 11px; gap: 7px; margin: 14px 0; color: var(--muted-foreground); flex-wrap: wrap; }
 .rk-workspace .a2a-contact { background: transparent; border: 0; padding: 2px; }
 .rk-workspace .a2a-reply details { border-left: 2px solid var(--input); padding-left: 10px; }
@@ -118,40 +94,19 @@
 .rk-workspace .ds-welcome-badge { display: none; }.rk-workspace .welcome > small { font-size: 11px; margin-top: 12px; color: var(--muted-foreground); }
 .rk-workspace .welcome-chips { display: flex; gap: 7px; flex-wrap: wrap; justify-content: center; margin-top: 22px; }
 .rk-workspace .welcome-chips button { background: var(--card); border: 1px solid var(--input); border-radius: 8px; padding: 8px 11px; font-size: 11px; color: var(--muted-foreground); }
-.rk-workspace .composer-area { flex-shrink: 0; padding: 12px 28px 26px; border: 0; background: var(--background); position: relative; }
-.rk-workspace .composer.conversation-input { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 24px; background: var(--card); box-shadow: 0 2px 12px #00000003; position: relative; }
-.rk-workspace .composer.conversation-input:focus-within { border-color: var(--muted-foreground); }
-.rk-workspace .composer textarea { border: 0; background: transparent; padding: 7px 8px; font-size: 14px; min-height: 40px; max-height: 160px; line-height: 22px; resize: none; outline: none; width: 100%; box-shadow: none; flex: none; }
-.rk-workspace .composer-add, .rk-workspace .composer .send { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 50%; padding: 0; margin: 0; }
-.rk-workspace .composer-add { border: 0; background: var(--secondary); color: var(--muted-foreground); }
-.rk-workspace .composer .send { background: var(--primary); color: var(--primary-foreground); border: 0; }
 .composer-menu { position: absolute; left: 28px; bottom: 100%; z-index: 52; min-width: 205px; padding: 6px; background: var(--popover); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 8px 32px #0002; }
 .rk-workspace .composer-menu button { display: flex; align-items: center; gap: 12px; width: 100%; background: transparent; border: 0; border-radius: 8px; padding: 12px; text-align: left; font-size: 13px; }
 .rk-workspace .composer-menu button:hover { background: var(--secondary); }
 .rk-workspace .composer-menu-dismiss { position: fixed; inset: 0; z-index: 51; background: transparent; border: 0; border-radius: 0; cursor: default; }
-.rk-workspace .processing-message > .agent-glyph, .rk-workspace .message.assistant > .agent-glyph, .rk-workspace .message .ds-bot-author { display: none; }
 .rk-workspace .task-status { display: flex; align-items: center; gap: 7px; margin: 0 4px 9px; padding: 4px 0; background: none; border: 0; font-size: 11px; color: var(--muted-foreground); }
 .rk-workspace .task-status button { margin-left: auto; border: 0; background: transparent; font-size: 11px; padding: 4px 7px; }
 .rk-workspace .quote-bar { background: var(--secondary); border: 0; border-left: 2px solid var(--muted-foreground); font-size: 11px; margin-bottom: 8px; }
 .rk-workspace .approval { padding: 14px; margin-bottom: 12px; background: var(--card); border: 1px solid var(--warning); border-radius: 10px; }
 .rk-workspace .approval strong { font-size: 13px; }.rk-workspace .approval small, .rk-workspace .approval summary { font-size: 11px; color: var(--muted-foreground); }
 .rk-workspace .approval pre { overflow: auto; max-height: 180px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tool-activity-disclosure { font-size: 11px; color: var(--muted-foreground); margin: 10px 0; }
-.tool-activity-disclosure summary { display: flex; align-items: center; gap: 4px; cursor: pointer; list-style: none; padding: 3px 0; }.tool-activity-disclosure summary::-webkit-details-marker { display: none; }
-.tool-activity-disclosure[open] > summary > svg { transform: rotate(90deg); }.tool-activity-content { border-left: 1px solid var(--input); margin: 5px 0 0 7px; padding-left: 11px; }
 .rk-workspace .step-row { background: none; border: 0; font-size: 11px; width: 100%; display: flex; padding: 6px 0; gap: 6px; }.rk-workspace .step-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.rk-workspace .step-row small { margin-left: auto; }
 
 /* Inspector */
-.rk-workspace .inspector.ds-drawer { width: auto; min-width: 0; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid var(--border); background: var(--background); box-shadow: none; }
-.inspector-heading { height: 64px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; color: var(--muted-foreground); font-size: 13px; }
-.rk-workspace .profile-top { position: relative; display: grid; grid-template-columns: 36px 1fr; gap: 4px 12px; padding: 18px 20px 22px; border: 0; background: transparent; text-align: left; }
-.rk-workspace .profile-top > .agent-glyph, .rk-workspace .profile-top > .avatar { grid-column: 1; grid-row: 1 / 3; align-self: center; }
-.rk-workspace .profile-top > strong { grid-column: 2; font-size: 14px; margin: 0; font-weight: 600; padding-right: 48px; }
-.rk-workspace .ds-drawer-top-actions { display: flex; position: absolute; top: 13px; right: 12px; gap: 0; }
-.rk-workspace .ds-drawer-top-actions .bt-round { width: 25px; height: 25px; flex-basis: 25px; }
-.rk-workspace .ds-drawer-badges { display: none; }
-.rk-workspace .ds-drawer-quick-links { grid-column: 2; display: flex; gap: 8px; margin: 0; align-items: center; color: var(--muted-foreground); }
-.rk-workspace .ds-drawer-quick-links button { font-size: 10px; }
 .rk-workspace .ds-look-picker { grid-column: 1 / -1; width: 100%; }
 .workspace-activity { display: flex; align-items: flex-start; gap: 9px; margin: 0 0 28px; }
 .workspace-activity strong { font-size: 13px; font-weight: 550; }
@@ -160,11 +115,7 @@
 .agent-configuration { margin: 28px 0 0; border-top: 1px solid var(--border); padding-top: 20px; }
 .agent-configuration > summary { display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; list-style: none; color: var(--muted-foreground); }
 .agent-configuration > summary::-webkit-details-marker { display: none; }.agent-configuration > div { padding-top: 24px; }
-.rk-workspace .inspector-tabs { display: flex; padding: 0 20px; gap: 16px; border-radius: 0; margin: 0; border: 0; border-bottom: 1px solid var(--border); background: none; flex-shrink: 0; }
-.rk-workspace .inspector-tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 0; font-size: 12px; background: transparent; color: var(--muted-foreground); }
-.rk-workspace .inspector-tabs button.selected { color: var(--foreground); border-bottom-color: var(--foreground); }
-.rk-workspace .inspector-content { overflow-y: auto; padding: 26px 20px 32px; min-height: 0; }
-.rk-workspace .ds-field-group { margin-bottom: 24px; }.rk-workspace .ds-field-label, .rk-workspace .inspector-content h2 { display: flex; justify-content: space-between; align-items: center; text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 600; color: var(--foreground); margin: 0 0 10px; }
+.rk-workspace .ds-field-group { margin-bottom: 24px; }.rk-workspace .ds-field-label { display: flex; justify-content: space-between; align-items: center; text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 600; color: var(--foreground); margin: 0 0 10px; }
 .rk-workspace .inspector-content h2 { margin-top: 24px; }.rk-workspace .inspector-content h2 button { background: transparent; border: 0; padding: 3px; color: var(--muted-foreground); }
 .rk-workspace .ds-field-card { border: 0; border-radius: 0; padding: 0; background: none; box-shadow: none; }
 .rk-workspace .ds-field-card p { font-size: 12px; line-height: 1.8; color: var(--muted-foreground); margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -204,11 +155,11 @@
 .rk-workspace .error-banner { background: var(--secondary); color: var(--destructive); border-bottom: 1px solid var(--border); }.rk-workspace .notice { background: var(--secondary); color: var(--foreground); font-size: 12px; }.rk-workspace .notice button { background: none; color: var(--link); border: 0; }
 .rk-workspace .settings, .rk-workspace .devices { background: var(--background); }.rk-workspace .ds-settings-card { background: var(--card); border-color: var(--input); box-shadow: none; }
 .rk-workspace ::-webkit-scrollbar { width: 5px; height: 5px; }.rk-workspace ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }.rk-workspace ::-webkit-scrollbar-track { background: transparent; }
-@media (max-width: 1250px) { .app.rk-workspace { grid-template-columns: 235px minmax(0, 1fr); }.app.rk-workspace.with-detail { grid-template-columns: 235px minmax(0, 1fr) 275px; }.rk-workspace .ds-composer-hint { display: none; }.rk-workspace .inspector-content { padding: 20px 16px; }.connectors-page { padding: 30px 24px; } }
-@media (max-width: 1040px) { .app.rk-workspace.with-detail { grid-template-columns: 235px minmax(0, 1fr); }.rk-workspace .inspector.ds-drawer { display: flex; position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: 306px; box-shadow: -20px 0 60px #00000018; }.connector-layout { grid-template-columns: 200px minmax(0, 1fr); } }
+@media (max-width: 1250px) { .rk-workspace .ds-composer-hint { display: none; }.connectors-page { padding: 30px 24px; } }
+@media (max-width: 1040px) { .connector-layout { grid-template-columns: 200px minmax(0, 1fr); } }
 @media (max-width: 720px) {
   .app.rk-workspace, .app.rk-workspace.with-detail { display: flex; }.rk-workspace > main { flex: 1; width: 100%; }.contact-sidebar { display: none; }.contact-sidebar.is-open { display: flex; position: fixed; inset: 0 auto 0 0; width: 278px; z-index: 60; box-shadow: 20px 0 60px #0002; }.rk-workspace .sidebar-scrim { display: block; position: fixed; inset: 0; border: 0; background: var(--overlay); z-index: 59; }.rk-workspace .sidebar-dismiss, .rk-workspace .mobile-menu { display: inline-flex; }
-  .rk-workspace > main > header { padding: 0 14px; min-height: 65px; gap: 8px; }.rk-workspace .contact-heading > div > span { max-width: 205px; }.rk-workspace .ds-model-pill { display: none; display: none; }.rk-workspace .transcript { padding: 18px 16px; }.rk-workspace .composer-area { padding: 8px 12px 15px; }.rk-workspace .composer.conversation-input { gap: 8px; }.rk-workspace .message-meta { opacity: 1; }.rk-workspace .composer-tools button { font-size: 10px; padding: 5px; }.rk-workspace .message-tools { opacity: 1; }.rk-workspace .message.user .message-body { max-width: 92%; }.rk-workspace .inspector.ds-drawer { width: min(340px, 94vw); z-index: 55; }.rk-workspace .modal { width: calc(100% - 24px); padding: 20px; }
+  .rk-workspace .composer-tools button { font-size: 10px; padding: 5px; }.rk-workspace .modal { width: calc(100% - 24px); padding: 20px; }
   .connectors-page { padding: 24px 16px; }.page-intro { flex-direction: column; align-items: flex-start; margin-bottom: 22px; }.page-intro h1 { font-size: 24px; }.connector-layout { display: flex; flex-direction: column; }.connector-list { border-right: 0; border-bottom: 1px solid var(--input); }.connector-detail { padding: 19px; }.connector-empty { min-height: 320px; padding: 22px; }.rk-workspace .welcome-chips button { font-size: 10px; }
 }
 @media (prefers-reduced-motion: reduce) { .rk-workspace *, .rk-workspace *::before, .rk-workspace *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

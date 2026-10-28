@@ -4,27 +4,36 @@
 }
 .workspace-stage { padding: 0 !important; }
 .workspace-stage > .app.rk-workspace { border: 0 !important; border-radius: 0 !important; }
-.rk-workspace .workspace-brand,
-.rk-workspace > main > header,
-.rk-workspace .inspector-heading {
-  height: 64px !important;
-  min-height: 64px !important;
+/* The floating panels sit inside the window's padding; the free space above and
+   between them is the drag area, and the conversation header shares the caption row. */
+.workspace-stage > .app.rk-workspace { -webkit-app-region: drag; }
+.rk-workspace .contact-sidebar,
+.rk-workspace .inspector.ds-drawer,
+.rk-workspace > main > :not(header),
+.rk-workspace .modal-backdrop,
+.rk-workspace .sidebar-scrim {
+  -webkit-app-region: no-drag;
+}
+.rk-workspace > main > header {
   -webkit-app-region: drag;
   user-select: none;
 }
-.rk-workspace .workspace-brand button,
 .rk-workspace > main > header button,
-.rk-workspace > main > header .contact-heading.clickable,
 .rk-workspace > main > header .header-actions,
-.rk-workspace .inspector-heading button {
+.rk-workspace .workspace-brand button {
   -webkit-app-region: no-drag;
 }
+/* Keep header controls clear of the native caption buttons when they overlap the column. */
 .rk-workspace:not(.with-detail) > main > header,
-.rk-workspace .inspector-heading {
-  padding-right: calc(var(--window-caption-width) + 12px) !important;
+.rk-workspace[data-page="settings"] > main > header {
+  padding-right: max(2px, calc(var(--window-caption-width) - 14px + 12px)) !important;
 }
-/* Keep the native caption/drag row; the conversation header toggles details. */
-.rk-workspace .inspector-heading > * { display: none !important; }
+/* Below 1040px the panel overlays the column, so the header always clears the caption. */
+@media (max-width: 1040px) {
+  .rk-workspace > main > header { padding-right: max(2px, calc(var(--window-caption-width) - 14px + 12px)) !important; }
+}
+/* The open companion panel reaches the caption row: start its content below the buttons. */
+.rk-workspace .inspector.ds-drawer { padding-top: 54px !important; }
 /* A draggable top edge remains available before login and during reconnect. */
 body:not(:has(.workspace-stage))::before {
   content: "";

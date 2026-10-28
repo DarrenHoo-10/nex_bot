@@ -47,10 +47,9 @@ struct Composer: View {
             }
         }
     }
-    private var height: CGFloat {
-        let lines = conversation.draft.split(separator: "\n", omittingEmptySubsequences: false).count
-        return min(104, max(22, CGFloat(min(lines, 5)) * 19 + 3))
-    }
+    /// The capsule is one line high and grows with the laid-out text, up to about six lines.
+    @State private var contentHeight: CGFloat = 20
+    private var height: CGFloat { min(120, max(20, contentHeight)) }
 
     /// Other agents whose name contains the text typed after a trailing `@`.
     private var mentions: [Bot] {
@@ -73,20 +72,20 @@ struct Composer: View {
     }
 
     private var field: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            textInput
-            toolbar
+        HStack(alignment: .bottom, spacing: 6) {
+            plusButton
+            textInput.padding(.vertical, 7)
+            sendButton
         }
-        .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 10)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.border))
-        .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+        .padding(.leading, 8).padding(.trailing, 6).padding(.vertical, 6)
+        .glass(RoundedRectangle(cornerRadius: 26, style: .continuous), strong: true)
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(Theme.identityAccent.opacity(focused ? 0.5 : 0), lineWidth: 1.5))
     }
 
     private var textInput: some View {
         ComposerTextEditor(text: $conversation.draft, focused: $focused, onPasteImage: { data, name in
             Task { await conversation.addAttachment(name: name, data: data) }
-        }) { key in
+        }, onContentHeight: { contentHeight = $0 }) { key in
             switch key {
             case 125: return moveMention(1) == .handled
             case 126: return moveMention(-1) == .handled
@@ -115,39 +114,38 @@ struct Composer: View {
             .accessibilityLabel("发送给 Agent 的消息")
     }
 
-    /// Bottom row: 添加 (＋) and the round send button. Permission and model live in the ＋ menu only.
-    private var toolbar: some View {
-        HStack(spacing: 8) {
-            Button { toggle(.add) } label: {
-                Image(systemName: "plus").font(.system(size: 15, weight: .regular)).foregroundStyle(Theme.muted)
-                    .frame(width: 34, height: 34).background(menu == .add ? Theme.border : Theme.secondary, in: Circle()).contentShape(Circle())
-            }
-            .buttonStyle(.plain).disabled(controlsDisabled)
-            .help("添加文件或指令").accessibilityLabel("添加文件或指令")
-            .popover(isPresented: anyMenuOpen, arrowEdge: .top) { menuContent }
+    /// ＋ opens 添加 / 指令; permission and model live in that menu only.
+    private var plusButton: some View {
+        Button { toggle(.add) } label: {
+            Image(systemName: "plus").font(.system(size: 15, weight: .regular)).foregroundStyle(menu == .add ? Theme.foreground : Theme.muted)
+                .frame(width: 34, height: 34).background(menu == .add ? Theme.wash : .clear, in: Circle()).contentShape(Circle())
+        }
+        .buttonStyle(.plain).disabled(controlsDisabled)
+        .help("添加文件或指令").accessibilityLabel("添加文件或指令")
+        .popover(isPresented: anyMenuOpen, arrowEdge: .top) { menuContent }
+    }
 
-            Spacer(minLength: 0)
-            // While the agent works and nothing is typed, the send key stops it (web composer).
-            if showStop {
-                Button(action: stopAll) {
-                    Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.primaryForeground)
-                        .frame(width: 34, height: 34)
-                        .background(Theme.primary, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(stopping || tasks.allSatisfy { $0.status == "cancelling" })
-                .help("停止任务").accessibilityLabel("停止任务")
-            } else {
-                Button(action: send) {
-                    Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(canSend ? Theme.primaryForeground : .white)
-                        .frame(width: 34, height: 34)
-                        .background(canSend ? Theme.primary : Color(hex: 0x9A9A9E), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送消息")
+    /// While the agent works and nothing is typed, the send key stops it (web composer).
+    @ViewBuilder private var sendButton: some View {
+        if showStop {
+            Button(action: stopAll) {
+                Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Theme.primaryForeground)
+                    .frame(width: 34, height: 34)
+                    .background(Theme.primary, in: Circle())
             }
+            .buttonStyle(.plain)
+            .disabled(stopping || tasks.allSatisfy { $0.status == "cancelling" })
+            .help("停止任务").accessibilityLabel("停止任务")
+        } else {
+            Button(action: send) {
+                Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(canSend ? Theme.primaryForeground : Theme.muted)
+                    .frame(width: 34, height: 34)
+                    .background(canSend ? Theme.primary : Theme.wash, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend).help("发送 (Return)").accessibilityLabel("发送消息")
         }
     }
 
@@ -281,8 +279,8 @@ struct Composer: View {
             .buttonStyle(.plain).help("取消引用").accessibilityLabel("取消引用")
         }
         .padding(.horizontal, 14).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(alignment: .leading) { Rectangle().fill(Theme.brand).frame(width: 3).padding(.vertical, 6) }
+        .background(Theme.glassStrong, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(alignment: .leading) { Capsule().fill(Theme.identityAccent).frame(width: 3).padding(.vertical, 8) }
     }
 
     private func errorLine(_ text: String) -> some View {
@@ -312,9 +310,7 @@ struct Composer: View {
             }
         }
         .padding(6)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
-        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        .glass(RoundedRectangle(cornerRadius: 16, style: .continuous), strong: true)
         .accessibilityLabel("提及同伴 Agent")
     }
 

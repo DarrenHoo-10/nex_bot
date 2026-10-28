@@ -11,6 +11,7 @@ interface GraphicAvatar {
 const revisedFemale = { id: "female-03-04-07", width: 1958, height: 803 };
 const expressiveFemale = { id: "female-05-06-12", width: 1536, height: 1024 };
 const expressiveMale = { id: "male-01-06", width: 1536, height: 1024 };
+const secretary = { id: "secretary-01-03", width: 1536, height: 512 };
 
 // Display the selected artwork directly from the original sheets. The classic
 // portrait catalog and its ID-based default assignment deliberately stay intact.
@@ -27,4 +28,7 @@ export const graphicAvatarData = {
   "male-04": { description: "蓝色配色、短发眨眼", sheet: expressiveMale, crop: [68, 502, 425, 427], motion: [5.2, 4, -3] },
   "male-05": { description: "粉色配色、短发浅笑", sheet: expressiveMale, crop: [547, 502, 430, 426], motion: [5.5, -4, -2] },
   "male-06": { description: "红色配色、短发欢笑", sheet: expressiveMale, crop: [1040, 502, 428, 427], motion: [4.8, 4, -3] },
+  "secretary-01": { description: "松青配色、黑发抱笔记本", sheet: secretary, crop: [81, 24, 340, 340], motion: [5.6, -3, -2] },
+  "secretary-02": { description: "松青配色、马尾眨眼", sheet: secretary, crop: [583, 70, 340, 340], motion: [4.7, 4, -3] },
+  "secretary-03": { description: "松青配色、银发蕾丝头饰", sheet: secretary, crop: [1100, 24, 340, 340], motion: [6.0, -4, -2] },
 } as const satisfies Record<GraphicAvatarId, GraphicAvatar>;

@@ -72,54 +72,49 @@ struct ComposerView: View {
             if menu == .add { addMenu.transition(.opacity) }
             if menu == .permissions { permissionMenu.frame(maxWidth: .infinity, alignment: .leading).transition(.opacity) }
             if !conversation.attachments.isEmpty { attachmentChips }
-            VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .bottom, spacing: 4) {
+                Button { toggle(.add) } label: {
+                    Image(systemName: "plus").font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(menu == .add ? Theme.foreground : Theme.muted)
+                        .frame(width: 36, height: 36)
+                        .background(menu == .add ? Theme.wash : .clear, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(conversation.isSending || conversation.isUploadingAttachments)
+                .accessibilityLabel("添加文件或指令")
                 TextField("给 \(botName) 发消息…", text: $conversation.draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .padding(.horizontal, 6).padding(.top, 6)
+                    .lineLimit(1...6)
+                    .padding(.vertical, 8)
                     .accessibilityLabel("发送给 Agent 的消息")
                     .onChange(of: conversation.draft) { showMentionsDismissed = false; menu = nil }
-                HStack(spacing: 8) {
-                    Button { toggle(.add) } label: {
-                        Image(systemName: "plus").font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(menu == .add ? Theme.foreground : Theme.muted)
-                            .frame(width: 34, height: 34)
-                            .background(menu == .add ? Theme.secondary : .clear, in: Circle())
+                // While the agent works and nothing is typed, the send key stops it (web composer).
+                if showStop {
+                    Button { Task { await stopAll() } } label: {
+                        Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                            .foregroundStyle(Theme.primaryForeground)
+                            .background(Theme.primary, in: Circle())
                     }
-                    .buttonStyle(.plain)
-                    .disabled(conversation.isSending || conversation.isUploadingAttachments)
-                    .accessibilityLabel("添加文件或指令")
-                    Spacer(minLength: 0)
-                    // While the agent works and nothing is typed, the send key stops it (web composer).
-                    if showStop {
-                        Button { Task { await stopAll() } } label: {
-                            Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
-                                .frame(width: 34, height: 34)
-                                .foregroundStyle(Theme.primaryForeground)
-                                .background(Theme.primary, in: Circle())
+                    .disabled(stopping || allCancelling || workspace.connection == .resyncing)
+                    .accessibilityLabel("停止任务")
+                } else {
+                    Button { Task { await send() } } label: {
+                        Group {
+                            if conversation.isSending { ProgressView() }
+                            else { Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold)) }
                         }
-                        .disabled(stopping || allCancelling || workspace.connection == .resyncing)
-                        .accessibilityLabel("停止任务")
-                    } else {
-                        Button { Task { await send() } } label: {
-                            Group {
-                                if conversation.isSending { ProgressView() }
-                                else { Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold)) }
-                            }
-                            .frame(width: 34, height: 34)
-                            .foregroundStyle(canSend ? Theme.primaryForeground : Theme.muted)
-                            .background(canSend ? Theme.primary : Theme.secondary, in: Circle())
-                        }
-                        .disabled(!canSend)
-                        .accessibilityLabel("发送消息")
+                        .frame(width: 36, height: 36)
+                        .foregroundStyle(canSend ? Theme.primaryForeground : Theme.muted)
+                        .background(canSend ? Theme.primary : Theme.wash, in: Circle())
                     }
+                    .disabled(!canSend)
+                    .accessibilityLabel("发送消息")
                 }
             }
-            .padding(.horizontal, 6).padding(.bottom, 6)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Theme.border))
+            .padding(.leading, 6).padding(.trailing, 5).padding(.vertical, 5)
+            .glass(RoundedRectangle(cornerRadius: 25, style: .continuous), strong: true)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Theme.background)
         .animation(.easeOut(duration: 0.12), value: menu)
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { Task { await addFiles(urls) } }

@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NexBot 视觉方向 · 可收放布局与回复格式</title>
+<!-- Standalone design preview. Not bundled, not loaded by the app. -->
+<style>
+:root {
+  font-family: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #e7ebf0; color: #1d2735; }
+body[data-theme="dark"] { background: #0a1018; color: #e5edf7; }
+button { font: inherit; color: inherit; cursor: pointer; }
+svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* Page chrome */
+.toolbar { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 24px; max-width: 1560px; margin: 0 auto; }
+.toolbar h1 { margin: 0 auto 0 0; font-size: 15px; font-weight: 650; letter-spacing: -.2px; }
+.ctl { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; opacity: .9; }
+.ctl > span { opacity: .6; }
+.seg { display: inline-flex; padding: 3px; border-radius: 999px; background: rgba(255,255,255,.75); box-shadow: 0 1px 2px rgba(20,40,70,.08); }
+body[data-theme="dark"] .seg { background: rgba(255,255,255,.07); }
+.seg button { border: 0; background: none; padding: 5px 12px; border-radius: 999px; font-size: 12px; }
+.seg button[aria-pressed="true"] { background: #1d2735; color: #fff; }
+body[data-theme="dark"] .seg button[aria-pressed="true"] { background: #e5edf7; color: #111a26; }
+.board { max-width: 1560px; margin: 0 auto; padding: 0 24px 36px; }
+.notes { display: grid; grid-template-columns: 1fr 1.4fr; gap: 28px; margin-top: 18px; padding: 0 6px; font-size: 12.5px; line-height: 1.85; }
+.notes h2 { margin: 0 0 4px; font-size: 13px; font-weight: 650; }
+.notes ul { margin: 0; padding-left: 18px; opacity: .78; }
+.notes b { font-weight: 650; }
+@media (max-width: 1000px) { .notes { grid-template-columns: 1fr; } }
+
+/* Window + atmosphere */
+.window {
+  --ink: #1b2533; --ink-2: #485467; --ink-3: #7b8799;
+  --card: #ffffff; --glass: rgba(255,255,255,.5); --glass-strong: rgba(255,255,255,.74); --glass-edge: rgba(255,255,255,.8);
+  --hair: rgba(40,60,90,.08); --wash: rgba(110,128,152,.1);
+  --accent: #23756d; --good: #2fa57c; --bad: #df5a4e; --warn: #e0a33a;
+  --sky-base: #dae3ed; --sky-1: #ffffff; --sky-2: #b7d3e9; --sky-3: #f0e1d5; --sky-4: #f2f6fa; --swirl: rgba(255,255,255,.6);
+  --shadow-card: 0 1px 2px rgba(30,50,80,.05), 0 10px 28px rgba(30,50,80,.07);
+  --shadow-float: 0 16px 44px rgba(30,50,80,.13), 0 2px 6px rgba(30,50,80,.06);
+  --lw: 244px; --rw: 290px; --ease: cubic-bezier(.3,.7,.2,1);
+  position: relative; height: min(900px, calc(100vh - 120px)); min-height: 660px; border-radius: 20px; overflow: hidden;
+  container-type: inline-size; color: var(--ink);
+  background:
+    radial-gradient(55% 45% at 6% 0%, var(--sky-1), transparent 70%),
+    radial-gradient(60% 55% at 0% 88%, var(--sky-2), transparent 70%),
+    radial-gradient(48% 52% at 100% 0%, var(--sky-3), transparent 70%),
+    radial-gradient(70% 60% at 78% 106%, var(--sky-4), transparent 70%),
+    var(--sky-base);
+  box-shadow: 0 30px 80px rgba(20,40,70,.16), inset 0 0 0 1px rgba(255,255,255,.55);
+}
+.window[data-left="closed"] { --lw: 74px; }
+.window[data-right="closed"] { --rw: 0px; }
+body[data-theme="dark"] .window {
+  --ink: #e8eff8; --ink-2: #b3c0d1; --ink-3: #7f8ca0;
+  --card: #1a2431; --glass: rgba(22,33,48,.5); --glass-strong: rgba(32,46,64,.74); --glass-edge: rgba(190,215,245,.12);
+  --hair: rgba(190,215,245,.08); --wash: rgba(170,195,225,.08);
+  --accent: #3f9c8f;
+  --sky-base: #0b1420; --sky-1: #1e3044; --sky-2: #1c3a58; --sky-3: #3a3026; --sky-4: #0f1a28; --swirl: rgba(150,190,235,.08);
+  --shadow-card: 0 1px 2px rgba(0,0,0,.25), 0 10px 28px rgba(0,0,0,.25);
+  --shadow-float: 0 16px 44px rgba(0,0,0,.4), 0 2px 6px rgba(0,0,0,.25);
+  box-shadow: 0 30px 80px rgba(0,0,0,.45), inset 0 0 0 1px rgba(190,215,245,.08);
+}
+.window::before { content: ""; position: absolute; inset: -25%; pointer-events: none; filter: blur(34px); transform: rotate(-14deg);
+  background: radial-gradient(38% 20% at 56% 44%, var(--swirl), transparent 70%), radial-gradient(26% 36% at 30% 62%, var(--swirl), transparent 70%), radial-gradient(22% 18% at 74% 72%, var(--swirl), transparent 70%); }
+.window::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .32; mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+.app { position: absolute; inset: 0; z-index: 1; display: grid; grid-template-columns: var(--lw) minmax(0, 1fr) var(--rw); padding: 14px; transition: grid-template-columns .36s var(--ease); }
+
+.glass { background: var(--glass); backdrop-filter: blur(26px) saturate(1.4); -webkit-backdrop-filter: blur(26px) saturate(1.4); border: 1px solid var(--glass-edge); box-shadow: var(--shadow-float); }
+.round { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--ink-2); }
+.btn { border: 0; font-size: 12px; padding: 6px 13px; border-radius: 999px; background: var(--ink); color: var(--card); white-space: nowrap; }
+
+/* Mascot (mirrors the satin companion avatar) */
+.mascot { position: relative; display: inline-block; width: var(--s); height: var(--s); flex: none; --u: calc(var(--s) / 100); }
+.mascot .body { position: absolute; inset: 6%; border-radius: var(--r); overflow: hidden; transform-origin: 50% 80%;
+  background: radial-gradient(ellipse at 24% 8%, #ffffff47, transparent 54%), radial-gradient(ellipse at 88% 84%, #052d3c52, transparent 62%), linear-gradient(155deg, color-mix(in srgb, var(--c) 82%, #b6e5de), var(--c) 56%, color-mix(in srgb, var(--c) 87%, #164453));
+  box-shadow: inset 0 calc(var(--u) * 1.2) calc(var(--u) * 2) #ffffff70, inset calc(var(--u) * -1.5) calc(var(--u) * -2.5) calc(var(--u) * 5) #072e3c33, 0 calc(var(--u) * 4) calc(var(--u) * 7) #113b5024; }
+.mascot .hl { position: absolute; inset: 5% 9% auto; height: 43%; border-radius: 48% 52% 64% 36%; background: radial-gradient(ellipse at 32% 4%, #ffffff30, transparent 72%); }
+.mascot .eyes { position: absolute; z-index: 1; display: flex; justify-content: space-between; align-items: center; left: 28%; right: 28%; top: 40%; height: 22%; }
+.mascot .eyes i { width: 21%; height: 100%; border-radius: 50%; background: linear-gradient(110deg, #fff, #e2f5ed); box-shadow: 0 calc(var(--u) * 1.2) calc(var(--u) * 1.8) #063c3e70; }
+.mascot .ck { position: absolute; z-index: 1; width: 8%; height: 3%; border-radius: 50%; right: 20%; top: 64%; background: #ddfff82b; }
+.mascot.bean .body { inset: 14% 5%; }
+.mascot.pebble .body { inset: 4% 12%; }
+.mascot.live .eyes { animation: blink 7s ease-in-out infinite; }
+.mascot.breathe .body { animation: breathe 5s ease-in-out infinite; }
+@keyframes blink { 0%, 43%, 47%, 100% { transform: scaleY(1); } 45% { transform: scaleY(.12); } }
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.035, .97) translateY(1.5%); } }
+@media (prefers-reduced-motion: reduce) { .mascot *, .app, .side, .who { animation: none !important; transition: none !important; } }
+.mascot.portrait { border-radius: 50%; overflow: hidden; background: #e9f3f1; box-shadow: 0 0 0 1.5px var(--card), 0 2px 8px rgba(20,60,70,.18); }
+/* Center the face point (--fx, --fy, as fractions) and zoom in by --zoom. */
+.mascot.portrait img { position: absolute; display: block; max-width: none; width: calc(var(--zoom, 2.3) * 100%); height: calc(var(--zoom, 2.3) * 100%); left: calc((.5 - var(--fx) * var(--zoom, 2.3)) * 100%); top: calc((.5 - var(--fy) * var(--zoom, 2.3)) * 100%); }
+.hero .mascot.portrait { width: 128px; height: 128px; border-radius: 36px; --zoom: 1.35; box-shadow: 0 0 0 3px var(--card), 0 14px 34px rgba(20,60,70,.22); }
+.hero .halo:has(.portrait) { width: 148px; height: 148px; }
+
+/* ---------- Left rail: list when open, avatar dock when closed ---------- */
+.rail { border-radius: 22px; padding: 12px 10px 10px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; white-space: nowrap; }
+.rail-head { display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 2px 0 6px; margin-bottom: 8px; font-weight: 650; font-size: 15px; letter-spacing: -.3px; }
+.rail-head .round { margin-left: auto; width: 30px; height: 30px; }
+.rail-head .round:hover, .rail .search:hover { background: var(--wash); }
+.rail .search { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border: 0; border-radius: 12px; background: var(--wash); font-size: 12.5px; color: var(--ink-3); margin: 0 2px 10px; text-align: left; }
+.rail .list { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow: auto; scrollbar-width: none; }
+.convo { position: relative; display: flex; gap: 10px; align-items: center; padding: 9px 8px; border-radius: 15px; min-width: 0; border: 0; background: none; text-align: left; }
+.convo.on { background: var(--glass-strong); box-shadow: 0 4px 14px rgba(30,50,80,.07), inset 0 1px 0 var(--glass-edge); }
+.convo .txt { min-width: 0; flex: 1; }
+.convo .t { display: flex; align-items: baseline; gap: 6px; }
+.convo b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.convo time { font-size: 10.5px; color: var(--ink-3); margin-left: auto; font-variant-numeric: tabular-nums; flex: none; }
+.convo p { margin: 2px 0 0; font-size: 11.5px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.convo.add { color: var(--ink-3); font-size: 12.5px; }
+.convo.add .plus { width: 36px; height: 36px; border-radius: 12px; border: 1px dashed color-mix(in srgb, var(--ink-3) 55%, transparent); display: grid; place-items: center; flex: none; }
+.account { margin-top: auto; display: flex; align-items: center; gap: 9px; padding: 8px; font-size: 12.5px; }
+.account .av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: #3866d6; color: #fff; font-size: 12px; font-weight: 600; position: relative; flex: none; }
+.account .av::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%; background: var(--good); border: 2px solid var(--card); }
+.window[data-left="closed"] .rail { padding-inline: 11px; }
+.window[data-left="closed"] .rail-head { flex-direction: column; height: auto; gap: 6px; padding: 2px 0 0; margin-bottom: 10px; }
+.window[data-left="closed"] .rail-head .round { margin: 0; }
+.window[data-left="closed"] :is(.rail-head .name, .rail .search span, .convo .txt, .convo.add span:last-child, .account .name) { display: none; }
+.window[data-left="closed"] .rail .search { width: 40px; padding: 0; justify-content: center; align-self: center; margin-inline: 0; }
+.window[data-left="closed"] .convo { justify-content: center; padding: 5px; }
+.window[data-left="closed"] .convo.on::before { content: ""; position: absolute; left: -11px; top: 14px; width: 3px; height: 22px; border-radius: 2px; background: var(--accent); }
+.window[data-left="closed"] .account { justify-content: center; padding: 8px 0; }
+
+/* ---------- Chat ---------- */
+.chat { position: relative; min-width: 0; min-height: 0; margin: 0 14px; }
+.scroll { position: absolute; inset: 0; overflow: auto; padding: 74px 10px 110px; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(transparent 0, #000 64px, #000 calc(100% - 96px), transparent); mask-image: linear-gradient(transparent 0, #000 64px, #000 calc(100% - 96px), transparent); }
+.col { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.top { position: absolute; z-index: 3; top: 2px; left: 0; right: 0; display: flex; justify-content: center; pointer-events: none; }
+.who { display: inline-flex; align-items: center; gap: 9px; padding: 5px 16px 5px 6px; border-radius: 999px; border: 1px solid var(--glass-edge); pointer-events: auto; transition: opacity .25s ease, transform .25s ease; }
+.who strong { font-size: 13.5px; letter-spacing: -.1px; }
+.who span { font-size: 11.5px; color: var(--ink-3); }
+.window[data-right="open"] .who { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+.acts { position: absolute; z-index: 3; top: 2px; right: 0; display: flex; gap: 6px; }
+.acts .round[aria-pressed="true"] { background: var(--ink); color: var(--card); }
+
+.msg { max-width: 100%; font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+.msg p { margin: 0 0 6px; } .msg p:last-child { margin: 0; }
+.msg.me { align-self: flex-end; max-width: 78%; }
+.msg.me .b { background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 86%, #fff), var(--accent)); color: #fff; border-radius: 20px 20px 6px 20px; padding: 9px 16px; box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 26%, transparent); }
+.msg.bot .b { background: var(--card); border-radius: 20px; padding: 10px 16px; box-shadow: var(--shadow-card); }
+.msg.bot.full .b { padding: 14px 18px; }
+.stamp { align-self: center; font-size: 11px; color: var(--ink-3); margin: 16px 0 2px; font-variant-numeric: tabular-nums; }
+.row { display: flex; align-items: flex-end; gap: 8px; max-width: 100%; align-self: flex-start; }
+.row .gutter { width: 26px; flex: none; }
+.stack { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; min-width: 0; max-width: calc(100% - 34px); }
+.stack > :last-child .b, .stack > .report:last-child, .stack > .doc:last-child { border-bottom-left-radius: 6px; }
+.meta { display: flex; gap: 12px; font-size: 11px; color: var(--ink-3); padding-left: 36px; margin-top: -4px; }
+.flash { animation: flash 1.4s ease; border-radius: 22px; }
+@keyframes flash { 0%, 40% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent); } 100% { box-shadow: 0 0 0 4px transparent; } }
+
+code.c { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 11.5px; background: var(--wash); padding: 1px 6px; border-radius: 6px; word-break: break-all; }
+.tbl { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.tbl td { padding: 7px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl td:last-child { text-align: right; padding-left: 12px; }
+.tbl td b { font-weight: 650; }
+.tbl code.c { white-space: nowrap; word-break: normal; }
+
+.notice { align-self: center; display: inline-flex; align-items: center; gap: 10px; padding: 5px 5px 5px 14px; border-radius: 999px; font-size: 12px; color: var(--ink-2); }
+.notice i { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
+details > summary { list-style: none; } details > summary::-webkit-details-marker { display: none; }
+.chev { transition: transform .18s ease; }
+details[open] > summary .chev, .doc.open .more .chev { transform: rotate(180deg); }
+.ops { min-width: 0; }
+.ops[open] { flex: 1; }
+.ops summary { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px 5px 6px; border-radius: 999px; font-size: 12px; color: var(--ink-2); cursor: pointer; box-shadow: none; }
+.ops .chips { display: inline-flex; }
+.ops .chips span { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--card); box-shadow: 0 0 0 2px var(--glass-strong); margin-left: -5px; color: var(--accent); }
+.ops .chips span:first-child { margin-left: 0; }
+.ops .chips svg { width: 13px; height: 13px; stroke-width: 2; }
+.ops .fail { color: var(--bad); }
+.steps { margin: 8px 0 0; padding: 8px 10px; list-style: none; background: var(--card); border-radius: 16px; box-shadow: var(--shadow-card); font-size: 12px; width: 100%; }
+.steps li { display: flex; gap: 9px; align-items: center; padding: 5px 4px; min-width: 0; }
+.steps li strong { font-weight: 600; flex: none; }
+.steps li code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--ink-3); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); flex: none; }
+.dot.bad { background: var(--bad); }
+
+/* Report card: structured result */
+.report { background: var(--card); border-radius: 20px; box-shadow: var(--shadow-card); overflow: hidden; width: min(440px, 100%); }
+.report .hd { padding: 14px 18px 2px; font-size: 12px; color: var(--ink-3); }
+.report .big { padding: 0 18px; font-size: 32px; font-weight: 650; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+.report .big small { font-size: 14px; font-weight: 500; letter-spacing: 0; color: var(--ink-3); margin-left: 3px; }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 12px 14px; }
+.tile { background: var(--wash); border-radius: 14px; padding: 9px 12px; min-width: 0; }
+.tile small { display: block; font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+.tile b { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile b em { font-style: normal; font-size: 11px; font-weight: 500; color: var(--ink-3); margin-left: 2px; }
+.report > p { margin: 0; padding: 0 18px 12px; font-size: 12.5px; color: var(--ink-2); line-height: 1.7; }
+.report details { border-top: 1px solid var(--hair); }
+.report summary { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; font-size: 12px; color: var(--ink-3); cursor: pointer; }
+.report .detail { padding: 0 18px 12px; font-size: 12.5px; color: var(--ink-2); }
+
+/* Document card: long markdown */
+.doc { background: var(--card); border-radius: 20px; box-shadow: var(--shadow-card); width: 100%; overflow: hidden; }
+.doc .outline { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 16px 0; }
+.doc .outline button { border: 0; font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: var(--wash); color: var(--ink-2); }
+.doc .outline button:hover { color: var(--accent); }
+.doc-body { padding: 10px 18px 4px; font-size: 14px; line-height: 1.75; max-height: 230px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 62%, transparent); mask-image: linear-gradient(#000 62%, transparent); }
+.doc.open .doc-body { max-height: none; -webkit-mask-image: none; mask-image: none; }
+.doc-body h4, .msg h4 { margin: 12px 0 4px; font-size: 14px; font-weight: 650; }
+.doc-body h4:first-child, .msg h4:first-child { margin-top: 0; }
+.doc-body p, .doc-body ul, .msg ul { margin: 0 0 6px; }
+.doc-body ul, .msg ul { padding-left: 20px; }
+.doc .more { display: flex; align-items: center; gap: 4px; margin: 2px 12px 10px; border: 0; background: none; font-size: 12px; color: var(--ink-3); padding: 4px 6px; border-radius: 8px; }
+.doc .more:hover { background: var(--wash); }
+.window[data-format="adaptive"] .fmt-plain, .window[data-format="plain"] .fmt-adaptive { display: none; }
+
+.composer { position: absolute; z-index: 3; left: 50%; bottom: 14px; transform: translateX(-50%); width: min(640px, calc(100% - 20px)); display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 8px; border-radius: 999px; }
+.composer .ph { flex: 1; font-size: 13.5px; color: var(--ink-3); padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer .round { width: 32px; height: 32px; }
+.composer .send { background: var(--ink); color: var(--card); }
+
+/* ---------- Right panel: companion hero + journal ---------- */
+.side { border-radius: 24px; padding: 18px 14px 14px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; transition: opacity .28s ease, transform .36s var(--ease); }
+.side > * { min-width: 258px; }
+.window[data-right="closed"] .side { opacity: 0; transform: translateX(24px); pointer-events: none; }
+.hero { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 0 14px; }
+.hero .halo { position: relative; display: grid; place-items: center; width: 132px; height: 132px; }
+.hero .halo::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--accent) 26%, transparent), transparent 68%); filter: blur(6px); }
+.hero strong { font-size: 17px; letter-spacing: -.3px; margin-top: 2px; }
+.hero .state { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); }
+.hero .state i { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 20%, transparent); }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px; border-radius: 999px; background: var(--wash); margin: 0 4px 6px; }
+.tabs button { border: 0; background: none; font-size: 12px; padding: 6px 0; border-radius: 999px; color: var(--ink-2); }
+.tabs button[aria-selected="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 4px rgba(30,50,80,.1); }
+.pane { flex: 1; min-height: 0; overflow: auto; padding: 0 4px; scrollbar-width: none; }
+.pane[hidden] { display: none; }
+.pane h3 { font-size: 11.5px; color: var(--ink-3); font-weight: 600; margin: 14px 2px 6px; }
+.entry { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 8px 6px; margin: 0 -4px; border: 0; background: none; width: calc(100% + 8px); text-align: left; border-radius: 12px; }
+.entry[data-jump]:hover { background: var(--wash); }
+.entry .ic { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
+.entry .ic.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.entry .ic.mem { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.entry .ic svg { width: 14px; height: 14px; stroke-width: 2; }
+.entry b { display: block; font-size: 12.5px; font-weight: 600; line-height: 1.45; white-space: normal; }
+.entry span { display: block; font-size: 11.5px; color: var(--ink-3); line-height: 1.5; white-space: normal; }
+.entry time { display: block; font-size: 10.5px; color: var(--ink-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.empty { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding: 10px 10px 10px 12px; border-radius: 14px; background: var(--wash); font-size: 12px; color: var(--ink-3); }
+.empty .round { width: 26px; height: 26px; background: var(--card); }
+</style>
+</head>
+<body data-theme="light">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M9.5 4.5v15"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M14.5 4.5v15"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9 4.5a3 3 0 0 0-3 3 3 3 0 0 0-1.5 5.5A3 3 0 0 0 9 17.5V4.5zM15 4.5a3 3 0 0 1 3 3 3 3 0 0 1 1.5 5.5 3 3 0 0 1-4.5 4.5V4.5zM9 17.5V20M15 17.5V20"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 16h7"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 8v5M12 16.5h.01"/><circle cx="12" cy="12" r="8.5"/></symbol>
+</svg>
+
+<div class="toolbar">
+  <h1>NexBot · 可收放布局</h1>
+  <span class="ctl"><span>左栏</span><span class="seg"><button data-set="left:open" aria-pressed="true">展开</button><button data-set="left:closed" aria-pressed="false">收起</button></span></span>
+  <span class="ctl"><span>右栏</span><span class="seg"><button data-set="right:open" aria-pressed="true">展开</button><button data-set="right:closed" aria-pressed="false">收起</button></span></span>
+  <span class="ctl"><span>回复</span><span class="seg"><button data-set="format:adaptive" aria-pressed="true">按内容</button><button data-set="format:plain" aria-pressed="false">原样</button></span></span>
+  <span class="ctl"><span>秘书头像</span><span class="seg"><button data-face="mascot" aria-pressed="false">吉祥物</button><button data-face="a" aria-pressed="true">A</button><button data-face="b" aria-pressed="false">B</button><button data-face="c" aria-pressed="false">C</button></span></span>
+  <span class="ctl"><span>主题</span><span class="seg"><button data-theme-set="light" aria-pressed="true">浅色</button><button data-theme-set="dark" aria-pressed="false">深色</button></span></span>
+</div>
+
+<div class="board">
+  <div class="window" id="win" data-left="open" data-right="open" data-format="adaptive">
+    <div class="app">
+      <aside class="rail glass">
+        <div class="rail-head"><span class="mascot" data-m="blue soft 26"></span><span class="name">NexBot</span><button class="round" data-toggle="left" aria-label="收起左栏" title="收起 / 展开"><svg class="i"><use href="#i-left"/></svg></button></div>
+        <button class="search" title="搜索会话记录"><svg class="i" style="width:14px;height:14px"><use href="#i-search"/></svg><span>搜索会话记录</span></button>
+        <div class="list">
+          <button class="convo on" title="私人秘书"><span class="mascot live" data-m="teal soft 38"></span><span class="txt"><span class="t"><b>私人秘书</b><time>00:12</time></span><p>不用换模型。这段对话里…</p></span></button>
+          <button class="convo" title="Research"><span class="mascot" data-m="blue bean 38"></span><span class="txt"><span class="t"><b>Research</b><time>10/25</time></span><p>hi</p></span></button>
+          <button class="convo" title="Writer"><span class="mascot" data-m="clay pebble 38"></span><span class="txt"><span class="t"><b>Writer</b><time>10/25</time></span><p>交互报告已经展示在上面。</p></span></button>
+          <button class="convo" title="桂林_win_test"><span class="mascot" data-m="plum bud 38"></span><span class="txt"><span class="t"><b>桂林_win_test</b><time>10/25</time></span><p>Toonflow 的 MCP 已经连通。</p></span></button>
+          <button class="convo add" title="新建助手"><span class="plus"><svg class="i"><use href="#i-plus"/></svg></span><span>新建助手</span></button>
+        </div>
+        <div class="account"><span class="av">d</span><span class="name">darrenadmin</span></div>
+      </aside>
+
+      <main class="chat">
+        <div class="top"><button class="who glass" data-toggle="right" title="打开助手资料"><span class="mascot live" data-m="teal soft 30"></span><strong>私人秘书</strong><span>准备好了</span></button></div>
+        <div class="acts">
+          <button class="round glass" aria-label="复制对话记录"><svg class="i"><use href="#i-share"/></svg></button>
+          <button class="round glass" data-toggle="right" aria-label="助手资料" aria-pressed="true"><svg class="i"><use href="#i-right"/></svg></button>
+        </div>
+
+        <div class="scroll"><div class="col">
+          <div class="stamp">10/27</div>
+          <div class="msg me"><div class="b">帮我用cpa里的gemini-3.8-flash模型，用claude，打一声招呼，记录一下发出去消息到收到消息的时长</div></div>
+          <div class="notice glass" id="t1"><i></i>整理历史未完成：超出模型窗口<button class="btn">切换模型</button></div>
+          <div class="msg me"><div class="b">hi</div></div>
+
+          <div class="stamp">今天 00:03</div>
+          <div class="row">
+            <span class="gutter"></span>
+            <details class="ops">
+              <summary class="glass"><span class="chips"><span><svg class="i"><use href="#i-brain"/></svg></span><span><svg class="i"><use href="#i-folder"/></svg></span><span><svg class="i"><use href="#i-term"/></svg></span></span>8 项操作<span class="fail">· 2 项失败</span><svg class="i chev" style="width:13px;height:13px"><use href="#i-chev"/></svg></summary>
+              <ol class="steps">
+                <li><span class="dot bad"></span><strong>检索记忆</strong><code>CPA gemini-3.8-flash claude 打招呼 时长</code></li>
+                <li><span class="dot bad"></span><strong>检索记忆</strong><code>claude-noproxy CPA 模型配置</code></li>
+                <li><span class="dot"></span><strong>检查设备目录</strong><code>device.inventory</code></li>
+                <li><span class="dot"></span><strong>检索记忆</strong><code>CPA gemini claude 打招呼</code></li>
+                <li><span class="dot"></span><strong>执行终端命令</strong><code>Get-ChildItem -Force "$env:USERPROFILE\.claude","$env:USERPROFILE\.config\claude"</code></li>
+                <li><span class="dot"></span><strong>执行终端命令</strong><code>claude --help 2&gt;&amp;1 | Select-String -Pattern "print|model|output-format|-p "</code></li>
+                <li><span class="dot"></span><strong>执行终端命令</strong><code>$ErrorActionPreference='Continue'; $env:HTTP_PROXY=''; $env:HTTPS_PROXY=''</code></li>
+                <li><span class="dot"></span><strong>写入长期记忆</strong><code>工作笔记</code></li>
+              </ol>
+            </details>
+          </div>
+          <div class="row" id="t2">
+            <span class="mascot live" data-m="teal soft 26"></span>
+            <div class="stack fmt-adaptive">
+              <div class="msg bot"><div class="b">招呼打通了，Gemini 3.8 Flash 回了一句「你好」。</div></div>
+              <div class="report">
+                <div class="hd">发出到收完 · 本机墙钟</div>
+                <div class="big">19.8<small>秒</small></div>
+                <div class="tiles">
+                  <div class="tile"><small>接口本身</small><b>6.2<em>秒</em></b></div>
+                  <div class="tile"><small>首字</small><b>8.0<em>秒</em></b></div>
+                  <div class="tile"><small>启动到发出</small><b>1.8<em>秒</em></b></div>
+                </div>
+                <p>Claude 自报 13.5 秒；多出的约 6 秒在进程启动和收尾，不是模型回复本身。</p>
+                <details>
+                  <summary>明细<svg class="i chev" style="width:13px;height:13px"><use href="#i-chev"/></svg></summary>
+                  <div class="detail">
+                    <table class="tbl">
+                      <tr><td>本机墙钟</td><td>00:02:41.692 → 00:03:01.482</td></tr>
+                      <tr><td><code class="c">duration_ms</code></td><td>13.5 秒</td></tr>
+                      <tr><td><code class="c">ttft_ms</code></td><td>8.0 秒</td></tr>
+                      <tr><td><code class="c">duration_api_ms</code></td><td>6.2 秒</td></tr>
+                      <tr><td>结果</td><td><code class="c">is_error=false</code> · <code class="c">success</code></td></tr>
+                    </table>
+                    别名 <code class="c">cpa/claude-fable-5-dd-hgih-hsalf-8.3-inimeg</code>，见 <code class="c">~/.claude/settings.json</code>
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div class="stack fmt-plain">
+              <div class="msg bot full"><div class="b">
+                <p>招呼已打通。</p>
+                <p><b>回复：</b>你好</p>
+                <p><b>模型：</b>CPA 里的 Gemini 3.8 Flash。本机 Claude 配置里的别名是 <code class="c">cpa/claude-fable-5-dd-hgih-hsalf-8.3-inimeg</code>（<code class="c">~/.claude/settings.json</code> 标签为「Gemini 3.8 Flash · CPA」）。</p>
+                <p><b>时长（发出到收完）：</b></p>
+                <table class="tbl">
+                  <tr><td>本机墙钟</td><td>00:02:41.692 → 00:03:01.482，<b>19.8 秒</b></td></tr>
+                  <tr><td>Claude 整段 <code class="c">duration_ms</code></td><td><b>13.5 秒</b></td></tr>
+                  <tr><td>其中启动到发出请求</td><td>1.8 秒</td></tr>
+                  <tr><td>首字 <code class="c">ttft_ms</code></td><td>8.0 秒</td></tr>
+                  <tr><td>接口本身 <code class="c">duration_api_ms</code></td><td><b>6.2 秒</b></td></tr>
+                </table>
+                <p><code class="c">is_error=false</code>，<code class="c">subtype=success</code>。墙钟比 Claude 自报多约 6 秒，差在进程启动和收尾，不是模型回复本身。</p>
+              </div></div>
+            </div>
+          </div>
+          <div class="meta"><span>00:03</span></div>
+
+          <div class="stamp">00:12</div>
+          <div class="msg me"><div class="b">上次那个"超出模型窗口"是怎么回事，现在还会吗？</div></div>
+          <div class="row" id="t3">
+            <span class="mascot live" data-m="teal soft 26"></span>
+            <div class="stack fmt-adaptive">
+              <div class="msg bot"><div class="b">不会了，10/27 已经修好。原因和改法如下。</div></div>
+              <div class="doc" data-doc>
+                <div class="outline"><button data-sec="0">原因</button><button data-sec="1">已经修了</button><button data-sec="2">你需要做什么</button></div>
+                <div class="doc-body">
+                  <h4>原因</h4>
+                  <p>整理历史时，要先把较早的对话压成摘要再交给模型。那一轮里有几次工具返回特别长，摘要这一步本身就塞不进模型窗口，于是报了「待整理内容超出模型窗口」。</p>
+                  <h4>已经修了</h4>
+                  <ul>
+                    <li>先把占比最大的旧工具结果单独压缩，再做整轮摘要。</li>
+                    <li>整轮摘要按窗口大小分批发送，每批带上前面已有的摘要接着写。</li>
+                    <li>之前已经折叠过的历史，也能正常整理。</li>
+                  </ul>
+                  <h4>你需要做什么</h4>
+                  <p>不用换模型。这段对话里 10/27 那条报错是修复前留下的，之后再整理历史会自动分批。</p>
+                  <p>如果还看到这条提示，把那一轮的时间发我，我去查对应的整理记录。</p>
+                </div>
+                <button class="more"><span>展开全文</span><svg class="i chev" style="width:13px;height:13px"><use href="#i-chev"/></svg></button>
+              </div>
+            </div>
+            <div class="stack fmt-plain">
+              <div class="msg bot full"><div class="b">
+                <p>不会了，10/27 已经修好。原因和改法如下。</p>
+                <h4>原因</h4>
+                <p>整理历史时，要先把较早的对话压成摘要再交给模型。那一轮里有几次工具返回特别长，摘要这一步本身就塞不进模型窗口，于是报了「待整理内容超出模型窗口」。</p>
+                <h4>已经修了</h4>
+                <ul>
+                  <li>先把占比最大的旧工具结果单独压缩，再做整轮摘要。</li>
+                  <li>整轮摘要按窗口大小分批发送，每批带上前面已有的摘要接着写。</li>
+                  <li>之前已经折叠过的历史，也能正常整理。</li>
+                </ul>
+                <h4>你需要做什么</h4>
+                <p>不用换模型。这段对话里 10/27 那条报错是修复前留下的，之后再整理历史会自动分批。</p>
+                <p>如果还看到这条提示，把那一轮的时间发我，我去查对应的整理记录。</p>
+              </div></div>
+            </div>
+          </div>
+          <div class="meta"><span>00:12</span></div>
+        </div></div>
+
+        <div class="composer glass">
+          <button class="round" aria-label="添加附件"><svg class="i"><use href="#i-plus"/></svg></button>
+          <span class="ph">给 私人秘书 发消息…</span>
+          <button class="round" aria-label="语音输入"><svg class="i"><use href="#i-mic"/></svg></button>
+          <button class="round send" aria-label="发送"><svg class="i"><use href="#i-up"/></svg></button>
+        </div>
+      </main>
+
+      <aside class="side glass">
+        <div class="hero">
+          <div class="halo"><span class="mascot live breathe" data-m="teal soft 96"></span></div>
+          <strong>私人秘书</strong>
+          <span class="state"><i></i>在线</span>
+        </div>
+        <div class="tabs" role="tablist"><button role="tab" aria-selected="true" data-tab="log">日志</button><button role="tab" aria-selected="false" data-tab="routine">例行</button><button role="tab" aria-selected="false" data-tab="memory">记忆</button></div>
+        <div class="pane" data-pane="log">
+          <h3>今天</h3>
+          <button class="entry" data-jump="t2"><span class="ic"><svg class="i"><use href="#i-check"/></svg></span><span><b>打通 Gemini 3.8 Flash 招呼</b><span>发出到收完 19.8 秒，回复「你好」</span><time>00:03</time></span></button>
+          <button class="entry" data-jump="t2"><span class="ic mem"><svg class="i"><use href="#i-brain"/></svg></span><span><b>写入长期记忆</b><span>工作笔记</span><time>00:03</time></span></button>
+          <h3>10/27</h3>
+          <button class="entry" data-jump="t1"><span class="ic warn"><svg class="i"><use href="#i-alert"/></svg></span><span><b>整理历史未完成</b><span>待整理内容超出模型窗口</span></span></button>
+        </div>
+        <div class="pane" data-pane="routine" hidden>
+          <div class="empty">暂无例行任务<button class="round" aria-label="添加例行任务"><svg class="i" style="width:13px;height:13px"><use href="#i-plus"/></svg></button></div>
+        </div>
+        <div class="pane" data-pane="memory" hidden>
+          <h3>今天</h3>
+          <button class="entry" data-jump="t2"><span class="ic mem"><svg class="i"><use href="#i-brain"/></svg></span><span><b>工作笔记</b><span>仅私人秘书</span><time>00:03</time></span></button>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="notes">
+    <section>
+      <h2>布局</h2>
+      <ul>
+        <li>左栏展开是会话列表，收起是头像坞；点左上角按钮切换</li>
+        <li>右栏展开是吉祥物 + 日志，收起后名字回到顶部悬浮胶囊；点胶囊或右上角按钮切换</li>
+        <li>日志条目可点，跳到对应消息</li>
+      </ul>
+    </section>
+    <section>
+      <h2>回复格式（待讨论）</h2>
+      <ul>
+        <li><b>气泡</b>：三行以内、没有标题、表格或代码</li>
+        <li><b>长文卡</b>：有小标题或超过约 12 行。顶部列出小节，超出一屏折叠；小节由标题自动生成，不改 Agent</li>
+        <li><b>报告卡</b>：Agent 用 <code class="c">```report</code> 代码块给出结构化结果时，和现有 <code class="c">```chart</code> 同一套做法</li>
+        <li><b>执行记录</b>：始终收成一个胶囊，标出失败数</li>
+        <li>第三轮回复是照 10/27 的修复记录写的示例，用来展示长文卡</li>
+      </ul>
+    </section>
+  </div>
+</div>
+
+<script>
+const palette = { teal: "#23756d", ink: "#414853", blue: "#426dac", clay: "#b26351", plum: "#7c608f" };
+const radii = { soft: "27% 35% 27% 35%", bean: "50% 50% 35% 50%", pebble: "52% 40% 48% 28%", bud: "52% 12% 52% 12%" };
+for (const el of document.querySelectorAll(".mascot[data-m]")) {
+  const [color, shape, size] = el.dataset.m.split(" ");
+  el.classList.add(shape);
+  el.style.setProperty("--c", palette[color]);
+  el.style.setProperty("--r", radii[shape]);
+  el.style.setProperty("--s", `${size}px`);
+  el.innerHTML = '<span class="body"><span class="hl"></span><span class="eyes"><i></i><i></i></span><span class="ck"></span></span>';
+}
+// Secretary portraits: focus point of each face for small circular crops.
+const faces = { a: [.49, .34], b: [.47, .45], c: [.48, .36] };
+const secretary = [...document.querySelectorAll('.mascot[data-m^="teal soft"]')].map((el) => ({ el, body: el.innerHTML }));
+const setFace = (face) => {
+  for (const { el, body } of secretary) {
+    const portrait = face !== "mascot";
+    el.classList.toggle("portrait", portrait);
+    if (portrait) {
+      el.innerHTML = `<img src="secretary-avatar/moe-${face}-512.jpg" alt="">`;
+      el.style.setProperty("--fx", faces[face][0]);
+      el.style.setProperty("--fy", faces[face][1]);
+    } else el.innerHTML = body;
+  }
+  for (const b of document.querySelectorAll("[data-face]")) b.setAttribute("aria-pressed", String(b.dataset.face === face));
+};
+for (const b of document.querySelectorAll("[data-face]")) b.onclick = () => setFace(b.dataset.face);
+setFace("a");
+const win = document.getElementById("win"), scroller = win.querySelector(".scroll");
+const toBottom = () => { scroller.scrollTop = scroller.scrollHeight; };
+const sync = () => {
+  for (const b of document.querySelectorAll("[data-set]")) { const [k, v] = b.dataset.set.split(":"); b.setAttribute("aria-pressed", String(win.dataset[k] === v)); }
+  for (const b of document.querySelectorAll("[data-theme-set]")) b.setAttribute("aria-pressed", String(b.dataset.themeSet === document.body.dataset.theme));
+  for (const b of win.querySelectorAll('.acts [data-toggle="right"]')) b.setAttribute("aria-pressed", String(win.dataset.right === "open"));
+};
+for (const b of document.querySelectorAll("[data-set]")) b.onclick = () => { const [k, v] = b.dataset.set.split(":"); win.dataset[k] = v; sync(); if (k === "format") setTimeout(toBottom, 30); };
+for (const b of document.querySelectorAll("[data-theme-set]")) b.onclick = () => { document.body.dataset.theme = b.dataset.themeSet; sync(); };
+for (const b of win.querySelectorAll("[data-toggle]")) b.onclick = () => { const k = b.dataset.toggle; win.dataset[k] = win.dataset[k] === "open" ? "closed" : "open"; sync(); };
+for (const b of win.querySelectorAll("[data-tab]")) b.onclick = () => {
+  for (const t of win.querySelectorAll("[data-tab]")) t.setAttribute("aria-selected", String(t === b));
+  for (const p of win.querySelectorAll("[data-pane]")) p.hidden = p.dataset.pane !== b.dataset.tab;
+};
+for (const e of win.querySelectorAll("[data-jump]")) e.onclick = () => {
+  const target = document.getElementById(e.dataset.jump);
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("flash"); void target.offsetWidth; target.classList.add("flash");
+};
+for (const doc of win.querySelectorAll("[data-doc]")) {
+  const more = doc.querySelector(".more"), heads = doc.querySelectorAll(".doc-body h4");
+  const setOpen = (open) => { doc.classList.toggle("open", open); more.querySelector("span").textContent = open ? "收起" : "展开全文"; };
+  more.onclick = () => setOpen(!doc.classList.contains("open"));
+  for (const chip of doc.querySelectorAll("[data-sec]")) chip.onclick = () => { setOpen(true); heads[Number(chip.dataset.sec)].scrollIntoView({ behavior: "smooth", block: "center" }); };
+}
+addEventListener("load", toBottom);
+sync();
+</script>
+</body>
+</html>

@@ -72,7 +72,7 @@ try {
   await button("保存", "document.querySelector('.bot-identity-editor')"); await wait("document.querySelector('.bot-identity-link')?.textContent==='协助整理资料，简洁回答。'");
   check("inline bot identity editing");
   await click(".profile-avatar-button"); await wait("!!document.querySelector('.avatar-picker')");
-  check("unlabelled role catalog and preserved original companions", await c.evaluate("document.querySelectorAll('[data-graphic-option]').length===12 && document.querySelectorAll('[data-preset]').length===20 && [...document.querySelectorAll('[data-graphic-option]')].every(e=>!e.textContent.trim()) && !document.querySelector('.avatar-picker').innerText.includes('经典图库')"));
+  check("unlabelled role catalog and preserved original companions", await c.evaluate("document.querySelectorAll('[data-graphic-option]').length===15 && document.querySelectorAll('[data-preset]').length===20 && [...document.querySelectorAll('[data-graphic-option]')].every(e=>!e.textContent.trim()) && !document.querySelector('.avatar-picker').innerText.includes('经典图库')"));
   await click('[data-graphic-option="male-06"]');
   await button("思考", "document.querySelector('.identity-state-picker')");
   check("selected artwork animates in preview", await c.evaluate("getComputedStyle(document.querySelector('.identity-preview .graphic-avatar-frame')).animationName==='graphic-ponder'"));

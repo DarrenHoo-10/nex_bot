@@ -82,7 +82,7 @@ try {
   const beforeGraphic = (await api("state")).bots.find(b => b.id === bot.id);
   const peerBeforeGraphic = (await api("state")).bots.find(b => b.id === peer.id);
   await click("[title='更换头像']");
-  await until(() => evaluate("document.querySelectorAll('[data-graphic-option]').length===12"));
+  await until(() => evaluate("document.querySelectorAll('[data-graphic-option]').length===15"));
   if (!await evaluate("document.querySelector('.identity-options[aria-label=角色]')&&document.querySelectorAll('[data-preset]').length===20&&!document.querySelector('[data-avatar-option],.identity-mode')&&!/经典图库|图形头像/.test(document.querySelector('.identity-picker').innerText)")) throw new Error("Avatar choices are not unified under roles");
   if (!await evaluate("!/女性向|男性向/.test(document.querySelector('.identity-picker').innerText)&&[...document.querySelectorAll('[data-graphic-option],.identity-shapes button')].every(el=>el.textContent.trim()===''&&el.getAttribute('aria-label'))")) throw new Error("Avatar gallery exposes gender, numbers, or names");
   await evaluate(`Promise.all([...new Set([...document.querySelectorAll('.graphic-avatar-frame image')].map(el=>el.href.baseVal))].map(src=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(true);img.onerror=()=>reject(new Error('Graphic artwork did not load'));img.src=src;})))`);

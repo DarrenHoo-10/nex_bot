@@ -19,6 +19,7 @@ struct ChatMarkdownBlocks: View {
 private struct ChatMarkdownBlock: View {
     let block: ChatBlock
     let fontSize: CGFloat
+    @Environment(\.chatInk) private var ink
 
     @ViewBuilder var body: some View {
         switch block {
@@ -46,7 +47,7 @@ private struct ChatMarkdownBlock: View {
                                 .accessibilityLabel(checked ? "已完成" : "未完成")
                         } else {
                             Text(start.map { "\($0 + index)." } ?? "•")
-                                .font(.system(size: fontSize)).foregroundStyle(Theme.foreground)
+                                .font(.system(size: fontSize)).foregroundStyle(ink)
                                 .frame(minWidth: fontSize + 2, alignment: .trailing)
                         }
                         ChatMarkdownBlocks(blocks: item.blocks, fontSize: fontSize)
@@ -109,17 +110,19 @@ private struct ChatMarkdownInline: View {
     let content: [ChatInline]
     let fontSize: CGFloat
     var strong = false
+    @Environment(\.chatInk) private var ink
+    @Environment(\.chatOnAccent) private var onAccent
 
     var body: some View {
-        Text(Self.attributed(content, size: fontSize, bold: strong))
-            .font(.system(size: fontSize)).foregroundStyle(Theme.foreground)
+        Text(Self.attributed(content, size: fontSize, bold: strong, onAccent: onAccent))
+            .font(.system(size: fontSize)).foregroundStyle(ink)
             .lineSpacing(fontSize * 0.35).fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
     }
 
     /// Render the parser's inline tree directly: no second parser can lose GFM
     /// strikethrough, reference links, escaping or formatting inside table cells.
-    private static func attributed(_ nodes: [ChatInline], size: CGFloat, bold: Bool = false, italic: Bool = false) -> AttributedString {
+    private static func attributed(_ nodes: [ChatInline], size: CGFloat, bold: Bool = false, italic: Bool = false, onAccent: Bool = false) -> AttributedString {
         var result = AttributedString()
         for node in nodes {
             var part: AttributedString
@@ -129,22 +132,23 @@ private struct ChatMarkdownInline: View {
             case .code(let text):
                 part = AttributedString(text)
                 part.font = .system(size: size - 1, weight: bold ? .bold : .regular, design: .monospaced)
-                part.backgroundColor = Theme.secondary
+                part.backgroundColor = onAccent ? Color.white.opacity(0.2) : Theme.secondary
                 if FilePathMatcher.isFilePath(text), let url = ChatLinks.url(forPath: text) {
-                    part.link = url; part.foregroundColor = Theme.brand
+                    part.link = url; part.foregroundColor = onAccent ? .white : Theme.brand
                 }
-            case .emphasis(let children): part = attributed(children, size: size, bold: bold, italic: true)
-            case .strong(let children): part = attributed(children, size: size, bold: true, italic: italic)
+            case .emphasis(let children): part = attributed(children, size: size, bold: bold, italic: true, onAccent: onAccent)
+            case .strong(let children): part = attributed(children, size: size, bold: true, italic: italic, onAccent: onAccent)
             case .strikethrough(let children):
-                part = attributed(children, size: size, bold: bold, italic: italic)
+                part = attributed(children, size: size, bold: bold, italic: italic, onAccent: onAccent)
                 part.strikethroughStyle = .single
             case .link(let destination, let children):
-                part = attributed(children, size: size, bold: bold, italic: italic)
+                part = attributed(children, size: size, bold: bold, italic: italic, onAccent: onAccent)
                 // Preserve the existing URL policy; generated links from model
                 // text cannot acquire the app's private file-preview scheme.
                 part.link = nil
                 if let destination, let url = URL(string: destination), Markdown.isOpenable(url) {
-                    part.link = url; part.foregroundColor = Theme.brand
+                    part.link = url; part.foregroundColor = onAccent ? .white : Theme.brand
+                    if onAccent { part.underlineStyle = .single }
                 }
             }
             if case .text = node {
