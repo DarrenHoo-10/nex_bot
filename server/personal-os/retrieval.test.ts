@@ -651,9 +651,9 @@ describe('migration', () => {
     app.store.run("UPDATE assistant_memories SET status='stale' WHERE id=?", inactive);
     const sql = (name: string) => String(app.store.get('SELECT sql FROM sqlite_master WHERE name=?', name)!.sql);
     for (const name of ['assistant_memory_search', 'conversation_episode_search', 'memory_search']) expect(sql(name)).toContain("tokenize='trigram'");
-    expect(app.store.get('SELECT COUNT(*) n FROM schema_migrations WHERE version IN (31,32)')!.n).toBe(2);
+    expect(app.store.get('SELECT COUNT(*) n FROM schema_migrations WHERE version IN (32,33)')!.n).toBe(2);
     // Put the old state back: unicode61 indexes holding derived (bigram) text, no new tables, migrations unrecorded.
-    app.store.db.exec(`DROP TABLE assistant_memory_search; DROP TABLE conversation_episode_search; DROP TABLE memory_search; DROP TABLE memory_vectors; DROP TABLE memory_retrieval_settings; DELETE FROM schema_migrations WHERE version>=31;
+    app.store.db.exec(`DROP TABLE assistant_memory_search; DROP TABLE conversation_episode_search; DROP TABLE memory_search; DROP TABLE memory_vectors; DROP TABLE memory_retrieval_settings; DELETE FROM schema_migrations WHERE version IN (32,33);
       CREATE VIRTUAL TABLE assistant_memory_search USING fts5(memory_id UNINDEXED,body,tokenize='unicode61');
       CREATE VIRTUAL TABLE conversation_episode_search USING fts5(episode_id UNINDEXED,body,tokenize='unicode61');
       CREATE VIRTUAL TABLE memory_search USING fts5(document_id UNINDEXED,title,content,tokenize='unicode61');
@@ -662,7 +662,7 @@ describe('migration', () => {
       const reopened = new CoreStore(app.store.dir, app.store.key, 'synthetic-token');
       try {
         for (const name of ['assistant_memory_search', 'conversation_episode_search', 'memory_search']) expect(String(reopened.get('SELECT sql FROM sqlite_master WHERE name=?', name)!.sql)).toContain("tokenize='trigram'");
-        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version IN (31,32)')!.n).toBe(2);
+        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version IN (32,33)')!.n).toBe(2);
         expect(reopened.all('SELECT memory_id FROM assistant_memory_search').map((row) => row.memory_id)).toEqual([memory]);
         expect(reopened.get("SELECT memory_id FROM assistant_memory_search WHERE assistant_memory_search MATCH '\"东京办公室\"'")?.memory_id).toBe(memory);
         expect(reopened.get('SELECT document_id FROM memory_search WHERE memory_search MATCH \'"postgresql"\'')?.document_id).toBe(document);
@@ -670,7 +670,7 @@ describe('migration', () => {
         expect(reopened.get('SELECT COUNT(*) n FROM memory_vectors')!.n).toBe(0);
         expect(reopened.get('SELECT COUNT(*) n FROM memory_retrieval_settings')!.n).toBe(0);
         // Running the migrations again (their rows deleted) changes nothing.
-        if (round === 0) reopened.run('DELETE FROM schema_migrations WHERE version>=31');
+        if (round === 0) reopened.run('DELETE FROM schema_migrations WHERE version IN (32,33)');
       } finally { reopened.close(); }
     }
     void root;

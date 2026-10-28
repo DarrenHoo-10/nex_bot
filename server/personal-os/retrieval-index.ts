@@ -12,7 +12,7 @@ export const BM25_TOP = 50;
 const SCAN_LIMIT = 200;
 const MAX_TERMS = 128;
 
-/** The text one pool item is indexed under; migration 31 writes the same shape in SQL. */
+/** The text one pool item is indexed under; migration 32 writes the same shape in SQL. */
 export const indexBody = (title: string, content: string) => `${title}\n${content}`;
 
 const WORD = /[\p{L}\p{N}_]+(?:[./:@#\\-][\p{L}\p{N}_]+)*/gu;

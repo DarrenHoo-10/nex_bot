@@ -85,7 +85,7 @@ struct ModelLimitsFields: View {
                       automatic: model.limits?.automatic.contextWindow, source: model.limits?.automatic.source.contextWindow)
                 field("最大输出 Token", id: "maxOutputTokens", text: Binding(get: { model.output }, set: { model.output = $0; model.userEdited(context: false); onEdit() }),
                       automatic: model.limits?.automatic.maxOutputTokens, source: model.limits?.automatic.source.maxOutputTokens)
-                field("工作上下文（Token）", id: "contextBudget", text: Binding(get: { model.budget }, set: { model.budget = $0; model.userEditedBudget(); onEdit() }),
+                field("压缩阈值（Token）", id: "contextBudget", text: Binding(get: { model.budget }, set: { model.budget = $0; model.userEditedBudget(); onEdit() }),
                       automatic: model.limits?.automatic.contextBudget, source: model.limits?.automatic.source.contextBudget)
             }
             Text(model.limits?.status.text ?? ModelLimitStatus.matched.text).font(.system(size: 10)).foregroundStyle(Theme.muted)

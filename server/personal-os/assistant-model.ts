@@ -21,7 +21,16 @@ export function maintainUsage(store: CoreStore, conversationId: string): number 
   const start = new Date(); start.setHours(0, 0, 0, 0);
   return Number(store.get(`SELECT ${spent} n FROM assistant_usage WHERE conversation_id=? AND purpose='maintain' AND created_at>=?`, conversationId, start.getTime())!.n);
 }
-export async function assistantCompletion(store: CoreStore, args: { botId: string; taskId?: string; conversationId?: string; purpose: string; model?: string; instruction: string; content: string; maxOutput?: number; signal?: AbortSignal; dailyBudget?: number; maintainBudget?: number }) {
+/** The model stopped at its output cap (`finish_reason=length`); `partial` is what it wrote. Callers that can use a partial text ask for it with `allowTruncated`. */
+export class TruncatedOutput extends Error {
+  constructor(readonly partial: string) { super('模型整理未完整结束，原文已保留'); }
+}
+/** The daily allowance of background work is spent: no fault of the target being summarized. */
+export class BudgetSpent extends Error {}
+interface CompletionArgs { botId: string; taskId?: string; conversationId?: string; purpose: string; model?: string; instruction: string; content: string; maxOutput?: number; signal?: AbortSignal; dailyBudget?: number; maintainBudget?: number }
+export async function assistantCompletion(store: CoreStore, args: CompletionArgs & { allowTruncated: true }): Promise<{ text: string; truncated: boolean }>;
+export async function assistantCompletion(store: CoreStore, args: CompletionArgs & { allowTruncated?: false }): Promise<string>;
+export async function assistantCompletion(store: CoreStore, args: CompletionArgs & { allowTruncated?: boolean }): Promise<string | { text: string; truncated: boolean }> {
   const model = store.modelConfig(args.botId);
   if (args.model) model.model = args.model;
   const limits = store.modelLimitSettings(model);
@@ -35,8 +44,8 @@ export async function assistantCompletion(store: CoreStore, args: { botId: strin
     // either but has its own per-conversation cap, so it neither consumes nor is blocked by the memory budget.
     // Embedding and rerank calls (retrieval.ts) are tracked in the same table but have their own, separate cap.
     const used = Number(store.get(`SELECT ${spent} n FROM assistant_usage WHERE bot_id=? AND task_id IS NULL AND purpose NOT IN ('maintain','embed','rerank') AND created_at>=?`, args.botId, start.getTime())!.n);
-    if (args.dailyBudget !== undefined && used + reserved > effectiveDailyBudget(args.dailyBudget)) throw new Error(MEMORY_BUDGET_EXHAUSTED);
-    if (args.maintainBudget !== undefined && maintainUsage(store, args.conversationId ?? '') + reserved > args.maintainBudget) throw new Error('今日后台整理预算已用完');
+    if (args.dailyBudget !== undefined && used + reserved > effectiveDailyBudget(args.dailyBudget)) throw new BudgetSpent(MEMORY_BUDGET_EXHAUSTED);
+    if (args.maintainBudget !== undefined && maintainUsage(store, args.conversationId ?? '') + reserved > args.maintainBudget) throw new BudgetSpent('今日后台整理预算已用完');
     store.insert('assistant_usage', { id: invoice, bot_id: args.botId, task_id: args.taskId ?? null, conversation_id: args.conversationId ?? null, purpose: args.purpose, model: model.model, status: 'running', reserved_tokens: reserved, created_at: now() });
   });
   try {
@@ -59,8 +68,14 @@ export async function assistantCompletion(store: CoreStore, args: { botId: strin
     const totalInput = baseInput === null ? null : baseInput + (model.provider === 'anthropic' ? (cacheRead ?? 0) + (cacheWrite ?? 0) : 0);
     store.run("UPDATE assistant_usage SET status='succeeded',input_tokens=?,output_tokens=?,cache_read=?,cache_write=?,finished_at=? WHERE id=?", totalInput, number(model.provider === 'anthropic' ? usage?.output_tokens : usage?.completion_tokens), cacheRead, cacheWrite, now(), invoice);
     const choice = (value.choices as Array<{ finish_reason: string; message: { content: string } }> | undefined)?.[0];
-    if (choice?.finish_reason !== 'stop' || !choice.message.content?.trim()) throw new Error('模型整理未完整结束，原文已保留');
-    return choice.message.content;
+    const written = choice?.message?.content;
+    // A cut-off answer is still a paid, valid receipt; only callers that asked for it get the partial text.
+    if (choice?.finish_reason === 'length' && written?.trim()) {
+      if (args.allowTruncated) return { text: written, truncated: true };
+      throw new TruncatedOutput(written);
+    }
+    if (choice?.finish_reason !== 'stop' || !written?.trim()) throw new Error('模型整理未完整结束，原文已保留');
+    return args.allowTruncated ? { text: written, truncated: false } : written;
   } catch (error) {
     store.run("UPDATE assistant_usage SET status=CASE WHEN status='succeeded' THEN 'invalid' ELSE 'unknown' END,finished_at=? WHERE id=?", now(), invoice);
     throw error;

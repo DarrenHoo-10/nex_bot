@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { createPersonalApp } from "./index.ts";
 import { CoreStore } from "./store.ts";
-import { matchModelLimits, modelInputBudget, parseModelLimit, workingContextBudget } from "./model-limits.ts";
+import { hardInputLimit, matchModelLimits, modelInputBudget, parseModelLimit, workingContextBudget } from "./model-limits.ts";
 import { trimModelsDevCatalog } from "../model-catalog/trim.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 
@@ -46,52 +46,79 @@ it("retains per-model overrides across model, endpoint, protocol switches and re
   } finally { store.db.close(); }
 });
 
-it("resolves the working context budget: default min(64k, input budget), manual value clamped, null clears", () => {
-  expect(workingContextBudget(null, 320000)).toBe(64000);
-  expect(workingContextBudget(null, 51200)).toBe(51200);
-  expect(workingContextBudget(null, 5000)).toBe(5000);
+it("resolves the soft compaction threshold: default 256k, never above 80% of the window or the input budget minus 2k, null clears", () => {
+  // The second argument is the hard limit H (hardInputLimit); the window argument adds the 80% share.
+  expect(workingContextBudget(null, 320000)).toBe(256000);
+  expect(workingContextBudget(null, 320000, 400000)).toBe(256000);
+  expect(workingContextBudget(null, 51200)).toBe(49152);
+  expect(workingContextBudget(null, 5000)).toBe(2952);
+  expect(workingContextBudget(null, 800000, 1000000)).toBe(256000);
+  expect(workingContextBudget(null, 102400, 128000)).toBe(100352);
   expect(workingContextBudget(100000, 320000)).toBe(100000);
-  expect(workingContextBudget(500000, 320000)).toBe(320000);
+  expect(workingContextBudget(500000, 320000)).toBe(317952);
+  expect(workingContextBudget(500000, 320000, 400000)).toBe(317952);
+  // The 80% share of the window caps it when the input budget is looser than that.
+  expect(workingContextBudget(500000, 399000, 400000)).toBe(320000);
   expect(workingContextBudget(1024, 320000)).toBe(8000);
-  expect(workingContextBudget(1024, 5000)).toBe(5000);
+  expect(workingContextBudget(1024, 5000)).toBe(2952);
+  expect(workingContextBudget(1024, 1500)).toBe(1);
   expect(parseModelLimit("2048", "contextBudget")).toBe(2048);
-  for (const value of [0, 1023, 123.5, "1e5", true, 10_000_001]) expect(() => parseModelLimit(value, "contextBudget")).toThrow("工作上下文");
+  for (const value of [0, 1023, 123.5, "1e5", true, 10_000_001]) expect(() => parseModelLimit(value, "contextBudget")).toThrow("压缩阈值");
   const root = directory(), key = randomBytes(32);
   let store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
   try {
     store.saveConfig({ ...config, contextWindow: 400000, maxOutputTokens: 4096 });
-    expect(store.modelConfig()).toMatchObject({ contextWindow: 400000, contextBudget: 64000 });
-    expect(store.modelLimitSettings(config)).toMatchObject({ manual: { contextBudget: null }, contextBudget: 64000, source: { contextBudget: "default" } });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 400000, contextBudget: 256000 });
+    expect(store.modelLimitSettings(config)).toMatchObject({ manual: { contextBudget: null }, contextBudget: 256000, source: { contextBudget: "default" } });
     store.saveConfig({ ...config, contextBudget: "120000" });
     expect(store.modelConfig().contextBudget).toBe(120000);
-    // Omitted keeps the saved value; an invalid value changes nothing; the budget never exceeds the input budget.
+    // Omitted keeps the saved value; an invalid value changes nothing; the threshold never reaches the input budget.
     store.saveConfig(config);
     expect(store.modelLimitSettings(config)).toMatchObject({ manual: { contextBudget: 120000 }, source: { contextBudget: "manual" } });
-    expect(() => store.saveConfig({ ...config, contextBudget: 100 })).toThrow("工作上下文");
+    expect(() => store.saveConfig({ ...config, contextBudget: 100 })).toThrow("压缩阈值");
     expect(store.modelConfig().contextBudget).toBe(120000);
     store.saveConfig({ ...config, contextWindow: 100000 });
-    expect(store.modelConfig()).toMatchObject({ contextWindow: 100000, contextBudget: modelInputBudget(100000, 4096) });
+    expect(store.modelConfig()).toMatchObject({ contextWindow: 100000, contextBudget: 80000 });
     store.db.close(); store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
     expect(store.modelLimitSettings(config).manual.contextBudget).toBe(120000);
     store.saveConfig({ ...config, contextWindow: 400000, contextBudget: null });
-    expect(store.modelConfig().contextBudget).toBe(64000);
+    expect(store.modelConfig().contextBudget).toBe(256000);
     expect(store.modelLimitSettings(config).manual.contextBudget).toBeNull();
   } finally { store.db.close(); }
 });
 
-it("round-trips the working context budget through the authenticated model routes", async () => {
+it.each([
+  // window, max output, H = window − min(output, 21k, window/4) − min(2048, 5% of window), S = min(256k, 80% of window, H − 2k)
+  [200_000, 64_000, 176_952, 160_000],
+  [1_000_000, 32_000, 976_952, 256_000],
+  [128_000, 16_000, 109_952, 102_400],
+  [128_000, 32_000, 104_952, 102_400],
+  [64_000, 4_096, 57_856, 51_200],
+  [32_000, 32_000, 22_400, 20_352],
+])("derives H and S from a %i window with %i output tokens", (window, output, hard, soft) => {
+  expect(hardInputLimit(window, output)).toBe(hard);
+  expect(workingContextBudget(null, hardInputLimit(window, output), window)).toBe(soft);
+  // S never reaches H, and the old input budget (which caps at 80% of the window) is never above H.
+  expect(soft).toBeLessThanOrEqual(hard - 2048);
+  expect(modelInputBudget(window, output)).toBeLessThanOrEqual(hard);
+  // The model settings resolve to the same S.
+  const root = directory(), key = randomBytes(32), store = new CoreStore(root, key, "fixture", { readSnapshot: () => undefined, fetchDisabled: true });
+  try { store.saveConfig({ ...config, contextWindow: window, maxOutputTokens: output }); expect(store.modelConfig().contextBudget).toBe(soft); } finally { store.db.close(); }
+});
+
+it("round-trips the compaction threshold through the authenticated model routes", async () => {
   const token = "synthetic-token";
   const app = await createPersonalApp({ dir: directory(), key: randomBytes(32), token, identity: false, hostDevice: false, memoryRuntime: false, modelCatalog: { fetchDisabled: true, readSnapshot: () => undefined } });
   const request = (route: string, data: unknown) => fetch(app.origin + "/api/" + route, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(data) });
   try {
     const scope = { provider: config.provider, endpoint: config.endpoint, model: config.model };
     expect((await request("config", { ...config, contextWindow: 400000, maxOutputTokens: 4096, contextBudget: 90000 })).ok).toBe(true);
-    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: 90000 }, contextBudget: 90000, source: { contextBudget: "manual" }, automatic: { contextBudget: 64000, source: { contextBudget: "default" } } });
+    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: 90000 }, contextBudget: 90000, source: { contextBudget: "manual" }, automatic: { contextBudget: 204800, source: { contextBudget: "default" } } });
     const rejected = await request("config", { ...config, contextBudget: 12 });
     expect(rejected.ok).toBe(false);
-    expect(JSON.stringify(await rejected.json())).toContain("工作上下文");
+    expect(JSON.stringify(await rejected.json())).toContain("压缩阈值");
     expect((await request("config", { ...config, contextBudget: null })).ok).toBe(true);
-    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: null }, contextBudget: 64000 });
+    expect(await (await request("models/limits", scope)).json()).toMatchObject({ manual: { contextBudget: null }, contextBudget: 256000 });
   } finally { await app.close(); }
 });
 

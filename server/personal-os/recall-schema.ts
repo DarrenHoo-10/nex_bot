@@ -1,4 +1,4 @@
-// Migration 33: what enters the prompt (docs/plans/memory-recall.md sections 4.2, 4.3 and 4.4).
+// Migration 34: what enters the prompt (docs/plans/memory-recall.md sections 4.2, 4.3 and 4.4).
 //  - assistant_core_memory: the small always-loaded memory, one row per assistant (scope 'bot') and one for the
 //    workspace (scope 'workspace', bot_id ''). `content` is JSON {about, topics}; see core-memory.ts.
 //  - core_memory_receipts: one row per tool call that changed it, so a replayed call returns its first result.

@@ -12,7 +12,7 @@ public enum ModelLimits {
     public static let contextBudgetRange = 1_024...10_000_000
     public static let contextWindowInvalid = "上下文窗口须为 1,024 至 10,000,000 的整数"
     public static let maxOutputTokensInvalid = "最大输出 Token 须为 1 至 10,000,000 的整数"
-    public static let contextBudgetInvalid = "工作上下文须为 1,024 至 10,000,000 的整数"
+    public static let contextBudgetInvalid = "压缩阈值须为 1,024 至 10,000,000 的整数"
 
     public enum Field: Sendable { case contextWindow, maxOutputTokens, contextBudget }
 

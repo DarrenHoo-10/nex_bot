@@ -716,7 +716,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
     expect(f.fake.requests[0].url).toContain("/v1/messages");
     expect(f.fake.requests[0].body).toContain("NexBot Personal AI OS");
-    expect(JSON.parse(f.fake.requests[0].body).system).toContain("Anthropic 私人秘书");
+    expect(JSON.stringify(JSON.parse(f.fake.requests[0].body).system)).toContain("Anthropic 私人秘书");
   }, 40_000);
   it("sends only the stable prompt as Anthropic system and appends the volatile block after the history, keeping the prefix byte-stable", async () => {
     const f = await fixture();
@@ -729,7 +729,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
       await wait(() => !f.app.runtime.workers.size);
     }
-    const bodies = f.fake.requests.map((r) => JSON.parse(r.body) as { system: string; messages: Wire[] });
+    const bodies = f.fake.requests.map((r) => JSON.parse(r.body) as { system: Array<Part & { cache_control?: { type: string; ttl?: string } }>; messages: Wire[] });
     expect(bodies).toHaveLength(3);
     const isVolatile = (part: Part) => part.type === "text" && part.text?.startsWith("<system-reminder>");
     const strip = (messages: Wire[]) => JSON.parse(JSON.stringify(messages, (key, value) => key === "cache_control" ? undefined : value)).map((m: Wire) => ({ ...m, content: Array.isArray(m.content) ? m.content.filter((part) => !isVolatile(part)) : m.content }));
@@ -742,7 +742,9 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     }
     // Tool results stay first in their message; the volatile text follows them.
     expect((bodies[1].messages.at(-1)!.content as Part[])[0].type).toBe("tool_result");
-    expect(new Set(bodies.map((b) => b.system)).size).toBe(1);
+    expect(new Set(bodies.map((b) => JSON.stringify(b.system))).size).toBe(1);
+    // The SDK's cache marker stays on the system prompt, with the 1 h retention.
+    for (const body of bodies) expect(body.system).toEqual([expect.objectContaining({ type: "text", cache_control: { type: "ephemeral", ttl: "1h" } })]);
     const stripped = bodies.map((b) => strip(b.messages));
     for (let i = 1; i < 3; i++) expect(JSON.stringify(stripped[i].slice(0, stripped[i - 1].length))).toBe(JSON.stringify(stripped[i - 1]));
   }, 60_000);

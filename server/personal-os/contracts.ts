@@ -13,8 +13,12 @@ export interface WorkerConfig {
   // Window of the tidy-up model, which every summarizer request goes to (digests, turn summaries, episode archives).
   // Summarizer batches and window checks are sized by it, not by the chat model's window. Defaults to contextWindow.
   tidyWindow?: number;
-  // Working context budget in tokens (resolved and clamped by Core); reduction starts here, not at the window.
+  // Soft compaction threshold S in tokens (resolved and clamped by Core): background reduction starts above it,
+  // never at or below it. The hard limit H is derived from the window and the output ceiling.
   contextBudget?: number;
+  // Reduction targets (entry:<id> tool results, range:<first>..<last> history batches) that Core has seen fail and
+  // is backing off from or has given up on. Only a reduction forced by a request above H tries them again.
+  blocked?: string[];
   // Set by Core when the input that opens this run's turn also opens a new episode (a 6 h gap or an explicit
   // new topic): before the first model request the worker closes the previous episode (see closeEpisode).
   episode?: { reason: "gap" | "topic"; inputId: string };

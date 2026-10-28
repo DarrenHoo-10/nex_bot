@@ -63,21 +63,24 @@ describe('Continuous personal assistant and memory',()=>{
     const checkpoint=app.store.get('SELECT first_entry FROM context_checkpoints WHERE first_entry=last_entry')!;
     expect(app.agents.search(bot,'entry:'+checkpoint.first_entry)[0].content).toContain('OLDER-DETAIL');
   },60000);
-  it('leaves original results intact when a pressure summary is incomplete',async()=>{
+  it('leaves original results intact and reports the capacity error only when every summary failed and the request still does not fit',async()=>{
     const {app,fake,bot}=await fixture();
     const first=app.runtime.memory.write(bot,{title:'前期资料',content:'FAILURE-ORIGINAL '+ '资料'.repeat(9000)});
     const second=app.runtime.memory.write(bot,{title:'最新资料',content:'FAILURE-RECENT '+ '信息'.repeat(9000)});
     fake.scripts.push({action:'memory.read',args:{documentId:first.documentId}},{action:'memory.read',args:{documentId:second.documentId}});
-    fake.setOverride(body=>body.stream?undefined:{choices:[{message:{content:'partial'},finish_reason:'length'}],usage:{prompt_tokens:50,completion_tokens:10}});
+    // The summarizer is cut off at its cap with far more than 30% of the original written: not a usable digest.
+    fake.setOverride(body=>body.stream?undefined:{choices:[{message:{content:'长'.repeat(12000)},finish_reason:'length'}],usage:{prompt_tokens:50,completion_tokens:10}});
     const task=app.agents.send(bot,'保留原文，摘要失败不得丢弃内容','pressure-failure').taskId;
     await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='failed',app);
-    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toContain('未完整结束');
+    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toContain('仍超过输入预算');
     expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
     const session=app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!;
     const entries=app.runtime.projection.load(String(session.id))!;
     expect(entries.some(entry=>entry.type==='context_edit')).toBe(false);
     expect(JSON.stringify(entries)).toContain('FAILURE-ORIGINAL');expect(JSON.stringify(entries)).toContain('FAILURE-RECENT');
     expect(fake.requests.filter(row=>row.stream)).toHaveLength(2);
+    // The failure is remembered against the result, with its backoff.
+    expect(app.store.all('SELECT target,attempts FROM compaction_failures')).toHaveLength(1);
   },60000);
   it('pages an oversized result explicitly and retrieves original ranges without re-executing the source tool',async()=>{
     const {app,fake,bot}=await fixture();
@@ -202,7 +205,7 @@ describe('Continuous personal assistant and memory',()=>{
     const {app,bot}=await fixture(),other=app.store.createBot('旧关闭助手');
     app.runtime.memory.personal.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:80000});
     app.store.run('UPDATE assistant_memory_settings SET enabled=0 WHERE bot_id=?',other);
-    app.store.db.exec('DROP TABLE memory_vectors; DROP TABLE memory_retrieval_settings; DROP TABLE assistant_memory_steps; DROP TABLE conversation_episodes; DROP TABLE conversation_episode_search; DROP TABLE conversation_topic_marks; ALTER TABLE assistant_memory_settings DROP COLUMN episode_cursor; DROP TABLE maintenance_runs; DROP INDEX assistant_usage_maintain; ALTER TABLE assistant_usage DROP COLUMN conversation_id; ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
+    app.store.db.exec('DROP TABLE memory_vectors; DROP TABLE memory_retrieval_settings; DROP TABLE compaction_failures; DROP TABLE assistant_memory_steps; DROP TABLE conversation_episodes; DROP TABLE conversation_episode_search; DROP TABLE conversation_topic_marks; ALTER TABLE assistant_memory_settings DROP COLUMN episode_cursor; DROP TABLE maintenance_runs; DROP INDEX assistant_usage_maintain; ALTER TABLE assistant_usage DROP COLUMN conversation_id; ALTER TABLE model_limit_overrides DROP COLUMN context_budget; DROP TABLE model_calibration; DROP TABLE agent_approval_rules; DROP TABLE workspace_memory_settings; DROP TABLE attachment_objects; DROP TABLE image_model_selections; DROP TABLE image_models; DROP INDEX IF EXISTS personal_connector_account; DROP TABLE personal_feishu_apps; DROP TABLE personal_feishu_messages; DROP TABLE personal_feishu_outbound; DELETE FROM schema_migrations WHERE version>=16;');
     app.store.db.exec('ALTER TABLE personal_connectors DROP COLUMN provider; ALTER TABLE personal_connectors DROP COLUMN account; ALTER TABLE personal_connectors DROP COLUMN kind;');
     const {CoreStore}=await import('./store.ts');
     const reopened=new CoreStore(app.store.dir,app.store.key,'synthetic-token');
@@ -211,10 +214,11 @@ describe('Continuous personal assistant and memory',()=>{
       expect(reopened.get('SELECT version FROM schema_migrations WHERE version=30')?.version).toBe(30);
       expect(reopened.get('SELECT version FROM schema_migrations WHERE version=31')?.version).toBe(31);
       expect(reopened.get('SELECT version FROM schema_migrations WHERE version=32')?.version).toBe(32);
+      expect(reopened.get('SELECT version FROM schema_migrations WHERE version=33')?.version).toBe(33);
       expect(reopened.get('SELECT COUNT(*) n FROM memory_vectors')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM memory_retrieval_settings')?.n).toBe(0);
-      for (const name of ['assistant_memory_search','conversation_episode_search','memory_search']) expect(String(reopened.get('SELECT sql FROM sqlite_master WHERE name=?',name)?.sql)).toContain("tokenize='trigram'");
-      expect(reopened.get('SELECT COUNT(*) n FROM assistant_memory_steps')?.n).toBe(0);
+      for (const name of ['assistant_memory_search','conversation_episode_search','memory_search']) expect(String(reopened.get('SELECT sql FROM sqlite_master WHERE name=?',name)?.sql)).toContain("tokenize='trigram'");      expect(reopened.get('SELECT COUNT(*) n FROM assistant_memory_steps')?.n).toBe(0);
+      expect(reopened.get('SELECT COUNT(*) n FROM compaction_failures')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM conversation_episodes')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM conversation_episode_search')?.n).toBe(0);
       expect(reopened.get('SELECT COUNT(*) n FROM conversation_topic_marks')?.n).toBe(0);
@@ -312,8 +316,8 @@ describe('Continuous personal assistant and memory',()=>{
   });
   it('checks tool continuations and preserves paired tool calls during compaction',async()=>{
     const {app,fake,bot}=await fixture();
-    const note=app.runtime.memory.write(bot,{title:'合成资料',content:'资料'.repeat(9500)});
-    const first=app.agents.send(bot,'保留初始约束。'+'旧材料'.repeat(3000),'tool-setup').taskId;
+    const note=app.runtime.memory.write(bot,{title:'合成资料',content:'资料'.repeat(10000)});
+    const first=app.agents.send(bot,'保留初始约束。'+'旧材料'.repeat(5000),'tool-setup').taskId;
     await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',first)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
     fake.scripts.push({action:'memory.read',args:{documentId:note.documentId}},'已读取资料');
     const task=app.agents.send(bot,'读取资料，遵守初始约束','tool-followup').taskId;
@@ -350,22 +354,30 @@ describe('Continuous personal assistant and memory',()=>{
     const last=streamed(fake).at(-1)!,input=Number(app.store.get('SELECT input_tokens FROM model_invocations ORDER BY created_at DESC LIMIT 1')!.input_tokens);
     expect(input).toBeGreaterThan(tokens(last)*.45);expect(input).toBeLessThan(tokens(last)*.55);
   },60000);
-  // Three 10000-character turns put the raw estimate between the 51,200-token trigger and 90% of the 64,000-token window.
-  const ballast='合成资料'.repeat(2500);
-  it('starts reduction on the calibrated count: a raw estimate above the trigger waits, one near the window still reduces',async()=>{
+  // Three 10400-character turns put the raw estimate just below H and 90% of the 64,000-token window
+  // (the count behind that line also carries the prompt, whose memory section is a few hundred tokens longer than it was).
+  const ballast='合成资料'.repeat(2600);
+  it('starts reduction on the calibrated count: a low ratio does not delay it past the raw 90% net, a high one brings it forward',async()=>{
+    // H of the 64,000-token window is 57,856. Without a ratio three of these turns (~54,000 raw) still fit.
     const control=await fixture();
     for(const n of [0,1,2])await turn(control.app,control.bot,`第${n}轮 ${ballast}`,'control-'+n);
-    expect(control.app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+    expect(control.app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
+    // Receipts that read 30% above the estimate: the calibrated count reaches H first.
+    const high=await fixture();
+    high.fake.setUsageScale(1.3);high.app.store.calibration.record(high.app.store.modelConfig(),2600,2000);
+    for(const n of [0,1,2])await turn(high.app,high.bot,`第${n}轮 ${ballast}`,'high-'+n);
+    expect(high.app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
+    expect(tokens(streamed(high.fake).at(-1))).toBeLessThan(64000-256);
     const {app,fake,bot}=await fixture();
     fake.setUsageScale(.5);app.store.calibration.record(app.store.modelConfig(),1000,2000);
     for(const n of [0,1,2])await turn(app,bot,`第${n}轮 ${ballast}`,'calibrated-'+n);
     const last=streamed(fake).at(-1)!,raw=tokens(last);
-    expect(raw).toBeGreaterThan(51200);expect(raw).toBeLessThan(64000*.9);
+    expect(raw).toBeGreaterThan(48000);expect(raw).toBeLessThan(64000*.9);
     expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
     expect(app.runtime.projection.load(String(app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!.id))!.some(entry=>entry.type==='compaction'||entry.type==='context_edit')).toBe(false);
     expect(JSON.stringify(last)).toContain('第0轮');
     expect(fake.requests.every(row=>row.stream)).toBe(true);
-    // The raw estimate would no longer fit the window soon: reduction starts however low the ratio reads.
+    // The raw estimate reaches 90% of the window: reduction starts however low the ratio reads.
     await turn(app,bot,`第3轮 ${ballast}`,'calibrated-3');
     expect(app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
     expect(tokens(streamed(fake).at(-1))).toBeLessThan(64000-256);
@@ -385,105 +397,91 @@ describe('Continuous personal assistant and memory',()=>{
   const bigDoc=(app:Fixture['app'],bot:string,label:string)=>app.runtime.memory.write(bot,{title:label,content:`${label} `+'资料'.repeat(1500)});
   const runtimeOf=(app:Fixture['app'],bot:string)=>String(app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!.id);
   const withoutSystem=(request:Record<string,unknown>)=>JSON.stringify((request.messages as Wire[]).filter(message=>message.role!=='system'&&message.role!=='developer'));
-  it('reduces at the working budget although the whole request fits the window, and sends what cannot reach the target but still fits',async()=>{
+  // The prefix of every request, minus the per-request volatile block, must be a byte-identical prefix of the next request.
+  const expectStablePrefixes=(fake:Fixture['fake'])=>{
+    const requests=fake.requests.filter(row=>row.stream).map(row=>(row.messages as Wire[]).filter(message=>!(message.role==='user'&&typeof message.content==='string'&&message.content.startsWith('<system-reminder>'))));
+    expect(requests.length).toBeGreaterThan(2);
+    for(const [index,messages] of requests.slice(1).entries())expect(JSON.stringify(messages.slice(0,requests[index].length))).toBe(JSON.stringify(requests[index]));
+  };
+  it('never reduces between the soft threshold and the input budget: the request goes out as it is, however far above the threshold',async()=>{
     const {app,fake,bot}=await fixture();
+    // S = 12,000 tokens; the input budget H is 160,000. Three results of ~13,500 tokens each put the context far above S.
     configure(app,fake,{contextWindow:200000,contextBudget:12000});
-    const note=bigDoc(app,bot,'BUDGET-RESULT');
-    fake.scripts.push({action:'memory.read',args:{documentId:note.documentId}},'第一轮完成');
-    // The current turn is protected: ~13,500 tokens of result exceed the budget yet fit the window, so the request is sent as is.
-    await turn(app,bot,'读取资料','budget-one');
-    expect(JSON.stringify(streamed(fake).at(-1))).toContain('BUDGET-RESULT');expect(streamed(fake).length).toBe(2);
+    const notes=['BUDGET-RESULT-0','BUDGET-RESULT-1','BUDGET-RESULT-2'].map(label=>bigDoc(app,bot,label));
+    fake.scripts.push(...notes.flatMap((note,index)=>[{action:'memory.read',args:{documentId:note.documentId}},`第${index}轮完成`]));
+    for(const [index] of notes.entries())await turn(app,bot,`读取资料 ${index}`,`budget-${index}`);
+    await turn(app,bot,'继续','budget-more');
+    const last=withoutSystem(streamed(fake).at(-1)!);
+    for(const label of ['BUDGET-RESULT-0','BUDGET-RESULT-1','BUDGET-RESULT-2'])expect(last).toContain(label);
+    expect(tokens(streamed(fake).at(-1))).toBeGreaterThan(12000);
+    // No summarizer call, no checkpoint, no edit: the history the cache holds is never touched.
+    expect(fake.requests.every(row=>row.stream)).toBe(true);
     expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
-    // The next turn starts above the budget: the earlier turn is summarized. The base prompt alone may exceed half the budget; the request still goes out.
-    const next=await turn(app,bot,'继续','budget-two');
-    expect(app.store.all('SELECT * FROM context_checkpoints').length).toBeGreaterThan(0);
-    expect(withoutSystem(streamed(fake).at(-1)!)).not.toContain('BUDGET-RESULT');
-    expect(app.store.get('SELECT status FROM tasks WHERE id=?',next)?.status).toBe('succeeded');
-  },90000);
-  it('defaults the working budget to min(64k, input budget) and lets an explicit value win',async()=>{
+    expect(app.runtime.projection.load(runtimeOf(app,bot))!.some(entry=>entry.type==='compaction'||entry.type==='context_edit')).toBe(false);
+    expectStablePrefixes(fake);
+  },120000);
+  it('resolves the soft threshold: default min(256k, 80% of the window, H − 2k), an explicit value wins within that cap',async()=>{
     const {app,fake}=await fixture();
     configure(app,fake,{contextWindow:400000});
-    expect(app.store.modelConfig().contextBudget).toBe(64000);
+    expect(app.store.modelConfig().contextBudget).toBe(256000);
     configure(app,fake,{contextWindow:64000});
     expect(app.store.modelConfig().contextBudget).toBe(51200);
     configure(app,fake,{contextWindow:400000,contextBudget:200000});
     expect(app.store.modelConfig().contextBudget).toBe(200000);
+    configure(app,fake,{contextWindow:400000,contextBudget:900000});
+    expect(app.store.modelConfig().contextBudget).toBe(320000);
+    configure(app,fake,{contextWindow:1000000,contextBudget:null});
+    expect(app.store.modelConfig().contextBudget).toBe(256000);
   });
-  it('starts reduction at the budget, keeps summarizing older results down to half of it and does not repeat on the next turn',async()=>{
+  it('reduces only a request that would not fit: it grows unreduced up to the input budget, then drops to the target, and the next turn adds no reduction',async()=>{
     const {app,fake,bot}=await fixture();
-    configure(app,fake,{contextWindow:200000,contextBudget:30000});
+    // H = 53,856, S = 30,000, T = 12,000: requests grow through S unreduced; only the one that would not fit is reduced.
+    configure(app,fake,{contextWindow:60000,contextBudget:30000});
+    expect(app.store.modelConfig().contextBudget).toBe(30000);
     const notes=Array.from({length:10},(_,i)=>bigDoc(app,bot,`STAGE-${i}`));
     fake.scripts.push(...notes.map(note=>({action:'memory.read',args:{documentId:note.documentId}})),'完成');
     await turn(app,bot,'逐个读取资料','stage-one');
     const sizes=streamed(fake).map(row=>tokens(row));
     const first=sizes.findIndex((_,index)=>index>0&&sizes[index]<sizes[index-1]);
-    // Requests grow with each result until the budget is crossed; then older results are summarized until at most half the budget remains.
+    // Requests grow with each result, crossing the soft threshold without any reduction; only the one that would not fit is reduced.
     expect(first).toBeGreaterThan(1);
-    for(const size of sizes.slice(0,first))expect(size).toBeLessThan(30000);
-    // The stage keeps going down to half the budget (15,000), not merely below 30,000; the newest result is never summarized.
-    expect(sizes[first]).toBeLessThanOrEqual(15000+600);
+    expect(sizes.slice(0,first).some(size=>size>30000)).toBe(true);
+    for(const size of sizes.slice(0,first))expect(size).toBeLessThan(53856+2000);
+    // The reduction goes down to the target (40% of S), not merely below the limit; the newest result is never summarized.
+    expect(sizes[first]).toBeLessThan(sizes[first-1]-8000);
     const edits=app.runtime.projection.load(runtimeOf(app,bot))!.filter(entry=>entry.type==='context_edit');
     expect(edits.length).toBeGreaterThanOrEqual(2);
     const after=app.store.all('SELECT * FROM context_checkpoints').length;
-    // The turn ended below the budget: the next turn adds no further reduction.
     await turn(app,bot,'继续','stage-two');
     expect(app.store.all('SELECT * FROM context_checkpoints').length).toBe(after);
-    expect(tokens(streamed(fake).at(-1))).toBeLessThan(30000);
+    expect(tokens(streamed(fake).at(-1))).toBeLessThan(53856);
   },120000);
-  it('digests tool results of turns older than the latest completed one when a turn starts; the latest turn stays full and edited or small results are left alone',async()=>{
+  it('never digests tool results of older turns while the context is at or below the soft threshold',async()=>{
     const {app,fake,bot}=await fixture();
     const one=bigDoc(app,bot,'DIGEST-ONE'),two=bigDoc(app,bot,'DIGEST-TWO');
     fake.scripts.push({action:'agent.directory',args:{}},{action:'memory.read',args:{documentId:one.documentId}},'第一轮完成',{action:'memory.read',args:{documentId:two.documentId}},'第二轮完成');
-    await turn(app,bot,'第一轮：读取资料','digest-1');await turn(app,bot,'第二轮：读取另一份资料','digest-2');
-    const runtime=runtimeOf(app,bot),edits=()=>app.runtime.projection.load(runtime)!.filter(entry=>entry.type==='context_edit') as Array<{targetId:string}>;
-    const summaries=()=>fake.requests.filter(row=>!row.stream).length;
-    // Two turns: nothing is older than the latest completed turn yet.
-    expect(summaries()).toBe(0);expect(edits()).toHaveLength(0);
-    expect(withoutSystem(streamed(fake).at(-1)!)).toContain('DIGEST-ONE');
-    await turn(app,bot,'第三轮：只讨论','digest-3');
-    // Turn one's large result is digested before the first request; its small directory result is not; turn two stays complete.
-    expect(summaries()).toBe(1);expect(edits()).toHaveLength(1);
-    const request=withoutSystem(streamed(fake).at(-1)!);
-    expect(request).toContain('DIGEST-TWO');expect(request).not.toContain('DIGEST-ONE');expect(request).toContain('工具结果摘要');
-    expect(request).toContain('agent.directory');
-    expect(String(app.agents.search(bot,'entry:'+edits()[0].targetId)[0].content)).toContain('DIGEST-ONE');
-    // The next turn digests turn two once; turn one's already edited result is not summarized again.
-    await turn(app,bot,'第四轮：继续','digest-4');
-    expect(summaries()).toBe(2);expect(edits()).toHaveLength(2);
-    expect(withoutSystem(streamed(fake).at(-1)!)).not.toContain('DIGEST-TWO');
-    expect(String(app.agents.search(bot,'entry:'+edits()[1].targetId)[0].content)).toContain('DIGEST-TWO');
-    await turn(app,bot,'第五轮：继续','digest-5');
-    expect(summaries()).toBe(2);expect(edits()).toHaveLength(2);
-  },120000);
-  it('keeps a digest failure from failing the turn and leaves the original result',async()=>{
-    const {app,fake,bot}=await fixture();
-    const one=bigDoc(app,bot,'FAILED-DIGEST-ONE');
-    fake.scripts.push({action:'memory.read',args:{documentId:one.documentId}},'第一轮完成');
-    await turn(app,bot,'第一轮：读取资料','digest-fail-1');await turn(app,bot,'第二轮','digest-fail-2');
-    fake.setOverride(body=>body.stream?undefined:{choices:[{message:{content:'partial'},finish_reason:'length'}],usage:{prompt_tokens:50,completion_tokens:10}});
-    await turn(app,bot,'第三轮','digest-fail-3');
+    for(const [index,text] of ['第一轮：读取资料','第二轮：读取另一份资料','第三轮：只讨论','第四轮：继续','第五轮：继续'].entries())await turn(app,bot,text,'digest-'+index);
+    // Turn one's large result is two turns old, yet nothing is summarized: the context is far below S.
+    expect(fake.requests.every(row=>row.stream)).toBe(true);
     expect(app.runtime.projection.load(runtimeOf(app,bot))!.some(entry=>entry.type==='context_edit')).toBe(false);
-    expect(withoutSystem(streamed(fake).at(-1)!)).toContain('FAILED-DIGEST-ONE');
-  },90000);
-  it('replaces images of older turns with text markers while the original entry keeps the bytes',async()=>{
+    const request=withoutSystem(streamed(fake).at(-1)!);
+    expect(request).toContain('DIGEST-ONE');expect(request).toContain('DIGEST-TWO');expect(request).not.toContain('工具结果摘要');
+    expectStablePrefixes(fake);
+  },120000);
+  it('keeps images of older turns complete while the context is at or below the soft threshold',async()=>{
     const {app,fake,bot}=await fixture();
     const files=new ChatFiles(app.store),image=files.upload({botId:bot,name:'older.png',data:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(2000,65)]).toString('base64')},app.store.session);
     fake.scripts.push({action:'attachment.read',args:{attachmentId:image.id}},'已看图');
     const first=app.agents.send(bot,`看这张图\n![合成图片](/api/attachments/${image.id})`,'image-one').taskId;files.bind([image.id],bot,'image-one');
     await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',first)?.status==='succeeded',app);await wait(()=>!app.runtime.workers.size,app);
     await turn(app,bot,'第二轮：继续','image-two');
-    expect(JSON.stringify(streamed(fake).at(-1))).toContain('data:image/png;base64,');
-    expect(app.runtime.projection.load(runtimeOf(app,bot))!.some(entry=>entry.type==='context_edit')).toBe(false);
     await turn(app,bot,'第三轮：继续','image-three');
+    // Two turns later the image is still sent as it was: replacing it would change the cached history for nothing.
     const last=JSON.stringify(streamed(fake).at(-1));
-    expect(last).not.toContain('data:image/png;base64,');expect(last).toContain(`[图片 attachment:${image.id}]`);
+    expect(last).toContain('data:image/png;base64,');expect(last).not.toContain('[图片 attachment:');
     expect(fake.requests.every(row=>row.stream)).toBe(true);
-    const stored=app.runtime.projection.load(runtimeOf(app,bot))!;
-    const edit=stored.find(entry=>entry.type==='context_edit') as {targetId:string}|undefined;
-    expect(edit).toBeDefined();
-    const target=stored.find(entry=>entry.id===edit!.targetId)!;
-    expect(JSON.stringify(target)).toContain('"type":"image"');expect(JSON.stringify(target)).toContain('"data":"iVBORw0KGg');
-    expect(String(app.agents.search(bot,'entry:'+edit!.targetId)[0].content)).toContain('[图片原文保留');
+    expect(app.runtime.projection.load(runtimeOf(app,bot))!.some(entry=>entry.type==='context_edit')).toBe(false);
+    expectStablePrefixes(fake);
   },90000);
   it('keeps the stable system message byte-identical when a peer starts or finishes a task and shows availability in the volatile block',async()=>{
     const {app,bot}=await fixture();

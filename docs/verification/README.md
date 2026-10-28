@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [Compaction timing: Core release (2026-10-29)](compaction-timing-release-20261029.md)
+- [Compaction timing and failure handling (2026-10-29)](compaction-timing.md)
 - [Memory background step backoff and budget cap (2026-10-29)](memory-stoploss-20261029.md)
 - [Glass workspace and secretary portraits: all-platform release (2026-10-28)](glass-workspace-release-20261028.md)
 - [Long conversations: all-platform release (2026-10-28)](long-context-release-20261028.md)

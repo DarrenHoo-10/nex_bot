@@ -24,7 +24,7 @@ async function fixture(extra: Record<string, unknown> = {}) {
   app.store.saveConfig({ provider: 'openai', endpoint: chat.origin + '/v1', model: 'fixture-chat', apiKey: 'synthetic-only', contextWindow: 64000, maxOutputTokens: 4096, ...extra });
   const bot = app.store.createBot('合成个人助手'); clearInterval(app.runtime.memory.personal.timer);
   // Background maintenance would add summarizer calls of its own; these tests look at the turn path.
-  app.runtime.maintenanceDelay = 600_000;
+  app.runtime.maintenanceIdle = 3_600_000;
   const result = { root, app, chat, fake, bot }; fixtures.push(result); return result;
 }
 afterEach(async () => {
@@ -104,6 +104,9 @@ describe('recall once per task', () => {
     remember(app, bot, '咖啡偏好', '喜欢拿铁咖啡');
     const long = Array.from({ length: 6 }, (_, index) => remember(app, bot, `上线长文${index}`, `上线记录${index} ` + '步骤说明细节'.repeat(500)));
     enableMemory(app); await embedAll(app, fake);
+    // Every document mentions 上线, so the stand-in reranker would score them all alike and the row order (random ids)
+    // would decide whether the short one fits the budget: score the one that answers the question higher.
+    fake.state.scores = (_query, documents) => documents.map((document) => document.includes('周五晚上上线东京服务器') ? 0.95 : 0.9);
     const first = await turn(app, bot, '请问部署流程怎么走', 'related-1');
     const row = task(app, first)!, block = String(row.block);
     expect(row.status).toBe('recalled');
@@ -412,8 +415,12 @@ describe('working notes per conversation', () => {
   }, 60000);
 
   describe('written by Core', () => {
-    // A tight working budget makes the second turn fold the first into a turn summary, which carries a working note.
+    // Core folds older turns only when a request does not fit the input limit H (57,856 for this window), or in the
+    // background after 55 idle minutes (compaction-timing.md). Two inputs of about 25k tokens do not fit together, so
+    // the second turn folds the first into a turn summary, which carries a working note. The small budget keeps the
+    // tail of full turns to the latest one.
     const folding = { contextBudget: 8000 };
+    const bulk = (label: string) => label + ' ' + '合成资料'.repeat(4200);
     const long = '长笔记条目：'.repeat(300);
     const summarizer = (chat: Fixture['chat'], compression: () => unknown) => chat.setOverride((body) => {
       if (body.stream) return undefined;
@@ -428,8 +435,8 @@ describe('working notes per conversation', () => {
       const { app, chat, bot } = await fixture(folding);
       expect(tokens(long)).toBeGreaterThan(WORKING_NOTE_TOKENS);
       summarizer(chat, () => reply('压缩后的笔记：只讨论，不部署；待验证长期记忆。'));
-      await turn(app, bot, 'NOTE-ONE：第一轮', 'core-note-1');
-      const second = await turn(app, bot, 'NOTE-TWO：第二轮', 'core-note-2');
+      await turn(app, bot, bulk('NOTE-ONE：第一轮'), 'core-note-1');
+      const second = await turn(app, bot, bulk('NOTE-TWO：第二轮'), 'core-note-2');
       expect(compressions(chat).length).toBeGreaterThan(0);
       expect(String(wire(compressions(chat)[0]).at(-1)!.content)).toBe(long);
       expect(instructionOf(compressions(chat)[0])).toContain('800 Token');
@@ -441,10 +448,10 @@ describe('working notes per conversation', () => {
     it.each([['the compression fails', () => truncated], ['the compressed note is still over the cap', () => reply(long)]])('keeps the old note and the summary when %s', async (_name, compression) => {
       const { app, chat, bot } = await fixture(folding);
       summarizer(chat, compression);
-      await turn(app, bot, 'KEEP-ONE：第一轮', 'keep-note-1');
+      await turn(app, bot, bulk('KEEP-ONE：第一轮'), 'keep-note-1');
       const conversation = conversationOf(app, bot);
       app.store.run('INSERT INTO conversation_working_notes(conversation_id,bot_id,content,task_id,version,updated_at) VALUES(?,?,?,?,?,?)', conversation, bot, 'EXISTING-NOTE', 'earlier-task', 3, 1);
-      const second = await turn(app, bot, 'KEEP-TWO：第二轮', 'keep-note-2');
+      const second = await turn(app, bot, bulk('KEEP-TWO：第二轮'), 'keep-note-2');
       expect(compressions(chat).length).toBeGreaterThan(0);
       expect(note(app, conversation)).toMatchObject({ content: 'EXISTING-NOTE', version: 3, task_id: 'earlier-task' });
       expect(String(app.store.get('SELECT summary FROM context_checkpoints WHERE task_id=?', second)!.summary)).toContain('HISTORY-ONLY');
@@ -466,7 +473,7 @@ describe('working notes per conversation', () => {
   }, 60000);
 });
 
-describe('migration 33', () => {
+describe('migration 34', () => {
   it('copies each assistant\'s working note into its most recently active conversation, keeps the old table, and cuts a note over the cap', async () => {
     const { app, bot } = await fixture();
     const other = app.store.createBot('另一个助手'), spare = app.store.createBot('没有笔记的助手');
@@ -479,11 +486,11 @@ describe('migration 33', () => {
     const huge = '很长的旧笔记。'.repeat(400);
     app.store.run('INSERT INTO assistant_working_notes(bot_id,content,task_id,version,updated_at) VALUES(?,?,?,?,?)', bot, '旧笔记：只讨论，不部署', 'task-x', 4, 7);
     app.store.run('INSERT INTO assistant_working_notes(bot_id,content,task_id,version,updated_at) VALUES(?,?,?,?,?)', other, huge, 'task-y', 2, 8);
-    app.store.db.exec('DROP TABLE conversation_working_notes; DROP TABLE task_recall; DROP TABLE core_memory_receipts; DROP TABLE assistant_core_memory; DELETE FROM schema_migrations WHERE version=33');
+    app.store.db.exec('DROP TABLE conversation_working_notes; DROP TABLE task_recall; DROP TABLE core_memory_receipts; DROP TABLE assistant_core_memory; DELETE FROM schema_migrations WHERE version=34');
     for (let round = 0; round < 2; round++) {
       const reopened = new CoreStore(app.store.dir, app.store.key, 'synthetic-token');
       try {
-        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version=33')!.n).toBe(1);
+        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version=34')!.n).toBe(1);
         expect(reopened.get('SELECT * FROM conversation_working_notes WHERE conversation_id=?', older)).toMatchObject({ bot_id: bot, content: '旧笔记：只讨论，不部署', task_id: 'task-x', version: 4, updated_at: 7 });
         expect(reopened.get('SELECT COUNT(*) n FROM conversation_working_notes WHERE conversation_id=?', newer)!.n).toBe(0);
         const cut = reopened.get('SELECT content FROM conversation_working_notes WHERE conversation_id=?', lone)!;
@@ -492,7 +499,7 @@ describe('migration 33', () => {
         expect(reopened.get('SELECT COUNT(*) n FROM assistant_working_notes')!.n).toBe(2);
         expect(reopened.get('SELECT COUNT(*) n FROM assistant_core_memory')!.n).toBe(0);
         // Running it again changes nothing.
-        if (round === 0) reopened.run('DELETE FROM schema_migrations WHERE version=33');
+        if (round === 0) reopened.run('DELETE FROM schema_migrations WHERE version=34');
       } finally { reopened.close(); }
     }
     void spare;

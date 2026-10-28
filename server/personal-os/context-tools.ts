@@ -1,6 +1,6 @@
 import type { FileEntry } from '@earendil-works/pi-coding-agent';
 import { isImagePart, tokens } from './token-estimate.ts';
-import { modelInputBudget, workingContextBudget } from './model-limits.ts';
+import { TARGET_SHARE, hardInputLimit, workingContextBudget } from './model-limits.ts';
 import { brokerDeclaration, brokerDescription, brokerParameters } from './broker-tool.ts';
 
 /** Text retrieval never turns image bytes back into a huge text token bill. */
@@ -62,12 +62,17 @@ export interface ProjectedItem { sourceEntry: FileEntry; messages: ContextMessag
 
 /** A user turn begins at an input, a replayed user row of earlier history, or a user message. */
 export const isTurnStart = (entry: FileEntry) => (entry.type === 'custom_message' && (entry.customType === 'nex.input' || entry.customType === 'nex.history' && String(entry.content).includes('"role":"user"'))) || (entry.type === 'message' && entry.message.role === 'user');
-/** Tool results above this many text tokens (images excluded) are digested once their turn is no longer the latest completed one. */
-export const DIGEST_TOKENS = 1500;
+/** A reduction digests tool results above this many text tokens (images excluded) of turns older than the latest completed one. */
+export const DIGEST_TOKENS = 4000;
 /** Fixed request overhead (tool framing, provider wrappers) added to every estimate. */
 export const CONTEXT_OVERHEAD = 2500;
-/** Background maintenance starts reducing at this share of the working budget, so the next turn finds room. */
-export const MAINTAIN_TRIGGER = 0.7;
+/** A context above the soft threshold is reduced in the background only once the conversation has been idle this long (the cache is cold by then). */
+export const MAINTAIN_IDLE_MS = 55 * 60_000;
+/** The message of a summarizer request whose output was cut at its token cap, so the worker can split the batch and retry. */
+export const OUTPUT_TRUNCATED = '压缩输出被截断';
+/** Failure-record keys: one tool result, or the range of a history batch (first source entry of the fold to the last of the batch). */
+export const entryTarget = (id: string) => `entry:${id}`;
+export const rangeTarget = (first: string, last: string) => `range:${first}..${last}`;
 
 /** The active branch: the chain of parents from the last entry. */
 export function branchOf(entries: FileEntry[]): Entry[] {
@@ -161,30 +166,32 @@ export function hygieneScope(items: ProjectedItem[], next: boolean): Set<string>
   const previous = current === undefined ? undefined : starts.findLast((index) => index < current);
   return previous !== undefined && previous > 0 ? new Set(entries.slice(0, previous).map((entry) => entry.id)) : undefined;
 }
-/** Large unedited tool results of older turns. */
-export const digestCandidates = <T extends ProjectedItem>(items: T[], older: Set<string>, edited: Set<string>): T[] => items.filter((item) => {
+const textTokens = (message: ContextMessage | undefined) => Array.isArray(message?.content) ? tokens(message.content.filter((part) => !isImagePart(part))) : 0;
+/** Large unedited tool results of older turns, largest first; `skip` leaves out targets that are in backoff. */
+export const digestCandidates = <T extends ProjectedItem>(items: T[], older: Set<string>, edited: Set<string>, skip?: (target: string) => boolean): T[] => items.filter((item) => {
   const message = item.messages[0];
-  return older.has(item.sourceEntry.id) && item.sourceEntry.type === 'message' && message?.role === 'toolResult' && !edited.has(item.sourceEntry.id) && Array.isArray(message.content) && tokens(message.content.filter((part) => !isImagePart(part))) > DIGEST_TOKENS;
-});
+  return older.has(item.sourceEntry.id) && item.sourceEntry.type === 'message' && message?.role === 'toolResult' && !edited.has(item.sourceEntry.id) && textTokens(message) > DIGEST_TOKENS && !skip?.(entryTarget(item.sourceEntry.id));
+}).map((item) => ({ item, size: textTokens(item.messages[0]) })).sort((a, b) => b.size - a.size).map(({ item }) => item);
 /** Messages of older turns that still hold image bytes. */
 export const imageCandidates = <T extends ProjectedItem>(items: T[], older: Set<string>): T[] => items.filter((item) => {
   const message = item.messages[0];
   return older.has(item.sourceEntry.id) && !!message && ['user', 'toolResult', 'custom'].includes(message.role) && Array.isArray(message.content) && message.content.some((part) => isImagePart(part));
 });
 
-export interface ReductionLimits { inputBudget: number; workingBudget: number; target: number; ceiling: number; calibration: number }
+export interface ReductionLimits { hard: number; soft: number; target: number; ceiling: number; calibration: number }
 /**
- * The lines the reduction pipeline works against. Reduction starts at the working budget (or at
- * MAINTAIN_TRIGGER of it in the background) and, once started, continues down to half of it. The raw
- * count reaching 90% of the window starts it regardless of the calibration; inputBudget is the hard limit.
+ * The lines the reduction pipeline works against. hard is the hard limit H (hardInputLimit): a request above it does not
+ * fit and is reduced in the turn. soft is the threshold S: above it (and idle for MAINTAIN_IDLE_MS) the
+ * background reduces; at or below it nothing is ever reduced. A reduction runs down to target T = 0.4 × S.
+ * The calibrated count is what S, T and H are compared with; the raw count reaching 90% of the window is a
+ * safety net that counts as over H whatever the calibration reads.
  */
 export function reductionLimits(config: { contextWindow: number; maxOutputTokens: number; contextBudget?: number; calibration?: number }): ReductionLimits {
-  const inputBudget = modelInputBudget(config.contextWindow, config.maxOutputTokens), workingBudget = workingContextBudget(config.contextBudget, inputBudget);
-  return { inputBudget, workingBudget, target: Math.floor(workingBudget * .5), ceiling: Math.floor(config.contextWindow * .9), calibration: Number.isFinite(config.calibration) && config.calibration! > 0 ? config.calibration! : 1 };
+  const hard = hardInputLimit(config.contextWindow, config.maxOutputTokens), soft = workingContextBudget(config.contextBudget, hard, config.contextWindow);
+  return { hard, soft, target: Math.floor(soft * TARGET_SHARE), ceiling: Math.floor(config.contextWindow * .9), calibration: Number.isFinite(config.calibration) && config.calibration! > 0 ? config.calibration! : 1 };
 }
-export const triggerLine = (limits: ReductionLimits, maintain: boolean) => maintain ? Math.floor(limits.workingBudget * MAINTAIN_TRIGGER) : limits.workingBudget;
-/** Tokens the turn summary may keep as full recent turns. */
-export const tailBudgetFor = (limits: ReductionLimits, promptTokens: number) => Math.max(0, Math.floor(limits.workingBudget * .3) - CONTEXT_OVERHEAD - promptTokens - tokens(brokerParameters) - tokens(brokerDescription) - 4096);
+/** Tokens a history compaction may keep as full recent turns. */
+export const tailBudgetFor = (limits: ReductionLimits, promptTokens: number) => Math.max(0, Math.floor(limits.soft * .3) - CONTEXT_OVERHEAD - promptTokens - tokens(brokerParameters) - tokens(brokerDescription) - 4096);
 /** The system message as it is counted: the prompt plus the broker declaration. */
 export const systemMessage = (prompt: string) => ({ role: 'system' as const, content: prompt, toolsAdded: brokerDeclaration, timestamp: Date.now() });
 
@@ -201,25 +208,48 @@ export function tailCut(entries: FileEntry[], tailBudget: number): number {
 /** Whether the entries before the cut hold anything a turn summary would fold, besides a leading summary and system messages. */
 export const foldable = (earlier: FileEntry[], projection: Map<string, ContextMessage[]>) => earlier.some((entry) => entry.type === 'custom_message' || (entry.type === 'message' && entry.message.role !== 'system' && (projection.get(entry.id)?.length ?? 0) > 0));
 
-export interface MaintenanceParams { contextWindow: number; maxOutputTokens: number; contextBudget?: number; calibration?: number; systemPrompt: string; volatilePrompt: string }
-export interface MaintenanceVerdict { work: boolean; reason: 'digest' | 'budget' | null; /** Calibrated token estimate of the next request, before its new input. */ estimate: number; /** The calibrated estimate at which background reduction starts. */ trigger: number }
+export interface SourceItem { ref: string; role: string; content: unknown }
 /**
- * Whether background maintenance of a stored projection would do anything: tool results or images of
- * turns older than the latest completed one waiting for a digest, or a calibrated context above
- * MAINTAIN_TRIGGER of the working budget with older turns left to fold into the summary. The latest
- * completed turn is never reduced, so a context made of that turn alone has no work however large it is.
+ * What the summarizer reads for a run of context entries: inputs, a leading summary and the projected
+ * messages. It reads text; image bytes stay in the original entry. Shared by the worker (which folds it) and
+ * Core (which needs the same first entry to tell whether a fold is in backoff).
+ */
+export function historySource(earlier: FileEntry[], projection: Map<string, ContextMessage[]>): SourceItem[] {
+  const textOnly = (content: unknown) => Array.isArray(content) ? content.map((part) => isImagePart(part) ? { type: 'text', text: '[图片]' } : part) : content;
+  return earlier.flatMap<SourceItem>((entry, index) => {
+    const ref = `entry:${entry.id}`;
+    if (entry.type === 'custom_message') return [{ ref, role: 'user', content: textOnly(entry.content) }];
+    if (entry.type === 'compaction' && index === 0) return [{ ref, role: 'summary', content: entry.summary }];
+    if (entry.type === 'message' && entry.message.role !== 'system') return (projection.get(entry.id) ?? []).map((message) => ({ ref, role: message.role, content: 'content' in message ? textOnly(message.content) : JSON.stringify(message) }));
+    return [];
+  });
+}
+/** A fold is in backoff when any batch range of it (all start at the fold's first source entry) is blocked. */
+export function foldBlocked(source: SourceItem[], blocked: Iterable<string>): boolean {
+  const start = source[0]?.ref.slice(6);
+  return !!start && [...blocked].some((target) => target.startsWith(`range:${start}..`));
+}
+
+export interface MaintenanceParams { contextWindow: number; maxOutputTokens: number; contextBudget?: number; calibration?: number; systemPrompt: string; volatilePrompt: string; /** Targets (entry:/range: keys) that are in backoff or given up on. */ blocked?: ReadonlySet<string> }
+export interface MaintenanceVerdict { work: boolean; reason: 'budget' | null; /** Calibrated token estimate of the next request, before its new input. */ estimate: number; /** The soft threshold S, which the calibrated estimate must exceed. */ trigger: number }
+/**
+ * Whether background maintenance of a stored projection would do anything: the calibrated context is above
+ * the soft threshold S and something is left to reduce, i.e. a large tool result of a turn older than the
+ * latest completed one that is not in backoff, or older turns to fold into the summary. The latest completed turn is never
+ * reduced, so a context made of that turn alone has no work however large it is. Old results or images alone
+ * are no reason: below S nothing is reduced. Whether the conversation has been idle long enough is Core's call.
  */
 export function maintenanceWork(entries: FileEntry[] | undefined, params: MaintenanceParams): MaintenanceVerdict {
-  const limits = reductionLimits(params), trigger = triggerLine(limits, true);
+  const limits = reductionLimits(params), trigger = limits.soft;
   if (!entries?.length) return { work: false, reason: null, estimate: 0, trigger };
   const items = projectEntries(entries), volatileTokens = tokens(params.volatilePrompt), promptTokens = tokens(params.systemPrompt) + volatileTokens;
   const count = tokens([systemMessage(params.systemPrompt), ...items.flatMap((item) => item.messages).filter((message) => message.role !== 'system')]) + CONTEXT_OVERHEAD + volatileTokens;
-  const estimate = Math.round(count * limits.calibration), verdict = (reason: 'digest' | 'budget' | null) => ({ work: reason !== null, reason, estimate, trigger });
-  const older = hygieneScope(items, true);
-  if (older && (digestCandidates(items, older, editedTargets(branchOf(entries))).length || imageCandidates(items, older).length)) return verdict('digest');
-  if (count * limits.calibration >= trigger || count >= limits.ceiling) {
-    const context = contextEntries(entries);
-    if (foldable(context.slice(0, tailCut(context, tailBudgetFor(limits, promptTokens))), new Map(items.map((item) => [item.sourceEntry.id, item.messages])))) return verdict('budget');
-  }
-  return verdict(null);
+  const estimate = Math.round(count * limits.calibration), verdict = (work: boolean) => ({ work, reason: work ? 'budget' as const : null, estimate, trigger });
+  if (!(count * limits.calibration > trigger || count >= limits.ceiling)) return verdict(false);
+  const blocked = (target: string) => params.blocked?.has(target) ?? false, older = hygieneScope(items, true);
+  if (older && digestCandidates(items, older, editedTargets(branchOf(entries)), blocked).length) return verdict(true);
+  const context = contextEntries(entries), projection = new Map(items.map((item) => [item.sourceEntry.id, item.messages])), earlier = context.slice(0, tailCut(context, tailBudgetFor(limits, promptTokens)));
+  if (!foldable(earlier, projection)) return verdict(false);
+  const source = historySource(earlier, projection);
+  return verdict(source.length > 0 && !foldBlocked(source, params.blocked ?? []));
 }
