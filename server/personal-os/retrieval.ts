@@ -74,14 +74,18 @@ export class Retrieval {
   resolveEntry?: (botId: string, entryId: string) => { id: string; content: string } | undefined;
   private readonly queries = new Map<string, { at: number; vector: Float32Array }>();
   private readonly reranks = new Map<string, { at: number; scores: Array<number | undefined> }>();
-  /** `valid` decides whether a memory still rests on verifiable sources. */
-  constructor(readonly store: CoreStore, readonly valid: (botId: string, row: Row) => boolean = () => true) { this.config = new RetrievalConfig(store); }
+  /**
+   * `valid` decides whether a memory may be recalled at all (it rests on verifiable sources and is a kind that is
+   * recalled). `covered` says a fact is already represented by a topic: ranked retrieval skips such a fact, while
+   * naming it with `memory:<id>` still opens it.
+   */
+  constructor(readonly store: CoreStore, readonly valid: (botId: string, row: Row) => boolean = () => true, readonly covered: (botId: string, row: Row) => boolean = () => false) { this.config = new RetrievalConfig(store); }
 
   private candidate(kind: PoolKind, row: Row, score: number, sources: string[]): Candidate {
     const item = describe(kind, row);
     return { kind, refId: String(row.id), ref: item.ref, title: item.title, text: item.text, tokens: tokens(item.text), score, sources, updatedAt: item.updatedAt, row };
   }
-  private accept(botId: string) { return (kind: PoolKind, row: Row) => kind !== 'memory' || this.valid(botId, row); }
+  private accept(botId: string) { return (kind: PoolKind, row: Row) => kind !== 'memory' || (this.valid(botId, row) && !this.covered(botId, row)); }
 
   /** `entry:` / `message:` / `episode:` / `memory:` name one record: no ranking, no models. */
   private exact(botId: string, query: string): Candidate[] | undefined {

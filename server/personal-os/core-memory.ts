@@ -163,7 +163,21 @@ export class CoreMemory {
     if (used > CORE_MEMORY_TOKENS) throw new Error(`核心记忆超过 ${CORE_MEMORY_TOKENS} Token（改后约 ${used}）。请合并相近的行、缩短说明或删除不再需要的行后重试${scope === 'workspace' ? '（共享行与每个助手自己的行合计计算）' : ''}`);
   }
 
-  private commit(scope: CoreScope, botId: string, expected: unknown, change: (current: CoreContent) => CoreContent, source: { actor: 'agent' | 'owner'; callId?: string }) {
+  /** Tokens of the text an assistant would carry if its own lines were `content` (the shared lines count too). */
+  measure(content: CoreContent): number {
+    return tokens(renderCore(content, this.read('workspace').content, 99999));
+  }
+  /**
+   * A change Core itself makes in the background (the topic index of topic-memory.ts): `change` receives the lines as
+   * they are at this moment, so there is no version to hand back, and the result is checked against the cap like
+   * any other write. Returns the unchanged result when `change` returns the same lines.
+   */
+  background(botId: string, change: (current: CoreContent) => CoreContent): CoreResult {
+    this.assertBot(botId);
+    return this.store.transaction(() => this.commit('bot', botId, this.read('bot', botId).version, change, { actor: 'core' }));
+  }
+
+  private commit(scope: CoreScope, botId: string, expected: unknown, change: (current: CoreContent) => CoreContent, source: { actor: 'agent' | 'owner' | 'core'; callId?: string }) {
     const expectedVersion = Number(expected);
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) throw new Error('核心记忆版本无效');
     const key = scope === 'bot' ? botId : '';

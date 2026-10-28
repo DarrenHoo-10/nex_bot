@@ -5,7 +5,8 @@ import { Episodes } from "./episodes.ts";
 import { CoreMemory } from "./core-memory.ts";
 import { dropVectors } from "./retrieval-index.ts";
 
-export interface ForgetPlan { sources: string[]; documents: string[]; messages: string[]; tasks: string[]; bots: string[]; banks: string[]; hashes: string[]; selectorHash: string; revision: string }
+/** `memories`: topic entries whose own text matches the selector (a plan journaled before topics existed has none). */
+export interface ForgetPlan { sources: string[]; documents: string[]; messages: string[]; tasks: string[]; bots: string[]; banks: string[]; hashes: string[]; memories?: string[]; selectorHash: string; revision: string }
 const redacted = "[已遗忘]";
 export class MemoryPrivacy {
   readonly episodes: Episodes;
@@ -25,7 +26,14 @@ export class MemoryPrivacy {
     // rests on, is forgotten with the assistant's other derived data (redact removes every archive of a reached assistant).
     const hitEpisodes = new Set<string>();
     if (!document) for (const episode of this.store.all("SELECT title,summary,open_items,id FROM conversation_episodes WHERE bot_id=?", botId)) if (matches({ title: episode.title, content: `${episode.summary}\n${episode.open_items}` })) hitEpisodes.add(`episode:${episode.id}`);
-    if(!document)for(const memory of this.store.all('SELECT * FROM assistant_memories WHERE bot_id=?',botId))if(matches(memory))for(const ref of JSON.parse(String(memory.refs_json)))(String(ref.id).startsWith('episode:')?hitEpisodes:messageIds).add(String(ref.id));
+    // A matching fact or experience takes the originals it rests on with it. A matching topic is dropped by itself: it
+    // is a digest of many facts, and the originals of the unrelated ones must not go because one detail did (a topic
+    // that cites a forgotten original is dropped with it anyway, below).
+    const topics = new Set<string>();
+    if(!document)for(const memory of this.store.all('SELECT * FROM assistant_memories WHERE bot_id=?',botId))if(matches(memory)){
+      if(memory.kind==='topic'){topics.add(String(memory.id));continue;}
+      for(const ref of JSON.parse(String(memory.refs_json)))(String(ref.id).startsWith('episode:')?hitEpisodes:messageIds).add(String(ref.id));
+    }
     const sources = new Set<string>(), tasks = new Set<string>(), banks = new Set<string>(), bots = new Set<string>();
     if (messageIds.size || hitEpisodes.size) bots.add(botId);
     for(const use of this.store.all('SELECT * FROM assistant_memory_uses'))if(messageIds.has(String(use.message_id))||hitEpisodes.has(String(use.message_id)))tasks.add(String(use.task_id));
@@ -70,7 +78,7 @@ export class MemoryPrivacy {
     const hashes = new Set(all.filter((s) => sources.has(String(s.id))).map((s) => String(s.content_hash)));
     for (const doc of docs) if (documents.has(String(doc.id))) hashes.add(hash(String(doc.content)));
     for (const message of this.store.all("SELECT id,content FROM agent_messages")) if (messageIds.has(String(message.id))) hashes.add(hash(String(message.content)));
-    const result = { sources: [...sources].sort(), documents: [...documents].sort(), messages: [...messageIds].sort(), tasks: [...tasks].sort(), banks: [...banks].sort(), bots: [...bots].sort(), hashes: [...hashes].sort(), selectorHash: hash(canonical({ botId, document, query })) };
+    const result = { sources: [...sources].sort(), documents: [...documents].sort(), messages: [...messageIds].sort(), tasks: [...tasks].sort(), banks: [...banks].sort(), bots: [...bots].sort(), hashes: [...hashes].sort(), memories: [...topics].sort(), selectorHash: hash(canonical({ botId, document, query })) };
     const revision = hash(canonical({ ...result, sources: all.filter((s) => sources.has(String(s.id))), docs: this.store.all("SELECT id,version,content_hash FROM memory_documents"), seqs: this.store.all("SELECT bot_id,next_seq FROM agent_inboxes") }));
     return { ...result, revision };
   }
@@ -88,6 +96,21 @@ export class MemoryPrivacy {
     for (const record of JSON.parse(this.store.decrypt(readFileSync(file, "utf8"))) as Array<{ id: string; plan: ForgetPlan }>) if ([undefined, "pending"].includes(this.store.get("SELECT status FROM memory_forget_rules WHERE id=?", record.id)?.status as string | undefined)) {
       this.redact(record.plan, record.id); apply(record.plan);
     }
+  }
+  /**
+   * Removes one memory with everything derived from it: its versions, index row, vector, evidence links and topic
+   * summary, and notes its index line for removal. The facts a deleted topic rested on that survive have no topic
+   * any more, and are merged afresh, into new topics, by the next pass (topic-memory.ts).
+   */
+  private dropMemory(key: string, forgotten: Set<string>) {
+    if(!this.store.get('SELECT id FROM assistant_memories WHERE id=?',key))return;
+    forgotten.add('memory:'+key);
+    this.store.run('DELETE FROM assistant_memory_versions WHERE id=?',key);
+    this.store.run('DELETE FROM assistant_memory_search WHERE memory_id=?',key);
+    dropVectors(this.store,'memory',key);
+    this.store.run('DELETE FROM assistant_topic_evidence WHERE topic_id=? OR memory_id=?',key,key);
+    this.store.run('DELETE FROM assistant_topics WHERE topic_id=?',key);
+    this.store.run('DELETE FROM assistant_memories WHERE id=?',key);
   }
   redact(plan: ForgetPlan, ruleId: string) {
     this.store.transaction(() => {
@@ -145,18 +168,15 @@ export class MemoryPrivacy {
         // while retaining unrelated facts in this assistant's bank.
         for(const memory of this.store.all('SELECT * FROM assistant_memories WHERE bot_id=?',bot)){
           const versions=[memory,...this.store.all('SELECT refs_json FROM assistant_memory_versions WHERE id=?',memory.id)];
-          if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>plan.messages.includes(ref.id)||archives.has(ref.id)))){
-            forgotten.add('memory:'+memory.id);
-            this.store.run('DELETE FROM assistant_memory_versions WHERE id=?',memory.id);
-            this.store.run('DELETE FROM assistant_memory_search WHERE memory_id=?',memory.id);
-            dropVectors(this.store,'memory',String(memory.id));
-            this.store.run('DELETE FROM assistant_memories WHERE id=?',memory.id);
-          }
+          // A topic is the union of its evidence's sources, so one forgotten fact takes every topic that cites it along.
+          if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>plan.messages.includes(ref.id)||archives.has(ref.id)))) this.dropMemory(String(memory.id),forgotten);
         }
         this.store.run('DELETE FROM assistant_memory_imports WHERE bot_id=?',bot);
         this.store.run('DELETE FROM assistant_memory_steps WHERE bot_id=?',bot);
         this.store.run('UPDATE assistant_memory_settings SET version=version+1,consolidated_at=0,profile_at=0 WHERE bot_id=?',bot);
       }
+      // Topics whose own text matched, whether or not anything they cite was forgotten.
+      for(const key of plan.memories??[])this.dropMemory(key,forgotten);
       new CoreMemory(this.store).dropRefs(forgotten);
       this.store.run("INSERT INTO memory_forget_rules VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,completed_at=excluded.completed_at", ruleId, plan.selectorHash, JSON.stringify(plan), plan.banks.length ? "cleaning" : "completed", now(), plan.banks.length ? null : now());
       this.store.run("UPDATE memory_privacy_maintenance SET active=0 WHERE id=1");
