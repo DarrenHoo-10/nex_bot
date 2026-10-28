@@ -460,6 +460,21 @@ extension CoreClient {
         try await post("/api/memory/forget", body: ForgetBody(botId: bot, query: query, revision: revision))
     }
 
+    /// `GET /api/memory/retrieval` (owner only; others get 403).
+    public func retrievalSettings() async throws -> RetrievalView { try await get("/api/memory/retrieval") }
+    /// `POST /api/memory/retrieval` (owner only). Core tests the settings with a real request before storing them, which
+    /// takes up to 15 s; a failed test or a stale version throws Core's text. Returns the stored view of both items.
+    public func saveRetrieval(_ request: RetrievalSaveRequest) async throws -> RetrievalView {
+        try await post("/api/memory/retrieval", request, timeout: 40)
+    }
+    /// `GET /api/memory/core?botId=` (owner only).
+    public func coreMemory(bot: String) async throws -> CoreMemoryView { try await get("/api/memory/core", query: [("botId", bot)]) }
+    /// `POST /api/memory/core` (owner only): replaces both lists of one scope. `version` is that scope's
+    /// ``CoreMemoryEntry/version``. Core refuses lines over 1500 tokens in total and a stale version. Returns the view of `bot`.
+    public func saveCoreMemory(bot: String, scope: CoreMemoryScope, about: [String], topics: [CoreMemoryTopic], version: Int) async throws -> CoreMemoryView {
+        try await post("/api/memory/core", CoreMemorySaveBody(botId: bot, scope: scope.rawValue, about: about, topics: topics, version: version), timeout: 20)
+    }
+
     // Preview
     /// `GET /api/preview?path=`.
     public func preview(path: String) async throws -> PreviewItem { try await get("/api/preview", query: [("path", path)]) }

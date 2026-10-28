@@ -39,6 +39,7 @@ struct SettingsMemoryView: View {
             }
             .padding(14).frame(maxWidth: .infinity, alignment: .leading).cardStyle()
             if !error.isEmpty { InlineBanner(text: error) }
+            CoreMemorySection(workspace: workspace)
         }
         .task(id: "\(workspace.state?.sync.privacyEpoch ?? 0)|\(config?.providerID ?? "")|\(config?.endpoint ?? "")") {
             generation += 1

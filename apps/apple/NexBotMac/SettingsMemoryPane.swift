@@ -46,6 +46,8 @@ struct SettingsMemoryPane: View {
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border))
             .padding(.top, 24)
             if !error.isEmpty { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).padding(.top, 12) }
+            if !workspace.bots.isEmpty { Hairline().padding(.vertical, 28) }
+            CoreMemorySection(workspace: workspace, active: active)
         }
         .task(id: "\(active)|\(workspace.state?.sync.privacyEpoch ?? 0)|\(config?.providerID ?? "")|\(config?.endpoint ?? "")") {
             generation += 1

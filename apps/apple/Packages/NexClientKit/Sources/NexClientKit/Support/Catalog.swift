@@ -99,7 +99,7 @@ public enum MemoryLabels {
         case "user_stated": "用户陈述"
         case "peer_reported": "同伴转述"
         case "agent_inferred": "Agent 推断"
-        case "synthesized": "综合观察"
+        case "synthesized": "主题"
         default: value
         }
     }

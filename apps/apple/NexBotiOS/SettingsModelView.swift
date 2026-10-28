@@ -145,6 +145,7 @@ struct SettingsModelView: View {
             }
             .padding(14).cardStyle()
             if let config { ImageModelSection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)") }
+            RetrievalSection(workspace: workspace)
         }
         .onDisappear { form.showKey = false }
         .task(id: form.scopeKey) { await loadLimits() }

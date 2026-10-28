@@ -254,6 +254,26 @@ extension WorkspaceStore {
         try await act { try await client.forget(bot: botID, query: query, revision: preview.revision) }
     }
 
+    // MARK: Memory retrieval and core memory (owner only)
+
+    /// The embedding and rerank models of memory retrieval. Read only (no state refresh).
+    public func retrievalSettings() async throws -> RetrievalView {
+        try await act(refresh: false) { try await client.retrievalSettings() }
+    }
+    /// Saves one item after Core's test request succeeds, or (``RetrievalSaveRequest/useDefault(kind:version:)``) drops the
+    /// user's settings. Returns the stored view of both items.
+    public func saveRetrieval(_ request: RetrievalSaveRequest) async throws -> RetrievalView {
+        try await act(refresh: false) { try await client.saveRetrieval(request) }
+    }
+    /// The always-loaded core memory of an assistant and of the workspace. Read only.
+    public func coreMemory(botID: String) async throws -> CoreMemoryView {
+        try await act(refresh: false) { try await client.coreMemory(bot: botID) }
+    }
+    /// Replaces both lists of one scope; `version` is that scope's ``CoreMemoryEntry/version`` from the last read.
+    public func saveCoreMemory(botID: String, scope: CoreMemoryScope, about: [String], topics: [CoreMemoryTopic], version: Int) async throws -> CoreMemoryView {
+        try await act(refresh: false) { try await client.saveCoreMemory(bot: botID, scope: scope, about: about, topics: topics, version: version) }
+    }
+
     // MARK: Preview
 
     public func previewFile(path: String) async throws -> PreviewItem { try await act(refresh: false) { try await client.preview(path: path) } }

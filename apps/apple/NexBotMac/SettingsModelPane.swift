@@ -83,6 +83,8 @@ struct SettingsModelPane: View {
                 Hairline().padding(.vertical, 28)
                 ImageModelSection(workspace: workspace, active: active).id("\(config.providerID)|\(config.endpoint)")
             }
+            Hairline().padding(.vertical, 28)
+            RetrievalSection(workspace: workspace, active: active)
         }
         .onAppear { load() }
         .onChange(of: limitScope, initial: true) { limits.reset(scope: limitScope) }
