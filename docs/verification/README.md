@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [Memory recall redesign: all-platform release (2026-10-29)](memory-recall-release-20261029.md)
 - [Compaction timing: Core release (2026-10-29)](compaction-timing-release-20261029.md)
 - [Compaction timing and failure handling (2026-10-29)](compaction-timing.md)
 - [Memory background step backoff and budget cap (2026-10-29)](memory-stoploss-20261029.md)
