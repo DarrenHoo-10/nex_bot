@@ -139,6 +139,7 @@ export class MemoryPrivacy {
           }
         }
         this.store.run('DELETE FROM assistant_memory_imports WHERE bot_id=?',bot);
+        this.store.run('DELETE FROM assistant_memory_steps WHERE bot_id=?',bot);
         this.store.run('UPDATE assistant_memory_settings SET version=version+1,consolidated_at=0,profile_at=0 WHERE bot_id=?',bot);
       }
       this.store.run("INSERT INTO memory_forget_rules VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,completed_at=excluded.completed_at", ruleId, plan.selectorHash, JSON.stringify(plan), plan.banks.length ? "cleaning" : "completed", now(), plan.banks.length ? null : now());

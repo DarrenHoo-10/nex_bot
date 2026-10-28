@@ -8,6 +8,11 @@ export function jsonObject(value: string): Record<string, unknown> {
   if (!result || Array.isArray(result) || typeof result !== 'object') throw new Error('模型未返回有效结构');
   return result;
 }
+/** Hard cap on the tokens one assistant's background memory work may use per day, whatever its setting says. */
+export const MEMORY_DAILY_TOKENS = 500_000;
+export const MEMORY_BUDGET_EXHAUSTED = '今日记忆维护预算已用完';
+/** The budget enforced for a saved setting: "0 = unlimited" and anything above the hard cap both mean the cap. */
+export const effectiveDailyBudget = (setting: number) => setting > 0 ? Math.min(setting, MEMORY_DAILY_TOKENS) : MEMORY_DAILY_TOKENS;
 /** Tokens (actual when known, else reserved) a day of background context maintenance may use per conversation. */
 export const MAINTAIN_DAILY_TOKENS = 500_000;
 const spent = "COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL THEN input_tokens+output_tokens ELSE reserved_tokens END),0)";
@@ -29,7 +34,7 @@ export async function assistantCompletion(store: CoreStore, args: { botId: strin
     // Memory work (task_id IS NULL) is budgeted per assistant per day; background context maintenance has no task
     // either but has its own per-conversation cap, so it neither consumes nor is blocked by the memory budget.
     const used = Number(store.get(`SELECT ${spent} n FROM assistant_usage WHERE bot_id=? AND task_id IS NULL AND purpose<>'maintain' AND created_at>=?`, args.botId, start.getTime())!.n);
-    if (args.dailyBudget && used + reserved > args.dailyBudget) throw new Error('今日记忆维护预算已用完');
+    if (args.dailyBudget !== undefined && used + reserved > effectiveDailyBudget(args.dailyBudget)) throw new Error(MEMORY_BUDGET_EXHAUSTED);
     if (args.maintainBudget !== undefined && maintainUsage(store, args.conversationId ?? '') + reserved > args.maintainBudget) throw new Error('今日后台整理预算已用完');
     store.insert('assistant_usage', { id: invoice, bot_id: args.botId, task_id: args.taskId ?? null, conversation_id: args.conversationId ?? null, purpose: args.purpose, model: model.model, status: 'running', reserved_tokens: reserved, created_at: now() });
   });

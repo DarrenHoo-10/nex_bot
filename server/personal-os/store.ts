@@ -339,6 +339,13 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.db.exec(this.all("PRAGMA table_info(assistant_memory_settings)").some((column) => column.name === "episode_cursor") ? episodeSchema.replace("ALTER TABLE assistant_memory_settings ADD COLUMN episode_cursor INTEGER NOT NULL DEFAULT 0;\n", "") : episodeSchema);
       this.insert("schema_migrations", { version: 29, checksum: hash(episodeSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=30")) this.transaction(() => {
+      // Failure/backoff state of the background memory steps (retain, consolidate, understanding): one row per
+      // assistant and step, present only while the step's latest attempts failed; a success deletes it.
+      const schema = "CREATE TABLE IF NOT EXISTS assistant_memory_steps(bot_id TEXT NOT NULL REFERENCES bots(id),step TEXT NOT NULL,failures INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,error TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(bot_id,step)) STRICT;";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 30, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
