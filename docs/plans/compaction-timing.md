@@ -1,6 +1,6 @@
 # 压缩时机与失败处理：技术方案
 
-状态：已实现（分支 `claude/compaction-timing`，2026-10-28），尚未合并和部署。范围：Core（`server/personal-os`）与模型设置页的一个字段。
+状态：已上线（main `7e889601`，2026-10-29，见[发布记录](../verification/compaction-timing-release-20261029.md)）。范围：Core（`server/personal-os`）与模型设置页的一个字段。
 验证记录：[压缩时机与失败处理](../verification/compaction-timing.md)。
 前置：[长会话上下文与记忆](long-context-and-memory.md)（0.9.17 已上线）。
 
