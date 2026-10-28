@@ -52,7 +52,6 @@ export function recallQuery(inputs: string[]): string {
 }
 export const worthRecalling = (query: string) => [...query.replace(/[\p{P}\p{S}\p{Z}\p{C}]/gu, '')].length >= RECALL_MIN_CHARS;
 
-const sourceIds = (row: Row) => { try { return (JSON.parse(String(row.refs_json)) as Array<{ id: string }>).map((ref) => ref.id); } catch { return []; } };
 function itemOf(candidate: Candidate): RecallItem {
   const row = candidate.row;
   // An archive is recalled as its brief; its full text is episode:<id>.
@@ -160,9 +159,8 @@ export class TaskRecall {
         if (!personal.enabled(botId)) return empty('skipped');
         const found: RetrievalResult = await this.memory.retrieval.retrieve(botId, source.query, { taskId, signal });
         if (signal?.aborted) return empty('failed');
-        // A fact whose sources an observation already covers is represented by that observation.
-        const covered = new Set(found.candidates.filter((item) => item.kind === 'memory' && item.row.kind === 'observation').flatMap((item) => sourceIds(item.row)));
-        const kept = found.candidates.filter((item) => item.kind === 'memory' ? !(['fact', 'experience'].includes(String(item.row.kind)) && sourceIds(item.row).every((ref) => covered.has(ref))) : true);
+        // Topics are what is recalled; retrieval already left out the facts a topic covers and every retired memory.
+        const kept = found.candidates;
         budget = found.budget;
         const result = renderRecall(kept.map(itemOf), budget);
         const shown = new Set(result.refs);

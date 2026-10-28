@@ -1,6 +1,14 @@
 import { createServer } from 'node:http';
 import { tokens } from '../token-estimate.ts';
 
+/** What the stricter extraction (RETAIN_INSTRUCTION) leaves out: the assistant's narration and one-off process details. */
+export const NOISE = /^(我已|我正在|正在|已为你|好的，我)|进程号|\bPID\b|\bpid[ =:]*\d+|\/tmp\/|临时文件|截图/i;
+/**
+ * Whether a model following the instruction records this text: always after 记住, never narration, and from the assistant
+ * only a stated solution or agreement. A closed episode archive is already a digest of decisions and outcomes.
+ */
+export const worthKeeping = (role: string, value: string) => role === 'episode' || value.includes('记住') || (!NOISE.test(value) && (role !== 'assistant' || /解决方法|约定|结论/.test(value)));
+
 // Synthetic responses exercise the complete provider boundary, not model quality.
 export async function startFakePersonalMemory() {
   const requests: Array<Record<string, unknown>>=[];
@@ -27,14 +35,18 @@ export async function startFakePersonalMemory() {
       else if(instruction.includes('只摘要这一个工具结果'))answer='摘要：操作成功，关键数据与标识见原文引用。';
       else if(instruction.includes('你整理连续对话'))answer='工作笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。历史：已经讨论上下文连续性及登录问题。原文见随附 entry 引用。';
       else if(instruction.includes('从新增原文提取')){
+        // Follows RETAIN_INSTRUCTION: narration and one-off process details are not recorded, an explicit 记住 always is.
         const rows=JSON.parse(input) as Array<{id:string;role:string;text:string}>;
-        answer=JSON.stringify({items:rows.map(row=>({kind:row.role==='assistant'?'experience':'fact',title:'合成偏好与决定',content:row.text,sources:[row.id]}))});
-      }else if(instruction.includes('合并同一事项')){
-        const data=JSON.parse(input);
-        answer=JSON.stringify({items:data.facts.map((fact:{content:string;refs_json:string})=>({title:'当前约束',content:fact.content,sources:JSON.parse(fact.refs_json).map((ref:{id:string})=>ref.id)}))});
-      }else if(instruction.includes('维护三个文档')){
-        const data=JSON.parse(input);
-        answer=JSON.stringify({documents:[{title:'重要决定',content:data.evidence.map((row:{content:string})=>row.content).join('\n'),sources:[...new Set(data.evidence.flatMap((row:{refs_json:string})=>JSON.parse(row.refs_json).map((ref:{id:string})=>ref.id)))]}]});
+        answer=JSON.stringify({items:rows.filter(row=>worthKeeping(row.role,row.text)).map(row=>({kind:row.role==='assistant'?'experience':'fact',title:'合成偏好与决定',content:row.text,sources:[row.id]}))});
+      }else if(instruction.includes('整理主题条目')){
+        // Merges the new facts into the topic's body, one line per fact; over the limit the oldest lines go (the instruction's "drop superseded content").
+        const data=JSON.parse(input) as {topic:{id:string;title:string;body:string}|null;facts:Array<{id:string;content:string}>};
+        const lines=[...(data.topic?.body.split('\n')??[]),...data.facts.map(fact=>fact.content)].filter((line,index,all)=>all.indexOf(line)===index);
+        while(lines.length>1&&tokens(lines.join('\n'))>380)lines.shift();
+        answer=JSON.stringify({topics:[{...(data.topic?{id:data.topic.id}:{}),title:data.topic?.title??data.facts[0].content.slice(0,12),summary:data.facts.at(-1)!.content.slice(0,40),body:lines.join('\n'),facts:data.facts.map(fact=>fact.id)}]});
+      }else if(instruction.includes('筛选旧记忆')){
+        const data=JSON.parse(input) as {items:Array<{id:string;content:string}>};
+        answer=JSON.stringify({retire:data.items.filter(item=>!worthKeeping('user',item.content)).map(item=>({id:item.id,reason:'助手自述或一次性过程细节'}))});
       }
       res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:400,completion_tokens:80,prompt_tokens_details:{cached_tokens:100}}}));return;
     }

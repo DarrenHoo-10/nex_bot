@@ -265,17 +265,19 @@ describe('Continuous personal assistant and memory',()=>{
     expect(app.agents.search(bot,'entry:'+checkpoints[0].first_entry)).toHaveLength(1);
     expect(app.runtime.memory.personal.monitor(bot).groups.some(row=>row.purpose==='compact')).toBe(true);
   },90000);
-  it('starts after opt-in, uses selected model, builds grounded understanding and reports usage',async()=>{
+  it('starts after opt-in, uses selected model, merges facts into a grounded topic and reports usage',async()=>{
     const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal;
     app.agents.publish(bot,'user','message','旧历史不得自动导入','old');
     memory.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:100000});
     app.agents.publish(bot,'user','message','这个项目先讨论完整方案，再实现','new');
     await memory.flush();
-    expect(fake.requests).toHaveLength(3);expect(fake.requests.every(request=>request.model==='fixture-memory')).toBe(true);
+    // One extraction call and one topic merge; the migration of an empty memory makes no call.
+    expect(fake.requests).toHaveLength(2);expect(fake.requests.every(request=>request.model==='fixture-memory')).toBe(true);
     expect(JSON.stringify(fake.requests)).not.toContain('旧历史不得自动导入');
-    expect(memory.rows(bot).map(row=>row.kind)).toEqual(expect.arrayContaining(['fact','observation','understanding']));
-    expect(memory.monitor(bot).totals).toMatchObject({input_tokens:1200,output_tokens:240,cache_read:300,unknown_calls:0});
-    const recalled=await memory.recall(bot,'项目方案');expect(recalled.length).toBeGreaterThan(0);
+    expect(memory.rows(bot).map(row=>row.kind).sort()).toEqual(['fact','topic']);
+    expect(memory.monitor(bot).totals).toMatchObject({input_tokens:800,output_tokens:160,cache_read:200,unknown_calls:0});
+    expect(await memory.recall(bot,'完全无关的天气')).toEqual([]);
+    const recalled=await memory.recall(bot,'讨论完整方案');expect(recalled).toHaveLength(1);expect(recalled[0]).toMatchObject({kind:'topic',sourceClass:'synthesized'});
     expect(app.runtime.memory.expand(bot,recalled[0].refs[0]).content).toContain('讨论完整方案');
     const other=app.store.createBot('另一助手');expect(()=>app.runtime.memory.expand(other,recalled[0].refs[0])).toThrow();
   });
@@ -565,86 +567,91 @@ describe('Continuous personal assistant and memory',()=>{
     expect(JSON.stringify(fake.requests)).not.toContain('关闭期间的记录');
     expect(app.agents.search(bot,'关闭期间')).toHaveLength(1);
   });
-  it('updates observations with provenance and stops recalling stale understanding after a correction',async()=>{
+  it('updates a topic with provenance when a correction arrives, and recalls the corrected text',async()=>{
     const {app,bot,fake}=await fixture(),memory=app.runtime.memory.personal;
     memory.save(bot,{version:0,enabled:true,dailyBudget:100000});app.agents.publish(bot,'user','message','这个项目使用方案甲','old');await memory.flush();
-    const observation=memory.rows(bot).find(row=>row.kind==='observation')!;
+    const topic=memory.rows(bot).find(row=>row.kind==='topic')!;
     fake.setOverride(body=>{
       const messages=body.messages as Array<{content:string}>;
-      if(!messages[0].content.includes('合并同一事项'))return undefined;
+      if(!messages[0].content.includes('整理主题条目'))return undefined;
       const input=JSON.parse(messages.at(-1)!.content);
-      return {choices:[{message:{content:JSON.stringify({items:[{id:observation.id,title:'当前项目方案',content:'用户已将方案甲改为方案乙',sources:input.facts.flatMap((row:{refs_json:string})=>JSON.parse(row.refs_json).map((ref:{id:string})=>ref.id))}]})},finish_reason:'stop'}],usage:{prompt_tokens:200,completion_tokens:100}};
+      expect(input.topic.id).toBe(topic.id);
+      return {choices:[{message:{content:JSON.stringify({topics:[{id:topic.id,title:'当前项目方案',summary:'项目方案已改为乙',body:'用户已将方案甲改为方案乙',facts:input.facts.map((fact:{id:string})=>fact.id)}]})},finish_reason:'stop'}],usage:{prompt_tokens:200,completion_tokens:100}};
     });
-    app.agents.publish(bot,'user','message','更正：这个项目改为方案乙','new');app.store.run('UPDATE assistant_memory_settings SET next_attempt=0 WHERE bot_id=?',bot);await memory.flush();
-    expect(app.store.get('SELECT version FROM assistant_memories WHERE id=?',observation.id)?.version).toBe(2);
-    expect(memory.rows(bot).filter(row=>row.kind==='understanding')).toHaveLength(0);
+    app.agents.publish(bot,'user','message','更正：这个项目使用方案乙','new');app.store.run('UPDATE assistant_memory_settings SET next_attempt=0 WHERE bot_id=?',bot);await memory.flush();
+    expect(app.store.get('SELECT version FROM assistant_memories WHERE id=?',topic.id)?.version).toBe(2);
+    expect(memory.rows(bot).filter(row=>row.kind==='topic')).toHaveLength(1);
+    // Both facts are evidence of the one topic, and its sources are theirs.
+    expect(app.store.all('SELECT memory_id FROM assistant_topic_evidence WHERE topic_id=?',topic.id)).toHaveLength(2);
+    expect(JSON.parse(String(app.store.get('SELECT refs_json FROM assistant_memories WHERE id=?',topic.id)!.refs_json))).toHaveLength(2);
     expect(JSON.stringify(await memory.recall(bot,'项目方案'))).toContain('改为方案乙');
   });
   describe('background step backoff and budget cap',()=>{
     const MIN=60000,HOUR=60*MIN;
-    const marker={retain:'从新增原文提取',consolidate:'合并同一事项',understanding:'维护三个文档'};
+    const marker={retain:'从新增原文提取',consolidate:'整理主题条目',migrate:'筛选旧记忆'};
     const instructionOf=(body:Record<string,unknown>)=>String((body.messages as Array<{role:string;content:string}>).find(message=>message.role==='system')?.content??'');
     const calls=(fake:Fixture['fake'],step:keyof typeof marker)=>fake.requests.filter(request=>!request.stream&&instructionOf(request).includes(marker[step])).length;
     const state=(app:Fixture['app'],bot:string,step:string)=>app.store.get('SELECT * FROM assistant_memory_steps WHERE bot_id=? AND step=?',bot,step);
     const usage={prompt_tokens:400,completion_tokens:80};
     const invalidJson={choices:[{message:{content:'这不是 JSON'},finish_reason:'stop'}],usage};
-    const truncated={choices:[{message:{content:'{"documents":['},finish_reason:'length'}],usage};
+    const truncated={choices:[{message:{content:'{"topics":['},finish_reason:'length'}],usage};
     // Time is the only thing faked, so the local model server and its sockets behave normally.
     const clock=()=>{
       const start=new Date();start.setDate(start.getDate()+1);start.setHours(1,0,0,0);
       vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(start);
       return {start:start.getTime(),advance:(ms:number)=>vi.setSystemTime(Date.now()+ms)};
     };
-    it.each([['invalid JSON',invalidJson],['a truncated answer',truncated]])('retries a failing understanding after 10 min, 1 h, then 6 h (%s), keeps retaining meanwhile, and a success resets it',async(_name,bad)=>{
+    it.each([['invalid JSON',invalidJson],['a truncated answer',truncated]])('retries a failing topic merge after 10 min, 1 h, then 6 h (%s), keeps retaining meanwhile, and a success resets it',async(_name,bad)=>{
       const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal,time=clock();
       try {
-        let failing=true;fake.setOverride(body=>failing&&instructionOf(body).includes(marker.understanding)?bad:undefined);
+        let failing=true;fake.setOverride(body=>failing&&instructionOf(body).includes(marker.consolidate)?bad:undefined);
         memory.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:100000});
         app.agents.publish(bot,'user','message','这个项目先讨论完整方案，再实现','m1');
         await memory.flush();
-        expect(calls(fake,'understanding')).toBe(1);
-        expect(state(app,bot,'understanding')).toMatchObject({failures:1,next_at:time.start+10*MIN});
-        expect(memory.settings(bot).last_error).toContain('understanding');
-        // Retain and consolidate are healthy, so the pass stays on its 30 s cadence.
+        expect(calls(fake,'consolidate')).toBe(1);
+        expect(state(app,bot,'consolidate')).toMatchObject({failures:1,next_at:time.start+10*MIN});
+        expect(memory.settings(bot).last_error).toContain('consolidate');
+        // Retain is healthy, so the pass stays on its 30 s cadence.
         expect(memory.settings(bot).next_attempt).toBe(time.start+30000);
-        // The old loop retried every minute; now nothing is called for 9 minutes while new facts are still retained and consolidated.
+        // The old loop retried every minute; now nothing is called for 9 minutes while new facts are still retained.
         for(let minute=1;minute<=9;minute++){
           time.advance(MIN);
           if(minute===2)app.agents.publish(bot,'user','message','另外约定每周五汇报','m2');
           await memory.flush();
         }
-        expect(calls(fake,'understanding')).toBe(1);
-        expect(calls(fake,'retain')).toBe(2);expect(calls(fake,'consolidate')).toBe(2);
-        expect(memory.rows(bot).filter(row=>row.kind==='observation').length).toBeGreaterThan(0);
+        expect(calls(fake,'consolidate')).toBe(1);
+        expect(calls(fake,'retain')).toBe(2);
+        expect(memory.rows(bot).filter(row=>row.kind==='fact')).toHaveLength(2);expect(memory.rows(bot).filter(row=>row.kind==='topic')).toHaveLength(0);
         time.advance(MIN);await memory.flush();
-        expect(calls(fake,'understanding')).toBe(2);
-        expect(state(app,bot,'understanding')).toMatchObject({failures:2,next_at:time.start+10*MIN+HOUR});
+        // Both facts are pending and unrelated: one call each, the first of which fails.
+        expect(calls(fake,'consolidate')).toBe(2);
+        expect(state(app,bot,'consolidate')).toMatchObject({failures:2,next_at:time.start+10*MIN+HOUR});
         // At most two attempts in the first hour.
         for(let n=0;n<10;n++){time.advance(5*MIN);await memory.flush();}
         expect(Date.now()-time.start).toBe(60*MIN);
-        expect(calls(fake,'understanding')).toBe(2);
+        expect(calls(fake,'consolidate')).toBe(2);
         time.advance(10*MIN);await memory.flush();
-        expect(calls(fake,'understanding')).toBe(3);
-        expect(state(app,bot,'understanding')).toMatchObject({failures:3,next_at:Date.now()+6*HOUR});
+        expect(calls(fake,'consolidate')).toBe(3);
+        expect(state(app,bot,'consolidate')).toMatchObject({failures:3,next_at:Date.now()+6*HOUR});
         const third=Date.now();
         for(let n=0;n<11;n++){time.advance(30*MIN);await memory.flush();}
         expect(Date.now()-third).toBe(5.5*HOUR);
-        expect(calls(fake,'understanding')).toBe(3);
-        expect(memory.rows(bot).filter(row=>row.kind==='understanding')).toHaveLength(0);
-        // A success writes the document and forgets the failures.
+        expect(calls(fake,'consolidate')).toBe(3);
+        expect(memory.rows(bot).filter(row=>row.kind==='topic')).toHaveLength(0);
+        // A success writes the topics and forgets the failures.
         failing=false;time.advance(30*MIN);await memory.flush();
-        expect(calls(fake,'understanding')).toBe(4);
-        expect(state(app,bot,'understanding')).toBeUndefined();
-        expect(memory.rows(bot).filter(row=>row.kind==='understanding').length).toBeGreaterThan(0);
+        expect(calls(fake,'consolidate')).toBe(5);
+        expect(state(app,bot,'consolidate')).toBeUndefined();
+        expect(memory.rows(bot).filter(row=>row.kind==='topic')).toHaveLength(2);
         expect(memory.settings(bot).last_error).toBeNull();
         // The next failure starts again at 10 minutes.
         app.agents.publish(bot,'user','message','新的约定：先评审再合并','m3');
         failing=true;time.advance(31*MIN);await memory.flush();
-        expect(calls(fake,'understanding')).toBe(5);
-        expect(state(app,bot,'understanding')).toMatchObject({failures:1,next_at:Date.now()+10*MIN});
+        expect(calls(fake,'consolidate')).toBe(6);
+        expect(state(app,bot,'consolidate')).toMatchObject({failures:1,next_at:Date.now()+10*MIN});
       } finally {vi.useRealTimers();}
     },60000);
-    it('backs off a failing consolidate and a failing retain independently, so the other keeps working',async()=>{
+    it('backs off a failing topic merge and a failing retain independently, so the other keeps working',async()=>{
       const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal,time=clock();
       try {
         let mode:'consolidate'|'retain'='consolidate';
@@ -655,18 +662,17 @@ describe('Continuous personal assistant and memory',()=>{
         expect(calls(fake,'consolidate')).toBe(1);
         expect(state(app,bot,'consolidate')).toMatchObject({failures:1,next_at:time.start+10*MIN});
         expect(memory.rows(bot).filter(row=>row.kind==='fact')).toHaveLength(1);
-        expect(calls(fake,'understanding')).toBe(0);
         // Consolidate waits; retain keeps taking new messages.
         app.agents.publish(bot,'user','message','另外约定每周五汇报','m2');
         time.advance(MIN);await memory.flush();
         expect(calls(fake,'retain')).toBe(2);expect(calls(fake,'consolidate')).toBe(1);
-        // Retain now fails, but consolidate is due again and still runs on the facts it already has.
+        // Retain now fails, but consolidate is due again and still runs on the facts it already has (two unrelated ones: two calls).
         mode='retain';app.agents.publish(bot,'user','message','第三条约定','m3');
         time.advance(10*MIN);await memory.flush();
-        expect(calls(fake,'retain')).toBe(3);expect(calls(fake,'consolidate')).toBe(2);
+        expect(calls(fake,'retain')).toBe(3);expect(calls(fake,'consolidate')).toBe(3);
         expect(state(app,bot,'retain')).toMatchObject({failures:1,next_at:Date.now()+10*MIN});
         expect(state(app,bot,'consolidate')).toBeUndefined();
-        expect(memory.rows(bot).filter(row=>row.kind==='observation').length).toBeGreaterThan(0);
+        expect(memory.rows(bot).filter(row=>row.kind==='topic')).toHaveLength(2);
         expect(memory.settings(bot).last_error).toContain('retain');
       } finally {vi.useRealTimers();}
     },60000);
@@ -674,7 +680,7 @@ describe('Continuous personal assistant and memory',()=>{
       const {app,fake,bot}=await fixture(),memory=app.runtime.memory.personal;
       memory.save(bot,{version:0,enabled:true,dailyBudget:100000});
       const at=Date.now();
-      for(const [step,wait] of [['retain',2*HOUR],['consolidate',HOUR],['understanding',6*HOUR]] as const)app.store.run('INSERT INTO assistant_memory_steps VALUES(?,?,?,?,?,?)',bot,step,2,at+wait,step+': 失败',at);
+      for(const [step,wait] of [['retain',2*HOUR],['consolidate',HOUR],['migrate',6*HOUR]] as const)app.store.run('INSERT INTO assistant_memory_steps VALUES(?,?,?,?,?,?)',bot,step,2,at+wait,step+': 失败',at);
       app.agents.publish(bot,'user','message','等待中的消息','m1');
       await memory.flush();
       expect(fake.requests).toHaveLength(0);
@@ -691,7 +697,7 @@ describe('Continuous personal assistant and memory',()=>{
         memory.save(bot,{version:0,enabled:true,model:'fixture-memory',dailyBudget:10_000_000});
         expect(memory.settings(bot).daily_budget).toBe(10_000_000);
         expect(memory.monitor(bot).settings.effective_daily_budget).toBe(500_000);
-        app.store.run('INSERT INTO assistant_usage(id,bot_id,purpose,model,status,reserved_tokens,input_tokens,output_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)','used',bot,'understanding','fixture','succeeded',2000,400_000,99_000,Date.now());
+        app.store.run('INSERT INTO assistant_usage(id,bot_id,purpose,model,status,reserved_tokens,input_tokens,output_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)','used',bot,'consolidate','fixture','succeeded',2000,400_000,99_000,Date.now());
         app.agents.publish(bot,'user','message','记住项目约束','m1');
         await memory.flush();
         expect(fake.requests).toHaveLength(0);

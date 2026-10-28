@@ -73,7 +73,8 @@ function remember(app: App, bot: string, title: string, content: string, kind = 
 /** Long-term memory on, and the language-model steps of the pump idle, so a pump only vectorizes. */
 function enableMemory(app: App) {
   app.runtime.memory.personal.saveGlobal({ version: 0, enabled: true });
-  app.store.run('UPDATE assistant_memory_settings SET consolidated_at=?', now() + 3_600_000);
+  // A far-away backoff of the migration keeps it (and with it the topic merge) idle.
+  app.store.run("INSERT OR REPLACE INTO assistant_memory_steps(bot_id,step,failures,next_at,error,updated_at) SELECT bot_id,'migrate',1,?,NULL,? FROM assistant_memory_settings", now() + 3_600_000, now());
 }
 async function embedAll(app: App, fake: Fixture['fake'], rerank = true) {
   const config = app.runtime.memory.retrieval.config;
