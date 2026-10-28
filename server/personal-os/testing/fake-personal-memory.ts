@@ -1,9 +1,12 @@
 import { createServer } from 'node:http';
+import { tokens } from '../token-estimate.ts';
 
 // Synthetic responses exercise the complete provider boundary, not model quality.
 export async function startFakePersonalMemory() {
   const requests: Array<Record<string, unknown>>=[];
   const scripts:Array<{action:string;args:Record<string,unknown>}|string>=[];
+  // Streamed answers report the input a provider would count: the offline estimate of the request times this scale.
+  let usageScale=1;
   let override: ((body: Record<string, unknown>)=>Promise<unknown>|unknown)|undefined;
   const server=createServer(async(req,res)=>{
     if(req.url==='/v1/models'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[{id:'fixture-chat'},{id:'fixture-memory'}]}));return;}
@@ -15,7 +18,13 @@ export async function startFakePersonalMemory() {
     const input=messages.at(-1)?.content??'';
     let answer='已收到，继续沿用已有约束。';
     if(!body.stream){
-      if(instruction.includes('你整理连续对话'))answer='工作笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。历史：已经讨论上下文连续性及登录问题。原文见随附 entry 引用。';
+      // Episode archive: structured JSON citing real entries of the input. History summary: {workingNote, history}.
+      // A single tool result digest (no JSON in the instruction) stays plain text.
+      if(instruction.includes('建立段落档案')){
+        const refs=[...new Set((input.match(/entry:[0-9a-f]+/g)??[]))].slice(0,2);
+        answer=JSON.stringify({title:'合成段落档案',brief:'上一段要点：已完成合成讨论，未部署。待办：验证长期记忆。',topics:['合成主题'],decisions:[{decision:'只讨论，不部署',reason:'用户要求保持只读'}],operations:[{operation:'memory.read 读取合成资料',outcome:'success',identifiers:['DOC-SYNTH-1'],detail:'读取成功'},{operation:'device.exec 保存文件',outcome:'failure',identifiers:['/tmp/synthetic.txt'],detail:'设备离线'}],openItems:['验证长期记忆'],refs,workingNote:'段落笔记：只讨论，不部署；待验证长期记忆。'});
+      }else if(instruction.includes('"workingNote"'))answer=JSON.stringify({workingNote:'Core 笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。',history:'历史：已经讨论上下文连续性及登录问题。原文见随附 entry 引用。'});
+      else if(instruction.includes('你整理连续对话'))answer='工作笔记：只讨论，不部署。压缩阈值80%。尚需验证长期记忆。历史：已经讨论上下文连续性及登录问题。原文见随附 entry 引用。';
       else if(instruction.includes('从新增原文提取')){
         const rows=JSON.parse(input) as Array<{id:string;role:string;text:string}>;
         answer=JSON.stringify({items:rows.map(row=>({kind:row.role==='assistant'?'experience':'fact',title:'合成偏好与决定',content:row.text,sources:[row.id]}))});
@@ -31,10 +40,10 @@ export async function startFakePersonalMemory() {
     res.setHeader('Content-Type','text/event-stream');
     const script=scripts.shift();
     const delta=script&&typeof script!=='string'?{role:'assistant',tool_calls:[{index:0,id:'call-'+requests.length,type:'function',function:{name:'broker',arguments:JSON.stringify({action:script.action,...script.args})}}]}:{role:'assistant',content:typeof script==='string'?script:answer};
-    for(const frame of [{choices:[{index:0,delta,finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:script&&typeof script!=='string'?'tool_calls':'stop'}],usage:{prompt_tokens:400,completion_tokens:20,prompt_tokens_details:{cached_tokens:100}}}])res.write(`data: ${JSON.stringify({id:'synthetic',object:'chat.completion.chunk',...frame})}\n\n`);
+    for(const frame of [{choices:[{index:0,delta,finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:script&&typeof script!=='string'?'tool_calls':'stop'}],usage:{prompt_tokens:Math.max(400,Math.ceil(tokens(body)*usageScale)),completion_tokens:20,prompt_tokens_details:{cached_tokens:100}}}])res.write(`data: ${JSON.stringify({id:'synthetic',object:'chat.completion.chunk',...frame})}\n\n`);
     res.end('data: [DONE]\n\n');
   });
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
   const address=server.address();if(!address||typeof address==='string')throw new Error('Fixture failed');
-  return {origin:`http://127.0.0.1:${address.port}`,requests,scripts,setOverride(fn:typeof override){override=fn;},async close(){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
+  return {origin:`http://127.0.0.1:${address.port}`,requests,scripts,setOverride(fn:typeof override){override=fn;},setUsageScale(value:number){usageScale=value;},async close(){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
 }

@@ -73,14 +73,14 @@ Production conversation `b9568ec9` (about 1.47M estimated non-system tokens, ten
 the folding removal: the whole older history went to the 500k-window summarizer
 in one request.
 
-- Two new `continuity.test.ts` cases build history under a 400k window, then
+- Two new `server/personal-os/continuity.test.ts` cases build history under a 400k window, then
   send a turn at 64k: one with five dominant tool results, one with five long
   replies. Both failed on the previous worker with the production error and pass
   now; every summarizer request stays below the window, and the long-reply case
   uses at least two batches with the carried summary.
 - `pnpm exec vitest run server/personal-os/continuity.test.ts server/personal-os/token-estimate.test.ts server/personal-os/model-limits.test.ts`
   — 29 passed. The full `server/personal-os` run has one failure,
-  `app.test.ts` “reads generic bundled skills…”, which fails identically
+  `server/personal-os/app.test.ts` “reads generic bundled skills…”, which fails identically
   without this change.
 - A throwaway production-scale check (isolated Core, synthetic provider, real
   worker): ten attachment results totalling 1,072,575 estimated tokens, then a

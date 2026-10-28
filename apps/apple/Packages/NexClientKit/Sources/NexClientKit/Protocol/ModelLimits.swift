@@ -5,21 +5,30 @@ public enum ModelLimits {
     /// Used when neither a manual value nor the models.dev catalog knows the model.
     public static let defaultContextWindow = 256_000
     public static let defaultMaxOutputTokens = 32_000
+    /// Working context default when Core reports none: min(64,000, input budget).
+    public static let defaultContextBudget = 64_000
     public static let contextWindowRange = 1_024...10_000_000
     public static let maxOutputTokensRange = 1...10_000_000
+    public static let contextBudgetRange = 1_024...10_000_000
     public static let contextWindowInvalid = "上下文窗口须为 1,024 至 10,000,000 的整数"
     public static let maxOutputTokensInvalid = "最大输出 Token 须为 1 至 10,000,000 的整数"
+    public static let contextBudgetInvalid = "工作上下文须为 1,024 至 10,000,000 的整数"
 
-    public enum Field: Sendable { case contextWindow, maxOutputTokens }
+    public enum Field: Sendable { case contextWindow, maxOutputTokens, contextBudget }
 
     /// Turns a text field into a setting: blank = ``LimitSetting/automatic``, digits within range = manual.
     /// Throws Core's validation message otherwise. Spaces around the number are ignored.
     public static func parse(_ text: String, field: Field) throws -> LimitSetting {
         let t = text.trimmingCharacters(in: .whitespaces)
         if t.isEmpty { return .automatic }
-        let range = field == .contextWindow ? contextWindowRange : maxOutputTokensRange
+        let range: ClosedRange<Int>, invalid: String
+        switch field {
+        case .contextWindow: range = contextWindowRange; invalid = contextWindowInvalid
+        case .maxOutputTokens: range = maxOutputTokensRange; invalid = maxOutputTokensInvalid
+        case .contextBudget: range = contextBudgetRange; invalid = contextBudgetInvalid
+        }
         guard t.allSatisfy({ $0.isASCII && $0.isNumber }), let n = Int(t), range.contains(n) else {
-            throw CoreError(kind: .unsupported, message: field == .contextWindow ? contextWindowInvalid : maxOutputTokensInvalid)
+            throw CoreError(kind: .unsupported, message: invalid)
         }
         return .manual(n)
     }
@@ -61,22 +70,24 @@ public enum ModelLimitStatus: String, Sendable, Hashable {
 }
 
 public struct ModelLimitSources: Sendable, Hashable {
-    public var contextWindow: ModelLimitSource, maxOutputTokens: ModelLimitSource
+    public var contextWindow: ModelLimitSource, maxOutputTokens: ModelLimitSource, contextBudget: ModelLimitSource
 }
 
 /// The values Core would use with no manual override.
 public struct ModelLimitAutomatic: Sendable, Hashable {
-    public var contextWindow: Int, maxOutputTokens: Int
+    public var contextWindow: Int, maxOutputTokens: Int, contextBudget: Int
     public var source: ModelLimitSources
 }
 
 /// `POST /api/models/limits` and `/refresh`: the effective limits of one provider + endpoint + model.
 public struct ModelLimitInfo: Decodable, Sendable, Hashable {
     /// Saved overrides; nil = automatic.
-    public struct Manual: Sendable, Hashable { public var contextWindow: Int?, maxOutputTokens: Int? }
+    public struct Manual: Sendable, Hashable { public var contextWindow: Int?, maxOutputTokens: Int?, contextBudget: Int? }
     /// Effective values (manual wins over automatic).
     public var contextWindow: Int
     public var maxOutputTokens: Int
+    /// Effective working context (clamped by Core to the model's input budget); `nil` from a Core that predates it.
+    public var contextBudget: Int?
     public var manual: Manual
     public var source: ModelLimitSources
     public var status: ModelLimitStatus
@@ -93,12 +104,13 @@ public struct ModelLimitInfo: Decodable, Sendable, Hashable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         func sources(_ v: JSONValue?) -> ModelLimitSources {
-            ModelLimitSources(contextWindow: ModelLimitSource(v?["contextWindow"]?.stringValue), maxOutputTokens: ModelLimitSource(v?["maxOutputTokens"]?.stringValue))
+            ModelLimitSources(contextWindow: ModelLimitSource(v?["contextWindow"]?.stringValue), maxOutputTokens: ModelLimitSource(v?["maxOutputTokens"]?.stringValue), contextBudget: ModelLimitSource(v?["contextBudget"]?.stringValue))
         }
         contextWindow = c.lenient(.init("contextWindow"))?.intValue ?? ModelLimits.defaultContextWindow
         maxOutputTokens = c.lenient(.init("maxOutputTokens"))?.intValue ?? ModelLimits.defaultMaxOutputTokens
+        contextBudget = c.lenient(.init("contextBudget"))?.intValue
         let m = c.lenient(.init("manual"))
-        manual = Manual(contextWindow: m?["contextWindow"]?.intValue, maxOutputTokens: m?["maxOutputTokens"]?.intValue)
+        manual = Manual(contextWindow: m?["contextWindow"]?.intValue, maxOutputTokens: m?["maxOutputTokens"]?.intValue, contextBudget: m?["contextBudget"]?.intValue)
         source = sources(c.lenient(.init("source")))
         status = ModelLimitStatus(c.lenient(.init("status"))?.stringValue)
         matched = c.lenient(.init("matched"))?.stringValue
@@ -106,6 +118,7 @@ public struct ModelLimitInfo: Decodable, Sendable, Hashable {
         let a = c.lenient(.init("automatic"))
         automatic = ModelLimitAutomatic(contextWindow: a?["contextWindow"]?.intValue ?? ModelLimits.defaultContextWindow,
                                         maxOutputTokens: a?["maxOutputTokens"]?.intValue ?? ModelLimits.defaultMaxOutputTokens,
+                                        contextBudget: a?["contextBudget"]?.intValue ?? ModelLimits.defaultContextBudget,
                                         source: sources(a?["source"]))
         refresh = c.lenient(.init("refresh"))?.stringValue
     }

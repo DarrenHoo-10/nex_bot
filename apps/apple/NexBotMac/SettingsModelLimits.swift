@@ -8,6 +8,7 @@ import NexClientKit
 final class ModelLimitsModel {
     var context = ""
     var output = ""
+    var budget = ""
     private(set) var limits: ModelLimitInfo?
     private(set) var loading = false
     private(set) var error = ""
@@ -16,21 +17,24 @@ final class ModelLimitsModel {
     private(set) var generation = 0
     @ObservationIgnored private var editedContext = false
     @ObservationIgnored private var editedOutput = false
+    @ObservationIgnored private var editedBudget = false
 
     var ready: Bool { limits != nil }
 
     func reset(scope: String) {
         generation += 1
         self.scope = scope
-        context = ""; output = ""; limits = nil; loading = false; error = ""; retry = 0
-        editedContext = false; editedOutput = false
+        context = ""; output = ""; budget = ""; limits = nil; loading = false; error = ""; retry = 0
+        editedContext = false; editedOutput = false; editedBudget = false
     }
     func userEdited(context: Bool) { if context { editedContext = true } else { editedOutput = true } }
+    func userEditedBudget() { editedBudget = true }
 
     private func apply(_ info: ModelLimitInfo) {
         limits = info
         if !editedContext { context = info.manual.contextWindow.map(String.init) ?? "" }
         if !editedOutput { output = info.manual.maxOutputTokens.map(String.init) ?? "" }
+        if !editedBudget { budget = info.manual.contextBudget.map(String.init) ?? "" }
     }
 
     /// Reads the cached answer, then asks the catalog online unless both values are manual; `retry > 0` forces the lookup.
@@ -81,6 +85,8 @@ struct ModelLimitsFields: View {
                       automatic: model.limits?.automatic.contextWindow, source: model.limits?.automatic.source.contextWindow)
                 field("最大输出 Token", id: "maxOutputTokens", text: Binding(get: { model.output }, set: { model.output = $0; model.userEdited(context: false); onEdit() }),
                       automatic: model.limits?.automatic.maxOutputTokens, source: model.limits?.automatic.source.maxOutputTokens)
+                field("工作上下文（Token）", id: "contextBudget", text: Binding(get: { model.budget }, set: { model.budget = $0; model.userEditedBudget(); onEdit() }),
+                      automatic: model.limits?.automatic.contextBudget, source: model.limits?.automatic.source.contextBudget)
             }
             Text(model.limits?.status.text ?? ModelLimitStatus.matched.text).font(.system(size: 10)).foregroundStyle(Theme.muted)
                 .accessibilityIdentifier("limits-status")

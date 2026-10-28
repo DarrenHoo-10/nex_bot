@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
 interface Limits {
-  manual: { contextWindow: number | null; maxOutputTokens: number | null };
-  contextWindow: number; maxOutputTokens: number;
-  source: { contextWindow: string; maxOutputTokens: string };
+  manual: { contextWindow: number | null; maxOutputTokens: number | null; contextBudget: number | null };
+  contextWindow: number; maxOutputTokens: number; contextBudget: number;
+  source: { contextWindow: string; maxOutputTokens: string; contextBudget: string };
   status: string; matched: string | null; refresh?: string;
-  automatic: { contextWindow: number; maxOutputTokens: number; source: { contextWindow: string; maxOutputTokens: string } };
+  automatic: { contextWindow: number; maxOutputTokens: number; contextBudget: number; source: { contextWindow: string; maxOutputTokens: string; contextBudget: string } };
 }
 
 export function ModelLimitsFields({ provider, endpoint, model, scopeKey, active, onReady, onEdit }: {
@@ -14,10 +14,10 @@ export function ModelLimitsFields({ provider, endpoint, model, scopeKey, active,
   onReady: (key: string) => void; onEdit: () => void;
 }) {
   const [limits, setLimits] = useState<Limits>();
-  const [context, setContext] = useState(""), [output, setOutput] = useState("");
+  const [context, setContext] = useState(""), [output, setOutput] = useState(""), [budget, setBudget] = useState("");
   const [loading, setLoading] = useState(false), [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
-  const edited = useRef({ context: false, output: false });
+  const edited = useRef({ context: false, output: false, budget: false });
   useEffect(() => {
     if (!active || !model.trim()) return;
     let cancelled = false;
@@ -26,6 +26,7 @@ export function ModelLimitsFields({ provider, endpoint, model, scopeKey, active,
       setLimits(value);
       if (!edited.current.context) setContext(value.manual.contextWindow?.toString() ?? "");
       if (!edited.current.output) setOutput(value.manual.maxOutputTokens?.toString() ?? "");
+      if (!edited.current.budget) setBudget(value.manual.contextBudget?.toString() ?? "");
     };
     const timer = setTimeout(() => {
       void (async () => {
@@ -49,11 +50,14 @@ export function ModelLimitsFields({ provider, endpoint, model, scopeKey, active,
   const source = (field: "contextWindow" | "maxOutputTokens") => limits?.automatic.source[field] === "models.dev" ? "models.dev" : "默认";
   const autoContext = limits?.automatic.contextWindow;
   const autoOutput = limits?.automatic.maxOutputTokens;
+  // The default working budget depends on the window and output limit in effect, which the fields above may override.
+  const autoBudget = limits?.automatic.contextBudget;
   return <div className="model-limits" data-model-limits>
     <div className="preferences-section-heading"><h3>模型参数</h3><button type="button" disabled={loading || !model.trim()} onClick={() => setRetry(value => value + 1)}>{loading ? "识别中…" : "联网识别"}</button></div>
     <div className="preferences-form-grid">
       <label className="field">上下文窗口（Token）<input name="contextWindow" type="number" min="1024" max="10000000" step="1" disabled={!limits} value={context} placeholder={autoContext ? `自动 · ${autoContext.toLocaleString()}` : "读取中…"} onChange={event => { edited.current.context = true; setContext(event.target.value); onEdit(); }}/><small>{context ? "手动配置" : `${source("contextWindow")} · ${autoContext?.toLocaleString() ?? "—"}`}</small></label>
       <label className="field">最大输出 Token<input name="maxOutputTokens" type="number" min="1" max="10000000" step="1" disabled={!limits} value={output} placeholder={autoOutput ? `自动 · ${autoOutput.toLocaleString()}` : "读取中…"} onChange={event => { edited.current.output = true; setOutput(event.target.value); onEdit(); }}/><small>{output ? "手动配置" : `${source("maxOutputTokens")} · ${autoOutput?.toLocaleString() ?? "—"}`}</small></label>
+      <label className="field">工作上下文（Token）<input name="contextBudget" type="number" min="1024" max="10000000" step="1" disabled={!limits} value={budget} placeholder={autoBudget ? `自动 · ${autoBudget.toLocaleString()}` : "读取中…"} onChange={event => { edited.current.budget = true; setBudget(event.target.value); onEdit(); }}/><small>{budget ? "手动配置" : `默认 · ${autoBudget?.toLocaleString() ?? "—"}`}</small></label>
     </div>
     <small role="status">{limits?.status === "ambiguous" ? "目录中存在不同配置，请手动填写" : limits?.status === "unknown" ? "未识别到此模型，使用默认值；可手动填写" : "留空自动识别，手动值优先"}</small>
     {error && <small className="model-error" role="alert">{error}</small>}

@@ -1,11 +1,13 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import { CoreStore, canonical, hash, id, now, text, type Row } from "./store.ts";
+import { Episodes } from "./episodes.ts";
 
 export interface ForgetPlan { sources: string[]; documents: string[]; messages: string[]; tasks: string[]; bots: string[]; banks: string[]; hashes: string[]; selectorHash: string; revision: string }
 const redacted = "[已遗忘]";
 export class MemoryPrivacy {
-  constructor(readonly store: CoreStore) {}
+  readonly episodes: Episodes;
+  constructor(readonly store: CoreStore) { this.episodes = new Episodes(store); }
   preview(botId: string, selector: Record<string, unknown>): ForgetPlan {
     if (!this.store.get("SELECT id FROM bots WHERE id=?", botId)) throw new Error("Agent 不存在");
     const document = typeof selector.documentId === "string" ? text(selector.documentId, 100) : undefined;
@@ -17,10 +19,14 @@ export class MemoryPrivacy {
     const documents = new Set(docs.filter((d) => document ? d.id === document : matches(d)).map((d) => String(d.id)));
     if (!document) for (const version of this.store.all("SELECT v.* FROM memory_document_versions v JOIN memory_documents d ON d.id=v.document_id WHERE d.bot_id=? OR d.scope='workspace'", botId)) if (matches(version)) documents.add(String(version.document_id));
     const messageIds = new Set(document ? [] : messages.filter(matches).map((m) => String(m.id)));
-    if(!document)for(const memory of this.store.all('SELECT * FROM assistant_memories WHERE bot_id=?',botId))if(matches(memory))for(const ref of JSON.parse(String(memory.refs_json)))messageIds.add(String(ref.id));
+    // Archives of closed episodes are derived from the conversation. One that matches, or that a matching memory
+    // rests on, is forgotten with the assistant's other derived data (redact removes every archive of a reached assistant).
+    const hitEpisodes = new Set<string>();
+    if (!document) for (const episode of this.store.all("SELECT title,summary,open_items,id FROM conversation_episodes WHERE bot_id=?", botId)) if (matches({ title: episode.title, content: `${episode.summary}\n${episode.open_items}` })) hitEpisodes.add(`episode:${episode.id}`);
+    if(!document)for(const memory of this.store.all('SELECT * FROM assistant_memories WHERE bot_id=?',botId))if(matches(memory))for(const ref of JSON.parse(String(memory.refs_json)))(String(ref.id).startsWith('episode:')?hitEpisodes:messageIds).add(String(ref.id));
     const sources = new Set<string>(), tasks = new Set<string>(), banks = new Set<string>(), bots = new Set<string>();
-    if (messageIds.size) bots.add(botId);
-    for(const use of this.store.all('SELECT * FROM assistant_memory_uses'))if(messageIds.has(String(use.message_id)))tasks.add(String(use.task_id));
+    if (messageIds.size || hitEpisodes.size) bots.add(botId);
+    for(const use of this.store.all('SELECT * FROM assistant_memory_uses'))if(messageIds.has(String(use.message_id))||hitEpisodes.has(String(use.message_id)))tasks.add(String(use.task_id));
     const all = this.store.all("SELECT * FROM memory_source_registry"), edges = this.store.all("SELECT * FROM memory_source_edges"), uses = this.store.all("SELECT * FROM memory_task_sources");
     const allTasks = this.store.all("SELECT id,bot_id,ended_at FROM tasks"), dependencies = this.store.all("SELECT * FROM memory_task_dependencies");
     for (const source of all) if ((source.source_kind === "document" && documents.has(String(source.original_id))) || (source.source_kind === "message" && messageIds.has(String(source.original_id)))) sources.add(String(source.id));
@@ -119,11 +125,14 @@ export class MemoryPrivacy {
         this.store.run("DELETE FROM memory_syntheses WHERE bot_id=?", bot);
         this.store.run('DELETE FROM context_checkpoints WHERE bot_id=?',bot);
         this.store.run('DELETE FROM assistant_working_notes WHERE bot_id=?',bot);
+        // Episode archives and their index are derived data like checkpoints: all of the reached assistant's go,
+        // and with them every memory that rests on one.
+        const archives=this.episodes.forgetBot(bot);
         // Remove complete mixed-source records (including prior versions),
         // while retaining unrelated facts in this assistant's bank.
         for(const memory of this.store.all('SELECT * FROM assistant_memories WHERE bot_id=?',bot)){
           const versions=[memory,...this.store.all('SELECT refs_json FROM assistant_memory_versions WHERE id=?',memory.id)];
-          if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>plan.messages.includes(ref.id)))){
+          if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>plan.messages.includes(ref.id)||archives.has(ref.id)))){
             this.store.run('DELETE FROM assistant_memory_versions WHERE id=?',memory.id);
             this.store.run('DELETE FROM assistant_memory_search WHERE memory_id=?',memory.id);
             this.store.run('DELETE FROM assistant_memories WHERE id=?',memory.id);

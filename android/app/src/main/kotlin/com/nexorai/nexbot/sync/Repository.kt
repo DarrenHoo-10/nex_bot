@@ -321,6 +321,15 @@ class Repository(
         return core.download(path)
     }
 
+    /** Marks the selected Agent's conversation so its next message opens a new topic. */
+    suspend fun startNewTopic(): Boolean {
+        val core = client ?: throw CoreException(0, "连接已断开")
+        val botId = _state.value.selectedBotId ?: throw CoreException(0, "没有选中的 Agent")
+        val marked = core.newTopic(botId)
+        requestReload(forceSnapshot = true)
+        return marked
+    }
+
     /** The whole transcript as Markdown, fetched page by page from the start. */
     suspend fun exportTranscript(): String {
         val core = client ?: throw CoreException(0, "连接已断开")

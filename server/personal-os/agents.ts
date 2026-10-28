@@ -183,6 +183,16 @@ export class AgentModule {
     if (!accepted.replay) this.runtime.input(accepted.conversationId, content, clientId, sessionId);
     this.runtime.changed(); return { taskId: accepted.taskId };
   }
+  /** The user starts a new topic: the assistant's next input opens a new episode (the previous one is archived and folded). */
+  newTopic(botId: string) {
+    this.ensure(botId);
+    const bound = this.store.get("SELECT a.conversation_id FROM assistant_conversations a JOIN conversations c ON c.id=a.conversation_id WHERE a.bot_id=? AND c.status='open'", botId);
+    // A message sent while the conversation is working steers that task; it cannot open an episode.
+    if (bound && this.store.get("SELECT id FROM tasks WHERE conversation_id=? AND ended_at IS NULL", bound.conversation_id)) throw new Error("请等待当前任务结束后再开启新话题");
+    const marked = !!bound && this.runtime.episodes.markTopic(String(bound.conversation_id));
+    this.runtime.changed();
+    return { marked };
+  }
   tool(call: Row, args: Record<string, unknown>) {
     const action = text(args.action, 40);
     const prior = this.store.get("SELECT details_json FROM audit_records WHERE action=? AND entity_id=?", `steward.${action}`, String(call.id));
@@ -269,16 +279,19 @@ export class AgentModule {
     if(/之前|上次|此前|以前|原来|早先|previous|earlier/i.test(query))matches.push(...this.store.all("SELECT id,content,role FROM agent_messages WHERE bot_id=? AND task_id IS NOT ? AND content!='[已遗忘]'",botId,taskId).map(row=>({...row,score:relevance(query,String(row.content))})).filter(row=>row.score>0).sort((a,b)=>b.score-a.score));
     for(const row of matches){const size=tokens(row);if(size>budget||recalled.some(prior=>prior.id===row.id))continue;recalled.push(row);budget-=size;}
     const note=this.store.get('SELECT content,version FROM assistant_working_notes WHERE bot_id=?',botId);
-    return JSON.stringify({ checkpoint:checkpoint?.id??null,workingNote:note??null,otherRecentWork:recent,recalledHistory:recalled,history:'通过 memory.search 搜索早期原文；query="message:<id>" 可展开消息，query="entry:<id>" 可展开运行记录。' });
+    // Archives of closed episodes that fit the current input (bounded); the volatile reminder is their only place in the prompt.
+    const relatedEpisodes=this.runtime.episodes.related(botId,query);
+    return JSON.stringify({ checkpoint:checkpoint?.id??null,workingNote:note??null,otherRecentWork:recent,recalledHistory:recalled,relatedEpisodes,history:'通过 memory.search 搜索早期原文；query="message:<id>" 可展开消息，query="entry:<id>" 可展开运行记录，query="episode:<id>" 可展开已结束段落的档案；普通文字查询也会搜索段落档案。' });
   }
   search(botId: string, query: string): Row[];
   search(botId: string, query: string, page?: { offset?: number; limit?: number }): Array<Row | ReturnType<typeof entryPage>>;
   search(botId: string, query: string, page?: { offset?: number; limit?: number }) {
     if(query.startsWith('message:')) return this.store.all('SELECT id,role,content,created_at FROM agent_messages WHERE bot_id=? AND id=?',botId,query.slice(8));
+    if(query.startsWith('episode:')) { const episode=this.runtime.episodes.get(botId,query.slice(8)); return episode ? [this.runtime.episodes.view(episode) as unknown as Row] : []; }
     if(query.startsWith('entry:')) {
       const entryId=query.slice(6);
       for(const session of this.store.all('SELECT id FROM runtime_sessions WHERE bot_id=?',botId)) {
-        const entry=this.runtime.projection.load(String(session.id))?.find(entry=>entry.type!=='session'&&entry.id===entryId);
+        const entry=this.runtime.projection.entry(String(session.id),entryId);
         if(entry){
           const content=entryText(entry);
           return [page ? entryPage(entryId,content,page.offset,page.limit) : {id:entryId,content}];

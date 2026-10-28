@@ -9,6 +9,8 @@ import { connectorSchema } from "./connector-schema.ts";
 import { feishuSchema } from "./feishu/feishu-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
 import { continuitySchema } from "./continuity-schema.ts";
+import { episodeSchema } from "./episodes-schema.ts";
+import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 export type Row = Record<string, string | number | null>;
@@ -58,6 +60,7 @@ export class CoreStore {
   readonly workspace = "personal";
   readonly session = "desktop-owner";
   readonly modelLimits: ModelLimits;
+  readonly calibration = new ModelCalibration(this);
   constructor(dir: string, readonly key: Buffer, token: string, catalog?: ModelCatalogConfig) {
     if (key.length !== 32) throw new Error("Invalid credential vault key");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -306,6 +309,36 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
       this.db.exec(feishuSchema);
       this.insert("schema_migrations", { version: 25, checksum: hash(feishuSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=26")) this.transaction(() => {
+      // Per-model ratio of real input tokens to the offline estimate; see calibration.ts.
+      const schema = "CREATE TABLE IF NOT EXISTS model_calibration(provider TEXT NOT NULL,endpoint TEXT NOT NULL,model TEXT NOT NULL,ratio REAL NOT NULL,samples INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(provider,endpoint,model)) STRICT;";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 26, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=27")) this.transaction(() => {
+      // Working context budget override (nullable: default is min(64k, input budget)); see model-limits.ts.
+      const schema = "ALTER TABLE model_limit_overrides ADD COLUMN context_budget INTEGER;";
+      if (!this.all("PRAGMA table_info(model_limit_overrides)").some((column) => column.name === "context_budget")) this.db.exec(schema);
+      this.insert("schema_migrations", { version: 27, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=28")) this.transaction(() => {
+      // Background context maintenance has no task, so it is not a task_run (whose task is required and
+      // referenced by tool calls and model invocations): its own run table, one active run per conversation.
+      // Maintenance summaries are told apart in assistant_usage by purpose 'maintain' and the conversation.
+      const schema = `CREATE TABLE IF NOT EXISTS maintenance_runs(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,bot_id TEXT NOT NULL,runtime_session_id TEXT NOT NULL,model_id TEXT NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('digest','budget')),status TEXT NOT NULL CHECK(status IN ('active','ended','failed','interrupted')),estimate INTEGER NOT NULL,error TEXT,started_at INTEGER NOT NULL,ended_at INTEGER,CHECK((status='active')=(ended_at IS NULL))) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS maintenance_one_active ON maintenance_runs(conversation_id) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS maintenance_runs_conversation ON maintenance_runs(conversation_id,started_at);
+ALTER TABLE assistant_usage ADD COLUMN conversation_id TEXT;
+CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversation_id,purpose,created_at);`;
+      const hasColumn = this.all("PRAGMA table_info(assistant_usage)").some((column) => column.name === "conversation_id");
+      this.db.exec(hasColumn ? schema.replace("ALTER TABLE assistant_usage ADD COLUMN conversation_id TEXT;\n", "") : schema);
+      this.insert("schema_migrations", { version: 28, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=29")) this.transaction(() => {
+      // Episode archives, their index, one-shot new-topic marks and the memory pump's cursor over archives.
+      this.db.exec(this.all("PRAGMA table_info(assistant_memory_settings)").some((column) => column.name === "episode_cursor") ? episodeSchema.replace("ALTER TABLE assistant_memory_settings ADD COLUMN episode_cursor INTEGER NOT NULL DEFAULT 0;\n", "") : episodeSchema);
+      this.insert("schema_migrations", { version: 29, checksum: hash(episodeSchema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -374,7 +407,7 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
   modelLimitSettings(input: Record<string, unknown>) {
     const scope = modelLimitScope(input);
     const row = this.get("SELECT * FROM model_limit_overrides WHERE provider=? AND endpoint=? AND model=?", scope.provider, scope.endpoint, scope.model);
-    const manual: ModelLimitOverrides = { contextWindow: row?.context_window == null ? null : Number(row.context_window), maxOutputTokens: row?.max_output_tokens == null ? null : Number(row.max_output_tokens) };
+    const manual: ModelLimitOverrides = { contextWindow: row?.context_window == null ? null : Number(row.context_window), maxOutputTokens: row?.max_output_tokens == null ? null : Number(row.max_output_tokens), contextBudget: row?.context_budget == null ? null : Number(row.context_budget) };
     return this.modelLimits.resolve(scope, manual);
   }
   saveConfig(value: Record<string, unknown>) {
@@ -388,12 +421,13 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
     const manual = {
       contextWindow: value.contextWindow === undefined ? previous.contextWindow : parseModelLimit(value.contextWindow, "contextWindow"),
       maxOutputTokens: value.maxOutputTokens === undefined ? previous.maxOutputTokens : parseModelLimit(value.maxOutputTokens, "maxOutputTokens"),
+      contextBudget: value.contextBudget === undefined ? previous.contextBudget : parseModelLimit(value.contextBudget, "contextBudget"),
     };
     validateModelLimits(this.modelLimits.resolve(scope, manual));
     const secret = typeof value.apiKey === "string" && value.apiKey.trim() ? text(value.apiKey, 8192) : undefined;
     if (!secret && !this.get("SELECT id FROM secrets WHERE id='model-key'")) throw new Error("请配置 API Key");
     this.transaction(() => {
-      this.run("INSERT INTO model_limit_overrides VALUES(?,?,?,?,?) ON CONFLICT(provider,endpoint,model) DO UPDATE SET context_window=excluded.context_window,max_output_tokens=excluded.max_output_tokens", scope.provider, scope.endpoint, scope.model, manual.contextWindow, manual.maxOutputTokens);
+      this.run("INSERT INTO model_limit_overrides(provider,endpoint,model,context_window,max_output_tokens,context_budget) VALUES(?,?,?,?,?,?) ON CONFLICT(provider,endpoint,model) DO UPDATE SET context_window=excluded.context_window,max_output_tokens=excluded.max_output_tokens,context_budget=excluded.context_budget", scope.provider, scope.endpoint, scope.model, manual.contextWindow, manual.maxOutputTokens, manual.contextBudget);
       if (secret) this.run("INSERT INTO secrets VALUES('model-key',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", this.encrypt(secret));
       this.run("INSERT INTO model_connections(id,workspace_id,owner_user_id,display_name,provider_id,endpoint,credential_ref,default_model,status,created_at) VALUES('default',?,?,?,?,?,'model-key',?,'active',?) ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,endpoint=excluded.endpoint,default_model=excluded.default_model,version=version+1", this.workspace, this.owner, "Default", provider, endpoint.toString().replace(/\/$/, ""), model, now());
       this.run("UPDATE bots SET model_connection_id='default' WHERE model_connection_id IS NULL");
@@ -411,7 +445,7 @@ CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_
     const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model: (botId && this.botModelSelection(botId)?.selected_model) || row.default_model });
     const limits = this.modelLimitSettings(scope);
     validateModelLimits(limits);
-    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };
+    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };
   }
   createBot(name: string, instructions?: unknown) {
     const botId = id();

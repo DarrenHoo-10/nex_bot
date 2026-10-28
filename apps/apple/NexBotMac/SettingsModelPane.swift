@@ -105,11 +105,12 @@ struct SettingsModelPane: View {
             case "save": save()
             case "limits":
                 let l = limits.limits
-                mbLog("limits ctx=\(limits.context) out=\(limits.output) auto=\(l?.automatic.contextWindow ?? -1)/\(l?.automatic.maxOutputTokens ?? -1) manual=\(l?.manual.contextWindow.map(String.init) ?? "nil")/\(l?.manual.maxOutputTokens.map(String.init) ?? "nil") src=\(l?.source.contextWindow.rawValue ?? "-")/\(l?.source.maxOutputTokens.rawValue ?? "-") status=\(l?.status.rawValue ?? "-") err=\(limits.error) saved=\(saved) saveError=\(error ?? "")")
+                mbLog("limits ctx=\(limits.context) out=\(limits.output) budget=\(limits.budget) autoBudget=\(l?.automatic.contextBudget ?? -1) manualBudget=\(l?.manual.contextBudget.map(String.init) ?? "nil") auto=\(l?.automatic.contextWindow ?? -1)/\(l?.automatic.maxOutputTokens ?? -1) manual=\(l?.manual.contextWindow.map(String.init) ?? "nil")/\(l?.manual.maxOutputTokens.map(String.init) ?? "nil") src=\(l?.source.contextWindow.rawValue ?? "-")/\(l?.source.maxOutputTokens.rawValue ?? "-") status=\(l?.status.rawValue ?? "-") err=\(limits.error) saved=\(saved) saveError=\(error ?? "")")
             case "setlimits":
                 let p = cmd.arg.components(separatedBy: "|")
                 limits.context = p.first ?? ""; limits.userEdited(context: true)
                 limits.output = p.count > 1 ? p[1] : ""; limits.userEdited(context: false)
+                limits.budget = p.count > 2 ? p[2] : ""; limits.userEditedBudget()
                 dirty = true; saved = false
             case "lookup": limits.retry += 1
             default: break
@@ -228,10 +229,11 @@ struct SettingsModelPane: View {
 
     private func save() {
         guard valid, !saving else { return }
-        let context: LimitSetting, output: LimitSetting
+        let context: LimitSetting, output: LimitSetting, budget: LimitSetting
         do {
             context = try ModelLimits.parse(limits.context, field: .contextWindow)
             output = try ModelLimits.parse(limits.output, field: .maxOutputTokens)
+            budget = try ModelLimits.parse(limits.budget, field: .contextBudget)
         } catch { self.error = mbFallbackMessage(error); saved = false; return }
         saving = true; error = nil
         Task {
@@ -240,7 +242,7 @@ struct SettingsModelPane: View {
                 let wasSaved = connectionSaved, draft = visible
                 try await workspace.saveModel(provider: provider, model: model.trimmingCharacters(in: .whitespaces),
                                               endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: apiKey,
-                                              contextWindow: context, maxOutputTokens: output)
+                                              contextWindow: context, maxOutputTokens: output, contextBudget: budget)
                 // A new connection's 显示的模型 were a draft until the connection existed.
                 if !wasSaved, let draft { try await workspace.saveModelVisibility(models: draft) }
                 apiKey = ""; showKey = false; dirty = false; saved = true

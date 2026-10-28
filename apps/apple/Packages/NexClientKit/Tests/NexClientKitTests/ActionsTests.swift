@@ -46,6 +46,42 @@ final class ActionsTests: XCTestCase {
         return (core, store)
     }
 
+    // MARK: 新话题
+
+    func testNewTopicRequestAndResult() async throws {
+        let (core, store) = await loaded { r in r.path == "/api/agents/topic" ? .json(["marked": true]) : .json(["ok": true]) }
+        let stateRequests = core.recorded("/api/state").count
+        let marked = try await store.startNewTopic(botID: "b1")
+        XCTAssertTrue(marked)
+        let requests = core.recorded("/api/agents/topic")
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].method, "POST")
+        XCTAssertEqual(requests[0].json["botId"] as? String, "b1"); XCTAssertEqual(requests[0].json.count, 1)
+        XCTAssertGreaterThan(core.recorded("/api/state").count, stateRequests, "the action refreshes state")
+        let direct = try await core.client().newTopic(bot: "b2")
+        XCTAssertTrue(direct); XCTAssertEqual(core.recorded("/api/agents/topic")[1].json["botId"] as? String, "b2")
+    }
+
+    func testNewTopicNotMarkedAndMissingFields() async throws {
+        let (_, store) = await loaded { _ in .json(["marked": false]) }
+        let notMarked = try await store.startNewTopic(botID: "b1")
+        XCTAssertFalse(notMarked)
+        let (core, lenient) = await loaded { _ in .json(["ok": true]) }
+        let absent = try await lenient.startNewTopic(botID: "b1")
+        XCTAssertFalse(absent, "a response without `marked` counts as not marked")
+        XCTAssertEqual(core.recorded("/api/agents/topic").count, 1)
+    }
+
+    func testNewTopicSurfacesCoreErrorAndUnknownAgent() async throws {
+        let (core, busy) = await loaded { r in r.path == "/api/agents/topic" ? .json(["error": "请等待当前任务结束后再开启新话题"], status: 400) : .json(["ok": true]) }
+        do { _ = try await busy.startNewTopic(botID: "b1"); XCTFail("expected Core's refusal") }
+        catch let e as CoreError { XCTAssertEqual(e.message, "请等待当前任务结束后再开启新话题"); XCTAssertEqual(e.status, 400) }
+        XCTAssertEqual(core.recorded("/api/agents/topic").count, 1)
+        let (core2, store) = await loaded()
+        do { _ = try await store.startNewTopic(botID: "nope"); XCTFail("expected unknown agent") } catch is CoreError {}
+        XCTAssertTrue(core2.recorded("/api/agents/topic").isEmpty, "nothing is sent for an unknown agent")
+    }
+
     // MARK: DTOs
 
     func testDecodesFullState() async throws {

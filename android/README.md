@@ -148,7 +148,7 @@ changes a field.
 
 ## What the tests prove
 
-`:core` (44 JVM tests):
+`:core` (53 JVM tests):
 
 - origin acceptance rules (`Origin.kt`), including public-HTTP refusal;
 - SSE parsing across CRLF/LF/CR, comments, multi-line data, sticky ids and
@@ -156,20 +156,23 @@ changes a field.
 - decoding of captured identity, login, state (full and summary), messages and
   live-frame documents, with unknown fields tolerated;
 - request shapes and error mapping against a MockWebServer, including the
-  attachment upload, send-with-attachments, approval-mode and download calls;
+  attachment upload, send-with-attachments, approval-mode, new-topic and
+  download calls;
 - the timing decisions the stream depends on (coalescing, backoff, staleness,
   refresh lead, snapshot invalidation, typing rule) with plain numbers.
 
-`:app` (26 JVM/Robolectric tests):
+`:app` (29 JVM/Robolectric tests):
 
 - login, resume, the stable send key across a failed retry, approval hash,
-  revocation and the public-HTTP refusal, against a fake Core;
+  the new-topic request and its refusal, revocation and the public-HTTP
+  refusal, against a fake Core;
 - the sealed session round-trip and a corrupt record being dropped;
 - inline Markdown spans and links, list markers becoming bullets;
 - the companion avatar contract (first Agent soft/teal, the 4×5 hash grid) and
   day/time labels;
 - the chat screen mounting with a real approval card, the composer's
-  permission label and the `＋` menu (文件 / 导出对话);
+  permission label and the `＋` menu (文件 / 新话题 / 导出对话), with 新话题
+  disabled on an empty conversation;
 - a native-graphics render of the login, agent-list and chat screens that
   asserts the pixels are not blank and writes PNGs to `build/screens`.
 

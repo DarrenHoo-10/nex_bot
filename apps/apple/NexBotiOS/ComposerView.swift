@@ -232,6 +232,7 @@ struct ComposerView: View {
             heading("指令")
             menuRow(mode == .full ? "exclamationmark.shield" : "checkmark.shield", "权限", "permission", value: mode.title, disabled: bot == nil) { menu = .permissions }
             menuRow("slider.horizontal.3", "模型", "model", value: chatModel.isEmpty ? (defaultModel.isEmpty ? "未连接模型" : defaultModel) : chatModel, disabled: config == nil || bot == nil) { menu = nil; showModels = true }
+            menuRow("plus.bubble", "新话题", "topic", disabled: conversation.messages.isEmpty || bot == nil) { menu = nil; Task { await startNewTopic() } }
             menuRow("square.and.arrow.down", "导出对话", "export", value: exporting ? "导出中…" : "Markdown", disabled: conversation.messages.isEmpty || exporting) { menu = nil; Task { await export() } }
         }
         .padding(.bottom, 4)
@@ -429,6 +430,11 @@ struct ComposerView: View {
         guard next != mode else { return }
         actionError = nil
         do { try await workspace.setApprovalMode(botID: botID, mode: next) } catch { actionError = coreMessage(error) }
+    }
+
+    private func startNewTopic() async {
+        actionError = nil
+        do { try await workspace.startNewTopic(botID: botID) } catch { actionError = coreMessage(error) }
     }
 
     private func export() async {

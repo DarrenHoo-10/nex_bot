@@ -2,7 +2,7 @@ import { ModelCatalogStore, type ModelCatalogOptions } from "../model-catalog/ca
 import type { CatalogModel, CatalogProviders } from "../model-catalog/trim.ts";
 
 export const DEFAULT_MODEL_LIMITS = { contextWindow: 256_000, maxOutputTokens: 32_000 };
-export type ModelLimitOverrides = { contextWindow: number | null; maxOutputTokens: number | null };
+export type ModelLimitOverrides = { contextWindow: number | null; maxOutputTokens: number | null; contextBudget: number | null };
 export type ModelCatalogConfig = Pick<ModelCatalogOptions, "fetch" | "fetchDisabled" | "readSnapshot" | "now" | "log">;
 
 export function modelInputBudget(contextWindow: number, maxOutputTokens: number): number {
@@ -11,6 +11,14 @@ export function modelInputBudget(contextWindow: number, maxOutputTokens: number)
   // actual request to the remaining window. Reserve bounded working room.
   const reserve = Math.min(maxOutputTokens, 21_000, Math.floor(contextWindow / 4));
   return Math.max(1, Math.floor(Math.min(contextWindow * 0.8, contextWindow - reserve - Math.min(2048, contextWindow * 0.05))));
+}
+
+/** Working context budget (tokens kept in the model context): the manual value or min(64k, inputBudget), always within [min(8k, inputBudget), inputBudget]. */
+export const DEFAULT_WORKING_BUDGET = 64_000;
+export const MIN_WORKING_BUDGET = 8_000;
+export function workingContextBudget(contextBudget: number | null | undefined, inputBudget: number): number {
+  const wanted = typeof contextBudget === "number" && Number.isFinite(contextBudget) ? contextBudget : Math.min(DEFAULT_WORKING_BUDGET, inputBudget);
+  return Math.min(inputBudget, Math.max(Math.min(MIN_WORKING_BUDGET, inputBudget), Math.floor(wanted)));
 }
 
 export function validateModelLimits(limits: { contextWindow: number; maxOutputTokens: number }) {
@@ -30,7 +38,7 @@ export function modelLimitScope(input: Record<string, unknown>) {
 export function parseModelLimit(value: unknown, field: keyof ModelLimitOverrides): number | null {
   if (value === null || value === undefined || value === "") return null;
   const number = typeof value === "string" && /^\d+$/.test(value.trim()) ? Number(value) : value;
-  if (typeof number !== "number" || !Number.isSafeInteger(number) || number < (field === "contextWindow" ? 1024 : 1) || number > 10_000_000) throw new Error(field === "contextWindow" ? "上下文窗口须为 1,024 至 10,000,000 的整数" : "最大输出 Token 须为 1 至 10,000,000 的整数");
+  if (typeof number !== "number" || !Number.isSafeInteger(number) || number < (field === "maxOutputTokens" ? 1 : 1024) || number > 10_000_000) throw new Error(field === "contextWindow" ? "上下文窗口须为 1,024 至 10,000,000 的整数" : field === "contextBudget" ? "工作上下文须为 1,024 至 10,000,000 的整数" : "最大输出 Token 须为 1 至 10,000,000 的整数");
   return number;
 }
 
@@ -66,9 +74,10 @@ export class ModelLimits {
     const output = match.model?.limit?.output;
     const detectedOutput = output && Number.isSafeInteger(output) && output > 0 && output <= (match.model?.limit?.context ?? 0) ? output : undefined;
     const maxOutputTokens = manual.maxOutputTokens ?? detectedOutput ?? DEFAULT_MODEL_LIMITS.maxOutputTokens;
-    return { manual, contextWindow, maxOutputTokens, matched: match.matched ?? null,
+    const contextBudget = workingContextBudget(manual.contextBudget, modelInputBudget(contextWindow, maxOutputTokens));
+    return { manual, contextWindow, maxOutputTokens, contextBudget, matched: match.matched ?? null,
       status: match.ambiguous ? "ambiguous" : match.model ? "matched" : "unknown",
-      source: { contextWindow: manual.contextWindow !== null ? "manual" : match.model ? "models.dev" : "default", maxOutputTokens: manual.maxOutputTokens !== null ? "manual" : detectedOutput ? "models.dev" : "default" },
+      source: { contextWindow: manual.contextWindow !== null ? "manual" : match.model ? "models.dev" : "default", maxOutputTokens: manual.maxOutputTokens !== null ? "manual" : detectedOutput ? "models.dev" : "default", contextBudget: manual.contextBudget !== null ? "manual" : "default" },
       updatedAt: catalog.updatedAt || null };
   }
 }

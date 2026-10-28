@@ -116,9 +116,11 @@ public struct ModelSettings: Sendable, Hashable, Encodable {
     public var contextWindow: LimitSetting
     /// Max output token override; independent of ``contextWindow`` (it may even exceed it).
     public var maxOutputTokens: LimitSetting
-    public init(provider: String, model: String, endpoint: String, apiKey: String? = nil, contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve) {
+    /// Working context override (the token budget that triggers context reduction); omitted by default.
+    public var contextBudget: LimitSetting
+    public init(provider: String, model: String, endpoint: String, apiKey: String? = nil, contextWindow: LimitSetting = .preserve, maxOutputTokens: LimitSetting = .preserve, contextBudget: LimitSetting = .preserve) {
         self.provider = provider; self.model = model; self.endpoint = endpoint; self.apiKey = apiKey
-        self.contextWindow = contextWindow; self.maxOutputTokens = maxOutputTokens
+        self.contextWindow = contextWindow; self.maxOutputTokens = maxOutputTokens; self.contextBudget = contextBudget
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
@@ -131,7 +133,7 @@ public struct ModelSettings: Sendable, Hashable, Encodable {
             case .manual(let n): try c.encode(n, forKey: .init(key))
             }
         }
-        try put(contextWindow, "contextWindow"); try put(maxOutputTokens, "maxOutputTokens")
+        try put(contextWindow, "contextWindow"); try put(maxOutputTokens, "maxOutputTokens"); try put(contextBudget, "contextBudget")
     }
 }
 
@@ -277,6 +279,7 @@ struct RoutineRunBody: Encodable { let id: String; let clientId: String }
 struct ConnectorToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
 struct ConnectorGrantBody: Encodable { let id: String; let version: Int; let botId: String; let tools: [String] }
 struct FeishuBotBody: Encodable { let botId: String }
+struct TopicBody: Encodable { let botId: String }
 struct FeishuIDBody: Encodable { let id: String }
 struct FeishuSaveBody: Encodable { let appId: String; let appSecret: String; let brand: String; let botId: String }
 struct FeishuToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
@@ -299,6 +302,10 @@ struct IDResult: Decodable, Sendable {
 struct CountResult: Decodable, Sendable {
     let count: Int
     init(from decoder: Decoder) throws { count = try decoder.container(keyedBy: AnyKey.self).lenient(.init("count"))?.intValue ?? 0 }
+}
+struct MarkedResult: Decodable, Sendable {
+    let marked: Bool
+    init(from decoder: Decoder) throws { marked = try decoder.container(keyedBy: AnyKey.self).lenient(.init("marked"))?.boolValue ?? false }
 }
 struct ProviderResult: Decodable, Sendable {
     let provider: String
@@ -331,6 +338,12 @@ extension CoreClient {
     }
     /// `POST /api/bots/archive`. `version` is `Bot.version`.
     public func archiveBot(id: String, version: Int) async throws { try await post("/api/bots/archive", body: IDVersion(id: id, version: version)) }
+    /// `POST /api/agents/topic`: the agent's next message opens a new conversation episode. Returns Core's `marked`
+    /// (false when the agent has no open conversation yet). While the conversation is working Core refuses
+    /// ("请等待当前任务结束后再开启新话题").
+    public func newTopic(bot: String) async throws -> Bool {
+        try await post("/api/agents/topic", body: TopicBody(botId: bot), as: MarkedResult.self).marked
+    }
     /// `POST /api/resume` for a paused task.
     public func resume(task: String) async throws { try await post("/api/resume", body: TaskBody(taskId: task)) }
 
