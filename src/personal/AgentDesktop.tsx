@@ -29,6 +29,8 @@ import { ImageLightbox } from "./components/ImageLightbox";
 import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
 import { ModelPicker } from "./components/ModelPicker";
 import { BotIdentity } from "./components/BotIdentity";
+import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
+import { RoutineOccurrenceDetail, occurrenceStatus, routineStatusLabel } from "./components/RoutineOccurrenceDetail";
 import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic } from "./transcript-session";
 
@@ -391,13 +393,13 @@ export function AgentDesktop() {
       }
     }).finally(() => setSendingBotId(undefined));
   };
-  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && !terminal.includes(str(t.status))) ?? [];
+  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin !== "routine" && !terminal.includes(str(t.status))) ?? [];
   useEffect(() => {
     const previous = previousTask.current;
     previousTask.current = tasks[0] ? { botId, taskId: str(tasks[0].id) } : undefined;
     setSettledState("idle");
     if (!tasks.length && previous?.botId === botId) {
-      const settled = state?.tasks.find((task) => task.id === previous.taskId);
+      const settled = state?.tasks.find((task) => task.id === previous.taskId && task.origin !== "routine");
       if (settled?.status === "succeeded" || settled?.status === "failed") {
         setSettledState(settled.status === "succeeded" ? "done" : "failed");
         const timer = setTimeout(() => setSettledState("idle"), 2400);
@@ -465,7 +467,8 @@ export function AgentDesktop() {
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) { await reload(); select(result.id); } closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
-  const editRoutine = (existing?: RecordRow) => setDialog(<RoutineEditor botId={botId} existing={existing} close={closeDialog} runNow={existing ? () => run(async () => { await api("routines/run", { id: existing.id, clientId: crypto.randomUUID() }); closeDialog(); }) : undefined} save={(data) => run(async () => { await api("routines", data); closeDialog(); })}/>);
+  const viewRoutine = (routine: RecordRow) => setDialog(<RoutineDetail routine={routine} latest={state?.occurrences.find((o) => o.routine_id === routine.id)} close={closeDialog} showResult={(id) => openOccurrence(id)} disable={async () => { await api("routines/toggle", { id: routine.id, version: routine.version, enabled: false }); await reload(); closeDialog(); }} remove={async () => { await api("routines/delete", { id: routine.id, version: routine.version }); await reload(); closeDialog(); }}/>);
+  const openOccurrence = (id: string) => setDialog(<RoutineOccurrenceDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>);
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
@@ -556,9 +559,8 @@ export function AgentDesktop() {
             <div className="ds-welcome-badge" style={{ color: botLook.ink.solid, background: botLook.ink.soft }}>长期陪伴，随时开始</div>
             <h1>{bot?.name}</h1>
             <p>{str(bot?.instructions) || "我是你的专属智能同伴。你可以直接向我提问、安排定时任务，或输入 @ 让我与团队其他成员协作。"}</p>
-            <small>直接发消息，或为我安排一项例行任务。</small>
+            <small>直接发消息，或安排一项定时任务。</small>
             <div className="welcome-chips">
-              <button type="button" onClick={() => editRoutine()}><Clock size={13}/>安排例行任务</button>
               <button type="button" onClick={() => editMemory()}><Sparkles size={13}/>添加长期记忆</button>
               {peers.length ? <button type="button" onClick={() => { changeDraft(`@${peers[0].name} `); composerRef.current?.focus(); }}><AtSign size={13}/>让 {peers[0].name} 协作</button> : null}
             </div>
@@ -666,19 +668,22 @@ export function AgentDesktop() {
           {tasks.length > 0 && <h2>正在处理</h2>}
           {tasks.map((t) => <section className="entry" key={str(t.id)}><span className="ic live"><Loader2 size={14}/></span><div><b>{t.objective || "Agent 工作"}</b><span>{taskPhrase(t)}</span>{t.created_at ? <time>{formatClock(t.created_at)}</time> : null}<div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></div></section>)}
 
-          {recentRuns.length > 0 && <h2>最近执行</h2>}
-          {recentRuns.map((o, index) => { const day = formatDay(o.scheduled_at), status = str(o.status), Icon = status === "succeeded" ? Check : status === "running" ? Loader2 : status === "pending" ? Clock : CircleAlert; return <div key={str(o.id)}>
+          {recentRuns.length > 0 ? <details className="routine-disclosure routine-history"><summary>最近动态<span>{recentRuns.length}</span></summary>
+          {recentRuns.map((o, index) => { const day = formatDay(o.scheduled_at), status = occurrenceStatus(o), Icon = status === "succeeded" ? Check : status === "running" ? Loader2 : status === "pending" ? Clock : CircleAlert; return <div key={str(o.id)}>
             {day && (!index || formatDay(recentRuns[index - 1].scheduled_at) !== day) ? <h3 className="day-label">{day}</h3> : null}
-            <section className="entry"><span className={`ic ${status === "succeeded" ? "" : status === "running" ? "live" : status === "pending" ? "mem" : "warn"}`}><Icon size={14}/></span><div><b>{o.name}</b><span>{statuses[status]}</span>{o.scheduled_at ? <time>{formatClock(o.scheduled_at)}</time> : null}</div></section>
-          </div>; })}
+            <button type="button" className="entry routine-occurrence" aria-label={`查看执行详情：${o.name}`} onClick={() => openOccurrence(str(o.id))}><span className={`ic ${status === "succeeded" ? "" : status === "running" ? "live" : status === "pending" ? "mem" : "warn"}`}><Icon size={14}/></span><span className="routine-occurrence-copy"><b>{o.name}</b><span>{routineStatusLabel(status)}</span>{o.scheduled_at ? <time>{formatClock(o.scheduled_at)}</time> : null}</span></button>
+          </div>; })}</details> : null}
 
-          <h2>例行任务{routines.length ? <button aria-label="添加例行任务" onClick={() => editRoutine()}><Plus size={16}/></button> : null}</h2>
-          {routines.length ? <div className="routine-list" aria-label="例行任务列表">
-            {routines.map((r) => <div className="routine-row" key={str(r.id)}>
-              <button type="button" className="routine-summary" onClick={() => editRoutine(r)} title={`${r.name} · ${routineLabel(r)} · ${r.prompt}`}><strong>{r.name}</strong><span>{routineLabel(r)} · {r.prompt}</span></button>
-              <button type="button" role="switch" aria-checked={!!r.enabled} aria-label={`${r.name}`} disabled={busy} className={`routine-toggle ${r.enabled ? "on" : ""}`} onClick={() => void run(() => api("routines/toggle", { id: r.id, version: r.version, enabled: !r.enabled }))}><span/></button>
-            </div>)}
-          </div> : <div className="empty-row">暂无例行任务<button type="button" className="bt-round" aria-label="添加例行任务" onClick={() => editRoutine()}><Plus size={14}/></button></div>}
+          <h2>定时任务</h2>
+          {routines.length ? <div className="routine-list" aria-label="定时任务列表">
+            {routines.map((r) => { const latest = state.occurrences.find((o) => o.routine_id === r.id), ended = routineEnded(r); return <article className="routine-row" key={str(r.id)}>
+              <div className="routine-row-heading"><button type="button" className="routine-summary" onClick={() => viewRoutine(r)} title={`查看 ${r.name}`}><strong>{r.name}</strong><span>{routineSchedule(r)}</span></button>
+                <span className="routine-ended">{ended ? "已结束" : r.enabled ? "已安排" : "已关闭"}</span>
+              </div>
+              {r.enabled && r.next_due_at ? <p className="routine-next">下次 {formatTime(r.next_due_at)}</p> : null}
+              <div className="routine-row-actions"><button type="button" onClick={() => viewRoutine(r)}>查看任务</button>{latest ? <button type="button" onClick={() => openOccurrence(str(latest.id))}>查看最近结果</button> : null}</div>
+            </article>; })}
+          </div> : <div className="routine-empty"><Clock size={24}/><strong>暂无定时任务</strong></div>}
 
         </> : null}
         {tab === "settings" ? <>
@@ -770,9 +775,4 @@ function sameGroup(a: RecordRow | undefined, b: RecordRow) {
   const plain = (m: RecordRow) => m.role === "assistant" && !str(m.a2a_direction);
   const gap = Number(b.created_at) - Number(a?.created_at);
   return !!a && plain(a) && plain(b) && str(a.sender_bot_id) === str(b.sender_bot_id) && gap >= 0 && gap <= 5 * 60_000;
-}
-function routineLabel(row: RecordRow) { return row.schedule_kind === "daily" ? `每天 ${row.local_time} · ${row.time_zone}` : row.schedule_kind === "interval" ? `每 ${Number(row.interval_ms) / 60_000} 分钟` : "一次性任务"; }
-function RoutineEditor({ botId, existing, close, save, runNow }: { botId: string; existing?: RecordRow; close: () => void; runNow?: () => Promise<void>; save: (data: Record<string, unknown>) => Promise<void> }) {
-  const [kind, setKind] = useState(str(existing?.schedule_kind) || "daily"), [pending, setPending] = useState(false);
-  return <><div className="modal-heading"><h2>{existing ? "编辑例行任务" : "添加例行任务"}</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(e) => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.currentTarget)); setPending(true); void save({ ...data, botId, id: existing?.id, version: existing?.version, runAt: data.runAt ? new Date(String(data.runAt)).getTime() : undefined }).finally(() => setPending(false)); }}><label className="field">名称<input autoFocus name="name" required defaultValue={str(existing?.name)} placeholder="例如：每日工作计划"/></label><label className="field">让 Agent 做什么<textarea name="prompt" required rows={4} defaultValue={str(existing?.prompt)} placeholder="描述目标、需要参考的资料和汇报方式"/></label><label className="field">执行计划<select name="scheduleKind" value={kind} onChange={(e) => setKind(e.target.value)}><option value="daily">每天</option><option value="interval">固定间隔</option><option value="once">指定时间执行一次</option></select></label>{kind === "daily" ? <label className="field">每天的时间<input name="localTime" type="time" required defaultValue={str(existing?.local_time) || "09:00"}/></label> : kind === "interval" ? <label className="field">间隔（分钟）<input name="intervalMinutes" type="number" min="1" max="525600" required defaultValue={existing?.interval_ms ? Number(existing.interval_ms) / 60_000 : 60}/></label> : <label className="field">执行时间（本机时间）<input name="runAt" type="datetime-local" required/></label>}<label className="field">时区<input name="timeZone" required defaultValue={str(existing?.time_zone) || Intl.DateTimeFormat().resolvedOptions().timeZone}/></label><p className="muted">按计划唤醒 Agent 会调用你配置的模型。需要批准的工具操作仍会等待你处理。</p><div className="actions"><button className="primary" disabled={pending}>保存</button><button type="button" onClick={close}>取消</button>{runNow ? <button type="button" disabled={pending} onClick={() => { setPending(true); void runNow().finally(() => setPending(false)); }}><Play size={12}/>现在执行</button> : null}</div></form></>;
 }

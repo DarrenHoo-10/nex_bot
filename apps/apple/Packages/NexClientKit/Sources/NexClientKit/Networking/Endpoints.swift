@@ -27,6 +27,11 @@ public enum RoutineSchedule: Sendable, Hashable {
     case interval(minutes: Int)
     case once(at: Date)
     public var kind: ScheduleKind { switch self { case .daily: .daily; case .interval: .interval; case .once: .once } }
+
+    /// Editing an existing one-off may retain its original past time without scheduling another run.
+    public static func acceptsOnceDate(_ date: Date, existing: Routine?, now: Date = Date()) -> Bool {
+        date > now || (existing?.scheduleKind == .once && existing?.runAt == date)
+    }
 }
 
 /// Body of `routines`. Omit `id` to create; pass `id` and the row's `version` to edit.
@@ -34,9 +39,10 @@ public struct RoutineDraft: Sendable, Hashable {
     public var botID: String, name: String, prompt: String
     public var schedule: RoutineSchedule
     public var timeZone: String
+    public var taskKind: RoutineTaskKind?
     public var id: String?, version: Int?
-    public init(botID: String, name: String, prompt: String, schedule: RoutineSchedule, timeZone: String = TimeZone.current.identifier, id: String? = nil, version: Int? = nil) {
-        self.botID = botID; self.name = name; self.prompt = prompt; self.schedule = schedule; self.timeZone = timeZone; self.id = id; self.version = version
+    public init(botID: String, name: String, prompt: String, schedule: RoutineSchedule, timeZone: String = TimeZone.current.identifier, id: String? = nil, version: Int? = nil, taskKind: RoutineTaskKind? = nil) {
+        self.botID = botID; self.name = name; self.prompt = prompt; self.schedule = schedule; self.timeZone = timeZone; self.id = id; self.version = version; self.taskKind = taskKind
     }
 }
 
@@ -44,8 +50,9 @@ struct RoutineBody: Encodable {
     let botId: String, name: String, prompt: String, scheduleKind: String, timeZone: String
     let localTime: String?, intervalMinutes: Int?, runAt: Int?
     let id: String?, version: Int?
+    let taskKind: RoutineTaskKind?
     init(_ d: RoutineDraft) {
-        botId = d.botID; name = d.name; prompt = d.prompt; scheduleKind = d.schedule.kind.rawValue; timeZone = d.timeZone; id = d.id; version = d.version
+        botId = d.botID; name = d.name; prompt = d.prompt; scheduleKind = d.schedule.kind.rawValue; timeZone = d.timeZone; id = d.id; version = d.version; taskKind = d.taskKind
         switch d.schedule {
         case .daily(let t): localTime = t; intervalMinutes = nil; runAt = nil
         case .interval(let m): localTime = nil; intervalMinutes = m; runAt = nil
@@ -276,6 +283,7 @@ struct AppearanceBody: Encodable { let id: String; let appearance: AppearanceCho
 struct PolicyBody: Encodable { let id: String; let version: Int; let tools: [String] }
 struct RoutineToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
 struct RoutineRunBody: Encodable { let id: String; let clientId: String }
+struct RoutineDeleteBody: Encodable { let id: String; let version: Int }
 struct ConnectorToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
 struct ConnectorGrantBody: Encodable { let id: String; let version: Int; let botId: String; let tools: [String] }
 struct FeishuBotBody: Encodable { let botId: String }
@@ -355,6 +363,11 @@ extension CoreClient {
     }
     /// `POST /api/routines/run`. The same `clientID` is idempotent.
     public func runRoutine(id: String, clientID: String) async throws { try await post("/api/routines/run", body: RoutineRunBody(id: id, clientId: clientID)) }
+
+    /// Stops future scheduling while preserving existing execution records.
+    public func deleteRoutine(id: String, version: Int) async throws {
+        try await post("/api/routines/delete", body: RoutineDeleteBody(id: id, version: version))
+    }
 
     // Connectors
     /// `POST /api/connectors/save`. Returns the connector id.

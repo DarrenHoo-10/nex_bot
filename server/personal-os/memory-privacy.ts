@@ -141,6 +141,7 @@ export class MemoryPrivacy {
         this.store.run("UPDATE routine_tool_receipts SET result_json=? WHERE call_id IN (SELECT id FROM tool_calls WHERE task_id=?)", JSON.stringify({ forgotten: true }), task);
         for (const origin of this.store.all("SELECT routine_id FROM routine_origins WHERE task_id=?", task)) {
           this.store.run("UPDATE agent_routines SET name=?,prompt=?,enabled=0,next_due_at=NULL,version=version+1 WHERE id=?", redacted, redacted, origin.routine_id);
+          this.store.run("UPDATE routine_occurrences SET name=?,prompt=?,reason=NULL WHERE routine_id=?", redacted, redacted, origin.routine_id);
           this.store.run("UPDATE routine_occurrences SET status='cancelled' WHERE routine_id=? AND status='pending'", origin.routine_id);
           this.store.run("UPDATE routine_tool_receipts SET result_json=? WHERE call_id IN (SELECT id FROM tool_calls WHERE tool_name='routine.save' AND (target_id=? OR id=?))", JSON.stringify({ forgotten: true }), origin.routine_id, String(origin.routine_id).replace(/^tool:/, ""));
         }
@@ -148,6 +149,7 @@ export class MemoryPrivacy {
         this.store.run("UPDATE audit_records SET details_json='{}' WHERE entity_id=? OR entity_id IN (SELECT id FROM tool_calls WHERE task_id=?)", task, task);
         this.store.run("UPDATE a2a_messages SET payload=?,result=? WHERE parent_task_id=? OR child_task_id=?", redacted, JSON.stringify({ result: redacted }), task, task);
         this.store.run("UPDATE conversations SET title=? WHERE id=(SELECT conversation_id FROM tasks WHERE id=?)", redacted, task);
+        this.store.run("UPDATE routine_occurrences SET name=?,prompt=?,reason=NULL WHERE task_id=?", redacted, redacted, task);
         this.store.run("UPDATE routine_occurrences SET status='cancelled' WHERE task_id=? AND status IN ('pending','running')", task);
       }
       // Topic lines of core memory that point at something forgotten go with it.

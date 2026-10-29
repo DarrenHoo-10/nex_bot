@@ -4,6 +4,7 @@ import Foundation
 public enum ToolLabels {
     static let statuses: [String: String] = [
         "queued": "排队中",
+        "skipped": "已跳过",
         "running": "执行中",
         "awaiting_approval": "等你批准",
         "paused": "已暂停",

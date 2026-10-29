@@ -25,6 +25,9 @@ targetTemplates:
       - path: ../Shared/GraphicAvatarBody.swift
       - path: ../Shared/RoleAvatarOptions.swift
       - path: ../Shared/Theme.swift
+      - path: ../Shared/Glass.swift
+      - path: ../Shared/MarkdownText.swift
+      - path: ../Shared/RoutineOccurrenceDetailView.swift
       - path: ../Shared/WorkspaceSurface.swift
       - path: ../Shared/Assets.xcassets
     dependencies:
@@ -41,6 +44,7 @@ targetTemplates:
       - path: ChartRenderingTests.swift
       - path: HTMLPreviewRenderingTests.swift
       - path: AvatarRenderingTests.swift
+      - path: RoutineRenderingTests.swift
     dependencies:
       - package: NexClientKit
       - package: NexMarkdown

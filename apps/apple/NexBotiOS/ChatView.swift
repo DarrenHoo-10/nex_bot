@@ -10,7 +10,6 @@ struct ChatView: View {
     @State private var quote: QuoteDraft?
     @State private var modelChooserOpen = false
     @State private var modelForm = ModelForm(config: nil)
-    @State private var showRoutine = false
     @State private var composerMenu: ComposerMenu?
     @State private var showMemory = false
     @State private var atBottom = true
@@ -176,7 +175,6 @@ struct ChatView: View {
             ToolbarItem(placement: .principal) { titleView }
         }
         .errorAlert($errorText)
-        .sheet(isPresented: $showRoutine) { RoutineEditorSheet(workspace: workspace, botID: botID) }
         .sheet(isPresented: $showMemory) { MemoryEditorSheet(workspace: workspace, botID: botID) }
         .onAppear {
             workspace.select(botID)
@@ -204,7 +202,6 @@ struct ChatView: View {
             }
             case "filechip": Task { await openFile(arg) }
             case "toolstep": if let step = conv.messages.reversed().compactMap({ $0.toolSteps.last }).first { Task { await openStep(step) } }
-            case "chatroutine": showRoutine = true
             case "chatmemory": showMemory = true
             default: break
             }
@@ -290,9 +287,8 @@ struct ChatView: View {
             Text(bot?.name ?? "").font(.title3.weight(.bold))
             Text(bot?.instructions.nonEmpty ?? "我是你的专属智能同伴。你可以直接向我提问、安排定时任务，或输入 @ 让我与团队其他成员协作。")
                 .font(.subheadline).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
-            Text("直接发消息，或为我安排一项例行任务。").font(.footnote).foregroundStyle(Theme.muted)
+            Text("直接发消息，让我帮你安排任务。").font(.footnote).foregroundStyle(Theme.muted)
             FlowLayout(spacing: 8) {
-                Chip(title: "安排例行任务", icon: "clock") { showRoutine = true }
                 Chip(title: "添加长期记忆", icon: "sparkles") { showMemory = true }
                 if let peer = firstPeer {
                     Chip(title: "让 \(peer.name) 协作", icon: "person.2") { conversation.draft = "@\(peer.name) " }

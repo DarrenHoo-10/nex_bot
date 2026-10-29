@@ -1,5 +1,9 @@
 # Routine schedules
 
+> This page describes the legacy `server/routines.ts` scheduler. Current Personal
+> Core uses independent routine subagents; see
+> [current scheduling behaviour and verification](verification/routine-subagents.md).
+
 Ask a bot in ordinary language, for example:
 
 > Prepare a report at 9 am on the first of every month, in Asia/Kolkata.
