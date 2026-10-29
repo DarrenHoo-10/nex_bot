@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [Unified Todo panel: local implementation and persistence](todos.md)
+
 - [Memory recall redesign: all-platform release (2026-10-29)](memory-recall-release-20261029.md)
 - [Compaction timing: Core release (2026-10-29)](compaction-timing-release-20261029.md)
 - [Compaction timing and failure handling (2026-10-29)](compaction-timing.md)

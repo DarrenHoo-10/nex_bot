@@ -12,7 +12,7 @@ struct MainView: View {
 
     private static let panel = RoundedRectangle(cornerRadius: 22, style: .continuous)
     private var panelOpen: Bool {
-        ui.inspectorVisible && workspace.selectedBotID.map { workspace.bot($0) != nil } == true
+        !ui.todosVisible && ui.inspectorVisible && workspace.selectedBotID.map { workspace.bot($0) != nil } == true
     }
 
     var body: some View {
@@ -25,7 +25,9 @@ struct MainView: View {
                 UpdateBanner()
                 NoticeBanner(workspace: workspace)
                 Group {
-                    if let id = workspace.selectedBotID, workspace.bot(id) != nil {
+                    if ui.todosVisible {
+                        TodosView(workspace: workspace) { id in ui.todosVisible = false; workspace.select(id) }
+                    } else if let id = workspace.selectedBotID, workspace.bot(id) != nil {
                         ConversationView(workspace: workspace, botID: id).id(id)
                     } else {
                         if workspace.bots.isEmpty && workspace.state != nil { NoAgentsWelcome() }

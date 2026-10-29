@@ -17,6 +17,8 @@ import { clipTokens, tokens } from "./token-estimate.ts";
 import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
+import { todoSchema } from "./todo-schema.ts";
+
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -386,6 +388,10 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       if (!String(this.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='assistant_memories'")?.sql).includes("'topic'")) this.db.exec(rebuildMemories);
       this.db.exec(topicSchema);
       this.insert("schema_migrations", { version: 35, checksum: hash(topicSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=36")) this.transaction(() => {
+      this.db.exec(todoSchema);
+      this.insert("schema_migrations", { version: 36, checksum: hash(todoSchema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

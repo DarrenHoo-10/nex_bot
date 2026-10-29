@@ -16,6 +16,7 @@ import { lookOf } from "./characters";
 import { Confirm, Editor, ModelSettings, SettingsPage, type SettingsCategory } from "./panels";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { AgentAvatar as Avatar } from "./components/AgentAvatar";
+import { TodoWorkspace } from "./todo/TodoWorkspace";
 import { ContactSidebar } from "./components/ContactSidebar";
 import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
@@ -516,9 +517,11 @@ export function AgentDesktop() {
   const heroState = !connected ? companionLabels.offline : tasks.length ? taskPhrase(tasks[0]) : avatarState === "idle" ? "在线" : companionLabels[avatarState];
   void lookRevision;
 
+  if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={<ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={(target) => { if(target === "todo") {setPage("todo");setSidebarOpen(false);} else openSettings();}} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
+
   return <div className="workspace-stage" data-dark={dark ? "1" : "0"} data-shell={desktop?.mode === "client" ? "1" : "0"}>
     <div className={`app rk-workspace ${panelOpen ? "with-detail" : ""}`} data-left={railClosed ? "closed" : "open"} data-right={panelOpen ? "open" : "closed"} data-page={page} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"} style={accent ? { "--bot-color": accent } as CSSProperties : undefined}>
-    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={() => openSettings()} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
+    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={(target) => { if(target === "todo") {setPage("todo");setSidebarOpen(false);} else openSettings();}} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
 
     <main>
       <header>

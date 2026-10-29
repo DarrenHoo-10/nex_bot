@@ -17,7 +17,7 @@ enum AgentDetailTab: String, CaseIterable { case work = "工作", settings = "�
 /// Root is the contacts list; chats, the approvals list, settings and the other pages are pushed on top.
 @MainActor @Observable
 final class Navigation {
-    enum Route: Hashable { case chat(String), approvals, settings, agentDetail(String) }
+    enum Route: Hashable { case chat(String), approvals, settings, agentDetail(String), todos }
     var path: [Route] = []
     /// The account menu sheet.
     var showMenu = false
@@ -56,6 +56,7 @@ final class Navigation {
         switch route {
         case .chat(let id): ChatView(workspace: workspace, botID: id)
         case .approvals: ApprovalsView(workspace: workspace)
+        case .todos: TodosView(workspace: workspace) { id in workspace.select(id); self.openChat(id) }.toolbar(.visible, for: .navigationBar)
         case .settings: SettingsView(model: model, workspace: workspace)
         case .agentDetail(let id): AgentDetailView(workspace: workspace, botID: id)
         }

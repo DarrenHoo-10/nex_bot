@@ -21,6 +21,15 @@ struct ContactsList: View {
         VStack(spacing: 0) {
             topBar
             searchField
+            Button { ui.todosVisible = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "checklist").font(.system(size: 17))
+                    if !collapsed { Text("待办").font(.system(size: 13, weight: .medium)); Spacer() }
+                }
+                .foregroundStyle(ui.todosVisible ? Theme.identityAccent : Theme.foreground)
+                .padding(12).frame(maxWidth: .infinity)
+                .background(ui.todosVisible ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).accessibilityLabel("待办").disabled(workspace.state == nil)
             if !collapsed {
                 HStack {
                     Text("对话")
@@ -137,13 +146,13 @@ struct ContactsList: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2)
             }
             ForEach(bots) { bot in
-                Button { workspace.showLatest(botID: bot.id); workspace.select(bot.id) } label: {
+                Button { ui.todosVisible = false; workspace.showLatest(botID: bot.id); workspace.select(bot.id) } label: {
                     if collapsed {
-                        DockRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id), selected: workspace.selectedBotID == bot.id)
+                        DockRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id), selected: !ui.todosVisible && workspace.selectedBotID == bot.id)
                     } else {
                         ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
                                    phrase: ToolLabels.taskPhrase(workspace.state?.unfinishedTask(botID: bot.id)),
-                                   selected: workspace.selectedBotID == bot.id)
+                                   selected: !ui.todosVisible && workspace.selectedBotID == bot.id)
                     }
                 }
                 .buttonStyle(.plain)

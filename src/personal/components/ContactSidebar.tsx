@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ChevronUp, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, X } from "lucide-react";
+import { ListTodo, ChevronUp, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, X } from "lucide-react";
 import { BrandMark } from "./BrandMark";
 import { companionState } from "../avatars/appearance";
 import { AgentAvatar as Avatar } from "./AgentAvatar";
@@ -46,6 +46,7 @@ export function ContactSidebar(props: Props) {
       <div className="workspace-brand">{collapsed ? null : <>{desktop ? <><BrandMark size={30}/><strong>NexBot</strong></> : <a className="workspace-home-link" href="#home" aria-label="NexBot 首页" title="返回首页"><BrandMark size={30}/><strong>NexBot</strong></a>}<button className="icon-button sidebar-dismiss" aria-label="收起联系人列表" onClick={props.onClose}><PanelLeftClose size={17}/></button><button className="icon-button" aria-label="添加 Agent" title="添加 Agent" onClick={props.onCreate}><Plus size={19}/></button></>}<button type="button" className="icon-button rail-toggle" aria-label={collapsed ? "展开左栏" : "收起左栏"} title={collapsed ? "展开左栏" : "收起左栏"} aria-expanded={!collapsed} onClick={props.onToggle}>{collapsed ? <PanelLeftOpen size={17}/> : <PanelLeftClose size={17}/>}</button></div>
       {collapsed ? <button type="button" className="sidebar-search dock-search" aria-label="搜索会话记录" title="搜索会话记录" onClick={() => { focusSearch.current = true; props.onToggle(); }}><Search size={16}/></button>
         : <label className="sidebar-search"><Search size={15}/><input ref={searchInput} aria-label="搜索会话记录" placeholder="搜索会话记录" maxLength={200} value={search} onChange={(event) => props.onSearch(event.target.value)}/>{search && <button className="icon-button" aria-label="清空搜索" onClick={() => props.onSearch("")}><X size={13}/></button>}</label>}
+      <button type="button" className={`contact-item todo-entry ${page === "todo" ? "is-selected" : ""}`} aria-label="待办" aria-current={page === "todo" ? "page" : undefined} onClick={() => props.onPage("todo")}><ListTodo size={19}/>{!collapsed && <strong>待办</strong>}</button>
       {collapsed ? null : <div className="contact-list-label"><span>对话</span><span>{state.bots.length}</span></div>}<div className="contact-groups">
         {!collapsed && search.trim() ? <ConversationSearch key={JSON.stringify([search.trim(),state.sync.coreId,state.sync.bootId,state.sync.privacyEpoch])} query={search.trim()} sync={state.sync} onSelect={props.onSearchResult}/> : <>{groups.map((group) => group.items.length ? <section key={group.title}>{collapsed ? null : <div className={`sidebar-section-title ${group.title === "我的 Agent" ? "is-default-group" : ""}`}><span>{group.title}</span></div>}{group.items.map((bot) => {
           const task = state.tasks.find((item) => item.bot_id === bot.id && !ended.has(str(item.status)));

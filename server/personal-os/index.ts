@@ -11,6 +11,7 @@ import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
 import { DeviceNode } from "./node.ts";
 import { AgentModule } from "./agents.ts";
+import { TodoModule, TodoConflict } from "./todos.ts";
 import { RoutineModule } from "./routines.ts";
 import { ClientIdentity } from "./clients.ts";
 import { CoreIdentity } from "./identity.ts";
@@ -87,6 +88,7 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const files = new ChatFiles(store);
   const routines = new RoutineModule(store, agents);
+  const todos = new TodoModule(store, agents);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
   feishu = new FeishuModule(store, changed, agents, runtime, {
@@ -104,7 +106,7 @@ export async function createPersonalApp(options: AppOptions) {
   let requestRouter: ((request: IncomingMessage, response: ServerResponse) => Promise<boolean>) | undefined;
   const server = createServer((request, response) => { void (async () => { if (!await requestRouter?.(request, response)) await route(request, response); })().catch((error: unknown) => {
     if (response.headersSent) { response.end(); return; }
-    json(response, error instanceof IdentityError ? error.status : 400, { error: error instanceof Error ? error.message : "请求失败", ...(error instanceof IdentityError && error.status === 503 ? { code: "identity_unavailable" } : {}) });
+    json(response, error instanceof IdentityError || error instanceof TodoConflict ? error.status : 400, { error: error instanceof Error ? error.message : "请求失败", ...(error instanceof IdentityError && error.status === 503 ? { code: "identity_unavailable" } : {}) });
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
@@ -300,6 +302,10 @@ export async function createPersonalApp(options: AppOptions) {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取核心记忆的权限" }); return; }
         json(response, 200, runtime.memory.core.view(text(url.searchParams.get("botId"), 100))); return;
       }
+      if (url.pathname.startsWith("/api/todos")) {
+        if (session.user_id !== store.owner) { json(response,403,{error:"此账号没有管理待办的权限"});return; }
+        if (url.pathname === "/api/todos" && request.method === "GET") { json(response,200,{items:todos.list()});return; }
+      }
       if (url.pathname === "/api/state") {
         const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
         json(response, 200, stateBody(view, requestOrigin)); return;
@@ -415,6 +421,8 @@ export async function createPersonalApp(options: AppOptions) {
         const result = await files.deleteMessageImage(text(data.botId, 100), text(data.messageId, 100), text(data.attachmentId, 100));
         changed(); json(response, 200, result); return;
       }
+      if (url.pathname === "/api/todos/save") { json(response,200,todos.save(data));return; }
+      if (url.pathname === "/api/todos/action") { json(response,200,todos.action(data,String(session.id)));return; }
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines/run") { routines.runNow(text(data.id, 100), text(data.clientId, 100)); json(response, 200, { ok: true }); return; }
