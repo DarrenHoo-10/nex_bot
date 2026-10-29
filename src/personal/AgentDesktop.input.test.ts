@@ -124,6 +124,33 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     await act(async () => { buttons[1].click(); });
     expect(fixture.api).toHaveBeenCalledWith("approvals", { id: "approval", hash: "digest", allow: true, remember: true });
   });
+  it("opens a read-only routine and allows only confirmed shutdown or deletion", async () => {
+    state.routines = [{ id: "r", bot_id: "agent", name: "例行巡检", prompt: "检查状态", schedule_kind: "interval", task_kind: "monitor", interval_ms: 300000, enabled: 1, next_due_at: 1900000000000 }];
+    state.occurrences = [{ id: "occ", bot_id: "agent", name: "例行巡检", status: "skipped", reason: "已过期", scheduled_at: 1800000000000 }];
+    await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
+    expect(container.querySelector(".routine-row")!.textContent).toContain("下次");
+    expect(container.querySelector(".routine-summary")!.textContent).toContain("巡检");
+    expect(container.querySelector('.routine-run, .routine-toggle, [aria-label="添加定时任务"]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('.routine-summary')!.click());
+    const dialog = container.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).not.toMatch(/现在执行|编辑|恢复/);
+    expect(dialog.querySelector('input, select, textarea')).toBeNull();
+    await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '关闭任务')!.click());
+    expect(fixture.api).not.toHaveBeenCalledWith('routines/toggle', expect.anything());
+    await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '确认关闭')!.click());
+    expect(fixture.api).toHaveBeenCalledWith('routines/toggle', { id: 'r', version: undefined, enabled: false });
+  });
+  it("does not select a routine child as the chat task or contact activity", async () => {
+    state.tasks = [{ id: "routine-task", bot_id: "agent", origin: "routine", status: "running", objective: "后台巡检" }];
+    await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
+    expect(container.querySelector('.composer .send[aria-label="停止任务"]')).toBeNull();
+    expect(container.querySelector(".processing-message")).toBeNull();
+    expect(container.querySelector('.contact-item[data-working="true"]')).toBeNull();
+    state.tasks.push({ id: "chat-task", bot_id: "agent", origin: "user", status: "running" });
+    await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
+    await act(async () => container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]')!.click());
+    expect(fixture.api).toHaveBeenCalledWith("cancel", { taskId: "chat-task" });
+  });
   it("turns the send key into a stop key while the Agent works and the composer is empty", async () => {
     state = { ...state, connected: true, tasks: [{ id: "task-1", bot_id: "agent", status: "running", objective: "fixture" }] } as State;
     await act(async () => { sources[0].emit("change", sync); await new Promise((resolve) => setTimeout(resolve, 300)); });

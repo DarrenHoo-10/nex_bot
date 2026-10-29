@@ -10,15 +10,14 @@ struct AgentDetailView: View {
     @State private var sheet: Sheet?
     @State private var errorText: String?
     @State private var busyTask: String?
-    /// The routine whose switch is submitting; every switch is disabled meanwhile.
-    @State private var togglingRoutine: String?
 
     enum Sheet: Identifiable {
-        case avatar, routine(Routine?)
+        case avatar, routine(Routine), occurrence(RoutineOccurrence)
         var id: String {
             switch self {
+            case .occurrence(let o): "occurrence-\(o.id)"
             case .avatar: "avatar"
-            case .routine(let r): "routine-\(r?.id ?? "new")"
+            case .routine(let r): "routine-\(r.id)"
             }
         }
     }
@@ -48,20 +47,18 @@ struct AgentDetailView: View {
         .refreshable { await workspace.refresh() }
         .sheet(item: $sheet) { sheet in
             switch sheet {
+            case .occurrence(let o): RoutineOccurrenceDetailView(workspace: workspace, occurrence: o)
             case .avatar: AvatarPickerSheet(workspace: workspace, botID: botID)
-            case .routine(let routine): RoutineEditorSheet(workspace: workspace, botID: botID, existing: routine)
+            case .routine(let routine): RoutinePlanDetailView(workspace: workspace, routine: routine)
             }
         }
         .errorAlert($errorText)
         .debugCommand { command, _ in
             switch command {
             case "avatarpicker": sheet = .avatar
-            case "routine": sheet = .routine(nil)
-            case "routineedit": if let r = workspace.state?.routines(botID: botID).first { sheet = .routine(r) }
             case "pin": preferences.togglePin(botID)
             case "workstop": if let t = tasks.first { Task { await run(t.id) { try await workspace.cancelTask(t.id) } } }
             case "resume": if let t = tasks.first(where: { $0.status == "paused" }) { Task { await run(t.id) { try await workspace.resumeTask(t.id) } } }
-            case "togglefirstroutine": if let r = workspace.state?.routines(botID: botID).first { Task { await toggle(r, !r.enabled) } }
             default: break
             }
         }
@@ -162,33 +159,30 @@ struct AgentDetailView: View {
 
             let occurrences = state?.occurrences(botID: botID) ?? []
             if !occurrences.isEmpty {
-                title("最近执行")
+                title("最近结果")
                 ForEach(Array(occurrences.enumerated()), id: \.element.id) { index, o in
                     let day = o.scheduledAt.map { TimeFormat.dayLabel($0) } ?? ""
                     if !day.isEmpty, index == 0 || day != occurrences[index - 1].scheduledAt.map({ TimeFormat.dayLabel($0) }) {
                         DayLabel(text: day)
                     }
-                    RunEntryRow(symbol: RunPresentation.symbol(o.status), tone: RunPresentation.tone(o.status), title: o.name,
-                                status: o.statusText, time: o.scheduledAt.map { TimeFormat.formatClock($0) })
+                    Button { sheet = .occurrence(o) } label: {
+                        RunEntryRow(symbol: RunPresentation.symbol(o.displayStatus), tone: RunPresentation.tone(o.displayStatus), title: o.name,
+                                    status: RoutineCopy.status(o.displayStatus), time: o.scheduledAt.map { TimeFormat.formatClock($0) })
+                    }.buttonStyle(.plain).accessibilityHint("查看结果")
                 }
             }
 
             let routines = state?.routines(botID: botID) ?? []
             if routines.isEmpty {
-                title("例行任务")
+                title("定时任务")
                 HStack {
-                    Text("暂无例行任务").font(.footnote).foregroundStyle(Theme.muted)
+                    Text("暂无定时任务").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
-                    Button { sheet = .routine(nil) } label: {
-                        Image(systemName: "plus").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.foreground)
-                            .frame(width: 30, height: 30).background(Theme.card, in: Circle())
-                    }
-                    .buttonStyle(.plain).accessibilityLabel("添加例行任务")
                 }
                 .padding(.leading, 14).padding(.trailing, 10).padding(.vertical, 10)
                 .background(Theme.wash, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
-                title("例行任务", trailing: ("plus", "添加例行任务", { sheet = .routine(nil) }))
+                title("定时任务")
                 VStack(spacing: 0) {
                     ForEach(Array(routines.enumerated()), id: \.element.id) { index, routine in
                         if index > 0 { Divider().overlay(Theme.border).padding(.leading, 14) }
@@ -196,26 +190,16 @@ struct AgentDetailView: View {
                     }
                 }
                 .background(Theme.wash, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .accessibilityLabel("例行任务列表")
+                .accessibilityLabel("定时任务列表")
             }
         }
     }
 
     private func routineRow(_ routine: Routine) -> some View {
-        HStack(spacing: 12) {
-            Button { sheet = .routine(routine) } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(routine.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text("\(routine.label) · \(routine.prompt)").font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            Toggle(routine.name, isOn: Binding(get: { routine.enabled }, set: { value in Task { await toggle(routine, value) } }))
-                .labelsHidden().tint(Theme.brand)
-                .disabled(togglingRoutine != nil)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
+        let latest = workspace.state?.occurrences.first { $0.routineID == routine.id }
+        return RoutineListEntry(routine: routine, latest: latest,
+            showPlan: { sheet = .routine(routine) },
+            showResult: { if let latest { sheet = .occurrence(latest) } })
     }
 
     // MARK: Actions
@@ -224,13 +208,6 @@ struct AgentDetailView: View {
         busyTask = id
         defer { busyTask = nil }
         do { try await action() } catch { errorText = message(of: error) }
-    }
-
-    private func toggle(_ routine: Routine, _ enabled: Bool) async {
-        guard togglingRoutine == nil else { return }
-        togglingRoutine = routine.id
-        defer { togglingRoutine = nil }
-        do { try await workspace.setRoutineEnabled(routine, enabled: enabled) } catch { errorText = message(of: error) }
     }
 
     private func section<C: View>(_ title: String, trailing: (icon: String, label: String, action: () -> Void)? = nil, @ViewBuilder content: () -> C) -> some View {

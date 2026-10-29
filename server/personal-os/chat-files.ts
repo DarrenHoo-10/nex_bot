@@ -27,7 +27,7 @@ export class ChatFiles {
     if ((encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded))) throw new Error("文件编码无效");
     const bytes = Buffer.from(encoded, "base64");
     if (!bytes.length || bytes.length > attachmentLimit) throw new Error("文件不能超过 5 MB");
-    this.store.run("DELETE FROM chat_attachments WHERE message_id IS NULL AND created_at<?", now() - 86400_000);
+    this.store.run("DELETE FROM chat_attachments WHERE message_id IS NULL AND created_at<? AND NOT EXISTS(SELECT 1 FROM transcript t JOIN conversations c ON c.id=t.conversation_id WHERE c.bot_id=chat_attachments.bot_id AND t.source_key LIKE 'image:%' AND instr(t.content,'/api/attachments/'||chat_attachments.id)>0)", now() - 86400_000);
     if (Number(this.store.get("SELECT COALESCE(SUM(size),0) n FROM chat_attachments")?.n) + bytes.length > 200 * 1024 * 1024) throw new Error("附件空间已满");
     const mime = bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? "image/png" : bytes[0] === 255 && bytes[1] === 216 ? "image/jpeg" : bytes.subarray(0, 4).toString() === "%PDF" ? "application/pdf" : bytes.subarray(0,4).toString() === "RIFF" && bytes.subarray(8,12).toString() === "WEBP" ? "image/webp" : "application/octet-stream";
     const file = { id: id(), botId, name, mime, size: bytes.length };
@@ -48,7 +48,13 @@ export class ChatFiles {
     for (const fileId of ids) this.store.run("UPDATE chat_attachments SET message_id=? WHERE id=? AND bot_id=? AND message_id IS NULL", message.id, fileId, botId);
   }
   authorize(fileId: string, botId?: string) {
-    const row = this.store.get("SELECT a.* FROM chat_attachments a JOIN agent_messages m ON m.id=a.message_id WHERE a.id=? AND instr(m.content,'/api/attachments/'||a.id)>0", fileId);
+    // Routine output has no inbox message until settlement. A Core-generated
+    // image transcript is its durable ownership proof in the meantime; arbitrary
+    // user/tool text containing an attachment URL is never sufficient.
+    const row = this.store.get(`SELECT a.* FROM chat_attachments a WHERE a.id=? AND (
+      EXISTS(SELECT 1 FROM agent_messages m WHERE m.id=a.message_id AND m.bot_id=a.bot_id AND instr(m.content,'/api/attachments/'||a.id)>0 AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id))
+      OR (a.message_id IS NULL AND EXISTS(SELECT 1 FROM transcript t JOIN tasks k ON k.id=t.task_id WHERE k.bot_id=a.bot_id AND t.conversation_id=k.conversation_id AND t.role='assistant' AND t.source_key LIKE 'image:%' AND instr(t.content,'/api/attachments/'||a.id)>0 AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=k.id)))
+    )`, fileId);
     if (!row || (botId && row.bot_id !== botId)) throw new Error("附件不存在或不可访问");
     return row;
   }

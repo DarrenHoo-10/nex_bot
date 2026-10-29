@@ -95,7 +95,7 @@ extension View {
 #if DEBUG
 /// DEBUG-only UI automation of the agent screens (simulators cannot be tapped from scripts). The file named by
 /// NEXBOT_DEBUG_UI_FILE is polled and consumed line by line as `<name> [argument]`; views react with `.debugCommand`.
-/// Names: createagent, identity, avatar [companion|portrait|state:<id>|pick:<n>], policy, routine, routineedit, memoryedit,
+/// Names: createagent, identity, avatar [companion|portrait|state:<id>|pick:<n>], policy, memoryedit,
 /// archive, pin, type <text>, quote, mention, search <text>, find <q>, reflect <q>, expand, forgetpreview <q>, filechip <path>,
 /// toolstep, scroll top|bottom, workstop, resume, runroutine, togglegroup.
 @MainActor @Observable

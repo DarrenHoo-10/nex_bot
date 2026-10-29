@@ -1,6 +1,6 @@
 import Foundation
 
-/// One async throwing method per user action. Each one echoes the version of the *current* row, routes failures
+/// One async throwing method per user action. Mutations echo their row's version and route failures
 /// through `report` (so an expired session ends the app session) and throws the ``CoreError`` with Core's Chinese
 /// message. Mutations call ``WorkspaceStore/refresh()`` after success; read-only calls (recall, preview, ...) do not.
 extension WorkspaceStore {
@@ -74,11 +74,12 @@ extension WorkspaceStore {
 
     // MARK: Routines
 
-    /// Creates (`existing == nil`) or edits a routine; the version comes from the current row. Returns the routine id.
+    /// Keeps the editor's original version so concurrent changes are rejected instead of overwritten.
     @discardableResult
-    public func saveRoutine(botID: String, existing: Routine? = nil, name: String, prompt: String, schedule: RoutineSchedule, timeZone: String = TimeZone.current.identifier) async throws -> String {
-        var draft = RoutineDraft(botID: botID, name: name, prompt: prompt, schedule: schedule, timeZone: timeZone)
-        if let existing { draft.id = existing.id; draft.version = (try? currentRoutine(existing.id))?.version ?? existing.version }
+    public func saveRoutine(botID: String, existing: Routine? = nil, name: String, prompt: String, schedule: RoutineSchedule, timeZone: String = TimeZone.current.identifier, taskKind: RoutineTaskKind? = nil) async throws -> String {
+        if case .interval(let minutes) = schedule, !(5...525_600).contains(minutes) { throw missing("间隔须为 5 分钟至 365 天") }
+        var draft = RoutineDraft(botID: botID, name: name, prompt: prompt, schedule: schedule, timeZone: timeZone, taskKind: taskKind)
+        if let existing { draft.id = existing.id; draft.version = existing.version }
         return try await act { try await client.saveRoutine(draft) }
     }
     public func setRoutineEnabled(_ routine: Routine, enabled: Bool) async throws {
@@ -88,6 +89,15 @@ extension WorkspaceStore {
     /// Runs now. Pass the same `clientID` when retrying so the run is not duplicated.
     public func runRoutine(_ routine: Routine, clientID: String = UUID().uuidString) async throws {
         try await act { try await client.runRoutine(id: routine.id, clientID: clientID) }
+    }
+
+    /// Uses the confirmed snapshot version; concurrent edits must be reviewed before deleting.
+    public func deleteRoutine(_ routine: Routine) async throws {
+        try await act { try await client.deleteRoutine(id: routine.id, version: routine.version) }
+    }
+
+    public func routineOccurrence(id: String) async throws -> RoutineOccurrenceDetail {
+        try await act(refresh: false) { try await client.get("/api/routines/occurrence", query: [("id", id)]) }
     }
 
     // MARK: Connectors

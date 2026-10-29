@@ -396,9 +396,8 @@ private struct MessageList: View {
             Text(bot?.name ?? "").font(.system(size: 22, weight: .bold))
             Text(instructions.isEmpty ? "我是你的专属智能同伴。你可以直接向我提问、安排定时任务，或输入 @ 让我与团队其他成员协作。" : instructions)
                 .font(.system(size: 13)).foregroundStyle(Theme.foreground).multilineTextAlignment(.center).lineLimit(6).frame(maxWidth: 460)
-            Text("直接发消息，或为我安排一项例行任务。").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            Text("直接发消息，让我帮你安排任务。").font(.system(size: 11)).foregroundStyle(Theme.muted)
             HStack(spacing: 8) {
-                chip("clock", "安排例行任务") { AgentUI.shared.editRoutine(botID: botID) }
                 chip("sparkles", "添加长期记忆") { AgentUI.shared.editMemory(botID: botID) }
                 if let peer = peers.first {
                     chip("at", "让 \(peer.name) 协作") { conversation.draft = "@\(peer.name) "; ui.composerFocusTick += 1 }

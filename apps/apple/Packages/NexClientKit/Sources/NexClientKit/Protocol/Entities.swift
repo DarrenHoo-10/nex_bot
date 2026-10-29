@@ -24,6 +24,14 @@ public enum ScheduleKind: String, Sendable, Codable, CaseIterable {
     public var title: String { switch self { case .daily: "每天"; case .interval: "固定间隔"; case .once: "指定时间执行一次" } }
 }
 
+public enum RoutineTaskKind: String, Sendable, Codable, CaseIterable {
+    case reminder, monitor, report, action
+    public var title: String { switch self { case .reminder: "提醒"; case .monitor: "巡检"; case .report: "汇总"; case .action: "执行" } }
+    public static func defaultKind(for schedule: ScheduleKind) -> Self {
+        switch schedule { case .once: .reminder; case .interval: .monitor; case .daily: .report }
+    }
+}
+
 /// `routines[]`: a scheduled prompt of one bot. Echo ``version`` on edit and toggle.
 public struct Routine: RowBacked {
     public let row: Row
@@ -39,6 +47,9 @@ public struct Routine: RowBacked {
     public var timeZone: String { row.string("time_zone") ?? TimeZone.current.identifier }
     public var enabled: Bool { row.bool("enabled") ?? false }
     public var nextDueAt: Date? { dateFromMilliseconds(row.double("next_due_at")) }
+    public var runAt: Date? { dateFromMilliseconds(row.double("run_at")) ?? nextDueAt }
+    public var taskKind: RoutineTaskKind { RoutineTaskKind(rawValue: row.string("task_kind") ?? "") ?? .defaultKind(for: scheduleKind) }
+    public var nextDueText: String { nextDueAt.map { "下次 · \(TimeFormat.formatTime($0))" } ?? "暂无下次执行" }
     public var version: Int { row.int("version") ?? 1 }
     public var createdAt: Date? { dateFromMilliseconds(row.double("created_at")) }
     /// 每天 09:00 · Asia/Shanghai / 每 60 分钟 / 一次性任务.
@@ -61,14 +72,40 @@ public struct RoutineOccurrence: RowBacked {
     public var routineID: String { row.string("routine_id") ?? "" }
     public var routineVersion: Int { row.int("routine_version") ?? 0 }
     public var scheduledAt: Date? { dateFromMilliseconds(row.double("scheduled_at")) }
-    /// `pending`, `running`, `succeeded`, `failed` or `cancelled`.
+    /// `pending`, `running`, `succeeded`, `failed`, `cancelled` or `skipped`.
     public var status: String { row.string("status") ?? "" }
-    public var statusText: String { ToolLabels.statusText(status) }
+    public var taskStatus: String? { row.string("task_status") }
+    public var displayStatus: String {
+        if status == "skipped" { return status }
+        return taskStatus.flatMap { $0.isEmpty ? nil : $0 } ?? status
+    }
+    public static let activeTaskStatuses: Set<String> = ["queued", "running", "awaiting_approval", "paused", "needs_reconciliation"]
+    public var statusText: String { ToolLabels.statusText(displayStatus) }
+    public var prompt: String { row.string("prompt") ?? "" }
+    public var reason: String? { row.string("reason") }
+    public var taskKind: RoutineTaskKind? { row.string("task_kind").flatMap(RoutineTaskKind.init(rawValue:)) }
+    public var startedAt: Date? { dateFromMilliseconds(row.double("started_at")) }
+    public var finishedAt: Date? { dateFromMilliseconds(row.double("finished_at")) }
     public var taskID: String? { row.string("task_id") }
     public var botID: String { row.string("bot_id") ?? "" }
     public var name: String { row.string("name") ?? "" }
     /// "已完成 · 10/17 09:00" as in the web 最近执行 list.
     public var summary: String { "\(statusText) · \(scheduledAt.map { TimeFormat.formatTime($0) } ?? "")" }
+}
+
+/// Isolated subagent run returned by `GET /api/routines/occurrence`.
+public struct RoutineOccurrenceDetail: Decodable, Sendable {
+    public let occurrence: RoutineOccurrence
+    public let task: AgentTask?
+    public let messages: [AgentMessage]
+    public let steps: [ToolStep]
+    public let streaming: String
+    public var status: String {
+        if occurrence.status == "skipped" { return "skipped" }
+        if let status = task?.status, !status.isEmpty { return status }
+        return occurrence.displayStatus
+    }
+    public var resultSummary: String { task?.row.string("result_summary") ?? "" }
 }
 
 // MARK: - Connectors

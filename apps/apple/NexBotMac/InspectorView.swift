@@ -112,6 +112,8 @@ struct InspectorWorkTab: View {
     let botID: String
     @State private var error: String?
     @State private var submitting = false
+    @State private var selectedOccurrence: RoutineOccurrence?
+    @State private var selectedRoutine: Routine?
 
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
 
@@ -125,17 +127,21 @@ struct InspectorWorkTab: View {
         }
         let occurrences = state?.occurrences(botID: botID) ?? []
         if !occurrences.isEmpty {
-            InspectorSectionTitle(title: "最近执行")
+            InspectorSectionTitle(title: "最近结果")
             ForEach(Array(occurrences.enumerated()), id: \.element.id) { index, o in
                 let day = o.scheduledAt.map { TimeFormat.dayLabel($0) } ?? ""
                 if !day.isEmpty, index == 0 || day != occurrences[index - 1].scheduledAt.map({ TimeFormat.dayLabel($0) }) {
                     DayLabel(text: day)
                 }
-                RunEntryRow(symbol: RunPresentation.symbol(o.status), tone: RunPresentation.tone(o.status), title: o.name,
-                            status: o.statusText, time: o.scheduledAt.map { TimeFormat.formatClock($0) })
+                Button { selectedOccurrence = o } label: {
+                    RunEntryRow(symbol: RunPresentation.symbol(o.displayStatus), tone: RunPresentation.tone(o.displayStatus), title: o.name,
+                                status: RoutineCopy.status(o.displayStatus), time: o.scheduledAt.map { TimeFormat.formatClock($0) })
+                }.buttonStyle(.plain).help("查看结果")
             }
         }
         routines
+            .sheet(item: $selectedRoutine) { RoutinePlanDetailView(workspace: workspace, routine: $0) }
+            .sheet(item: $selectedOccurrence) { RoutineOccurrenceDetailView(workspace: workspace, occurrence: $0) }
     }
 
     // MARK: Cards
@@ -153,54 +159,23 @@ struct InspectorWorkTab: View {
         }
     }
 
-    /// One rounded list: name and schedule on the left, a switch on the right. The row opens the editor.
-    /// With no routine yet, a quiet row offers the add button.
     private var routines: some View {
         let list = workspace.state?.routines(botID: botID) ?? []
         return VStack(alignment: .leading, spacing: 6) {
+            InspectorSectionTitle(title: "定时任务")
             if list.isEmpty {
-                InspectorSectionTitle(title: "例行任务")
-                HStack {
-                    Text("暂无例行任务").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                    Spacer()
-                    Button { AgentUI.shared.editRoutine(botID: botID) } label: {
-                        Image(systemName: "plus").font(.system(size: 12)).foregroundStyle(Theme.foreground)
-                            .frame(width: 26, height: 26).background(Theme.card, in: Circle()).contentShape(Circle())
-                    }
-                    .buttonStyle(.plain).help("添加例行任务").accessibilityLabel("添加例行任务")
-                }
-                .padding(.leading, 12).padding(.trailing, 10).padding(.vertical, 10)
-                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                Text("暂无定时任务").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(14)
             } else {
-                InspectorSectionTitle(title: "例行任务", addLabel: "添加例行任务") { AgentUI.shared.editRoutine(botID: botID) }
                 VStack(spacing: 0) {
-                    ForEach(list) { routine in routineRow(routine) }
-                }
-                .padding(.vertical, 4)
-                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .accessibilityLabel("例行任务列表")
+                    ForEach(list) { routine in
+                        let latest = workspace.state?.occurrences.first { $0.routineID == routine.id }
+                        RoutineListEntry(routine: routine, latest: latest,
+                            showPlan: { selectedRoutine = routine }, showResult: { selectedOccurrence = latest })
+                    }
+                }.background(Theme.wash, in: RoundedRectangle(cornerRadius: 14))
+                    .accessibilityLabel("定时任务列表")
             }
         }
-    }
-
-    private func routineRow(_ routine: Routine) -> some View {
-        HStack(spacing: 14) {
-            Button { AgentUI.shared.editRoutine(botID: botID, existing: routine) } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(routine.name).font(.system(size: 13)).foregroundStyle(Theme.foreground).lineLimit(1)
-                    Text("\(routine.label) · \(routine.prompt.replacingOccurrences(of: "\n", with: " "))").font(.system(size: 12))
-                        .foregroundStyle(Theme.muted).lineLimit(1)
-                }
-                .padding(.vertical, 3)
-                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("\(routine.name) · \(routine.label) · \(routine.prompt)")
-            RoutineSwitch(on: routine.enabled, disabled: submitting, label: routine.name) {
-                run { try await workspace.setRoutineEnabled(routine, enabled: !routine.enabled) }
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
     private func pill(_ symbol: String?, _ title: String, action: @escaping () -> Void) -> some View {
@@ -224,26 +199,5 @@ struct InspectorWorkTab: View {
             defer { submitting = false }
             do { try await body() } catch { self.error = message(of: error) }
         }
-    }
-}
-
-/// The 34 x 21 blue switch of the web routine list (`.routine-toggle`).
-private struct RoutineSwitch: View {
-    let on: Bool
-    let disabled: Bool
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Capsule().fill(on ? Color(hex: 0x3566ED) : Theme.muted)
-                .frame(width: 34, height: 21)
-                .overlay(alignment: on ? .trailing : .leading) { Circle().fill(.white).frame(width: 15, height: 15).padding(3) }
-                .animation(.easeOut(duration: 0.15), value: on)
-                .opacity(disabled ? 0.5 : 1)
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain).disabled(disabled)
-        .accessibilityLabel(label).accessibilityValue(on ? "已启用" : "已暂停").accessibilityAddTraits(.isButton)
     }
 }

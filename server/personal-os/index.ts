@@ -323,7 +323,10 @@ export async function createPersonalApp(options: AppOptions) {
         const around=url.searchParams.get('around');
         if(around&&(before!==undefined||after!==undefined))throw new Error('消息位置无效');
         const messages = around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before) : agents.messagesAfter(botId, after);
-        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && messages.length === 200, streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT bot_id FROM tasks WHERE id=?", w.taskId)?.bot_id === botId).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
+        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && messages.length === 200, streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT t.bot_id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='owner'", w.taskId)?.bot_id === botId).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
+      }
+      if (url.pathname === "/api/routines/occurrence" && request.method === "GET") {
+        json(response, 200, routines.occurrence(text(url.searchParams.get("id"), 256))); return;
       }
       if (url.pathname === "/api/messages" && request.method === "GET") {
         const conv = text(url.searchParams.get("conversation"), 100);
@@ -426,6 +429,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/routines") { json(response, 200, routines.save(data)); return; }
       if (url.pathname === "/api/routines/toggle") { if (typeof data.enabled !== "boolean") throw new Error("启用状态无效"); routines.toggle(text(data.id, 100), Number(data.version), data.enabled); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/routines/run") { routines.runNow(text(data.id, 100), text(data.clientId, 100)); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/routines/delete") { routines.remove(text(data.id, 100), Number(data.version)); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/models/limits" || url.pathname === "/api/models/limits/refresh") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取模型配置的权限" }); return; }
         const scope = modelLimitScope(data);
