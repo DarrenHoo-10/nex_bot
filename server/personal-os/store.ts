@@ -13,6 +13,7 @@ import { episodeSchema } from "./episodes-schema.ts";
 import { trigramSchema, vectorSchema } from "./retrieval-schema.ts";
 import { recallSchema, WORKING_NOTE_TOKENS } from "./recall-schema.ts";
 import { rebuildMemories, topicSchema } from "./topic-schema.ts";
+import { applyTreeSchema, treeMigrationSql } from "./topic-tree-schema.ts";
 import { clipTokens, tokens } from "./token-estimate.ts";
 import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
@@ -386,6 +387,11 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       if (!String(this.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='assistant_memories'")?.sql).includes("'topic'")) this.db.exec(rebuildMemories);
       this.db.exec(topicSchema);
       this.insert("schema_migrations", { version: 35, checksum: hash(topicSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=36")) this.transaction(() => {
+      // The two-level structure of assistant topics (containers), their members and moves; see topic-tree-schema.ts. No data moves.
+      applyTreeSchema(this.db);
+      this.insert("schema_migrations", { version: 36, checksum: hash(treeMigrationSql), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

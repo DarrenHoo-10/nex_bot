@@ -4,6 +4,7 @@ import { CoreStore, canonical, hash, id, now, text, type Row } from "./store.ts"
 import { Episodes } from "./episodes.ts";
 import { CoreMemory } from "./core-memory.ts";
 import { dropVectors } from "./retrieval-index.ts";
+import { forgetBotTree, forgetTopic } from "./topic-tree.ts";
 
 /** `memories`: topic entries whose own text matches the selector (a plan journaled before topics existed has none). */
 export interface ForgetPlan { sources: string[]; documents: string[]; messages: string[]; tasks: string[]; bots: string[]; banks: string[]; hashes: string[]; memories?: string[]; selectorHash: string; revision: string }
@@ -103,8 +104,11 @@ export class MemoryPrivacy {
    * any more, and are merged afresh, into new topics, by the next pass (topic-memory.ts).
    */
   private dropMemory(key: string, forgotten: Set<string>) {
-    if(!this.store.get('SELECT id FROM assistant_memories WHERE id=?',key))return;
+    const kind=this.store.get('SELECT kind FROM assistant_memories WHERE id=?',key)?.kind;
+    if(!kind)return;
     forgotten.add('memory:'+key);
+    // A topic leaves its container (which is to be rewritten, or dissolved); a container is taken down whole.
+    if(kind==='topic')forgetTopic(this.store,key,forgotten);
     this.store.run('DELETE FROM assistant_memory_versions WHERE id=?',key);
     this.store.run('DELETE FROM assistant_memory_search WHERE memory_id=?',key);
     dropVectors(this.store,'memory',key);
@@ -123,6 +127,8 @@ export class MemoryPrivacy {
         this.store.run("UPDATE memory_document_versions SET content='',title=? WHERE document_id=?", redacted, document);
         this.store.run("DELETE FROM memory_search WHERE document_id=?", document);
         dropVectors(this.store, "document", document);
+        this.store.run("DELETE FROM assistant_topic_members WHERE kind='document' AND ref_id=?", document);
+        this.store.run("DELETE FROM assistant_topic_member_scan WHERE kind='document' AND ref_id=?", document);
         this.store.run("UPDATE memory_publications SET revoked_at=? WHERE document_id=? OR source_id IN (SELECT id FROM memory_source_registry WHERE source_kind='document' AND original_id=?)", now(), document, document);
       }
       for (const message of plan.messages) this.store.run("UPDATE agent_messages SET content=? WHERE id=?", redacted, message);
@@ -171,6 +177,8 @@ export class MemoryPrivacy {
           // A topic is the union of its evidence's sources, so one forgotten fact takes every topic that cites it along.
           if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>plan.messages.includes(ref.id)||archives.has(ref.id)))) this.dropMemory(String(memory.id),forgotten);
         }
+        // Containers, members, moves and cached vectors of the assistant go with the rest of what was derived from its conversations.
+        forgetBotTree(this.store,bot,forgotten);
         this.store.run('DELETE FROM assistant_memory_imports WHERE bot_id=?',bot);
         this.store.run('DELETE FROM assistant_memory_steps WHERE bot_id=?',bot);
         this.store.run('UPDATE assistant_memory_settings SET version=version+1,consolidated_at=0,profile_at=0 WHERE bot_id=?',bot);

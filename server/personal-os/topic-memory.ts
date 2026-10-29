@@ -75,18 +75,32 @@ export class TopicMemory {
   constructor(readonly memory: AssistantMemory) { this.core = new CoreMemory(memory.store); }
   private get store(): CoreStore { return this.memory.store; }
 
-  /** The active topics of an assistant that still rest on their sources. */
+  /**
+   * The active topics of an assistant that still rest on their sources, and its containers (docs/plans/user-topics.md
+   * section 4): a container has no sources of its own and stands while at least two such topics are its children.
+   */
   topics(botId: string): Row[] {
-    return this.store.all("SELECT * FROM assistant_memories WHERE bot_id=? AND kind='topic' AND status='active' ORDER BY rowid", botId).filter((row) => this.memory.valid(sourceRefs(row), botId));
+    const rows = this.store.all("SELECT * FROM assistant_memories WHERE bot_id=? AND kind='topic' AND status='active' ORDER BY rowid", botId);
+    const meta = new Map(this.store.all('SELECT topic_id,role,parent_id FROM assistant_topics WHERE bot_id=?', botId).map((row) => [String(row.topic_id), row]));
+    const container = (row: Row) => meta.get(String(row.id))?.role === 'container';
+    const leaves = new Set(rows.filter((row) => !container(row) && this.memory.valid(sourceRefs(row), botId)).map((row) => String(row.id)));
+    const children = new Map<string, number>();
+    for (const key of leaves) { const parent = meta.get(key)?.parent_id; if (parent) children.set(String(parent), (children.get(String(parent)) ?? 0) + 1); }
+    return rows.filter((row) => container(row) ? (children.get(String(row.id)) ?? 0) >= 2 : leaves.has(String(row.id)));
+  }
+  /** The topics that rest on facts (everything but the containers): what new facts are merged into. */
+  leaves(botId: string): Row[] {
+    const containers = new Set(this.store.all("SELECT topic_id FROM assistant_topics WHERE bot_id=? AND role='container'", botId).map((row) => String(row.topic_id)));
+    return this.topics(botId).filter((row) => !containers.has(String(row.id)));
   }
   /** Topics for the dashboard: labels only. */
   list(botId: string) {
-    return this.topics(botId).map((row) => ({ id: row.id, title: row.title, updated_at: row.updated_at, facts: Number(this.store.get('SELECT COUNT(*) n FROM assistant_topic_evidence WHERE topic_id=?', row.id)!.n) }));
+    return this.topics(botId).map((row) => ({ id: row.id, title: row.title, updated_at: row.updated_at, facts: Number(this.store.get('SELECT COUNT(*) n FROM assistant_topic_evidence WHERE topic_id=?', row.id)!.n), ...this.store.get("SELECT role,parent_id FROM assistant_topics WHERE topic_id=? AND (role='container' OR parent_id IS NOT NULL)", String(row.id)) }));
   }
   private evidence(topicId: string): Row[] {
     return this.store.all('SELECT m.* FROM assistant_topic_evidence e JOIN assistant_memories m ON m.id=e.memory_id WHERE e.topic_id=? ORDER BY e.added_at,m.rowid', topicId);
   }
-  private summary(row: Row): string {
+  summary(row: Row): string {
     const stored = this.store.get('SELECT summary FROM assistant_topics WHERE topic_id=?', String(row.id))?.summary;
     return typeof stored === 'string' && stored.trim() ? stored : String(row.content).replace(/\s+/g, ' ').slice(0, 60);
   }
@@ -94,7 +108,7 @@ export class TopicMemory {
   // ---- the vectors, and the choice of topic ---------------------------------------------------------------
 
   /** The stored vector of a memory, if it was made by the configured model from the memory's current text. */
-  private vector(row: Row, embedding?: EmbeddingSettings): Float32Array | undefined {
+  vector(row: Row, embedding?: EmbeddingSettings): Float32Array | undefined {
     if (!embedding) return;
     const stored = this.store.get("SELECT model,dims,vector,content_hash FROM memory_vectors WHERE kind='memory' AND ref_id=?", String(row.id));
     if (!stored || stored.model !== embedding.model || (embedding.dimensions && stored.dims !== embedding.dimensions) || stored.content_hash !== embeddingHash('memory', row)) return;
@@ -130,6 +144,8 @@ export class TopicMemory {
     return containment(a.content, b.content) >= TOPIC_MATCH_LEXICAL;
   }
 
+  /** Whether facts wait to be merged into a topic. */
+  hasPending(botId: string): boolean { return this.pending(botId, undefined, 1).length > 0; }
   /** Facts (and, during the migration, old observations) not yet part of an active topic, oldest first. */
   private pending(botId: string, snapshot: number | undefined, limit: number): Row[] {
     const kinds = snapshot === undefined ? "'fact','experience'" : "'fact','experience','observation'";
@@ -140,7 +156,7 @@ export class TopicMemory {
   /** Who goes where: one job per affected topic, then one per group of new facts that belong together. */
   private plan(botId: string, pending: Row[], window: number): Job[] {
     const embedding = this.memory.retrieval.config.embedding();
-    const topics = this.topics(botId).map((row) => this.item(row, embedding));
+    const topics = this.leaves(botId).map((row) => this.item(row, embedding));
     const placed = new Map<string, Item[]>(), loose: Item[] = [];
     for (const row of pending) {
       const item = this.item(row, embedding), topic = this.closest(botId, item, topics);
@@ -233,12 +249,15 @@ export class TopicMemory {
     const rowsOf = (index: number) => [...(index === 0 ? supported : []), ...[...members[index]].map((key) => byId.get(key)!)];
     this.store.transaction(() => {
       this.memory.check(settings, signal, unique(written.flatMap((_, index) => rowsOf(index).flatMap(sourceRefs))));
+      let origin: string | undefined;
       written.forEach((entry, index) => {
         const rows = rowsOf(index), existing = index === 0 ? job.topic?.row : undefined;
         const topicId = this.memory.put(botId, 'topic', entry.title, entry.body, unique(rows.flatMap(sourceRefs)), existing);
         this.store.run('DELETE FROM assistant_topic_evidence WHERE topic_id=?', topicId);
         for (const row of rows) this.store.run('INSERT OR IGNORE INTO assistant_topic_evidence(topic_id,memory_id,added_at) VALUES(?,?,?)', topicId, String(row.id), now());
         this.store.run('INSERT INTO assistant_topics(topic_id,bot_id,summary) VALUES(?,?,?) ON CONFLICT(topic_id) DO UPDATE SET summary=excluded.summary', topicId, botId, entry.summary);
+        // A sub-topic remembers the topic it was split from; the background step puts it in the same container (topic-tree.ts).
+        if (index === 0) origin = topicId; else this.store.run('UPDATE assistant_topics SET split_from=? WHERE topic_id=?', origin!, topicId);
       });
       // An old observation is folded into the topic; it is not recalled any more.
       this.memory.retire(job.items.filter((item) => item.row.kind === 'observation').map((item) => String(item.row.id)));
@@ -251,7 +270,13 @@ export class TopicMemory {
   private line(row: Row): CoreTopic | undefined {
     try { return parseTopic({ title: String(row.title).slice(0, TITLE_CHARS), line: this.summary(row).slice(0, 200), ref: `memory:${row.id}` }); } catch { return; }
   }
-  private uses(row: Row): number {
+  /** A container's line: its name, the one-line summary and the size ("名称 — 一句话 · N 个子主题"); its children have no line of their own. */
+  private containerLine(row: Row, children: number): CoreTopic | undefined {
+    const stored = this.store.get('SELECT summary FROM assistant_topics WHERE topic_id=?', String(row.id))?.summary;
+    const summary = typeof stored === 'string' ? stored.replace(/\s+/g, ' ').trim().slice(0, 150) : '', count = `${children} 个子主题`;
+    try { return parseTopic({ title: String(row.title).slice(0, TITLE_CHARS), line: summary ? `${summary} · ${count}` : count, ref: `memory:${row.id}` }); } catch { return; }
+  }
+  uses(row: Row): number {
     return Number(this.store.get("SELECT COUNT(DISTINCT u.task_id) n FROM assistant_memory_uses u WHERE u.message_id IN (SELECT json_extract(value,'$.id') FROM json_each(?))", String(row.refs_json))!.n);
   }
 
@@ -262,27 +287,42 @@ export class TopicMemory {
    *  - Everything else waits until the cadence is met: at least 5 facts merged since the last patch and 6 hours since
    *    it. That patch also refreshes the lines of renamed or re-summarised topics (a line the owner edited by hand is
    *    left alone), removes lines of retired topics, and makes room for new lines by dropping the least recalled,
-   *    then oldest, topic lines (recall is counted from assistant_memory_uses). `force` skips the cadence (the
-   *    migration's seed). Returns whether a line was written.
+   *    then oldest, topic lines (recall is counted from assistant_memory_uses; a container's lines go after the
+   *    leaves'). `force` skips the cadence (the migration's seed). Returns whether a line was written.
+   *  - A container is one line (名称 — 一句话 · N 个子主题); the lines of its children are removed in the commit that
+   *    next happens, unless the owner edited them (docs/plans/user-topics.md section 8.3).
    */
   indexTopics(botId: string, force = false): boolean {
     this.store.run('INSERT OR IGNORE INTO assistant_topic_state(bot_id) VALUES(?)', botId);
     const state = this.store.get('SELECT * FROM assistant_topic_state WHERE bot_id=?', botId)!;
     const due = force || (Number(state.facts_since_patch) >= CORE_PATCH_FACTS && now() - Number(state.core_patched_at) >= CORE_PATCH_INTERVAL_MS);
     const topics = this.topics(botId), metas = new Map(this.store.all('SELECT * FROM assistant_topics WHERE bot_id=?', botId).map((row) => [String(row.topic_id), row]));
-    const fresh = topics.filter((row) => metas.get(String(row.id))?.indexed_at == null).sort((a, b) => Number(b.updated_at) - Number(a.updated_at));
+    const containers = new Set(topics.filter((row) => metas.get(String(row.id))?.role === 'container').map((row) => String(row.id)));
+    const parentOf = (row: Row) => { const parent = metas.get(String(row.id))?.parent_id; return parent && containers.has(String(parent)) && !containers.has(String(row.id)) ? String(parent) : undefined; };
+    const kids = new Map<string, Row[]>();
+    for (const row of topics) { const parent = parentOf(row); if (parent) kids.set(parent, [...(kids.get(parent) ?? []), row]); }
+    const fresh = topics.filter((row) => !parentOf(row) && metas.get(String(row.id))?.indexed_at == null).sort((a, b) => Number(b.updated_at) - Number(a.updated_at));
     if (!due && !fresh.length) return false;
     const all = new Map(this.store.all("SELECT * FROM assistant_memories WHERE bot_id=? AND kind='topic'", botId).map((row) => [`memory:${row.id}`, row]));
-    const written = new Map<string, CoreTopic>();
+    const hidden = (row?: Row) => !!row && metas.get(String(row.id))?.role === 'container' && !containers.has(String(row.id));
+    const lineOf = (row: Row) => containers.has(String(row.id)) ? this.containerLine(row, kids.get(String(row.id))?.length ?? 0) : this.line(row);
+    const written = new Map<string, CoreTopic>(), released = new Set<string>();
     return this.store.transaction(() => {
       this.core.background(botId, (content: CoreContent) => {
-        written.clear();
+        written.clear(); released.clear();
         let lines = [...content.topics];
         const fits = (candidate: CoreTopic[]) => this.core.measure({ about: content.about, topics: candidate }) <= CORE_MEMORY_TOKENS;
+        // A child's own line goes while its container has a line, unless the owner edited it.
+        const fold = (list: CoreTopic[]) => list.filter((entry) => {
+          const row = all.get(entry.ref), parent = row && parentOf(row);
+          if (!row || !parent || !list.some((other) => other.ref === `memory:${parent}`)) return true;
+          const meta = metas.get(String(row.id));
+          return !(meta?.indexed_title === entry.title && meta?.indexed_summary === entry.line);
+        });
         if (due) {
-          lines = lines.filter((entry) => all.get(entry.ref)?.status !== 'retired');
+          lines = lines.filter((entry) => all.get(entry.ref)?.status !== 'retired' && !hidden(all.get(entry.ref)));
           lines = lines.map((entry) => {
-            const row = all.get(entry.ref), meta = row && metas.get(String(row.id)), wanted = row?.status === 'active' ? this.line(row) : undefined;
+            const row = all.get(entry.ref), meta = row && metas.get(String(row.id)), wanted = row?.status === 'active' ? lineOf(row) : undefined;
             if (!wanted || !meta || meta.indexed_title !== entry.title || meta.indexed_summary !== entry.line || (wanted.title === entry.title && wanted.line === entry.line)) return entry;
             written.set(String(row!.id), wanted);
             return wanted;
@@ -290,27 +330,33 @@ export class TopicMemory {
         }
         const added = new Set<string>();
         for (const row of fresh) {
-          const entry = this.line(row);
+          const entry = lineOf(row);
           if (!entry) continue;
-          let next = [...lines, entry];
+          let next = fold([...lines, entry]);
           if (!fits(next)) {
             if (!due) continue;
             // Least recalled first, then oldest. Only a line that ranks below the new one goes (a well-recalled line is
             // never pushed out by a topic nobody has asked for yet); lines added in this patch and lines that are not topics stay.
-            const rank = (row: Row): [number, number] => [this.uses(row), Number(row.updated_at)];
+            // A container ranks by what its children are asked for, and its line goes after the lines of plain topics.
+            const rank = (item: Row): [number, number] => [containers.has(String(item.id)) ? (kids.get(String(item.id)) ?? []).reduce((sum, kid) => sum + this.uses(kid), 0) : this.uses(item), Number(item.updated_at)];
             const below = (a: [number, number], b: [number, number]) => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
             const newcomer = rank(row);
+            const container = (candidate: CoreTopic) => containers.has(String(all.get(candidate.ref)?.id));
             const victims = lines.filter((candidate) => !added.has(candidate.ref) && all.get(candidate.ref)?.status === 'active' && below(rank(all.get(candidate.ref)!), newcomer))
-              .sort((a, b) => (below(rank(all.get(a.ref)!), rank(all.get(b.ref)!)) ? -1 : 1));
+              .sort((a, b) => container(a) !== container(b) ? (container(a) ? 1 : -1) : (below(rank(all.get(a.ref)!), rank(all.get(b.ref)!)) ? -1 : 1));
             const dropped = new Set<CoreTopic>();
-            for (const victim of victims) { dropped.add(victim); next = [...lines.filter((candidate) => !dropped.has(candidate)), entry]; if (fits(next)) break; }
+            for (const victim of victims) { dropped.add(victim); next = fold([...lines.filter((candidate) => !dropped.has(candidate)), entry]); if (fits(next)) break; }
             if (!fits(next)) continue;
           }
           lines = next; added.add(entry.ref); written.set(String(row.id), entry);
         }
+        lines = fold(lines);
+        for (const entry of content.topics) { const row = all.get(entry.ref); if (row && parentOf(row) && !lines.some((kept) => kept.ref === entry.ref)) released.add(String(row.id)); }
         return { about: content.about, topics: lines };
       });
       for (const [topicId, entry] of written) this.store.run('UPDATE assistant_topics SET indexed_title=?,indexed_summary=?,indexed_at=? WHERE topic_id=?', entry.title, entry.line, now(), topicId);
+      // A topic whose line was folded away has none to refresh; it is indexed afresh if it ever leaves its container.
+      for (const topicId of released) this.store.run('UPDATE assistant_topics SET indexed_title=NULL,indexed_summary=NULL,indexed_at=NULL WHERE topic_id=?', topicId);
       if (due) this.store.run('UPDATE assistant_topic_state SET core_patched_at=?,facts_since_patch=0 WHERE bot_id=?', now(), botId);
       return written.size > 0;
     });

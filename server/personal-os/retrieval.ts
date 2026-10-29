@@ -3,7 +3,8 @@ import { clipTokens, tokens } from './token-estimate.ts';
 import { RetrievalConfig, type EmbeddingSettings } from './retrieval-config.ts';
 import { embedTexts } from './embeddings.ts';
 import { rerankDocuments } from './rerank.ts';
-import { POOL_KINDS, describe, embeddingHash, lexicalHits, pendingEmbeddings, sourceRow, storeVector, unpackVector, vectorRows, type Hit, type PendingEmbedding, type PoolKind } from './retrieval-index.ts';
+import { POOL_KINDS, describe, embeddingHash, lexicalHits, pendingEmbeddings, sourceRow, storeVector, type Hit, type PendingEmbedding, type PoolKind } from './retrieval-index.ts';
+import { vectorCache } from './vector-cache.ts';
 
 // Hybrid retrieval over one pool: assistant memories, episode archives and memory documents.
 //   BM25 (FTS5 trigram, top 50)  +  vectors (cosine, top 50)  ->  RRF (k=60, top 20)  ->  rerank (>= 0.3)
@@ -56,7 +57,11 @@ export interface RetrievalResult {
   budget: number;
   /** Stages ('embedding', 'rerank') that were configured but failed or timed out. */
   degraded: string[];
+  /** The containers (topic ids) the query was routed to; absent when it was routed nowhere. */
+  routed?: string[];
 }
+/** Where a query goes (topic-tree.ts): the containers it names and the items (`kind:refId`) that earn the routing bonus. */
+export interface Routing { topics: string[]; boost: ReadonlySet<string> }
 export interface RetrieveOptions {
   kinds?: readonly PoolKind[];
   taskId?: string;
@@ -72,6 +77,10 @@ export class Retrieval {
   readonly config: RetrievalConfig;
   /** Resolves `entry:<id>` (a run record of the conversation projection); wired by the app, which owns that store. */
   resolveEntry?: (botId: string, entryId: string) => { id: string; content: string } | undefined;
+  /** Routes a query to assistant topic containers (wired by AssistantMemory); `vector` is the query's embedding when there is one. */
+  router?: (botId: string, query: string, vector?: Float32Array) => Routing | undefined;
+  /** The row a container is shown as when opened by reference: its overview and its children (wired by AssistantMemory). */
+  expand?: (botId: string, row: Row) => Row | undefined;
   private readonly queries = new Map<string, { at: number; vector: Float32Array }>();
   private readonly reranks = new Map<string, { at: number; scores: Array<number | undefined> }>();
   /**
@@ -104,7 +113,7 @@ export class Retrieval {
       if (row) found.push(this.candidate('episode', row, 1, ['exact']));
     } else {
       const memory = sourceRow(this.store, 'memory', botId, ident);
-      if (memory && this.valid(botId, memory)) found.push(this.candidate('memory', memory, 1, ['exact']));
+      if (memory && this.valid(botId, memory)) found.push(this.candidate('memory', this.expand?.(botId, memory) ?? memory, 1, ['exact']));
       const document = sourceRow(this.store, 'document', botId, ident);
       if (document) found.push(this.candidate('document', document, 1, ['exact']));
     }
@@ -138,15 +147,8 @@ export class Retrieval {
 
   /** The closest vectors, cosine similarity in memory; vectors of changed text and invalid memories are skipped. */
   private vectorHits(botId: string, kinds: readonly PoolKind[], query: Float32Array, model: string): Hit[] {
-    const scored: Array<{ kind: PoolKind; refId: string; similarity: number; hash: string }> = [];
-    for (const kind of kinds) for (const row of vectorRows(this.store, kind, botId, model, query.length)) {
-      const vector = unpackVector(row.vector, query.length);
-      if (!vector) continue;
-      let similarity = 0;
-      for (let i = 0; i < vector.length; i++) similarity += vector[i] * query[i];
-      scored.push({ kind, refId: String(row.ref_id), similarity, hash: String(row.content_hash) });
-    }
-    scored.sort((a, b) => b.similarity - a.similarity);
+    // Above 2000 vectors the assistant's rows are kept in memory (vector-cache.ts); the scores are the same.
+    const scored = vectorCache(this.store).scan(this.store, kinds, botId, model, query);
     const accept = this.accept(botId), hits: Hit[] = [];
     for (const item of scored) {
       if (hits.length >= VECTOR_TOP) break;
@@ -166,24 +168,29 @@ export class Retrieval {
     const overall = AbortSignal.any([AbortSignal.timeout(timeout), ...(options.signal ? [options.signal] : [])]);
     const lexical = lexicalHits(this.store, botId, text, kinds, { accept: this.accept(botId) });
 
-    let vector: Hit[] = [], vectorUsed = false;
+    let vector: Hit[] = [], vectorUsed = false, queryVec: Float32Array | undefined;
     const embedding = this.config.embedding();
     if (embedding && !overall.aborted) {
       try {
         // Half of the time at most: the reranker needs the rest.
-        const queryVector = await this.queryVector(botId, embedding, text.slice(-QUERY_CHARS), AbortSignal.any([overall, AbortSignal.timeout(Math.max(1, Math.floor(timeout / 2)))]), options.taskId);
+        const queryVector = queryVec = await this.queryVector(botId, embedding, text.slice(-QUERY_CHARS), AbortSignal.any([overall, AbortSignal.timeout(Math.max(1, Math.floor(timeout / 2)))]), options.taskId);
         vector = this.vectorHits(botId, kinds, queryVector, embedding.model); vectorUsed = true;
       } catch { degraded.push('embedding'); }
     }
+    // Routing (topic-tree.ts) reuses the query vector: a container the query names, or is close to, lifts what is already found.
+    let routing: Routing | undefined;
+    if (this.router) { try { routing = this.router(botId, text.slice(-QUERY_CHARS), queryVec); } catch { /* routing is a bonus, never a failure */ } }
 
-    const fused = new Map<string, { kind: PoolKind; refId: string; row: Row; rrf: number; sources: string[]; similarity?: number }>();
+    const fused =new Map<string, { kind: PoolKind; refId: string; row: Row; rrf: number; sources: string[]; similarity?: number }>();
     for (const [source, hits] of [['bm25', lexical], ['vector', vector]] as const) hits.forEach((hit, index) => {
       const key = `${hit.kind}:${hit.refId}`, entry = fused.get(key) ?? { kind: hit.kind, refId: hit.refId, row: hit.row, rrf: 0, sources: [] };
       entry.rrf += 1 / (RRF_K + index + 1); entry.sources.push(source);
       if (source === 'vector') entry.similarity = hit.score;
       fused.set(key, entry);
     });
-    let ranked = [...fused.values()].sort((a, b) => b.rrf - a.rrf || describe(b.kind, b.row).updatedAt - describe(a.kind, a.row).updatedAt).slice(0, FUSED_TOP)
+    // The bonus is one more first-place vote, only for what BM25 or the vectors already found: it moves a member into the top 20, the reranker still decides.
+    if (routing) for (const [key, entry] of fused) if (routing.boost.has(key)) { entry.rrf += 1 / (RRF_K + 1); entry.sources.push('topic'); }
+    let ranked =[...fused.values()].sort((a, b) => b.rrf - a.rrf || describe(b.kind, b.row).updatedAt - describe(a.kind, a.row).updatedAt).slice(0, FUSED_TOP)
       .map((entry) => ({ ...this.candidate(entry.kind, entry.row, entry.rrf, entry.sources), similarity: entry.similarity }));
 
     let reranked = false;
@@ -204,7 +211,7 @@ export class Retrieval {
       } catch { degraded.push('rerank'); }
     }
     if (!reranked) ranked = ranked.filter((item) => item.sources.includes('bm25') || (item.similarity ?? 0) >= VECTOR_ONLY_MIN_SIMILARITY);
-    return { candidates: ranked.slice(0, options.limit ?? FUSED_TOP).map(({ similarity: _similarity, ...item }) => item), reranked, vector: vectorUsed, budget: reranked ? RECALL_BUDGET : RECALL_BUDGET_UNRANKED, degraded };
+    return { candidates: ranked.slice(0, options.limit ?? FUSED_TOP).map(({ similarity: _similarity, ...item }) => item), reranked, vector: vectorUsed, budget: reranked ? RECALL_BUDGET : RECALL_BUDGET_UNRANKED, degraded, ...(routing ? { routed: routing.topics } : {}) };
   }
 
   /** Items of an assistant that still need an embedding under the configured model (at most `limit`). */
@@ -223,7 +230,7 @@ export class Retrieval {
       items.forEach((item, index) => {
         const row = sourceRow(this.store, item.kind, botId, item.refId);
         if (!row || embeddingHash(item.kind, row) !== item.hash) return;
-        storeVector(this.store, item, settings.model, vectors[index], now()); stored++;
+        storeVector(this.store, item, settings.model, vectors[index], now(), botId); stored++;
       });
       return stored;
     });

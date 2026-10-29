@@ -136,6 +136,8 @@ export class Episodes {
   remove(episodeId: string) {
     this.store.run('DELETE FROM conversation_episode_search WHERE episode_id=?', episodeId);
     dropVectors(this.store, 'episode', episodeId);
+    this.store.run("DELETE FROM assistant_topic_members WHERE kind='episode' AND ref_id=?", episodeId);
+    this.store.run("DELETE FROM assistant_topic_member_scan WHERE kind='episode' AND ref_id=?", episodeId);
     this.store.run('DELETE FROM conversation_episodes WHERE id=?', episodeId);
   }
 
