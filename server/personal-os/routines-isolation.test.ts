@@ -33,7 +33,7 @@ describe("routine scheduling with isolated child execution", () => {
       ALTER TABLE agent_routines DROP COLUMN task_kind;
       ALTER TABLE agent_routines DROP COLUMN run_at;
       ALTER TABLE agent_routines DROP COLUMN deleted_at;
-      DELETE FROM schema_migrations WHERE version>=36;`);
+      DELETE FROM schema_migrations WHERE version IN (36,37);`);
     f.store.insert("agent_routines", { id: "legacy", bot_id: f.bot, name: "legacy", prompt: "saved work", schedule_kind: "interval", interval_ms: 60000, time_zone: "UTC", enabled: 1, next_due_at: at + 60000, created_at: at });
     f.store.run("INSERT INTO routine_occurrences VALUES('legacy-run','legacy',1,?,'succeeded',NULL,?)", at, at);
     f.store.run("INSERT INTO routine_occurrences VALUES('old-pending','legacy',1,?,'pending',NULL,?)", at + 1, at + 1);
@@ -57,7 +57,7 @@ describe("routine scheduling with isolated child execution", () => {
     fixtures.at(-1)!.store = upgraded;
     expect(upgraded.get("SELECT * FROM schema_migrations WHERE version=36")).toEqual(migration);
     expect(upgraded.get("SELECT deleted_at,version FROM agent_routines WHERE id=?", id)).toEqual({ deleted_at: null, version: 1 });
-    expect(upgraded.get("SELECT MAX(version) version FROM schema_migrations")?.version).toBe(37);
+    expect(upgraded.get("SELECT version FROM schema_migrations WHERE version=37")?.version).toBe(37);
     new RoutineModule(upgraded, f.agents).remove(id, 1);
     const deleted = upgraded.get("SELECT * FROM agent_routines WHERE id=?", id);
     upgraded.close();

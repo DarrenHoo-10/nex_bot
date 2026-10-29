@@ -2,7 +2,8 @@
 
 Implementation on `codex/todo-panel-design`, based on `origin/main` at
 `6e2e38410e6d659b64a890c53802669ed79e85e5`. This is a local implementation;
-no deployment, installer packaging, GitHub publication or OSS update was requested.
+the checks below record the initial local phase. The user subsequently authorized
+commit, push and deployment; see [the release record](todos-release-20261030.md).
 
 ## Behavior and persistence
 
@@ -10,7 +11,7 @@ no deployment, installer packaging, GitHub publication or OSS update was request
   All / In progress / Not started / Completed filters. Awaiting review belongs
   to In progress, and remains explicitly labelled in the list and detail.
 - Title, requirements, owner, due date, priority, steps and status are stored in
-  Core SQLite through additive migration 36. Production UI has no seeded todos
+  Core SQLite through additive migration 38 (after merging the routine migrations 36–37). Production UI has no seeded todos
   or localStorage Todo store. Unscheduled items remain accessible in all views.
 - Personal work can begin, pause, complete and reopen. Assigning an AI does not
   automatically run it: the explicit execution action uses the existing agent
@@ -33,7 +34,7 @@ No live user application or data was used.
 - Frontend and server TypeScript checks passed.
 - Core and shared Web UI production build passed (`node scripts/build-personal.mjs --core`).
 - Changed TypeScript/React files passed oxlint with warnings denied.
-- `todos.test.ts`, `calendar-model.test.ts` and `client-transport.test.ts`: 13 tests
+- `server/personal-os/todos.test.ts`, `src/personal/todo/calendar-model.test.ts` and `server/personal-os/client-transport.test.ts`: 13 tests
   passed. Covers restart persistence, completed and personal in-progress work,
   step data, version conflicts, validation, owner-only access, actual worker
   delivery with a synthetic model, repeated execution, busy-agent protection,
@@ -53,7 +54,7 @@ No live user application or data was used.
 
 ## Limits and existing failures
 
-A broader `app.test.ts` run completed with 43 passing, one skipped and one failing
+A broader `server/personal-os/app.test.ts` run completed with 43 passing, one skipped and one failing
 case. The failing `reads generic bundled skills ... keeps edited restrictions`
 assertion expects a policy without `html.render`. The identical failure was
 reproduced from a clean archive of the base commit, without the Todo changes.
