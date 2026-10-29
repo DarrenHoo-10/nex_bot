@@ -1,13 +1,13 @@
 import { CoreStore, hash, id, now, type Row } from './store.ts';
-import { clipTokens } from './token-estimate.ts';
-import { CORE_MEMORY_TOKENS, CoreMemory } from './core-memory.ts';
-import { EVERYONE, TopicAccess, type Role } from './topic-access.ts';
+import { clipTokens, tokens } from './token-estimate.ts';
+import { CORE_MEMORY_TOKENS, CoreMemory, renderCore, type CoreTopic } from './core-memory.ts';
+import { EVERYONE, TopicAccess, residentCandidates, type Role } from './topic-access.ts';
 import { embeddingHash, sourceRow, unpackVector, type PoolKind } from './retrieval-index.ts';
 import type { EmbeddingSettings } from './retrieval-config.ts';
 import type { Routing } from './retrieval.ts';
 import type { AssistantMemory } from './assistant-memory.ts';
 import { effectiveDailyBudget, memoryUsage } from './assistant-model.ts';
-import { MIGRATION_NAME, TOPIC_BODY_TOKENS, sourceRefs, type Source } from './topic-memory.ts';
+import { JOB_FACTS, MERGE_INSTRUCTION, MIGRATION_NAME, TOPIC_BODY_TOKENS, sourceRefs, type Job, type Source } from './topic-memory.ts';
 import { vectorCache } from './vector-cache.ts';
 
 // The two-level structure of an assistant's topics (docs/plans/user-topics.md sections 4, 8 and 9, phase 1).
@@ -134,7 +134,7 @@ export function forgetTopic(store: CoreStore, key: string, forgotten?: Set<strin
   store.run('DELETE FROM assistant_topic_members WHERE topic_id=?', key);
   const like = `%${key}%`;
   store.run('DELETE FROM assistant_topic_moves WHERE topic_id=? OR before_json LIKE ? OR after_json LIKE ?', key, like, like);
-  for (const table of ['user_topic_access', 'user_topic_indexed', 'topic_delegations']) store.run(`DELETE FROM ${table} WHERE topic_id=?`, key);
+  for (const table of ['user_topic_access', 'user_topic_indexed', 'topic_delegations', 'resident_shortened']) store.run(`DELETE FROM ${table} WHERE topic_id=?`, key);
 }
 /** An archive or document was forgotten or removed: it has no membership and need not be judged again. */
 export function forgetMember(store: CoreStore, kind: 'episode' | 'document', refId: string) {
@@ -146,7 +146,8 @@ export function forgetBotTree(store: CoreStore, botId: string, forgotten?: Set<s
   // The user topics it looks after are the user's, not its own: they stay (forgetBotAccess hands them on).
   for (const row of store.all("SELECT topic_id FROM assistant_topics WHERE bot_id=? AND role='container' AND owner='bot'", botId)) { eraseContainer(store, String(row.topic_id)); forgotten?.add(`memory:${row.topic_id}`); }
   store.run("UPDATE assistant_topics SET parent_id=NULL,split_from=NULL WHERE bot_id=? AND owner='bot'", botId);
-  for (const table of ['assistant_topic_members', 'assistant_topic_member_scan', 'assistant_topic_moves', 'assistant_topic_organize']) store.run(`DELETE FROM ${table} WHERE bot_id=?`, botId);
+  for (const table of ['assistant_topic_members', 'assistant_topic_member_scan', 'assistant_topic_moves']) store.run(`DELETE FROM ${table} WHERE bot_id=?`, botId);
+  store.run('DELETE FROM assistant_topic_organize WHERE bot_id IN (?,?)', botId, `user:${botId}`);
   vectorCache(store).drop(botId);
 }
 
@@ -233,11 +234,26 @@ export class TopicTree {
    */
   route(botId: string, query: string, vector?: Float32Array): Routing | undefined {
     const standing = this.readableContainers(botId).filter((row) => this.standing(botId, row)), text = normalizeTerm(query);
-    const blocked = this.blocked(botId, text);
-    if (!standing.length && !blocked.length) return;
+    const named = this.blocked(botId, text);
+    if (!standing.length && !named.length && !this.topLevelUser(botId).length) return;
     let chosen = standing.map((row) => ({ row, size: Math.max(0, ...this.terms(row).filter((term) => text.includes(term)).map((term) => term.length)) })).filter((item) => item.size > 0).sort((a, b) => b.size - a.size).slice(0, ROUTE_NAMES).map((item) => item.row);
+    let blocked = named;
     const embedding = this.memory.retrieval.config.embedding();
-    if (!chosen.length && vector && embedding) { const near = this.nearest(botId, standing, vector, ROUTE_SIMILARITY, ROUTE_MARGIN, embedding); if (near) chosen = [near]; }
+    // Nothing is named: the topic whose centre the prompt is close to, among all the top-level user topics (the ones the
+    // assistant may not read too) and its own containers, led by the margin over the second (section 8.2).
+    if (!chosen.length && !blocked.length && vector && embedding) {
+      const field: Array<{ kind: 'chosen' | 'blocked' | 'rival'; row: Row; similarity: number }> = [];
+      const aim = (row: Row, kind: 'chosen' | 'blocked' | 'rival') => {
+        const centre = this.isContainer(row) ? this.centre(botId, row, embedding, vector.length) : this.topics.vector(row, embedding);
+        if (centre?.length === vector.length) field.push({ kind, row, similarity: cosine(vector, centre) });
+      };
+      for (const row of standing) aim(row, 'chosen');
+      for (const { row, kind } of this.topLevelUser(botId)) if (!standing.some((one) => one.id === row.id)) aim(row, kind);
+      field.sort((a, b) => b.similarity - a.similarity);
+      if (field.length && field[0].similarity >= ROUTE_SIMILARITY && (field.length < 2 || field[0].similarity - field[1].similarity >= ROUTE_MARGIN)) {
+        if (field[0].kind === 'chosen') chosen = [field[0].row]; else if (field[0].kind === 'blocked') blocked = [String(field[0].row.id)];
+      }
+    }
     if (!chosen.length && !blocked.length) return;
     const boost = new Set<string>();
     for (const row of chosen) {
@@ -248,16 +264,24 @@ export class TopicTree {
     }
     return { topics: chosen.map((row) => String(row.id)), boost, blocked };
   }
+  /** The top-level user topics (the user's own one aside) with what the assistant is to them: 'blocked' when it may not read one and a steward can be named. */
+  private topLevelUser(botId: string): Array<{ row: Row; kind: 'blocked' | 'rival' }> {
+    const roles = this.memory.access.roles(botId);
+    if (!roles.size) return [];
+    return this.store.all("SELECT m.*,t.anchor,t.aliases_json,t.overview_stale FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.owner='user' AND t.parent_id IS NULL AND t.special IS NULL AND m.status='active' ORDER BY m.rowid").flatMap((row): Array<{ row: Row; kind: 'blocked' | 'rival' }> => {
+      const role = roles.get(String(row.id));
+      if (role === undefined) return [];
+      if (role !== 'none') return [{ row, kind: 'rival' as const }];
+      return this.memory.access.pickSteward(String(row.id)) !== undefined ? [{ row, kind: 'blocked' as const }] : [];
+    });
+  }
   /**
    * The top-level user topics the prompt names that the assistant may not read, and whose steward Core can name (at most two).
    * Routing looks at all of them; what the assistant is told is the name and the steward, nothing of the content (section 6).
    */
   private blocked(botId: string, text: string): string[] {
-    const roles = this.memory.access.roles(botId);
-    if (![...roles.values()].includes('none')) return [];
-    const rows = this.store.all("SELECT m.id,m.title,t.anchor,t.aliases_json,t.overview_stale FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.owner='user' AND t.parent_id IS NULL AND t.special IS NULL AND m.status='active' ORDER BY m.rowid");
-    return rows.filter((row) => roles.get(String(row.id)) === 'none' && this.memory.access.pickSteward(String(row.id)) !== undefined)
-      .map((row) => ({ id: String(row.id), size: Math.max(0, ...this.terms(row).filter((term) => text.includes(term)).map((term) => term.length)) })).filter((item) => item.size > 0).sort((a, b) => b.size - a.size).slice(0, ROUTE_NAMES).map((item) => item.id);
+    return this.topLevelUser(botId).filter((item) => item.kind === 'blocked')
+      .map(({ row }) => ({ id: String(row.id), size: Math.max(0, ...this.terms(row).filter((term) => text.includes(term)).map((term) => term.length)) })).filter((item) => item.size > 0).sort((a, b) => b.size - a.size).slice(0, ROUTE_NAMES).map((item) => item.id);
   }
 
   // ---- moves ------------------------------------------------------------------------------------------------
@@ -285,7 +309,8 @@ export class TopicTree {
   private build(botId: string, group: Omit<Group, 'members'>, children: string[], actor: 'auto' | 'model', placedBy: 'auto' | 'owner', overviewAt: number | null, owner: 'bot' | 'user' = 'bot'): string {
     const key = this.memory.put(botId, 'topic', group.name, group.overview, [], undefined, true);
     this.store.run("INSERT INTO assistant_topics(topic_id,bot_id,summary,role,anchor,aliases_json,placed_by,overview_at,overview_stale,owner,maintainer) VALUES(?,?,?,'container',?,?,?,?,?,?,?) ON CONFLICT(topic_id) DO UPDATE SET summary=excluded.summary,role='container',anchor=excluded.anchor,aliases_json=excluded.aliases_json,placed_by=excluded.placed_by,overview_at=excluded.overview_at,overview_stale=excluded.overview_stale", key, botId, group.summary, group.anchor, JSON.stringify(group.aliases), placedBy, overviewAt, overviewAt === null ? 1 : 0, owner, owner === 'user' ? botId : null);
-    if (owner === 'user') this.memory.access.create(key, botId);
+    // A user container has exactly the access of the topics in it (their overview tells what they say).
+    if (owner === 'user') { if (children.length) this.memory.access.copyEffective(children[0], key, botId); else this.memory.access.create(key, botId); }
     const before = children.map((child) => ({ id: child, parent: null, placedBy: String(this.meta(child)?.placed_by ?? 'auto') }));
     for (const child of children) this.attach(child, key, placedBy === 'owner' ? 'owner' : undefined);
     this.record(botId, key, 'create', { children: before }, this.snapshot(key), actor);
@@ -295,6 +320,8 @@ export class TopicTree {
   private dissolve(botId: string, key: string, actor: 'auto' | 'model' = 'auto') {
     const before = this.snapshot(key);
     if (!before) return;
+    // Children of a user container keep the access they had in it.
+    for (const child of before.children) if (this.memory.access.isUser(child)) this.memory.access.copyEffective(child, child, 'system');
     this.store.run('UPDATE assistant_topics SET parent_id=NULL WHERE parent_id=?', key);
     this.memory.retire([key]);
     this.record(botId, key, 'dissolve', before, {}, actor);
@@ -338,6 +365,7 @@ export class TopicTree {
     this.store.transaction(() => { this.promote(botId); this.inherit(botId); this.members(botId); this.join(botId); });
     let calls = await this.create(settings, signal);
     this.store.transaction(() => { this.mergeContainers(botId); this.dissolveSmall(botId); });
+    calls += await this.mergeLeaves(settings, signal, ORGANIZE_CALLS_PER_PASS - calls);
     calls += await this.rewrite(settings, signal, ORGANIZE_CALLS_PER_PASS - calls);
     return calls;
   }
@@ -351,6 +379,8 @@ export class TopicTree {
       if (!origin) { this.store.run('UPDATE assistant_topics SET split_from=NULL WHERE topic_id=?', String(row.id)); continue; }
       const parent = origin.parent_id ? this.store.get("SELECT * FROM assistant_memories WHERE id=? AND status='active'", String(origin.parent_id)) : undefined;
       if (!parent || !this.standing(botId, parent)) continue;
+      // A user topic only goes into a container of its own access.
+      if (meta.owner === 'user' && !this.memory.access.sameAccess(String(row.id), String(parent.id))) { this.store.run('UPDATE assistant_topics SET split_from=NULL WHERE topic_id=?', String(row.id)); continue; }
       if (meta.placed_by !== 'owner') {
         this.attach(String(row.id), String(parent.id));
         this.record(botId, String(row.id), 'contain', { parent: null, placedBy: String(meta.placed_by) }, { parent: String(parent.id), via: 'split' });
@@ -360,17 +390,23 @@ export class TopicTree {
     }
   }
 
-  /** A top-level leaf joins the container it names, or the one it is clearly closest to; two candidates mean no move. */
+  /**
+   * A top-level leaf joins the container it names, or the one it is clearly closest to; two candidates mean no move. A user
+   * topic only joins a container of the same access (a container's overview tells what its children say), and an assistant
+   * topic only one of assistant topics (4.2).
+   */
   private join(botId: string) {
-    const containers = this.containers(botId).filter((row) => row.owner === 'bot' && this.standing(botId, row));
+    const containers = this.containers(botId).filter((row) => row.special === null && this.standing(botId, row));
     if (!containers.length) return;
-    const embedding = this.memory.retrieval.config.embedding();
+    const embedding = this.memory.retrieval.config.embedding(), roles = this.memory.access.roles(botId);
     for (const { row, meta } of this.load(botId)) {
-      if (meta.parent_id || meta.placed_by === 'owner' || meta.owner !== 'bot') continue;
-      const text = normalizeTerm(`${row.title}\n${row.content}`), named = containers.filter((container) => this.terms(container).some((term) => text.includes(term)));
+      if (meta.parent_id || meta.placed_by === 'owner' || meta.special != null || (meta.owner === 'user' && roles.get(String(row.id)) !== 'steward')) continue;
+      const fitting = containers.filter((container) => container.owner === meta.owner && (meta.owner === 'bot' || this.memory.access.sameAccess(String(row.id), String(container.id))));
+      if (!fitting.length) continue;
+      const text = normalizeTerm(`${row.title}\n${row.content}`), named = fitting.filter((container) => this.terms(container).some((term) => text.includes(term)));
       let target: Row | undefined;
       if (named.length === 1) target = named[0];
-      else if (!named.length && embedding) { const vector = this.topics.vector(row, embedding); if (vector) target = this.nearest(botId, containers, vector, JOIN_SIMILARITY, JOIN_MARGIN, embedding); }
+      else if (!named.length && embedding) { const vector = this.topics.vector(row, embedding); if (vector) target = this.nearest(botId, fitting, vector, JOIN_SIMILARITY, JOIN_MARGIN, embedding); }
       if (!target) continue;
       this.attach(String(row.id), String(target.id));
       this.record(botId, String(row.id), 'contain', { parent: null, placedBy: String(meta.placed_by) }, { parent: String(target.id), via: named.length ? 'name' : 'vector' });
@@ -449,9 +485,9 @@ export class TopicTree {
   // ---- creating a container (section 4.1) ----------------------------------------------------------------------------
 
   /** The times of the originals a set of leaves rest on; a fact whose originals cannot be read counts at its own time. */
-  times(botId: string, keys: string[]): EvidenceTimes {
+  times(_botId: string, keys: string[]): EvidenceTimes {
     const result: EvidenceTimes = { days: new Set(), first: Infinity, last: 0, fellBack: false }, seen = new Map<string, number | undefined>();
-    const at = (ref: string) => { if (!seen.has(ref)) { let time: number | undefined; try { time = Number(this.memory.source(botId, ref).created_at); } catch { /* resolved below */ } seen.set(ref, Number.isFinite(time) ? time : undefined); } return seen.get(ref); };
+    const at = (ref: string) => { if (!seen.has(ref)) { let time: number | undefined; try { time = Number(this.memory.sourceAny(ref).created_at); } catch { /* resolved below */ } seen.set(ref, Number.isFinite(time) ? time : undefined); } return seen.get(ref); };
     const add = (time: number) => { result.days.add(dayOf(time)); result.first = Math.min(result.first, time); result.last = Math.max(result.last, time); };
     for (const key of keys) for (const fact of this.store.all('SELECT m.refs_json,m.created_at FROM assistant_topic_evidence e JOIN assistant_memories m ON m.id=e.memory_id WHERE e.topic_id=?', key)) {
       const times = sourceRefs(fact).map((ref) => at(ref.id));
@@ -479,38 +515,131 @@ export class TopicTree {
   }
 
   /**
-   * At most one container a pass, by one model call, when five top-level leaves are new since the last judgement and a day
-   * has passed. The call is made only when the leaves could meet the recurrence rule at all. A group the model does not
-   * anchor, that is too small, does not recur, or repeats an existing container is turned down and not sent again until
-   * something new joins the leaves.
+   * At most one container a pass, by one model call (assistant topics first, then user topics), when five top-level leaves
+   * are new since the last judgement of that kind and a day has passed. The call is made only when the leaves could meet the
+   * recurrence rule at all. A group the model does not anchor, that is too small, does not recur, or repeats an existing
+   * container is turned down and not sent again until something new joins the leaves. User topics are judged in groups of
+   * identical access, and the container takes exactly that access.
    */
   private async create(settings: Row, signal: AbortSignal): Promise<number> {
-    const botId = String(settings.bot_id), state = this.store.get('SELECT * FROM assistant_topic_organize WHERE bot_id=?', botId), checked = Number(state?.checked_at ?? 0);
-    const containers = this.containers(botId);
-    if (containers.length >= CONTAINER_LIMIT || now() - checked < CREATE_INTERVAL_MS) return 0;
-    const pool = this.load(botId).filter(({ meta }) => !meta.parent_id && meta.placed_by !== 'owner' && meta.owner === 'bot');
-    if (pool.filter(({ row }) => Number(row.created_at) > checked).length < NEW_LEAVES_FOR_CREATE) return 0;
-    const batch = pool.slice(-CREATE_BATCH);
-    if (batch.length < CONTAINER_MIN_CHILDREN) return 0;
+    if (this.containers(String(settings.bot_id)).length >= CONTAINER_LIMIT) return 0;
+    return (await this.createFor(settings, signal, 'bot')) || (await this.createFor(settings, signal, 'user')) ? 1 : 0;
+  }
+  private async createFor(settings: Row, signal: AbortSignal, kind: 'bot' | 'user'): Promise<boolean> {
+    const botId = String(settings.bot_id), slot = kind === 'bot' ? botId : `user:${botId}`;
+    const state = this.store.get('SELECT * FROM assistant_topic_organize WHERE bot_id=?', slot), checked = Number(state?.checked_at ?? 0);
+    if (now() - checked < CREATE_INTERVAL_MS) return false;
+    const containers = this.containers(botId).filter((row) => row.owner === kind), roles = this.memory.access.roles(botId);
+    const pool = this.load(botId).filter(({ row, meta }) => !meta.parent_id && meta.placed_by !== 'owner' && meta.owner === kind && meta.special == null && (kind === 'bot' || roles.get(String(row.id)) === 'steward'));
+    const groups = new Map<string, Topic[]>();
+    for (const topic of pool) { const key = kind === 'bot' ? '' : this.memory.access.signature(String(topic.row.id)); groups.set(key, [...(groups.get(key) ?? []), topic]); }
+    const fresh = (group: Topic[]) => group.filter(({ row }) => Number(row.created_at) > checked).length;
+    const group = [...groups.values()].filter((one) => fresh(one) >= NEW_LEAVES_FOR_CREATE).sort((a, b) => fresh(b) - fresh(a))[0];
+    if (!group) return false;
+    const batch = group.slice(-CREATE_BATCH);
+    if (batch.length < CONTAINER_MIN_CHILDREN) return false;
     const all = this.times(botId, batch.map(({ row }) => String(row.id)));
-    if (!recurs(all) || this.quiet(botId, all)) return 0;
+    if (!recurs(all) || this.quiet(botId, all)) return false;
     const rejected = parseList(state?.rejected_json), setHash = hash(batch.map(({ row }) => String(row.id)).sort().join(','));
-    if (rejected.includes(setHash)) return 0;
+    if (rejected.includes(setHash)) return false;
     const result = await this.memory.call(settings, 'organize', CREATE_INSTRUCTION, { topics: batch.map(({ row }) => ({ id: row.id, title: row.title, summary: this.topics.summary(row) })), containers: containers.map((row) => row.title) }, signal);
-    const group = this.parseGroup(result, batch), turnedDown = [setHash];
+    const made = this.parseGroup(result, batch), turnedDown = [setHash];
     let created = false;
     this.store.transaction(() => {
       this.memory.check(settings, signal);
-      if (group) {
-        const groupHash = hash([...group.members].sort().join(',')), taken = this.keys({ anchor: group.anchor, aliases_json: JSON.stringify(group.aliases) });
-        const times = this.times(botId, group.members);
-        const clash = containers.some((row) => [...this.keys(row), normalizeTerm(String(row.title))].some((term) => taken.has(term) || term === normalizeTerm(group.name)));
-        if (!rejected.includes(groupHash) && !clash && recurs(times) && !this.quiet(botId, times)) { this.build(botId, group, group.members, 'auto', 'auto', this.writtenAfter(group.members)); created = true; }
+      if (made) {
+        const groupHash = hash([...made.members].sort().join(',')), taken = this.keys({ anchor: made.anchor, aliases_json: JSON.stringify(made.aliases) });
+        const times = this.times(botId, made.members);
+        const clash = containers.some((row) => [...this.keys(row), normalizeTerm(String(row.title))].some((term) => taken.has(term) || term === normalizeTerm(made.name)));
+        if (!rejected.includes(groupHash) && !clash && recurs(times) && !this.quiet(botId, times)) { this.build(botId, made, made.members, 'auto', 'auto', this.writtenAfter(made.members), kind); created = true; }
         else turnedDown.push(groupHash);
       }
-      this.store.run('INSERT INTO assistant_topic_organize(bot_id,checked_at,rejected_json) VALUES(?,?,?) ON CONFLICT(bot_id) DO UPDATE SET checked_at=excluded.checked_at,rejected_json=excluded.rejected_json', botId, now(), JSON.stringify(created ? rejected : [...rejected, ...turnedDown].slice(-REJECTED_KEPT)));
+      this.store.run('INSERT INTO assistant_topic_organize(bot_id,checked_at,rejected_json) VALUES(?,?,?) ON CONFLICT(bot_id) DO UPDATE SET checked_at=excluded.checked_at,rejected_json=excluded.rejected_json', slot, now(), JSON.stringify(created ? rejected : [...rejected, ...turnedDown].slice(-REJECTED_KEPT)));
+    });
+    return true;
+  }
+
+  /**
+   * Two user topics of one name and the same access become one (10.2 item 5): the older stays and its body is rewritten with
+   * the facts of the other by one tidy-up call; evidence, members and split marks move to it, the other is retired, and the move
+   * can be reverted. Topics whose access differs, or that the owner placed, are left alone.
+   */
+  private async mergeLeaves(settings: Row, signal: AbortSignal, room: number): Promise<number> {
+    if (room < 1) return 0;
+    const botId = String(settings.bot_id), roles = this.memory.access.roles(botId), byName = new Map<string, Topic[]>();
+    for (const topic of this.load(botId)) {
+      const name = normalizeTerm(String(topic.row.title));
+      if (topic.meta.owner !== 'user' || topic.meta.special != null || topic.meta.placed_by === 'owner' || roles.get(String(topic.row.id)) !== 'steward' || name.length < 2) continue;
+      byName.set(name, [...(byName.get(name) ?? []), topic]);
+    }
+    let pair: [Topic, Topic] | undefined;
+    for (const same of byName.values()) for (let i = 0; i < same.length && !pair; i++) for (let j = i + 1; j < same.length && !pair; j++) if (this.memory.access.sameAccess(String(same[i].row.id), String(same[j].row.id))) pair = [same[i], same[j]];
+    if (!pair) return 0;
+    const [keep, drop] = pair, valid = (row: Row) => this.memory.valid(sourceRefs(row), String(row.bot_id));
+    const own = this.topics.evidence(String(keep.row.id)).filter(valid), moved = this.topics.evidence(String(drop.row.id)).filter(valid);
+    const job: Job = { topic: this.topics.item(keep.row), items: moved.slice(0, JOB_FACTS).map((row) => this.topics.item(row)), user: true };
+    const input = { topic: { id: keep.row.id, title: keep.row.title, summary: this.topics.summary(keep.row), body: keep.row.content }, facts: job.items.map(({ row }) => ({ id: row.id, kind: row.kind, title: row.title, content: row.content })) };
+    const written = this.topics.parse(await this.memory.call(settings, 'consolidate', MERGE_INSTRUCTION, input, signal), job);
+    if (written.length !== 1) throw new Error('合并同名主题应只得到一个主题');
+    const body = clipTokens(written[0].body, TOPIC_BODY_TOKENS).trimEnd();
+    this.store.transaction(() => {
+      const refs = [...new Map([...own, ...moved].flatMap(sourceRefs).map((ref) => [ref.id, ref])).values()];
+      this.memory.check(settings, signal, refs);
+      const row = (key: unknown) => this.store.get('SELECT * FROM assistant_memories WHERE id=?', String(key))!;
+      const was = { keep: { ...row(keep.row.id), summary: this.topics.summary(keep.row) }, drop: { ...row(drop.row.id), summary: this.topics.summary(drop.row), parent: drop.meta.parent_id }, evidence: moved.map((one) => String(one.id)) };
+      const members = this.store.all('SELECT kind,ref_id FROM assistant_topic_members WHERE topic_id=?', String(drop.row.id)), splits = this.store.all('SELECT topic_id FROM assistant_topics WHERE split_from=?', String(drop.row.id)).map((one) => String(one.topic_id));
+      this.memory.put(botId, 'topic', written[0].title, body, refs, row(keep.row.id), false, true);
+      this.store.run('UPDATE assistant_topics SET summary=?,maintainer=? WHERE topic_id=?', written[0].summary, botId, String(keep.row.id));
+      for (const one of moved) this.store.run('INSERT OR IGNORE INTO assistant_topic_evidence(topic_id,memory_id,added_at) VALUES(?,?,?)', String(keep.row.id), String(one.id), now());
+      this.store.run('DELETE FROM assistant_topic_evidence WHERE topic_id=?', String(drop.row.id));
+      for (const one of members) this.store.run('INSERT OR IGNORE INTO assistant_topic_members(topic_id,kind,ref_id,bot_id,placed_by,added_at) SELECT ?,kind,ref_id,bot_id,placed_by,added_at FROM assistant_topic_members WHERE topic_id=? AND kind=? AND ref_id=?', String(keep.row.id), String(drop.row.id), String(one.kind), String(one.ref_id));
+      this.store.run('DELETE FROM assistant_topic_members WHERE topic_id=?', String(drop.row.id));
+      this.store.run('UPDATE assistant_topics SET split_from=? WHERE split_from=?', String(keep.row.id), String(drop.row.id));
+      if (drop.meta.parent_id) { this.attach(String(drop.row.id), null); this.stale(drop.meta.parent_id); }
+      this.memory.retire([String(drop.row.id)]);
+      this.record(botId, String(keep.row.id), 'merge', { leaves: true, keep: was.keep, drop: was.drop, evidence: was.evidence, members, splits }, { title: written[0].title }, 'auto');
     });
     return 1;
+  }
+
+  // ---- a resident topic that outgrew a core memory (section 8.3) --------------------------------------------------------------
+
+  /**
+   * Keeps the core memory of one assistant within its cap when a resident topic it reads has grown. First the index lines go, in
+   * the order they always go (recalled least, oldest; plain topics before containers); if that is not enough the topics made
+   * resident last are shown as a single line, newest first, until it fits. What is shown shortened is recorded, and the full
+   * overview returns as soon as it fits again. Nothing is cut inside a line.
+   */
+  fitResidents(botId: string) {
+    const core = this.topics.core, candidates = residentCandidates(this.store, botId);
+    const stored = new Set(this.store.all('SELECT topic_id FROM resident_shortened WHERE bot_id=?', botId).map((row) => String(row.topic_id)));
+    if (!candidates.length && !stored.size) return;
+    const workspace = core.read('workspace').content, content = core.read('bot', botId).content;
+    const used = (lines: CoreTopic[], short: ReadonlySet<string>) => tokens(renderCore({ about: content.about, topics: lines }, workspace, 99999, candidates.map((one) => short.has(String(one.id)) ? { ...one, line: one.short } : one)));
+    let lines = content.topics;
+    const short = new Set<string>();
+    if (used(lines, short) > CORE_MEMORY_TOKENS) {
+      for (const victim of this.topics.trimOrder(botId, lines)) { lines = lines.filter((line) => line !== victim); if (used(lines, short) <= CORE_MEMORY_TOKENS) break; }
+      if (used(lines, short) > CORE_MEMORY_TOKENS) for (const one of [...candidates].sort((a, b) => Number(b.at) - Number(a.at))) { short.add(String(one.id)); if (used(lines, short) <= CORE_MEMORY_TOKENS) break; }
+    }
+    for (const one of candidates) {
+      if (short.has(String(one.id)) === stored.has(String(one.id))) continue;
+      if (short.has(String(one.id))) this.store.run('INSERT OR IGNORE INTO resident_shortened(topic_id,bot_id,since) VALUES(?,?,?)', String(one.id), botId, now());
+      else this.store.run('DELETE FROM resident_shortened WHERE topic_id=? AND bot_id=?', String(one.id), botId);
+      this.record(botId, String(one.id), 'resident', { shortened: stored.has(String(one.id)) }, { shortened: short.has(String(one.id)) }, 'auto');
+    }
+    this.store.run('DELETE FROM resident_shortened WHERE bot_id=? AND topic_id NOT IN (SELECT value FROM json_each(?))', botId, JSON.stringify(candidates.map((one) => String(one.id))));
+    // (When even the one-line forms do not fit, the lines stay: what the assistant itself wrote in its core memory is never cut.)
+    if (lines.length !== content.topics.length && used(lines, short) <= CORE_MEMORY_TOKENS) {
+      const gone = new Set(content.topics.filter((line) => !lines.includes(line)).map((line) => line.ref));
+      core.background(botId, (current) => ({ about: current.about, topics: current.topics.filter((line) => !gone.has(line.ref)) }));
+    }
+  }
+  /** A resident user topic was written: every assistant that reads it checks that its core memory still fits. */
+  fitFor(key: string) {
+    const meta = this.meta(key);
+    if (!meta || meta.owner !== 'user' || Number(meta.resident) !== 1) return;
+    for (const bot of this.memory.access.readers(key)) this.fitResidents(bot);
   }
 
   // ---- merging and dissolving (section 4.3) --------------------------------------------------------------------------
@@ -603,7 +732,7 @@ export class TopicTree {
     return this.store.transaction(() => {
       this.memory.settings(botId);
       if (op === 'group') return this.group(botId, args);
-      if (op === 'move') return this.place(botId, args);
+      if (op === 'move') return this.place(botId, args, ctx);
       if (op === 'rename') return this.rename(botId, args);
       if (op === 'merge') {
         const drop = this.ownContainer(botId, args.topic), keep = this.ownContainer(botId, args.into);
@@ -632,6 +761,8 @@ export class TopicTree {
     const leaves = keys.map((key) => this.ownLeaf(botId, key));
     if (leaves.some(({ meta }) => meta.parent_id)) throw new Error('主题已在容器中，请先用 move 取出');
     if (new Set(leaves.map(({ meta }) => meta.owner)).size > 1) throw new Error('用户主题和助手主题不能放进同一个容器');
+    // A container's overview tells what its children say: only topics that are seen by the same assistants go together.
+    if (leaves[0].meta.owner === 'user' && leaves.some(({ row }) => !this.memory.access.sameAccess(String(leaves[0].row.id), String(row.id)))) throw new Error('访问范围不同的用户主题不能放进同一个容器；请先让用户明确两边的访问');
     const name = clean(args.name, NAME_CHARS), anchor = clean(args.anchor, 60);
     if (!name) throw new Error('容器须有名称（name）');
     if (normalizeTerm(anchor).length < 2) throw new Error('容器须围绕一个具体对象（anchor）；没有锚点请先问用户范围');
@@ -643,11 +774,18 @@ export class TopicTree {
     const key = this.build(botId, { name, anchor, aliases, summary: clean(args.summary, SUMMARY_CHARS) || name, overview }, keys, 'model', 'owner', null, leaves[0].meta.owner === 'user' ? 'user' : 'bot');
     return { created: key, children: keys };
   }
-  private place(botId: string, args: Record<string, unknown>) {
+  private place(botId: string, args: Record<string, unknown>, ctx?: { taskId: string }) {
     const { row, meta } = this.ownLeaf(botId, args.topic), to = args.to === null || args.to === undefined || args.to === '' ? undefined : this.ownContainer(botId, args.to);
     if (to && meta.parent_id === to.id) throw new Error('主题已在该容器中');
     if (!to && !meta.parent_id) throw new Error('主题已在顶层');
     if (to && to.owner !== meta.owner) throw new Error('用户主题和助手主题不能放进同一个容器');
+    if (to && meta.owner === 'user') {
+      // The user's own topic is open to everyone: a topic put there is seen by everyone, which only the user's words can decide.
+      if (to.special !== null) { if (!ctx) throw new Error('缺少任务信息，不能放进「关于我」'); this.memory.access.assertUserTask(ctx.taskId); this.memory.access.assertQuote(ctx.taskId, args.quote); }
+      else if (!this.memory.access.sameAccess(String(row.id), String(to.id))) throw new Error('访问范围不同的用户主题不能放进同一个容器；请先让用户明确两边的访问');
+    }
+    // A user topic that leaves its container keeps the access it had in it.
+    if (meta.owner === 'user' && meta.parent_id) this.memory.access.copyEffective(String(row.id), String(row.id), 'system');
     const before = { parent: meta.parent_id ?? null, placedBy: String(meta.placed_by) };
     this.attach(String(row.id), to ? String(to.id) : null, 'owner');
     this.record(botId, String(row.id), to ? 'contain' : 'release', before, { parent: to ? String(to.id) : null, via: 'owner' }, 'model');
@@ -736,9 +874,12 @@ export class TopicTree {
     if (!role) throw new Error('role 须为 steward（负责）或 reader（可读）');
     const before = access.own(key, principal);
     access.set(key, principal, role, botId, ctx.taskId, quote);
+    access.propagate(key, principal);
     // A topic always has someone who looks after it.
     const successor = access.ensureSteward(key);
     this.pruneLines(key);
+    // Whoever gained or lost a resident topic has a core memory to fit again.
+    for (const bot of principal === EVERYONE ? access.activeBots() : [principal]) this.fitResidents(bot);
     const who = principal === EVERYONE ? '所有助手' : access.name(principal), title = String(row.title);
     const text = this.line(role, who, title) + (successor ? `（「${title}」现由 ${access.name(successor)} 负责）` : '');
     const move = this.record(botId, key, op, { principal, role: before ?? null }, { principal, role, quote }, 'model');
@@ -769,7 +910,9 @@ export class TopicTree {
       }
     }
     const before = Number(row.resident) === 1;
-    this.store.run('UPDATE assistant_topics SET resident=? WHERE topic_id=?', args.on ? 1 : 0, key);
+    this.store.run('UPDATE assistant_topics SET resident=?,resident_at=? WHERE topic_id=?', args.on ? 1 : 0, args.on ? now() : null, key);
+    if (!args.on) this.store.run('DELETE FROM resident_shortened WHERE topic_id=?', key);
+    for (const bot of access.readers(key)) this.fitResidents(bot);
     const move = this.record(botId, key, 'resident', { on: before }, { on: args.on, quote }, 'model');
     this.notify?.(botId, ctx.taskId, args.on ? `已将「${row.title}」设为常驻` : `已取消「${row.title}」的常驻`, `topic-access:${move}`);
     return { resident: key, on: args.on, move };
@@ -781,6 +924,7 @@ export class TopicTree {
     if (!move) throw new Error('变动不存在');
     if (move.reverted_by !== null || move.action === 'revert') throw new Error('该变动已撤销或不可撤销');
     const key = String(move.topic_id), before = JSON.parse(String(move.before_json)), action = String(move.action);
+    if (action === 'resident' && 'shortened' in before) throw new Error('这是核心记忆放不下时的自动缩写，不能撤销');
     if (['grant', 'revoke', 'resident', 'promote'].includes(action) && action !== 'promote') {
       // Undoing a change of access changes access: it needs the user's words too.
       if (!ctx) throw new Error('缺少任务信息，不能修改访问权限');
@@ -802,6 +946,18 @@ export class TopicTree {
       const state = this.store.get('SELECT rejected_json FROM assistant_topic_organize WHERE bot_id=?', botId), group = hash((before.children as Array<{ id: string }>).map((child) => child.id).sort().join(','));
       this.store.run('INSERT INTO assistant_topic_organize(bot_id,checked_at,rejected_json) VALUES(?,0,?) ON CONFLICT(bot_id) DO UPDATE SET rejected_json=excluded.rejected_json', botId, JSON.stringify([...parseList(state?.rejected_json), group].slice(-REJECTED_KEPT)));
     } else if (action === 'dissolve') this.reactivate(botId, key, before as Snapshot);
+    else if (action === 'merge' && before.leaves) {
+      // Two topics of one name, made one: the second is back with its facts, members and place, the first as it was.
+      const keep = before.keep as Row, drop = before.drop as Row, rowK = this.store.get('SELECT * FROM assistant_memories WHERE id=?', String(keep.id)), rowD = this.store.get('SELECT * FROM assistant_memories WHERE id=?', String(drop.id));
+      if (!rowK || !rowD) throw new Error('主题已被遗忘，无法恢复');
+      this.memory.put(botId, 'topic', String(drop.title), String(drop.content), JSON.parse(String(drop.refs_json)), rowD, false, true);
+      this.memory.put(botId, 'topic', String(keep.title), String(keep.content), JSON.parse(String(keep.refs_json)), rowK, false, true);
+      for (const one of [keep, drop]) this.store.run("UPDATE assistant_topics SET summary=?,placed_by='owner' WHERE topic_id=?", String(one.summary), String(one.id));
+      for (const fact of before.evidence as string[]) { this.store.run('DELETE FROM assistant_topic_evidence WHERE topic_id=? AND memory_id=?', String(keep.id), fact); this.store.run('INSERT OR IGNORE INTO assistant_topic_evidence(topic_id,memory_id,added_at) VALUES(?,?,?)', String(drop.id), fact, now()); }
+      for (const member of before.members as Array<{ kind: string; ref_id: string }>) this.store.run('UPDATE assistant_topic_members SET topic_id=? WHERE topic_id=? AND kind=? AND ref_id=?', String(drop.id), String(keep.id), member.kind, member.ref_id);
+      for (const split of before.splits as string[]) this.store.run('UPDATE assistant_topics SET split_from=? WHERE topic_id=?', String(drop.id), split);
+      if (drop.parent && this.containers(botId).some((row) => row.id === drop.parent)) { this.attach(String(drop.id), String(drop.parent)); this.stale(drop.parent); }
+    }
     else if (action === 'merge') {
       const keep = before.keep as Snapshot, drop = before.drop as Snapshot, folded = String(before.dropId);
       if (!this.store.get("SELECT 1 n FROM assistant_memories WHERE id=? AND status='retired'", folded)) throw new Error('被并入的容器已不存在');
@@ -820,7 +976,11 @@ export class TopicTree {
     } else if (action === 'grant' || action === 'revoke') {
       if (before.role === null) this.memory.access.unset(key, String(before.principal)); else this.memory.access.set(key, String(before.principal), before.role as Role, botId, ctx!.taskId, String(args.quote));
       this.memory.access.ensureSteward(key); this.pruneLines(key);
-    } else if (action === 'resident') this.store.run('UPDATE assistant_topics SET resident=? WHERE topic_id=?', before.on ? 1 : 0, key);
+    } else if (action === 'resident') {
+      if ('shortened' in before) throw new Error('这是核心记忆放不下时的自动缩写，不能撤销');
+      this.store.run('UPDATE assistant_topics SET resident=? WHERE topic_id=?', before.on ? 1 : 0, key);
+      for (const bot of this.memory.access.readers(key)) this.fitResidents(bot);
+    }
     else if (action === 'promote') {
       // Only while the topic is still visible to the one assistant it was made visible to.
       const rows = this.memory.access.rows(key);
@@ -860,6 +1020,7 @@ export class TopicTree {
 export function forgetBotAccess(store: CoreStore, botId: string) {
   store.run('DELETE FROM user_topic_access WHERE principal=?', botId);
   store.run('DELETE FROM user_topic_indexed WHERE bot_id=?', botId);
+  store.run('DELETE FROM resident_shortened WHERE bot_id=?', botId);
   store.run('DELETE FROM topic_delegations WHERE target_bot_id=? OR task_id IN (SELECT id FROM tasks WHERE bot_id=?)', botId, botId);
   const access = new TopicAccess(store);
   for (const row of store.all("SELECT t.topic_id FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.owner='user' AND t.parent_id IS NULL AND m.status='active'")) access.ensureSteward(String(row.topic_id), botId);

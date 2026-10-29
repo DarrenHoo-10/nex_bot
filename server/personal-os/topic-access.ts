@@ -72,10 +72,37 @@ export class TopicAccess {
   readers(topic: string): string[] { const g = graph(this.store); return g ? this.activeBots().filter((bot) => roleIn(g, topic, bot) !== 'none') : []; }
   /** The top-level topic above this one (or itself). */
   top(topic: string): string { let key = topic; for (let i = 0; i < 3; i++) { const parent = this.store.get('SELECT parent_id FROM assistant_topics WHERE topic_id=?', key)?.parent_id; if (!parent) break; key = String(parent); } return key; }
-  /** The same access for everyone, present and future: what two topics must have in common before they may be merged. */
+  /** The same access for everyone, present and future: what two topics must have in common before they may be merged or share a container. */
   sameAccess(a: string, b: string): boolean {
     const g = graph(this.store);
     return !!g && [...this.activeBots(), NEWCOMER].every((bot) => roleIn(g, a, bot) === roleIn(g, b, bot));
+  }
+  /** A line that is the same for two topics exactly when their access is (every assistant, and the ones to come). */
+  signature(topic: string): string {
+    const g = graph(this.store);
+    return g ? [...this.activeBots(), NEWCOMER].map((bot) => roleIn(g, topic, bot)).join(',') : '';
+  }
+  /**
+   * Gives `to` exactly the effective access of `from` as rows of its own: the '*' row for the assistants to come, and a row for
+   * each assistant whose role differs from it. A container made over topics of one access takes it this way (section 4.3), and a
+   * topic that leaves its container keeps the access it had in it.
+   */
+  copyEffective(from: string, to: string, by: string) {
+    const g = graph(this.store);
+    if (!g) return;
+    const base = roleIn(g, from, NEWCOMER), roles = this.activeBots().map((bot) => [bot, roleIn(g, from, bot)] as const);
+    this.store.run('DELETE FROM user_topic_access WHERE topic_id=?', to);
+    if (base !== 'none') this.set(to, EVERYONE, base, by);
+    for (const [bot, role] of roles) if (role !== base) this.set(to, bot, role, by);
+    this.changed();
+  }
+  /** A change on a container reaches the children that have a row of their own for the same principal (so they keep the container's access). */
+  propagate(topic: string, principal: string) {
+    const role = this.own(topic, principal);
+    for (const child of this.store.all('SELECT topic_id FROM assistant_topics WHERE parent_id=?', topic)) {
+      if (this.own(String(child.topic_id), principal) === undefined) continue;
+      if (role === undefined) this.unset(String(child.topic_id), principal); else this.set(String(child.topic_id), principal, role, 'system');
+    }
   }
   /** The steward Core names for a question about the topic: the one that wrote it last, else the one made steward last. */
   pickSteward(topic: string): string | undefined {
@@ -160,12 +187,23 @@ export class TopicAccess {
 }
 
 /** The user topics an assistant carries in its core memory because the user made them resident (the user's own topic is the shared "about" block already). */
-export function residentTopics(store: CoreStore, botId: string): Array<{ title: string; text: string }> {
+export function residentTopics(store: CoreStore, botId: string): ResidentItem[] {
+  const short = new Set(store.all('SELECT topic_id FROM resident_shortened WHERE bot_id=?', botId).map((row) => String(row.topic_id)));
+  return residentCandidates(store, botId).map(({ short: line, ...item }) => short.has(String(item.id)) ? { ...item, line } : item);
+}
+/** Every resident topic the assistant reads, with the one line it is shown as when shortened. */
+export function residentCandidates(store: CoreStore, botId: string): Array<ResidentItem & { short: string }> {
   const seen = visibility(store, botId);
   if (!seen?.readable.length) return [];
   const readable = new Set(seen.readable);
-  return store.all("SELECT m.id,m.title,m.content FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.owner='user' AND t.resident=1 AND t.special IS NULL AND m.status='active' ORDER BY m.rowid").filter((row) => readable.has(String(row.id))).map((row) => ({ title: String(row.title), text: String(row.content) }));
+  return store.all("SELECT m.id,m.title,m.content,t.summary,t.resident_at FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.owner='user' AND t.resident=1 AND t.special IS NULL AND m.status='active' ORDER BY m.rowid").filter((row) => readable.has(String(row.id))).map((row) => ({
+    id: String(row.id), title: String(row.title), text: String(row.content), at: Number(row.resident_at ?? 0),
+    // Shown shortened (section 8.3): one line, as the index lines are.
+    short: `${String(row.title)} — ${String(row.summary).replace(/\s+/g, ' ').trim() || String(row.content).replace(/\s+/g, ' ').slice(0, 60)} (memory:${String(row.id)})`,
+  }));
 }
+/** A resident topic as the core memory carries it: its overview, or (`line`) the one line it is shortened to. */
+export interface ResidentItem { id?: string; title: string; text: string; at?: number; line?: string }
 
 /**
  * The input of an episode archive without what came back from another assistant about a topic this one may not read

@@ -19,7 +19,7 @@ import { vectorCache } from './vector-cache.ts';
 // (scripted tool calls), a fake embedding service; nothing leaves the machine.
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
-interface Fixture { root: string; app: App; chat: Awaited<ReturnType<typeof startFakePersonalMemory>>; fake: Awaited<ReturnType<typeof startFakeRetrieval>>; a: string; b: string; c: string }
+interface Fixture { create?: (input: { topics: Array<{ id: string; title: string }> }) => Record<string, unknown>; root: string; app: App; chat: Awaited<ReturnType<typeof startFakePersonalMemory>>; fake: Awaited<ReturnType<typeof startFakeRetrieval>>; a: string; b: string; c: string }
 const fixtures: Fixture[] = [];
 const DAY = 86_400_000;
 
@@ -34,7 +34,7 @@ async function fixture(): Promise<Fixture> {
     if (body.stream) return undefined;
     const system = String((body.messages as Array<{ role: string; content: string }>).find((message) => message.role === 'system')?.content ?? ''), input = JSON.parse(String((body.messages as Array<{ content: string }>).at(-1)?.content ?? '{}'));
     const answer = (value: unknown) => ({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }], usage: { prompt_tokens: 400, completion_tokens: 80 } });
-    if (system.includes('组建容器')) return answer({ anchor: '', name: '', aliases: [], summary: '', overview: '', members: [] });
+    if (system.includes('组建容器')) return answer(fixtures.find((one) => one.chat === chat)?.create?.(input) ?? { anchor: '', name: '', aliases: [], summary: '', overview: '', members: [] });
     if (system.includes('重写容器概要')) return answer({ name: input.container.title, aliases: input.container.aliases, summary: '概要', overview: input.children.map((child: { title: string }) => child.title).join('；') });
     return undefined;
   });
@@ -276,7 +276,9 @@ describe('inheritance, override and the user\'s own topic', () => {
     const f = await fixture(), { app, a, b } = f;
     app.runtime.memory.core.replace('workspace', '', { about: ['称呼：小明'], topics: [] }, 0);
     const me = tree(app).aboutMe(a), style = userTopic(app, a, '沟通偏好', { body: '喜欢简短回答' }), health = userTopic(app, a, '健康状况', { body: '对花生过敏' });
-    for (const child of [style, health]) tree(app).run(a, { op: 'move', topic: child.key, to: me });
+    // Put in the user's own topic, a topic is seen by everyone: only on the user's words.
+    expect(() => tree(app).run(a, { op: 'move', topic: style.key, to: me })).toThrow(/任务/);
+    for (const [name, child] of [['沟通偏好', style], ['健康状况', health]] as const) { const text = `把${name}放进关于我`; tree(app).run(a, { op: 'move', topic: child.key, to: me, quote: text }, { taskId: task(app, a, text) }); }
     expect(tree(app).aboutMe(a)).toBe(me);
     expect(meta(app, me)).toMatchObject({ special: 'about_me', resident: 1, owner: 'user', role: 'container' });
     // Every assistant reads it, the later ones too; the sub-topics follow.
@@ -497,5 +499,201 @@ describe('retrieval scope, the map and forgetting', () => {
     expect(app.store.get('SELECT COUNT(*) n FROM user_topic_access WHERE principal=?', b)!.n).toBe(0);
     expect(app.store.get('SELECT COUNT(*) n FROM assistant_topic_moves WHERE bot_id=?', b)!.n).toBe(0);
     expect(personal(app).topics.topics(a).map((row) => row.id)).toContain(shared.key);
+  }, 90000);
+});
+
+// ---- containers and merges over user topics, semantic hints, residents that grow ----------------------------------------------
+
+const organize = (f: Fixture, bot: string) => tree(f.app).organize(personal(f.app).settings(bot), new AbortController().signal);
+const containersOf = (app: App) => app.store.all("SELECT m.*,t.anchor,t.parent_id,t.owner FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.role='container' AND m.status='active' AND t.special IS NULL ORDER BY m.rowid");
+const childrenOf = (app: App, key: string) => app.store.all('SELECT topic_id FROM assistant_topics WHERE parent_id=? ORDER BY rowid', key).map((row) => String(row.topic_id));
+const rolesOf = (app: App, key: string, bots: string[]) => bots.map((bot) => roleOf(app, key, bot));
+/** Lets `bot` read `topic` on the user's words, through the tool. */
+function share(app: App, by: string, topic: string, who: string, role: 'reader' | 'steward' = 'reader') {
+  const text = `让${counter++}号助手也${role === 'reader' ? '看' : '管'}这个主题吧`;
+  tree(app).run(by, { op: 'grant', topic, bot: who, role, quote: text }, { taskId: task(app, by, text) });
+}
+
+describe('containers over user topics', () => {
+  it('groups, joins and dissolves in the steward\'s pass, among topics of identical access only, and gives the container exactly that access', async () => {
+    const f = await fixture(), { app, chat, a, b, c } = f;
+    enable(app, a, b); await pump(app, 3);
+    const created: Array<{ topics: string[] }> = [];
+    f.create = (input) => { if (input.topics.some((topic) => topic.title.startsWith('做法'))) return { anchor: '', name: '', aliases: [], summary: '', overview: '', members: [] }; created.push({ topics: input.topics.map((topic) => topic.title) }); return { anchor: '运维体系', name: '运维体系', aliases: ['ops'], summary: '运维相关', overview: input.topics.map((topic) => topic.title).join('；'), members: input.topics.map((topic) => topic.id) }; };
+    const mine = [1, 2, 3, 4, 5].map((n) => userTopic(app, a, `运维笔记${n}`)), shared = [1, 2, 3].map((n) => userTopic(app, a, `共享笔记${n}`));
+    for (const one of shared) share(app, a, one.key, b);
+    // Topics of the assistant's own (never mixed in) and the user's own topic (never grouped), both with enough to tempt.
+    for (let n = 1; n <= 5; n++) seed(app, a, `做法${n}`, { kind: 'experience' });
+    const me = tree(app).aboutMe(a), style = userTopic(app, a, '沟通偏好');
+    tree(app).run(a, { op: 'move', topic: style.key, to: me, quote: '把沟通偏好放进关于我吧' }, { taskId: task(app, a, '把沟通偏好放进关于我吧') });
+    const before = chat.requests.length;
+    // The assistant topics are judged first (no anchor: nothing); the user topics follow in the next pass.
+    await organize(f, a);
+    expect(containersOf(app)).toHaveLength(0);
+    expect(await organize(f, a)).toBeGreaterThanOrEqual(1);
+    const [made] = containersOf(app);
+    expect(containersOf(app)).toHaveLength(1);
+    // Only the five of one access; the shared ones, the assistant's topics and the user's own topic are not in it or its input.
+    expect(made).toMatchObject({ owner: 'user', anchor: '运维体系' }); expect(childrenOf(app, String(made.id))).toEqual(mine.map((one) => one.key));
+    expect(created.at(-1)!.topics.sort()).toEqual(mine.map((_, n) => `运维笔记${n + 1}`).sort());
+    expect(rolesOf(app, String(made.id), [a, b, c])).toEqual(['steward', 'none', 'none']);
+    expect(access(app).sameAccess(String(made.id), mine[0].key)).toBe(true);
+    for (const one of shared) expect(meta(app, one.key).parent_id).toBeNull();
+    expect(meta(app, style.key).parent_id).toBe(me);
+    expect(chat.requests.length).toBeGreaterThan(before);
+    // A new topic joins by its name when its access is the same, and not when it is not.
+    const same = userTopic(app, a, '运维体系手册'), other = userTopic(app, a, '运维体系值班表');
+    share(app, a, other.key, c);
+    await organize(f, a);
+    expect(meta(app, same.key).parent_id).toBe(made.id); expect(meta(app, other.key).parent_id).toBeNull();
+    expect(roleOf(app, other.key, c)).toBe('reader');
+    // A topic made to look like the others, but seen by one more assistant than the container, stays out too.
+    // Dissolved below two children: the children go to the top level with the access they had.
+    for (const one of [mine[0], mine[1], mine[2], mine[3], mine[4]]) app.store.run("UPDATE agent_messages SET content='[已遗忘]' WHERE id=?", one.refs[0].id);
+    await organize(f, a);
+    expect(containersOf(app).filter((row) => row.owner === 'user')).toHaveLength(0);
+    expect(meta(app, same.key).parent_id).toBeNull(); expect(rolesOf(app, same.key, [a, b, c])).toEqual(['steward', 'none', 'none']);
+  }, 120000);
+
+  it('keeps the access of a topic when it leaves its container, and refuses to put one into a container of another access', async () => {
+    const f = await fixture(), { app, a, b } = f;
+    const kids = [1, 2, 3].map((n) => userTopic(app, a, `项目${n}`)), outsider = userTopic(app, a, '项目外');
+    const box = tree(app).run(a, { op: 'group', topics: kids.map((one) => one.key), name: '项目', anchor: '项目对象' }) as { created: string };
+    expect(rolesOf(app, box.created, [a, b])).toEqual(['steward', 'none']);
+    share(app, a, outsider.key, b);
+    expect(() => tree(app).run(a, { op: 'move', topic: outsider.key, to: box.created })).toThrow(/访问范围不同/);
+    expect(() => tree(app).run(a, { op: 'group', topics: [userTopic(app, a, '项目四').key, outsider.key, userTopic(app, a, '项目五').key], name: '另一个', anchor: '另一个对象' })).toThrow(/访问范围不同/);
+    // Granting on the container reaches what is in it; leaving keeps what the topic had there.
+    share(app, a, box.created, b);
+    expect(rolesOf(app, kids[0].key, [b])).toEqual(['reader']);
+    tree(app).run(a, { op: 'move', topic: kids[0].key });
+    expect(rolesOf(app, kids[0].key, [a, b])).toEqual(['steward', 'reader']);
+    // The container with two left is no container; both stay as they were seen.
+    tree(app).run(a, { op: 'move', topic: kids[1].key });
+    expect(containersOf(app).filter((row) => row.owner === 'user')).toHaveLength(0);
+    expect(rolesOf(app, kids[2].key, [a, b])).toEqual(['steward', 'reader']);
+  }, 60000);
+});
+
+describe('user topics of the same name', () => {
+  it('merges two once their access is identical: the older stays, the facts and members move, one tidy-up call, revertible; different access never', async () => {
+    const f = await fixture(), { app, chat, a, b } = f;
+    enable(app, a, b); await pump(app, 3);
+    const first = userTopic(app, a, '投资', { body: '定投指数基金' }), second = userTopic(app, a, '投资', { body: '每月第一周定投' });
+    share(app, a, second.key, b);
+    const archive = 'archive-' + id();
+    app.store.run("INSERT INTO assistant_topic_members(topic_id,kind,ref_id,bot_id,placed_by,added_at) VALUES(?,?,?,?,'auto',?)", second.key, 'episode', archive, a, Date.now());
+    const merges = () => chat.requests.filter((request) => !request.stream && String((request.messages as Array<{ role: string; content: string }>)[0].content).includes('整理主题条目')).length;
+    const topics = () => app.store.all("SELECT id,status,content FROM assistant_memories WHERE id IN (?,?)", first.key, second.key);
+    // The access differs: nothing is merged, whatever the name.
+    await organize(f, a);
+    expect(topics().map((row) => row.status)).toEqual(['active', 'active']); expect(merges()).toBe(0);
+    // The user lets the other assistant read the first as well: the next pass merges.
+    share(app, a, first.key, b);
+    expect(access(app).sameAccess(first.key, second.key)).toBe(true);
+    expect(await organize(f, a)).toBe(1); expect(merges()).toBe(1);
+    const survivor = app.store.get('SELECT * FROM assistant_memories WHERE id=?', first.key)!, gone = app.store.get('SELECT * FROM assistant_memories WHERE id=?', second.key)!;
+    expect(survivor.status).toBe('active'); expect(gone.status).toBe('retired');
+    expect(String(survivor.content)).toContain('定投指数基金'); expect(String(survivor.content)).toContain('的事实');
+    const evidence = app.store.all('SELECT memory_id FROM assistant_topic_evidence WHERE topic_id=?', first.key).map((row) => String(row.memory_id));
+    expect(evidence.sort()).toEqual([...first.facts, ...second.facts].sort());
+    expect(app.store.all('SELECT memory_id FROM assistant_topic_evidence WHERE topic_id=?', second.key)).toEqual([]);
+    expect(app.store.all('SELECT topic_id FROM assistant_topic_members WHERE ref_id=?', archive).map((row) => row.topic_id)).toEqual([first.key]);
+    expect(JSON.parse(String(survivor.refs_json))).toHaveLength(6);
+    expect(await recalled(app, b, '定投')).toContain(`memory:${first.key}`); expect(await recalled(app, b, '定投')).not.toContain(`memory:${second.key}`);
+    const [move] = app.store.all("SELECT * FROM assistant_topic_moves WHERE action='merge'");
+    expect(move).toMatchObject({ topic_id: first.key, actor: 'auto', reverted_by: null });
+    // Reverted: both as they were, with their facts and members; the pair is not merged again.
+    tree(app).run(a, { op: 'revert', moveId: String(move.id) });
+    expect(topics().map((row) => row.status)).toEqual(['active', 'active']);
+    expect(String(app.store.get('SELECT content FROM assistant_memories WHERE id=?', first.key)!.content)).toBe('定投指数基金');
+    expect(String(app.store.get('SELECT content FROM assistant_memories WHERE id=?', second.key)!.content)).toBe('每月第一周定投');
+    expect(app.store.all('SELECT memory_id FROM assistant_topic_evidence WHERE topic_id=?', second.key).map((row) => row.memory_id).sort()).toEqual([...second.facts].sort());
+    expect(app.store.all('SELECT topic_id FROM assistant_topic_members WHERE ref_id=?', archive).map((row) => row.topic_id)).toEqual([second.key]);
+    await organize(f, a); expect(merges()).toBe(1);
+  }, 120000);
+
+  it('counts the merge, the new container and an overview against the same three calls of a pass', async () => {
+    const f = await fixture(), { app, chat, a, b } = f;
+    enable(app, a, b); await pump(app, 3);
+    f.create = (input) => ({ anchor: '运维体系', name: '运维体系', aliases: [], summary: 's', overview: 'o', members: input.topics.slice(0, 3).map((topic) => topic.id) });
+    // Five private topics to group; two of one name, seen by the same two assistants; two containers waiting for an overview.
+    for (let n = 1; n <= 5; n++) userTopic(app, a, `运维笔记${n}`);
+    for (const topic of [userTopic(app, a, '重名'), userTopic(app, a, '重名')]) share(app, a, topic.key, b);
+    for (const name of ['甲', '乙']) { const kids = [1, 2, 3].map((n) => userTopic(app, a, `${name}专题${n}`)); for (const kid of kids) share(app, a, kid.key, b, 'steward'); tree(app).run(a, { op: 'group', topics: kids.map((kid) => kid.key), name: `${name}专题`, anchor: `${name}专题对象` }); }
+    const count = (marker: string) => chat.requests.filter((request) => !request.stream && String((request.messages as Array<{ role: string; content: string }>)[0].content).includes(marker)).length;
+    expect(await organize(f, a)).toBe(3);
+    expect(count('组建容器')).toBe(1); expect(count('整理主题条目')).toBe(1); expect(count('重写容器概要')).toBe(1);
+    expect(await organize(f, a)).toBe(1); expect(count('重写容器概要')).toBe(2);
+  }, 120000);
+});
+
+describe('a question that names nothing', () => {
+  it('is routed to the top-level user topic its meaning is closest to, also one the assistant may not read, and the hint names that topic and its steward only', async () => {
+    const f = await fixture(), { app, fake, a, b } = f;
+    await embeddingOn(app, fake); enable(app, a, b); await pump(app, 3);
+    // A container the other assistant may not read, with sub-topics whose names stay out of the hint; a topic of its own.
+    const kids = ['部署甲', '部署乙', '部署丙'].map((title) => userTopic(app, a, title, { body: `${title}的流程` }));
+    const box = tree(app).run(a, { op: 'group', topics: kids.map((one) => one.key), name: '运维流程', anchor: '运维对象' }) as { created: string };
+    userTopic(app, b, '会议习惯', { body: '周一会议提前十分钟' });
+    await pump(app, 4);
+    const found = await app.runtime.memory.retrieval.retrieve(b, '请问怎么上线发布');
+    expect(found.blocked).toEqual([box.created]);
+    const task_ = await turn(app, b, '请问怎么上线发布', 'semantic-1');
+    const hints = JSON.parse(String(app.store.get('SELECT hints_json FROM task_recall WHERE task_id=?', task_)!.hints_json));
+    expect(hints).toEqual([{ topic: box.created, name: '运维流程', steward: a, stewardName: '开发助手' }]);
+    const block = String(app.store.get('SELECT block FROM task_recall WHERE task_id=?', task_)!.block);
+    expect(block).toContain('「运维流程」'); expect(block).toContain('开发助手');
+    for (const secret of ['部署甲', '部署乙', '部署丙', '的流程']) expect(block).not.toContain(secret);
+    expect(String(volatileOf(streamed(f.chat).at(-1)!))).toContain('「运维流程」');
+    // The steward is not told; a question closer to a topic the assistant reads is its own; two equally close topics decide nothing.
+    expect((await app.runtime.memory.retrieval.retrieve(a, '请问怎么上线发布')).blocked).toBeUndefined();
+    expect((await app.runtime.memory.retrieval.retrieve(b, '周一开会安排')).blocked).toBeUndefined();
+    userTopic(app, a, '拿铁偏好', { body: '喜欢拿铁咖啡' }); userTopic(app, a, '咖啡豆产地', { body: '咖啡豆产自云南' });
+    await pump(app, 4);
+    expect((await app.runtime.memory.retrieval.retrieve(b, '推荐一款咖啡')).blocked).toBeUndefined();
+    // A name still decides before meaning does.
+    expect((await app.runtime.memory.retrieval.retrieve(b, '运维流程是什么')).blocked).toEqual([box.created]);
+  }, 180000);
+});
+
+describe('a resident topic that grows', () => {
+  it('drops index lines first, then shows the newest resident topic as one line, and restores the full overview when it fits again; the core memory stays within 1500 tokens', async () => {
+    const f = await fixture(), { app, a, b } = f;
+    const core = app.runtime.memory.core, used = () => tokens(coreText(app, b));
+    const run = (bot: string, args: Record<string, unknown>, text: string) => tree(app).run(bot, args, { taskId: task(app, bot, text) });
+    const older = userTopic(app, a, '旧常驻', { body: '旧的常驻概要。'.repeat(20) }), newer = userTopic(app, a, '新常驻', { body: '新的常驻概要。'.repeat(20) });
+    for (const topic of [older, newer]) run(a, { op: 'grant', topic: topic.key, bot: b, role: 'reader', quote: `让理财助手看${topic.key.slice(0, 6)}` }, `让理财助手看${topic.key.slice(0, 6)}`);
+    run(a, { op: 'resident', topic: older.key, on: true, quote: '把旧常驻设为常驻' }, '把旧常驻设为常驻');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    run(a, { op: 'resident', topic: newer.key, on: true, quote: '把新常驻设为常驻' }, '把新常驻设为常驻');
+    // The assistant's own lines: a few index lines of topics of its own, and shared lines of the user.
+    for (let n = 1; n <= 3; n++) seed(app, b, `自有主题${n}`, { kind: 'experience' });
+    core.update(b, { patch: { about: { add: ['甲'.repeat(200), '乙'.repeat(200)] } }, expectedVersion: core.read('bot', b).version });
+    for (let n = 0; n < 3; n++) personal(app).topics.indexTopics(b);
+    const lines = () => core.read('bot', b).content.topics.length, flags = () => app.store.all('SELECT topic_id FROM resident_shortened WHERE bot_id=?', b).map((row) => String(row.topic_id));
+    expect(lines()).toBeGreaterThan(0); expect(flags()).toEqual([]); expect(used()).toBeLessThanOrEqual(CORE_MEMORY_TOKENS);
+    const grow = (key: string, base: string, extra: number) => personal(app).put(a, 'topic', key === older.key ? '旧常驻' : '新常驻', base + '内容细节'.repeat(Math.ceil(extra / 6)), JSON.parse(String(app.store.get('SELECT refs_json FROM assistant_memories WHERE id=?', key)!.refs_json)), app.store.get('SELECT * FROM assistant_memories WHERE id=?', key)!, false, true);
+    const body = (key: string) => String(app.store.get('SELECT content FROM assistant_memories WHERE id=?', key)!.content);
+    const small = body(older.key), startLines = lines();
+
+    // A little over: the index lines go, least recalled and oldest first; nothing is shortened.
+    grow(older.key, small, CORE_MEMORY_TOKENS - used() + 20);
+    expect(lines()).toBeLessThan(startLines); expect(flags()).toEqual([]); expect(used()).toBeLessThanOrEqual(CORE_MEMORY_TOKENS);
+    // Far over: every line is gone, and the topic made resident last is one line (the older one keeps its overview).
+    const lineTokens = used() - tokens(coreText(app, b).split('主题索引：')[0]);
+    grow(older.key, body(older.key), CORE_MEMORY_TOKENS - used() + lineTokens + 60);
+    expect(lines()).toBe(0); expect(flags()).toEqual([newer.key]); expect(used()).toBeLessThanOrEqual(CORE_MEMORY_TOKENS);
+    const text = coreText(app, b);
+    expect(text).toContain(`- 新常驻 — 新常驻说明 (memory:${newer.key})`); expect(text).not.toContain('新的常驻概要'); expect(text).toContain(`「旧常驻」${body(older.key)}`);
+    const shortened = app.store.all("SELECT * FROM assistant_topic_moves WHERE bot_id=? AND action='resident' AND actor='auto'", b);
+    expect(shortened).toHaveLength(1); expect(JSON.parse(String(shortened[0].after_json))).toEqual({ shortened: true });
+    expect(() => run(b, { op: 'revert', moveId: String(shortened[0].id) }, '撤销一下自动缩写')).toThrow(/不能撤销/);
+    // The other assistant that reads it is not touched, and neither is the steward's own core memory.
+    expect(app.store.get('SELECT COUNT(*) n FROM resident_shortened WHERE bot_id=?', a)!.n).toBe(0);
+    // Back to a size that fits: the full overview returns (the index lines that were given up are not brought back).
+    grow(older.key, small, 0);
+    expect(flags()).toEqual([]); expect(coreText(app, b)).toContain('新的常驻概要'); expect(used()).toBeLessThanOrEqual(CORE_MEMORY_TOKENS); expect(lines()).toBe(0);
+    expect(app.store.all("SELECT after_json FROM assistant_topic_moves WHERE bot_id=? AND action='resident' AND actor='auto' ORDER BY created_at,rowid", b).map((row) => JSON.parse(String(row.after_json)))).toEqual([{ shortened: true }, { shortened: false }]);
   }, 90000);
 });

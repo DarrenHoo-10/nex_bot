@@ -266,6 +266,8 @@ export class AssistantMemory {
     this.store.run('INSERT INTO assistant_memory_search(memory_id,body) VALUES(?,?)',key,indexBody(title,content));
     // The text changed: a vector of the old text must not outlive it.
     dropVectors(this.store,'memory',key);
+    // A resident user topic that grew may not fit the core memory of an assistant that reads it any more (topic-tree.ts).
+    if (kind === 'topic') this.tree.fitFor(key);
     return key;
   }
   /**
@@ -309,6 +311,7 @@ export class AssistantMemory {
       await this.step(settings, 'consolidate', signal, () => this.topics.merge(settings, signal).then(() => {}));
       await this.step(settings, 'organize', signal, () => this.tree.organize(settings, signal).then(() => {}));
       try { this.topics.indexTopics(botId); } catch { /* the core memory index follows the topics on a later pass */ }
+      try { this.tree.fitResidents(botId); } catch { /* a resident topic is fitted on a later pass */ }
     }
     // Topics written or changed above are vectorized in the same pass.
     await this.step(settings, 'embed', signal, () => this.embedPending(settings, signal));

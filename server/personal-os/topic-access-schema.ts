@@ -35,3 +35,18 @@ export function applyAccessSchema(db: { exec(sql: string): void; prepare(sql: st
   }
   db.exec(accessSchema);
 }
+
+// Migration 38: a resident topic shown shortened (docs/plans/user-topics.md section 8.3).
+//  - assistant_topics.resident_at: when the topic was made resident (the newest is shortened first).
+//  - resident_shortened: the topics whose overview does not fit the core memory of one assistant any more and are shown there
+//    as a single line instead (restored when the overview fits again).
+export const RESIDENT_MIGRATION = 38;
+export const residentSchema = `
+CREATE TABLE IF NOT EXISTS resident_shortened(topic_id TEXT NOT NULL,bot_id TEXT NOT NULL,since INTEGER NOT NULL,PRIMARY KEY(topic_id,bot_id)) STRICT;
+`;
+export const residentMigrationSql = "ALTER TABLE assistant_topics ADD COLUMN resident_at INTEGER;\n" + residentSchema;
+export function applyResidentSchema(db: { exec(sql: string): void; prepare(sql: string): { all(): unknown[] } }) {
+  const have = new Set((db.prepare('PRAGMA table_info(assistant_topics)').all() as Array<{ name: string }>).map((column) => column.name));
+  if (!have.has('resident_at')) db.exec('ALTER TABLE assistant_topics ADD COLUMN resident_at INTEGER;');
+  db.exec(residentSchema);
+}

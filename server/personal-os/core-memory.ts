@@ -1,6 +1,6 @@
 import { CoreStore, now, type Row } from './store.ts';
 import { tokens } from './token-estimate.ts';
-import { residentTopics } from './topic-access.ts';
+import { residentTopics, type ResidentItem } from './topic-access.ts';
 
 // Core memory (docs/plans/memory-recall.md section 4.2): the small, stable memory every request of an assistant
 // carries in the cacheable system prompt. One per assistant plus one shared by the workspace, each stored as
@@ -28,11 +28,11 @@ const topicText = (item: CoreTopic) => `${item.title}${SEPARATOR}${item.line}${i
  * The text of the system prompt: the assistant's own lines first, then the shared ones tagged "[共享]". The header
  * carries the assistant's version, which `memory.core.update` must be given back as expectedVersion.
  */
-export function renderCore(bot: CoreContent, workspace: CoreContent, version: number, residents: ReadonlyArray<{ title: string; text: string }> = []): string {
+export function renderCore(bot: CoreContent, workspace: CoreContent, version: number, residents: ReadonlyArray<ResidentItem> = []): string {
   const about = [...bot.about.map((item) => `- ${item}`), ...workspace.about.map((item) => `- [共享] ${item}`)];
   const topics = [...bot.topics.map((item) => `- ${topicText(item)}`), ...workspace.topics.map((item) => `- [共享] ${topicText(item)}`)];
   // User topics the user made resident (docs/plans/user-topics.md 8.3): their overviews, between the "about" lines and the index.
-  const resident = residents.length ? ['常驻主题：', ...residents.map((item) => `- 「${item.title}」${item.text.replace(/\s+/g, ' ').trim()}`)] : [];
+  const resident = residents.length ? ['常驻主题：', ...residents.map((item) => item.line ? `- ${item.line}` : `- 「${item.title}」${item.text.replace(/\s+/g, ' ').trim()}`)] : [];
   return [`核心记忆（版本 ${version}）`, about.length ? '关于用户：' : '关于用户：暂无', ...about, ...resident, topics.length ? '主题索引：' : '主题索引：暂无', ...topics].join('\n');
 }
 
@@ -167,7 +167,7 @@ export class CoreMemory {
   }
 
   /** Tokens of the text an assistant would carry if its own lines were `content` (the shared lines count too). */
-  measure(content: CoreContent, botId?: string, extra: ReadonlyArray<{ title: string; text: string }> = []): number {
+  measure(content: CoreContent, botId?: string, extra: ReadonlyArray<ResidentItem> = []): number {
     return tokens(renderCore(content, this.read('workspace').content, 99999, [...(botId ? residentTopics(this.store, botId) : []), ...extra]));
   }
   /**
