@@ -67,7 +67,8 @@ const unique = (refs: Source[]) => [...new Map(refs.map((ref) => [ref.id, ref]))
 
 /** `text` is what BM25 searches with (title and content); lexical overlap compares the content alone, since titles are boilerplate-prone. */
 interface Item { row: Row; text: string; content: string; vector?: Float32Array }
-interface Job { topic?: Item; items: Item[] }
+/** `user`: the facts of the job belong to a user topic (docs/plans/user-topics.md section 3.1); the experiences of an assistant to its own. */
+interface Job { topic?: Item; items: Item[]; user?: boolean }
 interface Written { title: string; summary: string; body: string; facts?: string[] }
 
 export class TopicMemory {
@@ -80,17 +81,28 @@ export class TopicMemory {
    * section 4): a container has no sources of its own and stands while at least two such topics are its children.
    */
   topics(botId: string): Row[] {
-    const rows = this.store.all("SELECT * FROM assistant_memories WHERE bot_id=? AND kind='topic' AND status='active' ORDER BY rowid", botId);
-    const meta = new Map(this.store.all('SELECT topic_id,role,parent_id FROM assistant_topics WHERE bot_id=?', botId).map((row) => [String(row.topic_id), row]));
+    // The assistant's own topics, and the user topics it may read (whoever made them).
+    const readable = JSON.stringify(this.memory.access.readable(botId));
+    const rows = this.store.all("SELECT * FROM assistant_memories WHERE kind='topic' AND status='active' AND ((bot_id=? AND id NOT IN (SELECT topic_id FROM assistant_topics WHERE owner='user')) OR id IN (SELECT value FROM json_each(?))) ORDER BY rowid", botId, readable);
+    const meta = new Map(this.store.all("SELECT topic_id,role,parent_id,special FROM assistant_topics WHERE bot_id=? OR owner='user'", botId).map((row) => [String(row.topic_id), row]));
     const container = (row: Row) => meta.get(String(row.id))?.role === 'container';
-    const leaves = new Set(rows.filter((row) => !container(row) && this.memory.valid(sourceRefs(row), botId)).map((row) => String(row.id)));
+    const leaves = new Set(rows.filter((row) => !container(row) && this.memory.rowValid(botId, row)).map((row) => String(row.id)));
     const children = new Map<string, number>();
     for (const key of leaves) { const parent = meta.get(key)?.parent_id; if (parent) children.set(String(parent), (children.get(String(parent)) ?? 0) + 1); }
-    return rows.filter((row) => container(row) ? (children.get(String(row.id)) ?? 0) >= 2 : leaves.has(String(row.id)));
+    return rows.filter((row) => container(row) ? meta.get(String(row.id))?.special != null || (children.get(String(row.id)) ?? 0) >= 2 : leaves.has(String(row.id)));
+  }
+  /** The topics of the assistant that are its own (not user topics). */
+  assistantLeaves(botId: string): Row[] {
+    const user = new Set(this.store.all("SELECT topic_id FROM assistant_topics WHERE owner='user'").map((row) => String(row.topic_id)));
+    return this.leaves(botId).filter((row) => !user.has(String(row.id)));
+  }
+  /** Every user topic that holds facts, whoever may read it: what a new fact is compared with. */
+  userLeaves(): Row[] {
+    return this.store.all("SELECT m.* FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.owner='user' AND t.role='leaf' AND m.status='active' ORDER BY m.rowid").filter((row) => this.memory.validAny(sourceRefs(row)));
   }
   /** The topics that rest on facts (everything but the containers): what new facts are merged into. */
   leaves(botId: string): Row[] {
-    const containers = new Set(this.store.all("SELECT topic_id FROM assistant_topics WHERE bot_id=? AND role='container'", botId).map((row) => String(row.topic_id)));
+    const containers = new Set(this.store.all("SELECT topic_id FROM assistant_topics WHERE (bot_id=? OR owner='user') AND role='container'", botId).map((row) => String(row.topic_id)));
     return this.topics(botId).filter((row) => !containers.has(String(row.id)));
   }
   /** Topics for the dashboard: labels only. */
@@ -117,7 +129,7 @@ export class TopicMemory {
   private item(row: Row, embedding?: EmbeddingSettings): Item { return { row, text: `${row.title}\n${row.content}`, content: String(row.content), vector: this.vector(row, embedding) }; }
 
   /** The topic a fact belongs to: by vector similarity where both have one, else the best BM25 hit that shares enough text. */
-  private closest(botId: string, item: Item, topics: Item[]): Item | undefined {
+  private closest(item: Item, topics: Item[]): Item | undefined {
     if (item.vector && topics.some((topic) => topic.vector?.length === item.vector!.length)) {
       let best: Item | undefined, similarity = 0;
       for (const topic of topics) {
@@ -129,7 +141,7 @@ export class TopicMemory {
     }
     const terms = queryTerms(item.text).long;
     if (!terms.length) return;
-    const hits = this.store.all("SELECT r.id FROM assistant_memory_search JOIN assistant_memories r ON r.id=assistant_memory_search.memory_id WHERE assistant_memory_search MATCH ? AND r.bot_id=? AND r.status='active' AND r.kind='topic' ORDER BY bm25(assistant_memory_search) LIMIT 5", matchExpression(terms), botId);
+    const hits = this.store.all("SELECT r.id FROM assistant_memory_search JOIN assistant_memories r ON r.id=assistant_memory_search.memory_id WHERE assistant_memory_search MATCH ? AND r.id IN (SELECT value FROM json_each(?)) AND r.status='active' AND r.kind='topic' ORDER BY bm25(assistant_memory_search) LIMIT 5", matchExpression(terms), JSON.stringify(topics.map((topic) => String(topic.row.id))));
     let best: Item | undefined, share = 0;
     for (const hit of hits) {
       const topic = topics.find((candidate) => candidate.row.id === hit.id);
@@ -146,6 +158,15 @@ export class TopicMemory {
 
   /** Whether facts wait to be merged into a topic. */
   hasPending(botId: string): boolean { return this.pending(botId, undefined, 1).length > 0; }
+  /**
+   * Facts that other assistants extracted and that no topic holds yet (section 9): the steward of the user topic one of them
+   * belongs to merges it, in its own pass and at its own cost. Only assistants whose own migration is done are looked at.
+   */
+  private pendingForeign(botId: string, limit: number): Row[] {
+    const rows = this.store.all("SELECT m.rowid AS rid,m.* FROM assistant_memories m WHERE m.bot_id<>? AND m.status='active' AND m.kind='fact' AND NOT EXISTS (SELECT 1 FROM assistant_topic_evidence e JOIN assistant_memories t ON t.id=e.topic_id WHERE e.memory_id=m.id AND t.status='active') ORDER BY m.rowid LIMIT 500", botId);
+    const done = new Map<string, boolean>();
+    return rows.filter((row) => { const owner = String(row.bot_id); if (!done.has(owner)) done.set(owner, this.migrated(owner)); return done.get(owner) && this.memory.valid(sourceRefs(row), owner); }).slice(0, limit);
+  }
   /** Facts (and, during the migration, old observations) not yet part of an active topic, oldest first. */
   private pending(botId: string, snapshot: number | undefined, limit: number): Row[] {
     const kinds = snapshot === undefined ? "'fact','experience'" : "'fact','experience','observation'";
@@ -154,19 +175,23 @@ export class TopicMemory {
   }
 
   /** Who goes where: one job per affected topic, then one per group of new facts that belong together. */
-  private plan(botId: string, pending: Row[], window: number): Job[] {
+  private plan(botId: string, pending: Row[], foreign: Row[], window: number, legacy: boolean): Job[] {
     const embedding = this.memory.retrieval.config.embedding();
-    const topics = this.leaves(botId).map((row) => this.item(row, embedding));
-    const placed = new Map<string, Item[]>(), loose: Item[] = [];
-    for (const row of pending) {
-      const item = this.item(row, embedding), topic = this.closest(botId, item, topics);
-      if (topic) placed.set(String(topic.row.id), [...(placed.get(String(topic.row.id)) ?? []), item]); else loose.push(item);
+    // A fact goes to the closest user topic, whoever made it and whoever may read it; an experience to the assistant's own topics.
+    // The migration works on the assistant topics as it always did.
+    const own = this.assistantLeaves(botId).map((row) => this.item(row, embedding)), shared = legacy ? [] : this.userLeaves().map((row) => this.item(row, embedding));
+    const topics = [...own, ...shared];
+    const placed = new Map<string, Item[]>(), loose: Item[] = [], looseFacts: Item[] = [];
+    for (const row of [...pending, ...foreign]) {
+      const item = this.item(row, embedding), fact = !legacy && row.kind === 'fact', topic = this.closest(item, fact ? shared : own);
+      if (topic) {
+        // The facts of a topic somebody else looks after are left for its steward.
+        if (fact && !this.memory.access.stewards(String(topic.row.id)).includes(botId)) continue;
+        placed.set(String(topic.row.id), [...(placed.get(String(topic.row.id)) ?? []), item]);
+      } else if (row.bot_id === botId) (fact ? looseFacts : loose).push(item);
     }
-    const groups: Item[][] = [];
-    for (const item of loose) {
-      const home = groups.find((group) => group.some((member) => this.related(item, member)));
-      if (home) home.push(item); else groups.push([item]);
-    }
+    const group = (items: Item[]) => { const result: Item[][] = []; for (const item of items) { const home = result.find((one) => one.some((member) => this.related(item, member))); if (home) home.push(item); else result.push([item]); } return result; };
+    const groups = group(loose), factGroups = group(looseFacts);
     // What fits one request: the instruction, the topic's body and the facts, leaving room for the answer.
     const room = Math.max(1000, window - 2500);
     const fit = (items: Item[]) => {
@@ -180,8 +205,9 @@ export class TopicMemory {
       return kept;
     };
     return [
-      ...[...placed].map(([id, items]): Job => ({ topic: topics.find((topic) => topic.row.id === id), items: fit(items) })),
+      ...[...placed].map(([id, items]): Job => ({ topic: topics.find((topic) => topic.row.id === id), items: fit(items), user: shared.some((topic) => topic.row.id === id) })),
       ...groups.map((items): Job => ({ items: fit(items) })),
+      ...factGroups.map((items): Job => ({ items: fit(items), user: true })),
     ];
   }
 
@@ -193,9 +219,12 @@ export class TopicMemory {
    * observations and works only on the rows that existed when it began). Returns the number of calls made.
    */
   async merge(settings: Row, signal: AbortSignal, snapshot?: number): Promise<number> {
-    const botId = String(settings.bot_id), pending = this.pending(botId, snapshot, MERGE_FACTS_PER_PASS);
-    if (!pending.length) return 0;
-    const jobs = this.plan(botId, pending, this.memory.window(settings)).slice(0, snapshot === undefined ? MERGE_JOBS_PER_PASS : MIGRATION_JOBS_PER_PASS);
+    const botId = String(settings.bot_id);
+    // Topics of facts become user topics before new facts look for them (promotion is deterministic and free).
+    if (snapshot === undefined) this.memory.tree.promote(botId);
+    const pending = this.pending(botId, snapshot, MERGE_FACTS_PER_PASS), foreign = snapshot === undefined ? this.pendingForeign(botId, MERGE_FACTS_PER_PASS) : [];
+    if (!pending.length && !foreign.length) return 0;
+    const jobs = this.plan(botId, pending, foreign, this.memory.window(settings), snapshot !== undefined).slice(0, snapshot === undefined ? MERGE_JOBS_PER_PASS : MIGRATION_JOBS_PER_PASS);
     for (const job of jobs) await this.run(settings, signal, job);
     return jobs.length;
   }
@@ -225,9 +254,8 @@ export class TopicMemory {
   }
 
   private async run(settings: Row, signal: AbortSignal, job: Job) {
-    const botId = String(settings.bot_id);
     // Evidence whose originals no longer verify cannot support the rewritten topic.
-    const supported = job.topic ? this.evidence(String(job.topic.row.id)).filter((row) => this.memory.valid(sourceRefs(row), botId)) : [];
+    const supported = job.topic ? this.evidence(String(job.topic.row.id)).filter((row) => this.memory.valid(sourceRefs(row), String(row.bot_id))) : [];
     const input = {
       topic: job.topic ? { id: job.topic.row.id, title: job.topic.row.title, summary: this.summary(job.topic.row), body: job.topic.row.content } : null,
       facts: job.items.map(({ row }) => ({ id: row.id, kind: row.kind, title: row.title, content: row.content })),
@@ -252,10 +280,12 @@ export class TopicMemory {
       let origin: string | undefined;
       written.forEach((entry, index) => {
         const rows = rowsOf(index), existing = index === 0 ? job.topic?.row : undefined;
-        const topicId = this.memory.put(botId, 'topic', entry.title, entry.body, unique(rows.flatMap(sourceRefs)), existing);
+        const topicId = this.memory.put(botId, 'topic', entry.title, entry.body, unique(rows.flatMap(sourceRefs)), existing, false, !!job.user);
         this.store.run('DELETE FROM assistant_topic_evidence WHERE topic_id=?', topicId);
         for (const row of rows) this.store.run('INSERT OR IGNORE INTO assistant_topic_evidence(topic_id,memory_id,added_at) VALUES(?,?,?)', topicId, String(row.id), now());
-        this.store.run('INSERT INTO assistant_topics(topic_id,bot_id,summary) VALUES(?,?,?) ON CONFLICT(topic_id) DO UPDATE SET summary=excluded.summary', topicId, botId, entry.summary);
+        this.store.run('INSERT INTO assistant_topics(topic_id,bot_id,summary,owner,maintainer) VALUES(?,?,?,?,?) ON CONFLICT(topic_id) DO UPDATE SET summary=excluded.summary,maintainer=excluded.maintainer', topicId, botId, entry.summary, job.user ? 'user' : 'bot', job.user ? botId : null);
+        // A new user topic is looked after by the assistant that wrote it, who gains nothing else by it.
+        if (job.user && !existing) this.memory.access.create(topicId, botId);
         // A sub-topic remembers the topic it was split from; the background step puts it in the same container (topic-tree.ts).
         if (index === 0) origin = topicId; else this.store.run('UPDATE assistant_topics SET split_from=? WHERE topic_id=?', origin!, topicId);
       });
@@ -296,14 +326,18 @@ export class TopicMemory {
     this.store.run('INSERT OR IGNORE INTO assistant_topic_state(bot_id) VALUES(?)', botId);
     const state = this.store.get('SELECT * FROM assistant_topic_state WHERE bot_id=?', botId)!;
     const due = force || (Number(state.facts_since_patch) >= CORE_PATCH_FACTS && now() - Number(state.core_patched_at) >= CORE_PATCH_INTERVAL_MS);
-    const topics = this.topics(botId), metas = new Map(this.store.all('SELECT * FROM assistant_topics WHERE bot_id=?', botId).map((row) => [String(row.topic_id), row]));
+    const topics = this.topics(botId), metas = new Map(this.store.all('SELECT * FROM assistant_topics WHERE bot_id=? OR topic_id IN (SELECT value FROM json_each(?))', botId, JSON.stringify(topics.map((row) => String(row.id)))).map((row) => [String(row.topic_id), row]));
+    // A user topic is read by several assistants: what its line in this assistant's core memory looked like is kept per assistant.
+    for (const [key, meta] of metas) if (meta.owner === 'user') { const mine = this.store.get('SELECT * FROM user_topic_indexed WHERE topic_id=? AND bot_id=?', key, botId); metas.set(key, { ...meta, indexed_title: mine?.title ?? null, indexed_summary: mine?.summary ?? null, indexed_at: mine?.indexed_at ?? null }); }
     const containers = new Set(topics.filter((row) => metas.get(String(row.id))?.role === 'container').map((row) => String(row.id)));
     const parentOf = (row: Row) => { const parent = metas.get(String(row.id))?.parent_id; return parent && containers.has(String(parent)) && !containers.has(String(row.id)) ? String(parent) : undefined; };
     const kids = new Map<string, Row[]>();
     for (const row of topics) { const parent = parentOf(row); if (parent) kids.set(parent, [...(kids.get(parent) ?? []), row]); }
-    const fresh = topics.filter((row) => !parentOf(row) && metas.get(String(row.id))?.indexed_at == null).sort((a, b) => Number(b.updated_at) - Number(a.updated_at));
+    // The user's own topic carries its overview in the shared "about" lines, and its sub-topics are recalled on demand: none has an index line.
+    const muted = (row?: Row) => !!row && (metas.get(String(row.id))?.special != null || (!!metas.get(String(row.id))?.parent_id && metas.get(String(metas.get(String(row.id))!.parent_id))?.special != null));
+    const fresh = topics.filter((row) => !parentOf(row) && !muted(row) && metas.get(String(row.id))?.indexed_at == null).sort((a, b) => Number(b.updated_at) - Number(a.updated_at));
     if (!due && !fresh.length) return false;
-    const all = new Map(this.store.all("SELECT * FROM assistant_memories WHERE bot_id=? AND kind='topic'", botId).map((row) => [`memory:${row.id}`, row]));
+    const all = new Map(this.store.all("SELECT * FROM assistant_memories WHERE kind='topic' AND (bot_id=? OR id IN (SELECT value FROM json_each(?)))", botId, JSON.stringify(topics.map((row) => String(row.id)))).map((row) => [`memory:${row.id}`, row]));
     const hidden = (row?: Row) => !!row && metas.get(String(row.id))?.role === 'container' && !containers.has(String(row.id));
     const lineOf = (row: Row) => containers.has(String(row.id)) ? this.containerLine(row, kids.get(String(row.id))?.length ?? 0) : this.line(row);
     const written = new Map<string, CoreTopic>(), released = new Set<string>();
@@ -320,7 +354,7 @@ export class TopicMemory {
           return !(meta?.indexed_title === entry.title && meta?.indexed_summary === entry.line);
         });
         if (due) {
-          lines = lines.filter((entry) => all.get(entry.ref)?.status !== 'retired' && !hidden(all.get(entry.ref)));
+          lines = lines.filter((entry) => all.get(entry.ref)?.status !== 'retired' && !hidden(all.get(entry.ref)) && !muted(all.get(entry.ref)));
           lines = lines.map((entry) => {
             const row = all.get(entry.ref), meta = row && metas.get(String(row.id)), wanted = row?.status === 'active' ? lineOf(row) : undefined;
             if (!wanted || !meta || meta.indexed_title !== entry.title || meta.indexed_summary !== entry.line || (wanted.title === entry.title && wanted.line === entry.line)) return entry;
@@ -331,7 +365,7 @@ export class TopicMemory {
         const added = new Set<string>();
         for (const row of fresh) {
           const entry = lineOf(row);
-          if (!entry) continue;
+          if (!entry || lines.some((line) => line.ref === entry.ref)) continue;
           let next = fold([...lines, entry]);
           if (!fits(next)) {
             if (!due) continue;
@@ -354,9 +388,16 @@ export class TopicMemory {
         for (const entry of content.topics) { const row = all.get(entry.ref); if (row && parentOf(row) && !lines.some((kept) => kept.ref === entry.ref)) released.add(String(row.id)); }
         return { about: content.about, topics: lines };
       });
-      for (const [topicId, entry] of written) this.store.run('UPDATE assistant_topics SET indexed_title=?,indexed_summary=?,indexed_at=? WHERE topic_id=?', entry.title, entry.line, now(), topicId);
+      const shared = (topicId: string) => metas.get(topicId)?.owner === 'user';
+      for (const [topicId, entry] of written) {
+        if (shared(topicId)) this.store.run('INSERT INTO user_topic_indexed(topic_id,bot_id,title,summary,indexed_at) VALUES(?,?,?,?,?) ON CONFLICT(topic_id,bot_id) DO UPDATE SET title=excluded.title,summary=excluded.summary,indexed_at=excluded.indexed_at', topicId, botId, entry.title, entry.line, now());
+        else this.store.run('UPDATE assistant_topics SET indexed_title=?,indexed_summary=?,indexed_at=? WHERE topic_id=?', entry.title, entry.line, now(), topicId);
+      }
       // A topic whose line was folded away has none to refresh; it is indexed afresh if it ever leaves its container.
-      for (const topicId of released) this.store.run('UPDATE assistant_topics SET indexed_title=NULL,indexed_summary=NULL,indexed_at=NULL WHERE topic_id=?', topicId);
+      for (const topicId of released) {
+        if (shared(topicId)) this.store.run('DELETE FROM user_topic_indexed WHERE topic_id=? AND bot_id=?', topicId, botId);
+        else this.store.run('UPDATE assistant_topics SET indexed_title=NULL,indexed_summary=NULL,indexed_at=NULL WHERE topic_id=?', topicId);
+      }
       if (due) this.store.run('UPDATE assistant_topic_state SET core_patched_at=?,facts_since_patch=0 WHERE bot_id=?', now(), botId);
       return written.size > 0;
     });

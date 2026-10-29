@@ -59,9 +59,11 @@ export interface RetrievalResult {
   degraded: string[];
   /** The containers (topic ids) the query was routed to; absent when it was routed nowhere. */
   routed?: string[];
+  /** The user topics the query is about that the assistant may not read, with a steward to ask. */
+  blocked?: string[];
 }
 /** Where a query goes (topic-tree.ts): the containers it names and the items (`kind:refId`) that earn the routing bonus. */
-export interface Routing { topics: string[]; boost: ReadonlySet<string> }
+export interface Routing { topics: string[]; boost: ReadonlySet<string>; /** Top-level user topics the query names that the assistant may not read (section 6). */ blocked?: string[] }
 export interface RetrieveOptions {
   kinds?: readonly PoolKind[];
   taskId?: string;
@@ -211,7 +213,7 @@ export class Retrieval {
       } catch { degraded.push('rerank'); }
     }
     if (!reranked) ranked = ranked.filter((item) => item.sources.includes('bm25') || (item.similarity ?? 0) >= VECTOR_ONLY_MIN_SIMILARITY);
-    return { candidates: ranked.slice(0, options.limit ?? FUSED_TOP).map(({ similarity: _similarity, ...item }) => item), reranked, vector: vectorUsed, budget: reranked ? RECALL_BUDGET : RECALL_BUDGET_UNRANKED, degraded, ...(routing ? { routed: routing.topics } : {}) };
+    return { candidates: ranked.slice(0, options.limit ?? FUSED_TOP).map(({ similarity: _similarity, ...item }) => item), reranked, vector: vectorUsed, budget: reranked ? RECALL_BUDGET : RECALL_BUDGET_UNRANKED, degraded, ...(routing?.topics.length ? { routed: routing.topics } : {}), ...(routing?.blocked?.length ? { blocked: routing.blocked } : {}) };
   }
 
   /** Items of an assistant that still need an embedding under the configured model (at most `limit`). */

@@ -1,5 +1,6 @@
 import { CoreStore, now, type Row } from './store.ts';
 import { tokens } from './token-estimate.ts';
+import { residentTopics } from './topic-access.ts';
 
 // Core memory (docs/plans/memory-recall.md section 4.2): the small, stable memory every request of an assistant
 // carries in the cacheable system prompt. One per assistant plus one shared by the workspace, each stored as
@@ -27,10 +28,12 @@ const topicText = (item: CoreTopic) => `${item.title}${SEPARATOR}${item.line}${i
  * The text of the system prompt: the assistant's own lines first, then the shared ones tagged "[共享]". The header
  * carries the assistant's version, which `memory.core.update` must be given back as expectedVersion.
  */
-export function renderCore(bot: CoreContent, workspace: CoreContent, version: number): string {
+export function renderCore(bot: CoreContent, workspace: CoreContent, version: number, residents: ReadonlyArray<{ title: string; text: string }> = []): string {
   const about = [...bot.about.map((item) => `- ${item}`), ...workspace.about.map((item) => `- [共享] ${item}`)];
   const topics = [...bot.topics.map((item) => `- ${topicText(item)}`), ...workspace.topics.map((item) => `- [共享] ${topicText(item)}`)];
-  return [`核心记忆（版本 ${version}）`, about.length ? '关于用户：' : '关于用户：暂无', ...about, topics.length ? '主题索引：' : '主题索引：暂无', ...topics].join('\n');
+  // User topics the user made resident (docs/plans/user-topics.md 8.3): their overviews, between the "about" lines and the index.
+  const resident = residents.length ? ['常驻主题：', ...residents.map((item) => `- 「${item.title}」${item.text.replace(/\s+/g, ' ').trim()}`)] : [];
+  return [`核心记忆（版本 ${version}）`, about.length ? '关于用户：' : '关于用户：暂无', ...about, ...resident, topics.length ? '主题索引：' : '主题索引：暂无', ...topics].join('\n');
 }
 
 function oneLine(value: unknown, max: number, label: string): string {
@@ -143,7 +146,7 @@ export class CoreMemory {
   /** The prompt text for one assistant (its lines and the workspace's). */
   render(botId: string): string {
     const bot = this.read('bot', botId);
-    return renderCore(bot.content, this.read('workspace').content, bot.version);
+    return renderCore(bot.content, this.read('workspace').content, bot.version, residentTopics(this.store, botId));
   }
   view(botId: string) {
     this.assertBot(botId);
@@ -155,17 +158,17 @@ export class CoreMemory {
   }
 
   /** Throws when the lines would not fit with the other scope's: the workspace lines are carried by every assistant. */
-  private assertFits(scope: CoreScope, next: CoreContent) {
-    const measure = (bot: CoreContent, workspace: CoreContent) => tokens(renderCore(bot, workspace, 99999));
+  private assertFits(scope: CoreScope, next: CoreContent, botId = '') {
+    const measure = (bot: CoreContent, workspace: CoreContent, owner = '') => tokens(renderCore(bot, workspace, 99999, owner ? residentTopics(this.store, owner) : []));
     const used = scope === 'bot'
-      ? measure(next, this.read('workspace').content)
-      : Math.max(measure(emptyCore(), next), ...this.store.all("SELECT bot_id FROM assistant_core_memory WHERE scope='bot'").map((row) => measure(this.read('bot', String(row.bot_id)).content, next)));
+      ? measure(next, this.read('workspace').content, botId)
+      : Math.max(measure(emptyCore(), next), ...this.store.all("SELECT bot_id FROM assistant_core_memory WHERE scope='bot'").map((row) => measure(this.read('bot', String(row.bot_id)).content, next, String(row.bot_id))));
     if (used > CORE_MEMORY_TOKENS) throw new Error(`核心记忆超过 ${CORE_MEMORY_TOKENS} Token（改后约 ${used}）。请合并相近的行、缩短说明或删除不再需要的行后重试${scope === 'workspace' ? '（共享行与每个助手自己的行合计计算）' : ''}`);
   }
 
   /** Tokens of the text an assistant would carry if its own lines were `content` (the shared lines count too). */
-  measure(content: CoreContent): number {
-    return tokens(renderCore(content, this.read('workspace').content, 99999));
+  measure(content: CoreContent, botId?: string, extra: ReadonlyArray<{ title: string; text: string }> = []): number {
+    return tokens(renderCore(content, this.read('workspace').content, 99999, [...(botId ? residentTopics(this.store, botId) : []), ...extra]));
   }
   /**
    * A change Core itself makes in the background (the topic index of topic-memory.ts): `change` receives the lines as
@@ -191,11 +194,11 @@ export class CoreMemory {
       const next = change(current.content), changed = JSON.stringify(next) !== JSON.stringify(current.content);
       let version = current.version;
       if (changed) {
-        this.assertFits(scope, next);
+        this.assertFits(scope, next, key);
         version += 1;
         this.store.run('INSERT INTO assistant_core_memory(scope,bot_id,content,version,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(scope,bot_id) DO UPDATE SET content=excluded.content,version=excluded.version,updated_at=excluded.updated_at', scope, key, JSON.stringify(next), version, now());
       }
-      const result: CoreResult = { saved: true, scope, version, changed, tokens: tokens(this.render(key)), limit: CORE_MEMORY_TOKENS };
+      const result: CoreResult = { saved: true, scope, version, changed, tokens: tokens(scope === 'bot' ? this.render(key) : renderCore(emptyCore(), next, version)), limit: CORE_MEMORY_TOKENS };
       if (source.callId) this.store.insert('core_memory_receipts', { tool_call_id: source.callId, scope, bot_id: key, expected_version: expectedVersion, committed_version: version, result_json: JSON.stringify(result), committed_at: now() });
       this.store.audit('memory.core.update', 'core_memory', key || 'workspace', { scope, botId: key, expectedVersion, version, changed, actor: source.actor, callId: source.callId ?? null });
       return result;
@@ -215,6 +218,17 @@ export class CoreMemory {
       if (exists) for (const item of next.topics) if (item.ref && !current.topics.some((row) => row.ref === item.ref) && !exists(item.ref)) throw new Error(`引用 ${item.ref} 不存在或不可读取`);
       return next;
     }, { actor: 'agent', callId });
+  }
+  /**
+   * "记住…" said by the user, kept as a line of the user's own topic (the shared "about" block): allowed only in a task the
+   * user started in a chat of their own and only with the user's words as `quote`; it is the one way a model writes to the
+   * shared lines. Only `about` lines can change, and the same cap holds.
+   */
+  updateAbout(botId: string, patch: unknown, callId?: string): CoreResult {
+    this.assertBot(botId);
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch) || Object.keys(patch).some((key) => key !== 'about')) throw new Error('共享核心记忆只能修改「关于用户」（patch.about）');
+    const current = this.read('workspace');
+    return this.commit('workspace', '', current.version, (content) => { const next = applyPatch(content, patch); return { about: next.about, topics: content.topics }; }, { actor: 'agent', callId });
   }
   /** The owner's whole replacement of one scope (the editor): the same version check and cap as the model's patch. */
   replace(scope: CoreScope, botId: string, content: unknown, expectedVersion: unknown): CoreResult {

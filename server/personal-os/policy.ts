@@ -5,6 +5,7 @@ import { connectorAccess, type ConnectorTool } from "./connectors.ts";
 import { universalActions } from '../../shared/personal-capabilities.ts';
 import { htmlRenderContent } from '../../shared/html-render.ts';
 import { approvalRuleScope } from "./approval-rules.ts";
+import { TopicAccess } from "./topic-access.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
@@ -42,6 +43,7 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     } else if (action !== "device.info") { if (scope.read === false) throw new Error("设备未授权文件目录"); text(args.path ?? ".", 2048); }
   } else if (action === "agent.delegate") {
     text(args.message, 16_000);
+    if (args.topic !== undefined) text(args.topic, 200);
     if (!store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", text(args.botId, 100), store.workspace, store.owner)) throw new Error("目标 Agent 不存在或已停用");
   } else if (action === "agent.create") {
     text(args.name, 80);
@@ -64,11 +66,13 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     if (args.scope !== undefined && args.scope !== "bot" && args.scope !== "context") throw new Error("自动记忆写入仅限自身私有范围；共享内容请由用户在记忆面板明确发布");
     if(args.scope==='context')text(args.content,6000);
   } else if (action === "memory.topic") {
-    if (typeof args.op !== "string" || !["tree", "group", "move", "rename", "merge", "revert"].includes(args.op)) throw new Error("memory.topic 的 op 须为 tree、group、move、rename、merge 或 revert");
+    if (typeof args.op !== "string" || !["tree", "access", "grant", "revoke", "resident", "group", "move", "rename", "merge", "revert"].includes(args.op)) throw new Error("memory.topic 的 op 须为 tree、access、grant、revoke、resident、group、move、rename、merge 或 revert");
   } else if (action === "memory.core.update") {
-    if (args.scope !== undefined && args.scope !== "bot") throw new Error(args.scope === "workspace" ? "共享核心记忆请由用户在记忆设置中编辑，模型只能更新自己的核心记忆" : "核心记忆范围无效");
+    // The shared "about" lines (the user's own topic) change only on the user's words: the quote is checked against the task when it runs.
+    const workspace = args.scope === "workspace" && typeof args.quote === "string" && args.quote.trim().length >= 4;
+    if (args.scope !== undefined && args.scope !== "bot" && !workspace) throw new Error(args.scope === "workspace" ? "共享核心记忆请由用户在记忆设置中编辑，模型只能更新自己的核心记忆" : "核心记忆范围无效");
     if (!args.patch || typeof args.patch !== "object" || Array.isArray(args.patch) || JSON.stringify(args.patch).length > 20_000) throw new Error("核心记忆补丁无效");
-    if (!Number.isSafeInteger(args.expectedVersion) || Number(args.expectedVersion) < 0) throw new Error("核心记忆版本无效");
+    if (!workspace && (!Number.isSafeInteger(args.expectedVersion) || Number(args.expectedVersion) < 0)) throw new Error("核心记忆版本无效");
   } else if (action === "memory.read") text(args.documentId, 100);
   else if (action === "memory.delete" || action === "memory.forget") {
     const doc = store.get("SELECT * FROM memory_documents WHERE id=? AND status='active' AND scope='bot' AND bot_id=? AND workspace_id=? AND owner_user_id=?", text(args.documentId, 100), botId, store.workspace, store.owner);
@@ -96,11 +100,14 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
 export function directory(store: CoreStore) {
   const grantVersions = store.all("SELECT g.device_id,g.policy_version,g.status,g.scope_json,d.status device_status FROM device_local_grants g JOIN devices d ON d.id=g.device_id ORDER BY g.device_id");
   const bots = store.all("SELECT b.id,b.name,b.instructions,b.version,p.version policy_version,p.policy_json,x.expertise_json FROM bots b JOIN bot_policies p ON p.bot_id=b.id JOIN bot_public_profiles x ON x.bot_id=b.id WHERE b.status='active' AND b.workspace_id=? AND b.owner_user_id=? ORDER BY b.created_at,b.id", store.workspace, store.owner);
-  const revision = hash(canonical({ bots, grants: grantVersions }));
+  // What each assistant looks after (section 7): the names of the top-level user topics it is steward of, nothing below them.
+  const access = new TopicAccess(store), duties = new Map(bots.map((bot) => [String(bot.id), access.responsibilities(String(bot.id))]));
+  const revision = hash(canonical({ bots, grants: grantVersions, duties: [...duties] }));
   return bots.map((bot) => ({ id: bot.id, bot_id: bot.id, name: bot.name, instructions: bot.instructions, description: bot.instructions, version: bot.version,
     expertise: JSON.parse(String(bot.expertise_json)), capabilities: policyTools(bot).filter((tool) => !tool.startsWith("device.") || tool === "device.inventory" || grantVersions.some((grant) => {
       const scope = JSON.parse(String(grant.scope_json));
       return grant.status === "active" && grant.device_status === "bound" && (tool === "device.exec" ? scope.exec : tool === "device.computer" ? scope.computer : tool === "device.info" ? scope.info : scope.read !== false);
     })),
+    ...(duties.get(String(bot.id))?.length ? { responsibilities: duties.get(String(bot.id)) } : {}),
     availability: store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", bot.id) ? "busy" : "ready", profile_version: bot.version, capability_version: bot.policy_version, directory_version: revision }));
 }

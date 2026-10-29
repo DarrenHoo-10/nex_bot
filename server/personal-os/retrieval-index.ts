@@ -1,5 +1,6 @@
 import { CoreStore, hash, type Row } from './store.ts';
 import { vectorCache } from './vector-cache.ts';
+import { visibility } from './topic-access.ts';
 
 // The lexical half of memory retrieval, and the helpers the writers of the pool use to keep indexes and vectors
 // in step with their sources. Dependency-free of the network on purpose: sync callers (the episode archive's
@@ -63,7 +64,13 @@ const POOLS: Record<PoolKind, Pool> = {
   memory: {
     source: 'assistant_memories r',
     from: 'assistant_memory_search JOIN assistant_memories r ON r.id=assistant_memory_search.memory_id', select: 'r.*', fts: 'assistant_memory_search', columns: ['body'], bm25: 'bm25(assistant_memory_search)',
-    scope: (_store, botId) => ({ where: "r.bot_id=? AND r.status='active'", args: [botId] }),
+    // Its own rows, and the user topics it may read with their facts (topic-access.ts); a user topic it made but may no longer read is not its own any more.
+    scope: (store, botId) => {
+      const seen = visibility(store, botId);
+      if (!seen) return { where: "r.bot_id=? AND r.status='active'", args: [botId] };
+      const readable = JSON.stringify(seen.readable);
+      return { where: "r.status='active' AND ((r.bot_id=? AND r.id NOT IN (SELECT value FROM json_each(?)) AND r.id NOT IN (SELECT memory_id FROM assistant_topic_evidence WHERE topic_id IN (SELECT value FROM json_each(?)))) OR r.id IN (SELECT value FROM json_each(?)) OR r.id IN (SELECT memory_id FROM assistant_topic_evidence WHERE topic_id IN (SELECT value FROM json_each(?))))", args: [botId, JSON.stringify(seen.hidden), JSON.stringify(seen.unreadable), readable, readable] };
+    },
   },
   episode: {
     source: 'conversation_episodes r',

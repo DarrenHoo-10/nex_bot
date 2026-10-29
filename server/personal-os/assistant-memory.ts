@@ -7,6 +7,8 @@ import { dropVectors, indexBody } from './retrieval-index.ts';
 import { EMBED_BATCH } from './embeddings.ts';
 import { TopicMemory, sourceRefs, type Source } from './topic-memory.ts';
 import { TopicTree, leaveContainers } from './topic-tree.ts';
+import { TopicAccess } from './topic-access.ts';
+import { vectorCache } from './vector-cache.ts';
 
 /** Text that must never reach the memory model, whatever its origin (message, episode archive). */
 const secret = /-----BEGIN .*PRIVATE KEY-----|\bsk-[\w-]{16,}|(?:密码|密钥|password|api[_ -]?key)\s*[:=：]\s*\S{6,}/i;
@@ -42,11 +44,16 @@ export class AssistantMemory {
   readonly topics: TopicMemory;
   /** The two-level structure of topics: containers, members, the background `organize` step, routing and the `memory.topic` tool. */
   readonly tree: TopicTree;
+  /** Who may see which user topic (topic-access.ts). */
+  readonly access: TopicAccess;
   constructor(readonly store: CoreStore, readonly changed: () => void = () => {}) {
     store.run("UPDATE assistant_usage SET status='unknown',finished_at=? WHERE status='running'", now());
     // Recalled: topics, and the facts no topic covers (a fact is covered while it is evidence of an active topic).
-    this.retrieval = new Retrieval(store, (botId, row) => !SUPERSEDED.includes(String(row.kind)) && (this.tree.isContainer(row) ? this.tree.standing(botId, row) : this.valid(sourceRefs(row), botId)), (_botId, row) => ['fact', 'experience'].includes(String(row.kind)) && !!store.get("SELECT 1 n FROM assistant_topic_evidence e JOIN assistant_memories t ON t.id=e.topic_id WHERE e.memory_id=? AND t.status='active'", row.id));
+    this.retrieval = new Retrieval(store, (botId, row) => !SUPERSEDED.includes(String(row.kind)) && (this.tree.isContainer(row) ? this.tree.standing(botId, row) : this.rowValid(botId, row)), (_botId, row) => ['fact', 'experience'].includes(String(row.kind)) && !!store.get("SELECT 1 n FROM assistant_topic_evidence e JOIN assistant_memories t ON t.id=e.topic_id WHERE e.memory_id=? AND t.status='active'", row.id));
     this.topics = new TopicMemory(this);
+    this.access = new TopicAccess(store);
+    // Who may see what changed: the vectors an assistant scans are those of the rows it may see.
+    this.access.changed = () => vectorCache(store).invalidate();
     this.tree = new TopicTree(this);
     this.retrieval.router = (botId, query, vector) => this.tree.route(botId, query, vector);
     this.retrieval.expand = (botId, row) => this.tree.expand(botId, row);
@@ -132,6 +139,27 @@ export class AssistantMemory {
     if (!row || row.content === '[已遗忘]') throw new Error('来源不存在或已遗忘');
     return row;
   }
+  /** Like `source`, for a memory that rests on the originals of several assistants (a user topic): any assistant's message or archive. */
+  sourceAny(ref: string) {
+    if (ref.startsWith('episode:')) {
+      const episode = this.store.get('SELECT * FROM conversation_episodes WHERE id=?', ref.slice(8));
+      if (!episode) throw new Error('来源不存在或已遗忘');
+      return { id: ref, role: 'episode', content: episodeText(episode), created_at: episode.ended_at, task_id: null };
+    }
+    const row = this.store.get('SELECT id,role,content,created_at,task_id FROM agent_messages WHERE id=?', ref);
+    if (!row || row.content === '[已遗忘]') throw new Error('来源不存在或已遗忘');
+    return row;
+  }
+  validAny(refs: Source[]) {
+    return refs.length > 0 && refs.every(ref => {
+      try { return hash(String(this.sourceAny(ref.id).content)) === ref.hash; } catch { return false; }
+    });
+  }
+  /** Whether a memory row may be shown to the assistant: it rests on its sources (a user topic or another assistant's fact on theirs, whoever's they are). */
+  rowValid(botId: string, row: Row): boolean {
+    const shared = String(row.bot_id) !== botId || (row.kind === 'topic' && this.access.isUser(String(row.id)));
+    return shared ? this.validAny(sourceRefs(row)) : this.valid(sourceRefs(row), botId);
+  }
   valid(refs: Source[], botId: string) {
     return refs.length > 0 && refs.every(ref => {
       try { return hash(String(this.source(botId, ref.id).content)) === ref.hash; } catch { return false; }
@@ -160,11 +188,11 @@ export class AssistantMemory {
     return selected.map(row => ({ ref: `personal:${row.id}`, refs: sourceRefs(row).map(ref => ref.id.startsWith('episode:') ? ref.id : `message:${ref.id}`), text: String(row.content), scope: 'bot', sourceClass: row.kind === 'topic' ? 'synthesized' : row.kind === 'experience' ? 'agent_inferred' : 'user_stated', kind: row.kind, updatedAt: row.updated_at }));
   }
   /** Records that a task saw these memories, so forgetting one of their sources reaches the task (privacy closure). */
-  use(botId: string, taskId: string, rows: Row[]) {
+  use(_botId: string, taskId: string, rows: Row[]) {
     // A container rests on what its children rest on: a task that saw it has seen all of that.
     this.store.transaction(() => { for (const row of rows) for (const ref of this.tree.sources(row)) {
       this.store.run('INSERT OR IGNORE INTO assistant_memory_uses VALUES(?,?)',taskId,ref.id);
-      const source = this.source(botId, ref.id);
+      const source = this.sourceAny(ref.id);
       if (source.task_id && source.task_id !== taskId) this.store.run('INSERT OR IGNORE INTO memory_task_dependencies VALUES(?,?)', taskId, source.task_id);
     } });
   }
@@ -203,7 +231,7 @@ export class AssistantMemory {
   }
   check(settings: Row, signal: AbortSignal, refs: Source[] = []) {
     const current = this.settings(String(settings.bot_id));
-    if (signal.aborted || this.closing || !this.enabled(String(settings.bot_id)) || current.version !== settings.version || (refs.length && !this.valid(refs, String(settings.bot_id)))) throw new Error('记忆设置或来源已变化');
+    if (signal.aborted || this.closing || !this.enabled(String(settings.bot_id)) || current.version !== settings.version || (refs.length && !this.validAny(refs))) throw new Error('记忆设置或来源已变化');
   }
   async call(settings: Row, purpose: string, instruction: string, content: unknown, signal: AbortSignal) {
     this.check(settings, signal);
@@ -228,8 +256,8 @@ export class AssistantMemory {
     }
   }
   /** `container`: a topic container rests on its children, not on sources of its own (topic-tree.ts), so it may have none. */
-  put(botId: string, kind: string, title: string, content: string, refs: Source[], existing?: Row, container = false): string {
-    if (!(container && !refs.length) && !this.valid(refs, botId)) throw new Error('记忆缺少有效原文');
+  put(botId: string, kind: string, title: string, content: string, refs: Source[], existing?: Row, container = false, shared = false): string {
+    if (!(container && !refs.length) && !(shared ? this.validAny(refs) : this.valid(refs, botId))) throw new Error('记忆缺少有效原文');
     const key = existing ? String(existing.id) : id(), version = Number(existing?.version ?? 0)+1;
     const timestamp=Math.max(now(),Number(this.store.get('SELECT MAX(updated_at) n FROM assistant_memories WHERE bot_id=?',botId)?.n??0)+1);
     this.store.run("INSERT INTO assistant_memories(id,bot_id,kind,title,content,refs_json,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status='active',title=excluded.title,content=excluded.content,refs_json=excluded.refs_json,version=excluded.version,updated_at=excluded.updated_at", key, botId, kind, title, content, JSON.stringify(refs), version, timestamp, timestamp);
@@ -319,7 +347,7 @@ export class AssistantMemory {
       const start = Number(message.seq) === cursor ? offset : 0;
       const content = String(message.content), fragment = content.slice(start, start + Math.max(1, Math.floor(remaining / 1.5)));
       nextSeq = Number(message.seq); nextOffset = start + fragment.length < content.length ? start+fragment.length : 0;
-      if (content !== '[已遗忘]' && !secret.test(content)) { batch.push({ id: String(message.id), role: String(message.role), text: fragment, at: Number(message.created_at) }); refs.push({ id: String(message.id), hash: hash(content) }); }
+      if (content !== '[已遗忘]' && !secret.test(content) && !this.isolated(message)) { batch.push({ id: String(message.id), role: String(message.role), text: fragment, at: Number(message.created_at) }); refs.push({ id: String(message.id), hash: hash(content) }); }
       remaining -= tokens(fragment);
       if (nextOffset || remaining < 256) break;
     }
@@ -327,6 +355,16 @@ export class AssistantMemory {
     else if (messages.length) this.advance(botId, nextSeq, nextOffset, imported);
     else if (imported) this.store.run('DELETE FROM assistant_memory_imports WHERE id=?', imported.id);
     await this.retainEpisodes(settings, signal);
+  }
+  /**
+   * Whether a message of a task that handed a question to another assistant for a topic it may not read stays out of the
+   * memory (section 6.1): the results that came back as peer messages, and its own replies from the first handover on.
+   * The user's messages are kept.
+   */
+  isolated(message: Row): boolean {
+    if (!message.task_id || !['assistant', 'peer'].includes(String(message.role))) return false;
+    const first = this.store.get('SELECT MIN(created_at) n FROM topic_delegations WHERE task_id=?', message.task_id)?.n;
+    return first !== null && first !== undefined && (message.role === 'peer' || Number(message.created_at) >= Number(first));
   }
   /** Extracts facts and experiences from a batch of sources (messages or episode archives), stores them and runs `done` in the same transaction. */
   async retain(settings: Row, signal: AbortSignal, batch: Array<{ id: string; role: string; text: string; at: number }>, refs: Source[], done: () => void) {

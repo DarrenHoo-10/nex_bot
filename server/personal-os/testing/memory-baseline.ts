@@ -22,7 +22,7 @@ const normalize = (value: unknown) => {
   return JSON.parse(JSON.stringify(value).replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, (found) => { if (!seen.has(found)) seen.set(found, `#${seen.size + 1}`); return seen.get(found)!; }));
 };
 
-export async function baselineSnapshot(): Promise<unknown> {
+export async function baselineSnapshot(inspect?: (app: App, bot: string) => void | Promise<void>): Promise<unknown> {
   const root = mkdtempSync(path.join(os.tmpdir(), 'nex-baseline-')), chat = await startFakePersonalMemory(), fake = await startFakeRetrieval();
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(START);
   const app: App = await createPersonalApp({ dir: root, key: randomBytes(32), token: 'synthetic-token', identity: false, memoryRuntime: false, hostDevice: false });
@@ -32,15 +32,16 @@ export async function baselineSnapshot(): Promise<unknown> {
     const personal = app.runtime.memory.personal, config = app.runtime.memory.retrieval.config;
     await config.save({ kind: 'embedding', baseUrl: fake.origin, model: 'fake-embed', enabled: true, version: config.view().embedding.version });
     await config.save({ kind: 'rerank', format: 'cohere', baseUrl: fake.origin, model: 'fake-rerank', enabled: true, version: config.view().rerank.version });
+    // An archive and a document of the assistant join the pool before the memory starts: nothing is extracted from them
+    // (experiences are not merged into user topics, so the scenario keeps to facts, which both versions merge alike).
+    new Episodes(app.store).save({ botId: bot, conversationId: 'baseline-conversation', firstEntry: 'e1', lastEntry: 'e2', startedAt: START, endedAt: START + 3600_000, archive: { title: '上线东京服务器的讨论', brief: '讨论了周五上线东京服务器的流程', topics: ['部署'], decisions: [{ decision: '周五晚上上线', reason: '用户空闲' }], operations: [], openItems: ['通知运维'], refs: [] } });
+    app.runtime.memory.write(bot, { title: '部署手册', content: '部署手册：周五晚上上线东京服务器，发布前备份数据库' });
     personal.save(bot, { version: personal.settings(bot).version, enabled: true, model: 'fixture-memory', dailyBudget: 100000 });
     const pump = async (times: number) => { for (let i = 0; i < times; i++) { app.store.run('UPDATE assistant_memory_settings SET next_attempt=0'); await personal.flush(); } };
     let at = START;
     const say = (content: string) => app.agents.publish(bot, 'user', 'message', content, 'k-' + (++at), null, null, at);
     for (const line of ['周五晚上上线东京服务器', '部署前不需要再次确认', '发布后通知运维', '喜欢拿铁咖啡', '咖啡不加糖', '会议提前十分钟确认日程', '旅行订机票和酒店', '数据库用 sqlite 不用 postgres']) { say(line); at += 60_000; }
     await pump(1);
-    // An archive and a document of the assistant join the pool.
-    new Episodes(app.store).save({ botId: bot, conversationId: 'baseline-conversation', firstEntry: 'e1', lastEntry: 'e2', startedAt: START, endedAt: START + 3600_000, archive: { title: '上线东京服务器的讨论', brief: '讨论了周五上线东京服务器的流程', topics: ['部署'], decisions: [{ decision: '周五晚上上线', reason: '用户空闲' }], operations: [], openItems: ['通知运维'], refs: [] } });
-    app.runtime.memory.write(bot, { title: '部署手册', content: '部署手册：周五晚上上线东京服务器，发布前备份数据库' });
     await pump(3);
 
     const rounded = (value: number) => Number(value.toPrecision(12));
@@ -64,6 +65,7 @@ export async function baselineSnapshot(): Promise<unknown> {
     const topics = app.store.all("SELECT m.id,m.title,m.content,m.version,t.summary FROM assistant_memories m JOIN assistant_topics t ON t.topic_id=m.id WHERE m.bot_id=? AND m.kind='topic' AND m.status='active' ORDER BY m.rowid", bot);
     const semantic = (await personal.recall(bot, '周五上线东京服务器的部署流程', 2000)).map((item) => ({ ref: item.ref, text: item.text, kind: item.kind, sourceClass: item.sourceClass }));
     const core = app.runtime.memory.core;
+    await inspect?.(app, bot);
     return normalize({ withBoth, withVectors, lexicalOnly, topics, semantic, core: core.read('bot', bot).content, rendered: core.render(bot), prompt: app.runtime.memory.prompt(bot) });
   } finally {
     vi.useRealTimers();

@@ -87,13 +87,13 @@ function settle(app: App, bot: string) {
  * A leaf topic resting on one fact per entry of `days` (days from NOW at which its original message was said), with its
  * summary and evidence rows, as the merge leaves it. `task` puts the messages in a conversation (for archive membership).
  */
-function leaf(app: App, bot: string, title: string, opts: { days?: number[]; body?: string; task?: string; at?: number } = {}) {
+function leaf(app: App, bot: string, title: string, opts: { days?: number[]; body?: string; task?: string; at?: number; kind?: string } = {}) {
   const days = opts.days ?? [-30, -20, -5], refs: Array<{ id: string; hash: string }> = [], facts: string[] = [];
   for (const day of days) {
     const content = `${title}的事实${++counter}`, source = 'seed-' + id();
     app.agents.publish(bot, 'user', 'message', content, source, opts.task ?? null, null, (opts.at ?? Date.now()) + day * DAY);
     const message = app.store.get('SELECT id FROM agent_messages WHERE source_key=?', source)!, ref = { id: String(message.id), hash: hash(content) };
-    facts.push(personal(app).put(bot, 'fact', title, content, [ref])); refs.push(ref);
+    facts.push(personal(app).put(bot, opts.kind ?? 'experience', title, content, [ref])); refs.push(ref);
   }
   const key = personal(app).put(bot, 'topic', title, opts.body ?? `${title}正文`, refs);
   app.store.run('INSERT INTO assistant_topics(topic_id,bot_id,summary) VALUES(?,?,?)', key, bot, `${title}说明`);
@@ -128,8 +128,8 @@ describe('migration 36', () => {
     expect(before).toEqual(expect.arrayContaining(['owner', 'role', 'parent_id', 'anchor', 'aliases_json', 'placed_by', 'split_from', 'overview_stale', 'overview_at']));
     expect(columns(app.store, 'task_recall')).toContain('topic_ids');
     for (const table of ['assistant_topic_members', 'assistant_topic_member_scan', 'assistant_topic_moves']) expect(app.store.get('SELECT COUNT(*) n FROM sqlite_master WHERE name=?', table)!.n).toBe(1);
-    // Phase 2 tables are not part of this migration.
-    for (const table of ['user_topic_access', 'topic_delegations']) expect(app.store.get('SELECT COUNT(*) n FROM sqlite_master WHERE name=?', table)!.n).toBe(0);
+    // The tables of the next migration (user topics) are there too, empty.
+    for (const table of ['user_topic_access', 'topic_delegations']) expect(app.store.get(`SELECT COUNT(*) n FROM ${table}`)!.n).toBe(0);
     expect(meta(app, topic.key)).toMatchObject({ role: 'leaf', parent_id: null, owner: 'bot', placed_by: 'auto', anchor: '', aliases_json: '[]', overview_stale: 0 });
     for (let round = 0; round < 3; round++) {
       const reopened = new CoreStore(app.store.dir, app.store.key, 'synthetic-token');
@@ -251,8 +251,8 @@ describe('creating a container', () => {
 // ---- helpers for the rest ----------------------------------------------------------------------------------------
 
 /** A container the owner made over `count` fresh leaves named `${name}1..`; returns its id and the leaves. */
-function made(f: Fixture, name: string, anchor: string, count = 3, opts: { body?: (n: number) => string; days?: number[] } = {}) {
-  const leaves = Array.from({ length: count }, (_, n) => leaf(f.app, f.bot, `${name}${n + 1}`, { days: opts.days, body: opts.body?.(n + 1) }));
+function made(f: Fixture, name: string, anchor: string, count = 3, opts: { body?: (n: number) => string; days?: number[]; kind?: string } = {}) {
+  const leaves = Array.from({ length: count }, (_, n) => leaf(f.app, f.bot, `${name}${n + 1}`, { days: opts.days, body: opts.body?.(n + 1), kind: opts.kind }));
   const result = tree(f.app).run(f.bot, { op: 'group', topics: leaves.map((one) => one.key), name, anchor }) as { created: string };
   return { key: result.created, leaves };
 }
@@ -348,7 +348,8 @@ describe('joining and inheriting', () => {
     const f = await fixture(), { app, bot } = f;
     await ready(f); clock();
     const body = '甲项目发布流程说明文档';
-    const group = made(f, '甲项目', '甲项目对象', 3, { body: () => body });
+    // Topics of facts: the merge promotes them (and their container) to user topics before it looks for the one a new fact belongs to.
+    const group = made(f, '甲项目', '甲项目对象', 3, { body: () => body, kind: 'fact' });
     // The merge splits the new facts into the topic and a sub-topic.
     f.script.merge = (input) => { const ids = input.facts.map((fact) => fact.id); return { topics: [{ id: input.topic!.id, title: input.topic!.title, summary: '主', body, facts: [ids[0]] }, { title: '拆出的子主题', summary: '子', body: '子正文', facts: ids.slice(1) }] }; };
     app.agents.publish(bot, 'user', 'message', '记住：' + body, 'a-' + id()); app.agents.publish(bot, 'user', 'message', '记住：' + body + '。', 'b-' + id());

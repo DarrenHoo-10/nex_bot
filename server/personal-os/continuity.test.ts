@@ -356,9 +356,9 @@ describe('Continuous personal assistant and memory',()=>{
     const last=streamed(fake).at(-1)!,input=Number(app.store.get('SELECT input_tokens FROM model_invocations ORDER BY created_at DESC LIMIT 1')!.input_tokens);
     expect(input).toBeGreaterThan(tokens(last)*.45);expect(input).toBeLessThan(tokens(last)*.55);
   },60000);
-  // Three 10400-character turns put the raw estimate just below H and 90% of the 64,000-token window
-  // (the count behind that line also carries the prompt, whose memory section is a few hundred tokens longer than it was).
-  const ballast='合成资料'.repeat(2600);
+  // Three 10240-character turns put the raw estimate just below H and 90% of the 64,000-token window
+  // (the count behind that line also carries the prompt, whose memory section is a few hundred tokens longer than it was; the broker description and prompt grew again with user topics, hence 10240 characters.)
+  const ballast='合成资料'.repeat(2560);
   it('starts reduction on the calibrated count: a low ratio does not delay it past the raw 90% net, a high one brings it forward',async()=>{
     // H of the 64,000-token window is 57,856. Without a ratio three of these turns (~54,000 raw) still fit.
     const control=await fixture();
