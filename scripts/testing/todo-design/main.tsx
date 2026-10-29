@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowDown, ArrowLeft, ArrowUp, CalendarDays, Check, CheckCheck, ChevronDown, ChevronRight, Circle, CircleCheck, Clock3, FileText, Flag, LayoutGrid, List, ListTodo, Loader2, MessageSquare, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, Search, Send, Sparkles, Square, Sun, Trash2, UserRound, X } from 'lucide-react';
+import { ArrowLeft, ArrowUp, CalendarDays, Check, CheckCheck, ChevronDown, ChevronRight, Circle, CircleCheck, FileText, Flag, ListTodo, Loader2, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, Search, Send, Sparkles, Square, Sun, Trash2, UserRound, X } from 'lucide-react';
 import { BrandMark } from '../../../src/personal/components/BrandMark';
 import { AgentAvatar } from '../../../src/personal/components/AgentAvatar';
 import '../../../src/personal/agent.css';
@@ -11,7 +11,7 @@ import '../../../src/personal/glass.css';
 import './todo.css';
 import { GlowButton, GlassSwitch } from './controls';
 import { SoftSelect, DatePicker } from './pickers';
-import { parseDate, shiftDate, weekDays, monthDays, inPeriod, matchesStatus, periodTitle } from './calendar-model.mjs';
+import { shiftDate, weekDays, monthDays, inPeriod, matchesStatus, periodTitle } from './calendar-model.mjs';
 
 type Status = 'todo' | 'running' | 'review' | 'done';
 type Item = { id: string; title: string; owner: string; date: string; priority: string; status: Status; description: string; steps: { text: string; done: boolean }[]; log: string[]; result?: string };
@@ -66,7 +66,6 @@ function App() {
  const title = agents.some(a=>a.id===route) ? `${ownerName(route)}的待办` : '待办';
  const groups: Status[] = ['running','todo','done'];
  const count = (test: (x: Item)=>boolean) => items.filter(test).length;
- const iconButton = (label:string, fn:()=>void, icon:ReactNode) => <button className="bt-round glass" aria-label={label} title={label} onClick={fn}>{icon}</button>;
  function Row({ item, card = false }: { item: Item; card?: boolean }) { return <div className={`todo-row ${card ? 'todo-board-card' : ''} ${selected === item.id ? 'is-selected' : ''}`}><button className={`todo-check status-${item.status}`} aria-label={`${item.status === 'done' ? '重新打开' : '完成'}：${item.title}`} disabled={item.status === 'running'} onClick={() => { update(item.id, { status: item.status === 'done' ? 'todo' : 'done' }, item.status === 'done' ? '你重新打开了这条待办' : '你确认完成了这条待办'); setToast(item.status === 'done' ? '已重新打开' : '已完成'); }}><StatusIcon status={item.status} size={18}/></button><button className="todo-row-content" onClick={() => choose(item.id)} aria-label={`打开：${item.title}`} aria-pressed={selected === item.id}><span className="todo-row-title">{item.title}</span><span className="todo-row-meta">{item.status==='review'&&<span className="review-label">待验收</span>}{item.priority === '高' && <span className="todo-priority"><Flag size={11}/>高优先级</span>}<span className={item.date && item.date < dateOf() && item.status !== 'done' ? 'overdue' : ''}><CalendarDays size={12}/>{due(item.date)}</span>{item.steps.length > 0 && <span><ListTodo size={12}/>{item.steps.filter(s=>s.done).length}/{item.steps.length}</span>}</span></button><button className="todo-row-owner" aria-label={`查看${item.title}的负责人`} onClick={() => choose(item.id)} title={ownerName(item.owner)}><Avatar owner={item.owner} size={26}/>{!card && <span>{ownerName(item.owner)}</span>}</button></div>; }
  return <div className="workspace-stage" data-dark={dark?'1':'0'}><div className="app rk-workspace todo-app" data-dark={dark?'1':'0'} data-theme="studio" data-left={collapsed?'closed':'open'} data-right={task?'open':'closed'} data-page="todo" data-mobile-detail={task?'open':'closed'}>
  {mobileNav && <button className="todo-nav-scrim" aria-label="关闭导航" onClick={()=>setMobileNav(false)}/>}
