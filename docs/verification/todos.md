@@ -1,5 +1,24 @@
 # Unified Todo panel — local verification (2026-10-30)
 
+## Local follow-up: default visibility (not released)
+
+Web and native Apple Todo views now start in day view with unscheduled items
+expanded. In Web day view, an empty dated section no longer pushes existing
+unscheduled rows below a large empty-state placeholder. Header and status counts
+include unscheduled items alongside the selected date range.
+When the unscheduled tray is the first section, its inter-section margin, top
+padding and separator are removed. Rebuilt and visually checked with the same
+three-item fixture; the rows fit without the previous blank band or scrollbar.
+
+Verified with three synthetic undated items in a throwaway Core: entry selected
+day view, all three rows were immediately visible, counters showed 3, and manual
+collapse/reopen worked. Core/Web build, changed-file lint and four calendar-model
+tests passed. macOS Debug and iOS Simulator Debug compiled in a fresh temporary
+source directory on the Mac, without using a user checkout or simulator. The
+directory was removed. Screenshot and build logs remain in ignored
+`release/todo-defaults-evidence/`. Native interactive behavior was not exercised.
+No push, deployment, installer or GitHub/OSS publication was performed.
+
 Implementation on `codex/todo-panel-design`, based on `origin/main` at
 `6e2e38410e6d659b64a890c53802669ed79e85e5`. This is a local implementation;
 the checks below record the initial local phase. The user subsequently authorized

@@ -153,7 +153,7 @@ export function TodoWorkspace({
   const [items, setItems] = useState<Item[]>([]),
     [selected, setSelected] = useState<string | null>(null);
   const [filter, setFilter] = useState("all"),
-    [view, setView] = useState("week"),
+    [view, setView] = useState("day"),
     [search, setSearch] = useState(""),
     [anchor, setAnchor] = useState(dateOf());
   const [quick, setQuick] = useState(""),
@@ -363,7 +363,7 @@ export function TodoWorkspace({
     { id: "done", label: "已完成" },
   ].map((x) => ({
     ...x,
-    count: inRange.filter((i) => matchesStatus(i.status, x.id)).length,
+    count: scoped.filter((i) => (!i.date || inPeriod(i.date, anchor, view)) && matchesStatus(i.status, x.id)).length,
   }));
   function Row({ item, card = false }: { item: Item; card?: boolean }) {
     return (
@@ -504,7 +504,7 @@ export function TodoWorkspace({
               <div>
                 <h1>
                   {title}
-                  <span>{filtered.length}</span>
+                  <span>{filtered.length + unscheduled.length}</span>
                 </h1>
               </div>
               <GlassSwitch
@@ -584,7 +584,7 @@ export function TodoWorkspace({
               className={`todo-list-scroll calendar-scroll view-${view}`}
               key={`${view}-${anchor}-${filter}`}
             >
-              {view === "day" && (
+              {view === "day" && (filtered.length > 0 || unscheduled.length === 0) && (
                 <div className="day-agenda">
                   {filtered.length === 0 ? (
                     <div className="todo-empty">
@@ -776,7 +776,7 @@ export function TodoWorkspace({
                 </div>
               )}
               {unscheduled.length > 0 && (
-                <details className="unscheduled-tray">
+                <details className="unscheduled-tray" open>
                   <summary>
                     <span>
                       <ListTodo size={14} />

@@ -6,7 +6,8 @@ struct TodosView: View {
     let workspace: WorkspaceStore
     let openAgent: (String) -> Void
     @State private var items: [TodoItem] = []
-    @State private var period = "week"
+    @State private var period = "day"
+    @State private var unscheduledExpanded = true
     @State private var filter = "all"
     @State private var anchor = Date()
     @State private var query = ""
@@ -53,7 +54,7 @@ struct TodosView: View {
                     }
                 }
                 let unscheduled = filtered.filter { $0.date.isEmpty }
-                if !unscheduled.isEmpty { DisclosureGroup("未安排 · \(unscheduled.count)") { ForEach(unscheduled) { item in row(item) } }.padding(.top, 18) }
+                if !unscheduled.isEmpty { DisclosureGroup("未安排 · \(unscheduled.count)", isExpanded: $unscheduledExpanded) { ForEach(unscheduled) { item in row(item) } }.padding(.top, 18) }
             } }
         }
         .padding(20).background { WorkspaceSurface(kind: .stage) }

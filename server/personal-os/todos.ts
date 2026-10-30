@@ -96,12 +96,26 @@ export class TodoModule {
   // Broker and the panel share the same records. Saving a note never starts work.
   tool(call: Row, args: Record<string, unknown>) {
     if (call.tool_name === "todo.list") return { items: this.list() };
-    if (call.tool_name !== "todo.save") throw new Error("未知的待办能力");
+    if (call.tool_name !== "todo.save" && call.tool_name !== "todo.delete") throw new Error("未知的待办能力");
     return this.store.transaction(() => {
       const receipt = this.store.get("SELECT * FROM todo_tool_receipts WHERE call_id=?", call.id);
       if (receipt) {
         if (receipt.argument_hash !== call.argument_hash) throw new Error("待办调用身份冲突");
+        if (call.tool_name === "todo.delete") {
+          const deleted = this.store.get(
+            "SELECT id FROM todos WHERE id=? AND workspace_id=? AND owner_user_id=? AND deleted_at IS NOT NULL",
+            receipt.todo_id, this.store.workspace, this.store.owner,
+          );
+          if (!deleted) throw new Error("待办不存在或已删除");
+          return { deleted: true, todoId: String(deleted.id) };
+        }
         return { saved: true, item: this.get(String(receipt.todo_id)) };
+      }
+      if (call.tool_name === "todo.delete") {
+        const todoId = text(args.todoId, 100);
+        this.action({ id: todoId, version: args.expectedVersion, action: "delete" }, this.store.session);
+        this.store.insert("todo_tool_receipts", { call_id: call.id, argument_hash: call.argument_hash, todo_id: todoId });
+        return { deleted: true, todoId };
       }
       const existing = args.todoId === undefined ? undefined : this.get(text(args.todoId, 100));
       const item = this.save({

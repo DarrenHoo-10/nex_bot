@@ -1704,6 +1704,11 @@
   border-top: 1px solid var(--hair);
   padding-top: 14px;
 }
+.unscheduled-tray:first-child {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
 .unscheduled-tray > summary,
 .todo-activity-fold > summary {
   list-style: none;
