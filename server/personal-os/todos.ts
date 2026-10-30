@@ -93,6 +93,31 @@ export class TodoModule {
   get(todoId: string) {
     return this.view(this.row(todoId));
   }
+  // Broker and the panel share the same records. Saving a note never starts work.
+  tool(call: Row, args: Record<string, unknown>) {
+    if (call.tool_name === "todo.list") return { items: this.list() };
+    if (call.tool_name !== "todo.save") throw new Error("未知的待办能力");
+    return this.store.transaction(() => {
+      const receipt = this.store.get("SELECT * FROM todo_tool_receipts WHERE call_id=?", call.id);
+      if (receipt) {
+        if (receipt.argument_hash !== call.argument_hash) throw new Error("待办调用身份冲突");
+        return { saved: true, item: this.get(String(receipt.todo_id)) };
+      }
+      const existing = args.todoId === undefined ? undefined : this.get(text(args.todoId, 100));
+      const item = this.save({
+        id: existing?.id ?? `tool:${call.id}`,
+        version: existing ? args.expectedVersion : 0,
+        title: args.title ?? existing?.title,
+        description: args.description ?? existing?.description ?? "",
+        owner: args.owner ?? existing?.owner ?? "me",
+        date: args.date ?? existing?.date ?? "",
+        priority: args.priority ?? existing?.priority ?? "普通",
+        steps: args.steps ?? existing?.steps ?? [],
+      });
+      this.store.insert("todo_tool_receipts", { call_id: call.id, argument_hash: call.argument_hash, todo_id: item.id });
+      return { saved: true, item };
+    });
+  }
   save(data: Record<string, unknown>) {
     const todoId = text(data.id, 100),
       title = text(data.title, 120),

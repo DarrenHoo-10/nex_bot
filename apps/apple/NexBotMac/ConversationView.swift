@@ -52,7 +52,6 @@ struct ConversationView: View {
             VStack(spacing: 10) {
                 ForEach(pendingApprovals) { ApprovalCard(workspace: workspace, approval: $0) }
                 ForEach(workspace.state?.peersAwaitingApproval(for: botID) ?? [], id: \.self) { peerID in waitingLine(peerID) }
-                if !tasks.isEmpty || conv.isSending { statusLine(conv) }
                 Composer(workspace: workspace, conversation: conv, bot: bot, onOpenImage: { imagePreview = $0 })
             }
             .frame(maxWidth: Theme.readingWidth)
@@ -174,16 +173,7 @@ struct ConversationView: View {
         .padding(.horizontal, 4)
     }
 
-    private func statusLine(_ conv: ConversationStore) -> some View {
-        // Text only, as on the web: the composer's send key turns into the stop key.
-        let stopping = tasks.contains { $0.status == "cancelling" }
-        return HStack(spacing: 8) {
-            Circle().fill(tasks.first?.status == "awaiting_approval" ? Theme.approval : Theme.success).frame(width: 6, height: 6)
-            Text(tasks.isEmpty ? "正在发送…" : stopping ? "正在停止…" : "Agent 正在工作 · \(ToolLabels.taskPhrase(tasks.first))").font(.system(size: 12)).foregroundStyle(Theme.muted)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 5)
-        .glass(Capsule(), lift: .none)
-    }
+
 }
 
 // MARK: - No agents

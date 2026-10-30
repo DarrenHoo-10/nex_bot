@@ -156,7 +156,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     await act(async () => { sources[0].emit("change", sync); await new Promise((resolve) => setTimeout(resolve, 300)); });
     const stop = container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]');
     expect(stop).not.toBeNull();
-    expect(container.querySelector('.task-status [aria-label="停止任务"]')).toBeNull();
+    expect(container.querySelector('.task-status')).toBeNull();
     await act(async () => { stop!.click(); });
     expect(fixture.api).toHaveBeenCalledWith("cancel", { taskId: "task-1" });
     await type("补充一句");
@@ -247,7 +247,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(container.querySelector(".boot")).toBeNull();
     const optimisticElement = container.querySelector('[data-message-id^="optimistic:"]');
     expect(container.querySelector(".processing-caption")?.textContent).toBe("正在发送…");
-    expect(container.querySelector(".task-status")).not.toBeNull();
+    expect(container.querySelector(".task-status")).toBeNull();
     await act(async () => { releaseInput(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(transcript()).toContain("更早的问题");

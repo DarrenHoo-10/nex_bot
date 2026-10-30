@@ -89,6 +89,7 @@ export async function createPersonalApp(options: AppOptions) {
   const files = new ChatFiles(store);
   const routines = new RoutineModule(store, agents);
   const todos = new TodoModule(store, agents);
+  runtime.todoExecutor = (call, args) => todos.tool(call, args);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
   feishu = new FeishuModule(store, changed, agents, runtime, {

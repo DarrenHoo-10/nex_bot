@@ -63,7 +63,6 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            if !tasks.isEmpty { statusBar }
             if let error = errorText {
                 Text(error).font(.footnote).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -152,15 +151,6 @@ struct ComposerView: View {
 
     // MARK: Parts
 
-    private var statusBar: some View {
-        HStack(spacing: 6) {
-            Circle().fill(Theme.success).frame(width: 6, height: 6)
-            Text(tasks.contains { $0.status == "cancelling" } ? "正在停止…" : "Agent 正在工作 · \(tasks[0].phrase)")
-                .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
-            Spacer()
-        }
-        .padding(.horizontal, 6)
-    }
 
     private func quoteBar(_ quote: QuoteDraft) -> some View {
         HStack(spacing: 8) {

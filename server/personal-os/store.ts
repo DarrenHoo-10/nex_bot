@@ -403,6 +403,11 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.db.exec(todoSchema);
       this.insert("schema_migrations", { version: 38, checksum: hash(todoSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=39")) this.transaction(() => {
+      const schema = "CREATE TABLE todo_tool_receipts (call_id TEXT PRIMARY KEY REFERENCES tool_calls(id), argument_hash TEXT NOT NULL, todo_id TEXT NOT NULL REFERENCES todos(id));";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 39, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

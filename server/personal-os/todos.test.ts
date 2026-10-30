@@ -6,6 +6,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createPersonalApp } from "./index.ts";
 import { TodoModule } from "./todos.ts";
 import { hash } from "./store.ts";
+import { evaluateTool } from "./policy.ts";
+import type { TodoItem } from "../../shared/personal-todos.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -100,6 +102,58 @@ async function until(check: () => boolean) {
   throw new Error("任务未在隔离环境中完成");
 }
 describe("durable unified todos", () => {
+  it("lets a model save panel todos, edit with versions and replay safely across restart", async () => {
+    const f = await fixture();
+    const draft = { action: "todo.save", title: "修复聊天界面", description: "修复侧栏摘要与流式显示", steps: [{ text: "检查侧栏摘要", done: false }] };
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "save-todo", name: "broker", args: JSON.stringify(draft) }] },
+      { kind: "openai-tool", calls: [{ id: "list-todos", name: "broker", args: JSON.stringify({ action: "todo.list" }) }] },
+      { kind: "openai-text", text: "已记录在待办中，尚未开始。" },
+    );
+    const task = f.app.agents.send(f.bot, "把这些记录为待办，先不要开工", "todo-broker-create").taskId;
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded" && f.app.runtime.workers.size === 0);
+    let items = (await (await f.request("todos")).json() as { items: TodoItem[] }).items;
+    expect(items).toHaveLength(1);
+    const original = items[0];
+    expect(original).toMatchObject({ title: draft.title, description: draft.description, status: "todo", owner: "me", date: "", priority: "普通", taskId: null, steps: draft.steps });
+    const call = f.app.store.get("SELECT * FROM tool_calls WHERE task_id=? AND tool_name='todo.save'", task)!;
+    expect(call.status).toBe("succeeded");
+    expect(f.app.store.all("SELECT * FROM todo_runs")).toHaveLength(0);
+    const prompt = JSON.stringify(f.model.requests[0].body);
+    expect(prompt).toContain("todo.save");
+    expect(prompt).toContain("不能用 memory.write");
+    expect(prompt).toContain("todoId");
+    await f.restart();
+    expect(f.module().tool(call, draft)).toMatchObject({ saved: true, item: { id: original.id, version: original.version } });
+    expect(f.module().list()).toHaveLength(1);
+    const update = { action: "todo.save", todoId: original.id, expectedVersion: original.version, title: "更新后的界面待办", owner: f.bot };
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "edit-todo", name: "broker", args: JSON.stringify(update) }] },
+      { kind: "openai-text", text: "待办已更新，尚未开始。" },
+    );
+    const editTask = f.app.agents.send(f.bot, "修改待办标题并分配给你，先不要执行", "todo-broker-edit").taskId;
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", editTask)?.status === "succeeded" && f.app.runtime.workers.size === 0);
+    items = (await (await f.request("todos")).json() as { items: TodoItem[] }).items;
+    expect(items[0]).toMatchObject({ id: original.id, title: update.title, description: draft.description, steps: draft.steps, owner: f.bot, status: "todo", taskId: null, version: original.version + 1 });
+    const editCall = f.app.store.get("SELECT * FROM tool_calls WHERE task_id=? AND tool_name='todo.save'", editTask)!;
+    expect(f.module().tool(editCall, update)).toMatchObject({ item: { version: original.version + 1 } });
+    expect(() => f.module().tool({ ...editCall, id: "stale-attempt" }, update)).toThrow("其他设备更新");
+    expect(() => f.module().tool({ ...editCall, argument_hash: "changed" }, update)).toThrow("身份冲突");
+    f.module().action({ id: original.id, version: items[0].version, action: "delete" }, f.app.store.session);
+    expect(() => f.module().tool(call, draft)).toThrow("已删除");
+    expect(f.module().list()).toHaveLength(0);
+  });
+  it("honors tool grants and workspace ownership", async () => {
+    const f = await fixture();
+    expect(evaluateTool(f.app.store, f.bot, { action: "todo.save", title: "授权待办" }).approvalRequired).toBe(false);
+    const item = f.module().save(f.input());
+    f.app.store.insert("users", { id: "another-owner", display_name: "隔离成员", status: "active", created_at: Date.now() });
+    f.app.store.run("UPDATE todos SET owner_user_id='another-owner' WHERE id=?", item.id);
+    expect(f.module().tool({ tool_name: "todo.list" }, {})).toEqual({ items: [] });
+    expect(() => f.module().tool({ id: "cross-owner", tool_name: "todo.save" }, { todoId: item.id, expectedVersion: item.version, title: "不应修改" })).toThrow("不存在");
+    f.app.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: ["memory.search"] }), f.bot);
+    expect(() => evaluateTool(f.app.store, f.bot, { action: "todo.save", title: "不应创建" })).toThrow("无权");
+  });
   it("persists changes, steps and completion across Core restart and detects stale writes", async () => {
     const f = await fixture();
     let item = f
