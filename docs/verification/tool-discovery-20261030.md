@@ -1,5 +1,7 @@
 # Common tools and on-demand discovery — local verification
 
+后续已随 [0.9.23 全平台发布](tool-discovery-release-20261031.md) 上线；下文保留当时的本地验收记录。
+
 The user chose short resident instructions for common tools, with Todo explicitly
 classified as common. Uncommon tools should be queried when needed rather than
 adding another full manual to the system prompt.

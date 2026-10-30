@@ -1,5 +1,7 @@
 # Model Todo deletion — local verification
 
+后续已随 [0.9.23 全平台发布](tool-discovery-release-20261031.md) 上线；下文保留当时的本地验收记录。
+
 The panel already supported deletion, but the model only had `todo.list` and
 `todo.save`. Broker now exposes `todo.delete(todoId,expectedVersion)` and tells
 the model to identify the user-requested item and current version before deleting,

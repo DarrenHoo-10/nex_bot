@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [待办删除与工具按需查询：全平台发布（2026-10-31）](tool-discovery-release-20261031.md)
+
 - [Common tools and on-demand discovery: local verification (2026-10-30)](tool-discovery-20261030.md)
 
 - [Model Todo deletion: local verification (2026-10-30)](todo-delete-20261030.md)
