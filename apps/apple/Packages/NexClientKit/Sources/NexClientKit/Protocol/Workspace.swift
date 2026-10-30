@@ -76,6 +76,7 @@ public struct AgentTask: RowBacked {
     public var botID: String { row.string("bot_id") ?? "" }
     public var status: String { row.string("status") ?? "" }
     public var objective: String { row.string("objective") ?? "" }
+    public var origin: String { row.string("origin") ?? "" }
     public var activeTool: String? { row.string("active_tool") }
     public var createdAt: Date? { dateFromMilliseconds(row.double("created_at")) }
     /// Nil while the task is unfinished.
@@ -158,9 +159,9 @@ public struct WorkspaceState: Codable, Sendable {
         if imageModelSelection.models == nil { imageModelSelection.models = [] }
     }
     /// Newest unfinished task of a bot (tasks arrive unfinished-first, newest first).
-    public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.isUnfinished } }
+    public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.origin != "routine" && $0.isUnfinished } }
     /// All unfinished tasks of a bot, newest first.
-    public func unfinishedTasks(botID: String) -> [AgentTask] { tasks.filter { $0.botID == botID && $0.isUnfinished } }
+    public func unfinishedTasks(botID: String) -> [AgentTask] { tasks.filter { $0.botID == botID && $0.origin != "routine" && $0.isUnfinished } }
     public func routines(botID: String) -> [Routine] { routines.filter { $0.botID == botID } }
     /// Up to `limit` newest occurrences of a bot's routines (web 工作 tab: 10).
     public func occurrences(botID: String, limit: Int = 10) -> [RoutineOccurrence] { Array(occurrences.filter { $0.botID == botID }.prefix(limit)) }

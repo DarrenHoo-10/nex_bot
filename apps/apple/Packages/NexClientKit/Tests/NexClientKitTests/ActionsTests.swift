@@ -82,6 +82,41 @@ final class ActionsTests: XCTestCase {
         XCTAssertTrue(core2.recorded("/api/agents/topic").isEmpty, "nothing is sent for an unknown agent")
     }
 
+    func testDeleteRoutineUsesConfirmedVersionAndRefreshes() async throws {
+        let (core, store) = await loaded()
+        let snapshot = Routine(row: ["id": "r1", "version": 6])
+        let before = core.recorded("/api/state").count
+        try await store.deleteRoutine(snapshot)
+        let request = try XCTUnwrap(core.recorded("/api/routines/delete").first)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.json["id"] as? String, "r1")
+        XCTAssertEqual(request.json["version"] as? Int, 6, "must not silently replace the confirmed version with state version 7")
+        XCTAssertEqual(request.json.count, 2)
+        XCTAssertGreaterThan(core.recorded("/api/state").count, before)
+        XCTAssertTrue(core.recorded("/api/routines/run").isEmpty)
+        XCTAssertTrue(core.recorded("/api/cancel").isEmpty, "deleting a plan must not cancel its running task from the client")
+    }
+
+    func testDeleteRoutineSurfacesConflictAndMissingErrors() async throws {
+        for status in [409, 404] {
+            let (core, store) = await loaded { r in
+                r.path == "/api/routines/delete" ? .json(["error": "任务已变化，请刷新"], status: status) : .json(["ok": true])
+            }
+            do { try await store.deleteRoutine(Routine(row: ["id": "r1", "version": 6])); XCTFail("expected refusal") }
+            catch let error as CoreError { XCTAssertEqual(error.status, status); XCTAssertEqual(error.message, "任务已变化，请刷新") }
+            XCTAssertEqual(core.recorded("/api/routines/delete").count, 1, "never retry a delete with a substituted version")
+        }
+    }
+
+    func testCloseRoutineDoesNotRunOrCancelExistingTask() async throws {
+        let (core, store) = await loaded()
+        try await store.setRoutineEnabled(Routine(row: ["id": "r1", "version": 7]), enabled: false)
+        let request = try XCTUnwrap(core.recorded("/api/routines/toggle").first)
+        XCTAssertEqual(request.json["enabled"] as? Bool, false)
+        XCTAssertTrue(core.recorded("/api/routines/run").isEmpty)
+        XCTAssertTrue(core.recorded("/api/cancel").isEmpty)
+    }
+
     // MARK: DTOs
 
     func testDecodesFullState() async throws {
@@ -198,6 +233,116 @@ final class ActionsTests: XCTestCase {
         j = core.recorded("/api/routines/toggle")[0].json; XCTAssertEqual(j["version"] as? Int, 2); XCTAssertEqual(j["enabled"] as? Bool, true)
         try await store.runRoutine(existing, clientID: "cid-1")
         j = core.recorded("/api/routines/run")[0].json; XCTAssertEqual(j["clientId"] as? String, "cid-1"); XCTAssertNil(j["version"])
+    }
+
+    func testRoutineEditKeepsOriginalVersionAndCategory() async throws {
+        let (core, store) = await loaded { r in
+            r.path == "/api/routines" ? .json(["error": "计划已变化，请刷新"], status: 409) : .json(["ok": true])
+        }
+        // State has version 7; the open editor still owns version 6.
+        let original = Routine(row: ["id": "r1", "version": 6, "schedule_kind": "once", "next_due_at": 1_900_000_000_000])
+        do {
+            _ = try await store.saveRoutine(botID: "b1", existing: original, name: "edited", prompt: "P", schedule: .once(at: try XCTUnwrap(original.runAt)), taskKind: .action)
+            XCTFail("expected stale edit rejection")
+        } catch let e as CoreError { XCTAssertEqual(e.status, 409); XCTAssertEqual(e.message, "计划已变化，请刷新") }
+        let request = try XCTUnwrap(core.recorded("/api/routines").last)
+        XCTAssertEqual(request.json["version"] as? Int, 6)
+        XCTAssertEqual(request.json["taskKind"] as? String, "action")
+        XCTAssertEqual(request.json["runAt"] as? Int, 1_900_000_000_000)
+    }
+
+    func testRoutineDefaultsOriginalTimeAndIntervalBoundary() async throws {
+        for (schedule, category) in [("once", RoutineTaskKind.reminder), ("interval", .monitor), ("daily", .report)] {
+            XCTAssertEqual(Routine(row: ["schedule_kind": .string(schedule)]).taskKind, category)
+        }
+        let completed = Routine(row: ["run_at": 1_800_000_000_000, "next_due_at": .null])
+        XCTAssertEqual(completed.runAt, Date(timeIntervalSince1970: 1_800_000_000))
+        let both = Routine(row: ["run_at": 1_800_000_000_000, "next_due_at": 1_900_000_000_000])
+        XCTAssertEqual(both.runAt, completed.runAt)
+        let (core, store) = await loaded { _ in .json(["id": "r9"]) }
+        do { _ = try await store.saveRoutine(botID: "b1", name: "A", prompt: "P", schedule: .interval(minutes: 4)); XCTFail() }
+        catch let e as CoreError { XCTAssertEqual(e.message, "间隔须为 5 分钟至 365 天") }
+        XCTAssertTrue(core.recorded("/api/routines").isEmpty)
+        _ = try await store.saveRoutine(botID: "b1", name: "A", prompt: "P", schedule: .interval(minutes: 5))
+        XCTAssertEqual(core.recorded("/api/routines")[0].json["intervalMinutes"] as? Int, 5)
+        XCTAssertNil(core.recorded("/api/routines")[0].json["taskKind"], "nil preserves the server default")
+    }
+
+    func testCompletedOnceEditKeepsPastTimeWithoutReenabling() async throws {
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        let past = Date(timeIntervalSince1970: 1_800_000_000)
+        let completed = Routine(row: ["id": "completed", "schedule_kind": "once", "run_at": 1_800_000_000_000, "next_due_at": .null, "enabled": false, "version": 4])
+        XCTAssertTrue(RoutineSchedule.acceptsOnceDate(past, existing: completed, now: now))
+        XCTAssertFalse(RoutineSchedule.acceptsOnceDate(past.addingTimeInterval(60), existing: completed, now: now))
+        XCTAssertFalse(RoutineSchedule.acceptsOnceDate(past, existing: nil, now: now))
+        XCTAssertFalse(RoutineSchedule.acceptsOnceDate(past, existing: Routine(row: ["schedule_kind": "daily", "next_due_at": 1_800_000_000_000]), now: now))
+        XCTAssertTrue(RoutineSchedule.acceptsOnceDate(now.addingTimeInterval(60), existing: nil, now: now))
+        let legacy = Routine(row: ["schedule_kind": "once", "next_due_at": 1_800_000_000_000])
+        XCTAssertTrue(RoutineSchedule.acceptsOnceDate(past, existing: legacy, now: now))
+        let (core, store) = await loaded { _ in .json(["id": "completed"]) }
+        _ = try await store.saveRoutine(botID: "b1", existing: completed, name: "重命名", prompt: "原任务", schedule: .once(at: past))
+        let json = try XCTUnwrap(core.recorded("/api/routines").first).json
+        XCTAssertEqual(json["runAt"] as? Int, 1_800_000_000_000)
+        XCTAssertEqual(json["version"] as? Int, 4)
+        XCTAssertNil(json["enabled"], "An edit must leave the stored disabled state under Core's control")
+        XCTAssertTrue(core.recorded("/api/routines/toggle").isEmpty)
+        XCTAssertTrue(core.recorded("/api/routines/run").isEmpty)
+    }
+
+    func testRoutineDetailRefreshAndNullTask() async throws {
+        let (core, store) = await loaded { r in
+            if r.path == "/api/routines/occurrence" {
+                return .json(["occurrence": ["id": "o&1", "name": "巡检", "prompt": "检查", "status": "running", "task_kind": "monitor", "task_status": "awaiting_approval", "scheduled_at": 1_800_000_000_000],
+                              "task": ["id": "routine-task", "status": "awaiting_approval", "origin": "routine", "result_summary": "等待批准"],
+                              "messages": [["id": "m1", "role": "assistant", "content": "正在检查", "created_at": 1_800_000_000_000]],
+                              "steps": [["id": "call1", "tool_name": "device.exec", "status": "awaiting_approval", "summary": "device.exec", "preview": "", "created_at": 1_800_000_000_000]], "streaming": "部分输出"])
+            }
+            return .json(["ok": true])
+        }
+        let detail = try await store.routineOccurrence(id: "o&1")
+        XCTAssertEqual(core.recorded("/api/routines/occurrence")[0].query, "id=o%261")
+        XCTAssertEqual(detail.status, "awaiting_approval"); XCTAssertEqual(detail.occurrence.statusText, "等你批准")
+        XCTAssertEqual(detail.messages.first?.content, "正在检查"); XCTAssertEqual(detail.steps.first?.id, "call1")
+        XCTAssertEqual(detail.streaming, "部分输出"); XCTAssertEqual(detail.occurrence.taskKind, .monitor)
+        core.handle { _ in .json(["occurrence": ["id": "o&1", "status": "skipped", "reason": "已有任务运行"], "task": NSNull(), "messages": [], "steps": [], "streaming": ""]) }
+        let refreshed = try await store.routineOccurrence(id: "o&1")
+        XCTAssertNil(refreshed.task); XCTAssertEqual(refreshed.status, "skipped")
+        XCTAssertEqual(refreshed.occurrence.statusText, "已跳过"); XCTAssertEqual(refreshed.occurrence.reason, "已有任务运行")
+        XCTAssertTrue(refreshed.messages.isEmpty); XCTAssertTrue(refreshed.steps.isEmpty)
+        core.handle { _ in .json(["error": "执行记录不存在"], status: 404) }
+        do { _ = try await store.routineOccurrence(id: "missing"); XCTFail() }
+        catch let e as CoreError { XCTAssertEqual(e.status, 404); XCTAssertEqual(e.message, "执行记录不存在") }
+    }
+
+    func testRoutineStatusPrecedenceAndMainTaskIsolation() {
+        for status in RoutineOccurrence.activeTaskStatuses {
+            let run = RoutineOccurrence(row: ["status": "running", "task_status": .string(status)])
+            XCTAssertEqual(run.displayStatus, status)
+        }
+        for status in ["succeeded", "failed", "cancelled"] {
+            let occurrence = RoutineOccurrence(row: ["status": "running", "task_status": .string(status)])
+            XCTAssertEqual(occurrence.displayStatus, status, "Task completion is visible before the occurrence tick")
+            let detail = RoutineOccurrenceDetail(occurrence: RoutineOccurrence(row: ["status": "running", "task_status": "queued"]),
+                                                 task: AgentTask(row: ["status": .string(status)]), messages: [], steps: [], streaming: "")
+            XCTAssertEqual(detail.status, status)
+        }
+        XCTAssertEqual(RoutineOccurrence(row: ["status": "failed", "task_status": "succeeded"]).displayStatus, "succeeded")
+        for taskStatus in ["running", "succeeded", ""] {
+            let skipped = RoutineOccurrence(row: ["status": "skipped", "task_status": .string(taskStatus)])
+            XCTAssertEqual(skipped.displayStatus, "skipped")
+            let detail = RoutineOccurrenceDetail(occurrence: skipped, task: AgentTask(row: ["status": .string(taskStatus)]), messages: [], steps: [], streaming: "")
+            XCTAssertEqual(detail.status, "skipped")
+        }
+        let fallback = RoutineOccurrence(row: ["status": "running", "task_status": "paused"])
+        XCTAssertEqual(RoutineOccurrenceDetail(occurrence: fallback, task: nil, messages: [], steps: [], streaming: "").status, "paused")
+        XCTAssertEqual(RoutineOccurrenceDetail(occurrence: fallback, task: AgentTask(row: [:]), messages: [], steps: [], streaming: "").status, "paused")
+        XCTAssertEqual(RoutineOccurrence(row: ["status": "pending", "task_status": ""]).displayStatus, "pending")
+        XCTAssertEqual(RoutineOccurrence(row: ["status": "pending"]).displayStatus, "pending")
+        let routine = AgentTask(row: ["id": "routine", "bot_id": "b1", "origin": "routine", "status": "running", "ended_at": .null])
+        let main = AgentTask(row: ["id": "main", "bot_id": "b1", "status": "running", "ended_at": .null])
+        let state = WorkspaceState(sync: SyncIdentity(cursor: 1, privacyEpoch: 0, coreId: "c", bootId: "b"), tasks: [routine, main])
+        XCTAssertEqual(state.unfinishedTask(botID: "b1")?.id, "main")
+        XCTAssertEqual(state.unfinishedTasks(botID: "b1").map(\.id), ["main"])
     }
 
     func testConnectorCalls() async throws {

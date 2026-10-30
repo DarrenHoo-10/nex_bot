@@ -9,7 +9,7 @@ import { startFakePersonalMemory } from './fake-personal-memory.ts';
 import { startFakeRetrieval } from './fake-retrieval.ts';
 
 // A fixed scenario whose recall candidates and core memory text were recorded (memory-baseline.golden.json) with the code
-// before migration 36 (assistant topic containers). It runs with no container present: the structure added by migration 36
+// before migration 39 (assistant topic containers). It runs with no container present: the structure added by migration 39
 // must leave every byte of what an assistant recalls and carries in its prompt as it was. Ids are random, so they are
 // replaced by their order of appearance; candidates that tie on score are put in a fixed order (the row order of a tie
 // follows random ids in SQLite and is not part of the behaviour).

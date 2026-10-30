@@ -1,5 +1,10 @@
 # Verifying OpenMausBot
 
+- [统一待办：全平台发布（2026-10-30）](todos-release-20261030.md)
+- [Unified Todo panel: local implementation and persistence](todos.md)
+- [定时任务独立执行：全平台发布（2026-10-30）](routines-release-20261030.md)
+- [Routine subagents, scheduling and execution details (2026-10-30)](routine-subagents.md)
+
 - [Memory recall redesign: all-platform release (2026-10-29)](memory-recall-release-20261029.md)
 - [Compaction timing: Core release (2026-10-29)](compaction-timing-release-20261029.md)
 - [Compaction timing and failure handling (2026-10-29)](compaction-timing.md)

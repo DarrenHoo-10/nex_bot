@@ -1,8 +1,8 @@
-// Migration 37: user topics and who may see them (docs/plans/user-topics.md sections 3, 5, 6 and 10.1, phase 2).
+// Migration 40: user topics and who may see them (docs/plans/user-topics.md sections 3, 5, 6 and 10.1, phase 2).
 //  - assistant_topics gains `special` ('about_me' or NULL: the user's own topic, open to every assistant), `resident` (1: its
 //    overview is carried by the core memory of every assistant that may read it) and `maintainer` (the assistant whose pass
 //    last wrote the topic, which decides who is asked when several assistants look after it). `owner` ('bot' | 'user') came
-//    with migration 36; this migration changes no row, so every topic stays an assistant topic and nobody sees more.
+//    with migration 39; this migration changes no row, so every topic stays an assistant topic and nobody sees more.
 //  - user_topic_access: who may read a user topic ('reader'), who looks after it ('steward': reads, writes, pays for the
 //    upkeep), and who was shut out ('none'); the principal is an assistant id or '*' (every assistant, those made later too).
 //    A topic inherits the rows of its container; its own rows win, and a row for an assistant wins over '*'.
@@ -12,7 +12,7 @@
 //  - task_recall.hints_json: the hints (topic, steward) that were put in the task's recall, kept so every request of the task
 //    carries the same text and the task's later messages can be held back from the asking assistant's memory.
 // Safe to run again: columns are added only where missing.
-export const ACCESS_MIGRATION = 37;
+export const ACCESS_MIGRATION = 40;
 
 export const accessColumns: ReadonlyArray<readonly [string, string, string]> = [
   ['assistant_topics', 'special', 'TEXT'],
@@ -36,11 +36,11 @@ export function applyAccessSchema(db: { exec(sql: string): void; prepare(sql: st
   db.exec(accessSchema);
 }
 
-// Migration 38: a resident topic shown shortened (docs/plans/user-topics.md section 8.3).
+// Migration 41: a resident topic shown shortened (docs/plans/user-topics.md section 8.3).
 //  - assistant_topics.resident_at: when the topic was made resident (the newest is shortened first).
 //  - resident_shortened: the topics whose overview does not fit the core memory of one assistant any more and are shown there
 //    as a single line instead (restored when the overview fits again).
-export const RESIDENT_MIGRATION = 38;
+export const RESIDENT_MIGRATION = 41;
 export const residentSchema = `
 CREATE TABLE IF NOT EXISTS resident_shortened(topic_id TEXT NOT NULL,bot_id TEXT NOT NULL,since INTEGER NOT NULL,PRIMARY KEY(topic_id,bot_id)) STRICT;
 `;

@@ -10,7 +10,6 @@ enum AgentEditorRequest: Identifiable, Hashable {
     var id: String { switch self { case .create: "create"; case .edit(let id): "edit-\(id)" } }
 }
 
-struct RoutineRequest: Identifiable { let id = UUID(); let botID: String; let existing: Routine? }
 struct MemoryRequest: Identifiable { let id = UUID(); let botID: String; let existing: Memory? }
 
 /// Dialog and preview state that several of the agent views (sidebar, chat, inspector) open and observe.
@@ -22,7 +21,6 @@ final class AgentUI {
     var editor: AgentEditorRequest?
     var avatar: BotRef?
     var policy: BotRef?
-    var routine: RoutineRequest?
     var memory: MemoryRequest?
     /// The 工作 tab preview card (file or tool call) and the agent it was opened for.
     var preview: PreviewItem?
@@ -36,7 +34,6 @@ final class AgentUI {
     func editIdentity(_ botID: String) { editor = .edit(botID) }
     func pickAvatar(_ botID: String) { avatar = BotRef(id: botID) }
     func editPolicy(_ botID: String) { policy = BotRef(id: botID) }
-    func editRoutine(botID: String, existing: Routine? = nil) { routine = RoutineRequest(botID: botID, existing: existing) }
     func editMemory(botID: String, existing: Memory? = nil) { memory = MemoryRequest(botID: botID, existing: existing) }
 
     /// Opens a file preview in the inspector 工作 tab.
@@ -225,7 +222,6 @@ struct AgentSheetsHost: ViewModifier {
             .sheet(item: $agentUI.editor) { AgentEditorSheet(workspace: workspace, request: $0) }
             .sheet(item: $agentUI.avatar) { AvatarPickerSheet(workspace: workspace, botID: $0.id) }
             .sheet(item: $agentUI.policy) { PolicyEditorSheet(workspace: workspace, botID: $0.id) }
-            .sheet(item: $agentUI.routine) { RoutineEditorSheet(workspace: workspace, request: $0) }
             .sheet(item: $agentUI.memory) { MemoryEditorSheet(workspace: workspace, request: $0) }
     }
 }

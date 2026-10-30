@@ -113,7 +113,7 @@ function project(f: Fixture, names = ['甲项目发布', '甲项目数据库', '
   return leaves;
 }
 
-describe('migration 36', () => {
+describe('migration 39', () => {
   it('leaves what an assistant recalls and carries in its prompt byte for byte as it was, with no container present, on every run', async () => {
     const golden = JSON.parse(readFileSync(new URL('./testing/memory-baseline.golden.json', import.meta.url), 'utf8'));
     expect(await baselineSnapshot()).toEqual(golden);
@@ -134,11 +134,11 @@ describe('migration 36', () => {
     for (let round = 0; round < 3; round++) {
       const reopened = new CoreStore(app.store.dir, app.store.key, 'synthetic-token');
       try {
-        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version=36')!.n).toBe(1);
+        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version=39')!.n).toBe(1);
         expect(columns(reopened, 'assistant_topics')).toEqual(before);
         expect(reopened.get('SELECT role,parent_id FROM assistant_topics WHERE topic_id=?', topic.key)).toMatchObject({ role: 'leaf', parent_id: null });
         // As after a restore of the marker table: the migration runs again over the finished schema.
-        if (round < 2) reopened.run('DELETE FROM schema_migrations WHERE version=36');
+        if (round < 2) reopened.run('DELETE FROM schema_migrations WHERE version=39');
       } finally { reopened.close(); }
     }
   });

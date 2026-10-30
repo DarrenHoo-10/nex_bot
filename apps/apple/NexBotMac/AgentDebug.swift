@@ -4,10 +4,10 @@ import AppKit
 import NexClientKit
 
 /// DEBUG-only automation for the agent dialogs, driven by the file in `NEXBOT_DEBUG_UI_FILE` (consumed line by line).
-/// Open dialogs: `newagent`, `editagent`, `avatar`, `policy`, `routine [edit]`, `memoryadd`, `memoryedit`, `closesheets`.
+/// Open dialogs: `newagent`, `editagent`, `avatar`, `policy`, `memoryadd`, `memoryedit`, `closesheets`.
 /// Chat: `quote`, `mention`, `actions`, `share`, `previewfile <path>`, `previewstep`, `togglepin`, `welcome`.
 /// Direct Core calls: `createagent name|instructions`, `identity name|instructions`, `appearance companion bean plum`,
-/// `appearance portrait fox`, `policysave a,b,c`, `routinesave name|prompt|HH:mm`, `routinetoggle`, `routinerun`,
+/// `appearance portrait fox`, `policysave a,b,c`,
 /// `memorysave title|content|scope`, `memorydelete`, `recall q`, `reflect q`, `expand q`, `forgetpreview q`, `forgetconfirm q`,
 /// `resume`, `archive`.
 @MainActor func runAgentDebugCommands(workspace: WorkspaceStore, ui: UIState, preferences: ContactPreferences) async {
@@ -34,13 +34,10 @@ import NexClientKit
                 case "editagent": agentUI.editIdentity(id)
                 case "avatar": agentUI.pickAvatar(id)
                 case "policy": agentUI.editPolicy(id)
-                case "routine":
-                    let existing = arg == "edit" ? workspace.state?.routines(botID: id).first : nil
-                    agentUI.editRoutine(botID: id, existing: existing)
                 case "memoryadd": agentUI.editMemory(botID: id)
                 case "memoryedit": agentUI.editMemory(botID: id, existing: workspace.state?.memories(botID: id).first)
                 case "closesheets":
-                    agentUI.editor = nil; agentUI.avatar = nil; agentUI.policy = nil; agentUI.routine = nil; agentUI.memory = nil
+                    agentUI.editor = nil; agentUI.avatar = nil; agentUI.policy = nil; agentUI.memory = nil
                 case "quote":
                     if let m = conv.messages.last(where: { $0.role == "assistant" || $0.role == "user" }) {
                         agentUI.quotes[id] = QuoteDraft(author: senderLabel(m, bot: workspace.bot(id), workspace: workspace), text: m.content)
@@ -63,10 +60,6 @@ import NexClientKit
                     else if w.first == "graphic", w.count == 2, AvatarCatalog.graphic(w[1]) != nil { try await workspace.updateAppearance(botID: id, .graphic(w[1])) }
                     else if w.first == "portrait", w.count == 2 { try await workspace.updateAppearance(botID: id, .portrait(w[1])) }
                 case "policysave": try await workspace.updatePolicy(botID: id, tools: arg.split(separator: ",").map(String.init))
-                case "routinesave":
-                    try await workspace.saveRoutine(botID: id, existing: workspace.state?.routines(botID: id).first { $0.name == fields[0] }, name: fields[0], prompt: fields[1], schedule: .daily(localTime: fields[2]))
-                case "routinetoggle": if let r = workspace.state?.routines(botID: id).first { try await workspace.setRoutineEnabled(r, enabled: !r.enabled) }
-                case "routinerun": if let r = workspace.state?.routines(botID: id).first { try await workspace.runRoutine(r) }
                 case "memorysave":
                     try await workspace.saveMemory(botID: id, existing: workspace.state?.memories(botID: id).first { $0.title == fields[0] }, title: fields[0], content: fields[1], scope: fields.count > 2 ? fields[2] : "bot")
                 case "memorydelete": if let m = workspace.state?.memories(botID: id).first { try await workspace.deleteMemory(m) }

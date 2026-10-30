@@ -1,4 +1,4 @@
-// Migration 36: the two-level structure of an assistant's topics (docs/plans/user-topics.md sections 4 and 10.1, phase 1).
+// Migration 39: the two-level structure of an assistant's topics (docs/plans/user-topics.md sections 4 and 10.1, phase 1).
 //  - assistant_topics gains the structure of a topic: `role` ('leaf' is today's topic; a 'container' has only children and a
 //    summarized overview and rests on no evidence of its own), `parent_id` (the container of a leaf; two levels at most),
 //    the container's `anchor` and `aliases_json`, who placed it (`placed_by` 'auto' | 'owner': the owner's placement is
@@ -13,7 +13,7 @@
 //  - assistant_topic_organize: when an assistant's containers were last judged and which groups were turned down.
 //  - task_recall.topic_ids: the containers a task's recall was routed to.
 // Safe to run again: columns are added only where missing.
-export const TREE_MIGRATION = 36;
+export const TREE_MIGRATION = 39;
 
 export const treeColumns: ReadonlyArray<readonly [string, string]> = [
   ['owner', "TEXT NOT NULL DEFAULT 'bot'"],

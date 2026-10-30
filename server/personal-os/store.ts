@@ -12,12 +12,15 @@ import { continuitySchema } from "./continuity-schema.ts";
 import { episodeSchema } from "./episodes-schema.ts";
 import { trigramSchema, vectorSchema } from "./retrieval-schema.ts";
 import { recallSchema, WORKING_NOTE_TOKENS } from "./recall-schema.ts";
+import { routineSchema } from "./routine-schema.ts";
 import { rebuildMemories, topicSchema } from "./topic-schema.ts";
 import { applyTreeSchema, treeMigrationSql } from "./topic-tree-schema.ts";
 import { accessMigrationSql, applyAccessSchema, applyResidentSchema, residentMigrationSql } from "./topic-access-schema.ts";
 import { clipTokens, tokens } from "./token-estimate.ts";
 import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
+
+import { todoSchema } from "./todo-schema.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
@@ -390,19 +393,32 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.insert("schema_migrations", { version: 35, checksum: hash(topicSchema), applied_at: now() });
     });
     if (!this.get("SELECT version FROM schema_migrations WHERE version=36")) this.transaction(() => {
-      // The two-level structure of assistant topics (containers), their members and moves; see topic-tree-schema.ts. No data moves.
-      applyTreeSchema(this.db);
-      this.insert("schema_migrations", { version: 36, checksum: hash(treeMigrationSql), applied_at: now() });
+      this.db.exec(routineSchema);
+      this.insert("schema_migrations", { version: 36, checksum: hash(routineSchema), applied_at: now() });
     });
     if (!this.get("SELECT version FROM schema_migrations WHERE version=37")) this.transaction(() => {
-      // User topics and who may see them: access grants, delegations of questions, hints kept with the recall; see topic-access-schema.ts. No data moves.
-      applyAccessSchema(this.db);
-      this.insert("schema_migrations", { version: 37, checksum: hash(accessMigrationSql), applied_at: now() });
+      const schema = "ALTER TABLE agent_routines ADD COLUMN deleted_at INTEGER;";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 37, checksum: hash(schema), applied_at: now() });
     });
     if (!this.get("SELECT version FROM schema_migrations WHERE version=38")) this.transaction(() => {
+      this.db.exec(todoSchema);
+      this.insert("schema_migrations", { version: 38, checksum: hash(todoSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=39")) this.transaction(() => {
+      // The two-level structure of assistant topics (containers), their members and moves; see topic-tree-schema.ts. No data moves.
+      applyTreeSchema(this.db);
+      this.insert("schema_migrations", { version: 39, checksum: hash(treeMigrationSql), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=40")) this.transaction(() => {
+      // User topics and who may see them: access grants, delegations of questions, hints kept with the recall; see topic-access-schema.ts. No data moves.
+      applyAccessSchema(this.db);
+      this.insert("schema_migrations", { version: 40, checksum: hash(accessMigrationSql), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=41")) this.transaction(() => {
       // A resident topic shown shortened when its overview outgrows a reader's core memory; see topic-access-schema.ts.
       applyResidentSchema(this.db);
-      this.insert("schema_migrations", { version: 38, checksum: hash(residentMigrationSql), applied_at: now() });
+      this.insert("schema_migrations", { version: 41, checksum: hash(residentMigrationSql), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
@@ -587,7 +603,7 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       delegations: this.all("SELECT * FROM a2a_messages ORDER BY created_at DESC LIMIT 100"),
       memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,d.updated_at,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' ORDER BY d.updated_at DESC"),
       devices: this.all("SELECT id,name,status,capabilities_json FROM devices"),
-      tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at,(SELECT tool_name FROM tool_calls WHERE task_id=tasks.id AND status IN ('proposed','awaiting_approval','ready','executing','unknown') ORDER BY created_at DESC LIMIT 1) active_tool FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200"),
+      tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at,(SELECT origin FROM agent_task_links WHERE task_id=tasks.id) origin,(SELECT tool_name FROM tool_calls WHERE task_id=tasks.id AND status IN ('proposed','awaiting_approval','ready','executing','unknown') ORDER BY created_at DESC LIMIT 1) active_tool FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200"),
       usage: this.all("SELECT r.bot_id,COUNT(m.id) calls,COALESCE(SUM(m.input_tokens),0) input_tokens,COALESCE(SUM(m.output_tokens),0) output_tokens FROM model_invocations m JOIN task_runs r ON r.id=m.run_id WHERE m.status='succeeded' GROUP BY r.bot_id"),
     };
   }

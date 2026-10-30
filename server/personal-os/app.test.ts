@@ -220,7 +220,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.app.store.run("DELETE FROM schema_migrations WHERE version=7");
     await f.app.close(); f.owned.apps.splice(0, 1);
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
-    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory", "image.models", "image.generate"]);
+    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory", "image.models", "image.generate", "html.render"]);
   }, 60_000);
   it("runs ordinary computer input automatically and approves dangerous effects only in the executing Agent, returning screenshot images to the vision model", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
@@ -342,7 +342,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.fake.scripts.push({ kind: "openai-text", text: "合成你好，到时间了" });
     f.app.routines.tick(Number(row.next_due_at));
     await wait(() => f.app.store.get("SELECT status FROM routine_occurrences")?.status === "succeeded" || f.app.store.get("SELECT status FROM tasks WHERE id=(SELECT task_id FROM routine_occurrences)")?.status === "succeeded");
-    expect(f.app.agents.messages(botId).some((m) => m.content === "合成你好，到时间了")).toBe(true);
+    expect(f.app.agents.messages(botId).some((m) => String(m.content).includes("合成你好，到时间了"))).toBe(true);
     expect(f.app.store.all("SELECT * FROM routine_occurrences")).toHaveLength(1);
   }, 60_000);
   it("issues independent client sessions, preserves them through Core restart, rejects device credentials and revokes one client only", async () => {
@@ -576,7 +576,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.app.routines.save({ botId, name: "工作汇报", prompt: "整理工作并汇报", scheduleKind: "once", runAt: due, timeZone: "Asia/Shanghai" });
     f.fake.scripts.push({ kind: "openai-text", text: "例行任务主动汇报成功" });
     f.app.routines.tick(due); f.app.routines.tick(due);
-    await wait(() => f.app.agents.messages(botId).some((m) => m.content === "例行任务主动汇报成功"));
+    await wait(() => f.app.agents.messages(botId).some((m) => String(m.content).includes("例行任务主动汇报成功")));
     f.app.routines.tick(due + 1);
     expect(f.app.store.all("SELECT * FROM routine_occurrences")).toHaveLength(1);
     expect(f.app.store.all("SELECT * FROM routine_occurrences")[0].status).toBe("succeeded");
@@ -584,22 +584,27 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const restored = await createApp({ dir, key: f.key, token: f.token }); f.owned.apps.push(restored);
     restored.routines.tick(due + 2);
     expect(f.fake.requests).toHaveLength(1);
-    expect(restored.agents.messages(botId).filter((m) => m.content === "例行任务主动汇报成功")).toHaveLength(1);
+    expect(restored.agents.messages(botId).filter((m) => String(m.content).includes("例行任务主动汇报成功"))).toHaveLength(1);
   }, 40_000);
-  it("queues routines behind approvals and cancels undispatched occurrences when paused", async () => {
+  it("runs a routine child independently of the owner's approval and cancels only pending schedule work", async () => {
     const f = await fixture(), botId = String(f.bots[0].id);
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "owner-pending", name: "broker", args: JSON.stringify(pendingCleanup(f.app, String(f.bots[0].id))) }] });
     const task = f.app.agents.send(botId, "记住一件事", "pending-owner").taskId;
     await wait(() => !!approval(f.app));
-    const routine = f.app.routines.save({ botId, name: "排队任务", prompt: "不要绕过审批", scheduleKind: "interval", intervalMinutes: 1 });
+    const routine = f.app.routines.save({ botId, name: "排队任务", prompt: "不要绕过审批", scheduleKind: "interval", intervalMinutes: 5 });
     const row = f.app.store.get("SELECT * FROM agent_routines WHERE id=?", routine.id)!;
+    f.fake.scripts.push({ kind: "hang" });
     f.app.routines.tick(Number(row.next_due_at));
-    expect(f.app.store.all("SELECT * FROM tasks WHERE ended_at IS NULL")).toHaveLength(1);
-    expect(f.app.store.get("SELECT status FROM routine_occurrences")?.status).toBe("pending");
+    await wait(() => f.fake.requests.length === 2);
+    expect(f.app.store.all("SELECT * FROM tasks WHERE ended_at IS NULL")).toHaveLength(2);
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status).toBe("awaiting_approval");
+    const child = f.app.store.get("SELECT task_id FROM routine_occurrences WHERE routine_id=?", routine.id)!;
+    f.app.routines.tick(Number(row.next_due_at) + 300_000);
+    expect(f.app.store.get("SELECT COUNT(*) n FROM routine_occurrences WHERE status='pending'")?.n).toBe(1);
     f.app.routines.toggle(routine.id, Number(row.version), false);
-    expect(f.app.store.get("SELECT status FROM routine_occurrences")?.status).toBe("cancelled");
-    expect(f.fake.requests).toHaveLength(1);
-    f.app.runtime.cancel(task);
+    expect(f.app.store.get("SELECT COUNT(*) n FROM routine_occurrences WHERE status='cancelled'")?.n).toBe(1);
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", child.task_id)?.status).toBe("running");
+    f.app.runtime.cancel(String(child.task_id)); f.app.runtime.cancel(task);
   }, 40_000);
   it("publishes peer requests and replies in both Agent inboxes, retaining isolated child execution", async () => {
     const f = await fixture(), botId = String(f.bots[0].id), peer = String(f.bots[1].id);
@@ -966,7 +971,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.app.store.get("SELECT status FROM assistant_usage WHERE purpose='compact'")).toMatchObject({ status: "succeeded" });
     expect(f.app.store.all("SELECT * FROM transcript WHERE role='user'")).toHaveLength(6);
   }, 60_000);
-  it("supports three-layer prompt cache ordering, routine preemption, steward agent management, tool trajectories, and preview API", async () => {
+  it("supports three-layer prompt cache ordering, independent routine execution, steward agent management, tool trajectories, and preview API", async () => {
     const f = await fixture();
     const botId = String(f.bots[1].id);
     // 1. Core memory lines keep their order (a new line goes last) + <system-reminder> dynamic tail
@@ -976,7 +981,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(promptText.indexOf("最早创建的记忆")).toBeGreaterThan(0);
     expect(promptText.indexOf("最早创建的记忆")).toBeLessThan(promptText.indexOf("后来追加的记忆"));
 
-    // 2. Priority delivery: user input preempts an active background routine task
+    // 2. User input gets its own conversation while the routine child keeps running.
     const routine = f.app.routines.save({ botId, name: "后台巡检", prompt: "执行后台例行巡检", scheduleKind: "once", runAt: Date.now() + 60_000 });
     f.fake.scripts.push({ kind: "hang" });
     f.app.routines.runNow(routine.id, id());
@@ -998,8 +1003,10 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.app.store.get("SELECT id FROM bots WHERE name='数据分析师'")).toBeUndefined();
     f.app.runtime.decide(String(createApproval.id), String(createApproval.argument_hash), true);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", userTurn.taskId)?.status === "succeeded");
-    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", routineTaskId)?.status).toBe("cancelled");
-    expect(f.app.store.get("SELECT status FROM routine_occurrences WHERE task_id=?", routineTaskId)?.status).toBe("cancelled");
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", routineTaskId)?.status).toBe("running");
+    expect(f.app.store.get("SELECT status FROM routine_occurrences WHERE task_id=?", routineTaskId)?.status).toBe("running");
+    expect(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", userTurn.taskId)?.conversation_id).not.toBe(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", routineTaskId)?.conversation_id);
+    f.app.runtime.cancel(routineTaskId);
 
     // 3. Steward agent creation & update verification
     const createdBot = f.app.store.get("SELECT * FROM bots WHERE name='数据分析师' AND status='active'");

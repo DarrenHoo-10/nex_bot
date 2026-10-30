@@ -110,7 +110,7 @@ const recalled = async (app: App, bot: string, query: string) => (await app.runt
 const meta = (app: App, key: string) => app.store.get('SELECT * FROM assistant_topics WHERE topic_id=?', key)!;
 const coreText = (app: App, bot: string) => app.runtime.memory.prompt(bot);
 
-describe('migration 37 and promotion', () => {
+describe('migration 40 and promotion', () => {
   it('goes through the merge as before for one assistant: recall and core memory stay byte for byte as recorded before user topics existed', async () => {
     const golden = JSON.parse(readFileSync(new URL('./testing/memory-baseline.golden.json', import.meta.url), 'utf8'));
     let owners: unknown[] = [];
@@ -157,9 +157,9 @@ describe('migration 37 and promotion', () => {
     for (let round = 0; round < 3; round++) {
       const reopened = new CoreStore(app.store.dir, app.store.key, 'synthetic-token');
       try {
-        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version=37')!.n).toBe(1);
+        expect(reopened.get('SELECT COUNT(*) n FROM schema_migrations WHERE version=40')!.n).toBe(1);
         expect(columns(reopened, 'assistant_topics')).toEqual(before);
-        if (round < 2) reopened.run('DELETE FROM schema_migrations WHERE version=37');
+        if (round < 2) reopened.run('DELETE FROM schema_migrations WHERE version=40');
       } finally { reopened.close(); }
     }
   });

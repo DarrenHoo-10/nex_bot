@@ -322,14 +322,20 @@ describe('Background maintenance of the projection', () => {
     expect(count(app, 'context_checkpoints')).toBe(checkpoints); expect(count(app, 'assistant_usage')).toBe(usage);
   }, 180000);
 
-  it('never takes the last free worker slot and retries later', async () => {
+  it('preserves its assistant owner slot and retries without counting another assistant', async () => {
     const { app, bot } = await fixture();
     await fillPast(app, bot);
     const conversation = conversationOf(app, bot);
     app.runtime.maintenanceRetry = 60; minutesLater(app, 56);
-    // Three busy workers leave one slot, which maintenance does not take.
-    const busy = ['busy-1', 'busy-2', 'busy-3'];
-    for (const key of busy) app.runtime.workers.set(key, {} as never);
+    // Use persisted task identities: capacity belongs to a bot, not a global
+    // count of opaque process handles. Three background workers reserve chat.
+    const busy = [0, 1, 2].map(index => app.agents.startRoutine(bot, '合成忙碌工作', '容量' + index, 'maintenance-busy-' + index));
+    const otherBot = app.store.createBot('独立维护容量助手');
+    const other = app.agents.startRoutine(otherBot, '另一个助手工作', '独立容量', 'maintenance-other');
+    for (const key of [...busy, other]) {
+      app.store.run("UPDATE tasks SET status='running' WHERE id=?", key);
+      app.runtime.workers.set(key, {} as never);
+    }
     try {
       app.runtime.scheduleMaintenance(conversation);
       await sleep(400);
@@ -337,9 +343,9 @@ describe('Background maintenance of the projection', () => {
       expect(app.runtime.maintenance.size).toBe(0);
       // It keeps retrying instead of giving up.
       expect(app.runtime.maintenanceTimers.size).toBe(1);
-      app.runtime.workers.delete('busy-3');
-    } catch (error) { for (const key of busy) app.runtime.workers.delete(key); throw error; }
-    try { await finished(app); } finally { for (const key of busy) app.runtime.workers.delete(key); }
+      app.runtime.workers.delete(busy[2]);
+    } catch (error) { for (const key of [...busy, other]) app.runtime.workers.delete(key); throw error; }
+    try { await finished(app); } finally { for (const key of [...busy, other]) app.runtime.workers.delete(key); }
     expect(app.store.get('SELECT status FROM maintenance_runs')).toMatchObject({ status: 'ended' });
   }, 120000);
 

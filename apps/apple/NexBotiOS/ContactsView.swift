@@ -18,6 +18,11 @@ struct ContactsView: View {
         NavigationStack(path: $nav.path) {
             VStack(spacing: 0) {
                 header
+                Button { nav.push(.todos) } label: {
+                    HStack { Label("待办", systemImage: "checklist"); Spacer(); Image(systemName: "chevron.right").font(.caption) }
+                        .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
+                        .padding(14).glass(RoundedRectangle(cornerRadius: 16))
+                }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
                 content
             }
             .background { WorkspaceSurface(kind: .stage) }
