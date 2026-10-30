@@ -34,6 +34,14 @@ export function withPendingOptimistic(server: readonly RecordRow[], shown: reado
   return [...server, ...pending];
 }
 
+/**
+ * A live bubble whose text is already the committed assistant row would vanish
+ * again when the worker drops it. Keep the committed row only.
+ */
+export function withoutCommittedStreaming<T extends { taskId: string; text: string }>(messages: readonly RecordRow[], streaming: readonly T[]): T[] {
+  return streaming.filter((item) => item.text && !messages.some((message) => message.role === "assistant" && String(message.task_id ?? "") === item.taskId && String(message.content ?? "") === item.text));
+}
+
 interface ClipboardFileItem {
   kind: string;
   type: string;

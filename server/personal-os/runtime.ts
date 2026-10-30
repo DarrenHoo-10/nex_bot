@@ -645,6 +645,9 @@ ${chartPrompt}
           this.onSettled?.(worker.taskId);
         }
       });
+      // The reply is now a transcript row. Drop the live copy before notifying,
+      // or the client paints both and then deletes the live one.
+      worker.streaming = "";
       worker.finished = true;
       if (event.requestId) this.reply(worker, event.requestId, { accepted: true });
       this.changed();
@@ -936,7 +939,7 @@ ${chartPrompt}
       this.finishTask(worker.taskId, "failed", detail);
     });
     this.store.run("UPDATE model_invocations SET status='failed',finished_at=? WHERE run_id=? AND status='in_flight'", now(), worker.runId);
-    worker.finished = true; worker.child.kill(); this.changed();
+    worker.streaming = ""; worker.finished = true; worker.child.kill(); this.changed();
   }
   cancel(taskId: string, reason = "用户取消") {
     const task = this.store.get("SELECT * FROM tasks WHERE id=? AND ended_at IS NULL", taskId);

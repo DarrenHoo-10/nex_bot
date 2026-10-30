@@ -203,6 +203,20 @@ final class SyncTests: XCTestCase {
         XCTAssertEqual(store.selectedBotID, "b1", "falls back to the first bot")
     }
 
+    func testCommittedReplyDropsIdenticalStreaming() async throws {
+        let core = StubCore()
+        core.handle { request in
+            if request.path != "/api/agents/messages" { return .json(stateJSON()) }
+            var row = message(1, role: "assistant", content: "完整回复")
+            row["task_id"] = "t1"
+            return .json(["sync": syncJSON(), "messages": [row], "hasMore": false, "streaming": [["taskId": "t1", "text": "完整回复"], ["taskId": "t2", "text": "还在写"], ["taskId": "t3", "text": ""]]])
+        }
+        let store = makeStore(core); store.select("b1"); await store.refresh()
+        let conv = store.conversation(for: "b1")
+        XCTAssertEqual(conv.messages.last?.content, "完整回复")
+        XCTAssertEqual(conv.streaming, [StreamingText(taskId: "t2", text: "还在写")])
+    }
+
     // MARK: Sending
 
     func testSendRetryKeepsClientID() async throws {
@@ -227,6 +241,39 @@ final class SyncTests: XCTestCase {
         XCTAssertEqual(inputs[0]["text"] as? String, "hello"); XCTAssertEqual(inputs[0]["botId"] as? String, "b1")
         conv.draft = "next"; _ = await conv.send()
         XCTAssertNotEqual(core.recorded("/api/agents/input")[2].json["clientId"] as? String, inputs[0]["clientId"] as? String)
+    }
+
+    func testSendKeepsTypingRowWhenItsReloadIsSuperseded() async throws {
+        final class StateCalls: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+            func next() -> Int { lock.withLock { value += 1; return value } }
+        }
+        let core = StubCore()
+        let calls = StateCalls()
+        core.handle { request in
+            if request.path == "/api/agents/input" { return .json(["accepted": true], status: 202) }
+            if request.path == "/api/state" {
+                let call = calls.next()
+                if call == 1 { return .json(stateJSON()) }
+                if call == 2 { return .json(stateJSON(), delay: 0.3) }
+                return .json(stateJSON(tasks: [["id": "t1", "bot_id": "b1", "status": "running"]]), delay: 0.6)
+            }
+            return .json(feedJSON([1]))
+        }
+        let store = makeStore(core); store.select("b1"); await store.refresh()
+        let conv = store.conversation(for: "b1")
+        let sending = Task { await conv.send(text: "你好") }
+        for _ in 0..<200 where core.recorded("/api/state").count < 2 { try await Task.sleep(for: .milliseconds(2)) }
+        let later = Task { await store.refresh() }
+        for _ in 0..<200 where core.recorded("/api/state").count < 3 { try await Task.sleep(for: .milliseconds(2)) }
+        let sent = await sending.value
+        XCTAssertTrue(sent)
+        XCTAssertTrue(conv.isSending, "a superseded reload must not drop the typing row")
+        XCTAssertNil(conv.activeTask)
+        await later.value
+        XCTAssertFalse(conv.isSending)
+        XCTAssertEqual(conv.activeTask?.id, "t1")
     }
 
     func testChangedTextGetsNewClientID() async throws {

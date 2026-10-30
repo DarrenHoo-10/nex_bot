@@ -213,6 +213,18 @@ public final class WorkspaceStore {
 
     // MARK: Refresh
 
+    /// Records that Core accepted `conversation`'s send at the current reload serial.
+    func noteAcceptedSend(_ conversation: ConversationStore) {
+        conversation.sendAcceptedSerial = serial
+    }
+
+    /// Drops typing rows whose accept is older than this published snapshot.
+    private func releaseAcceptedSends(_ request: Int) {
+        for conversation in conversations.values {
+            if let mark = conversation.sendAcceptedSerial, request > mark { conversation.finishSending() }
+        }
+    }
+
     /// Refreshes now (pull to refresh, after an action).
     public func refresh() async {
         debounceTask?.cancel(); debounceTask = nil
@@ -313,13 +325,23 @@ public final class WorkspaceStore {
             if !next.bots.contains(where: { $0.id == current }) {
                 state = next; sync = next.sync; connection = .connected
                 conv.focusedMessageID = nil; conv.reset(); selectedBotID = next.bots.first?.id; notice = nil
+                releaseAcceptedSends(request)
                 if selectedBotID != nil { scheduleRefresh(after: 0) }
                 return
             }
             let same = conv.loadedSync?.sameGeneration(as: next.sync) == true && guess != nil
             var history = same ? conv.messages : []
             var feed: Feed
-            do { feed = try await (same || guess == nil ? early!.get() : client.feed(bot: current)) }
+            // The prefetch can be served before this state snapshot. After a send, read the transcript again.
+            let feedAfterAccept = target == nil && conv.sendAcceptedSerial.map { request > $0 } == true
+            do {
+                if feedAfterAccept {
+                    if let prefetched = await early { _ = try? prefetched.get() }
+                    feed = try await client.feed(bot: current, after: same ? history.last?.seq : nil)
+                } else {
+                    feed = try await (same || guess == nil ? early!.get() : client.feed(bot: current))
+                }
+            }
             catch {
                 // The searched message was forgotten or its assistant archived: fall back to the latest messages.
                 guard target != nil, CoreError.wrap(error).message == messageGoneMessage else { throw error }
@@ -342,7 +364,10 @@ public final class WorkspaceStore {
         }
         // Publish task status and the matching transcript in one MainActor turn.
         // Otherwise a finished task hides the typing row while its reply is still loading.
-        if request == serial { state = next; sync = next.sync; connection = .connected; notice = nil }
+        if request == serial {
+            state = next; sync = next.sync; connection = .connected; notice = nil
+            releaseAcceptedSends(request)
+        }
     }
 
     private static func capture(_ client: CoreClient, bot: String?, after: Int?, around: String?) async -> Result<Feed, CoreError>? {

@@ -33,7 +33,7 @@ import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail, occurrenceStatus, routineStatusLabel } from "./components/RoutineOccurrenceDetail";
 import { copyText as writeCopyText } from "../lib/copy-text";
-import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic } from "./transcript-session";
+import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -197,6 +197,9 @@ export function AgentDesktop() {
   const [focusedMessage,setFocusedMessage]=useState("");
   const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), transcriptInner = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
+  // Set once Core has accepted the send. Cleared only when a later reload publishes
+  // its snapshot, so a superseded reload cannot drop the in-progress row first.
+  const pendingSend = useRef<{ botId: string; acceptedAfter: number } | undefined>(undefined);
   const previousScrollTop = useRef(0), touchY = useRef(0), feedRetry = useRef(false), loadedBot = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (desktop?.platform !== "android") return;
@@ -242,7 +245,7 @@ export function AgentDesktop() {
     void uploadRef.current([new File([blob], image.name.trim() || "截图.png", { type: image.type })]);
   }), []);
   const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
-  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
+  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; pendingSend.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
   selected.current = botId; pageRef.current = page;
 
@@ -253,6 +256,12 @@ export function AgentDesktop() {
 
   const reload = useCallback(async () => {
     const request = ++serial.current, current = selected.current;
+    const releaseSend = () => {
+      const pending = pendingSend.current;
+      if (!pending || request <= pending.acceptedAfter) return;
+      pendingSend.current = undefined;
+      setSendingBotId((id) => id === pending.botId ? undefined : id);
+    };
     type Feed = { messages: RecordRow[]; streaming: Array<{ taskId: string; text: string }>; sync: State["sync"]; hasMore: boolean };
     const target=historyTarget.current?.botId===current?historyTarget.current:undefined;
     const base = `agents/messages?bot=${encodeURIComponent(current)}${target?`&around=${encodeURIComponent(target.id)}`:""}`;
@@ -268,7 +277,7 @@ export function AgentDesktop() {
       if (updated) setMemoryNotice(str(updated.title));
     }
     memoryVersions.current = new Map(next.memories.map((m) => [str(m.id), `${m.version}:${m.updated_at}`]));
-    if (current && !next.bots.some((bot) => bot.id === current)) { setState(next); setBotId(str(next.bots[0]?.id)); setMessages([]); setStreaming([]); return; }
+    if (current && !next.bots.some((bot) => bot.id === current)) { setState(next); setBotId(str(next.bots[0]?.id)); setMessages([]); setStreaming([]); releaseSend(); return; }
     if (current) {
       // Commit task state with its feed below, so the typing indicator cannot
       // disappear a network round trip before the final reply arrives.
@@ -276,7 +285,12 @@ export function AgentDesktop() {
       const same = cached?.botId === current && cached.sync.privacyEpoch === next.sync.privacyEpoch && cached.sync.coreId === next.sync.coreId && cached.sync.bootId === next.sync.bootId;
       let history = same ? cached.messages : [];
       let feed: Feed;
-      try { feed = await (same || !guess?.messages.length ? early! : api<Feed>(base)); }
+      // The prefetch can be served before this state snapshot. After a send, read the
+      // transcript again so the reply cannot lag behind the task that produced it.
+      const pending = pendingSend.current;
+      const feedAfterAccept = !!pending && pending.botId === current && request > pending.acceptedAfter;
+      const freshFeed = () => api<Feed>(same && history.length ? `${base}&after=${history.at(-1)!.seq}` : base);
+      try { feed = await (feedAfterAccept ? freshFeed() : (same || !guess?.messages.length ? early! : api<Feed>(base))); }
       catch (failure) {
         if (request !== serial.current || selected.current !== current) return;
         if (!target || !(failure instanceof Error) || failure.message !== '该消息已不存在或已遗忘') throw failure;
@@ -308,7 +322,7 @@ export function AgentDesktop() {
         void api("agents/read", { botId: current, seq: through }).catch(() => { if (readPositions.current.get(current) === through) readPositions.current.delete(current); });
       }
     }
-    if (request === serial.current) { setState(next); setConnected(true); setError(""); setHistoryLoading(false); }
+    if (request === serial.current) { setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
   }, [offline]);
   useEffect(() => {
     // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
@@ -382,9 +396,12 @@ export function AgentDesktop() {
     void run(async () => {
       try {
         await api("agents/input", { botId: target, text: content, clientId, attachments: attachmentIds });
+        pendingSend.current = { botId: target, acceptedAfter: serial.current };
         setFiles(target, []);
         retry.current = undefined;
       } catch (error) {
+        pendingSend.current = undefined;
+        setSendingBotId((id) => id === target ? undefined : id);
         if (!drafts.current.has(target)) drafts.current.set(target, savedDraft);
         if (selected.current === target) {
           setDraft((current) => current || savedDraft);
@@ -392,7 +409,7 @@ export function AgentDesktop() {
         }
         throw error;
       }
-    }).finally(() => setSendingBotId(undefined));
+    });
   };
   const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin !== "routine" && !terminal.includes(str(t.status))) ?? [];
   useEffect(() => {
@@ -409,7 +426,8 @@ export function AgentDesktop() {
     }
   }, [botId, tasks[0]?.id]);
   const avatarState = !connected ? "offline" : tasks.length ? companionState(tasks[0], state?.approvals.some((a) => a.bot_id === botId), connected) : sendingBotId === botId ? "thinking" : settledState;
-  const processing = connected && !streaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
+  const liveStreaming = withoutCommittedStreaming(messages, streaming);
+  const processing = connected && !liveStreaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
   const setFollowing = useCallback((next: boolean) => {
     stickToBottom.current = next;
     setShowScrollPill(!next && messagesRef.current.length > 3 && !historyTarget.current);
@@ -576,7 +594,7 @@ export function AgentDesktop() {
               <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
             </div>;
           })}
-          {streaming.map((s) => {
+          {liveStreaming.map((s) => {
             const link = state.delegations.find((d) => d.child_task_id === s.taskId), peer = state.bots.find((b) => b.id === link?.sender_bot_id);
             return <article className={`message assistant streaming ${link ? "a2a-reply" : ""}`} key={s.taskId}>
               <Avatar bot={bot} allBots={state.bots} size={26} state={avatarState}/>

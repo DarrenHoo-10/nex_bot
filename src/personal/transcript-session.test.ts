@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { imageFilesFromClipboard, optimisticOutgoing, withPendingOptimistic } from "./transcript-session";
+import { imageFilesFromClipboard, optimisticOutgoing, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
 
 describe("transcript session", () => {
   it("keeps an optimistic send until the matching server row arrives", () => {
@@ -14,6 +14,16 @@ describe("transcript session", () => {
     const first = { id: "m1", role: "user", kind: "message", content: "好", created_at: 1, seq: 1, source_key: "agent-input:agent:client-1" };
     const again = optimisticOutgoing("client-2", "好", 2);
     expect(withPendingOptimistic([first], [first, again])).toEqual([first, again]);
+  });
+
+  it("drops a live reply once the same assistant text is committed", () => {
+    const messages = [{ id: "a", role: "assistant", kind: "message", content: "完整回复", task_id: "t1", seq: 2 }];
+    expect(withoutCommittedStreaming(messages, [
+      { taskId: "t1", text: "完整回复" },
+      { taskId: "t1", text: "完整回复，还有" },
+      { taskId: "t2", text: "另一段" },
+      { taskId: "t3", text: "" },
+    ])).toEqual([{ taskId: "t1", text: "完整回复，还有" }, { taskId: "t2", text: "另一段" }]);
   });
 
   it("names a screenshot whose file metadata is empty and ignores text", () => {

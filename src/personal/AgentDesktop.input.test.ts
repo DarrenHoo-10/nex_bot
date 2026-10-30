@@ -255,6 +255,52 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(container.querySelector('[data-message-id="sent"]')).toBe(optimisticElement);
   });
 
+  it("keeps the in-progress row when a newer sync supersedes the send reload", async () => {
+    const gates: Array<(value: State) => void> = [];
+    fixture.api.mockImplementation((route: string) => {
+      if (route === "state") return new Promise<State>((resolve) => { gates.push(resolve); });
+      if (route === "agents/input") return Promise.resolve({});
+      if (route.startsWith("agents/messages")) return Promise.resolve({ sync, messages: [], streaming: [], hasMore: false });
+      return Promise.resolve({});
+    });
+    await type("你好");
+    await act(async () => {
+      composer().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(gates).toHaveLength(1);
+    expect(container.querySelector(".processing-caption")?.textContent).toBe("正在发送…");
+    await act(async () => {
+      sources.at(-1)!.emit("change", sync);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(gates).toHaveLength(2);
+    await act(async () => { gates[0](state); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector(".processing-message")).not.toBeNull();
+    expect(container.querySelector(".processing-caption")?.textContent).toBe("正在发送…");
+    await act(async () => {
+      gates[1]({ ...state, tasks: [{ id: "t1", bot_id: "agent", status: "running", origin: "user" }] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector(".processing-message")).not.toBeNull();
+    expect(container.querySelector(".processing-caption")?.textContent).toBe("执行中");
+  });
+
+  it("does not paint the live reply again once that text is in the transcript", async () => {
+    const history = [{ id: "answer", role: "assistant", kind: "message", content: "完整回复", created_at: 2, seq: 2, task_id: "t1" }];
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "state") return { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded", origin: "user" }] };
+      if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [{ taskId: "t1", text: "完整回复" }, { taskId: "t2", text: "另一段" }], hasMore: false };
+      return {};
+    });
+    await act(async () => { sources[0].emit("change", sync); await new Promise((resolve) => setTimeout(resolve, 200)); });
+    const transcript = container.querySelector(".transcript")!.textContent ?? "";
+    expect(transcript.split("完整回复").length - 1).toBe(1);
+    expect(transcript).toContain("另一段");
+    expect(transcript).toContain("正在回复…");
+    expect(container.querySelector(".processing-message")).toBeNull();
+  });
+
   it("preserves scrollback until sending, then returns to and follows the bottom", async () => {
     const el = container.querySelector<HTMLDivElement>(".transcript")!;
     let top = 0;

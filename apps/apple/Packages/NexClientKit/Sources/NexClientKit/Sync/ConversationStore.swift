@@ -21,6 +21,8 @@ public final class ConversationStore {
     /// Last send or load error text (Core's message).
     public private(set) var sendError: String?
     public private(set) var isSending = false
+    /// Workspace serial when Core accepted the latest send. The typing row stays until a later snapshot is published.
+    @ObservationIgnored var sendAcceptedSerial: Int?
     /// Changes at send initiation, even when a fast request finishes in the same UI update.
     public private(set) var sendRevision = 0
     /// Composer text. Survives resets; discarded only when the session ends.
@@ -54,8 +56,14 @@ public final class ConversationStore {
 
     func commit(_ history: [AgentMessage], sync: SyncIdentity, streaming: [StreamingText], hasOlder: Bool?) {
         messages = history; loadedSync = sync; isLoaded = true
-        self.streaming = streaming.filter { !$0.text.isEmpty }
+        let committed = Set(history.filter { $0.role == "assistant" }.map { "\($0.taskID ?? "")\u{1}\($0.content)" })
+        self.streaming = streaming.filter { !$0.text.isEmpty && !committed.contains("\($0.taskId)\u{1}\($0.text)") }
         if let hasOlder { self.hasOlder = hasOlder }
+    }
+
+    func finishSending() {
+        isSending = false
+        sendAcceptedSerial = nil
     }
 
     func reset() {
@@ -135,15 +143,18 @@ public final class ConversationStore {
         if focusedMessageID != nil { workspace.leaveHistory(botID) }
         sendRevision += 1
         isSending = true; sendError = nil
-        defer { isSending = false }
         do {
             try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID, attachments: ids)
             pending = nil
             attachments.removeAll { $0.attachment.map { ids.contains($0.id) } ?? false }
             if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+            // refresh() returns when its reload is superseded, before the snapshot that
+            // contains this send is on screen. Keep the typing row until that snapshot.
+            workspace.noteAcceptedSend(self)
             await workspace.refresh()
             return true
         } catch {
+            finishSending()
             sendError = workspace.report(error).message
             return false
         }
