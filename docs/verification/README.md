@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [模型待办与聊天状态条：全平台发布（2026-10-30）](todo-broker-release-20261030.md)
+
 - [Product Todo tools and composer status: local verification (2026-10-30)](todo-broker-20261030.md)
 
 - [User topics and assistant topics: Core release and data preview (2026-10-30)](user-topics.md)

@@ -1,5 +1,7 @@
 # Product Todo tools and composer status — local verification
 
+This local change subsequently shipped in the [0.9.22 all-platform release](todo-broker-release-20261030.md).
+
 The Todo panel persisted records, but the model's Broker had no Todo actions or
 instructions. A model could claim it recorded a todo after writing private memory,
 which never appeared in the user's panel.

@@ -10,7 +10,7 @@
 - 合并后的验证：
   - `server/personal-os` 全部测试 491 项通过、3 项跳过、0 项失败。
   - 全仓 `tsc -b` 与服务端 `tsc` 通过，`oxlint --deny-warnings .` 通过，推送钩子的十种语言目录校验通过。
-- 合并前，各阶段在分支上分别验证过：`topic-tree.test.ts` 31 项、`topic-access.test.ts` 新增用例，以及迁移前后召回与核心记忆逐字节相同的基线测试。
+- 合并前，各阶段在分支上分别验证过：`server/personal-os/topic-tree.test.ts` 31 项、`server/personal-os/topic-access.test.ts` 新增用例，以及迁移前后召回与核心记忆逐字节相同的基线测试。
 - 分支上全目录运行时，`chat-composer`、`sender-device`、`maintenance` 各有一次失败，单独重跑都通过，判断为负载下的偶发失败。
 
 ## Core 部署（Tokyo）
