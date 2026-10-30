@@ -12,7 +12,7 @@ effective; inherited default policies pick up the new tools.
 
 The Broker schema and runtime prompt describe the product tools and distinguish
 them from private memory. They require a successful tool result before claiming
-that a todo was saved. Migration 39 stores body-free receipts in the same
+that a todo was saved. Migration 42 stores body-free receipts in the same
 transaction as each save, so an interrupted call can replay without creating or
 editing twice. A replay cannot revive a deleted todo.
 

@@ -92,6 +92,8 @@ export class MemoryModule {
       if (this.store.run("UPDATE memory_documents SET status='deleted',version=version+1,updated_at=? WHERE id=? AND version=? AND status='active'", now(), documentId, expectedVersion).changes !== 1) throw new Error("记忆版本已变化");
       this.store.run("DELETE FROM memory_search WHERE document_id=?", documentId);
       dropVectors(this.store, "document", documentId);
+      this.store.run("DELETE FROM assistant_topic_members WHERE kind='document' AND ref_id=?", documentId);
+      this.store.run("DELETE FROM assistant_topic_member_scan WHERE kind='document' AND ref_id=?", documentId);
       this.ledger.retractDocument(documentId);
       this.store.audit("memory.delete", "memory", documentId, { expectedVersion });
     });

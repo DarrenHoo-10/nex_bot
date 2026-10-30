@@ -1,0 +1,599 @@
+{
+ "withBoth": [
+  {
+   "query": "周五上线东京服务器的部署流程",
+   "candidates": [
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.9,
+     "sources": [
+      "bm25",
+      "vector",
+      "rerank"
+     ]
+    },
+    {
+     "kind": "episode",
+     "ref": "episode:#2",
+     "title": "上线东京服务器的讨论",
+     "text": "标题：上线东京服务器的讨论\n要点：讨论了周五上线东京服务器的流程\n主题：部署\n决定：\n- 周五晚上上线（原因：用户空闲）\n未完成：\n- 通知运维",
+     "tokens": 97,
+     "score": 0.9,
+     "sources": [
+      "bm25",
+      "vector",
+      "rerank"
+     ]
+    },
+    {
+     "kind": "memory",
+     "ref": "memory:#3",
+     "title": "周五晚上上线东京服务器",
+     "text": "周五晚上上线东京服务器\n部署前不需要再次确认\n发布后通知运维",
+     "tokens": 43,
+     "score": 0.9,
+     "sources": [
+      "bm25",
+      "vector",
+      "rerank"
+     ]
+    }
+   ],
+   "reranked": true,
+   "vector": true,
+   "budget": 2000,
+   "degraded": []
+  },
+  {
+   "query": "咖啡偏好",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#4",
+     "title": "喜欢拿铁咖啡",
+     "text": "喜欢拿铁咖啡\n咖啡不加糖",
+     "tokens": 17,
+     "score": 0.9,
+     "sources": [
+      "vector",
+      "rerank"
+     ]
+    }
+   ],
+   "reranked": true,
+   "vector": true,
+   "budget": 2000,
+   "degraded": []
+  },
+  {
+   "query": "数据库迁移",
+   "candidates": [
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.9,
+     "sources": [
+      "bm25",
+      "vector",
+      "rerank"
+     ]
+    },
+    {
+     "kind": "memory",
+     "ref": "memory:#5",
+     "title": "数据库用 sqlite",
+     "text": "数据库用 sqlite 不用 postgres",
+     "tokens": 15,
+     "score": 0.9,
+     "sources": [
+      "bm25",
+      "vector",
+      "rerank"
+     ]
+    }
+   ],
+   "reranked": true,
+   "vector": true,
+   "budget": 2000,
+   "degraded": []
+  },
+  {
+   "query": "旅行机票酒店",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#6",
+     "title": "旅行订机票和酒店",
+     "text": "旅行订机票和酒店",
+     "tokens": 12,
+     "score": 0.9,
+     "sources": [
+      "vector",
+      "rerank"
+     ]
+    }
+   ],
+   "reranked": true,
+   "vector": true,
+   "budget": 2000,
+   "degraded": []
+  },
+  {
+   "query": "今天天气怎么样",
+   "candidates": [],
+   "reranked": true,
+   "vector": true,
+   "budget": 2000,
+   "degraded": []
+  },
+  {
+   "query": "会议日程安排",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#7",
+     "title": "会议提前十分钟确认日程",
+     "text": "会议提前十分钟确认日程",
+     "tokens": 17,
+     "score": 0.9,
+     "sources": [
+      "vector",
+      "rerank"
+     ]
+    }
+   ],
+   "reranked": true,
+   "vector": true,
+   "budget": 2000,
+   "degraded": []
+  },
+  {
+   "query": "部署手册 备份",
+   "candidates": [
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.9,
+     "sources": [
+      "bm25",
+      "vector",
+      "rerank"
+     ]
+    },
+    {
+     "kind": "episode",
+     "ref": "episode:#2",
+     "title": "上线东京服务器的讨论",
+     "text": "标题：上线东京服务器的讨论\n要点：讨论了周五上线东京服务器的流程\n主题：部署\n决定：\n- 周五晚上上线（原因：用户空闲）\n未完成：\n- 通知运维",
+     "tokens": 97,
+     "score": 0.9,
+     "sources": [
+      "vector",
+      "rerank"
+     ]
+    },
+    {
+     "kind": "memory",
+     "ref": "memory:#3",
+     "title": "周五晚上上线东京服务器",
+     "text": "周五晚上上线东京服务器\n部署前不需要再次确认\n发布后通知运维",
+     "tokens": 43,
+     "score": 0.9,
+     "sources": [
+      "vector",
+      "rerank"
+     ]
+    }
+   ],
+   "reranked": true,
+   "vector": true,
+   "budget": 2000,
+   "degraded": []
+  }
+ ],
+ "withVectors": [
+  {
+   "query": "周五上线东京服务器的部署流程",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#3",
+     "title": "周五晚上上线东京服务器",
+     "text": "周五晚上上线东京服务器\n部署前不需要再次确认\n发布后通知运维",
+     "tokens": 43,
+     "score": 0.0327868852459,
+     "sources": [
+      "bm25",
+      "vector"
+     ]
+    },
+    {
+     "kind": "episode",
+     "ref": "episode:#2",
+     "title": "上线东京服务器的讨论",
+     "text": "标题：上线东京服务器的讨论\n要点：讨论了周五上线东京服务器的流程\n主题：部署\n决定：\n- 周五晚上上线（原因：用户空闲）\n未完成：\n- 通知运维",
+     "tokens": 97,
+     "score": 0.0322580645161,
+     "sources": [
+      "bm25",
+      "vector"
+     ]
+    },
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.031746031746,
+     "sources": [
+      "bm25",
+      "vector"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": true,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "咖啡偏好",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#4",
+     "title": "喜欢拿铁咖啡",
+     "text": "喜欢拿铁咖啡\n咖啡不加糖",
+     "tokens": 17,
+     "score": 0.016393442623,
+     "sources": [
+      "vector"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": true,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "数据库迁移",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#5",
+     "title": "数据库用 sqlite",
+     "text": "数据库用 sqlite 不用 postgres",
+     "tokens": 15,
+     "score": 0.0327868852459,
+     "sources": [
+      "bm25",
+      "vector"
+     ]
+    },
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.0322580645161,
+     "sources": [
+      "bm25",
+      "vector"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": true,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "旅行机票酒店",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#6",
+     "title": "旅行订机票和酒店",
+     "text": "旅行订机票和酒店",
+     "tokens": 12,
+     "score": 0.016393442623,
+     "sources": [
+      "vector"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": true,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "今天天气怎么样",
+   "candidates": [],
+   "reranked": false,
+   "vector": true,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "会议日程安排",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#7",
+     "title": "会议提前十分钟确认日程",
+     "text": "会议提前十分钟确认日程",
+     "tokens": 17,
+     "score": 0.016393442623,
+     "sources": [
+      "vector"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": true,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "部署手册 备份",
+   "candidates": [
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.032266458496,
+     "sources": [
+      "bm25",
+      "vector"
+     ]
+    },
+    {
+     "kind": "memory",
+     "ref": "memory:#3",
+     "title": "周五晚上上线东京服务器",
+     "text": "周五晚上上线东京服务器\n部署前不需要再次确认\n发布后通知运维",
+     "tokens": 43,
+     "score": 0.016393442623,
+     "sources": [
+      "vector"
+     ]
+    },
+    {
+     "kind": "episode",
+     "ref": "episode:#2",
+     "title": "上线东京服务器的讨论",
+     "text": "标题：上线东京服务器的讨论\n要点：讨论了周五上线东京服务器的流程\n主题：部署\n决定：\n- 周五晚上上线（原因：用户空闲）\n未完成：\n- 通知运维",
+     "tokens": 97,
+     "score": 0.0161290322581,
+     "sources": [
+      "vector"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": true,
+   "budget": 1000,
+   "degraded": []
+  }
+ ],
+ "lexicalOnly": [
+  {
+   "query": "周五上线东京服务器的部署流程",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#3",
+     "title": "周五晚上上线东京服务器",
+     "text": "周五晚上上线东京服务器\n部署前不需要再次确认\n发布后通知运维",
+     "tokens": 43,
+     "score": 0.016393442623,
+     "sources": [
+      "bm25"
+     ]
+    },
+    {
+     "kind": "episode",
+     "ref": "episode:#2",
+     "title": "上线东京服务器的讨论",
+     "text": "标题：上线东京服务器的讨论\n要点：讨论了周五上线东京服务器的流程\n主题：部署\n决定：\n- 周五晚上上线（原因：用户空闲）\n未完成：\n- 通知运维",
+     "tokens": 97,
+     "score": 0.0161290322581,
+     "sources": [
+      "bm25"
+     ]
+    },
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.015873015873,
+     "sources": [
+      "bm25"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": false,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "咖啡偏好",
+   "candidates": [],
+   "reranked": false,
+   "vector": false,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "数据库迁移",
+   "candidates": [
+    {
+     "kind": "memory",
+     "ref": "memory:#5",
+     "title": "数据库用 sqlite",
+     "text": "数据库用 sqlite 不用 postgres",
+     "tokens": 15,
+     "score": 0.016393442623,
+     "sources": [
+      "bm25"
+     ]
+    },
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.0161290322581,
+     "sources": [
+      "bm25"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": false,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "旅行机票酒店",
+   "candidates": [],
+   "reranked": false,
+   "vector": false,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "今天天气怎么样",
+   "candidates": [],
+   "reranked": false,
+   "vector": false,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "会议日程安排",
+   "candidates": [],
+   "reranked": false,
+   "vector": false,
+   "budget": 1000,
+   "degraded": []
+  },
+  {
+   "query": "部署手册 备份",
+   "candidates": [
+    {
+     "kind": "document",
+     "ref": "memory:#1",
+     "title": "部署手册",
+     "text": "部署手册：周五晚上上线东京服务器，发布前备份数据库",
+     "tokens": 38,
+     "score": 0.016393442623,
+     "sources": [
+      "bm25"
+     ]
+    }
+   ],
+   "reranked": false,
+   "vector": false,
+   "budget": 1000,
+   "degraded": []
+  }
+ ],
+ "topics": [
+  {
+   "id": "#3",
+   "title": "周五晚上上线东京服务器",
+   "content": "周五晚上上线东京服务器\n部署前不需要再次确认\n发布后通知运维",
+   "version": 1,
+   "summary": "发布后通知运维"
+  },
+  {
+   "id": "#4",
+   "title": "喜欢拿铁咖啡",
+   "content": "喜欢拿铁咖啡\n咖啡不加糖",
+   "version": 1,
+   "summary": "咖啡不加糖"
+  },
+  {
+   "id": "#7",
+   "title": "会议提前十分钟确认日程",
+   "content": "会议提前十分钟确认日程",
+   "version": 1,
+   "summary": "会议提前十分钟确认日程"
+  },
+  {
+   "id": "#6",
+   "title": "旅行订机票和酒店",
+   "content": "旅行订机票和酒店",
+   "version": 1,
+   "summary": "旅行订机票和酒店"
+  },
+  {
+   "id": "#5",
+   "title": "数据库用 sqlite",
+   "content": "数据库用 sqlite 不用 postgres",
+   "version": 1,
+   "summary": "数据库用 sqlite 不用 postgres"
+  }
+ ],
+ "semantic": [
+  {
+   "ref": "personal:#3",
+   "text": "周五晚上上线东京服务器\n部署前不需要再次确认\n发布后通知运维",
+   "kind": "topic",
+   "sourceClass": "synthesized"
+  }
+ ],
+ "core": {
+  "about": [],
+  "topics": [
+   {
+    "title": "数据库用 sqlite",
+    "line": "数据库用 sqlite 不用 postgres",
+    "ref": "memory:#5"
+   },
+   {
+    "title": "旅行订机票和酒店",
+    "line": "旅行订机票和酒店",
+    "ref": "memory:#6"
+   },
+   {
+    "title": "会议提前十分钟确认日程",
+    "line": "会议提前十分钟确认日程",
+    "ref": "memory:#7"
+   },
+   {
+    "title": "喜欢拿铁咖啡",
+    "line": "咖啡不加糖",
+    "ref": "memory:#4"
+   },
+   {
+    "title": "周五晚上上线东京服务器",
+    "line": "发布后通知运维",
+    "ref": "memory:#3"
+   }
+  ]
+ },
+ "rendered": "核心记忆（版本 1）\n关于用户：暂无\n主题索引：\n- 数据库用 sqlite — 数据库用 sqlite 不用 postgres (memory:#5)\n- 旅行订机票和酒店 — 旅行订机票和酒店 (memory:#6)\n- 会议提前十分钟确认日程 — 会议提前十分钟确认日程 (memory:#7)\n- 喜欢拿铁咖啡 — 咖啡不加糖 (memory:#4)\n- 周五晚上上线东京服务器 — 发布后通知运维 (memory:#3)",
+ "prompt": "核心记忆（版本 1）\n关于用户：暂无\n主题索引：\n- 数据库用 sqlite — 数据库用 sqlite 不用 postgres (memory:#5)\n- 旅行订机票和酒店 — 旅行订机票和酒店 (memory:#6)\n- 会议提前十分钟确认日程 — 会议提前十分钟确认日程 (memory:#7)\n- 喜欢拿铁咖啡 — 咖啡不加糖 (memory:#4)\n- 周五晚上上线东京服务器 — 发布后通知运维 (memory:#3)"
+}

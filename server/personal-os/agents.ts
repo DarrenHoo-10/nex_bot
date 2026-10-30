@@ -374,6 +374,7 @@ export class AgentModule {
                 const a = JSON.parse(String(c.arguments_json || "{}")) as Record<string, unknown>;
                 if (c.tool_name === "memory.write" || c.tool_name === "memory.search" || c.tool_name === "memory.reflect") summary = String(a.title || a.query || summary).slice(0, 80);
                 else if (c.tool_name === "memory.core.update") summary = "核心记忆";
+                else if (c.tool_name === "memory.topic") summary = `主题${String(a.op ?? "")}`.slice(0, 40);
                 else if (c.tool_name === "device.read" || c.tool_name === "device.list") summary = String(a.path || ".").slice(0, 120);
                 else if (c.tool_name === "device.exec") summary = String(a.command || "").slice(0, 80);
                 else if (c.tool_name === "device.computer") summary = String(a.operation || "").slice(0, 60);

@@ -92,6 +92,8 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.todoExecutor = (call, args) => todos.tool(call, args);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
+  // A change of who may see a topic is told in the conversation where the user asked for it.
+  runtime.memory.personal.tree.notify = (botId, taskId, text, key) => agents.publish(botId, "system", "activity", text, key, taskId);
   feishu = new FeishuModule(store, changed, agents, runtime, {
     ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
     grantTools: (connectorId, version, botId, tools) => { connectors.grant({ id: connectorId, version, botId, tools }); },

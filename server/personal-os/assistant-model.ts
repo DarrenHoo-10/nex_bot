@@ -16,6 +16,11 @@ export const effectiveDailyBudget = (setting: number) => setting > 0 ? Math.min(
 /** Tokens (actual when known, else reserved) a day of background context maintenance may use per conversation. */
 export const MAINTAIN_DAILY_TOKENS = 500_000;
 const spent = "COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL THEN input_tokens+output_tokens ELSE reserved_tokens END),0)";
+/** Tokens an assistant's background memory work has used since local midnight (what its daily budget is counted against). */
+export function memoryUsage(store: CoreStore, botId: string): number {
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  return Number(store.get(`SELECT ${spent} n FROM assistant_usage WHERE bot_id=? AND task_id IS NULL AND purpose NOT IN ('maintain','embed','rerank') AND created_at>=?`, botId, start.getTime())!.n);
+}
 /** Maintenance tokens one conversation has used since local midnight. */
 export function maintainUsage(store: CoreStore, conversationId: string): number {
   const start = new Date(); start.setHours(0, 0, 0, 0);

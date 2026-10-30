@@ -1,4 +1,6 @@
 import { CoreStore, hash, type Row } from './store.ts';
+import { vectorCache } from './vector-cache.ts';
+import { visibility } from './topic-access.ts';
 
 // The lexical half of memory retrieval, and the helpers the writers of the pool use to keep indexes and vectors
 // in step with their sources. Dependency-free of the network on purpose: sync callers (the episode archive's
@@ -62,7 +64,13 @@ const POOLS: Record<PoolKind, Pool> = {
   memory: {
     source: 'assistant_memories r',
     from: 'assistant_memory_search JOIN assistant_memories r ON r.id=assistant_memory_search.memory_id', select: 'r.*', fts: 'assistant_memory_search', columns: ['body'], bm25: 'bm25(assistant_memory_search)',
-    scope: (_store, botId) => ({ where: "r.bot_id=? AND r.status='active'", args: [botId] }),
+    // Its own rows, and the user topics it may read with their facts (topic-access.ts); a user topic it made but may no longer read is not its own any more.
+    scope: (store, botId) => {
+      const seen = visibility(store, botId);
+      if (!seen) return { where: "r.bot_id=? AND r.status='active'", args: [botId] };
+      const readable = JSON.stringify(seen.readable);
+      return { where: "r.status='active' AND ((r.bot_id=? AND r.id NOT IN (SELECT value FROM json_each(?)) AND r.id NOT IN (SELECT memory_id FROM assistant_topic_evidence WHERE topic_id IN (SELECT value FROM json_each(?)))) OR r.id IN (SELECT value FROM json_each(?)) OR r.id IN (SELECT memory_id FROM assistant_topic_evidence WHERE topic_id IN (SELECT value FROM json_each(?))))", args: [botId, JSON.stringify(seen.hidden), JSON.stringify(seen.unreadable), readable, readable] };
+    },
   },
   episode: {
     source: 'conversation_episodes r',
@@ -157,12 +165,15 @@ export function pendingEmbeddings(store: CoreStore, botId: string, model: string
   }
   return pending;
 }
-export function storeVector(store: CoreStore, item: { kind: PoolKind; refId: string; hash: string }, model: string, vector: Float32Array, at: number) {
+/** `botId` names the assistant that owns the item; without it (and for documents, which an assistant may share) every assistant's cached vectors go stale (vector-cache.ts). */
+export function storeVector(store: CoreStore, item: { kind: PoolKind; refId: string; hash: string }, model: string, vector: Float32Array, at: number, botId?: string) {
+  vectorCache(store).invalidate(item.kind === 'document' ? undefined : botId);
   store.run('INSERT INTO memory_vectors(kind,ref_id,model,dims,vector,content_hash,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(kind,ref_id) DO UPDATE SET model=excluded.model,dims=excluded.dims,vector=excluded.vector,content_hash=excluded.content_hash,updated_at=excluded.updated_at', item.kind, item.refId, model, vector.length, packVector(vector), item.hash, at);
 }
 
 /** Removes the vectors of items whose text changed or that were deleted, forgotten or redacted. */
 export function dropVectors(store: CoreStore, kind: PoolKind, ...ids: string[]) {
+  vectorCache(store).invalidate();
   for (const id of ids) store.run('DELETE FROM memory_vectors WHERE kind=? AND ref_id=?', kind, id);
 }
 

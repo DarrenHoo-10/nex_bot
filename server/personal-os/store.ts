@@ -14,6 +14,8 @@ import { trigramSchema, vectorSchema } from "./retrieval-schema.ts";
 import { recallSchema, WORKING_NOTE_TOKENS } from "./recall-schema.ts";
 import { routineSchema } from "./routine-schema.ts";
 import { rebuildMemories, topicSchema } from "./topic-schema.ts";
+import { applyTreeSchema, treeMigrationSql } from "./topic-tree-schema.ts";
+import { accessMigrationSql, applyAccessSchema, applyResidentSchema, residentMigrationSql } from "./topic-access-schema.ts";
 import { clipTokens, tokens } from "./token-estimate.ts";
 import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
@@ -404,9 +406,24 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.insert("schema_migrations", { version: 38, checksum: hash(todoSchema), applied_at: now() });
     });
     if (!this.get("SELECT version FROM schema_migrations WHERE version=39")) this.transaction(() => {
+      // The two-level structure of assistant topics (containers), their members and moves; see topic-tree-schema.ts. No data moves.
+      applyTreeSchema(this.db);
+      this.insert("schema_migrations", { version: 39, checksum: hash(treeMigrationSql), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=40")) this.transaction(() => {
+      // User topics and who may see them: access grants, delegations of questions, hints kept with the recall; see topic-access-schema.ts. No data moves.
+      applyAccessSchema(this.db);
+      this.insert("schema_migrations", { version: 40, checksum: hash(accessMigrationSql), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=41")) this.transaction(() => {
+      // A resident topic shown shortened when its overview outgrows a reader's core memory; see topic-access-schema.ts.
+      applyResidentSchema(this.db);
+      this.insert("schema_migrations", { version: 41, checksum: hash(residentMigrationSql), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=42")) this.transaction(() => {
       const schema = "CREATE TABLE todo_tool_receipts (call_id TEXT PRIMARY KEY REFERENCES tool_calls(id), argument_hash TEXT NOT NULL, todo_id TEXT NOT NULL REFERENCES todos(id));";
       this.db.exec(schema);
-      this.insert("schema_migrations", { version: 39, checksum: hash(schema), applied_at: now() });
+      this.insert("schema_migrations", { version: 42, checksum: hash(schema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

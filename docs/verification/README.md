@@ -2,6 +2,7 @@
 
 - [Product Todo tools and composer status: local verification (2026-10-30)](todo-broker-20261030.md)
 
+- [User topics and assistant topics: Core release and data preview (2026-10-30)](user-topics.md)
 - [统一待办：全平台发布（2026-10-30）](todos-release-20261030.md)
 - [Unified Todo panel: local implementation and persistence](todos.md)
 - [定时任务独立执行：全平台发布（2026-10-30）](routines-release-20261030.md)
