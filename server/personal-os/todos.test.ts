@@ -143,16 +143,64 @@ describe("durable unified todos", () => {
     expect(() => f.module().tool(call, draft)).toThrow("已删除");
     expect(f.module().list()).toHaveLength(0);
   });
+  it("lets a model delete a panel todo and replay the durable receipt after restart", async () => {
+    const f = await fixture();
+    const item = f.module().save(f.input());
+    const kept = f.module().save(f.input({ title: "保留的待办" }));
+    const args = { action: "todo.delete", todoId: item.id, expectedVersion: item.version };
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "delete-todo", name: "broker", args: JSON.stringify(args) }] },
+      { kind: "openai-text", text: "已删除指定待办。" },
+    );
+    const task = f.app.agents.send(f.bot, "删除指定待办", "todo-broker-delete").taskId;
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded" && f.app.runtime.workers.size === 0);
+    const call = f.app.store.get("SELECT * FROM tool_calls WHERE task_id=? AND tool_name='todo.delete'", task)!;
+    expect(call.status).toBe("succeeded");
+    expect(JSON.stringify(f.model.requests[0].body)).toContain("todo.delete(todoId,expectedVersion)");
+    expect((await (await f.request("todos")).json() as { items: TodoItem[] }).items.map((t) => t.id)).toEqual([kept.id]);
+    const tombstone = f.app.store.get("SELECT * FROM todos WHERE id=?", item.id)!;
+    expect(tombstone.deleted_at).not.toBeNull();
+    expect(tombstone.version).toBe(item.version + 1);
+    await f.restart();
+    expect(f.module().tool(call, args)).toEqual({ deleted: true, todoId: item.id });
+    expect(f.app.store.get("SELECT * FROM todos WHERE id=?", item.id)).toEqual(tombstone);
+    expect(f.app.store.all("SELECT * FROM todo_tool_receipts WHERE call_id=?", call.id)).toHaveLength(1);
+    expect(f.app.store.all("SELECT * FROM audit_records WHERE action='todo.delete' AND entity_id=?", item.id)).toHaveLength(1);
+    expect(f.module().list().map((t) => t.id)).toEqual([kept.id]);
+    expect(() => f.module().tool({ ...call, argument_hash: "changed" }, args)).toThrow("身份冲突");
+    expect(() => f.module().tool({ ...call, id: "another-delete" }, args)).toThrow("已删除");
+    f.app.store.insert("users", { id: "different-owner", display_name: "隔离成员", status: "active", created_at: Date.now() });
+    f.app.store.run("UPDATE todos SET owner_user_id='different-owner' WHERE id=?", item.id);
+    expect(() => f.module().tool(call, args)).toThrow("不存在");
+  });
+  it("rejects stale or missing delete versions without removing the item", async () => {
+    const f = await fixture();
+    const item = f.module().save(f.input());
+    const current = f.module().save({ ...item, title: "已更新" });
+    const call = { id: "rejected-delete", tool_name: "todo.delete" };
+    for (const expectedVersion of [undefined, item.version, "2", 2.5])
+      expect(() => f.module().tool(call, { todoId: item.id, expectedVersion })).toThrow("其他设备更新");
+    expect(() => f.module().tool(call, { todoId: "missing", expectedVersion: 1 })).toThrow("不存在");
+    expect(() => f.module().tool(call, { expectedVersion: current.version })).toThrow();
+    // A receipt failure must roll the deletion and its audit record back together.
+    expect(() => f.module().tool(call, { todoId: item.id, expectedVersion: current.version })).toThrow();
+    expect(f.module().get(item.id)).toEqual(current);
+    expect(f.app.store.all("SELECT * FROM todo_tool_receipts")).toHaveLength(0);
+    expect(f.app.store.all("SELECT * FROM audit_records WHERE action='todo.delete' AND entity_id=?", item.id)).toHaveLength(0);
+  });
   it("honors tool grants and workspace ownership", async () => {
     const f = await fixture();
     expect(evaluateTool(f.app.store, f.bot, { action: "todo.save", title: "授权待办" }).approvalRequired).toBe(false);
+    expect(evaluateTool(f.app.store, f.bot, { action: "todo.delete", todoId: "specified", expectedVersion: 1 }).approvalRequired).toBe(false);
     const item = f.module().save(f.input());
     f.app.store.insert("users", { id: "another-owner", display_name: "隔离成员", status: "active", created_at: Date.now() });
     f.app.store.run("UPDATE todos SET owner_user_id='another-owner' WHERE id=?", item.id);
     expect(f.module().tool({ tool_name: "todo.list" }, {})).toEqual({ items: [] });
     expect(() => f.module().tool({ id: "cross-owner", tool_name: "todo.save" }, { todoId: item.id, expectedVersion: item.version, title: "不应修改" })).toThrow("不存在");
+    expect(() => f.module().tool({ id: "cross-owner-delete", tool_name: "todo.delete" }, { todoId: item.id, expectedVersion: item.version })).toThrow("不存在");
     f.app.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: ["memory.search"] }), f.bot);
     expect(() => evaluateTool(f.app.store, f.bot, { action: "todo.save", title: "不应创建" })).toThrow("无权");
+    expect(() => evaluateTool(f.app.store, f.bot, { action: "todo.delete", todoId: item.id, expectedVersion: item.version })).toThrow("无权");
   });
   it("persists changes, steps and completion across Core restart and detects stale writes", async () => {
     const f = await fixture();
@@ -236,6 +284,7 @@ describe("durable unified todos", () => {
         f.module().action({ ...item, action }, f.app.store.session),
       ).toThrow("停止");
     expect(() => f.module().save({ ...item })).toThrow("停止");
+    expect(() => f.module().tool({ id: "running-delete", tool_name: "todo.delete" }, { todoId: item.id, expectedVersion: item.version })).toThrow("停止");
     f.module().action({ ...item, action: "stop" }, f.app.store.session);
     await until(() => f.module().get(item.id).status === "todo");
     expect(f.module().get(item.id).log).toContain("执行已停止");

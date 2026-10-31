@@ -9,7 +9,7 @@ import { TopicAccess } from "./topic-access.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "todo.list", "todo.save", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render", "tool.search"] as const;
 // Device binding, Agent policy and effect-specific approval remain independent.
 export const basicActions = [...actions];
 export function policyTools(policy: Row): string[] {

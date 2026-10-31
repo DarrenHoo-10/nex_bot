@@ -169,7 +169,7 @@ final class ActionsTests: XCTestCase {
         XCTAssertEqual(file.subtitle, "a/b.md · 12 B")
         XCTAssertEqual(PreviewItem.fallback(step: ToolStep(row: ["id": "s", "tool_name": "x", "status": "failed", "preview": ""])).content, "暂无输出内容")
         XCTAssertTrue(FilePathMatcher.isFilePath("src/App.TSX")); XCTAssertTrue(FilePathMatcher.isFilePath("a\\b.json")); XCTAssertFalse(FilePathMatcher.isFilePath("run it.md")); XCTAssertFalse(FilePathMatcher.isFilePath("x.exe"))
-        XCTAssertEqual(PolicyCatalog.serverOrder.count, 31); XCTAssertEqual(Set(PolicyCatalog.uiOrder.map(\.id)), Set(PolicyCatalog.serverOrder)); XCTAssertEqual(PolicyCatalog.uiOrder.count, 31)
+        XCTAssertEqual(PolicyCatalog.serverOrder.count, 33); XCTAssertEqual(Set(PolicyCatalog.uiOrder.map(\.id)), Set(PolicyCatalog.serverOrder)); XCTAssertEqual(PolicyCatalog.uiOrder.count, 33)
         XCTAssertEqual(PolicyCatalog.orderedTools(["future.action", "attachment.read", "device.exec"]), ["device.exec", "attachment.read", "future.action"])
         XCTAssertEqual(PolicyCatalog.label(for: "device.exec"), "执行设备终端命令")
         XCTAssertEqual(AvatarCatalog.portraits.count, 20); XCTAssertEqual(Set(AvatarCatalog.portraits.map(\.id)), Set(AgentCatalogIDs.portraits))

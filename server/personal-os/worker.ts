@@ -6,6 +6,8 @@ import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply 
 import { modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
 import { brokerDescription, brokerParameters } from "./broker-tool.ts";
+import { Check } from "typebox/value";
+import { toolFields } from "./tool-fields.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
 import { CONTEXT_OVERHEAD, OUTPUT_TRUNCATED, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryTarget, entryText, episodeStart, foldBlocked, foldable, historySource, hygieneScope, imageCandidates, rangeTarget, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, type SourceItem } from './context-tools.ts';
 import { applyRequestPrompt } from './request-prompt.ts';
@@ -359,6 +361,8 @@ async function main(value: WorkerConfig) {
   const broker = defineTool({ name: "broker", label: "Core Broker", description: brokerDescription,
     parameters: brokerParameters,
     execute: async (providerId, args) => {
+      // Keep the previous field-type validation without sending every field to the model.
+      if (!Check(toolFields, args)) throw new Error("工具参数类型无效；请用 tool.search 查询用法");
       const source = manager.getBranch().findLast((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.content.some((p) => p.type === "toolCall" && p.id === providerId));
       if (!source) throw new Error("Tool proposal source missing");
       const result = await execute(providerId, source.id, args);
