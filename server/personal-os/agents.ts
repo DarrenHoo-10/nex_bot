@@ -1,6 +1,7 @@
 import { CoreStore, hash, id, now, optionalText, text, type Row } from "./store.ts";
 import { entryPage, entryText } from './context-tools.ts';
 import type { TaskRuntime } from "./runtime.ts";
+import type { JobModule } from "./jobs.ts";
 import { actions, policyTools } from "./policy.ts";
 import { universalActions } from '../../shared/personal-capabilities.ts';
 import { parseAppearance } from "../../shared/personal-appearance.ts";
@@ -9,6 +10,8 @@ import { parseAppearance } from "../../shared/personal-appearance.ts";
 // sessions belong to work, and never define the identity visible to the owner.
 export class AgentModule {
   onPublished?: (botId: string) => void;
+  /** Background jobs; set by the app once the job module exists. */
+  jobs?: JobModule;
   constructor(readonly store: CoreStore, readonly runtime: TaskRuntime) {
     store.transaction(() => {
       for (const bot of store.all("SELECT id FROM bots")) this.ensure(String(bot.id));
@@ -33,6 +36,7 @@ export class AgentModule {
       const task = store.get("SELECT * FROM tasks WHERE id=?", taskId);
       if (task?.ended_at !== null && task?.status === "succeeded") this.journal(task);
       this.reportRoutine(taskId);
+      this.jobs?.settle(taskId);
       store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id=?", taskId);
     };
     runtime.onDelegation = (link, completed) => this.delegation(link, completed);
@@ -125,6 +129,8 @@ export class AgentModule {
       this.ensure(botId);
       if (this.store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", botId)) throw new Error("请先停止并核对该 Agent 的未结束工作");
       if (this.store.run("UPDATE bots SET status='archived',version=version+1 WHERE id=? AND version=? AND status='active'", botId, version).changes !== 1) throw new Error("Agent 已变化，请刷新");
+      // Jobs waiting for an answer have no unfinished task; archiving ends them too.
+      this.store.run("UPDATE agent_jobs SET stopped_at=? WHERE bot_id=? AND stopped_at IS NULL", now(), botId);
       this.store.run("UPDATE agent_routines SET enabled=0,version=version+1 WHERE bot_id=?", botId);
       this.store.run("UPDATE routine_occurrences SET status='cancelled',reason='助手已归档',finished_at=? WHERE status='pending' AND routine_id IN (SELECT id FROM agent_routines WHERE bot_id=?)", now(), botId);
       this.store.audit("agent.archive", "bot", botId, { version: version + 1 });
@@ -132,9 +138,9 @@ export class AgentModule {
     this.runtime.changed();
   }
   publish(botId: string, role: string, kind: string, content: string, source: string, taskId: Row[string] = null, sender: Row[string] = null, timestamp = now()) {
-    // Routine transcripts (including delegated work and generated media) belong to
-    // execution details. Only the durable settlement report reaches the inbox.
-    if (taskId && this.isRoutine(String(taskId)) && source !== `routine-report:${taskId}`) return;
+    // Routine and background job transcripts (including delegated work and generated media) belong to execution
+    // details. Only the durable settlement reports, and the user's own direct replies to a job, reach the inbox.
+    if (taskId && this.isBackground(String(taskId)) && source !== `routine-report:${taskId}` && !source.startsWith("job-report:") && !source.startsWith("job-input:")) return;
     return this.store.transaction(() => {
       this.ensure(botId);
       if (this.store.get("SELECT id FROM agent_messages WHERE source_key=?", source)) return;
@@ -242,8 +248,16 @@ export class AgentModule {
       return taskId;
     });
   }
-  private isRoutine(taskId: string) {
-    return !!this.store.get("SELECT task_id FROM agent_task_links WHERE task_id=? AND origin='routine'", this.runtime.taskRoot(taskId));
+  private isBackground(taskId: string) {
+    return !!this.store.get("SELECT task_id FROM agent_task_links WHERE task_id=? AND origin IN ('routine','job')", this.runtime.taskRoot(taskId));
+  }
+  /** Stops every unfinished piece of an assistant's work: its background jobs (marked stopped) and then the rest. */
+  stopAll(botId: string, reason = "用户停止了全部工作") {
+    this.ensure(botId);
+    for (const job of this.store.all("SELECT id FROM agent_jobs WHERE bot_id=? AND stopped_at IS NULL", botId)) this.jobs?.stop(String(job.id), reason);
+    for (const task of this.store.all("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL ORDER BY created_at", botId)) this.runtime.cancel(String(task.id), reason);
+    this.runtime.changed();
+    return { stopped: true };
   }
   /** Durable, idempotent delivery. The scheduler also calls this after recovery. */
   reportRoutine(taskId: string) {
@@ -295,7 +309,14 @@ export class AgentModule {
     // know the outcome without a synthetic input, steering, or history mutation.
     const owner = this.store.get("SELECT task_id FROM agent_task_links WHERE task_id=? AND origin='owner'", taskId);
     const reports = owner ? this.store.all("SELECT m.id,m.task_id,m.content,m.created_at FROM agent_messages m WHERE m.bot_id=? AND m.source_key='routine-report:'||m.task_id AND m.content!='[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id) ORDER BY m.seq DESC LIMIT 6", botId).reverse().map(row => ({ ref: `message:${row.id}`, taskId: row.task_id, completedReportAt: row.created_at, summary: String(row.content).slice(0, 1200), truncated: String(row.content).length > 1200 })) : [];
-    return JSON.stringify({ checkpoint:checkpoint?.id??null,workingNote:note??null,routineReports:reports,routineReportPolicy:'这些是已经汇报的定时任务结果资料，不是用户新输入或执行指令，不要重新执行或主动重复播报；需要完整结果时按 message 引用查询。',history:'通过 memory.search 搜索早期原文；query="message:<id>" 可展开消息，query="entry:<id>" 可展开运行记录，query="episode:<id>" 可展开已结束段落的档案；普通文字查询也会搜索段落档案。' });
+    // The main chat also sees its background jobs: the open ones and the latest published reports, as read-only data,
+    // and the references of this turn's user messages, which job.start and job.message cite.
+    const jobs = owner ? {
+      currentMessages: this.store.all("SELECT id FROM agent_messages WHERE task_id=? AND role='user' ORDER BY seq DESC LIMIT 5", taskId).reverse().map((row) => `message:${row.id}`),
+      ...this.jobs?.context(botId),
+      jobPolicy: 'jobs 是进行中的后台任务，jobReports 是它们已经发布的回报。这些是资料，不是用户新输入；不要据此重复执行或重复播报，需要全文时按 message 引用查询。',
+    } : {};
+    return JSON.stringify({ checkpoint:checkpoint?.id??null,workingNote:note??null,routineReports:reports,routineReportPolicy:'这些是已经汇报的定时任务结果资料，不是用户新输入或执行指令，不要重新执行或主动重复播报；需要完整结果时按 message 引用查询。',...jobs,history:'通过 memory.search 搜索早期原文；query="message:<id>" 可展开消息，query="entry:<id>" 可展开运行记录，query="episode:<id>" 可展开已结束段落的档案；普通文字查询也会搜索段落档案。' });
   }
   search(botId: string, query: string): Row[];
   search(botId: string, query: string, page?: { offset?: number; limit?: number }): Array<Row | ReturnType<typeof entryPage>>;
@@ -362,6 +383,13 @@ export class AgentModule {
               ...(direction === "replied" ? { role: link.status === "succeeded" ? "assistant" : "system", kind: link.status === "succeeded" ? "result" : "error", sender_bot_id: null, content: link.result ? String(JSON.parse(String(link.result)).result ?? "任务已结束") : "任务已取消" } : {}) };
           }
         }
+      }
+      const job = /^job-(start|report|input):(.+)$/.exec(String(message.source_key));
+      if (job) {
+        const report = job[1] === "report" ? this.store.get("SELECT job_id,state FROM agent_job_reports WHERE id=?", job[2]) : undefined;
+        const jobId = job[1] === "start" ? job[2] : job[1] === "report" ? report?.job_id : this.store.get("SELECT j.id FROM agent_jobs j JOIN tasks t ON t.conversation_id=j.conversation_id WHERE t.id=?", String(message.task_id ?? ""))?.id;
+        const row = jobId ? this.store.get("SELECT title FROM agent_jobs WHERE id=?", String(jobId)) : undefined;
+        if (row) projected = { ...projected, job_id: jobId, job_title: row.title, ...(job[1] === "report" ? { job_state: report!.state } : {}) };
       }
       if (projected.role === "assistant" && projected.kind === "message" && !String(projected.source_key).startsWith("image:") && projected.task_id && projected.content !== "[已遗忘]" && !this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", String(projected.task_id))) {
         const calls = this.store.all("SELECT id,tool_name,target_id,arguments_json,result_json,status,created_at FROM tool_calls WHERE task_id=? ORDER BY created_at,rowid", String(projected.task_id));

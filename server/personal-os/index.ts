@@ -12,6 +12,8 @@ import { DeviceGateway } from "./devices.ts";
 import { DeviceNode } from "./node.ts";
 import { AgentModule } from "./agents.ts";
 import { TodoModule, TodoConflict } from "./todos.ts";
+import { JobModule } from "./jobs.ts";
+import { DeviceLeases } from "./device-leases.ts";
 import { RoutineModule } from "./routines.ts";
 import { ClientIdentity } from "./clients.ts";
 import { CoreIdentity } from "./identity.ts";
@@ -88,7 +90,10 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const files = new ChatFiles(store);
   const routines = new RoutineModule(store, agents);
-  const todos = new TodoModule(store, agents);
+  const leases = new DeviceLeases(store);
+  const jobs = new JobModule(store, agents, leases);
+  const todos = new TodoModule(store, agents, jobs);
+  runtime.jobExecutor = (call, args) => jobs.tool(call, args);
   runtime.todoExecutor = (call, args) => todos.tool(call, args);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
   runtime.agentExecutor = (call, args) => agents.tool(call, args);
@@ -112,8 +117,9 @@ export async function createPersonalApp(options: AppOptions) {
     json(response, error instanceof IdentityError || error instanceof TodoConflict ? error.status : 400, { error: error instanceof Error ? error.message : "请求失败", ...(error instanceof IdentityError && error.status === 503 ? { code: "identity_unavailable" } : {}) });
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
+  gateway.leases = leases;
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
-  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); connectors.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
+  runtime.onCancel = (taskId) => { jobs.releaseLeases(taskId); gateway.cancelTask(taskId); connectors.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
   runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed, options.hostDevice !== false);
   function json(response: ServerResponse, status: number, value: unknown) {
@@ -141,6 +147,7 @@ export async function createPersonalApp(options: AppOptions) {
       directory: directory(store),
       routines: routines.list(),
       occurrences: routines.occurrences(),
+      jobs: jobs.list(),
       ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100") }),
       onlineDevices: [...gateway.sockets.keys()],
       node: { ...node.publicState(), hosted: options.hostDevice === false },
@@ -331,6 +338,9 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/routines/occurrence" && request.method === "GET") {
         json(response, 200, routines.occurrence(text(url.searchParams.get("id"), 256))); return;
       }
+      if (url.pathname === "/api/jobs/detail" && request.method === "GET") {
+        json(response, 200, jobs.detail(text(url.searchParams.get("id"), 100))); return;
+      }
       if (url.pathname === "/api/messages" && request.method === "GET") {
         const conv = text(url.searchParams.get("conversation"), 100);
         json(response, 200, { messages: store.all("SELECT * FROM transcript WHERE conversation_id=? ORDER BY created_at,rowid", conv), streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT conversation_id FROM tasks WHERE id=?", w.taskId)?.conversation_id === conv).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
@@ -421,6 +431,9 @@ export async function createPersonalApp(options: AppOptions) {
         const result = store.transaction(() => { const sent = agents.send(botId, content, clientId, String(session.id)); files.bind(attachments as string[], botId, clientId); return sent; });
         json(response, 202, result); return;
       }
+      if (url.pathname === "/api/jobs/input") { json(response, 202, jobs.input(text(data.jobId, 100), text(data.text), text(data.clientId, 100), "direct", String(session.id))); return; }
+      if (url.pathname === "/api/jobs/stop") { json(response, 200, jobs.stop(text(data.jobId, 100))); return; }
+      if (url.pathname === "/api/agents/stop-all") { json(response, 200, agents.stopAll(text(data.botId, 100))); return; }
       if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/agents/topic") { json(response, 200, agents.newTopic(text(data.botId, 100))); return; }
       if (url.pathname === "/api/agents/messages/image/delete") {
@@ -548,6 +561,7 @@ export async function createPersonalApp(options: AppOptions) {
   if (!options.hindsight) memoryPlugin.start();
   runtime.memory.ledger.start();
   runtime.memory.personal.start();
+  jobs.recover();
   runtime.startRecovered();
   runtime.scheduleStartupMaintenance();
   routines.start();
@@ -558,7 +572,7 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
   archiveTimer?.unref(); archive();
-  return { server, store, runtime, agents, routines, gateway, node, memoryPlugin, identity, connectors, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  return { server, store, runtime, agents, routines, jobs, todos, gateway, node, memoryPlugin, identity, connectors, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
     closing = true; clearInterval(heartbeat); clearInterval(archiveTimer); await archiveJob;
     await identity?.close();

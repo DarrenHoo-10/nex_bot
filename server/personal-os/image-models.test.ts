@@ -17,6 +17,10 @@ async function until(check: () => boolean) {
   const end = Date.now() + 25000;
   while (!check()) { if (Date.now() > end) throw new Error('Image fixture timed out'); await new Promise(resolve => setTimeout(resolve, 25)); }
 }
+/** image.generate runs only in a background job (the main chat refuses it). */
+function job(app: Awaited<ReturnType<typeof createPersonalApp>>, botId: string, text: string, clientId: string) {
+  return app.jobs.start({ botId, title: text, prompt: text, sourceKey: `image-job:${clientId}` });
+}
 async function fixture() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'nex-image-models-')), key = randomBytes(32), token = 'synthetic-image-owner';
   cleanup.push(async () => {
@@ -84,8 +88,9 @@ it('generates through a real worker and publishes a scoped, previewable, downloa
     { kind: 'openai-tool', calls: [{ id: 'image-generate', name: 'broker', args: JSON.stringify({ action: 'image.generate', modelId: 'gpt-image-fixture', prompt: '画一只蓝色小鸟', size: '1536x1024' }) }] },
     { kind: 'openai-text', text: '图片已生成' },
   );
-  const sent = await (await f.request('agents/input', { botId: f.bot, text: '画一只蓝色小鸟', clientId: 'image-turn' })).json() as { taskId: string };
-  await until(() => f.app.store.get('SELECT status FROM tasks WHERE id=?', sent.taskId)?.status === 'succeeded');
+  // The main chat hands image generation to a background job; its report carries the image.
+  const sent = job(f.app, f.bot, '画一只蓝色小鸟', 'image-turn');
+  await until(() => !!f.app.store.get("SELECT id FROM agent_job_reports WHERE job_id=? AND message_id IS NOT NULL", sent.jobId));
   expect(f.requests).toHaveLength(1);
   expect(f.requests[0]).toMatchObject({ path: '/v1/images/generations', body: { model: 'gpt-image-fixture', prompt: '画一只蓝色小鸟', size: '1536x1024', n: 1 } });
   expect(f.requests[0].body).not.toHaveProperty('response_format');
@@ -93,8 +98,10 @@ it('generates through a real worker and publishes a scoped, previewable, downloa
   expect(call.status).toBe('succeeded');
   const result = JSON.parse(String(call.result_json)) as { url: string; attachmentId: string };
   expect(String(call.result_json)).not.toContain(png);
-  const message = f.app.store.get("SELECT * FROM agent_messages WHERE source_key=?", `image:${call.id}`)!;
+  expect(f.app.store.get("SELECT * FROM agent_messages WHERE source_key=?", `image:${call.id}`)).toBeUndefined();
+  const message = f.app.store.get("SELECT m.* FROM agent_messages m JOIN agent_job_reports r ON r.message_id=m.id WHERE r.job_id=?", sent.jobId)!;
   expect(message.content).toContain(`![生成图片](${result.url})`);
+  expect(f.app.store.get('SELECT message_id FROM chat_attachments WHERE id=?', result.attachmentId)?.message_id).toBe(message.id);
   expect(f.app.store.all('SELECT id FROM approvals')).toHaveLength(0);
   const preview = await f.request(`attachments/${result.attachmentId}?preview=1`);
   expect(preview.headers.get('content-type')).toBe('image/png');
@@ -129,7 +136,7 @@ it('stopping an in-flight generation prevents late attachments and messages', as
   f.select(['image-fixture']);
   let release!: () => void; f.hold(new Promise<void>(resolve => { release = resolve; }));
   f.model.scripts.push({ kind: 'openai-tool', calls: [{ id: 'slow-image', name: 'broker', args: JSON.stringify({ action: 'image.generate', prompt: 'bird' }) }] });
-  const sent = f.app.agents.send(f.bot, 'draw a bird', 'slow-image');
+  const sent = job(f.app, f.bot, 'draw a bird', 'slow-image');
   await until(() => f.requests.length === 1);
   f.app.runtime.cancel(sent.taskId, '用户停止'); release();
   await until(() => f.app.runtime.workers.size === 0);
@@ -144,7 +151,7 @@ it('does not publish an image when stopped during object storage upload', async 
   const held = new Promise<void>(resolve => { release = resolve; });
   f.app.store.attachmentObjects = { async put(_key, value) { started = true; await held; stored = value; }, async get() { return stored; } };
   f.model.scripts.push({ kind: 'openai-tool', calls: [{ id: 'cloud-image', name: 'broker', args: JSON.stringify({ action: 'image.generate', prompt: 'bird' }) }] });
-  const sent = f.app.agents.send(f.bot, 'draw a bird', 'cloud-image');
+  const sent = job(f.app, f.bot, 'draw a bird', 'cloud-image');
   await until(() => started); f.app.runtime.cancel(sent.taskId, '用户停止'); release();
   await until(() => f.app.store.attachmentJobs.size === 0 && f.app.runtime.workers.size === 0);
   expect(f.app.store.all("SELECT id FROM agent_messages WHERE source_key LIKE 'image:%'")).toHaveLength(0);
@@ -181,7 +188,7 @@ it.each(['selection', 'connection', 'permission'])('does not publish a late imag
   f.select(['image-fixture']);
   let release!: () => void; f.hold(new Promise<void>(resolve => { release = resolve; }));
   f.model.scripts.push({ kind: 'openai-tool', calls: [{ id: 'changed-image', name: 'broker', args: JSON.stringify({ action: 'image.generate', prompt: 'bird' }) }] }, { kind: 'openai-text', text: '生成未完成' });
-  const sent = f.app.agents.send(f.bot, 'draw a bird', 'changed-image');
+  const sent = job(f.app, f.bot, 'draw a bird', 'changed-image');
   await until(() => f.requests.length === 1);
   if (change === 'selection') f.select([]);
   else if (change === 'connection') f.app.store.saveConfig({ provider: 'openai', endpoint: f.endpoint, model: 'fixture', apiKey: 'rotated-key' });

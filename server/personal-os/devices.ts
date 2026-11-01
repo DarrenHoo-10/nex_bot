@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import type { Server, IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
+import { leaseResources, resourceNames, waitingKey, type DeviceLeases } from "./device-leases.ts";
 
 /** How long a device has to take a delivered call. Sent as a duration (`leaseMs`) so the device never has to compare its clock with Core's. */
 export const DEVICE_LEASE_MS = 30_000;
@@ -12,6 +13,7 @@ export class DeviceGateway {
   readonly pending = new Map<string, { resolve: (result: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout; deviceId: string }>();
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   hostDeviceId?: string;
+  leases?: DeviceLeases;
   private readonly alive = new Set<WebSocket>();
   /** Calls to one device run one at a time; parallel tool calls wait their turn instead of failing. */
   private readonly queues = new Map<string, Promise<unknown>>();
@@ -118,8 +120,15 @@ export class DeviceGateway {
       this.changed();
     });
   }
-  execute(call: Row, args: Record<string, unknown>) {
+  execute(call: Row, args: Record<string, unknown>): Promise<unknown> {
     const deviceId = String(call.target_id);
+    // An exclusive resource held by another unfinished task is not queued for: the caller learns who holds it and
+    // what to wait for, and nothing reaches the device.
+    const resources = leaseResources(String(call.tool_name), args);
+    if (resources.length && this.leases) {
+      const lease = this.leases.acquire(String(call.task_id), deviceId, resources);
+      if (!lease.ok) return Promise.resolve({ error: `${resourceNames[lease.resource] ?? lease.resource}正被「${lease.holder.label}」使用`, waitingFor: waitingKey(deviceId, lease.resource) });
+    }
     const previous = this.queues.get(deviceId) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(() => this.executeNow(call, args));
     const settled = run.catch(() => {});

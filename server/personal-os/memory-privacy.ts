@@ -40,6 +40,7 @@ export class MemoryPrivacy {
     for(const use of this.store.all('SELECT * FROM assistant_memory_uses'))if(messageIds.has(String(use.message_id))||hitEpisodes.has(String(use.message_id)))tasks.add(String(use.task_id));
     const all = this.store.all("SELECT * FROM memory_source_registry"), edges = this.store.all("SELECT * FROM memory_source_edges"), uses = this.store.all("SELECT * FROM memory_task_sources");
     const allTasks = this.store.all("SELECT id,bot_id,ended_at FROM tasks"), dependencies = this.store.all("SELECT * FROM memory_task_dependencies");
+    const jobs = this.store.all("SELECT id,origin_task_id,conversation_id FROM agent_jobs").map((job) => ({ origin_task_id: job.origin_task_id, tasks: this.store.all("SELECT id FROM tasks WHERE conversation_id=?", job.conversation_id).map((task) => String(task.id)) }));
     for (const source of all) if ((source.source_kind === "document" && documents.has(String(source.original_id))) || (source.source_kind === "message" && messageIds.has(String(source.original_id)))) sources.add(String(source.id));
     for (const message of messages) if (messageIds.has(String(message.id)) && message.task_id) tasks.add(String(message.task_id));
     // Conservative causal closure: a mixed-source answer is removed whole.
@@ -49,6 +50,8 @@ export class MemoryPrivacy {
       for (const use of uses) if (sources.has(String(use.source_id))) tasks.add(String(use.task_id));
       for (const dependency of dependencies) if (tasks.has(String(dependency.parent_task_id))) tasks.add(String(dependency.task_id));
       for (const origin of this.store.all("SELECT o.task_id parent_task_id,c.task_id FROM routine_origins o JOIN routine_occurrences c ON c.routine_id=o.routine_id WHERE c.task_id IS NOT NULL")) if (tasks.has(String(origin.parent_task_id))) tasks.add(String(origin.task_id));
+      // A background job is one context over its rounds, and it was dispatched with the dispatching turn's words.
+      for (const job of jobs) if ((job.origin_task_id && tasks.has(String(job.origin_task_id))) || job.tasks.some((task) => tasks.has(task))) for (const task of job.tasks) tasks.add(task);
       for (const edge of edges) if (sources.has(String(edge.parent_id))) sources.add(String(edge.source_id));
       const sameHashes = new Set(all.filter((s) => sources.has(String(s.id))).map((s) => s.content_hash));
       for (const source of all) if (sameHashes.has(source.content_hash)) sources.add(String(source.id));
@@ -157,6 +160,14 @@ export class MemoryPrivacy {
         this.store.run("UPDATE conversations SET title=? WHERE id=(SELECT conversation_id FROM tasks WHERE id=?)", redacted, task);
         this.store.run("UPDATE routine_occurrences SET name=?,prompt=?,reason=NULL WHERE task_id=?", redacted, redacted, task);
         this.store.run("UPDATE routine_occurrences SET status='cancelled' WHERE task_id=? AND status IN ('pending','running')", task);
+        // A background job of a forgotten round keeps no title, brief, progress or report, and takes no more input.
+        const job = this.store.get("SELECT j.id FROM agent_jobs j JOIN tasks t ON t.conversation_id=j.conversation_id WHERE t.id=?", task);
+        if (job) {
+          this.store.run("UPDATE agent_jobs SET title=?,brief_json='{}',progress=NULL,stopped_at=COALESCE(stopped_at,?) WHERE id=?", redacted, now(), job.id);
+          this.store.run("UPDATE agent_messages SET content=? WHERE source_key=?", redacted, `job-start:${job.id}`);
+        }
+        this.store.run("UPDATE agent_job_reports SET summary=?,question=CASE WHEN question IS NULL THEN NULL ELSE ? END WHERE task_id=?", redacted, redacted, task);
+        this.store.run("UPDATE job_tool_receipts SET result_json=? WHERE call_id IN (SELECT id FROM tool_calls WHERE task_id=?)", JSON.stringify({ forgotten: true }), task);
       }
       // Topic lines of core memory that point at something forgotten go with it.
       const forgotten = new Set<string>(plan.documents.map((document) => `memory:${document}`)), erased = new Set<string>(plan.messages);

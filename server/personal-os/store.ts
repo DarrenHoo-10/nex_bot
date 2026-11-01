@@ -21,6 +21,7 @@ import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 import { todoSchema } from "./todo-schema.ts";
+import { jobSchema } from "./job-schema.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
@@ -424,6 +425,11 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       const schema = "CREATE TABLE todo_tool_receipts (call_id TEXT PRIMARY KEY REFERENCES tool_calls(id), argument_hash TEXT NOT NULL, todo_id TEXT NOT NULL REFERENCES todos(id));";
       this.db.exec(schema);
       this.insert("schema_migrations", { version: 42, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=43")) this.transaction(() => {
+      // Background jobs, their reports and device resource leases; see job-schema.ts. Existing rows are kept unchanged.
+      this.db.exec(jobSchema);
+      this.insert("schema_migrations", { version: 43, checksum: hash(jobSchema), applied_at: now() });
     });
     this.db.exec("PRAGMA secure_delete=ON;");
   }

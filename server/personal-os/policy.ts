@@ -17,11 +17,23 @@ export function policyTools(policy: Row): string[] {
   const configured = Array.isArray(parsed.tools) ? parsed.tools.filter((value): value is string => typeof value === "string" && actions.includes(value as typeof actions[number])) : [];
   return [...new Set([...(parsed.inheritDefaults === true ? basicActions : configured), ...universalActions])];
 }
+/**
+ * Background job actions are not grants: they move the assistant's own work between its main chat and its background
+ * jobs, so every active assistant has them and the calling task's origin decides which apply (see jobs.ts).
+ */
+export const ownerJobActions = ["job.start", "job.list", "job.message", "job.stop"] as const;
+export const workerJobActions = ["job.report", "job.progress"] as const;
+export const jobActions: readonly string[] = [...ownerJobActions, ...workerJobActions];
+/** Long work the main chat hands to a background job instead of doing itself (agent.delegate with a topic excepted). */
+export const ownerJobOnly = ["device.computer", "image.generate", "agent.delegate"];
+export function ownerMayCall(action: string, args: Record<string, unknown>) {
+  return !ownerJobOnly.includes(action) || (action === "agent.delegate" && args.topic !== undefined);
+}
 export function evaluateTool(store: CoreStore, botId: string, args: Record<string, unknown>) {
   const action = text(args.action, 40);
   const policy = store.get("SELECT p.* FROM bot_policies p JOIN bots b ON b.id=p.bot_id WHERE b.id=? AND b.status='active' AND b.workspace_id=? AND b.owner_user_id=?", botId, store.workspace, store.owner);
   // memory.core.update and memory.topic are the same kind of private memory write as memory.write: one grant covers all three.
-  if (!policy || !(policyTools(policy).includes(action) || ((action === "memory.core.update" || action === "memory.topic") && policyTools(policy).includes("memory.write")))) throw new Error("该 Agent 无权调用此能力");
+  if (!policy || !(policyTools(policy).includes(action) || jobActions.includes(action) || ((action === "memory.core.update" || action === "memory.topic") && policyTools(policy).includes("memory.write")))) throw new Error("该 Agent 无权调用此能力");
   let local: Row | undefined;
   let connectorTool: ConnectorTool | undefined;
   let resourceVersion = 0;

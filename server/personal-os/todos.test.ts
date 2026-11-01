@@ -45,7 +45,7 @@ async function fixture() {
   });
   const bot = app.store.createBot("测试助手");
   app.agents.ensure(bot);
-  const module = () => new TodoModule(app.store, app.agents);
+  const module = () => new TodoModule(app.store, app.agents, app.jobs);
   const input = (overrides = {}) => ({
     id: randomUUID(),
     version: 0,
@@ -228,9 +228,13 @@ describe("durable unified todos", () => {
     f.module().action({ ...item, action: "delete" }, f.app.store.session);
     expect(f.module().list()).toEqual([]);
   });
-  it("links a real worker run, rejects busy assignment, delivers for review, and replays start once", async () => {
+  it("runs as a background job beside a busy assistant, delivers for review, and replays start once", async () => {
     const f = await fixture();
-    f.model.scripts.push({ kind: "openai-text", text: "待办交付结果" });
+    let release!: () => void;
+    f.model.scripts.push({ kind: "openai-text", text: "主对话仍在回答", waitFor: new Promise<void>((resolve) => { release = resolve; }) });
+    const owner = f.app.agents.send(f.bot, "先回答一个问题", "todo-busy-owner").taskId;
+    await until(() => f.model.requests.length === 1);
+    f.model.scripts.push({ kind: "openai-text", text: "待办交付结果" }, { kind: "openai-text", text: "待办交付结果（另一项）" });
     const item = f.module().save(f.input({ owner: f.bot })),
       request = {
         id: item.id,
@@ -238,27 +242,27 @@ describe("durable unified todos", () => {
         action: "start",
         clientId: randomUUID(),
       };
-    const started = f.module().action(request, f.app.store.session);
+    const started = f.module().action(request, f.app.store.session) as TodoItem;
     expect(started).toMatchObject({ status: "running" });
     expect(f.module().action(request, f.app.store.session)).toMatchObject({
       taskId: "taskId" in started ? started.taskId : null,
     });
+    // A busy assistant no longer refuses a todo: it runs in its own job, not in the main chat.
     const other = f.module().save(f.input({ owner: f.bot }));
-    expect(() =>
-      f.module().action(
-        {
-          id: other.id,
-          version: other.version,
-          action: "start",
-          clientId: randomUUID(),
-        },
-        f.app.store.session,
-      ),
-    ).toThrow("其他工作");
-    await until(() => f.module().get(item.id).status === "review");
+    expect(f.module().action({ id: other.id, version: other.version, action: "start", clientId: randomUUID() }, f.app.store.session)).toMatchObject({ status: "running" });
+    await until(() => f.module().get(item.id).status === "review" && f.module().get(other.id).status === "review");
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", owner)?.status).toBe("running");
+    const job = f.app.store.get("SELECT * FROM agent_jobs WHERE todo_id=?", item.id)!;
+    expect(f.app.store.get("SELECT origin FROM agent_task_links WHERE task_id=?", started.taskId)?.origin).toBe("job");
+    expect(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", started.taskId)?.conversation_id).toBe(job.conversation_id);
+    expect(f.app.store.all("SELECT * FROM conversation_inputs WHERE task_id=?", owner)).toHaveLength(1);
     const delivered = f.module().get(item.id);
     expect(delivered.result).toContain("待办交付结果");
-    expect(f.app.store.all("SELECT * FROM todo_runs")).toHaveLength(1);
+    expect(delivered.log).toContain("AI 已交付，等待验收");
+    expect(f.app.store.all("SELECT * FROM todo_runs")).toHaveLength(2);
+    const report = f.app.agents.messages(f.bot).find((message) => message.job_id === job.id && message.job_state === "ready")!;
+    expect(report.content).toContain("待办交付结果");
+    release();
     await f.restart();
     expect(f.module().get(item.id)).toMatchObject({
       status: "review",

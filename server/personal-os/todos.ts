@@ -8,6 +8,7 @@ import {
   type Row,
 } from "./store.ts";
 import type { AgentModule } from "./agents.ts";
+import type { JobModule } from "./jobs.ts";
 import type {
   TodoItem,
   TodoStatus,
@@ -21,6 +22,7 @@ export class TodoModule {
   constructor(
     readonly store: CoreStore,
     readonly agents: AgentModule,
+    readonly jobs: JobModule,
   ) {}
   private row(todoId: string) {
     const row = this.store.get(
@@ -222,7 +224,7 @@ export class TodoModule {
   action(data: Record<string, unknown>, sessionId: string) {
     const todoId = text(data.id, 100),
       action = text(data.action, 20);
-    let stopTask: string | undefined;
+    let stopTask: string | undefined, stopJob: string | undefined;
     this.store.transaction(() => {
       if (action === "start") {
         const clientId = text(data.clientId, 100),
@@ -240,32 +242,35 @@ export class TodoModule {
         const row = this.checked(data);
         if (!["todo", "review"].includes(String(row.status)) || !row.bot_id)
           throw new TodoConflict("请选择 Agent，并确认待办尚未完成");
-        if (this.agents.active(String(row.bot_id)))
-          throw new TodoConflict("该 Agent 正在处理其他工作，请稍后再开始");
         const feedback = optionalText(data.feedback, 2000);
         const previous = this.get(todoId).result;
         const steps = (JSON.parse(String(row.steps_json)) as TodoStep[])
           .map((s) => `- [${s.done ? "x" : " "}] ${s.text}`)
           .join("\n");
         const prompt = `请完成待办：${row.title}\n\n${row.description}${steps ? "\n\n步骤：\n" + steps : ""}${row.due_date ? "\n截止日期：" + row.due_date : ""}${feedback ? "\n\n上一版结果：\n" + previous.slice(0, 12000) + "\n\n修改要求：" + feedback : ""}\n\n完成后提交具体结果，等待用户验收。`;
-        const sent = this.agents.send(
-          String(row.bot_id),
-          prompt,
-          `todo:${clientId}`,
-          sessionId,
+        // A todo runs as a background job: the main chat stays free, and a busy assistant queues it
+        // in its background slots. A revision goes to the todo's own job while it is not stopped.
+        const job = this.store.get(
+          "SELECT id FROM agent_jobs WHERE todo_id=? AND bot_id=? AND stopped_at IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1",
+          todoId,
+          row.bot_id,
         );
+        const sent = job
+          ? this.jobs.input(String(job.id), feedback ? `修改要求：${feedback}` : prompt, `todo:${clientId}`, feedback ? "direct" : "system", sessionId)
+          : this.jobs.start({ botId: String(row.bot_id), title: row.title, prompt, todoId, sourceKey: `todo-job:${clientId}`, sessionId });
         this.store.run(
           "UPDATE todos SET status='running',task_id=?,version=version+1,updated_at=? WHERE id=?",
           sent.taskId,
           now(),
           todoId,
         );
-        this.store.insert("todo_runs", {
-          client_id: clientId,
-          todo_id: todoId,
-          request_hash: digest,
-          task_id: sent.taskId,
-        });
+        this.store.run(
+          "INSERT OR IGNORE INTO todo_runs(client_id,todo_id,request_hash,task_id) VALUES(?,?,?,?)",
+          clientId,
+          todoId,
+          digest,
+          sent.taskId,
+        );
         this.event(todoId, feedback ? "已提交修改要求" : "已交给 AI 执行");
       } else {
         const row = this.checked(data);
@@ -281,7 +286,14 @@ export class TodoModule {
         } else if (action === "stop") {
           if (row.status !== "running")
             throw new TodoConflict("这条待办没有正在执行的任务");
-          if (row.task_id) stopTask = String(row.task_id);
+          const job = row.task_id
+            ? this.store.get(
+                "SELECT j.id FROM agent_jobs j JOIN tasks t ON t.conversation_id=j.conversation_id WHERE t.id=? AND j.stopped_at IS NULL",
+                row.task_id,
+              )
+            : undefined;
+          if (job) stopJob = String(job.id);
+          else if (row.task_id) stopTask = String(row.task_id);
           else {
             this.store.run(
               "UPDATE todos SET status='todo',version=version+1,updated_at=? WHERE id=?",
@@ -317,6 +329,7 @@ export class TodoModule {
       }
       this.store.audit(`todo.${action}`, "todo", todoId, {});
     });
+    if (stopJob) this.jobs.stop(stopJob, "用户停止了待办执行");
     if (stopTask) this.agents.runtime.cancel(stopTask, "用户停止了待办执行");
     this.agents.runtime.changed();
     return action === "delete" ? { deleted: true } : this.get(todoId);

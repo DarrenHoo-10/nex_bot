@@ -45,10 +45,20 @@ it("lists authorized tools with pagination and returns usable action-specific sc
   for (const args of [{ query: {} }, { query: "x".repeat(201) }, { offset: -1 }, { offset: 0.5 }, { limit: 11 }])
     expect(() => searchTools(store, bot, args)).toThrow();
   for (const entry of toolCatalog) {
-    const found = searchTools(store, bot, { query: entry.action }).items[0];
+    // Background job actions belong to the calling task's origin, not to a grant.
+    const origin = ["job.report", "job.progress"].includes(entry.action) ? "job" : entry.action.startsWith("job.") ? "owner" : undefined;
+    const found = searchTools(store, bot, { query: entry.action }, origin).items[0];
     expect(found.action).toBe(entry.action);
     expect(Object.values(found.parameters!.properties).every((schema) => schema !== undefined)).toBe(true);
   }
+  expect(searchTools(store, bot, { query: "job" }).items).toEqual([]);
+  expect(searchTools(store, bot, { query: "job.report" }, "owner").items).toEqual([]);
+  expect(searchTools(store, bot, { query: "job.start" }, "job").items).toEqual([]);
+  const owner = searchTools(store, bot, { query: "device.computer" }, "owner").items[0];
+  expect(owner.title).toContain("仅后台任务");
+  expect(owner.description).toContain("job.start");
+  expect(searchTools(store, bot, { query: "device.computer" }, "job").items[0].title).not.toContain("仅后台任务");
+  expect(commonToolPrompt(policyTools(store.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!), "owner")).toContain("job.start(title");
 });
 
 it("does not expose restricted operations or grant them through discovery, including after a policy change", () => {
