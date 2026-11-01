@@ -1,6 +1,6 @@
 # 助手后台任务：主对话保持可响应
 
-状态：设计已确认（2026-11-01，第 13 节四项决定），尚未实现。技术方案见 [2026-11-01-background-jobs-implementation.md](../plans/2026-11-01-background-jobs-implementation.md)。
+状态：设计已确认（2026-11-01，第 13 节四项决定），已在 0.9.27 发布（[发布记录](../verification/background-jobs-release-20261102.md)）。技术方案见 [2026-11-01-background-jobs-implementation.md](../plans/2026-11-01-background-jobs-implementation.md)。
 
 参考：DeepSeek《Super-agent 设计探索》的双层架构（Router / Worker），以及它的原型
 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)。本方案只借用其中一部分：主对话负责接话和分派，长任务交给独立的后台上下文执行，再以结构化结果回报。不引入常驻 Router、事件过滤或团队授权。

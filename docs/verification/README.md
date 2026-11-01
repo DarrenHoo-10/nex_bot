@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [后台任务：全平台发布记录（2026-11-02）](background-jobs-release-20261102.md)
+
 - [待办日期、模型完成与输入框修复：发布记录（2026-11-01）](todo-release-20261101.md)
 
 - [Todo default date and composer focus: local verification (2026-11-01)](todo-default-date-20261101.md)
