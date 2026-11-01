@@ -439,6 +439,9 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-1" });
     await show([job({ stage: "done", endedAt: 3, latestReport: { ...latest, state: "ready", question: null } })], [report("ready")]);
     expect(cardButtons()).toEqual([]);
+    // A failed job still waits for a person: its card can stop it.
+    await show([job({ stage: "failed", latestReport: { ...latest, state: "failed", question: null } })], [report("failed")]);
+    expect(cardButtons()).toEqual(["停止"]);
     // An older report of the job carries no actions.
     await show([job({ stage: "question", latestReport: { ...latest, messageId: "newer" } })], [report("question")]);
     expect(cardButtons()).toEqual([]);

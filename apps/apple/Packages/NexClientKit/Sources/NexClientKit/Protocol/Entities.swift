@@ -126,12 +126,12 @@ public struct Job: RowBacked {
     public var createdAt: Date? { dateFromMilliseconds(row.double("createdAt")) }
     /// Nil while the job still needs the assistant or the user.
     public var endedAt: Date? { dateFromMilliseconds(row.double("endedAt")) }
-    /// Still needs the assistant or the user (running, queued, approval, question, review, blocked).
+    /// Still needs the assistant or the user (running, queued, approval, question, review, blocked, failed).
     public var isOpen: Bool { endedAt == nil && stage != "stopped" }
     /// Running or about to run: the assistant counts as working.
     public var isBusy: Bool { ["running", "queued", "approval"].contains(stage) }
     /// Its report card may still offer 停止.
-    public var isStoppable: Bool { ["running", "queued", "approval", "question", "blocked"].contains(stage) }
+    public var isStoppable: Bool { ["running", "queued", "approval", "question", "blocked", "failed"].contains(stage) }
     public var stageText: String { Job.stageText(stage) }
     public static func stageText(_ stage: String) -> String {
         switch stage {

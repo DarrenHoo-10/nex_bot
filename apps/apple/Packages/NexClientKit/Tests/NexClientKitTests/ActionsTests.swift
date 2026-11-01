@@ -375,6 +375,9 @@ final class ActionsTests: XCTestCase {
         let job = try XCTUnwrap(s.job("j1"))
         XCTAssertEqual(job.stageText, "待验收"); XCTAssertEqual(job.latestReport?.messageID, "m9"); XCTAssertFalse(job.isStoppable)
         XCTAssertTrue(try XCTUnwrap(s.job("j2")).isStoppable); XCTAssertFalse(try XCTUnwrap(s.job("j3")).isOpen)
+        // A failed job waits for a person like a blocked one: open (no endedAt) and stoppable.
+        let failed = Job(row: ["id": "jf", "botId": "b1", "title": "失败", "stage": "failed", "endedAt": .null])
+        XCTAssertTrue(failed.isOpen); XCTAssertTrue(failed.isStoppable)
         try await store.acceptJob(job)
         var j = core.recorded("/api/todos/action")[0].json
         XCTAssertEqual(j["id"] as? String, "todo-1"); XCTAssertEqual(j["version"] as? Int, 7); XCTAssertEqual(j["action"] as? String, "complete"); XCTAssertNil(j["feedback"])

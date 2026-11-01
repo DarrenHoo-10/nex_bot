@@ -11,7 +11,7 @@ export interface JobCardActions {
   revise(job: Job): void;
 }
 /** Stages in which a job can still be stopped from its card. */
-const stoppable = new Set(["running", "queued", "approval", "question", "blocked"]);
+const stoppable = new Set(["running", "queued", "approval", "question", "blocked", "failed"]);
 
 /**
  * A background job's report in the message stream: title, its current stage (from state, not the message), the
