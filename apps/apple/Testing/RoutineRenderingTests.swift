@@ -105,3 +105,101 @@ final class RoutineRenderingTests: XCTestCase {
         add(attachment)
     }
 }
+
+private final class JobFixtureProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var onRequest: (@Sendable () -> Void)?
+    nonisolated(unsafe) static let jobs: [[String: Any]] = [
+        ["id": "j-question", "botId": "b1", "title": "整理下载文件夹", "stage": "question", "taskId": "t1", "createdAt": 1800000000000, "endedAt": NSNull(),
+         "latestReport": ["id": "r1", "state": "question", "summary": "已按类型整理 12 个文件。", "question": "下载里的 3 张截图要保留吗？", "messageId": "m-question", "createdAt": 1800000001000]],
+        ["id": "j-review", "botId": "b1", "title": "写周报", "stage": "review", "taskId": "t2", "todoId": "todo", "todoVersion": 4, "todoStatus": "review", "createdAt": 1800000000000, "endedAt": NSNull(),
+         "latestReport": ["id": "r2", "state": "ready", "summary": "周报已写好：本周完成 3 项。", "messageId": "m-review", "createdAt": 1800000002000]],
+        ["id": "j-blocked", "botId": "b1", "title": "操作屏幕", "stage": "blocked", "taskId": "t3", "createdAt": 1800000000000, "endedAt": NSNull(),
+         "latestReport": ["id": "r3", "state": "blocked", "summary": "屏幕正被「整理下载文件夹」使用。", "messageId": "m-blocked", "createdAt": 1800000003000]],
+    ]
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let path = request.url!.path
+        let payload: [String: Any] = path == "/api/jobs/detail" ? [
+            "job": Self.jobs[0], "task": ["id": "t1", "status": "succeeded"], "tasks": [["id": "t1"]],
+            "messages": [["id": "brief", "role": "user", "content": "后台任务「整理下载文件夹」。以用户原话为准"], ["id": "m1", "role": "assistant", "content": "正在按类型整理。", "created_at": 1800000000000]],
+            "steps": [["id": "s1", "tool_name": "device.list", "status": "succeeded", "summary": "device.list", "preview": "", "created_at": 1800000000000]],
+            "reports": [["id": "r1", "state": "question", "summary": "已按类型整理 12 个文件。", "created_at": 1800000001000]], "streaming": "",
+        ] : ["sync": ["cursor": 1, "privacyEpoch": 0, "coreId": "fixture", "bootId": "fixture"], "bots": [["id": "b1", "name": "后台演示助手"]],
+             "approvals": [], "tasks": [], "routines": [], "occurrences": [], "devices": [], "conversations": [], "onlineDevices": [], "memories": [], "jobs": Self.jobs]
+        let data = try! JSONSerialization.data(withJSONObject: payload)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+        if path == "/api/jobs/detail" { Self.onRequest?() }
+    }
+    override func stopLoading() {}
+}
+
+final class JobRenderingTests: XCTestCase {
+    @MainActor private func workspace() async throws -> WorkspaceStore {
+        let session = CoreClient.makeSession(protocolClasses: [JobFixtureProtocol.self])
+        let store = WorkspaceStore(client: CoreClient(origin: try CoreOrigin("https://job-fixture.example.test"), token: "synthetic", session: session))
+        await store.refresh()
+        return store
+    }
+
+    /// Report cards follow the job's current stage: 回复 on a question, 验收 / 修改 on a todo delivery, 停止 while open.
+    @MainActor func testReportCards() async throws {
+        let store = try await workspace()
+        XCTAssertEqual(store.state?.openJobs(botID: "b1").count, 3)
+        func message(_ id: String, _ job: String, _ state: String, _ content: String) -> AgentMessage {
+            AgentMessage(row: ["id": .string(id), "bot_id": "b1", "role": state == "blocked" ? "system" : "assistant", "content": .string(content), "job_id": .string(job), "job_state": .string(state), "created_at": 1_800_000_001_000])
+        }
+        let view = VStack(alignment: .leading, spacing: 14) {
+            JobReportCard(message: message("m-question", "j-question", "question", "后台任务「整理下载文件夹」\n已按类型整理 12 个文件。\n\n下载里的 3 张截图要保留吗？"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
+            JobReportCard(message: message("m-review", "j-review", "ready", "后台任务「写周报」\n周报已写好：本周完成 3 项。"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
+            JobReportCard(message: message("m-blocked", "j-blocked", "blocked", "后台任务「操作屏幕」\n屏幕正被「整理下载文件夹」使用。"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
+            Spacer()
+        }.padding(20).background(Theme.background)
+        try await snapshot(view, name: "job-report-cards", requested: nil)
+    }
+
+    @MainActor func testJobDetail() async throws {
+        let requested = expectation(description: "Loads the fixture job")
+        requested.assertForOverFulfill = false
+        JobFixtureProtocol.onRequest = { requested.fulfill() }
+        defer { JobFixtureProtocol.onRequest = nil }
+        let view = JobDetailView(workspace: try await workspace(), jobID: "j-question")
+        try await snapshot(view, name: "job-detail", requested: requested)
+    }
+
+    @MainActor private func snapshot<V: View>(_ view: V, name: String, requested: XCTestExpectation?) async throws {
+        #if os(macOS)
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 640), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        host.frame = window.contentView!.bounds
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        #else
+        let host = UIHostingController(rootView: view)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        #endif
+        if let requested { await fulfillment(of: [requested], timeout: 5) }
+        try await Task.sleep(for: .milliseconds(250))
+        #if os(macOS)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(bitmap)
+        #else
+        host.view.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }
+        #endif
+        XCTAssertGreaterThan(image.size.width, 300)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}

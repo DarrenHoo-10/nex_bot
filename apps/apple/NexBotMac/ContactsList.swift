@@ -151,7 +151,7 @@ struct ContactsList: View {
                         DockRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id), selected: !ui.todosVisible && workspace.selectedBotID == bot.id)
                     } else {
                         ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
-                                   phrase: ToolLabels.taskPhrase(workspace.state?.unfinishedTask(botID: bot.id)),
+                                   phrase: workspace.state?.workingPhrase(botID: bot.id) ?? "",
                                    selected: !ui.todosVisible && workspace.selectedBotID == bot.id)
                     }
                 }

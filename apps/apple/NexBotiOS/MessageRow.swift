@@ -117,6 +117,8 @@ struct MessageRow: View {
     var onQuote: (_ author: String, _ text: String) -> Void = { _, _ in }
     var onOpenStep: (ToolStep) -> Void = { _ in }
     var onOpenPeer: (String) -> Void = { _ in }
+    var onOpenJob: (String) -> Void = { _ in }
+    var onReplyJob: (Job) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
     @State private var folded = true
 
@@ -139,7 +141,23 @@ struct MessageRow: View {
 
     var body: some View {
         Group {
-            if isMarker {
+            if message.isJobStart {
+                JobMarkerView(message: message, job: message.jobID.flatMap { workspace.state?.job($0) }) { if let id = message.jobID { onOpenJob(id) } }
+            } else if message.isJobReport {
+                HStack(alignment: .bottom, spacing: 8) {
+                    if let bot { AgentAvatar(appearance: workspace.appearance(of: bot), state: .idle, size: 26).padding(.bottom, 22) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        JobReportCard(message: message, workspace: workspace, open: { if let id = message.jobID { onOpenJob(id) } }, reply: onReplyJob) {
+                            let pictures = AttachmentLink.embeddedImages(message.content)
+                            if !pictures.isEmpty {
+                                AttachmentCards(links: pictures, workspace: workspace, conversation: workspace.conversation(for: message.botID), messageID: message.id)
+                            }
+                        }
+                        time.padding(.horizontal, 4)
+                    }
+                }
+                .padding(.trailing, 28).frame(maxWidth: .infinity, alignment: .leading)
+            } else if isMarker {
                 marker.frame(maxWidth: .infinity)
             } else if message.role == "system" {
                 Text(message.content).font(.caption).foregroundStyle(Theme.muted).multilineTextAlignment(.center).frame(maxWidth: .infinity)
@@ -175,6 +193,9 @@ struct MessageRow: View {
         let images = split.links.filter(\.isImage), files = split.links.filter { !$0.isImage }
         let conversation = workspace.conversation(for: message.botID)
         return VStack(alignment: .trailing, spacing: 6) {
+            if message.jobID != nil {
+                Text("回复后台任务：\(message.jobID.flatMap { workspace.state?.job($0)?.title } ?? message.jobTitle)").font(.caption).foregroundStyle(Theme.muted)
+            }
             if !images.isEmpty {
                 AttachmentCards(links: images, workspace: workspace, conversation: conversation, messageID: message.id, trailing: true)
             }

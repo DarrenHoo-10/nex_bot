@@ -31,14 +31,14 @@ final class SyncTests: XCTestCase {
 
     func testTaskCompletionWaitsForMatchingFeedBeforePublishing() async throws {
         let core = StubCore(), fake = Fake()
-        fake.tasks = [["id": "t1", "bot_id": "b1", "status": "running"]]
+        fake.tasks = [["id": "t1", "bot_id": "b1", "origin": "owner", "status": "running"]]
         core.handle(fake.handler)
         let store = makeStore(core); store.select("b1")
         await store.refresh()
         let conv = store.conversation(for: "b1")
         XCTAssertEqual(conv.activeTask?.id, "t1")
         fake.lock.withLock {
-            fake.tasks = [["id": "t1", "bot_id": "b1", "status": "succeeded"]]
+            fake.tasks = [["id": "t1", "bot_id": "b1", "origin": "owner", "status": "succeeded"]]
             fake.seqs.append(4); fake.feedDelay = 0.3
         }
         let refresh = Task { await store.refresh() }
@@ -257,7 +257,7 @@ final class SyncTests: XCTestCase {
                 let call = calls.next()
                 if call == 1 { return .json(stateJSON()) }
                 if call == 2 { return .json(stateJSON(), delay: 0.3) }
-                return .json(stateJSON(tasks: [["id": "t1", "bot_id": "b1", "status": "running"]]), delay: 0.6)
+                return .json(stateJSON(tasks: [["id": "t1", "bot_id": "b1", "origin": "owner", "status": "running"]]), delay: 0.6)
             }
             return .json(feedJSON([1]))
         }
@@ -288,14 +288,41 @@ final class SyncTests: XCTestCase {
     func testStopCancelsUnfinishedTask() async throws {
         let core = StubCore()
         core.handle { r in
-            r.path == "/api/state" ? .json(stateJSON(tasks: [["id": "old", "bot_id": "b1", "status": "succeeded", "ended_at": 5], ["id": "run", "bot_id": "b1", "status": "running", "ended_at": NSNull()]]))
+            r.path == "/api/state" ? .json(stateJSON(tasks: [["id": "old", "bot_id": "b1", "status": "succeeded", "ended_at": 5], ["id": "job-run", "bot_id": "b1", "origin": "job", "status": "running", "ended_at": NSNull()], ["id": "run", "bot_id": "b1", "origin": "owner", "status": "running", "ended_at": NSNull()]]))
                 : .json(feedJSON([1]))
         }
         let store = makeStore(core); store.select("b1"); await store.refresh()
         let conv = store.conversation(for: "b1")
         XCTAssertEqual(conv.activeTask?.id, "run"); XCTAssertTrue(conv.canStop)
         await conv.stop()
-        XCTAssertEqual(core.recorded("/api/cancel")[0].json["taskId"] as? String, "run")
+        XCTAssertEqual(core.recorded("/api/cancel").map { $0.json["taskId"] as? String }, ["run"], "the stop key stops the main chat only")
+    }
+
+    func testReplyToJobGoesToJobsInputAndKeepsTargetOnRefusal() async throws {
+        let core = StubCore(), fake = Fake()
+        nonisolated(unsafe) var refuse = true
+        core.handle { r in
+            if r.path == "/api/jobs/input" && refuse { refuse = false; return StubResponse(status: 400, headers: ["Content-Type": "application/json"], body: Data(#"{"error":"后台任务已停止，不能再补充"}"#.utf8)) }
+            if r.path == "/api/jobs/input" { return .json(["jobId": "j1", "taskId": "t9"], status: 202) }
+            return fake.handler(r)
+        }
+        let store = makeStore(core); store.select("b1")
+        let conv = store.conversation(for: "b1")
+        conv.replyJob = JobReplyTarget(id: "j1", title: "整理下载文件夹")
+        conv.draft = "保留截图"
+        let refused = await conv.send()
+        XCTAssertFalse(refused); XCTAssertEqual(conv.sendError, "后台任务已停止，不能再补充")
+        XCTAssertEqual(conv.draft, "保留截图"); XCTAssertEqual(conv.replyJob?.id, "j1")
+        let sent = await conv.send()
+        XCTAssertTrue(sent); XCTAssertEqual(conv.draft, ""); XCTAssertNil(conv.replyJob)
+        let bodies = core.recorded("/api/jobs/input").map(\.json)
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertEqual(bodies[0]["jobId"] as? String, "j1"); XCTAssertEqual(bodies[0]["text"] as? String, "保留截图")
+        XCTAssertEqual(bodies[0]["clientId"] as? String, bodies[1]["clientId"] as? String, "a retry reuses the client id")
+        XCTAssertTrue(core.recorded("/api/agents/input").isEmpty, "a job reply never reaches the main chat")
+        // Without a target the next send is the main chat's again; a reply never carries files.
+        conv.draft = "主对话"; _ = await conv.send()
+        XCTAssertEqual(core.recorded("/api/agents/input").count, 1)
     }
 
     func testApprovalDecisionAndSessions() async throws {

@@ -156,7 +156,7 @@ final class ActionsTests: XCTestCase {
 
     func testPeersAwaitingApproval() {
         var s = WorkspaceState(sync: SyncIdentity(cursor: 1, privacyEpoch: 0, coreId: "c", bootId: "b"))
-        s.tasks = [AgentTask(row: ["id": .string("t1"), "bot_id": .string("b1"), "status": .string("running"), "ended_at": .null])]
+        s.tasks = [AgentTask(row: ["id": .string("t1"), "bot_id": .string("b1"), "origin": "owner", "status": .string("running"), "ended_at": .null])]
         s.delegations = [Delegation(row: ["parent_task_id": .string("t1"), "receiver_bot_id": .string("b2"), "child_task_id": .string("t2")])]
         s.approvals = [Approval(row: ["id": .string("a"), "task_id": .string("t2"), "bot_id": .string("b2")])]
         XCTAssertEqual(s.peersAwaitingApproval(for: "b1"), ["b2"])
@@ -339,10 +339,56 @@ final class ActionsTests: XCTestCase {
         XCTAssertEqual(RoutineOccurrence(row: ["status": "pending", "task_status": ""]).displayStatus, "pending")
         XCTAssertEqual(RoutineOccurrence(row: ["status": "pending"]).displayStatus, "pending")
         let routine = AgentTask(row: ["id": "routine", "bot_id": "b1", "origin": "routine", "status": "running", "ended_at": .null])
-        let main = AgentTask(row: ["id": "main", "bot_id": "b1", "status": "running", "ended_at": .null])
-        let state = WorkspaceState(sync: SyncIdentity(cursor: 1, privacyEpoch: 0, coreId: "c", bootId: "b"), tasks: [routine, main])
+        let main = AgentTask(row: ["id": "main", "bot_id": "b1", "origin": "owner", "status": "running", "ended_at": .null])
+        // A background job's round and a delegated child (no inbox link, so no origin) are not the chat's work either.
+        let job = AgentTask(row: ["id": "job", "bot_id": "b1", "origin": "job", "status": "running", "ended_at": .null])
+        let child = AgentTask(row: ["id": "child", "bot_id": "b1", "origin": .null, "status": "running", "ended_at": .null])
+        let state = WorkspaceState(sync: SyncIdentity(cursor: 1, privacyEpoch: 0, coreId: "c", bootId: "b"), tasks: [routine, job, child, main])
         XCTAssertEqual(state.unfinishedTask(botID: "b1")?.id, "main")
         XCTAssertEqual(state.unfinishedTasks(botID: "b1").map(\.id), ["main"])
+    }
+
+    func testBackgroundJobCalls() async throws {
+        var state = fullState
+        state["tasks"] = [["id": "job-task", "bot_id": "b1", "origin": "job", "status": "running", "ended_at": NSNull()]]
+        state["jobs"] = [
+            ["id": "j1", "botId": "b1", "title": "写周报", "stage": "review", "taskId": "job-task", "todoId": "todo-1", "todoVersion": 7, "todoStatus": "review", "progress": NSNull(),
+             "latestReport": ["id": "r1", "state": "ready", "summary": "周报已写好", "question": NSNull(), "messageId": "m9", "createdAt": 2], "createdAt": 1, "endedAt": NSNull()],
+            ["id": "j2", "botId": "b1", "title": "导出报告", "stage": "running", "taskId": "t3", "todoId": NSNull(), "todoVersion": NSNull(), "progress": "已导出一半", "latestReport": NSNull(), "createdAt": 3, "endedAt": NSNull()],
+            ["id": "j3", "botId": "b1", "title": "旧任务", "stage": "done", "createdAt": 0, "endedAt": 5],
+        ]
+        let snapshot = state
+        let core = StubCore()
+        core.handle { r in
+            switch r.path {
+            case "/api/state": .json(snapshot)
+            case "/api/jobs/detail": .json(["job": (snapshot["jobs"] as! [[String: Any]])[0], "task": NSNull(), "tasks": [], "messages": [["id": "m1", "role": "user", "content": "任务书"]],
+                                             "steps": [], "reports": [["id": "r1", "state": "ready", "summary": "周报已写好", "created_at": 2]], "streaming": ""])
+            default: .json(["ok": true])
+            }
+        }
+        let store = makeStore(core); await store.refresh()
+        let s = try XCTUnwrap(store.state)
+        XCTAssertNil(s.unfinishedTask(botID: "b1"), "a job's round is not the chat's work")
+        XCTAssertEqual(s.openJobs(botID: "b1").map(\.id), ["j1", "j2"])
+        XCTAssertEqual(s.workingPhrase(botID: "b1"), "后台任务：导出报告")
+        let job = try XCTUnwrap(s.job("j1"))
+        XCTAssertEqual(job.stageText, "待验收"); XCTAssertEqual(job.latestReport?.messageID, "m9"); XCTAssertFalse(job.isStoppable)
+        XCTAssertTrue(try XCTUnwrap(s.job("j2")).isStoppable); XCTAssertFalse(try XCTUnwrap(s.job("j3")).isOpen)
+        try await store.acceptJob(job)
+        var j = core.recorded("/api/todos/action")[0].json
+        XCTAssertEqual(j["id"] as? String, "todo-1"); XCTAssertEqual(j["version"] as? Int, 7); XCTAssertEqual(j["action"] as? String, "complete"); XCTAssertNil(j["feedback"])
+        try await store.reviseJob(job, feedback: "加上风险")
+        j = core.recorded("/api/todos/action")[1].json
+        XCTAssertEqual(j["action"] as? String, "start"); XCTAssertEqual(j["feedback"] as? String, "加上风险"); XCTAssertEqual(j["version"] as? Int, 7); XCTAssertNotNil(j["clientId"])
+        try await store.stopJob("j2")
+        XCTAssertEqual(core.recorded("/api/jobs/stop")[0].json as NSDictionary, ["jobId": "j2"])
+        try await store.stopAll(botID: "b1")
+        XCTAssertEqual(core.recorded("/api/agents/stop-all")[0].json as NSDictionary, ["botId": "b1"])
+        let detail = try await store.jobDetail(id: "j1")
+        XCTAssertEqual(core.recorded("/api/jobs/detail")[0].query, "id=j1")
+        XCTAssertEqual(detail.job.title, "写周报"); XCTAssertEqual(detail.reports.first?.summary, "周报已写好"); XCTAssertEqual(detail.messages.first?.content, "任务书")
+        do { try await store.acceptJob(try XCTUnwrap(s.job("j2"))); XCTFail("a job without a todo cannot be accepted") } catch let e as CoreError { XCTAssertEqual(e.message, "这项后台任务没有待办") }
     }
 
     func testConnectorCalls() async throws {

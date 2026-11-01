@@ -108,6 +108,80 @@ public struct RoutineOccurrenceDetail: Decodable, Sendable {
     public var resultSummary: String { task?.row.string("result_summary") ?? "" }
 }
 
+// MARK: - Background jobs
+
+/// `jobs[]`: long work the main chat handed to its own conversation. Core derives ``stage``; clients never compute it.
+public struct Job: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var botID: String { row.string("botId") ?? "" }
+    public var title: String { row.string("title") ?? "" }
+    /// `approval`, `question`, `review`, `blocked`, `failed`, `queued`, `running`, `done`, `dropped` or `stopped`.
+    public var stage: String { row.string("stage") ?? "" }
+    public var taskID: String? { row.string("taskId") }
+    public var todoID: String? { row.string("todoId") }
+    public var todoVersion: Int? { row.int("todoVersion") }
+    public var progress: String? { row.string("progress").flatMap { $0.isEmpty ? nil : $0 } }
+    public var latestReport: JobReport? { row["latestReport"]?.objectValue.map(JobReport.init) }
+    public var createdAt: Date? { dateFromMilliseconds(row.double("createdAt")) }
+    /// Nil while the job still needs the assistant or the user.
+    public var endedAt: Date? { dateFromMilliseconds(row.double("endedAt")) }
+    /// Still needs the assistant or the user (running, queued, approval, question, review, blocked).
+    public var isOpen: Bool { endedAt == nil && stage != "stopped" }
+    /// Running or about to run: the assistant counts as working.
+    public var isBusy: Bool { ["running", "queued", "approval"].contains(stage) }
+    /// Its report card may still offer 停止.
+    public var isStoppable: Bool { ["running", "queued", "approval", "question", "blocked"].contains(stage) }
+    public var stageText: String { Job.stageText(stage) }
+    public static func stageText(_ stage: String) -> String {
+        switch stage {
+        case "approval": "等待批准"
+        case "question": "等待你回答"
+        case "review": "待验收"
+        case "blocked": "受阻"
+        case "failed": "失败"
+        case "queued": "排队中"
+        case "running": "执行中"
+        case "done": "已完成"
+        case "dropped": "无需处理"
+        case "stopped": "已停止"
+        default: stage
+        }
+    }
+}
+
+/// A job's latest report as part of ``Job``.
+public struct JobReport: Sendable, Hashable {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var id: String { row.string("id") ?? "" }
+    /// `ready`, `question`, `blocked`, `failed` or `dropped`.
+    public var state: String { row.string("state") ?? "" }
+    public var summary: String { row.string("summary") ?? "" }
+    public var question: String? { row.string("question") }
+    public var messageID: String? { row.string("messageId") }
+}
+
+/// `GET /api/jobs/detail`: a job's execution over all its rounds.
+public struct JobDetail: Decodable, Sendable {
+    public let job: Job
+    public let task: AgentTask?
+    public let tasks: [AgentTask]
+    public let messages: [AgentMessage]
+    public let steps: [ToolStep]
+    public let reports: [JobRoundReport]
+    public let streaming: String
+}
+
+/// One round's report in ``JobDetail``.
+public struct JobRoundReport: RowBacked {
+    public let row: Row
+    public init(row: Row) { self.row = row }
+    public var state: String { row.string("state") ?? "" }
+    public var summary: String { row.string("summary") ?? "" }
+    public var createdAt: Date? { dateFromMilliseconds(row.double("created_at")) }
+}
+
 // MARK: - Connectors
 
 /// One tool of a connector's catalog.

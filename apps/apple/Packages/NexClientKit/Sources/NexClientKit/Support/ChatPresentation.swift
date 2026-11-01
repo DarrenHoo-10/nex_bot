@@ -22,7 +22,7 @@ public enum MessageGrouping {
     }
 
     private static func plain(_ message: AgentMessage) -> Bool {
-        message.role == "assistant" && (message.a2aDirection ?? "").isEmpty
+        message.role == "assistant" && (message.a2aDirection ?? "").isEmpty && message.jobID == nil
     }
 }
 

@@ -47,7 +47,7 @@ final class ProtocolTests: XCTestCase {
         {"sync":{"cursor":12,"privacyEpoch":1.0,"coreId":"c1","bootId":"b"},"extra":{"a":1},
          "bots":[{"id":"b1","name":"小助手","instructions":"hi","version":3,"read_seq":4,"unread_count":2,"last_message":"你好","last_message_at":1760000000000,"policy_version":1}],
          "approvals":[{"id":"a1","argument_hash":"\(String(repeating: "f", count: 64))","expires_at":1760000099000,"tool_name":"device.exec","arguments_json":"{\\"command\\":\\"ls\\"}","bot_id":"b1","task_id":"t1","call_id":"c"}],
-         "tasks":[{"id":"t1","bot_id":"b1","status":"running","active_tool":"memory.search","ended_at":null,"created_at":1760000000000},{"id":"t0","bot_id":"b1","status":"succeeded","ended_at":1760000001000,"active_tool":null}],
+         "tasks":[{"id":"t1","bot_id":"b1","origin":"owner","status":"running","active_tool":"memory.search","ended_at":null,"created_at":1760000000000},{"id":"t0","bot_id":"b1","status":"succeeded","ended_at":1760000001000,"active_tool":null}],
          "routines":[{"id":"r","enabled":1}],"devices":[],"onlineDevices":["d1"],"memories":[{"id":"m"}],"usage":[]}
         """
         let s = try decode(WorkspaceState.self, json)
@@ -79,6 +79,16 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(f.streaming, [StreamingText(taskId: "t1", text: "par")])
         let list = try decode(ClientSessionList.self, #"{"sessions":[{"session_id":"s1","client_name":"Mac","created_at":1,"expires_at":2,"last_seen_at":3,"revoked_at":null}],"currentSessionId":"s1"}"#)
         XCTAssertEqual(list.sessions[0].sessionID, "s1"); XCTAssertEqual(list.sessions[0].name, "Mac")
+        let jobs = try decode(Feed.self, """
+        {"sync":{"cursor":3,"privacyEpoch":0,"coreId":"c","bootId":"b"},
+         "messages":[{"id":"s","seq":1,"role":"system","kind":"activity","content":"已交给后台：整理","source_key":"job-start:j1","job_id":"j1","job_title":"整理"},
+          {"id":"r","seq":2,"role":"assistant","kind":"request","content":"后台任务「整理」\\n已整理\\n\\n要保留吗？","source_key":"job-report:x","job_id":"j1","job_title":"整理","job_state":"question","created_at":1760000000000},
+          {"id":"u","seq":3,"role":"user","kind":"message","content":"保留","source_key":"job-input:j1:c","job_id":"j1"}]}
+        """)
+        XCTAssertTrue(jobs.messages[0].isJobStart); XCTAssertFalse(jobs.messages[0].isJobReport)
+        XCTAssertTrue(jobs.messages[1].isJobReport); XCTAssertEqual(jobs.messages[1].jobState, "question"); XCTAssertEqual(jobs.messages[1].jobReportBody, "已整理\n\n要保留吗？")
+        XCTAssertFalse(jobs.messages[2].isJobReport); XCTAssertEqual(jobs.messages[2].jobID, "j1")
+        XCTAssertFalse(MessageGrouping.joins(jobs.messages[1], jobs.messages[1]), "job rows never join a reply group")
         let ev = try decode(ChangeEvent.self, #"{"cursor":5,"privacyEpoch":0,"coreId":"c","bootId":"b","reset":true}"#)
         XCTAssertTrue(ev.reset); XCTAssertEqual(ev.sync.cursor, 5)
     }

@@ -59,6 +59,7 @@ struct Composer: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if let job = conversation.replyJob { replyBar(job) }
             if let quote { quoteBar(quote) }
             if !mentions.isEmpty { mentionMenu }
             if !conversation.attachments.isEmpty { AttachmentChips(conversation: conversation, onOpenImage: onOpenImage) }
@@ -106,7 +107,7 @@ struct Composer: View {
                 // TextEditor may not publish marked (IME) text to the binding yet.
                 // Hide the overlay throughout editing so it cannot cover composition.
                 if conversation.draft.isEmpty && !focused {
-                    Text("给 \(botName) 发消息…")
+                    Text(conversation.replyJob.map { "回复后台任务：\($0.title)" } ?? "给 \(botName) 发消息…")
                         .font(.system(size: 14)).foregroundStyle(Theme.muted)
                         .padding(.leading, 5).allowsHitTesting(false)
                 }
@@ -293,6 +294,21 @@ struct Composer: View {
         .overlay(alignment: .leading) { Capsule().fill(Theme.identityAccent).frame(width: 3).padding(.vertical, 8) }
     }
 
+    /// 回复后台任务: the next send goes to that job, not to the main chat.
+    private func replyBar(_ job: JobReplyTarget) -> some View {
+        HStack(spacing: 10) {
+            Text("回复后台任务：\(job.title)").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.identityAccent).lineLimit(1)
+            Spacer(minLength: 0)
+            Button { conversation.replyJob = nil } label: {
+                Image(systemName: "xmark").font(.system(size: 10)).frame(width: 24, height: 24).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("取消回复").accessibilityLabel("取消回复")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.glassStrong, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(alignment: .leading) { Capsule().fill(Theme.identityAccent).frame(width: 3).padding(.vertical, 8) }
+    }
+
     private func errorLine(_ text: String) -> some View {
         Label(text, systemImage: "exclamationmark.triangle.fill")
             .font(.system(size: 12)).foregroundStyle(Theme.danger).textSelection(.enabled)
@@ -354,7 +370,7 @@ struct Composer: View {
 
     private func send() {
         guard canSend else { return }
-        let quoted = quote
+        let quoted = conversation.replyJob == nil ? quote : nil
         Task {
             if let quoted {
                 let text = quoted.prefix + conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines)

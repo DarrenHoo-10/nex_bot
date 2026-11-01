@@ -19,7 +19,7 @@ final class GraphicAvatarTests: XCTestCase {
     func testCompletionIsBriefAndDoesNotMaskNewWork() {
         let now = Date(timeIntervalSince1970: 100)
         func task(_ id: String, _ status: String, _ ended: Double?) -> AgentTask {
-            AgentTask(row: ["id": .string(id), "bot_id": "b", "status": .string(status), "ended_at": ended.map { .number($0 * 1000) } ?? .null])
+            AgentTask(row: ["id": .string(id), "bot_id": "b", "origin": "owner", "status": .string(status), "ended_at": ended.map { .number($0 * 1000) } ?? .null])
         }
         var state = WorkspaceState(sync: SyncIdentity(cursor: 1, privacyEpoch: 0, coreId: "fixture", bootId: "fixture"))
         state.tasks = [task("old", "succeeded", 90), task("just-done", "succeeded", 99)]

@@ -284,6 +284,10 @@ struct PolicyBody: Encodable { let id: String; let version: Int; let tools: [Str
 struct RoutineToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
 struct RoutineRunBody: Encodable { let id: String; let clientId: String }
 struct RoutineDeleteBody: Encodable { let id: String; let version: Int }
+struct JobInputBody: Encodable { let jobId: String; let text: String; let clientId: String }
+struct JobIDBody: Encodable { let jobId: String }
+/// `todos/action` sent from a job's report card with the todo id and version the card shows.
+struct JobTodoAction: Encodable { let id: String; let version: Int; let action: String; let clientId: String; let feedback: String? }
 struct ConnectorToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
 struct ConnectorGrantBody: Encodable { let id: String; let version: Int; let botId: String; let tools: [String] }
 struct FeishuBotBody: Encodable { let botId: String }
@@ -368,6 +372,19 @@ extension CoreClient {
     public func deleteRoutine(id: String, version: Int) async throws {
         try await post("/api/routines/delete", body: RoutineDeleteBody(id: id, version: version))
     }
+
+    // Background jobs
+    /// `POST /api/jobs/input`: the user's direct reply to a job (steers its running round or starts the next one).
+    /// The same `clientID` is idempotent; Core refuses a stopped job.
+    public func jobInput(jobID: String, text: String, clientID: String) async throws {
+        try await post("/api/jobs/input", body: JobInputBody(jobId: jobID, text: text, clientId: clientID))
+    }
+    /// `POST /api/jobs/stop`: stops the job for good.
+    public func stopJob(jobID: String) async throws { try await post("/api/jobs/stop", body: JobIDBody(jobId: jobID)) }
+    /// `POST /api/agents/stop-all`: the main chat and every open job of the assistant.
+    public func stopAll(botID: String) async throws { try await post("/api/agents/stop-all", body: TopicBody(botId: botID)) }
+    /// `GET /api/jobs/detail`.
+    public func jobDetail(id: String) async throws -> JobDetail { try await get("/api/jobs/detail", query: [("id", id)]) }
 
     // Connectors
     /// `POST /api/connectors/save`. Returns the connector id.

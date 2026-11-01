@@ -27,6 +27,8 @@ public final class ConversationStore {
     public private(set) var sendRevision = 0
     /// Composer text. Survives resets; discarded only when the session ends.
     public var draft = ""
+    /// The background job the next send replies to (回复后台任务), set from a report card; nil sends to the main chat.
+    public var replyJob: JobReplyTarget?
     /// Files attached to the next message (up to 5), in the order they were added. Survive resets like ``draft``.
     public private(set) var attachments: [PendingAttachment] = []
     /// At least one file is still uploading; ``send(text:)`` waits (returns false) until it finishes.
@@ -75,7 +77,7 @@ public final class ConversationStore {
     func discardDraft() {
         for upload in uploads.values { upload.cancel() }
         uploads.removeAll()
-        draft = ""; attachments = []; pending = nil; sendError = nil
+        draft = ""; attachments = []; pending = nil; sendError = nil; replyJob = nil
     }
 
     /// Uploads a file for the next message. A file over 5 MiB or empty, or a sixth file, sets ``sendError`` ("文件不能超过 5 MB" /
@@ -138,6 +140,7 @@ public final class ConversationStore {
         let text = (override ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = readyAttachments.map(\.id)
         guard (!text.isEmpty || !ids.isEmpty), !isSending, !isUploadingAttachments else { return false }
+        if let job = replyJob { return await reply(to: job, text: text, override: override) }
         if pending?.text != text || pending?.attachmentIDs != ids { pending = (text, ids, UUID().uuidString) }
         let clientID = pending!.clientID
         if focusedMessageID != nil { workspace.leaveHistory(botID) }
@@ -150,6 +153,30 @@ public final class ConversationStore {
             if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
             // refresh() returns when its reload is superseded, before the snapshot that
             // contains this send is on screen. Keep the typing row until that snapshot.
+            workspace.noteAcceptedSend(self)
+            await workspace.refresh()
+            return true
+        } catch {
+            finishSending()
+            sendError = workspace.report(error).message
+            return false
+        }
+    }
+
+    /// A direct reply to a background job: no attachments; the job gets it as input, not the main chat. On failure (a
+    /// stopped job, say) the draft and the target stay; a retry of the same text reuses the same `clientId`.
+    private func reply(to job: JobReplyTarget, text: String, override: String?) async -> Bool {
+        guard !text.isEmpty else { return false }
+        guard attachments.isEmpty else { sendError = "回复后台任务时不能附带文件"; return false }
+        if pending?.text != "job:\(job.id):\(text)" { pending = ("job:\(job.id):\(text)", [], UUID().uuidString) }
+        let clientID = pending!.clientID
+        if focusedMessageID != nil { workspace.leaveHistory(botID) }
+        sendRevision += 1
+        isSending = true; sendError = nil
+        do {
+            try await workspace.client.jobInput(jobID: job.id, text: text, clientID: clientID)
+            pending = nil; replyJob = nil
+            if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
             workspace.noteAcceptedSend(self)
             await workspace.refresh()
             return true
@@ -176,7 +203,7 @@ public final class ConversationStore {
         try await workspace.downloadAttachment(id: link.id).data
     }
 
-    /// Cancels the bot's unfinished task.
+    /// Cancels the bot's unfinished main-chat task. Background jobs keep running; stop them from their card or the profile.
     public func stop() async {
         guard let task = activeTask else { return }
         do { try await workspace.client.cancel(task: task.id); await workspace.refresh() }
@@ -194,4 +221,11 @@ public final class ConversationStore {
             workspace.report(error)
         }
     }
+}
+
+/// The background job a composer reply goes to.
+public struct JobReplyTarget: Sendable, Hashable {
+    public let id: String
+    public let title: String
+    public init(id: String, title: String) { self.id = id; self.title = title }
 }

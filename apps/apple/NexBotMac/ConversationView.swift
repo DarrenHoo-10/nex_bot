@@ -25,6 +25,7 @@ struct ConversationView: View {
     @State private var memoryBaseline: [String: String]?
     @State private var memoryNotice = ""
     @State private var imagePreview: ChatImagePreview?
+    @State private var jobsOpen = false
 
     private var dropHighlight: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.brand, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
@@ -37,6 +38,7 @@ struct ConversationView: View {
     private var isActive: Bool { activeState == .key && scenePhase == .active }
     private var pendingApprovals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
+    private var openJobs: [Job] { workspace.state?.openJobs(botID: botID) ?? [] }
 
     /// `version:updated_at` of every memory this agent can see; a change makes the 已更新记忆 pill appear.
     private var memorySignatures: [String: String] {
@@ -70,6 +72,7 @@ struct ConversationView: View {
         .onChange(of: conv.messages.last?.seq) { Task { await conv.markReadIfNeeded() } }
         .onChange(of: memorySignatures, initial: true) { _, new in trackMemory(new) }
         .onDisappear { conv.isActive = false }
+        .sheet(item: Bindable(AgentUI.shared).job) { JobDetailView(workspace: workspace, jobID: $0.id) }
     }
 
     private func trackMemory(_ new: [String: String]) {
@@ -120,6 +123,7 @@ struct ConversationView: View {
                     .foregroundStyle(Theme.identityAccent).padding(.horizontal, 12).frame(height: 28)
                     .glass(Capsule(), strong: true, lift: .card).frame(maxWidth: 240)
                 }
+                if !openJobs.isEmpty { jobsPill }
                 if !conversation.messages.isEmpty {
                     RoundGlassButton(symbol: exported ? "checkmark" : "square.and.arrow.up", label: "复制对话记录", action: share)
                 }
@@ -127,6 +131,32 @@ struct ConversationView: View {
             }
         }
         .padding(.horizontal, 2).frame(height: 64)
+    }
+
+    /// N 项后台任务: the open background jobs with their stage and their own stop.
+    private var jobsPill: some View {
+        Button { jobsOpen.toggle() } label: {
+            Text("\(openJobs.count) 项后台任务").font(.system(size: 11.5)).foregroundStyle(Theme.foreground)
+                .padding(.horizontal, 12).frame(height: 28).glass(Capsule(), strong: true, lift: .card).contentShape(Capsule())
+        }
+        .buttonStyle(.plain).accessibilityLabel("\(openJobs.count) 项后台任务")
+        .popover(isPresented: $jobsOpen, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(openJobs) { job in
+                    HStack(spacing: 10) {
+                        Button { jobsOpen = false; AgentUI.shared.job = JobSheetItem(id: job.id) } label: {
+                            Text(job.title).font(.system(size: 12, weight: .medium)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
+                        Text(job.stageText).font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        Button { Task { try? await workspace.stopJob(job.id) } } label: {
+                            Image(systemName: "stop.fill").font(.system(size: 9)).frame(width: 22, height: 22).contentShape(Rectangle())
+                        }.buttonStyle(.plain).help("停止").accessibilityLabel("停止 \(job.title)")
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                }
+            }
+            .padding(6).frame(width: 300)
+        }
     }
 
     private func share() {
@@ -476,7 +506,25 @@ private struct MessageRow: View {
     private var actionsVisible: Bool { hover || copied || AgentUI.shared.alwaysShowActions }
 
     var body: some View {
-        if let direction = message.a2aDirection, ["sent", "returned", "received"].contains(direction) {
+        if message.isJobStart {
+            JobMarkerView(message: message, job: message.jobID.flatMap { workspace.state?.job($0) }) { openJob() }
+        } else if message.isJobReport {
+            AssistantFrame(workspace: workspace, bot: bot, showAvatar: true) {
+                VStack(alignment: .leading, spacing: 4) {
+                    JobReportCard(message: message, workspace: workspace, open: openJob, reply: replyTo) {
+                        let images = AttachmentLink.embeddedImages(message.content)
+                        if !images.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(images) { link in
+                                    AttachmentThumbnail(link: link, conversation: workspace.conversation(for: botID), messageID: message.id, onOpen: onOpenImage)
+                                }
+                            }
+                        }
+                    }
+                    meta
+                }
+            }
+        } else if let direction = message.a2aDirection, ["sent", "returned", "received"].contains(direction) {
             marker(direction)
         } else if message.a2aDirection == "replied", message.role == "assistant" {
             repliedCard
@@ -506,6 +554,9 @@ private struct MessageRow: View {
         let parsed = AttachmentLink.parse(message.content)
         let images = parsed.links.filter(\.isImage), files = parsed.links.filter { !$0.isImage }
         return VStack(alignment: .trailing, spacing: 6) {
+            if message.jobID != nil {
+                Text("回复后台任务：\(message.jobID.flatMap { workspace.state?.job($0)?.title } ?? message.jobTitle)").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            }
             if !images.isEmpty {
                 VStack(alignment: .trailing, spacing: 8) {
                     ForEach(images) { link in
@@ -627,6 +678,15 @@ private struct MessageRow: View {
         }
         .font(.system(size: 10.5)).foregroundStyle(Theme.muted)
         .padding(.horizontal, 4).frame(minHeight: 18)
+    }
+
+    private func openJob() { if let id = message.jobID { AgentUI.shared.job = JobSheetItem(id: id) } }
+
+    /// 回复 on a job's question: the composer's next send goes to that job.
+    private func replyTo(_ job: Job) {
+        AgentUI.shared.quotes[botID] = nil
+        workspace.conversation(for: botID).replyJob = JobReplyTarget(id: job.id, title: job.title)
+        ui.composerFocusTick += 1
     }
 
     private func quote() {

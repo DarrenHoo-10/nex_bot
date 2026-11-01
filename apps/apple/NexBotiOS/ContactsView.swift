@@ -213,7 +213,7 @@ struct ContactRow: View {
     let bot: Bot
     let workspace: WorkspaceStore
 
-    private var phrase: String { workspace.state?.unfinishedTask(botID: bot.id)?.phrase ?? "" }
+    private var phrase: String { workspace.state?.workingPhrase(botID: bot.id) ?? "" }
 
     var body: some View {
         HStack(spacing: 12) {

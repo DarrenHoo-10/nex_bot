@@ -196,21 +196,7 @@ struct RoutineOccurrenceDetailView: View {
                     }
                     if let detail {
                         result(detail)
-                        DisclosureGroup("查看过程") {
-                            VStack(alignment: .leading, spacing: 18) {
-                                ForEach(detail.messages) { message in
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        if let date = message.createdAt { Text(TimeFormat.formatClock(date)).font(.caption).foregroundStyle(Theme.muted) }
-                                        MarkdownText(source: message.content)
-                                    }
-                                }
-                                if !detail.streaming.isEmpty { MarkdownText(source: detail.streaming) }
-                                ForEach(detail.steps) { step in RoutineStepDetail(workspace: workspace, step: step) }
-                                if detail.messages.isEmpty && detail.streaming.isEmpty && detail.steps.isEmpty {
-                                    Text("暂无记录").foregroundStyle(Theme.muted)
-                                }
-                            }.padding(.top, 12)
-                        }.font(.subheadline).tint(Theme.muted)
+                        RunTranscriptView(workspace: workspace, messages: detail.messages, streaming: detail.streaming, steps: detail.steps)
                     }
                     DisclosureGroup("任务安排") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -260,6 +246,32 @@ struct RoutineOccurrenceDetailView: View {
         defer { loading = false }
         do { detail = try await workspace.routineOccurrence(id: occurrence.id) }
         catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
+    }
+}
+
+/// The collapsed execution record of a background run (a routine occurrence or a job): its messages, live text and tool steps.
+struct RunTranscriptView: View {
+    let workspace: WorkspaceStore
+    let messages: [AgentMessage]
+    let streaming: String
+    let steps: [ToolStep]
+
+    var body: some View {
+        DisclosureGroup("查看过程") {
+            VStack(alignment: .leading, spacing: 18) {
+                ForEach(messages) { message in
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let date = message.createdAt { Text(TimeFormat.formatClock(date)).font(.caption).foregroundStyle(Theme.muted) }
+                        MarkdownText(source: message.content)
+                    }
+                }
+                if !streaming.isEmpty { MarkdownText(source: streaming) }
+                ForEach(steps) { step in RoutineStepDetail(workspace: workspace, step: step) }
+                if messages.isEmpty && streaming.isEmpty && steps.isEmpty {
+                    Text("暂无记录").foregroundStyle(Theme.muted)
+                }
+            }.padding(.top, 12)
+        }.font(.subheadline).tint(Theme.muted)
     }
 }
 

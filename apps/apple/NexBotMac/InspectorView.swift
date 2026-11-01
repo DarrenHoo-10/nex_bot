@@ -114,8 +114,16 @@ struct InspectorWorkTab: View {
     @State private var submitting = false
     @State private var selectedOccurrence: RoutineOccurrence?
     @State private var selectedRoutine: Routine?
+    @State private var confirmStopAll = false
 
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
+    private var openJobs: [Job] { workspace.state?.openJobs(botID: botID) ?? [] }
+    /// Routine runs and finished background jobs, newest first.
+    private var recent: [RecentRun] {
+        let runs = (workspace.state?.occurrences(botID: botID) ?? []).map { RecentRun.occurrence($0) }
+        let jobs = (workspace.state?.jobs(botID: botID) ?? []).filter { !$0.isOpen }.map { RecentRun.job($0) }
+        return Array((runs + jobs).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }.prefix(10))
+    }
 
     var body: some View {
         let state = workspace.state
@@ -125,18 +133,36 @@ struct InspectorWorkTab: View {
             InspectorSectionTitle(title: "正在处理")
             ForEach(tasks) { task in activeTask(task) }
         }
-        let occurrences = state?.occurrences(botID: botID) ?? []
-        if !occurrences.isEmpty {
+        if !openJobs.isEmpty {
+            InspectorSectionTitle(title: "后台任务")
+            ForEach(openJobs) { job in openJob(job) }
+            Button("停止全部") { confirmStopAll = true }
+                .buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.danger).padding(.vertical, 4)
+                .confirmationDialog("停止全部工作？", isPresented: $confirmStopAll) {
+                    Button("停止全部", role: .destructive) { run { try await workspace.stopAll(botID: botID) } }
+                } message: { Text("停止主对话和所有后台任务。") }
+        }
+        let runs = recent
+        if !runs.isEmpty {
             InspectorSectionTitle(title: "最近结果")
-            ForEach(Array(occurrences.enumerated()), id: \.element.id) { index, o in
-                let day = o.scheduledAt.map { TimeFormat.dayLabel($0) } ?? ""
-                if !day.isEmpty, index == 0 || day != occurrences[index - 1].scheduledAt.map({ TimeFormat.dayLabel($0) }) {
+            ForEach(Array(runs.enumerated()), id: \.element.id) { index, entry in
+                let day = entry.at.map { TimeFormat.dayLabel($0) } ?? ""
+                if !day.isEmpty, index == 0 || day != runs[index - 1].at.map({ TimeFormat.dayLabel($0) }) {
                     DayLabel(text: day)
                 }
-                Button { selectedOccurrence = o } label: {
-                    RunEntryRow(symbol: RunPresentation.symbol(o.displayStatus), tone: RunPresentation.tone(o.displayStatus), title: o.name,
-                                status: RoutineCopy.status(o.displayStatus), time: o.scheduledAt.map { TimeFormat.formatClock($0) })
-                }.buttonStyle(.plain).help("查看结果")
+                switch entry {
+                case .occurrence(let o):
+                    Button { selectedOccurrence = o } label: {
+                        RunEntryRow(symbol: RunPresentation.symbol(o.displayStatus), tone: RunPresentation.tone(o.displayStatus), title: o.name,
+                                    status: RoutineCopy.status(o.displayStatus), time: o.scheduledAt.map { TimeFormat.formatClock($0) })
+                    }.buttonStyle(.plain).help("查看结果")
+                case .job(let job):
+                    Button { AgentUI.shared.job = JobSheetItem(id: job.id) } label: {
+                        let good = job.stage == "done" || job.stage == "dropped"
+                        RunEntryRow(symbol: good ? "checkmark" : "exclamationmark.circle", tone: good ? .success : .warn, title: job.title,
+                                    status: job.stageText, time: job.createdAt.map { TimeFormat.formatClock($0) })
+                    }.buttonStyle(.plain).help("查看结果")
+                }
             }
         }
         routines
@@ -154,6 +180,17 @@ struct InspectorWorkTab: View {
                     pill("play.fill", "继续") { run { try await workspace.resumeTask(task.id) } }
                 }
                 pill("stop.fill", "停止") { run { try await workspace.cancelTask(task.id) } }
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    private func openJob(_ job: Job) -> some View {
+        RunEntryRow(symbol: job.isBusy ? "arrow.triangle.2.circlepath" : "exclamationmark.circle", tone: job.isBusy ? .live : .warn, title: job.title,
+                    status: [job.stageText, job.isBusy ? job.progress : nil].compactMap { $0 }.joined(separator: " · "), time: job.createdAt.map { TimeFormat.formatClock($0) }) {
+            HStack(spacing: 8) {
+                pill(nil, "详情") { AgentUI.shared.job = JobSheetItem(id: job.id) }
+                pill("stop.fill", "停止") { run { try await workspace.stopJob(job.id) } }
             }
             .padding(.top, 6)
         }

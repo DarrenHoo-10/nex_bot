@@ -28,6 +28,7 @@ targetTemplates:
       - path: ../Shared/Glass.swift
       - path: ../Shared/MarkdownText.swift
       - path: ../Shared/RoutineOccurrenceDetailView.swift
+      - path: ../Shared/JobViews.swift
       - path: ../Shared/WorkspaceSurface.swift
       - path: ../Shared/Assets.xcassets
     dependencies:

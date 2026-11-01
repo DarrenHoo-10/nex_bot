@@ -27,6 +27,8 @@ final class AgentUI {
     var previewBotID: String?
     /// The message each agent's composer is quoting.
     var quotes: [String: QuoteDraft] = [:]
+    /// The background job whose details are open.
+    var job: JobSheetItem?
     /// Keeps the hover actions (引用 / 复制) of every message visible; set by a DEBUG command for screenshots.
     var alwaysShowActions = false
 

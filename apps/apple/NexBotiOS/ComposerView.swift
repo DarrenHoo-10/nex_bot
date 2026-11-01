@@ -67,6 +67,7 @@ struct ComposerView: View {
                 Text(error).font(.footnote).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading)
             }
             if !mentionCandidates.isEmpty { mentionList }
+            if let job = conversation.replyJob { replyBar(job) }
             if let quote { quoteBar(quote) }
             if menu == .add { addMenu.transition(.opacity) }
             if menu == .permissions { permissionMenu.frame(maxWidth: .infinity, alignment: .leading).transition(.opacity) }
@@ -81,7 +82,7 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .disabled(conversation.isSending || conversation.isUploadingAttachments)
                 .accessibilityLabel("添加文件或指令")
-                TextField("给 \(botName) 发消息…", text: $conversation.draft, axis: .vertical)
+                TextField(conversation.replyJob.map { "回复后台任务：\($0.title)" } ?? "给 \(botName) 发消息…", text: $conversation.draft, axis: .vertical)
                     .lineLimit(1...6)
                     .padding(.vertical, 8)
                     .accessibilityLabel("发送给 Agent 的消息")
@@ -151,6 +152,20 @@ struct ComposerView: View {
 
     // MARK: Parts
 
+
+    /// 回复后台任务: the next send goes to that job, not to the main chat.
+    private func replyBar(_ job: JobReplyTarget) -> some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(Theme.identityAccent).frame(width: 3)
+            Text("回复后台任务：\(job.title)").font(.caption.weight(.semibold)).foregroundStyle(Theme.identityAccent).lineLimit(1)
+            Spacer(minLength: 4)
+            Button { conversation.replyJob = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted).frame(width: 28, height: 28) }
+                .buttonStyle(.plain).accessibilityLabel("取消回复")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .fixedSize(horizontal: false, vertical: true)
+    }
 
     private func quoteBar(_ quote: QuoteDraft) -> some View {
         HStack(spacing: 8) {
@@ -446,9 +461,10 @@ struct ComposerView: View {
         guard canSend else { return }
         menu = nil; actionError = nil
         let hasText = !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let text = hasText ? (quote?.prefix ?? "") + conversation.draft : ""
+        let replying = conversation.replyJob != nil
+        let text = hasText ? (replying ? "" : quote?.prefix ?? "") + conversation.draft : ""
         if await conversation.send(text: text) {
-            conversation.draft = ""; quote = nil
+            conversation.draft = ""; if !replying { quote = nil }
         }
     }
 

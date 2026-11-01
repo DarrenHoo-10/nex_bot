@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var atBottom = true
     @State private var knownMemories: [String: String]?
     @State private var memoryNotice: String?
+    @State private var jobSheet: JobSheetItem?
     private let bottomID = "bottom"
 
     /// The search hit being viewed; the window around it replaces the latest messages.
@@ -65,7 +66,9 @@ struct ChatView: View {
                                    groupEnd: MessageGrouping.ends(message, next: next),
                                    onQuote: { author, text in quote = QuoteDraft(author: author, text: text) },
                                    onOpenStep: { step in Task { await openStep(step) } },
-                                   onOpenPeer: { nav.openChat($0) })
+                                   onOpenPeer: { nav.openChat($0) },
+                                   onOpenJob: { jobSheet = JobSheetItem(id: $0) },
+                                   onReplyJob: { job in quote = nil; conv.replyJob = JobReplyTarget(id: job.id, title: job.title) })
                             .overlay {
                                 if message.id == focusedID {
                                     RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.primary, lineWidth: 2)
@@ -165,6 +168,21 @@ struct ChatView: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                let openJobs = workspace.state?.openJobs(botID: botID) ?? []
+                if !openJobs.isEmpty {
+                    // N 项后台任务: each open job with its stage, its details and its own stop.
+                    Menu {
+                        ForEach(openJobs) { job in
+                            Section("\(job.title) · \(job.stageText)") {
+                                Button("查看详情") { jobSheet = JobSheetItem(id: job.id) }
+                                Button("停止", role: .destructive) { Task { do { try await workspace.stopJob(job.id) } catch { errorText = message(of: error) } } }
+                            }
+                        }
+                    } label: {
+                        Text("\(openJobs.count) 项后台任务").font(.caption.weight(.medium)).padding(.horizontal, 8).frame(height: 28)
+                    }
+                    .accessibilityLabel("\(openJobs.count) 项后台任务")
+                }
                 if let transcript = workspace.exportTranscript(botID: botID) {
                     ShareLink(item: transcript) { Image(systemName: "square.and.arrow.up").font(.system(size: 14, weight: .medium)).frame(width: 32, height: 32) }
                         .accessibilityLabel("复制对话记录")
@@ -176,6 +194,7 @@ struct ChatView: View {
         }
         .errorAlert($errorText)
         .sheet(isPresented: $showMemory) { MemoryEditorSheet(workspace: workspace, botID: botID) }
+        .sheet(item: $jobSheet) { JobDetailView(workspace: workspace, jobID: $0.id) }
         .onAppear {
             workspace.select(botID)
             conv.isActive = scenePhase == .active

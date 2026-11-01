@@ -96,6 +96,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var conversations: [Row]
     public var routines: [Routine]
     public var occurrences: [RoutineOccurrence]
+    /// Background jobs, open first then recent (`jobs`). Empty on Cores that predate them.
+    public var jobs: [Job] = []
     public var devices: [Device]
     public var delegations: [Delegation]
     public var onlineDevices: [String]
@@ -125,12 +127,13 @@ public struct WorkspaceState: Codable, Sendable {
     /// `imageModelSelection`: the models offered for image generation (always a list; OpenAI-compatible connections only).
     public var imageModelSelection: ModelVisibility = ModelVisibility(models: [])
 
-    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false, modelVisibility: ModelVisibility = ModelVisibility(), feishu: FeishuState? = nil) {
+    public init(sync: SyncIdentity, bots: [Bot] = [], approvals: [Approval] = [], tasks: [AgentTask] = [], conversations: [Row] = [], routines: [Routine] = [], occurrences: [RoutineOccurrence] = [], devices: [Device] = [], delegations: [Delegation] = [], onlineDevices: [String] = [], connectors: [ConnectorView] = [], memories: [Memory] = [], journal: [JournalEntry] = [], usage: [Usage] = [], config: ModelConfig? = nil, node: NodeState? = nil, memoryEngine: MemoryEngineStatus? = nil, memoryPlugin: MemoryPluginState? = nil, directory: [Row] = [], hostDeviceID: String? = nil, address: String = "", dataDir: String = "", runtime: String = "", lanEnabled: Bool = false, modelVisibility: ModelVisibility = ModelVisibility(), feishu: FeishuState? = nil, jobs: [Job] = []) {
         self.sync = sync; self.bots = bots; self.approvals = approvals; self.tasks = tasks; self.conversations = conversations
         self.routines = routines; self.occurrences = occurrences; self.devices = devices; self.delegations = delegations; self.onlineDevices = onlineDevices
         self.connectors = connectors; self.memories = memories; self.journal = journal; self.usage = usage; self.config = config; self.node = node
         self.memoryEngine = memoryEngine; self.memoryPlugin = memoryPlugin; self.directory = directory; self.hostDeviceID = hostDeviceID
         self.address = address; self.dataDir = dataDir; self.runtime = runtime; self.lanEnabled = lanEnabled; self.modelVisibility = modelVisibility; self.feishu = feishu
+        self.jobs = jobs
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -141,6 +144,7 @@ public struct WorkspaceState: Codable, Sendable {
         approvalRules = rows("approvalRules").map(ApprovalRule.init)
         conversations = rows("conversations"); routines = rows("routines").map(Routine.init); occurrences = rows("occurrences").map(RoutineOccurrence.init)
         delegations = rows("delegations").map(Delegation.init)
+        jobs = rows("jobs").map(Job.init)
         onlineDevices = c.lenient(.init("onlineDevices"))?.arrayValue?.compactMap(\.stringValue) ?? []
         let online = Set(onlineDevices)
         devices = rows("devices").map { Device(row: $0, online: online.contains($0.string("id") ?? "")) }
@@ -158,10 +162,20 @@ public struct WorkspaceState: Codable, Sendable {
         imageModelSelection = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("imageModelSelection"))) ?? ModelVisibility(models: [])
         if imageModelSelection.models == nil { imageModelSelection.models = [] }
     }
-    /// Newest unfinished task of a bot (tasks arrive unfinished-first, newest first).
-    public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.origin != "routine" && $0.isUnfinished } }
-    /// All unfinished tasks of a bot, newest first.
-    public func unfinishedTasks(botID: String) -> [AgentTask] { tasks.filter { $0.botID == botID && $0.origin != "routine" && $0.isUnfinished } }
+    /// Newest unfinished main-chat task of a bot (tasks arrive unfinished-first, newest first). Background jobs, routines and
+    /// delegated children have their own state and are never the chat's work.
+    public func unfinishedTask(botID: String) -> AgentTask? { tasks.first { $0.botID == botID && $0.origin == "owner" && $0.isUnfinished } }
+    /// All unfinished main-chat tasks of a bot, newest first.
+    public func unfinishedTasks(botID: String) -> [AgentTask] { tasks.filter { $0.botID == botID && $0.origin == "owner" && $0.isUnfinished } }
+    public func jobs(botID: String) -> [Job] { jobs.filter { $0.botID == botID } }
+    /// Jobs that still need the assistant or the user.
+    public func openJobs(botID: String) -> [Job] { jobs.filter { $0.botID == botID && $0.isOpen } }
+    public func job(_ id: String) -> Job? { jobs.first { $0.id == id } }
+    /// What a contact row says while the assistant works: its main-chat task, else a running background job.
+    public func workingPhrase(botID: String) -> String? {
+        if let task = unfinishedTask(botID: botID) { return task.phrase }
+        return jobs.first { $0.botID == botID && $0.isBusy }.map { "后台任务：\($0.title)" }
+    }
     public func routines(botID: String) -> [Routine] { routines.filter { $0.botID == botID } }
     /// Up to `limit` newest occurrences of a bot's routines (web 工作 tab: 10).
     public func occurrences(botID: String, limit: Int = 10) -> [RoutineOccurrence] { Array(occurrences.filter { $0.botID == botID }.prefix(limit)) }
@@ -211,6 +225,20 @@ public struct AgentMessage: RowBacked {
     public var a2aPeerID: String? { row.string("a2a_peer_id") }
     public var toolSteps: [ToolStep] { row["tool_steps"]?.arrayValue?.compactMap(\.objectValue).map(ToolStep.init) ?? [] }
     public var isFromUser: Bool { role == "user" }
+    public var sourceKey: String { row.string("source_key") ?? "" }
+    /// The background job this message belongs to: its hand-off, a report or the user's direct reply.
+    public var jobID: String? { row.string("job_id") }
+    public var jobTitle: String { row.string("job_title") ?? "" }
+    /// `ready`, `question`, `blocked`, `failed` or `dropped` on a job report.
+    public var jobState: String? { row.string("job_state") }
+    /// 已交给后台：the main chat handed work to a job.
+    public var isJobStart: Bool { jobID != nil && sourceKey.hasPrefix("job-start:") }
+    public var isJobReport: Bool { jobID != nil && jobState != nil }
+    /// The report text without its first line, which repeats the title.
+    public var jobReportBody: String {
+        guard content.hasPrefix("后台任务「"), let end = content.firstIndex(of: "\n") else { return content.hasPrefix("后台任务「") ? "" : content }
+        return String(content[content.index(after: end)...])
+    }
 }
 
 public struct StreamingText: Codable, Sendable, Hashable {

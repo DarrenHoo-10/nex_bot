@@ -5,7 +5,7 @@ extension WorkspaceState {
     public func avatarTask(botID: String, now: Date = Date()) -> AgentTask? {
         if let active = unfinishedTask(botID: botID) { return active }
         return tasks.filter { task in
-            guard task.botID == botID, task.status == "succeeded", let ended = task.endedAt else { return false }
+            guard task.botID == botID, task.origin == "owner", task.status == "succeeded", let ended = task.endedAt else { return false }
             let age = now.timeIntervalSince(ended)
             return age >= 0 && age < 4
         }.max { ($0.endedAt ?? .distantPast) < ($1.endedAt ?? .distantPast) }

@@ -100,6 +100,24 @@ extension WorkspaceStore {
         try await act(refresh: false) { try await client.get("/api/routines/occurrence", query: [("id", id)]) }
     }
 
+    // MARK: Background jobs
+
+    /// Stops a background job for good (its running round is cancelled; it takes no more input).
+    public func stopJob(_ jobID: String) async throws { try await act { try await client.stopJob(jobID: jobID) } }
+    /// 停止全部: the main chat and every open background job of the assistant.
+    public func stopAll(botID: String) async throws { try await act { try await client.stopAll(botID: botID) } }
+    public func jobDetail(id: String) async throws -> JobDetail { try await act(refresh: false) { try await client.jobDetail(id: id) } }
+    /// 验收 from a job's report card: the todo panel's own `complete`, checked against the todo version the card shows.
+    public func acceptJob(_ job: Job) async throws {
+        guard let todoID = job.todoID, let version = job.todoVersion else { throw missing("这项后台任务没有待办") }
+        try await act { try await client.post("/api/todos/action", body: JobTodoAction(id: todoID, version: version, action: "complete", clientId: UUID().uuidString, feedback: nil)) }
+    }
+    /// 修改 from a job's report card: the todo panel's `start` with the revision request; it goes to the same job.
+    public func reviseJob(_ job: Job, feedback: String) async throws {
+        guard let todoID = job.todoID, let version = job.todoVersion else { throw missing("这项后台任务没有待办") }
+        try await act { try await client.post("/api/todos/action", body: JobTodoAction(id: todoID, version: version, action: "start", clientId: UUID().uuidString, feedback: feedback)) }
+    }
+
     // MARK: Connectors
 
     /// Adds (`existing == nil`) or edits a connector. `token` blank keeps the credential while URL and transport stay.
