@@ -9,7 +9,7 @@ import { htmlPreviewParts } from "../../shared/html-preview";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Pin, Play, Plus, PanelLeft, PanelRight, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
 import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
@@ -107,7 +107,7 @@ export function AgentDesktop() {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("account");
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
-  const [pinned, setPinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
+  const [pinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
   const [sidebarOpen, setSidebarOpen] = useState(desktop?.platform === "android" && window.innerWidth <= 720);
   const [rail, setRail] = useState(() => localStorage.getItem("nexbot.rail") !== "0"), [wide, setWide] = useState(() => window.matchMedia("(min-width: 721px)").matches);
@@ -370,7 +370,6 @@ export function AgentDesktop() {
   const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(botId, value); setAtDismissed(false); setAtIndex(0); };
-  const togglePin = (id: string) => setPinned((current) => { const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id]; localStorage.setItem("nexbot.pinnedAgents", JSON.stringify(next)); return next; });
   const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
   const deleteMessageImage = async (messageId: string, image: MessageImage) => {
     await api("agents/messages/image/delete", { botId, messageId, attachmentId: image.id });
@@ -557,9 +556,9 @@ export function AgentDesktop() {
         <div className="header-actions">
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
           {page === "agent" && bot && messages.length > 0 ? <button type="button" className="bt-round glass" title="复制对话记录" aria-label="复制对话记录" onClick={() => exportTranscript()}>{exported ? <Check size={16}/> : <Share2 size={16}/>}</button> : null}
-          {page === "agent" && bot ? <button aria-label="助手详情" aria-pressed={panelOpen} title="Agent 资料" className={`bt-round glass ${panelOpen ? "selected" : ""}`} onClick={() => setDetail(!detail)}><PanelRight size={17}/></button> : null}
         </div>
       </header>
+      {page === "agent" && bot ? <button type="button" aria-label="助手详情" aria-pressed={panelOpen} title={panelOpen ? "收起 Agent 资料" : "展开 Agent 资料"} className="panel-handle glass" onClick={() => setDetail(!detail)}>{panelOpen ? <ChevronRight size={15}/> : <ChevronLeft size={15}/>}</button> : null}
 
       {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(e.message))}>立即更新</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
@@ -668,9 +667,6 @@ export function AgentDesktop() {
 
     {page === "agent" && bot ? <aside className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="收起助手详情" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
       <div className="profile-top">
-        <div className="ds-drawer-top-actions">
-          <button type="button" className={`bt-round ${pinned.includes(str(bot.id)) ? "selected" : ""}`} title={pinned.includes(str(bot.id)) ? "取消置顶" : "置顶联系人"} onClick={() => togglePin(str(bot.id))}><Pin size={15}/></button>
-        </div>
         <button type="button" className="profile-avatar-button" title="更换头像" aria-label={`更换 ${bot.name} 的头像`} onClick={editAvatar}><span className="hero-halo"><Avatar bot={bot} allBots={state.bots} size={96} state={avatarState} animate/></span></button>
         <strong>{bot.name}</strong>
         <span className="hero-state" data-state={avatarState}><i/>{heroState}</span>

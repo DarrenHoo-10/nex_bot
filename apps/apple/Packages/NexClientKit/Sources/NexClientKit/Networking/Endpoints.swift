@@ -7,6 +7,7 @@ public enum AppearanceChoice: Sendable, Hashable, Encodable {
     case companion(shape: String, color: String)
     case portrait(String)
     case graphic(String)
+    case q(String)
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
         switch self {
@@ -16,6 +17,8 @@ public enum AppearanceChoice: Sendable, Hashable, Encodable {
             try c.encode("portrait", forKey: .init("kind")); try c.encode(id, forKey: .init("id"))
         case .graphic(let id):
             try c.encode("graphic", forKey: .init("kind")); try c.encode(id, forKey: .init("id"))
+        case .q(let id):
+            try c.encode("q", forKey: .init("kind")); try c.encode(id, forKey: .init("id"))
         }
     }
 }

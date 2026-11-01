@@ -1,6 +1,6 @@
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { androidViewportUnits } from "./android-viewport.mjs";
@@ -19,3 +19,5 @@ const { readFileSync } = await import("node:fs");
 const output = path.join(root, "android/app/build/generated/workspaceAssets/workspace");
 writeFileSync(path.join(output, "index.html"), readFileSync(path.join(output, "android/app/build/ui-entry/index.html")));
 writeFileSync(path.join(output, 'html-preview.html'), shell);
+// Avatar atlases use stable /companions URLs and must be available offline.
+cpSync(path.join(root, 'public/companions'), path.join(output, 'companions'), { recursive: true });
