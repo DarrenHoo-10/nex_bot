@@ -65,8 +65,14 @@ struct InspectorView: View {
     private var profile: some View {
         VStack(spacing: 4) {
             Button { AgentUI.shared.pickAvatar(botID) } label: {
-                HeroHalo(accent: bot.map { workspace.appearance($0).accent } ?? Color(hex: Theme.defaultAccent)) {
-                    if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 96, animated: preferences.motionEnabled) }
+                Group {
+                    if let bot, workspace.appearance(bot).isQ {
+                        AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 210, animated: preferences.motionEnabled)
+                    } else {
+                        HeroHalo(accent: bot.map { workspace.appearance($0).accent } ?? Color(hex: Theme.defaultAccent)) {
+                            if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 96, animated: preferences.motionEnabled) }
+                        }
+                    }
                 }
                 .contentShape(Circle())
             }

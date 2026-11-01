@@ -4,9 +4,11 @@ import { GRAPHIC_AVATARS } from "../avatars/graphic";
 import { api, type RecordRow } from "../api";
 import { appearanceOf, colors, shapes, companionColors, companionShapes, companionLabels, type Appearance, type CompanionState } from "../avatars/appearance";
 import { AgentAvatar } from "./AgentAvatar";
+import { characterCatalog, characterIds } from "../avatars/character-catalog";
+import { localAvatarPreview, localAppearanceOf, saveLocalAppearance, type PreviewAppearance } from '../avatars/local-preview';
 
 export function AvatarPicker({ bot, firstId, onChange, close }: { bot: RecordRow; firstId: string; onChange(): Promise<void>; close(): void }) {
-  const [selected, setSelected] = useState<Appearance>(() => appearanceOf(bot, firstId));
+  const [selected, setSelected] = useState<PreviewAppearance>(() => localAvatarPreview ? localAppearanceOf(bot,firstId) : appearanceOf(bot, firstId));
   const [previewState, setPreviewState] = useState<CompanionState>("idle");
   const [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -14,7 +16,10 @@ export function AvatarPicker({ bot, firstId, onChange, close }: { bot: RecordRow
   const shape = selected.kind === "companion" ? selected.shape : "soft";
   const apply = async () => {
     setSaving(true); setError("");
-    try { await api("bots/appearance", { id: bot.id, appearance: selected, version: Number(bot.appearance_version ?? 0) }); await onChange(); close(); }
+    try {
+      if (localAvatarPreview) {saveLocalAppearance(bot,selected);close();return;}
+      await api("bots/appearance", { id: bot.id, appearance: selected, version: Number(bot.appearance_version ?? 0) }); await onChange(); close();
+    }
     catch (e) { setError(e instanceof Error ? e.message : "保存失败，请重试"); }
     finally { setSaving(false); }
   };
@@ -28,13 +33,14 @@ export function AvatarPicker({ bot, firstId, onChange, close }: { bot: RecordRow
     <div className="modal-heading"><div><span className="avatar-picker-eyebrow">NEXBOT COMPANIONS</span><h2>属于 {bot.name} 的形象</h2></div><button autoFocus className="icon-button" aria-label="关闭头像选择" disabled={saving} onClick={close}><X size={18}/></button></div>
     <div className="identity-editor-body" inert={saving}>
       <section className="identity-preview">
-        <AgentAvatar appearance={selected} size={104} state={previewState} animate/>
+        <AgentAvatar appearance={selected} size={selected.kind === 'q' ? 180 : 104} state={previewState} animate/>
         <strong>{bot.name}</strong><span aria-live="polite">{companionLabels[previewState]}</span>
         <div className="identity-state-picker" aria-label="预览状态">{(["idle", "thinking", "working", "approval", "done", "offline"] as CompanionState[]).map((state) => <button type="button" key={state} aria-pressed={previewState === state} onClick={() => setPreviewState(state)}>{({ idle: "待命", thinking: "思考", working: "执行", approval: "待确认", done: "完成", offline: "断线" } as Record<string, string>)[state]}</button>)}</div>
         <small>{selected.kind === "portrait" ? "预览状态" : "预览动效"}，不会启动任务</small>
       </section>
       <section className="identity-options" aria-label="角色">
         <h3 className="identity-section-title">角色</h3>
+        <div className="q-character-grid">{characterIds.map(id=><button key={id} type="button" className="q-avatar-option" aria-label={`选择${characterCatalog[id].name}`} aria-pressed={selected.kind === 'q' && selected.id === id} onClick={()=>setSelected({kind:'q',id})}><AgentAvatar appearance={{kind:'q',id}} size={88}/><span><strong>{characterCatalog[id].name}</strong></span>{selected.kind === 'q' && selected.id === id && <Check size={15}/>}</button>)}</div>
         <GraphicAvatarOptions selected={selected} select={setSelected}/>
         <section className="identity-originals" aria-label="基础角色">
           <h3 className="identity-section-title">基础角色</h3>
@@ -48,11 +54,11 @@ export function AvatarPicker({ bot, firstId, onChange, close }: { bot: RecordRow
       </section>
     </div>
     {error && <p role="alert" className="identity-error">{error}</p>}
-    <div className="avatar-picker-footer"><span>应用后同步到此账号的其他设备</span><div><button type="button" disabled={saving} onClick={close}>取消</button><button type="button" className="primary" disabled={saving} onClick={() => void apply()}>{saving ? "保存中…" : "应用形象"}</button></div></div>
+    <div className="avatar-picker-footer"><span>{localAvatarPreview ? '本地预览 · 仅此浏览器' : '应用后同步到此账号的其他设备'}</span><div><button type="button" disabled={saving} onClick={close}>取消</button><button type="button" className="primary" disabled={saving} onClick={() => void apply()}>{saving ? "保存中…" : "应用形象"}</button></div></div>
   </div>;
 }
 
-function GraphicAvatarOptions({ selected, select }: { selected: Appearance; select(appearance: Appearance): void }) {
+function GraphicAvatarOptions({ selected, select }: { selected: PreviewAppearance; select(appearance: Appearance): void }) {
   return <div className="graphic-picker-grid">
     {GRAPHIC_AVATARS.map((avatar) => <button
       type="button"

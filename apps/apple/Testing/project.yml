@@ -22,6 +22,12 @@ targetTemplates:
       - path: ../Shared/StaticHTMLMessage.swift
       - path: ../Shared/HTMLPreviewMessage.swift
       - path: ../Shared/AgentAvatar.swift
+      - path: ../Shared/QAvatarBody.swift
+      - path: ../../../public/companions
+        type: folder
+        buildPhase: resources
+      - path: ../../../src/personal/avatars/character-sprites.json
+        buildPhase: resources
       - path: ../Shared/GraphicAvatarBody.swift
       - path: ../Shared/RoleAvatarOptions.swift
       - path: ../Shared/Theme.swift

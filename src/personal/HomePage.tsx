@@ -26,7 +26,7 @@ const research: Appearance = { kind: "companion", shape: "bean", color: "blue" }
 const writing: Appearance = { kind: "companion", shape: "pebble", color: "clay" };
 
 const features = [
-  { icon: Bot, title: "专属助手", text: "为写作、研究、工作整理分别创建助手，各有名字、身份和职责。" },
+  { icon: Bot, title: "专属助手", text: "为写作、研究、工作整理分别创建助手，选择专属角色头像，随任务状态显示表情与动作。" },
   { icon: MonitorSmartphone, title: "跨设备接着聊", text: "每个助手保留自己的对话，电脑、手机和网页用同一账号继续。" },
   { icon: FileText, title: "处理文件", text: "上传文档、PDF 和图片，让助手阅读、总结和整理。" },
   { icon: SquareTerminal, title: "操作电脑", text: "Windows 和 Mac 客户端登录后连接本机，助手可读取文件、运行命令。" },
