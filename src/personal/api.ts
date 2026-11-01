@@ -10,6 +10,20 @@ export interface MemoryPluginState {
 }
 export interface ToolStep { id: string; tool_name: string; status: string; summary: string; preview: string; created_at: number }
 export interface RoutineOccurrenceDetail { occurrence: RecordRow; task: RecordRow | null; messages: RecordRow[]; steps: ToolStep[]; streaming: string }
+/** A background job as Core derives it; the stage is never computed on the client. */
+export interface Job {
+  id: string; botId: string; title: string; stage: JobStage; taskId: string | null; originTaskId: string | null;
+  todoId: string | null; todoVersion: number | null; todoStatus: string | null; progress: string | null;
+  latestReport: { id: string; state: string; summary: string; question: string | null; messageId: string | null; createdAt: number } | null;
+  createdAt: number; endedAt: number | null;
+}
+export type JobStage = "approval" | "question" | "review" | "blocked" | "failed" | "queued" | "running" | "done" | "dropped" | "stopped";
+export interface JobDetail { job: Job; task: RecordRow | null; tasks: RecordRow[]; messages: RecordRow[]; steps: ToolStep[]; reports: RecordRow[]; streaming: string }
+export const jobStageLabels: Record<JobStage, string> = { approval: "等待批准", question: "等待你回答", review: "待验收", blocked: "受阻", failed: "失败", queued: "排队中", running: "执行中", done: "已完成", dropped: "无需处理", stopped: "已停止" };
+/** Jobs still occupying or waiting on the assistant or the user. */
+export const openJob = (job: Job) => job.endedAt === null && job.stage !== "stopped";
+/** Jobs running or about to run (they make the assistant "working"). */
+export const busyJob = (job: Job) => job.stage === "running" || job.stage === "queued" || job.stage === "approval";
 export interface PreviewItem { kind: "file" | "tool"; id?: string; path?: string; title: string; status?: string; exists?: boolean; size?: number; updatedAt?: number; createdAt?: number; arguments?: string; content: string }
 export interface State {
   imageModelSelection?: { models: string[]; version: number };
@@ -22,6 +36,8 @@ export interface State {
   approvalRules?: Array<{ id: string; bot_id: string; label: string; active?: boolean }>;
   memories: RecordRow[]; delegations: RecordRow[]; devices: RecordRow[]; tasks: RecordRow[]; onlineDevices: string[];
   routines: RecordRow[]; occurrences: RecordRow[]; journal: RecordRow[]; usage?: RecordRow[];
+  /** Absent from a Core that predates background jobs. */
+  jobs?: Job[];
   memoryEngine?: { provider: string; release: string; status: string; service: string; pending: number; failed: number; quarantined: number; forgetting: number; revision: string; error: string | null };
   memoryPlugin?: MemoryPluginState;
   hostDeviceId?: string;
@@ -74,7 +90,7 @@ export async function api<T>(url: string, data?: unknown, signal?: AbortSignal):
   return result;
 }
 export const statuses: Record<string, string> = { queued: "排队中", running: "执行中", awaiting_approval: "等你批准", paused: "已暂停", needs_reconciliation: "需核对结果", cancelling: "取消中", succeeded: "已完成", failed: "失败", cancelled: "已取消", rejected: "已拒绝", bound: "已配对", revoked: "已撤销", pending: "待执行", skipped: "已错过" };
-export const toolLabels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "生成图片", "attachment.read": "读取附件", "connector.list": "查看连接器", "connector.tools": "读取工具目录", "connector.call": "调用连接器工具", "agent.delegate": "联系同伴", "agent.directory": "查看同伴目录", "agent.create": "招募新同伴", "agent.update": "更新同伴资料", "memory.search": "检索记忆", "memory.read": "读取记忆", "memory.reflect": "综合记忆", "memory.write": "写入长期记忆", "memory.core.update": "更新核心记忆", "memory.delete": "撤回记忆", "memory.forget": "清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看计划", "routine.save": "保存例行任务", "routine.toggle": "切换计划状态", "routine.run": "立即运行计划", "device.list": "查看设备目录", "device.read": "读取设备文件", "device.exec": "执行终端命令", "device.inventory": "检查设备目录", "device.info": "读取设备信息", "device.computer": "操作电脑窗口", "skill.list": "查看技能目录", "skill.read": "阅读技能说明" };
-export const toolPhrases: Record<string, string> = { "html.render": "正在准备展示内容", "image.models": "正在查看生图模型", "image.generate": "正在生成图片", "attachment.read": "正在读取附件", "connector.list": "正在查看连接器", "connector.tools": "正在读取工具目录", "connector.call": "正在调用连接器工具", "agent.delegate": "正在联系同伴", "agent.directory": "正在查看同伴目录", "agent.create": "正在创建新同伴", "agent.update": "正在更新同伴资料", "memory.search": "正在检索记忆", "memory.read": "正在读取记忆", "memory.reflect": "正在综合记忆", "memory.write": "正在记录长期记忆", "memory.core.update": "正在更新核心记忆", "memory.delete": "正在整理记忆", "memory.forget": "正在清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "正在查看计划", "routine.save": "正在安排例行任务", "routine.toggle": "正在调整计划", "routine.run": "正在执行例行任务", "device.list": "正在查看设备目录", "device.read": "正在读取设备文件", "device.exec": "正在执行终端命令", "device.inventory": "正在检查设备状态", "device.info": "正在读取设备信息", "device.computer": "正在操作电脑窗口", "skill.list": "正在查看技能目录", "skill.read": "正在阅读技能说明" };
+export const toolLabels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "生成图片", "attachment.read": "读取附件", "connector.list": "查看连接器", "connector.tools": "读取工具目录", "connector.call": "调用连接器工具", "agent.delegate": "联系同伴", "agent.directory": "查看同伴目录", "agent.create": "招募新同伴", "agent.update": "更新同伴资料", "memory.search": "检索记忆", "memory.read": "读取记忆", "memory.reflect": "综合记忆", "memory.write": "写入长期记忆", "memory.core.update": "更新核心记忆", "memory.delete": "撤回记忆", "memory.forget": "清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看计划", "routine.save": "保存例行任务", "routine.toggle": "切换计划状态", "routine.run": "立即运行计划", "device.list": "查看设备目录", "device.read": "读取设备文件", "device.exec": "执行终端命令", "device.inventory": "检查设备目录", "device.info": "读取设备信息", "device.computer": "操作电脑窗口", "skill.list": "查看技能目录", "skill.read": "阅读技能说明", "job.start": "交给后台任务", "job.list": "查看后台任务", "job.message": "转交给后台任务", "job.stop": "停止后台任务", "job.report": "提交回报", "job.progress": "记录进度" };
+export const toolPhrases: Record<string, string> = { "html.render": "正在准备展示内容", "image.models": "正在查看生图模型", "image.generate": "正在生成图片", "attachment.read": "正在读取附件", "connector.list": "正在查看连接器", "connector.tools": "正在读取工具目录", "connector.call": "正在调用连接器工具", "agent.delegate": "正在联系同伴", "agent.directory": "正在查看同伴目录", "agent.create": "正在创建新同伴", "agent.update": "正在更新同伴资料", "memory.search": "正在检索记忆", "memory.read": "正在读取记忆", "memory.reflect": "正在综合记忆", "memory.write": "正在记录长期记忆", "memory.core.update": "正在更新核心记忆", "memory.delete": "正在整理记忆", "memory.forget": "正在清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "正在查看计划", "routine.save": "正在安排例行任务", "routine.toggle": "正在调整计划", "routine.run": "正在执行例行任务", "device.list": "正在查看设备目录", "device.read": "正在读取设备文件", "device.exec": "正在执行终端命令", "device.inventory": "正在检查设备状态", "device.info": "正在读取设备信息", "device.computer": "正在操作电脑窗口", "skill.list": "正在查看技能目录", "skill.read": "正在阅读技能说明", "job.start": "正在交给后台任务", "job.list": "正在查看后台任务", "job.message": "正在转交给后台任务", "job.stop": "正在停止后台任务", "job.report": "正在提交回报", "job.progress": "正在记录进度" };
 export const str = (value: string | number | null | undefined) => String(value ?? "");
 export const taskPhrase = (task?: RecordRow) => !task ? "" : task.status === "needs_reconciliation" ? "等待核对执行结果" : task.status === "cancelling" ? "正在停止…" : task.status === "awaiting_approval" ? "等你批准" : (task.active_tool && toolPhrases[str(task.active_tool)]) || statuses[str(task.status)] || "执行中";

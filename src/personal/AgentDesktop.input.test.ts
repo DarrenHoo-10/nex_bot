@@ -99,10 +99,10 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   });
 
   it("keeps the processing row until the finished task's reply is ready to commit", async () => {
-    state = { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "running" }] };
+    state = { ...state, tasks: [{ id: "t1", bot_id: "agent", origin: "owner", status: "running" }] };
     await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
     expect(container.querySelector(".processing-message")).not.toBeNull();
-    state = { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded" }] };
+    state = { ...state, tasks: [{ id: "t1", bot_id: "agent", origin: "owner", status: "succeeded" }] };
     let finishFeed!: (value: unknown) => void;
     fixture.api.mockImplementation(async (route: string) => {
       if (route === "state") return state;
@@ -140,19 +140,22 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '确认关闭')!.click());
     expect(fixture.api).toHaveBeenCalledWith('routines/toggle', { id: 'r', version: undefined, enabled: false });
   });
-  it("does not select a routine child as the chat task or contact activity", async () => {
-    state.tasks = [{ id: "routine-task", bot_id: "agent", origin: "routine", status: "running", objective: "后台巡检" }];
+  it("does not select a routine, background job or delegated child as the chat task or contact activity", async () => {
+    // A delegated child has no inbox link, so Core reports no origin for it.
+    state.tasks = [{ id: "routine-task", bot_id: "agent", origin: "routine", status: "running", objective: "后台巡检" }, { id: "job-task", bot_id: "agent", origin: "job", status: "running", objective: "后台整理" }, { id: "child-task", bot_id: "agent", origin: null, status: "running", objective: "委派子任务" }];
     await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
     expect(container.querySelector('.composer .send[aria-label="停止任务"]')).toBeNull();
     expect(container.querySelector(".processing-message")).toBeNull();
     expect(container.querySelector('.contact-item[data-working="true"]')).toBeNull();
-    state.tasks.push({ id: "chat-task", bot_id: "agent", origin: "user", status: "running" });
+    state.tasks.push({ id: "chat-task", bot_id: "agent", origin: "owner", status: "running" });
     await act(async () => { sources[0].emit("change", sync); await new Promise(resolve => setTimeout(resolve, 200)); });
     await act(async () => container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]')!.click());
     expect(fixture.api).toHaveBeenCalledWith("cancel", { taskId: "chat-task" });
+    expect(fixture.api).not.toHaveBeenCalledWith("cancel", { taskId: "job-task" });
+    expect(fixture.api).not.toHaveBeenCalledWith("cancel", { taskId: "child-task" });
   });
   it("turns the send key into a stop key while the Agent works and the composer is empty", async () => {
-    state = { ...state, connected: true, tasks: [{ id: "task-1", bot_id: "agent", status: "running", objective: "fixture" }] } as State;
+    state = { ...state, connected: true, tasks: [{ id: "task-1", bot_id: "agent", origin: "owner", status: "running", objective: "fixture" }] } as State;
     await act(async () => { sources[0].emit("change", sync); await new Promise((resolve) => setTimeout(resolve, 300)); });
     const stop = container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]');
     expect(stop).not.toBeNull();
@@ -279,7 +282,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     expect(container.querySelector(".processing-message")).not.toBeNull();
     expect(container.querySelector(".processing-caption")?.textContent).toBe("正在发送…");
     await act(async () => {
-      gates[1]({ ...state, tasks: [{ id: "t1", bot_id: "agent", status: "running", origin: "user" }] });
+      gates[1]({ ...state, tasks: [{ id: "t1", bot_id: "agent", status: "running", origin: "owner" }] });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(container.querySelector(".processing-message")).not.toBeNull();
@@ -289,7 +292,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("does not paint the live reply again once that text is in the transcript", async () => {
     const history = [{ id: "answer", role: "assistant", kind: "message", content: "完整回复", created_at: 2, seq: 2, task_id: "t1" }];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded", origin: "user" }] };
+      if (route === "state") return { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded", origin: "owner" }] };
       if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [{ taskId: "t1", text: "完整回复" }, { taskId: "t2", text: "另一段" }], hasMore: false };
       return {};
     });
@@ -401,5 +404,108 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     await act(async () => { for (let i = 0; i < 50 && !finish; i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); finish({ id: "file-1", botId: "agent", name: "截图.png", size: 4, mime: "image/png" }); await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(container.querySelector(".attachment-image-draft.is-uploading")).toBeNull();
     expect(container.querySelector<HTMLImageElement>(".attachment-image-draft img.attachment-thumb-tile")?.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+  });
+});
+
+describe("Background jobs in the chat (Web, Electron and Android WebView)", () => {
+  const job = (overrides: Record<string, unknown> = {}) => ({ id: "job-1", botId: "agent", title: "整理下载文件夹", stage: "running", taskId: "job-task", originTaskId: "owner-task", todoId: null, todoVersion: null, todoStatus: null, progress: null, latestReport: null, createdAt: 1, endedAt: null, ...overrides });
+  const report = (state: string, extra: Record<string, unknown> = {}) => ({ id: "report-msg", role: state === "blocked" || state === "failed" ? "system" : "assistant", kind: state === "question" ? "request" : state === "ready" ? "result" : "error", content: `后台任务「整理下载文件夹」\n已整理 12 个文件${state === "question" ? "\n\n要保留截图吗？" : ""}`, source_key: "job-report:r1", job_id: "job-1", job_title: "整理下载文件夹", job_state: state, created_at: 2, seq: 2, ...extra });
+  async function show(jobs: unknown[], messages: unknown[], tasks: State["tasks"] = []) {
+    state = { ...state, jobs, tasks } as State;
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "state") return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : messages, streaming: [], hasMore: false };
+      return {};
+    });
+    await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 250)); });
+  }
+  const cardButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button")].map(button => button.textContent);
+  const cardButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button")].find(button => button.textContent === label)!;
+
+  it("shows the hand-off as a marker and the report as a card whose actions follow the job's current stage", async () => {
+    const latest = { id: "r1", state: "question", summary: "已整理 12 个文件", question: "要保留截图吗？", messageId: "report-msg", createdAt: 2 };
+    await show([job({ stage: "question", latestReport: latest })], [
+      { id: "start-msg", role: "system", kind: "activity", content: "已交给后台：整理下载文件夹", source_key: "job-start:job-1", job_id: "job-1", job_title: "整理下载文件夹", created_at: 1, seq: 1 },
+      report("question"),
+    ]);
+    expect(container.querySelector(".job-marker")?.textContent).toContain("已交给后台");
+    expect(container.querySelector(".job-card header")?.textContent).toBe("整理下载文件夹等待你回答");
+    expect(container.querySelector(".job-card-body")?.textContent).toContain("要保留截图吗？");
+    expect(container.querySelector(".job-card-body")?.textContent).not.toContain("后台任务「");
+    expect(cardButtons()).toEqual(["回复", "停止"]);
+    await show([job({ stage: "running", latestReport: latest })], [report("question")]);
+    expect(cardButtons()).toEqual(["停止"]);
+    await act(async () => cardButton("停止").click());
+    expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-1" });
+    await show([job({ stage: "done", endedAt: 3, latestReport: { ...latest, state: "ready", question: null } })], [report("ready")]);
+    expect(cardButtons()).toEqual([]);
+    // An older report of the job carries no actions.
+    await show([job({ stage: "question", latestReport: { ...latest, messageId: "newer" } })], [report("question")]);
+    expect(cardButtons()).toEqual([]);
+  });
+
+  it("accepts or revises a todo's delivery from the card with the todo's version", async () => {
+    const latest = { id: "r1", state: "ready", summary: "已整理 12 个文件", question: null, messageId: "report-msg", createdAt: 2 };
+    await show([job({ stage: "review", todoId: "todo-1", todoVersion: 7, todoStatus: "review", latestReport: latest })], [report("ready")]);
+    expect(cardButtons()).toEqual(["验收", "修改"]);
+    await act(async () => cardButton("验收").click());
+    expect(fixture.api).toHaveBeenCalledWith("todos/action", { id: "todo-1", version: 7, action: "complete" });
+    await act(async () => cardButton("修改").click());
+    const dialog = container.querySelector('[role="dialog"]')!;
+    await act(async () => {
+      const field = dialog.querySelector("textarea")!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "加上截图");
+      dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(fixture.api).toHaveBeenCalledWith("todos/action", expect.objectContaining({ id: "todo-1", version: 7, action: "start", feedback: "加上截图" }));
+  });
+
+  it("replies to a job's question through jobs/input, not the main chat, and keeps the draft when refused", async () => {
+    const latest = { id: "r1", state: "question", summary: "已整理 12 个文件", question: "要保留截图吗？", messageId: "report-msg", createdAt: 2 };
+    await show([job({ stage: "question", latestReport: latest })], [report("question")]);
+    await act(async () => cardButton("回复").click());
+    expect(container.querySelector(".reply-job-bar")?.textContent).toContain("回复后台任务：整理下载文件夹");
+    await type("保留"); await enter();
+    expect(fixture.api).toHaveBeenCalledWith("jobs/input", expect.objectContaining({ jobId: "job-1", text: "保留", clientId: expect.any(String) }));
+    expect(fixture.api.mock.calls.some(([route]) => route === "agents/input")).toBe(false);
+    expect(container.querySelector(".reply-job-bar")).toBeNull();
+    // A refused reply (a stopped job) restores the draft and the reply target.
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "jobs/input") throw new Error("后台任务已停止，不能再补充");
+      if (route === "state") return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: [report("question")], streaming: [], hasMore: false };
+      return {};
+    });
+    await act(async () => cardButton("回复").click());
+    await type("再补充"); await enter();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    expect(composer().value).toBe("再补充");
+    expect(container.querySelector(".reply-job-bar")).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("已停止");
+    // Cancelling the reply returns to the main chat.
+    await act(async () => container.querySelector<HTMLButtonElement>('.reply-job-bar button[aria-label="取消回复"]')!.click());
+    await type("主对话的问题"); await enter();
+    expect(fixture.api).toHaveBeenCalledWith("agents/input", expect.objectContaining({ text: "主对话的问题" }));
+  });
+
+  it("lists open jobs in the header and the profile with their own stop, and the stop key stops only the main chat", async () => {
+    await show([job(), job({ id: "job-2", title: "导出报告", stage: "question", taskId: "job-task-2" }), job({ id: "job-3", title: "旧任务", stage: "done", endedAt: 5 })], [],
+      [{ id: "owner-task", bot_id: "agent", origin: "owner", status: "running" }, { id: "job-task", bot_id: "agent", origin: "job", status: "running" }]);
+    const pill = container.querySelector<HTMLButtonElement>(".jobs-pill")!;
+    expect(pill.textContent).toBe("2 项后台任务");
+    await act(async () => pill.click());
+    const rows = [...container.querySelectorAll(".jobs-popover-row")];
+    expect(rows.map(row => row.textContent)).toEqual(["整理下载文件夹执行中", "导出报告等待你回答"]);
+    await act(async () => rows[1].querySelector<HTMLButtonElement>('button[aria-label="停止 导出报告"]')!.click());
+    expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-2" });
+    await act(async () => container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]')!.click());
+    expect(fixture.api).toHaveBeenCalledWith("cancel", { taskId: "owner-task" });
+    expect(fixture.api).not.toHaveBeenCalledWith("cancel", { taskId: "job-task" });
+    expect([...container.querySelectorAll(".inspector .job-entry b")].map(item => item.textContent)).toEqual(["整理下载文件夹", "导出报告"]);
+    expect(container.querySelector(".inspector .routine-history")?.textContent).toContain("旧任务");
+    await act(async () => container.querySelector<HTMLButtonElement>(".inspector .stop-all button")!.click());
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b => b.textContent === "确认")!.click());
+    expect(fixture.api).toHaveBeenCalledWith("agents/stop-all", { botId: "agent" });
+    expect(container.querySelector('.contact-item[data-working="true"]')).not.toBeNull();
   });
 });

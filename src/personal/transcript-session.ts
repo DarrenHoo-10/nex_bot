@@ -8,7 +8,7 @@ export function optimisticOutgoing(clientId: string, content: string, createdAt 
 /** The receipt replaces data, not the already visible message element. */
 export function transcriptMessageKey(message: RecordRow): string {
   const source = String(message.source_key ?? "");
-  return message.role === "user" && source.startsWith("agent-input:")
+  return message.role === "user" && (source.startsWith("agent-input:") || source.startsWith("job-input:"))
     ? `optimistic:${source.slice(source.lastIndexOf(":") + 1)}`
     : String(message.id);
 }

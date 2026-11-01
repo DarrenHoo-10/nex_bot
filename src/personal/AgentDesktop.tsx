@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
 import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, listModels, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
+import { api, busyJob, desktop, jobStageLabels, listModels, openJob, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, ModelSettings, SettingsPage, type SettingsCategory } from "./panels";
@@ -32,6 +32,8 @@ import { ModelPicker } from "./components/ModelPicker";
 import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail, occurrenceStatus, routineStatusLabel } from "./components/RoutineOccurrenceDetail";
+import { JobDetail } from "./components/JobDetail";
+import { JobReportCard, type JobCardActions } from "./components/JobReportCard";
 import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
 
@@ -191,6 +193,8 @@ export function AgentDesktop() {
   const imeEndedAt = useRef(0);
   const [modelChooserOpen, setModelChooserOpen] = useState(false);
   const [quote, setQuote] = useState<{ author: string; text: string }>(), [copiedId, setCopiedId] = useState(""), [exported, setExported] = useState(false);
+  // A reply to a background job goes straight to that job, not to the main chat.
+  const [replyJob, setReplyJob] = useState<{ id: string; title: string }>(), [jobsOpen, setJobsOpen] = useState(false);
   const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -351,6 +355,8 @@ export function AgentDesktop() {
       stickToBottom.current = !historyTarget.current;
       setShowScrollPill(false);
       setQuote(undefined);
+      setReplyJob(undefined);
+      setJobsOpen(false);
       setMemoryNotice("");
       setPreview(undefined);
       setMessages([]);
@@ -378,6 +384,7 @@ export function AgentDesktop() {
   };
   const send = (event: FormEvent) => {
     event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || !state?.bots.some((agent) => agent.id === target)) return;
+    if (replyJob) { sendJobReply(raw, target, replyJob); return; }
     const prefix = quote ? `> ${quote.author}：${quote.text.replace(/\s+/g, " ").slice(0, 140)}\n\n` : "";
     const content = prefix + raw, attachmentIds = attachments.map((file) => file.id), requestKey = content + JSON.stringify(attachmentIds);
     if (!retry.current || retry.current.botId !== target || retry.current.text !== requestKey) retry.current = { botId: target, text: requestKey, id: crypto.randomUUID() };
@@ -410,13 +417,36 @@ export function AgentDesktop() {
       }
     });
   };
-  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin !== "routine" && !terminal.includes(str(t.status))) ?? [];
+  /** A reply to a background job: no attachments, the job gets it as input; the draft comes back if Core refuses it. */
+  const sendJobReply = (raw: string, target: string, job: { id: string; title: string }) => {
+    if (!raw || attachments.length || pending.length) { setError("回复后台任务时不能附带文件"); return; }
+    const requestKey = `job:${job.id}:${raw}`;
+    if (!retry.current || retry.current.botId !== target || retry.current.text !== requestKey) retry.current = { botId: target, text: requestKey, id: crypto.randomUUID() };
+    const clientId = retry.current.id, savedDraft = draft;
+    stickToBottom.current = true;
+    drafts.current.delete(target);
+    setDraft(""); setReplyJob(undefined);
+    setMessages((shown) => shown.some((row) => row.id === `optimistic:${clientId}`) ? shown : [...shown, { ...optimisticOutgoing(clientId, raw), job_id: job.id, job_title: job.title }]);
+    void run(async () => {
+      try { await api("jobs/input", { jobId: job.id, text: raw, clientId }); retry.current = undefined; }
+      catch (error) {
+        setMessages((shown) => shown.filter((row) => row.id !== `optimistic:${clientId}`));
+        if (!drafts.current.has(target)) drafts.current.set(target, savedDraft);
+        if (selected.current === target) { setDraft((current) => current || savedDraft); setReplyJob((current) => current ?? job); }
+        throw error;
+      }
+    });
+  };
+  // The chat's working state and its stop key follow the main chat only: background jobs, routines and delegated children have their own.
+  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status))) ?? [];
+  const botJobs = state?.jobs?.filter((job) => job.botId === botId) ?? [], openJobs = botJobs.filter(openJob);
+  const jobById = new Map((state?.jobs ?? []).map((job) => [job.id, job]));
   useEffect(() => {
     const previous = previousTask.current;
     previousTask.current = tasks[0] ? { botId, taskId: str(tasks[0].id) } : undefined;
     setSettledState("idle");
     if (!tasks.length && previous?.botId === botId) {
-      const settled = state?.tasks.find((task) => task.id === previous.taskId && task.origin !== "routine");
+      const settled = state?.tasks.find((task) => task.id === previous.taskId && task.origin === "owner");
       if (settled?.status === "succeeded" || settled?.status === "failed") {
         setSettledState(settled.status === "succeeded" ? "done" : "failed");
         const timer = setTimeout(() => setSettledState("idle"), 2400);
@@ -487,6 +517,17 @@ export function AgentDesktop() {
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
   const viewRoutine = (routine: RecordRow) => setDialog(<RoutineDetail routine={routine} latest={state?.occurrences.find((o) => o.routine_id === routine.id)} close={closeDialog} showResult={(id) => openOccurrence(id)} disable={async () => { await api("routines/toggle", { id: routine.id, version: routine.version, enabled: false }); await reload(); closeDialog(); }} remove={async () => { await api("routines/delete", { id: routine.id, version: routine.version }); await reload(); closeDialog(); }}/>);
   const openOccurrence = (id: string) => setDialog(<RoutineOccurrenceDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>);
+  const openJobDetail = (id: string) => { setJobsOpen(false); setDialog(<JobDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>); };
+  const stopJob = (job: Job) => void run(() => api("jobs/stop", { jobId: job.id }));
+  // The card's acceptance and revision are the todo panel's own versioned actions.
+  const jobActions: JobCardActions = {
+    open: openJobDetail,
+    reply: (job) => { setQuote(undefined); setReplyJob({ id: job.id, title: job.title }); composerRef.current?.focus(); },
+    stop: stopJob,
+    accept: (job) => void run(() => api("todos/action", { id: job.todoId, version: job.todoVersion, action: "complete" })),
+    revise: (job) => setDialog(<Editor title="继续修改" onClose={closeDialog} fields={[{ name: "feedback", label: "告诉 AI 要调整什么", multiline: true, required: true }]} onSubmit={(data) => run(async () => { await api("todos/action", { id: job.todoId, version: job.todoVersion, action: "start", clientId: crypto.randomUUID(), feedback: data.feedback }); closeDialog(); })}/>),
+  };
+  const stopAll = () => setDialog(<Confirm title="停止全部工作？" detail="停止主对话和所有后台任务。" onClose={closeDialog} onConfirm={() => run(async () => { await api("agents/stop-all", { botId }); closeDialog(); })}/>);
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
@@ -532,7 +573,9 @@ export function AgentDesktop() {
   const modelLabel = str(bot?.selected_model) || str(state.config?.default_model) || "未连接模型";
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   const panelOpen = page === "agent" && detail && !!bot, railClosed = !rail && wide;
-  const recentRuns = state.occurrences.filter((o) => o.bot_id === botId).slice(0, 10), routines = state.routines.filter((r) => r.bot_id === botId);
+  const routines = state.routines.filter((r) => r.bot_id === botId);
+  // Routine runs and finished background jobs, newest first.
+  const recentRuns: Array<{ at: number; occurrence?: RecordRow; job?: Job }> = [...state.occurrences.filter((o) => o.bot_id === botId).map((o) => ({ at: Number(o.scheduled_at), occurrence: o })), ...botJobs.filter((job) => !openJob(job)).map((job) => ({ at: job.createdAt, job }))].sort((a, b) => b.at - a.at).slice(0, 10);
   const look = appearanceOf(bot, str(state.bots[0]?.id)), accent = look.kind === "companion" ? colors[look.color].value : undefined;
   const heroState = !connected ? companionLabels.offline : tasks.length ? taskPhrase(tasks[0]) : avatarState === "idle" ? "在线" : companionLabels[avatarState];
   void lookRevision;
@@ -554,6 +597,12 @@ export function AgentDesktop() {
             </button>
           : <div className="contact-heading who"><strong>{page === "settings" ? "设置" : "你的 Agent"}</strong></div>}
         <div className="header-actions">
+          {page === "agent" && bot && openJobs.length > 0 ? <div className="jobs-pill-anchor">
+            <button type="button" className="jobs-pill glass" aria-expanded={jobsOpen} aria-haspopup="dialog" onClick={() => setJobsOpen((open) => !open)}>{openJobs.length} 项后台任务</button>
+            {jobsOpen ? <div className="jobs-popover glass" role="dialog" aria-label="后台任务" onKeyDown={(event) => { if (event.key === "Escape") setJobsOpen(false); }}>
+              {openJobs.map((job) => <div className="jobs-popover-row" key={job.id}><button type="button" className="jobs-popover-title" onClick={() => openJobDetail(job.id)}>{job.title}</button><span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span><button type="button" aria-label={`停止 ${job.title}`} disabled={busy} onClick={() => stopJob(job)}><Square size={12}/></button></div>)}
+            </div> : null}
+          </div> : null}
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
           {page === "agent" && bot && messages.length > 0 ? <button type="button" className="bt-round glass" title="复制对话记录" aria-label="复制对话记录" onClick={() => exportTranscript()}>{exported ? <Check size={16}/> : <Share2 size={16}/>}</button> : null}
         </div>
@@ -590,7 +639,7 @@ export function AgentDesktop() {
             const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
             return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
               {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              <AgentMessage message={m} bot={bot} bots={state.bots} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
+              <AgentMessage message={m} bot={bot} bots={state.bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
             </div>;
           })}
           {liveStreaming.map((s) => {
@@ -616,8 +665,9 @@ export function AgentDesktop() {
         <div className="composer-dock">
           {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" aria-label="回到底部" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ArrowDown size={22} strokeWidth={1.5} aria-hidden="true"/></button> : null}
         <div className="composer-area">
-          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
+          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准{(() => { const job = botJobs.find((item) => item.taskId === a.task_id); return job ? ` · 后台任务「${job.title}」` : ""; })()}</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
+          {replyJob ? <div className="quote-bar reply-job-bar"><div><strong>回复后台任务：{replyJob.title}</strong></div><button type="button" aria-label="取消回复" onClick={() => setReplyJob(undefined)}><X size={14}/></button></div> : null}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}
           <input ref={fileInput} type="file" hidden multiple aria-label="上传附件" onChange={(event) => void upload(event.target.files)}/>
@@ -652,8 +702,8 @@ export function AgentDesktop() {
                       <button type="button" className="attachment-file-remove" aria-label={`取消上传 ${item.file.name}`} onClick={() => removePending(item)}><X size={12}/></button>
                     </div>)}
             </div>}
-            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={`给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => fileInput.current?.click()} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onNewTopic={() => void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
+            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={replyJob ? `回复后台任务：${replyJob.title}` : `给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
+            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} visibleModels={state.modelVisibility?.models} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} model={str(bot?.selected_model)} defaultModel={str(state.config?.default_model)} loadModels={() => listModels({ provider: str(state.config?.provider_id), endpoint: str(state.config?.endpoint), apiKey: "" })} onModel={(model) => run(() => api("bots/model", { id: botId, model, provider: state.config?.provider_id, endpoint: state.config?.endpoint, version: Number(bot?.model_selection_version ?? 0) }))} onExport={() => void run(downloadTranscript)} onNewTopic={() => void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
               {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
               {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
                 ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
@@ -684,9 +734,17 @@ export function AgentDesktop() {
           {tasks.length > 0 && <h2>正在处理</h2>}
           {tasks.map((t) => <section className="entry" key={str(t.id)}><span className="ic live"><Loader2 size={14}/></span><div><b>{t.objective || "Agent 工作"}</b><span>{taskPhrase(t)}</span>{t.created_at ? <time>{formatClock(t.created_at)}</time> : null}<div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></div></section>)}
 
+          {openJobs.length > 0 && <h2>后台任务</h2>}
+          {openJobs.map((job) => <section className="entry job-entry" key={job.id}><span className={`ic ${busyJob(job) ? "live" : "warn"}`}>{busyJob(job) ? <Loader2 size={14}/> : <CircleAlert size={14}/>}</span><div><button type="button" className="job-entry-title" onClick={() => openJobDetail(job.id)}><b>{job.title}</b></button><span>{jobStageLabels[job.stage]}{job.progress && busyJob(job) ? ` · ${job.progress}` : ""}</span><time>{formatClock(job.createdAt)}</time><div className="actions"><button onClick={() => stopJob(job)}><Square size={12}/>停止</button></div></div></section>)}
+          {openJobs.length > 0 ? <div className="actions stop-all"><button type="button" className="text-button danger-link" disabled={busy} onClick={stopAll}>停止全部</button></div> : null}
+
           {recentRuns.length > 0 ? <details className="routine-disclosure routine-history"><summary>最近动态<span>{recentRuns.length}</span></summary>
-          {recentRuns.map((o, index) => { const day = formatDay(o.scheduled_at), status = occurrenceStatus(o), Icon = status === "succeeded" ? Check : status === "running" ? Loader2 : status === "pending" ? Clock : CircleAlert; return <div key={str(o.id)}>
-            {day && (!index || formatDay(recentRuns[index - 1].scheduled_at) !== day) ? <h3 className="day-label">{day}</h3> : null}
+          {recentRuns.map((entry, index) => { const day = formatDay(entry.at), heading = day && (!index || formatDay(recentRuns[index - 1].at) !== day) ? <h3 className="day-label">{day}</h3> : null;
+            if (entry.job) { const job = entry.job, good = job.stage === "done" || job.stage === "dropped"; return <div key={job.id}>{heading}
+              <button type="button" className="entry routine-occurrence" aria-label={`查看执行详情：${job.title}`} onClick={() => openJobDetail(job.id)}><span className={`ic ${good ? "" : "warn"}`}>{good ? <Check size={14}/> : <CircleAlert size={14}/>}</span><span className="routine-occurrence-copy"><b>{job.title}</b><span>{jobStageLabels[job.stage]}</span><time>{formatClock(job.createdAt)}</time></span></button>
+            </div>; }
+            const o = entry.occurrence!, status = occurrenceStatus(o), Icon = status === "succeeded" ? Check : status === "running" ? Loader2 : status === "pending" ? Clock : CircleAlert; return <div key={str(o.id)}>
+            {heading}
             <button type="button" className="entry routine-occurrence" aria-label={`查看执行详情：${o.name}`} onClick={() => openOccurrence(str(o.id))}><span className={`ic ${status === "succeeded" ? "" : status === "running" ? "live" : status === "pending" ? "mem" : "warn"}`}><Icon size={14}/></span><span className="routine-occurrence-copy"><b>{o.name}</b><span>{routineStatusLabel(status)}</span>{o.scheduled_at ? <time>{formatClock(o.scheduled_at)}</time> : null}</span></button>
           </div>; })}</details> : null}
 
@@ -766,8 +824,14 @@ function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]
   if (m.role === "peer") return str(bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id))?.name) || "同伴 Agent";
   return str(bot?.name) || "Agent";
 }
-function AgentMessage({ message: m, bot, bots, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
+function JobMarker({ message, job, open }: { message: RecordRow; job?: Job; open: (id: string) => void }) {
+  return <div className="a2a-marker job-marker"><span>已交给后台</span><button type="button" className="a2a-contact" aria-label={`查看后台任务：${job?.title ?? str(message.job_title)}`} onClick={() => open(str(message.job_id))}><span>{job?.title ?? str(message.job_title)}</span></button><time title={message.created_at ? new Date(Number(message.created_at)).toLocaleString("zh-CN") : undefined}>{formatTime(message.created_at)}</time></div>;
+}
+function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; jobs: Map<string, Job>; jobActions: JobCardActions; busy: boolean; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
   const direction = str(m.a2a_direction), peer = bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id));
+  const jobId = str(m.job_id), job = jobId ? jobs.get(jobId) : undefined;
+  if (jobId && str(m.source_key).startsWith("job-start:")) return <JobMarker message={m} job={job} open={jobActions.open}/>;
+  if (jobId && m.job_state) return <article className="message assistant job-report" data-message-id={str(m.id)}><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><JobReportCard message={m} job={job} busy={busy} actions={jobActions} renderContent={(value) => <RichText value={value} onPreviewFile={onPreviewFile}/>} onDeleteImage={(image) => onDeleteImage(str(m.id), image)}/><div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time></div></div></article>;
   if (direction === "sent" || direction === "returned") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "received") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;
@@ -778,6 +842,7 @@ function AgentMessage({ message: m, bot, bots, select, copiedId, joined = false,
   return <article className={`message ${m.role} ${m.kind} ${joined ? "joined" : ""} ${groupEnd ? "group-end" : ""} ${document ? "has-doc" : ""}`} data-message-id={str(m.id)}>
     {assistant ? groupEnd ? <Avatar bot={bot} allBots={bots} size={26}/> : <span className="message-gutter" aria-hidden="true"/> : null}
     <div className="message-body">
+      {m.role === "user" && jobId ? <div className="job-reply-label">回复后台任务：{job?.title ?? str(m.job_title)}</div> : null}
       {m.role === "peer" ? <div className="message-author"><Avatar bot={peer} allBots={bots} size={22}/>{peer?.name ?? "Agent"} · {m.kind === "request" ? "发来任务" : "返回结果"}</div> : null}
       {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length} steps={steps}><div className="step-list">{steps.map((step) => <button type="button" key={step.id} className="step-row" onClick={() => onPreviewStep(step)} title="点击在右侧面板查看详情"><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>)}</div></ToolActivityDisclosure> : null}
       <MessageImages images={images} onDelete={(image) => onDeleteImage(str(m.id), image)}/>
@@ -788,7 +853,7 @@ function AgentMessage({ message: m, bot, bots, select, copiedId, joined = false,
 }
 /** Consecutive replies from the same assistant within five minutes read as one group. */
 function sameGroup(a: RecordRow | undefined, b: RecordRow) {
-  const plain = (m: RecordRow) => m.role === "assistant" && !str(m.a2a_direction);
+  const plain = (m: RecordRow) => m.role === "assistant" && !str(m.a2a_direction) && !str(m.job_id);
   const gap = Number(b.created_at) - Number(a?.created_at);
   return !!a && plain(a) && plain(b) && str(a.sender_bot_id) === str(b.sender_bot_id) && gap >= 0 && gap <= 5 * 60_000;
 }

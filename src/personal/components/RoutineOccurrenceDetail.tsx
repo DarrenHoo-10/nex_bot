@@ -9,14 +9,35 @@ export const occurrenceStatus = (row: RecordRow) => row.status === "skipped" ? "
 const time = (value: RecordRow[string] | undefined) => value ? new Date(Number(value)).toLocaleString("zh-CN") : "";
 const reasons: Record<string, string> = { expired: "已过期", coalesced: "已合并到后续执行" };
 
+/** The collapsed execution record of a background run (a routine occurrence or a job): its output and tool steps, each step opening its preview. */
+export function RunTranscript({ messages, steps, renderContent }: { messages: RecordRow[]; steps: ToolStep[]; renderContent: (content: string, pending?: boolean) => ReactNode }) {
+  const [step, setStep] = useState<ToolStep>();
+  const [preview, setPreview] = useState<PreviewItem>();
+  const [previewError, setPreviewError] = useState("");
+  useEffect(() => {
+    setPreview(undefined); setPreviewError("");
+    if (!step) return;
+    const controller = new AbortController();
+    void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`, undefined, controller.signal).then((item) => {
+      if (!controller.signal.aborted) setPreview(item);
+    }).catch((failure: unknown) => { if (!controller.signal.aborted) setPreviewError(failure instanceof Error ? failure.message : "加载失败"); });
+    return () => controller.abort();
+  }, [step]);
+  return <>
+    <details className="routine-disclosure routine-process"><summary>查看过程{steps.length ? <span>{steps.length} 个步骤</span> : null}</summary>
+      {messages.map((message) => <div key={str(message.id)} className="routine-detail-message">{renderContent(str(message.content))}</div>)}
+      {steps.length ? <div className="step-list">{steps.map((item) => <button type="button" className="step-row" key={item.id} onClick={() => setStep(item)}><span className={`step-dot ${item.status}`}/><strong>{toolLabels[item.tool_name] ?? item.tool_name}</strong><small>{routineStatusLabel(item.status)}</small></button>)}</div> : null}
+      {!messages.length && !steps.length ? <p className="muted">还没有处理记录</p> : null}
+    </details>
+    {step ? <section className="preview-card" aria-label="工具详情"><div className="preview-header"><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong><button type="button" aria-label="关闭工具详情" onClick={() => setStep(undefined)}><X size={14}/></button></div>{previewError ? <p role="alert">{previewError}</p> : null}{preview?.arguments ? <details><summary>技术信息</summary><pre>{preview.arguments}</pre></details> : null}<pre>{preview ? preview.content || "暂无输出" : previewError ? step.preview || "暂无输出" : "加载中…"}</pre></section> : null}
+  </>;
+}
+
 export function RoutineOccurrenceDetail({ id, close, renderContent }: { id: string; close: () => void; renderContent: (content: string, pending?: boolean) => ReactNode }) {
   const [detail, setDetail] = useState<Detail>();
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [step, setStep] = useState<ToolStep>();
-  const [preview, setPreview] = useState<PreviewItem>();
-  const [previewError, setPreviewError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -40,15 +61,6 @@ export function RoutineOccurrenceDetail({ id, close, renderContent }: { id: stri
     void load();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [id, refresh]);
-  useEffect(() => {
-    setPreview(undefined); setPreviewError("");
-    if (!step) return;
-    const controller = new AbortController();
-    void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`, undefined, controller.signal).then((item) => {
-      if (!controller.signal.aborted) setPreview(item);
-    }).catch((failure: unknown) => { if (!controller.signal.aborted) setPreviewError(failure instanceof Error ? failure.message : "加载失败"); });
-    return () => controller.abort();
-  }, [step]);
   const occurrence = detail?.occurrence;
   const status = occurrence ? occurrenceStatus(occurrence) : "";
   const output = detail?.messages.filter((message) => message.role !== "user" && !!message.content) ?? [];
@@ -66,16 +78,11 @@ export function RoutineOccurrenceDetail({ id, close, renderContent }: { id: stri
         {occurrence.reason ? <p className="routine-detail-reason">{reasons[str(occurrence.reason)] ?? occurrence.reason}</p> : null}
         {!hasResult && !occurrence.reason ? <p className="muted">{status === "skipped" || status === "cancelled" ? "本次未执行" : active.has(status) ? "有新进展会显示在这里" : "暂无结果"}</p> : null}
       </section>
-      <details className="routine-disclosure routine-process"><summary>查看过程{detail?.steps.length ? <span>{detail.steps.length} 个步骤</span> : null}</summary>
-        {output.map((message) => <div key={str(message.id)} className="routine-detail-message">{renderContent(str(message.content))}</div>)}
-        {detail?.steps.length ? <div className="step-list">{detail.steps.map((item) => <button type="button" className="step-row" key={item.id} onClick={() => setStep(item)}><span className={`step-dot ${item.status}`}/><strong>{toolLabels[item.tool_name] ?? item.tool_name}</strong><small>{routineStatusLabel(item.status)}</small></button>)}</div> : null}
-        {!output.length && !detail?.steps.length ? <p className="muted">还没有处理记录</p> : null}
-      </details>
+      <RunTranscript messages={output} steps={detail?.steps ?? []} renderContent={renderContent}/>
       <details className="routine-disclosure"><summary>任务安排</summary>
         <p className="routine-detail-prompt">{occurrence.prompt}</p>
         <dl className="routine-detail-meta">{[["原定时间", occurrence.scheduled_at], ["开始时间", occurrence.started_at], ["完成时间", occurrence.finished_at]].map(([label, value]) => value ? <div key={String(label)}><dt>{label}</dt><dd>{time(value)}</dd></div> : null)}</dl>
       </details>
     </> : null}
-    {step ? <section className="preview-card" aria-label="工具详情"><div className="preview-header"><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong><button type="button" aria-label="关闭工具详情" onClick={() => setStep(undefined)}><X size={14}/></button></div>{previewError ? <p role="alert">{previewError}</p> : null}{preview?.arguments ? <details><summary>技术信息</summary><pre>{preview.arguments}</pre></details> : null}<pre>{preview ? preview.content || "暂无输出" : previewError ? step.preview || "暂无输出" : "加载中…"}</pre></section> : null}
   </div>;
 }

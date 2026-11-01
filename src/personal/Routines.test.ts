@@ -7,6 +7,8 @@ const fixture = vi.hoisted(() => ({ api: vi.fn() }));
 vi.mock("./api", async (original) => ({ ...await original<typeof import("./api")>(), api: fixture.api }));
 import { RoutineDetail } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail } from "./components/RoutineOccurrenceDetail";
+import { JobDetail } from "./components/JobDetail";
+import type { JobDetail as JobDetailData } from "./api";
 let root: Root, container: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -74,5 +76,40 @@ describe("Routine occurrence detail", () => {
     await act(async () => container.querySelector<HTMLButtonElement>(".step-row")!.click());
     expect(fixture.api).toHaveBeenCalledWith("preview?callId=call", undefined, expect.any(AbortSignal));
     expect(container.textContent).toContain("详细错误"); expect(container.textContent).toContain('"command":"test"');
+  });
+});
+
+const jobDetail = (stage = "running"): JobDetailData => ({
+  job: { id: "j", botId: "b", title: "整理下载文件夹", stage: stage as JobDetailData["job"]["stage"], taskId: "t2", originTaskId: "o", todoId: null, todoVersion: null, todoStatus: null, progress: "已整理一半", latestReport: null, createdAt: 1000, endedAt: stage === "done" ? 2000 : null },
+  task: { id: "t2", status: "running" }, tasks: [{ id: "t1" }, { id: "t2" }],
+  messages: [{ id: "brief", role: "user", content: "后台任务「整理下载文件夹」。以用户原话为准" }, { id: "m", role: "assistant", content: "正在分类文件" }],
+  steps: [{ id: "call", tool_name: "device.list", status: "succeeded", summary: "", preview: "", created_at: 1 }], reports: [], streaming: "",
+});
+async function mountJob() { await act(async () => root.render(createElement(JobDetail, { id: "j", close: vi.fn(), renderContent: (text: string) => text }))); }
+describe("Background job detail", () => {
+  it("shows the latest report over its rounds, the collapsed record and the brief, reusing the routine transcript", async () => {
+    const data = jobDetail("done");
+    data.job.latestReport = { id: "r2", state: "ready", summary: "已整理 12 个文件", question: null, messageId: "m2", createdAt: 1500 };
+    data.reports = [{ id: "r1", state: "question", summary: "要保留截图吗？", created_at: 1200 }, { id: "r2", state: "ready", summary: "已整理 12 个文件", created_at: 1500 }];
+    fixture.api.mockImplementation(async (route: string) => route.startsWith("preview?") ? { kind: "tool", title: "device.list", content: "目录内容" } : data);
+    await mountJob();
+    expect(fixture.api).toHaveBeenCalledWith("jobs/detail?id=j", undefined, expect.any(AbortSignal));
+    expect(container.querySelector('[role="status"]')!.textContent).toBe("已完成");
+    expect(container.querySelector('[aria-label="最新回报"]')!.textContent).toContain("已整理 12 个文件");
+    expect(container.textContent).toContain("各轮回报");
+    const process = container.querySelector<HTMLDetailsElement>(".routine-process")!;
+    expect(process.open).toBe(false); expect(process.textContent).toContain("正在分类文件"); expect(process.textContent).not.toContain("以用户原话为准");
+    expect(container.textContent).toContain("任务书");
+    await act(async () => container.querySelector<HTMLButtonElement>(".step-row")!.click());
+    expect(fixture.api).toHaveBeenCalledWith("preview?callId=call", undefined, expect.any(AbortSignal));
+    expect(container.textContent).toContain("目录内容");
+  });
+  it("polls while the job is open and stops once it has ended or on close", async () => {
+    vi.useFakeTimers(); fixture.api.mockResolvedValue(jobDetail("running"));
+    await mountJob(); expect(container.textContent).toContain("已整理一半");
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); }); expect(fixture.api).toHaveBeenCalledTimes(2);
+    fixture.api.mockResolvedValue(jobDetail("done"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); }); expect(fixture.api).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(9000); }); expect(fixture.api).toHaveBeenCalledTimes(3);
   });
 });
