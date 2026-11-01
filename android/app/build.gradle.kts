@@ -15,6 +15,7 @@ val buildWorkspaceUi by tasks.registering(Exec::class) {
     commandLine("node", "scripts/build-android-ui.mjs")
     inputs.dir(rootProject.file("../src/personal"))
     inputs.dir(rootProject.file("../shared"))
+    inputs.dir(rootProject.file("../public/companions"))
     inputs.file(rootProject.file("../electron/client/style.css"))
     inputs.file(rootProject.file("../scripts/build-android-ui.mjs"))
     inputs.file(rootProject.file("../scripts/build-html-preview.mjs"))

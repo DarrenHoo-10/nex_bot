@@ -150,7 +150,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                     } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
                 }
                 if (uri.scheme != "https" || "https://${uri.host}" != origin || request.method != "GET" ||
-                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path == "/html-preview.html" || path.startsWith("/assets/"))) {
+                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path == "/html-preview.html" || path.startsWith("/assets/") || (path.startsWith("/companions/") && path.endsWith(".png")))) {
                     return response(403, "text/plain", ByteArrayInputStream(ByteArray(0)))
                 }
                 return try {
