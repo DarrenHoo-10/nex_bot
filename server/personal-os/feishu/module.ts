@@ -489,8 +489,11 @@ export class FeishuModule {
         }
         return;
       }
+      // A reply to a job report goes straight to that job (unless it was stopped), not through the main chat.
+      const parentId = pick(envelope, ["parent_id"]);
+      const replied = parentId ? this.store.get("SELECT j.id FROM personal_feishu_outbound o JOIN agent_jobs j ON j.id=o.job_id WHERE o.message_id=? AND o.app_id=? AND j.bot_id=? AND j.stopped_at IS NULL", parentId, appId, String(app.bot_id)) : undefined;
       let taskId: string;
-      try { taskId = this.agents.send(String(app.bot_id), content, `feishu:${messageId}`, this.store.session).taskId; }
+      try { taskId = replied && this.agents.jobs ? this.agents.jobs.input(String(replied.id), content, `feishu:${messageId}`, "direct", this.store.session).taskId : this.agents.send(String(app.bot_id), content, `feishu:${messageId}`, this.store.session).taskId; }
       catch (error) { await this.send(app, chatId, `消息未送达：${safe(error)}`).catch(() => {}); return; }
       this.store.run("UPDATE personal_feishu_messages SET task_id=? WHERE message_id=?", taskId, messageId);
       this.changed();
@@ -526,12 +529,13 @@ export class FeishuModule {
     try {
       const app = this.store.get("SELECT a.*,c.enabled FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.app_id=?", appId);
       if (!app || app.enabled !== 1) { if (!this.closed) this.store.run("DELETE FROM personal_feishu_outbound WHERE source_key=?", `reply:${message.source_key}`); return; }
-      // A background job's report goes back as one message.
+      // A background job's report goes back as one message; its outbound record names the job, so a Feishu reply to it reaches the job.
       const report = String(message.source_key).startsWith("job-report:");
       const chunks = report ? [reportBody(String(message.content))] : splitChunks((message.role === "system" ? `出错了：${message.content}` : String(message.content)).slice(0, 20_000));
+      const jobId = report ? this.store.get("SELECT job_id FROM agent_job_reports WHERE id=?", String(message.source_key).slice("job-report:".length))?.job_id ?? null : null;
       for (const [index, chunk] of chunks.entries()) {
         const sent = await this.sendRaw(app, String(mapping.chat_id), markdownCard(chunk), index === 0 && mapping.chat_type === "group" ? String(mapping.message_id) : undefined);
-        if (index === 0 && sent && !this.closed) this.store.run("UPDATE personal_feishu_outbound SET message_id=? WHERE source_key=?", sent, `reply:${message.source_key}`);
+        if (index === 0 && sent && !this.closed) this.store.run("UPDATE personal_feishu_outbound SET message_id=?,job_id=? WHERE source_key=?", sent, jobId, `reply:${message.source_key}`);
       }
       this.changed();
     } catch {

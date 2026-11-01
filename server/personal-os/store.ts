@@ -431,6 +431,12 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.db.exec(jobSchema);
       this.insert("schema_migrations", { version: 43, checksum: hash(jobSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=44")) this.transaction(() => {
+      // A Feishu reply to a background job's report names the job, so a reply to that message goes to the job.
+      const schema = "ALTER TABLE personal_feishu_outbound ADD COLUMN job_id TEXT;";
+      if (!this.all("PRAGMA table_info(personal_feishu_outbound)").some((column) => column.name === "job_id")) this.db.exec(schema);
+      this.insert("schema_migrations", { version: 44, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

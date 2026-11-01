@@ -156,6 +156,34 @@ describe("feishu connector in disposable Core", () => {
     expect(f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("例行结果"))).toBe(false);
   }, 60_000);
 
+  it("routes a Feishu reply to a job report straight to that job, not through the main chat", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const { owner, start } = await dispatched(f, "om_job_reply", "导出报告");
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "ask-format", name: "broker", args: JSON.stringify({ action: "job.report", state: "question", summary: "报告已整理", question: "导出为 PDF 还是 Word？" }) }] },
+      { kind: "openai-text", text: "等待回答" },
+    );
+    const job = start();
+    await until(() => f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("导出为 PDF 还是 Word？")));
+    const report = f.app.store.get("SELECT id FROM agent_job_reports WHERE job_id=?", job.jobId)!;
+    const outbound = f.app.store.get("SELECT message_id,job_id FROM personal_feishu_outbound WHERE source_key=?", `reply:job-report:${report.id}`)!;
+    expect(outbound.job_id).toBe(job.jobId);
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "exported", name: "broker", args: JSON.stringify({ action: "job.report", state: "ready", summary: "已导出 PDF" }) }] },
+      { kind: "openai-text", text: "完成" },
+    );
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_answer", chatId: "oc_job", senderOpenId: "ou_owner", content: JSON.stringify({ text: "PDF" }), parentId: String(outbound.message_id) }));
+    await until(() => f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("已导出 PDF")));
+    const rounds = f.app.store.all("SELECT id FROM tasks WHERE conversation_id=(SELECT conversation_id FROM agent_jobs WHERE id=?) ORDER BY created_at", job.jobId);
+    expect(rounds).toHaveLength(2);
+    expect(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_answer'")?.task_id).toBe(rounds[1].id);
+    expect(JSON.parse(String(f.app.store.get("SELECT content_json FROM conversation_inputs WHERE task_id=?", rounds[1].id)!.content_json)).text).toBe("PDF");
+    // The main chat got no new turn; the reply is shown in the stream as a reply to the job.
+    expect(f.app.store.all("SELECT t.id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.origin='owner'").map((row) => row.id)).toEqual([owner]);
+    expect(f.app.agents.messages(String(f.bot.id)).find((message) => message.content === "PDF")).toMatchObject({ role: "user", job_id: job.jobId });
+  }, 60_000);
+
   it("sends approval cards for a dispatched job with its title, and the stop button stops the job", async () => {
     const f = await fixture();
     await f.connectFake();
