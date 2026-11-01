@@ -21,7 +21,7 @@ public struct TodoItem: Codable, Sendable, Identifiable, Hashable {
     public var log: [String]
     public var createdAt: Double
     public var updatedAt: Double
-    public init(date: String = "") {
+    public init(date: String = TodoDates.key(Date())) {
         id = UUID().uuidString; title = ""; description = ""; owner = "me"; self.date = date
         priority = "普通"; status = "todo"; version = 0; steps = []; result = ""; log = []
         createdAt = 0; updatedAt = 0

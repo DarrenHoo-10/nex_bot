@@ -7,14 +7,15 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-val appVersionName = "0.2.23"
-val appVersionCode = 223
+val appVersionName = "0.2.25"
+val appVersionCode = 225
 
 val buildWorkspaceUi by tasks.registering(Exec::class) {
     workingDir(rootProject.projectDir.parentFile)
     commandLine("node", "scripts/build-android-ui.mjs")
     inputs.dir(rootProject.file("../src/personal"))
     inputs.dir(rootProject.file("../shared"))
+    inputs.dir(rootProject.file("../public/companions"))
     inputs.file(rootProject.file("../electron/client/style.css"))
     inputs.file(rootProject.file("../scripts/build-android-ui.mjs"))
     inputs.file(rootProject.file("../scripts/build-html-preview.mjs"))

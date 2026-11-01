@@ -11,6 +11,14 @@ struct RoleAvatarOptions: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("角色").font(.subheadline.weight(.semibold))
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                ForEach(QAvatarCatalog.ids, id: \.self) { id in
+                    VStack(spacing: 4) {
+                        option(.q(id), label: "选择\(QAvatarCatalog.names[id] ?? id)", size: 88)
+                        Text(QAvatarCatalog.names[id] ?? id).font(.caption)
+                    }
+                }
+            }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: columns), spacing: 10) {
                 ForEach(AvatarCatalog.graphics) { item in
                     option(.graphic(item.id), label: item.description, size: 54)

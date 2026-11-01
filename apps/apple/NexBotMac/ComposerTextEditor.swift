@@ -14,10 +14,12 @@ struct ComposerTextEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.drawsBackground = false
+        scroll.focusRingType = .none
         scroll.hasVerticalScroller = true
         let editor = ComposerNSTextView()
         editor.isRichText = false
         editor.drawsBackground = false
+        editor.focusRingType = .none
         editor.font = .systemFont(ofSize: 14)
         editor.textColor = .labelColor
         editor.isVerticallyResizable = true

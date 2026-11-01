@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import { createPersonalApp } from "./index.ts";
 import { createWorkspaceService } from "./workspaces.ts";
 import { startFakeIdentity } from "./testing/fake-identity.ts";
-import { graphicAvatarIds, type Appearance } from "../../shared/personal-appearance.ts";
+import { graphicAvatarIds, qAvatarIds, type Appearance } from "../../shared/personal-appearance.ts";
 
 it("syncs appearance across sessions, rejects stale/invalid/foreign changes and persists through restart", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-appearance-fixture-"));
@@ -64,6 +64,14 @@ it("syncs appearance across sessions, rejects stale/invalid/foreign changes and 
       graphicVersion++;
       const saved = (await request("state", secondSession)).body.bots.find((item) => item.id === graphicBot)!;
       expect(JSON.parse(saved.appearance_json!)).toEqual({ kind: "graphic", id });
+      expect(saved.appearance_version).toBe(graphicVersion);
+    }
+    expect((await request("bots/appearance", owner.token, {id:graphicBot,version:graphicVersion,appearance:{kind:'q',id:'https://foreign.example.test/image.png'}})).status).toBe(400);
+    for(const id of qAvatarIds) {
+      expect((await request('bots/appearance',owner.token,{id:graphicBot,version:graphicVersion,appearance:{kind:'q',id}})).status).toBe(200);
+      graphicVersion++;
+      const saved=(await request('state',secondSession)).body.bots.find(item=>item.id===graphicBot)!;
+      expect(JSON.parse(saved.appearance_json!)).toEqual({kind:'q',id});
       expect(saved.appearance_version).toBe(graphicVersion);
     }
     const graphic = (await request("state", secondSession)).body.bots.find((item) => item.id === graphicBot)!;

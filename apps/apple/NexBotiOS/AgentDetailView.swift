@@ -98,7 +98,11 @@ struct AgentDetailView: View {
         VStack(spacing: 4) {
             if let bot {
                 Button { sheet = .avatar } label: {
-                    HeroHalo(accent: workspace.appearance(of: bot).accent) { workspace.avatar(of: bot, size: 96, animated: true) }
+                    if workspace.appearance(of: bot).isQ {
+                        workspace.avatar(of: bot, size: 210, animated: true)
+                    } else {
+                        HeroHalo(accent: workspace.appearance(of: bot).accent) { workspace.avatar(of: bot, size: 96, animated: true) }
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("更换 \(bot.name) 的头像")

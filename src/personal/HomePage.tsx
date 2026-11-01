@@ -26,13 +26,13 @@ const research: Appearance = { kind: "companion", shape: "bean", color: "blue" }
 const writing: Appearance = { kind: "companion", shape: "pebble", color: "clay" };
 
 const features = [
-  { icon: Bot, title: "专属助手", text: "为写作、研究、工作整理分别创建助手，各有名字、身份和职责。" },
+  { icon: Bot, title: "专属助手", text: "为写作、研究、工作整理分别创建助手，选择专属角色头像，随任务状态显示表情与动作。" },
   { icon: MonitorSmartphone, title: "跨设备接着聊", text: "每个助手保留自己的对话，电脑、手机和网页用同一账号继续。" },
   { icon: FileText, title: "处理文件", text: "上传文档、PDF 和图片，让助手阅读、总结和整理。" },
   { icon: SquareTerminal, title: "操作电脑", text: "Windows 和 Mac 客户端登录后连接本机，助手可读取文件、运行命令。" },
   { icon: Plug, title: "连接工具", text: "添加 MCP 连接器，按助手分别授权可用的工具。" },
   { icon: CalendarClock, title: "定时任务", text: "告诉助手何时做什么，任务独立执行，完成后回到对话汇报。" },
-  { icon: Check, title: "统一待办", text: "在对话里记录、修改或删除待办，打开就能看到今天与未安排的事项。" },
+  { icon: Check, title: "统一待办", text: "在对话里记录、修改、完成或删除待办；未指定日期默认当天，按日、周、月查看。" },
   { icon: Cpu, title: "自选模型", text: "连接自己的模型服务，按助手切换模型、调整上下文与输出。" },
   { icon: ShieldCheck, title: "关键操作你来定", text: "删除、覆盖、发消息等操作先请你批准，随时可以停止。" },
 ];

@@ -2,6 +2,12 @@ import XCTest
 @testable import NexClientKit
 
 final class GraphicAvatarTests: XCTestCase {
+    func testNamedCompanionsUseTheCoreWireFormat() throws {
+        for id in ["blue-maid", "orange-flower", "white-dragon", "purple-cat", "gold-bat"] {
+            let bytes = try JSONEncoder().encode(AppearanceChoice.q(id))
+            XCTAssertEqual(try JSONSerialization.jsonObject(with: bytes) as? [String: String], ["kind": "q", "id": id])
+        }
+    }
     func testAllApprovedGraphicsUseTheCoreWireFormat() throws {
         XCTAssertEqual(AvatarCatalog.graphics.count, 15)
         XCTAssertEqual(Set(AvatarCatalog.graphics.map(\.id)).count, 15)
