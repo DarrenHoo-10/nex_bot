@@ -268,7 +268,10 @@ describe('Background jobs in disposable Core fixtures', () => {
     expect(view(app, job.jobId).stage).toBe('stopped');
     const refused = await f.request('jobs/input', { jobId: job.jobId, text: '继续', clientId: 'after-stop' });
     expect(refused.status).toBe(400); expect(await refused.json()).toMatchObject({ error: expect.stringContaining('已停止') });
-    // Stop-all ends the main chat and every job, including one waiting for an answer.
+    // Stop-all ends the main chat and every open job, including one waiting for an answer; a finished job keeps its outcome.
+    await model.lane('已经完成', say('早已完成'));
+    const finished = app.jobs.start({ botId: bot, title: '已经完成', prompt: '马上完成', sourceKey: 'stop-all-finished' });
+    await wait(() => view(app, finished.jobId).stage === 'done', () => app);
     const waiting = await model.lane('等待回答', tool('ask', { action: 'job.report', state: 'question', summary: '需要确认', question: '要继续吗？' }), say('等待'));
     const question = app.jobs.start({ botId: bot, title: '等待回答', prompt: '需要确认后继续', sourceKey: 'stop-all-question' });
     await wait(() => view(app, question.jobId).stage === 'question' && waiting.requests.length === 2, () => app);
@@ -280,7 +283,7 @@ describe('Background jobs in disposable Core fixtures', () => {
     expect((await f.request('agents/stop-all', { botId: bot })).status).toBe(200);
     await wait(() => idle(app), () => app);
     expect([task(app, busy.taskId).status, task(app, ownerBusy).status]).toEqual(['cancelled', 'cancelled']);
-    expect([view(app, question.jobId).stage, view(app, busy.jobId).stage]).toEqual(['stopped', 'stopped']);
+    expect([view(app, question.jobId).stage, view(app, busy.jobId).stage, view(app, finished.jobId).stage]).toEqual(['stopped', 'stopped', 'done']);
   }, 60_000);
 
   it('asks for approval inside a job, keeps it through main-chat input and continues once approved', async () => {

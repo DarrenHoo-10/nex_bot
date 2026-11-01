@@ -129,8 +129,8 @@ export class AgentModule {
       this.ensure(botId);
       if (this.store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", botId)) throw new Error("请先停止并核对该 Agent 的未结束工作");
       if (this.store.run("UPDATE bots SET status='archived',version=version+1 WHERE id=? AND version=? AND status='active'", botId, version).changes !== 1) throw new Error("Agent 已变化，请刷新");
-      // Jobs waiting for an answer have no unfinished task; archiving ends them too.
-      this.store.run("UPDATE agent_jobs SET stopped_at=? WHERE bot_id=? AND stopped_at IS NULL", now(), botId);
+      // Jobs waiting for an answer have no unfinished task; archiving ends them too. Finished jobs keep their outcome.
+      for (const job of this.jobs?.list().filter((job) => job.botId === botId && job.endedAt === null) ?? []) this.store.run("UPDATE agent_jobs SET stopped_at=? WHERE id=? AND stopped_at IS NULL", now(), job.id);
       this.store.run("UPDATE agent_routines SET enabled=0,version=version+1 WHERE bot_id=?", botId);
       this.store.run("UPDATE routine_occurrences SET status='cancelled',reason='助手已归档',finished_at=? WHERE status='pending' AND routine_id IN (SELECT id FROM agent_routines WHERE bot_id=?)", now(), botId);
       this.store.audit("agent.archive", "bot", botId, { version: version + 1 });
@@ -254,7 +254,8 @@ export class AgentModule {
   /** Stops every unfinished piece of an assistant's work: its background jobs (marked stopped) and then the rest. */
   stopAll(botId: string, reason = "用户停止了全部工作") {
     this.ensure(botId);
-    for (const job of this.store.all("SELECT id FROM agent_jobs WHERE bot_id=? AND stopped_at IS NULL", botId)) this.jobs?.stop(String(job.id), reason);
+    // Finished jobs keep their outcome; only open ones (running, waiting for an answer, blocked...) are stopped.
+    for (const job of this.jobs?.list().filter((job) => job.botId === botId && job.endedAt === null) ?? []) this.jobs?.stop(job.id, reason);
     for (const task of this.store.all("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL ORDER BY created_at", botId)) this.runtime.cancel(String(task.id), reason);
     this.runtime.changed();
     return { stopped: true };
