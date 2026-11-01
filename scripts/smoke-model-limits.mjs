@@ -124,6 +124,13 @@ try {
   await click(".workspace-account-name"); await textButton("设置", "document.querySelector('.account-menu')"); await textButton("模型", "document.querySelector('.preferences-nav')"); await ready();
   await until(() => evaluate("document.querySelector('input[name=contextWindow]').value==='190000'"));
   cases.push("unknown-model-validation-and-reload");
+  // Fixing a typo in the endpoint keeps typed limits; changing the model still starts from that model's values.
+  await input("input[name=contextWindow]", "210000"); await input("input[name=maxOutputTokens]", "21000");
+  await input("input[name=endpoint]", model.origin + "/v1/"); await new Promise(resolve => setTimeout(resolve, 900)); await ready();
+  if (!await evaluate("document.querySelector('input[name=contextWindow]').value==='210000'&&document.querySelector('input[name=maxOutputTokens]').value==='21000'")) throw new Error("Editing the endpoint discarded typed limits");
+  await input("input[name=model]", "fixture-other"); await ready();
+  if (await evaluate("document.querySelector('input[name=contextWindow]').value==='210000'")) throw new Error("Another model inherited the typed limits");
+  cases.push("endpoint-edit-keeps-typed-limits-model-change-resets");
   await evaluate("document.querySelector('[data-model-limits]').scrollIntoView({block:'center'})");
   await geometry(); await screenshot("model-limits-desktop");
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });

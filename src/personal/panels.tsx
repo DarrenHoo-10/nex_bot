@@ -109,7 +109,7 @@ export function ModelSettings({ state, run, refresh = async () => {}, active }: 
         <div className="field"><span>默认模型</span><div className="preferences-model-controls">
           <ModelPicker key={JSON.stringify([provider,endpoint,catalogRevision,models.length])} name="model" label="默认模型" value={model} models={visible ?? (models.length ? models : null)} loadModels={() => listModels({provider,endpoint,apiKey:(modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement)?.value ?? ""})} onChange={value => {setModel(value);setSaved(false);}}/>
         </div></div>
-        <ModelLimitsFields key={limitScope} scopeKey={limitScope} provider={provider} endpoint={endpoint} model={model} active={active} onReady={setLimitsReady} onEdit={() => setSaved(false)}/>
+        <ModelLimitsFields key={JSON.stringify([provider, model])} scopeKey={limitScope} provider={provider} endpoint={endpoint} model={model} active={active} onReady={setLimitsReady} onEdit={() => setSaved(false)}/>
         <div className="preferences-actions"><button className="primary" type="submit" disabled={limitsReady !== limitScope}>{pending ? "保存中…" : "保存配置"}</button>{saved && <span className="preferences-saved" role="status"><Check size={15}/>已保存</span>}</div>
       </fieldset>
     </form>
