@@ -113,8 +113,8 @@ try {
     await first.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(el=>el.textContent==='模型').click();true");
     if (!await first.evaluate("document.querySelector('input[name=apiKey]').type==='password'&&document.querySelector('input[name=apiKey]').value==='synthetic-catalog-key'")) throw new Error("Category navigation exposed or lost the key");
     await first.evaluate("(()=>{const el=document.querySelector('input[name=endpoint]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'https://other.example.test/v1');el.dispatchEvent(new Event('input',{bubbles:true}));})()");
-    if (!await first.evaluate("document.querySelector('input[name=apiKey]').value===''")) throw new Error("Endpoint change retained another provider's key");
-    cases.push("key-reveal-hide", "save-then-discover-on-older-core", "key-remasked-on-navigation", "key-cleared-for-new-endpoint");
+    if (!await first.evaluate("document.querySelector('input[name=apiKey]').value==='synthetic-catalog-key'&&document.querySelector('input[name=apiKey]').type==='password'")) throw new Error("Endpoint editing lost the entered key or left it revealed");
+    cases.push("key-reveal-hide", "save-then-discover-on-older-core", "key-remasked-on-navigation", "key-retained-while-editing-endpoint");
     if (await first.evaluate("/个人工作空间|系统信息|高级设置|后端连接/.test(document.body.innerText)")) throw new Error("Removed descriptions remain visible");
     cases.push("native-model-discovery-in-settings");
   }

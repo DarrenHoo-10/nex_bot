@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { createPersonalApp } from "./index.ts";
+import { createPersonalApp, type AppOptions } from "./index.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 
 it("authenticated catalog lookup keeps saved keys and configuration private and unchanged", async () => {
@@ -21,6 +21,29 @@ it("authenticated catalog lookup keeps saved keys and configuration private and 
     const changed = await request({ ...query, endpoint: fake.origin + "/other" });
     expect(changed.ok).toBe(false); expect(await changed.text()).not.toContain("synthetic-key");
     expect(app.store.modelConfig()).toMatchObject({ model: "original-model", apiKey: "synthetic-key" });
+  } finally { await app.close(); await fake.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("keeps a saved API key through blank saves and restart without returning it to clients", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "nex-model-key-")), key = randomBytes(32);
+  const fake = await startFakeModel(), token = "synthetic-key-session";
+  const options: AppOptions = { dir, key, token, identity: false, hostDevice: false, memoryRuntime: false, modelCatalog: { fetchDisabled: true } };
+  let app = await createPersonalApp(options);
+  const config = { provider: "openai", endpoint: fake.origin + "/v1", model: "fixture-model" };
+  const request = (route: string, data?: unknown) => fetch(app.origin + "/api/" + route, { headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, ...(data ? { method: "POST", body: JSON.stringify(data) } : {}) });
+  try {
+    expect((await request("config", { ...config, apiKey: "synthetic-persisted-key" })).ok).toBe(true);
+    expect((await request("config", { ...config, apiKey: "" })).ok).toBe(true);
+    await app.close();
+    app = await createPersonalApp(options);
+    const response = await request("state"), state = await response.json() as { config: { configured: number; endpoint: string } };
+    expect(response.ok).toBe(true);
+    expect(state.config).toMatchObject({ configured: 1, endpoint: config.endpoint });
+    expect(JSON.stringify(state)).not.toContain("synthetic-persisted-key");
+    expect(app.store.modelConfig().apiKey).toBe("synthetic-persisted-key");
+    const catalog = await request("models/list", { ...config, apiKey: "" });
+    expect(catalog.ok).toBe(true);
+    expect(await catalog.json()).toMatchObject({ models: ["fixture-model", "fixture-reasoning"] });
   } finally { await app.close(); await fake.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
