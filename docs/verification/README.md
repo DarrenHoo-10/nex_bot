@@ -1,5 +1,11 @@
 # Verifying OpenMausBot
 
+- [待办日期、模型完成与输入框修复：发布记录（2026-11-01）](todo-release-20261101.md)
+
+- [Todo default date and composer focus: local verification (2026-11-01)](todo-default-date-20261101.md)
+
+- [Model Todo completion: local verification (2026-11-01)](todo-completion-20261101.md)
+
 - [Five assistant appearances: release verification (2026-11-01)](q-avatar-release-20261101.md)
 
 - [界面单层化：Core、网页、Windows 和 Android 发布（2026-11-01）](single-layer-release-20261101.md)

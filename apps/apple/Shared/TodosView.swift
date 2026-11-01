@@ -123,8 +123,7 @@ private struct TodoEditor: View {
             Text("完成要求").font(.caption).foregroundStyle(Theme.muted)
             TextEditor(text: $draft.description).frame(minHeight: 100, maxHeight: 160).padding(8).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12))
             Picker("交给谁", selection: $draft.owner) { Text("我").tag("me"); ForEach(workspace.bots) { bot in Text(bot.name).tag(bot.id) } }
-            Toggle("设置截止日期", isOn: Binding(get: { !draft.date.isEmpty }, set: { draft.date = $0 ? TodoDates.key(Date()) : "" }))
-            if !draft.date.isEmpty { DatePicker("截止日期", selection: Binding(get: { TodoDates.parse(draft.date) ?? Date() }, set: { draft.date = TodoDates.key($0) }), displayedComponents: .date) }
+            DatePicker("日期", selection: Binding(get: { TodoDates.parse(draft.date) ?? Date() }, set: { draft.date = TodoDates.key($0) }), displayedComponents: .date)
             Picker("优先级", selection: $draft.priority) { Text("高").tag("高"); Text("普通").tag("普通"); Text("低").tag("低") }.pickerStyle(.segmented)
             if !errorText.isEmpty { Text(errorText).font(.caption).foregroundStyle(.red) }
             HStack { Spacer(); Button("取消") { dismiss() }; Button(busy ? "保存中…" : "保存") { Task { await save() } }.buttonStyle(.borderedProminent).tint(Theme.identityAccent).disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }

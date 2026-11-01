@@ -2,6 +2,10 @@ import XCTest
 @testable import NexClientKit
 
 final class TodosTests: XCTestCase {
+    func testNewTodoDefaultsToToday() {
+        XCTAssertEqual(TodoItem().date, TodoDates.key(Date()))
+        XCTAssertEqual(TodoItem(date: "2026-11-10").date, "2026-11-10")
+    }
     func testCalendarBoundaries() throws {
         let anchor = try XCTUnwrap(TodoDates.parse("2027-01-01"))
         XCTAssertEqual(TodoDates.days(anchor, period: "week").map(TodoDates.key), ["2026-12-28", "2026-12-29", "2026-12-30", "2026-12-31", "2027-01-01", "2027-01-02", "2027-01-03"])

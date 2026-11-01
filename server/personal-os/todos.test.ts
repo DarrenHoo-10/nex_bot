@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createPersonalApp } from "./index.ts";
-import { TodoModule } from "./todos.ts";
+import { TodoModule, todayForTodos } from "./todos.ts";
 import { hash } from "./store.ts";
 import { evaluateTool } from "./policy.ts";
 import type { TodoItem } from "../../shared/personal-todos.ts";
@@ -102,6 +102,86 @@ async function until(check: () => boolean) {
   throw new Error("任务未在隔离环境中完成");
 }
 describe("durable unified todos", () => {
+  it("defaults omitted/empty dates to today, preserves explicit dates and displays legacy undated items in today's week", async () => {
+    const f = await fixture();
+    const today = todayForTodos();
+    expect(todayForTodos(new Date("2026-11-01T15:59:59Z"))).toBe("2026-11-01");
+    expect(todayForTodos(new Date("2026-11-01T16:00:00Z"))).toBe("2026-11-02");
+    for (const date of [undefined, ""]) {
+      const item = f.module().save(f.input({ date }));
+      expect(item.date).toBe(today);
+      expect(f.app.store.get("SELECT due_date FROM todos WHERE id=?", item.id)?.due_date).toBe(today);
+    }
+    const dated = f.module().save(f.input({ date: "2027-01-01" }));
+    const legacy = f.module().save(f.input());
+    f.app.store.run("UPDATE todos SET due_date='' WHERE id=?", legacy.id);
+    const items = (await (await f.request("todos")).json() as { items: TodoItem[] }).items;
+    expect(items.find((item) => item.id === dated.id)?.date).toBe("2027-01-01");
+    expect(items.find((item) => item.id === legacy.id)).toMatchObject({ date: today, version: legacy.version });
+    expect(f.app.store.get("SELECT due_date FROM todos WHERE id=?", legacy.id)?.due_date).toBe("");
+    await f.restart();
+    expect(f.module().get(legacy.id).date).toBe(today);
+    expect(f.module().get(dated.id).date).toBe("2027-01-01");
+  });
+  it.each(["openai", "anthropic"] as const)("completes three panel todos through the %s worker and persists across restart", async (provider) => {
+    const f = await fixture();
+    f.app.store.saveConfig({ provider, endpoint: f.model.origin + "/v1", model: "fake", apiKey: "synthetic" });
+    const originals = ["侧栏摘要", "流式输出", "头像位置"].map((title) => f.module().save(f.input({ title })));
+    const calls = originals.map((item, i) => ({ id: `complete-${i}`, name: "broker",
+      args: JSON.stringify({ action: "todo.save", todoId: item.id, expectedVersion: item.version, status: "done" }) }));
+    for (const call of calls) f.model.scripts.push(provider === "openai"
+      ? { kind: "openai-tool", calls: [call] }
+      : { kind: "anthropic-tool", id: call.id, name: call.name, args: call.args });
+    f.model.scripts.push({ kind: provider === "openai" ? "openai-text" : "anthropic-text", text: "三条待办已标记完成。" });
+    const task = f.app.agents.send(f.bot, "把这三个待办都标为完成", `complete-${provider}`).taskId;
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded" && f.app.runtime.workers.size === 0);
+    const receipts = f.app.store.all("SELECT * FROM tool_calls WHERE task_id=?", task);
+    expect(receipts).toHaveLength(3);
+    expect(receipts.every((call) => call.status === "succeeded")).toBe(true);
+    for (const original of originals) expect(f.module().get(original.id)).toMatchObject({
+      status: "done", version: original.version + 1, title: original.title, description: original.description,
+    });
+    await f.restart();
+    const items = (await (await f.request("todos")).json() as { items: TodoItem[] }).items;
+    expect(items).toHaveLength(3);
+    expect(items.every((item) => item.status === "done")).toBe(true);
+    for (const call of receipts) f.module().tool(call, JSON.parse(String(call.arguments_json)));
+    for (const original of originals) expect(f.module().get(original.id).version).toBe(original.version + 1);
+    expect(f.app.store.all("SELECT * FROM todo_runs")).toHaveLength(0);
+  }, 60000);
+
+  it("protects completion versions, active AI work, ownership and atomic metadata edits", async () => {
+    const f = await fixture();
+    const item = f.module().save(f.input());
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: ["complete", "reopen"].map((id) => ({ id, name: "broker", args: JSON.stringify({ action: "todo.list" }) })) },
+      { kind: "openai-text", text: "隔离状态保护检查。" },
+    );
+    const task = f.app.agents.send(f.bot, "读取隔离待办", "completion-guards").taskId;
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded" && f.app.runtime.workers.size === 0);
+    const recorded = f.app.store.all("SELECT * FROM tool_calls WHERE task_id=? ORDER BY created_at", task);
+    expect(recorded).toHaveLength(2);
+    const call = { ...recorded[0], tool_name: "todo.save" };
+    const args = { todoId: item.id, expectedVersion: item.version, status: "done" };
+    for (const expectedVersion of [undefined, 0, "1", 1.5])
+      expect(() => f.module().tool(call, { ...args, expectedVersion })).toThrow("其他设备更新");
+    expect(() => f.module().tool(call, { status: "done" })).toThrow("todo.list");
+    expect(() => f.module().tool(call, {})).toThrow("title");
+    expect(() => f.module().tool(call, { ...args, status: "running" })).toThrow("状态只能");
+    f.app.store.run("UPDATE todos SET bot_id=?,status='running',task_id=? WHERE id=?", f.bot, task, item.id);
+    expect(() => f.module().tool(call, args)).toThrow("先停止");
+    expect(() => f.module().tool(call, { ...args, title: "不可保存" })).toThrow("先停止");
+    expect(f.module().get(item.id).title).toBe(item.title);
+    expect(f.app.store.all("SELECT * FROM todo_tool_receipts")).toHaveLength(0);
+    f.app.store.run("UPDATE todos SET status='review',task_id=NULL WHERE id=?", item.id);
+    expect(f.module().tool(call, args)).toMatchObject({ saved: true, item: { status: "done", version: item.version + 1 } });
+    const reopen = { ...recorded[1], tool_name: "todo.save" };
+    expect(f.module().tool(reopen, { ...args, expectedVersion: item.version + 1, status: "todo" })).toMatchObject({ item: { status: "todo", version: item.version + 2 } });
+    f.app.store.insert("users", { id: "completion-other-owner", display_name: "隔离成员", status: "active", created_at: Date.now() });
+    f.app.store.run("UPDATE todos SET owner_user_id='completion-other-owner' WHERE id=?", item.id);
+    expect(() => f.module().tool({ ...call, id: "cross-owner-complete" }, args)).toThrow("不存在");
+  });
+
   it("lets a model save panel todos, edit with versions and replay safely across restart", async () => {
     const f = await fixture();
     const draft = { action: "todo.save", title: "修复聊天界面", description: "修复侧栏摘要与流式显示", steps: [{ text: "检查侧栏摘要", done: false }] };
@@ -115,7 +195,7 @@ describe("durable unified todos", () => {
     let items = (await (await f.request("todos")).json() as { items: TodoItem[] }).items;
     expect(items).toHaveLength(1);
     const original = items[0];
-    expect(original).toMatchObject({ title: draft.title, description: draft.description, status: "todo", owner: "me", date: "", priority: "普通", taskId: null, steps: draft.steps });
+    expect(original).toMatchObject({ title: draft.title, description: draft.description, status: "todo", owner: "me", date: todayForTodos(), priority: "普通", taskId: null, steps: draft.steps });
     const call = f.app.store.get("SELECT * FROM tool_calls WHERE task_id=? AND tool_name='todo.save'", task)!;
     expect(call.status).toBe("succeeded");
     expect(f.app.store.all("SELECT * FROM todo_runs")).toHaveLength(0);

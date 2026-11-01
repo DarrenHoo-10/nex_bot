@@ -882,6 +882,7 @@ export function TodoWorkspace({
                   </span>
                   <DatePicker
                     label="截止日期"
+                    clearable={false}
                     disabled={
                       busy || (task.status === "running" && !!task.taskId)
                     }
@@ -1180,6 +1181,7 @@ export function TodoWorkspace({
                     <span>截止日期</span>
                     <DatePicker
                       label="截止日期"
+                      clearable={false}
                       name="date"
                       defaultValue={modal === "edit" ? editing?.date : anchor}
                     />

@@ -13,11 +13,14 @@ const entry = `
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { AgentDesktop } from "./src/personal/AgentDesktop";
+import { TodoWorkspace } from "./src/personal/todo/TodoWorkspace";
 import "./src/personal/agent.css";
 import "./src/personal/workspace.css";
 import "./src/personal/identity.css";
 import "./src/personal/settings.css";
 import "./electron/client/style.css";
+import "./src/personal/atmosphere.css";
+import "./src/personal/glass.css";
 const sync = { cursor: 1, privacyEpoch: 1, coreId: "fixture", bootId: "fixture" };
 const state = { sync, bots: [{ id: "agent", name: "Fixture", instructions: "" }],
   conversations: [], approvals: [], memories: [], delegations: [], devices: [], tasks: [],
@@ -25,11 +28,15 @@ const state = { sync, bots: [{ id: "agent", name: "Fixture", instructions: "" }]
 const messages = [{ id: "reply", seq: 1, role: "assistant", kind: "text",
   content: "这是可以选中复制的消息正文。 Select this message text.",
   created_at: Date.now() }];
+const today = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+const todos = ["侧栏摘要", "流式输出", "头像位置"].map((title, i) => ({ id: "todo-" + i,
+  title, description: "", owner: "me", date: today, priority: "普通", status: "todo", version: 1,
+  steps: [], taskId: null, taskStatus: null, result: "", log: [], createdAt: Date.now(), updatedAt: Date.now() }));
 window.fixtureCalls = [];
 window.fetch = async (url, options) => {
   if (!String(url).startsWith("/api/")) throw new Error("Fixture forbids external requests");
   window.fixtureCalls.push({ url, body: options?.body });
-  const value = url === "/api/state" ? state : url.startsWith("/api/agents/messages")
+  const value = url === "/api/todos" ? { items: todos } : url === "/api/state" ? state : url.startsWith("/api/agents/messages")
     ? { sync, messages, streaming: [], hasMore: false } : {};
   return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
 };
@@ -37,13 +44,16 @@ window.EventSource = class { addEventListener() {} close() {} };
 Object.defineProperty(navigator, "clipboard", { value: { writeText: async value => { window.fixtureCopied = value; } } });
 localStorage.clear();
 localStorage.setItem("nexbot.selectedAgent", "agent");
-createRoot(document.getElementById("root")).render(<AgentDesktop/>);
+const root = createRoot(document.getElementById("root"));
+root.render(<AgentDesktop/>);
+window.fixtureShowTodos = () => root.render(<TodoWorkspace state={state} sidebar={<aside/>} dark={false} collapsed={true} onNavigation={()=>{}} onOpenAgent={()=>{}}/>);
 `;
 let child;
 try {
   await build({
     stdin: { contents: entry, loader: "tsx", resolveDir: process.cwd() },
     bundle: true, outfile: path.join(fixture, "app.js"), format: "iife", jsx: "automatic",
+    define: { "import.meta.env": "{}" },
     loader: { ".svg": "dataurl", ".png": "dataurl", ".woff2": "dataurl" },
   });
   writeFileSync(path.join(fixture, "index.html"), '<meta charset="utf-8"><link rel="stylesheet" href="app.css"><div id="root"></div><script src="app.js"></script>');
@@ -120,6 +130,9 @@ try {
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-chooser-notice')).display"), "block");
   assert.equal(await evaluate("!!document.querySelector('.composer textarea') && !document.querySelector('.preferences-page')"), true);
   await click(".model-chooser-notice > div > button");
+  await click(".composer textarea");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.composer textarea')).outlineStyle"), "none", "Composer has no inner focus ring");
+  if (process.env.COMPOSER_SCREENSHOT) writeFileSync(process.env.COMPOSER_SCREENSHOT, Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
 
   const body = ".message .markdown p", copy = ".message-tools button[title='复制内容']";
   const from = await point(body), to = await point(copy);
@@ -145,7 +158,19 @@ try {
   assert.ok((await evaluate("window.getSelection().toString()")).length > 10, "Mouse drag selects message text");
   await pause(300);
   assert.ok((await evaluate("window.getSelection().toString()")).length > 10, "Selection survives after mouse release");
-  console.log("PASS: inline model settings; hover path; Copy; Quote; mouse text selection. Synthetic API/clipboard only.");
+  await evaluate("window.fixtureShowTodos()");
+  await until("document.querySelectorAll('.todo-row').length === 3");
+  await click(".period-switch [aria-label='周']");
+  await until("document.querySelectorAll('.week-day.is-today .calendar-task').length === 3");
+  assert.equal(await evaluate("document.querySelectorAll('.calendar-task').length"), 3);
+  assert.equal(await evaluate("document.querySelector('h1 span').textContent"), "3");
+  await click("[aria-label='下一周']");
+  await until("document.querySelectorAll('.calendar-task').length === 0");
+  assert.equal(await evaluate("document.querySelector('h1 span').textContent"), "0");
+  await click(".calendar-today");
+  await until("document.querySelectorAll('.week-day.is-today .calendar-task').length === 3");
+  if (process.env.TODO_SCREENSHOT) writeFileSync(process.env.TODO_SCREENSHOT, Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  console.log("PASS: composer focus has no inner outline; model settings; Copy; Quote; selection; three todos in today's week; next-week counts. Synthetic API/clipboard only.");
 } finally {
   if (child?.pid && child.exitCode === null && child.signalCode === null) {
     const exited = new Promise(resolve => child.once("exit", resolve));

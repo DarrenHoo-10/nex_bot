@@ -17,6 +17,10 @@ import type {
 export class TodoConflict extends Error {
   status = 409;
 }
+// The workspace calendar uses China time even when Core runs in another timezone.
+export const todayForTodos = (at = new Date()) => new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+}).format(at);
 export class TodoModule {
   constructor(
     readonly store: CoreStore,
@@ -63,7 +67,7 @@ export class TodoModule {
       title: String(row.title),
       description: String(row.description),
       owner: row.bot_id ? String(row.bot_id) : "me",
-      date: String(row.due_date),
+      date: String(row.due_date) || todayForTodos(),
       priority: String(row.priority),
       status: row.status as TodoStatus,
       version: Number(row.version),
@@ -118,7 +122,16 @@ export class TodoModule {
         return { deleted: true, todoId };
       }
       const existing = args.todoId === undefined ? undefined : this.get(text(args.todoId, 100));
-      const item = this.save({
+      if (!existing && args.status !== undefined && args.status !== "todo")
+        throw new Error("标记完成须先 todo.list，再传 todoId、expectedVersion 和 status=done");
+      if (args.status !== undefined && args.status !== "todo" && args.status !== "done")
+        throw new Error("待办状态只能为 todo（重新打开）或 done（完成）");
+      if (!existing && (typeof args.title !== "string" || !args.title.trim()))
+        throw new Error("新建待办须传 title；修改或完成已有待办须先 todo.list，再传 todoId 和 expectedVersion");
+      if (existing) this.checked({ id: existing.id, version: args.expectedVersion });
+      const statusOnly = existing && args.status !== undefined &&
+        !["title", "description", "owner", "date", "priority", "steps"].some((key) => args[key] !== undefined);
+      let item = statusOnly ? existing : this.save({
         id: existing?.id ?? `tool:${call.id}`,
         version: existing ? args.expectedVersion : 0,
         title: args.title ?? existing?.title,
@@ -128,6 +141,10 @@ export class TodoModule {
         priority: args.priority ?? existing?.priority ?? "普通",
         steps: args.steps ?? existing?.steps ?? [],
       });
+      if (args.status !== undefined && args.status !== item.status) {
+        item = this.action({ id: item.id, version: item.version,
+          action: args.status === "done" ? "complete" : "reopen" }, this.store.session) as TodoItem;
+      }
       this.store.insert("todo_tool_receipts", { call_id: call.id, argument_hash: call.argument_hash, todo_id: item.id });
       return { saved: true, item };
     });
@@ -136,7 +153,7 @@ export class TodoModule {
     const todoId = text(data.id, 100),
       title = text(data.title, 120),
       description = optionalText(data.description, 4000),
-      date = optionalText(data.date, 10),
+      date = optionalText(data.date, 10) || todayForTodos(),
       owner = text(data.owner, 100),
       priority = text(data.priority, 10);
     if (
