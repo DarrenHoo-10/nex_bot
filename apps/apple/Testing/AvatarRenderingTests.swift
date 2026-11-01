@@ -4,6 +4,33 @@ import NexClientKit
 @testable import NexRenderFixture
 
 final class AvatarRenderingTests: XCTestCase {
+    @MainActor func testQCharactersParseAndRenderHeadAndTaskPoses() throws {
+        for id in QAvatarCatalog.ids {
+            let bot = Bot(row: ["id": "b", "appearance_json": .string("{\"kind\":\"q\",\"id\":\"\(id)\"}")])
+            XCTAssertEqual(AgentAppearance.of(bot, firstID: "b"), .q(id))
+            for state in [CompanionState.idle, .thinking, .working, .approval, .done, .failed] {
+                let content = HStack {
+                    AgentAvatar(appearance: .q(id), state: state, size: 40)
+                    AgentAvatar(appearance: .q(id), state: state, size: 180)
+                }
+                let renderer = ImageRenderer(content: content)
+                let cgImage = try XCTUnwrap(renderer.cgImage, "\(id):\(state)")
+                let pixels = try XCTUnwrap(cgImage.dataProvider?.data) as Data
+                XCTAssertGreaterThan(Set(pixels).count, 100, "Missing artwork: \(id)")
+                if state == .idle || state == .thinking {
+                    #if os(macOS)
+                    let image = try XCTUnwrap(renderer.nsImage)
+                    #else
+                    let image = try XCTUnwrap(renderer.uiImage)
+                    #endif
+                    let attachment = XCTAttachment(image: image)
+                    attachment.name = "q-\(id)-\(state.rawValue)"; attachment.lifetime = .keepAlways; add(attachment)
+                }
+            }
+        }
+        let waiting = AgentTask(row: ["id": "t", "bot_id": "b", "status": "needs_reconciliation"])
+        XCTAssertEqual(CompanionState(task: waiting), .approval)
+    }
     func testSavedGraphicsAndClassicPortraitsSurviveParsing() {
         for id in AvatarCatalog.graphics.map(\.id) {
             let bot = Bot(row: ["id": "b", "appearance_json": .string("{\"kind\":\"graphic\",\"id\":\"\(id)\"}")])

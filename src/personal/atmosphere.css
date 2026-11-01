@@ -100,18 +100,19 @@
 
 .workspace-stage {
   height: 100dvh;
-  padding: clamp(10px, 1.2vw, 22px);
+  padding: 0;
   box-sizing: border-box;
   background: var(--stage);
 }
 
+/* One layer: the atmosphere fills the window; only the panels float on it. */
 .workspace-stage > .app.rk-workspace {
   position: relative;
   isolation: isolate;
   height: 100%;
-  border: 1px solid var(--frame-edge);
-  border-radius: 22px;
-  box-shadow: var(--frame-shadow);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   background:
     radial-gradient(ellipse at 0% 5%, var(--atmosphere-light), transparent 34%),
     radial-gradient(ellipse at 10% 68%, var(--atmosphere-blue), transparent 54%),

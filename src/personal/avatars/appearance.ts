@@ -15,8 +15,8 @@ export type CompanionState = "idle" | "thinking" | "working" | "approval" | "don
 export const companionLabels: Record<CompanionState, string> = { idle: "准备好了", thinking: "正在思考", working: "正在执行", approval: "等你确认", done: "已完成", failed: "执行未完成", offline: "正在重新连接", paused: "已暂停" };
 export function companionState(task?: RecordRow, approval = false, connected = true): CompanionState {
   if (!connected) return "offline";
-  if (approval || task?.status === "awaiting_approval") return "approval";
-  if (task?.status === "failed" || task?.status === "needs_reconciliation") return "failed";
+  if (approval || task?.status === "awaiting_approval" || task?.status === "needs_reconciliation") return "approval";
+  if (task?.status === "failed") return "failed";
   if (["paused", "cancelled", "rejected"].includes(String(task?.status))) return "paused";
   if (task?.status === "succeeded") return "done";
   if (task?.status === "queued" || task?.status === "running" && !task.active_tool) return "thinking";
