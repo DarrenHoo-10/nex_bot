@@ -24,10 +24,17 @@ export function policyTools(policy: Row): string[] {
 export const ownerJobActions = ["job.start", "job.list", "job.message", "job.stop"] as const;
 export const workerJobActions = ["job.report", "job.progress"] as const;
 export const jobActions: readonly string[] = [...ownerJobActions, ...workerJobActions];
-/** Long work the main chat hands to a background job instead of doing itself (agent.delegate with a topic excepted). */
+/** Long work the main chat hands to a background job instead of doing itself (a topic question excepted). */
 export const ownerJobOnly = ["device.computer", "image.generate", "agent.delegate"];
+/**
+ * The one delegation the main chat keeps: a short question to the steward of a topic it may not read (the steward is
+ * checked by checkDelegation when the call runs). A question, not a task: at most this many characters. Anything
+ * longer is work for a background job, so the main chat never waits on a peer's long run.
+ */
+export const TOPIC_QUESTION_LIMIT = 300;
 export function ownerMayCall(action: string, args: Record<string, unknown>) {
-  return !ownerJobOnly.includes(action) || (action === "agent.delegate" && args.topic !== undefined);
+  if (!ownerJobOnly.includes(action)) return true;
+  return action === "agent.delegate" && typeof args.topic === "string" && typeof args.message === "string" && args.message.trim().length <= TOPIC_QUESTION_LIMIT;
 }
 export function evaluateTool(store: CoreStore, botId: string, args: Record<string, unknown>) {
   const action = text(args.action, 40);

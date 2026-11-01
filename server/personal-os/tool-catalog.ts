@@ -1,7 +1,7 @@
 import { toolFields } from "./tool-fields.ts";
 import { htmlRenderDescription } from "../../shared/html-render.ts";
 import { chartPrompt } from "../../shared/chat-chart-format.ts";
-import { ownerJobActions, ownerJobOnly, policyTools, workerJobActions } from "./policy.ts";
+import { TOPIC_QUESTION_LIMIT, ownerJobActions, ownerJobOnly, policyTools, workerJobActions } from "./policy.ts";
 import type { CoreStore } from "./store.ts";
 
 type Entry = { action: string; title: string; fields: string; required: string; help: string; brief?: string; keywords?: string };
@@ -52,7 +52,7 @@ export const toolCatalog: Entry[] = [
 
 /** Who calls a tool: the main chat, a background job, a routine run or a delegated child. */
 export type TaskOrigin = "owner" | "routine" | "job" | "delegated";
-const OWNER_DELEGATE_BRIEF = "agent.delegate(botId,message,topic)：主对话只用于带 topic 向主题负责人提问；其余求助交给后台任务。";
+const OWNER_DELEGATE_BRIEF = `agent.delegate(botId,message,topic)：主对话只用于带 topic 向主题负责人提一个简短问题（${TOPIC_QUESTION_LIMIT} 字以内）；其余求助交给后台任务。`;
 function expandedGrants(granted: string[], origin?: TaskOrigin) {
   const allowed = new Set([...granted, ...(granted.includes("memory.write") ? ["memory.core.update", "memory.topic"] : [])]);
   if (origin === "owner") for (const action of ownerJobActions) allowed.add(action);
@@ -84,7 +84,7 @@ export function searchTools(store: CoreStore, botId: string, args: Record<string
   const fields = toolFields.properties as Record<string, unknown>;
   return {
     items: selected.map(({ entry }) => ({ action: entry.action, title: origin === "owner" && ownerJobOnly.includes(entry.action) ? `${entry.title}（仅后台任务）` : entry.title, common: !!entry.brief,
-      ...(q ? { description: origin === "owner" && ownerJobOnly.includes(entry.action) ? `仅后台任务可用${entry.action === "agent.delegate" ? "（主对话只能带 topic 向主题负责人提问）" : ""}；主对话请用 job.start 交给后台任务。${entry.help}` : entry.help, parameters: { type: "object", properties: {
+      ...(q ? { description: origin === "owner" && ownerJobOnly.includes(entry.action) ? `仅后台任务可用${entry.action === "agent.delegate" ? `（主对话只能带 topic 向主题负责人提一个 ${TOPIC_QUESTION_LIMIT} 字以内的问题）` : ""}；主对话请用 job.start 交给后台任务。${entry.help}` : entry.help, parameters: { type: "object", properties: {
         action: { type: "string", const: entry.action },
         ...Object.fromEntries(entry.fields.split(" ").filter(Boolean).map((key) => [key,
           entry.action === "tool.search" && key === "limit" ? { type: "integer", minimum: 1, maximum: 10 } : fields[key]])),
