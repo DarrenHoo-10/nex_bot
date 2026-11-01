@@ -54,7 +54,7 @@ struct AvatarPickerSheet: View {
     private var previewPanel: some View {
         VStack(spacing: 14) {
             Spacer(minLength: 0)
-            AgentAvatar(appearance: choice, state: previewState, size: 104, animated: preferences.motionEnabled)
+            AgentAvatar(appearance: choice, state: previewState, size: choice.isQ ? 180 : 104, animated: preferences.motionEnabled)
                 .accessibilityHidden(false).accessibilityLabel("头像预览")
             Text(bot?.name ?? "Agent").font(.system(size: 16, weight: .bold)).lineLimit(1)
             Text(previewState.label).font(.system(size: 12)).foregroundStyle(Theme.muted)

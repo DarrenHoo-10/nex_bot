@@ -250,8 +250,20 @@
 .rk-workspace .inspector-heading { display: flex; align-items: center; justify-content: flex-end; flex: none; height: 34px; padding: 0; }
 .rk-workspace .inspector-heading .icon-button { width: 30px; height: 30px; flex-basis: 30px; border-radius: 50%; }
 .rk-workspace .profile-top { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 0; padding: 0 0 14px; text-align: center; }
-.rk-workspace .ds-drawer-top-actions { position: absolute; top: -34px; left: 0; display: flex; }
-.rk-workspace .ds-drawer-top-actions .bt-round { width: 30px; height: 30px; flex-basis: 30px; border-radius: 50%; }
+/* The docked panel closes from its edge handle; the heading's close button only serves the overlay drawer. */
+@media (min-width: 1041px) {
+  .rk-workspace .inspector-heading { display: none; }
+  .rk-workspace .inspector.ds-drawer { padding-top: 30px; }
+}
+/* Edge handle: a tab on the panel's left edge when open, on the window edge when closed. */
+.rk-workspace .panel-handle {
+  position: absolute; z-index: 7; top: 50%; right: calc(var(--gap) * -1); width: 22px; height: 56px; padding: 0;
+  display: grid; place-items: center; transform: translateY(-50%);
+  border-right: 0; border-radius: 14px 0 0 14px; color: var(--muted-foreground);
+  transition: color .15s ease, width .2s var(--ease), background-color .15s ease, right .36s var(--ease);
+}
+.rk-workspace .panel-handle:hover { width: 26px; color: var(--foreground); background: var(--glass-strong); }
+.rk-workspace .panel-handle:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .rk-workspace .profile-avatar-button { width: auto; height: auto; padding: 0; border-radius: 50%; background: none; }
 .rk-workspace .profile-avatar-button:hover { background: none; }
 .rk-workspace .hero-halo { position: relative; display: grid; place-items: center; width: 132px; height: 132px; }
@@ -321,6 +333,20 @@
   .rk-workspace .inspector.ds-drawer { top: 0; right: 0; bottom: 0; width: min(340px, 94vw); border-radius: 24px 0 0 24px; }
   .app.rk-workspace[data-right="closed"] .inspector.ds-drawer { transform: translateX(100%); }
   .rk-workspace[data-page="settings"] > main { border-radius: 0; border-width: 0; }
+}
+
+.rk-workspace .contact-item.todo-entry { justify-content: flex-start; text-align: left; gap: 12px; padding-inline: 10px; }
+.app.rk-workspace[data-left="closed"] .contact-item.todo-entry { justify-content: center; padding-inline: 0; }
+
+/* ---------- Flush layout: the window is the only rounded layer; the rail and panel run edge to edge ---------- */
+@media (min-width: 721px) {
+  .app.rk-workspace { padding: 0; }
+  .rk-workspace .contact-sidebar { border-radius: 0; border-width: 0 1px 0 0; box-shadow: none; }
+  .rk-workspace > main { padding-bottom: var(--gap); }
+  .rk-workspace[data-page="settings"] > main { margin-block: var(--gap); padding-bottom: 0; }
+}
+@media (min-width: 1041px) {
+  .rk-workspace .inspector.ds-drawer { border-radius: 0; border-width: 0 0 0 1px; box-shadow: none; }
 }
 
 /* ---------- Fallbacks ---------- */

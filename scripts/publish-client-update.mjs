@@ -4,6 +4,7 @@
 // Only installers built from a pushed main commit may be published (see AGENTS.md).
 import { createHash, createHmac } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
+import https from "node:https";
 import path from "node:path";
 
 const arg = (name) => process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -31,10 +32,15 @@ function signed(method, key, headers = {}, md5 = "", type = "") {
 async function put(key, body, type, overwrite) {
   const md5 = createHash("md5").update(body).digest("base64");
   const headers = { "x-oss-object-acl": "private", ...(overwrite ? {} : { "x-oss-forbid-overwrite": "true" }) };
-  const response = await fetch(`${origin}/${key}`, { method: "PUT", headers: signed("PUT", key, headers, md5, type), body, redirect: "error" });
-  await response.body?.cancel();
-  if (response.status === 409 && !overwrite) return "exists";
-  if (!response.ok) throw new Error(`上传 ${key} 返回 HTTP ${response.status}`);
+  // fetch() gives up after five minutes without response headers, which a large installer over a slow link exceeds.
+  const status = await new Promise((resolve, reject) => {
+    const request = https.request(`${origin}/${key}`, { method: "PUT", headers: { ...signed("PUT", key, headers, md5, type), "Content-Length": body.length } }, (response) => { response.resume(); response.on("end", () => resolve(response.statusCode)); response.on("error", reject); });
+    request.setTimeout(10 * 60_000, () => request.destroy(new Error(`上传 ${key} 超过 10 分钟没有数据往来`)));
+    request.on("error", reject);
+    request.end(body);
+  });
+  if (status === 409 && !overwrite) return "exists";
+  if (status < 200 || status >= 300) throw new Error(`上传 ${key} 返回 HTTP ${status}`);
   return "uploaded";
 }
 async function get(key) {

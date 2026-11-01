@@ -6,12 +6,16 @@ enum AgentAppearance: Equatable {
     case companion(shape: String, color: String)
     case portrait(String)
     case graphic(String)
+    case q(String)
+
+    var isQ: Bool { if case .q = self { true } else { false } }
 
     var request: AppearanceChoice {
         switch self {
         case .companion(let shape, let color): .companion(shape: shape, color: color)
         case .portrait(let id): .portrait(id)
         case .graphic(let id): .graphic(id)
+        case .q(let id): .q(id)
         }
     }
 
@@ -27,6 +31,7 @@ enum AgentAppearance: Equatable {
                shapes.contains(shape), colors.contains(color) { return .companion(shape: shape, color: color) }
             if value["kind"] as? String == "portrait", let id = value["id"] as? String, portraits.contains(id) { return .portrait(id) }
             if value["kind"] as? String == "graphic", let id = value["id"] as? String, AvatarCatalog.graphic(id) != nil { return .graphic(id) }
+            if value["kind"] as? String == "q", let id = value["id"] as? String, QAvatarCatalog.names[id] != nil { return .q(id) }
         }
         if bot.id.isEmpty || bot.id == firstID { return .graphic("secretary-01") }
         var seed: UInt32 = 0
@@ -54,9 +59,9 @@ enum CompanionState: String {
 
     init(task: AgentTask?, approval: Bool = false, connected: Bool = true) {
         if !connected { self = .offline; return }
-        if approval || task?.status == "awaiting_approval" { self = .approval; return }
+        if approval || task?.status == "awaiting_approval" || task?.status == "needs_reconciliation" { self = .approval; return }
         switch task?.status {
-        case "failed", "needs_reconciliation": self = .failed
+        case "failed": self = .failed
         case "paused", "cancelled", "rejected": self = .paused
         case "succeeded": self = .done
         case "queued": self = .thinking
@@ -86,6 +91,8 @@ struct AgentAvatar: View {
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.29, style: .continuous))
             case .companion(let shape, let color):
                 CompanionBody(shape: shape, color: Self.color(color), state: displayedState, size: size, animated: animated)
+            case .q(let id):
+                QAvatarBody(id: id, state: state, size: size, animated: animated)
             case .graphic(let id):
                 if let graphic = AvatarCatalog.graphic(id) {
                     GraphicAvatarBody(graphic: graphic, state: displayedState, size: size, animated: animated)
