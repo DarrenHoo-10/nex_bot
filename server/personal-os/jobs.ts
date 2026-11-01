@@ -7,8 +7,8 @@ import { resourceNames, waitingKey, type DeviceLeases } from "./device-leases.ts
  * the same thing. The first matching row of the design's table wins; a stopped job is stopped whatever came before.
  */
 export type JobStage = "approval" | "question" | "review" | "blocked" | "failed" | "queued" | "running" | "done" | "dropped" | "stopped";
-/** Stages in which a job still needs the assistant or the user. */
-export const openStages: JobStage[] = ["approval", "question", "review", "blocked", "queued", "running"];
+/** Stages in which a job still needs the assistant or the user. 受阻 and 失败 wait for a person, as a question does. */
+export const openStages: JobStage[] = ["approval", "question", "review", "blocked", "failed", "queued", "running"];
 const reportStates = ["ready", "question", "blocked", "failed", "dropped"];
 const SUMMARY_LIMIT = 600, QUESTION_LIMIT = 300;
 const clip = (value: string, max: number) => value.length > max ? value.slice(0, max - 1) + "…" : value;
@@ -35,9 +35,6 @@ export class JobModule {
   }
   private currentTask(job: Row) {
     return this.store.get("SELECT * FROM tasks WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", job.conversation_id);
-  }
-  private latestReport(job: Row) {
-    return this.store.get("SELECT * FROM agent_job_reports WHERE job_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", job.id);
   }
   /** The user messages a brief cites: at most five of this assistant's own, unforgotten user messages, and always the one that triggered the dispatch. */
   private sources(botId: string, value: unknown, originTaskId?: string) {
@@ -91,9 +88,13 @@ export class JobModule {
   /**
    * New input for a job: it steers the running round or starts the next one. 'direct' is the user's own reply from a
    * report card (shown in the message stream), 'owner' a hand-over by the main chat (whose user message is already
-   * shown), 'system' Core's own (a todo revision or a freed resource).
+   * shown), 'system' Core's own (a freed resource). The todo panel passes `ownsTodo`: it moves its todo itself.
+   *
+   * Otherwise a todo follows its job only while it is still the job's open work: running, or back to 未开始 after a
+   * blocked or failed round (then it runs again, with an event). A todo in review or already accepted is the user's
+   * decision and is never reopened by later input; that round's outcome does not touch it.
    */
-  input(jobId: string, content: string, clientId: string, via: Via, sessionId?: string) {
+  input(jobId: string, content: string, clientId: string, via: Via, sessionId?: string, ownsTodo = false) {
     const job = this.row(jobId);
     if (job.stopped_at !== null) throw new Error("后台任务已停止，不能再补充");
     const value = text(content, 30_000), client = text(clientId, 100);
@@ -101,7 +102,13 @@ export class JobModule {
     const taskId = this.store.transaction(() => {
       const taskId = this.store.accept(String(job.conversation_id), value, client, session);
       this.store.run("INSERT OR IGNORE INTO agent_task_links(task_id,bot_id,origin,source_key) VALUES(?,?,'job',?)", taskId, job.bot_id, `job-task:${taskId}`);
-      if (job.todo_id) this.store.run("UPDATE todos SET task_id=?,status='running',version=version+1,updated_at=? WHERE id=? AND deleted_at IS NULL AND (task_id IS NOT ? OR status<>'running')", taskId, now(), job.todo_id, taskId);
+      if (job.todo_id && !ownsTodo) {
+        const todo = this.store.get("SELECT status,task_id FROM todos WHERE id=? AND deleted_at IS NULL AND (task_id IS NULL OR task_id IN (SELECT id FROM tasks WHERE conversation_id=?))", job.todo_id, job.conversation_id);
+        if (todo && (todo.status === "running" || todo.status === "todo") && (todo.task_id !== taskId || todo.status !== "running")) {
+          this.store.run("UPDATE todos SET task_id=?,status='running',version=version+1,updated_at=? WHERE id=?", taskId, now(), job.todo_id);
+          if (todo.status === "todo") this.todoEvent(String(job.todo_id), "继续执行");
+        }
+      }
       if (via === "direct") this.agents.publish(String(job.bot_id), "user", "message", value, `job-input:${job.id}:${client}`, taskId);
       return taskId;
     });
@@ -112,46 +119,69 @@ export class JobModule {
   stop(jobId: string, reason = "用户停止了后台任务") {
     const job = this.row(jobId);
     const task = this.store.transaction(() => {
-      this.store.run("UPDATE agent_jobs SET stopped_at=COALESCE(stopped_at,?) WHERE id=?", now(), job.id);
-      // A job waiting for an answer has no unfinished round to cancel; its todo goes back here.
-      if (job.todo_id && this.store.run("UPDATE todos SET status='todo',version=version+1,updated_at=? WHERE id=? AND status='running' AND task_id IN (SELECT id FROM tasks WHERE conversation_id=?)", now(), job.todo_id, job.conversation_id).changes) this.todoEvent(String(job.todo_id), "执行已停止");
+      this.markStopped(job);
       return this.store.get("SELECT id FROM tasks WHERE conversation_id=? AND ended_at IS NULL", job.conversation_id);
     });
     if (task) { this.runtime.cancel(String(task.id), reason); this.releaseLeases(String(task.id)); }
     this.runtime.changed();
     return { stopped: true };
   }
+  /** Records the stop; a todo the job was still working on goes back to 未开始. */
+  private markStopped(job: Row) {
+    this.store.run("UPDATE agent_jobs SET stopped_at=COALESCE(stopped_at,?) WHERE id=?", now(), job.id);
+    if (job.todo_id && this.store.run("UPDATE todos SET status='todo',version=version+1,updated_at=? WHERE id=? AND status='running' AND task_id IN (SELECT id FROM tasks WHERE conversation_id=?)", now(), job.todo_id, job.conversation_id).changes) this.todoEvent(String(job.todo_id), "执行已停止");
+  }
   private todoEvent(todoId: string, label: string) { this.store.insert("todo_events", { todo_id: todoId, label, created_at: now() }); }
-  /** Releases a task's device leases and wakes the earliest job waiting for each freed resource. Called when any task's round ends or is stopped. */
+  /** Releases a task's device leases and wakes the next job waiting for each freed resource. Called when any task's round ends or is stopped. */
   releaseLeases(taskId: string) {
     const released = this.leases.releaseTask(taskId);
     if (released.length) setImmediate(() => { for (const lease of released) this.wakeWaiting(lease.deviceId, lease.resource); });
   }
-  /** The earliest job whose latest report waits for this free resource continues with a new round. */
+  /** A device reported a call's outcome: a stopped or ended round's lease, kept while that call was unsettled, can go now. */
+  callSettled(callId: string) {
+    const task = this.store.get("SELECT t.id FROM tool_calls c JOIN tasks t ON t.id=c.task_id WHERE c.id=? AND t.ended_at IS NOT NULL", callId);
+    if (task) this.releaseLeases(String(task.id));
+  }
+  /**
+   * Wakes the earliest job waiting for a free resource, one at a time: while a woken job's round runs, the others keep
+   * waiting; when that round ends (it may never take the resource), the next one is woken. A job is woken only for a
+   * real conflict in its last round (a device call that returned this waitingFor), so a job that merely claims to wait
+   * on a free resource cannot wake itself in a loop.
+   */
   wakeWaiting(deviceId: string, resource: string) {
-    if (this.runtime.closing) return;
-    const held = this.store.get("SELECT t.ended_at FROM device_resource_leases l JOIN tasks t ON t.id=l.task_id WHERE l.device_id=? AND l.resource=?", deviceId, resource);
-    if (held && held.ended_at === null) return;
-    for (const job of this.store.all("SELECT j.*,r.id report_id FROM agent_jobs j JOIN agent_job_reports r ON r.job_id=j.id WHERE j.stopped_at IS NULL AND r.state='blocked' AND r.waiting_for=? AND r.id=(SELECT id FROM agent_job_reports WHERE job_id=j.id ORDER BY created_at DESC,rowid DESC LIMIT 1) ORDER BY j.created_at,j.rowid", waitingKey(deviceId, resource))) {
-      if (this.store.get("SELECT id FROM tasks WHERE conversation_id=? AND ended_at IS NULL", job.conversation_id)) continue;
+    if (this.runtime.closing || !this.leases.free(deviceId, resource)) return;
+    const key = waitingKey(deviceId, resource);
+    const waiters = this.store.all("SELECT j.*,r.id report_id,r.task_id report_task FROM agent_jobs j JOIN agent_job_reports r ON r.job_id=j.id WHERE j.stopped_at IS NULL AND r.state='blocked' AND r.waiting_for=? AND r.id=(SELECT id FROM agent_job_reports WHERE job_id=j.id ORDER BY created_at DESC,rowid DESC LIMIT 1) ORDER BY j.created_at,j.rowid", key);
+    // A waiter already woken (its new round is still running) goes first; the rest wait for its round to end.
+    if (waiters.some((job) => this.store.get("SELECT id FROM tasks WHERE conversation_id=? AND ended_at IS NULL", job.conversation_id))) return;
+    for (const job of waiters) {
+      if (!this.store.get("SELECT id FROM tool_calls WHERE task_id=? AND instr(result_json,?)>0", job.report_task, `"waitingFor":${JSON.stringify(key)}`)) continue;
       try { this.input(String(job.id), `${resourceNames[resource] ?? resource}已空闲，可以继续。`, `wake:${job.report_id}`, "system"); this.runtime.changed(); } catch { /* the job changed meanwhile; the next one may go */ continue; }
       return;
+    }
+  }
+  /** Every resource some job waits on gets its next waiter woken if it is free (after any job round ends). */
+  private wakeAll() {
+    if (this.runtime.closing) return;
+    for (const row of this.store.all("SELECT DISTINCT r.waiting_for FROM agent_job_reports r JOIN agent_jobs j ON j.id=r.job_id WHERE j.stopped_at IS NULL AND r.state='blocked' AND r.waiting_for IS NOT NULL AND r.id=(SELECT id FROM agent_job_reports WHERE job_id=j.id ORDER BY created_at DESC,rowid DESC LIMIT 1)")) {
+      const key = /^resource:(.+):([^:]+)$/.exec(String(row.waiting_for));
+      if (key) this.wakeWaiting(key[1], key[2]);
     }
   }
   /**
    * Settles a job round that ended: writes the report Core owes (a failure, or an automatic ready from the final answer
    * when the job did not report) and publishes it once as job-report:<id>. Idempotent: startup recovery calls it again.
+   * A cancelled round (a stop from the job's card, the profile, an old client's stop key or Core) stops the job.
    */
   settle(taskId: string) {
     this.releaseLeases(taskId);
     const task = this.store.get("SELECT t.* FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='job' AND t.ended_at IS NOT NULL", taskId);
     const job = task && this.jobOfTask(taskId);
     if (!task || !job || this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", taskId)) return;
-    let waiting: string | undefined;
     this.store.transaction(() => {
       const todo = job.todo_id ? String(job.todo_id) : undefined;
       const moveTodo = (status: string, label: string) => { if (todo && this.store.run("UPDATE todos SET status=?,version=version+1,updated_at=? WHERE id=? AND status='running' AND task_id=?", status, now(), todo, taskId).changes) this.todoEvent(todo, label); };
-      if (task.status === "cancelled") { moveTodo("todo", "执行已停止"); return; }
+      if (task.status === "cancelled") { this.markStopped(job); return; }
       const existing = this.store.get("SELECT * FROM agent_job_reports WHERE task_id=?", taskId);
       if (existing?.message_id) return;
       if (task.status === "failed") this.writeReport(job, taskId, { state: "failed", summary: clip(String(task.result_summary || "执行失败"), SUMMARY_LIMIT) }, true);
@@ -161,69 +191,83 @@ export class JobModule {
       if (state === "dropped" && !todo) return;
       const summary = String(report.summary);
       // Generated files are results too: published with the report and bound to it, as routine reports do.
-      const images = this.store.all("SELECT content FROM transcript WHERE task_id=? AND source_key LIKE 'image:%' ORDER BY created_at,rowid", taskId).map((row) => String(row.content)).filter((content) => ![...content.matchAll(/\/api\/attachments\/([\w-]+)/g)].some((match) => summary.includes(match[0])));
-      const content = [`后台任务「${job.title}」\n${summary}${report.question ? "\n\n" + report.question : ""}`, ...images].join("\n\n");
+      const content = [`后台任务「${job.title}」\n${summary}${report.question ? "\n\n" + report.question : ""}`, ...this.agents.reportImages(taskId, summary)].join("\n\n");
       const [role, kind] = state === "question" ? ["assistant", "request"] : state === "blocked" || state === "failed" ? ["system", "error"] : ["assistant", "result"];
       const source = `job-report:${report.id}`;
-      this.agents.publish(String(job.bot_id), role, kind, content, source, taskId);
-      const message = this.store.get("SELECT id,content FROM agent_messages WHERE source_key=?", source);
-      if (message) {
-        this.store.run("UPDATE agent_job_reports SET message_id=? WHERE id=?", message.id, report.id);
-        for (const match of String(message.content).matchAll(/\/api\/attachments\/([\w-]+)/g)) this.store.run("UPDATE chat_attachments SET message_id=? WHERE id=? AND bot_id=? AND message_id IS NULL", message.id, match[1], job.bot_id);
-      }
+      const message = this.agents.publishReport(String(job.bot_id), role, kind, content, source, taskId);
+      if (message) this.store.run("UPDATE agent_job_reports SET message_id=? WHERE id=?", message, report.id);
       if (state === "ready" || state === "dropped") moveTodo("review", "AI 已交付，等待验收");
       else if (state === "question") { if (todo && this.store.get("SELECT id FROM todos WHERE id=? AND status='running' AND task_id=?", todo, taskId)) this.todoEvent(todo, "等待你回答"); }
       else moveTodo("todo", "执行未完成，可重试");
-      if (state === "blocked" && report.waiting_for) waiting = String(report.waiting_for);
     });
-    // The holder may have finished before this job reported that it waits.
-    const key = waiting && /^resource:(.+):([^:]+)$/.exec(waiting);
-    if (key) setImmediate(() => this.wakeWaiting(key[1], key[2]));
+    // This round may have been a woken waiter that never took the resource, or the holder may have finished before
+    // this job reported that it waits: whoever waits next on a free resource goes now.
+    setImmediate(() => this.wakeAll());
   }
   private writeReport(job: Row, taskId: string, report: { state: string; summary: string; question?: string; waitingFor?: string }, automatic: boolean) {
     this.store.run("INSERT INTO agent_job_reports(id,job_id,task_id,state,summary,question,waiting_for,automatic,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET state=excluded.state,summary=excluded.summary,question=excluded.question,waiting_for=excluded.waiting_for,automatic=excluded.automatic,created_at=excluded.created_at WHERE message_id IS NULL",
       id(), job.id, taskId, report.state, report.summary, report.question ?? null, report.waitingFor ?? null, automatic ? 1 : 0, now());
   }
-  /** After a restart: rounds that ended while Core was down still get their report. */
+  /** After a restart (and after a settlement that failed): rounds that ended still get their report, and stopped ones stop their job. */
   recover() {
-    // A stop persisted before the restart is completed by the runtime's recovery, which does not settle; its todo is still running.
-    for (const task of this.store.all("SELECT t.id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.origin='job' AND t.ended_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) AND ((t.status IN ('succeeded','failed') AND NOT EXISTS(SELECT 1 FROM agent_job_reports r WHERE r.task_id=t.id AND (r.message_id IS NOT NULL OR (r.state='dropped' AND (SELECT todo_id FROM agent_jobs WHERE id=r.job_id) IS NULL)))) OR EXISTS(SELECT 1 FROM todos d WHERE d.task_id=t.id AND d.status='running' AND t.status='cancelled'))")) this.settle(String(task.id));
+    for (const task of this.store.all("SELECT t.id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id JOIN agent_jobs j ON j.conversation_id=t.conversation_id WHERE l.origin='job' AND t.ended_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) AND ((t.status IN ('succeeded','failed') AND NOT EXISTS(SELECT 1 FROM agent_job_reports r WHERE r.task_id=t.id AND (r.message_id IS NOT NULL OR (r.state='dropped' AND j.todo_id IS NULL)))) OR (t.status='cancelled' AND j.stopped_at IS NULL AND t.id=(SELECT id FROM tasks WHERE conversation_id=t.conversation_id ORDER BY created_at DESC,rowid DESC LIMIT 1)))")) this.settle(String(task.id));
   }
-  stage(job: Row, task = this.currentTask(job), report = this.latestReport(job)): JobStage {
+  /** One job's stage, derived from prefetched facts (see ``views``). */
+  private stageOf(job: Row, task: Row | undefined, report: Row | undefined, approval: boolean, todo: Row | undefined): JobStage {
     if (job.stopped_at !== null) return "stopped";
     if (task && task.ended_at === null) {
-      if (this.store.get("SELECT a.id FROM approvals a JOIN tool_calls c ON c.id=a.tool_call_id WHERE c.task_id=? AND a.status='pending'", task.id)) return "approval";
+      if (approval) return "approval";
       if (task.status === "needs_reconciliation" || task.status === "paused") return "blocked";
       return task.status === "queued" && !this.runtime.workers.has(String(task.id)) ? "queued" : "running";
     }
-    // A stopped round writes no report.
-    if (!report || task?.status === "cancelled" || report.task_id !== task?.id) return task?.status === "cancelled" ? "stopped" : "done";
-    const review = job.todo_id && this.store.get("SELECT id FROM todos WHERE id=? AND status='review' AND task_id=?", job.todo_id, task.id);
+    // A cancelled round stops its job (settle records it); until then it already reads as stopped.
+    if (task?.status === "cancelled") return "stopped";
+    if (!report || report.task_id !== task?.id) return "done";
+    const review = todo?.status === "review" && todo.task_id === task.id;
     if (report.state === "question") return "question";
     if (report.state === "ready" || report.state === "dropped") return review ? "review" : report.state === "ready" ? "done" : "dropped";
     return report.state === "blocked" ? "blocked" : "failed";
   }
-  view(job: Row) {
-    const task = this.currentTask(job), report = this.latestReport(job), stage = this.stage(job, task, report);
-    const todo = job.todo_id ? this.store.get("SELECT version,status FROM todos WHERE id=? AND deleted_at IS NULL", job.todo_id) : undefined;
-    const forgotten = !!report && !!this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", report.task_id);
-    return {
-      id: String(job.id), botId: String(job.bot_id), title: String(job.title), stage, taskId: task ? String(task.id) : null, originTaskId: job.origin_task_id ?? null,
-      todoId: job.todo_id ?? null, todoVersion: todo ? Number(todo.version) : null, todoStatus: todo ? String(todo.status) : null,
-      progress: job.progress ?? null, progressAt: job.progress_at ?? null,
-      latestReport: report ? { id: String(report.id), state: String(report.state), summary: forgotten ? "" : String(report.summary), question: forgotten ? null : report.question ?? null, waitingFor: report.waiting_for ?? null, automatic: report.automatic === 1, messageId: report.message_id ?? null, createdAt: Number(report.created_at) } : null,
-      createdAt: Number(job.created_at), endedAt: openStages.includes(stage) ? null : Number(job.stopped_at ?? task?.ended_at ?? job.created_at),
-    };
+  stage(job: Row): JobStage { return this.views([job])[0].stage; }
+  /** Views of many jobs with one query per kind of fact, not per job (this runs on every state read and main-chat request). */
+  views(jobs: Row[]) {
+    if (!jobs.length) return [];
+    const list = (values: unknown[]) => JSON.stringify([...new Set(values.filter((value) => value !== null && value !== undefined).map(String))]);
+    const current = new Map<string, Row>();
+    for (const task of this.store.all("SELECT * FROM tasks WHERE conversation_id IN (SELECT value FROM json_each(?)) ORDER BY created_at,rowid", list(jobs.map((job) => job.conversation_id)))) current.set(String(task.conversation_id), task);
+    const reports = new Map<string, Row>();
+    for (const report of this.store.all("SELECT * FROM agent_job_reports WHERE job_id IN (SELECT value FROM json_each(?)) ORDER BY created_at,rowid", list(jobs.map((job) => job.id)))) reports.set(String(report.job_id), report);
+    const tasks = [...current.values()].map((task) => task.id);
+    const approvals = new Set(this.store.all("SELECT DISTINCT c.task_id FROM approvals a JOIN tool_calls c ON c.id=a.tool_call_id WHERE a.status='pending' AND c.task_id IN (SELECT value FROM json_each(?))", list(tasks)).map((row) => String(row.task_id)));
+    const todos = new Map(this.store.all("SELECT id,version,status,task_id FROM todos WHERE deleted_at IS NULL AND id IN (SELECT value FROM json_each(?))", list(jobs.map((job) => job.todo_id))).map((row) => [String(row.id), row]));
+    const forgotten = new Set(this.store.all("SELECT task_id FROM memory_forgotten_tasks WHERE task_id IN (SELECT value FROM json_each(?))", list([...reports.values()].map((report) => report.task_id))).map((row) => String(row.task_id)));
+    return jobs.map((job) => {
+      const task = current.get(String(job.conversation_id)), report = reports.get(String(job.id)), todo = job.todo_id ? todos.get(String(job.todo_id)) : undefined;
+      const stage = this.stageOf(job, task, report, !!task && approvals.has(String(task.id)), todo);
+      const hidden = !!report && forgotten.has(String(report.task_id));
+      return {
+        id: String(job.id), botId: String(job.bot_id), title: String(job.title), stage, taskId: task ? String(task.id) : null, originTaskId: job.origin_task_id ?? null,
+        todoId: job.todo_id ?? null, todoVersion: todo ? Number(todo.version) : null, todoStatus: todo ? String(todo.status) : null,
+        progress: job.progress ?? null, progressAt: job.progress_at ?? null,
+        latestReport: report ? { id: String(report.id), state: String(report.state), summary: hidden ? "" : String(report.summary), question: hidden ? null : report.question ?? null, waitingFor: report.waiting_for ?? null, automatic: report.automatic === 1, messageId: report.message_id ?? null, createdAt: Number(report.created_at) } : null,
+        createdAt: Number(job.created_at), endedAt: openStages.includes(stage) ? null : Number(job.stopped_at ?? task?.ended_at ?? job.created_at),
+      };
+    });
   }
+  view(job: Row) { return this.views([job])[0]; }
   /** Every open job and the most recent closed ones, newest first. */
   list() {
     const rows = this.store.all("SELECT * FROM agent_jobs j WHERE j.id IN (SELECT id FROM agent_jobs ORDER BY created_at DESC LIMIT 200) OR (j.stopped_at IS NULL AND EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=j.conversation_id AND t.ended_at IS NULL)) ORDER BY j.created_at DESC,j.rowid DESC");
     let closed = 0;
-    return rows.map((row) => this.view(row)).filter((job) => job.endedAt === null || closed++ < 50);
+    return this.views(rows).filter((job) => job.endedAt === null || closed++ < 50);
+  }
+  /** One assistant's open jobs: its jobs not stopped, among its recent ones or with a round still running. */
+  openFor(botId: string) {
+    return this.views(this.store.all("SELECT * FROM agent_jobs j WHERE j.bot_id=? AND j.stopped_at IS NULL AND (j.id IN (SELECT id FROM agent_jobs WHERE bot_id=? ORDER BY created_at DESC LIMIT 200) OR EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=j.conversation_id AND t.ended_at IS NULL)) ORDER BY j.created_at DESC,j.rowid DESC", botId, botId)).filter((job) => job.endedAt === null);
   }
   /** The main chat's read-only view of its jobs: the open ones and the latest published reports. */
   context(botId: string) {
-    const jobs = this.list().filter((job) => job.botId === botId && job.endedAt === null).map((job) => ({ id: job.id, title: job.title, stage: job.stage, ...(job.progress ? { progress: job.progress } : {}), ...(job.stage === "question" && job.latestReport?.question ? { question: job.latestReport.question } : {}) }));
+    const jobs = this.openFor(botId).map((job) => ({ id: job.id, title: job.title, stage: job.stage, ...(job.progress ? { progress: job.progress } : {}), ...(job.stage === "question" && job.latestReport?.question ? { question: job.latestReport.question } : {}) }));
     const jobReports = this.store.all("SELECT m.id,m.content,m.created_at,r.job_id,r.state FROM agent_messages m JOIN agent_job_reports r ON m.source_key='job-report:'||r.id WHERE m.bot_id=? AND m.content!='[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id) ORDER BY m.seq DESC LIMIT 6", botId).reverse()
       .map((row) => ({ ref: `message:${row.id}`, jobId: row.job_id, state: row.state, reportedAt: row.created_at, summary: String(row.content).slice(0, 1200), truncated: String(row.content).length > 1200 }));
     return { jobs, jobReports };

@@ -3,10 +3,12 @@ import { createServer } from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPersonalApp } from './index.ts';
 import { startFakeModel, type FakeModel, type FakeScript } from '../runtime/pi/p0/fake-model.ts';
 import { leaseResources } from './device-leases.ts';
+import { ownerMayCall } from './policy.ts';
+import { ChatFiles } from './chat-files.ts';
 import { todoSchema } from './todo-schema.ts';
 import type { TodoItem } from '../../shared/personal-todos.ts';
 
@@ -38,10 +40,10 @@ async function router() {
     async close() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); for (const fake of [main, ...lanes.values()]) await fake.close(); },
   };
 }
-async function fixture() {
+async function fixture(options: { hostDevice?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'nex-jobs-')), key = randomBytes(32), model = await router();
   const start = async () => {
-    const app = await createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, hostDevice: false });
+    const app = await createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, hostDevice: options.hostDevice === true ? undefined : false });
     clearInterval(app.runtime.memory.personal.timer);
     return app;
   };
@@ -369,7 +371,7 @@ describe('Background jobs in disposable Core fixtures', () => {
   }, 60_000);
 
   it('leases a device resource per device: writers wait, readers and other devices do not, and a freed screen wakes the waiter', async () => {
-    const f = await fixture(), { app, bot, model } = f;
+    const f = await fixture(), { app, bot } = f;
     app.runtime.authorizeTask = async () => false;
     const a = app.jobs.start({ botId: bot, title: '操作甲', prompt: '操作屏幕', sourceKey: 'lease-a' });
     const b = app.jobs.start({ botId: bot, title: '操作乙', prompt: '也操作屏幕', sourceKey: 'lease-b' });
@@ -388,17 +390,9 @@ describe('Background jobs in disposable Core fixtures', () => {
     app.store.run("UPDATE tasks SET status='failed',ended_at=? WHERE id=?", Date.now(), b.taskId);
     const c = app.jobs.start({ botId: bot, title: '操作丙', prompt: '接管', sourceKey: 'lease-c' });
     await expect(call(c.taskId, two, 'click')).rejects.toThrow('设备离线');
-    // Stopping a job releases its leases; a job blocked on that resource gets a new round.
-    app.store.run("UPDATE tasks SET status='succeeded',ended_at=? WHERE id=?", Date.now(), c.taskId);
-    app.store.run("INSERT INTO agent_job_reports(id,job_id,task_id,state,summary,waiting_for,created_at) VALUES('blocked-c',?,?,'blocked','屏幕正被占用',?,?)", c.jobId, c.taskId, `resource:${one}:screen`, Date.now());
-    app.runtime.authorizeTask = async () => true;
-    await model.lane('操作丙', say('屏幕空出后完成'));
+    // Stopping a job releases its leases (waking the next waiter is covered by the review-fix tests below).
     app.jobs.stop(a.jobId);
     expect(app.store.all('SELECT * FROM device_resource_leases WHERE task_id=?', a.taskId)).toEqual([]);
-    await wait(() => tasksOf(app, c.jobId).length === 2, () => app);
-    const wake = JSON.parse(String(app.store.get('SELECT content_json FROM conversation_inputs WHERE task_id=?', tasksOf(app, c.jobId)[1].id)!.content_json)).text;
-    expect(wake).toBe('屏幕已空闲，可以继续。');
-    await wait(() => reportMessages(app, c.jobId).length === 1 && idle(app), () => app);
   }, 60_000);
 
   it('migrates a database from before background jobs without changing existing rows', async () => {
@@ -424,5 +418,211 @@ describe('Background jobs in disposable Core fixtures', () => {
     expect(app.store.all('PRAGMA foreign_key_check')).toEqual([]);
     expect(app.todos.get(item.id).status).toBe('todo');
     expect(app.agents.messages(bot).map(message => message.content)).toEqual(['迁移前的消息', '迁移前的回答']);
+  }, 60_000);
+});
+
+/** A paired device whose local grant offers computer use, without a live connection (calls past the lease fail offline). */
+function computerDevice(app: App, name: string) {
+  const device = app.gateway.pair(name).deviceId;
+  app.store.run("INSERT INTO device_local_grants(device_id,local_grant_id,workspace_id,owner_user_id,policy_version,scope_json,status,reported_at) VALUES(?,'shared',?,?,1,?,'active',?)", device, app.store.workspace, app.store.owner, JSON.stringify({ root: 'shared', info: true, read: true, exec: true, computer: true, identity: { supported: ['device.computer'] } }), Date.now());
+  return device;
+}
+const firstInput = (app: App, taskId: string) => JSON.parse(String(app.store.get('SELECT content_json FROM conversation_inputs WHERE task_id=? ORDER BY input_seq LIMIT 1', taskId)!.content_json)).text as string;
+
+describe('Background jobs: review fixes', () => {
+  it('wakes waiters one after another, even when a woken job never takes the resource, and never on a claimed wait', async () => {
+    const f = await fixture(), { app, bot, model } = f;
+    const device = computerDevice(app, '合成电脑'), key = `resource:${device}:screen`;
+    const holderLane = await model.lane('占用屏幕', { kind: 'hang' });
+    const holder = app.jobs.start({ botId: bot, title: '占用屏幕', prompt: '一直操作屏幕', sourceKey: 'holder' });
+    await wait(() => holderLane.requests.length === 1, () => app);
+    app.store.run('INSERT INTO device_resource_leases(device_id,resource,task_id,acquired_at) VALUES(?,?,?,?)', device, 'screen', holder.taskId, Date.now());
+    const click = (id: string) => tool(id, { action: 'device.computer', deviceId: device, operation: 'click', parameters: { x: 1, y: 1 } });
+    const blocked = (id: string) => tool(id, { action: 'job.report', state: 'blocked', summary: '屏幕被占用', waitingFor: key });
+    // The earliest job claims to wait without a conflict of its own: it is never woken for the resource.
+    await model.lane('声称等待', blocked('claim-block'), say('等待'));
+    const claimed = app.jobs.start({ botId: bot, title: '声称等待', prompt: '直接回报受阻', sourceKey: 'claimed' });
+    await wait(() => view(app, claimed.jobId).stage === 'blocked', () => app);
+    await model.lane('等屏幕甲', click('a-click'), blocked('a-block'), say('等待'), say('甲已不再需要屏幕'));
+    const a = app.jobs.start({ botId: bot, title: '等屏幕甲', prompt: '操作屏幕甲', sourceKey: 'waiter-a' });
+    await wait(() => view(app, a.jobId).stage === 'blocked', () => app);
+    await model.lane('等屏幕乙', click('b-click'), blocked('b-block'), say('等待'), say('乙继续完成'));
+    const b = app.jobs.start({ botId: bot, title: '等屏幕乙', prompt: '操作屏幕乙', sourceKey: 'waiter-b' });
+    await wait(() => view(app, b.jobId).stage === 'blocked', () => app);
+    expect(JSON.parse(String(app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='b-click'")!.result_json))).toMatchObject({ waitingFor: key, error: '屏幕正被「占用屏幕」使用' });
+    app.jobs.stop(holder.jobId);
+    // 甲 is woken first and ends without taking the screen; that alone wakes 乙.
+    await wait(() => tasksOf(app, b.jobId).length === 2 && tasksOf(app, b.jobId)[1].ended_at !== null, () => app);
+    expect(tasksOf(app, a.jobId)).toHaveLength(2);
+    expect(firstInput(app, String(tasksOf(app, a.jobId)[1].id))).toBe('屏幕已空闲，可以继续。');
+    expect(firstInput(app, String(tasksOf(app, b.jobId)[1].id))).toBe('屏幕已空闲，可以继续。');
+    expect(Number(tasksOf(app, a.jobId)[1].ended_at)).toBeLessThanOrEqual(Number(tasksOf(app, b.jobId)[1].created_at));
+    expect(tasksOf(app, claimed.jobId)).toHaveLength(1);
+    expect(view(app, b.jobId).stage).toBe('done');
+  }, 60_000);
+
+  it('lets others take the screen from a holder waiting for approval or paused, but not from one that needs reconciliation', async () => {
+    const f = await fixture(), { app, bot } = f;
+    app.runtime.authorizeTask = async () => false;
+    const a = app.jobs.start({ botId: bot, title: '持有者', prompt: '持有屏幕', sourceKey: 'stall-a' });
+    const b = app.jobs.start({ botId: bot, title: '后来者', prompt: '也要屏幕', sourceKey: 'stall-b' });
+    const one = app.gateway.pair('合成设备').deviceId;
+    let n = 0;
+    const call = (taskId: string) => app.gateway.execute({ id: `stall-${n++}`, task_id: taskId, target_id: one, tool_name: 'device.computer', authorization_snapshot_json: '{}' }, { operation: 'click' });
+    const holder = () => app.store.get('SELECT task_id FROM device_resource_leases WHERE device_id=?', one)?.task_id;
+    await expect(call(a.taskId)).rejects.toThrow('设备离线');
+    expect(holder()).toBe(a.taskId);
+    expect(await call(b.taskId)).toMatchObject({ error: '屏幕正被「持有者」使用' });
+    for (const status of ['awaiting_approval', 'paused']) {
+      app.store.run('UPDATE device_resource_leases SET task_id=? WHERE device_id=?', a.taskId, one);
+      app.store.run('UPDATE tasks SET status=? WHERE id=?', status, a.taskId);
+      await expect(call(b.taskId)).rejects.toThrow('设备离线');
+      expect(holder()).toBe(b.taskId);
+    }
+    app.store.run('UPDATE device_resource_leases SET task_id=? WHERE device_id=?', a.taskId, one);
+    app.store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=?", a.taskId);
+    expect(await call(b.taskId)).toMatchObject({ error: '屏幕正被「持有者」使用，需先核对它的执行结果' });
+    expect(holder()).toBe(a.taskId);
+  }, 60_000);
+
+  it('keeps a stopped round\'s lease until the device reports its in-flight call', async () => {
+    const f = await fixture({ hostDevice: true }), { app, bot, model } = f;
+    await wait(() => app.node.status === '已连接', () => app);
+    let started = false;
+    const done = f.gate();
+    app.node.computer.available = () => true;
+    app.node.computer.execute = async () => { started = true; await done; return { text: '合成点击完成', images: [], isError: false, errorCode: undefined, structured: undefined }; };
+    app.node.configure({ ...app.node.config!, computer: true });
+    await wait(() => app.node.status === '已连接' && app.gateway.inventory()[0]?.granted.computer === true, () => app);
+    const device = app.gateway.hostDeviceId!;
+    await model.lane('慢点击', tool('slow-click', { action: 'device.computer', deviceId: device, operation: 'click', parameters: { pid: 1, window_id: 2 } }), say('点击完成'));
+    const job = app.jobs.start({ botId: bot, title: '慢点击', prompt: '点一下', sourceKey: 'slow-click' });
+    await wait(() => started, () => app);
+    const leases = () => app.store.all('SELECT * FROM device_resource_leases WHERE task_id=?', job.taskId);
+    expect(leases()).toHaveLength(1);
+    app.jobs.stop(job.jobId);
+    await wait(() => task(app, job.taskId).status === 'cancelled', () => app);
+    // The device has not confirmed the click yet: the screen stays with the stopped round.
+    expect(leases()).toHaveLength(1);
+    expect(app.jobs.leases.free(device, 'screen')).toBe(false);
+    f.owned.release[0]();
+    await wait(() => leases().length === 0, () => app);
+    expect(app.store.get("SELECT d.status FROM device_calls d JOIN tool_calls c ON c.id=d.id WHERE c.task_id=?", job.taskId)?.status).not.toBe('delivered');
+  }, 60_000);
+
+  it('never reopens a todo the user accepted, and resumes one that went back to 未开始 with an event', async () => {
+    const f = await fixture(), { app, bot, model } = f;
+    const lane = await model.lane('写周报', tool('ready', { action: 'job.report', state: 'ready', summary: '周报已写好' }), say('完成'));
+    const item = app.todos.save({ id: 'todo-accepted', version: 0, title: '写周报', description: '', owner: bot, date: '', priority: '普通', steps: [] });
+    app.todos.action({ id: item.id, version: item.version, action: 'start', clientId: 'accepted-start' }, app.store.session);
+    await wait(() => app.todos.get(item.id).status === 'review' && idle(app), () => app);
+    const accepted = app.todos.action({ ...app.todos.get(item.id), action: 'complete' }, app.store.session) as TodoItem;
+    const job = app.store.get('SELECT * FROM agent_jobs WHERE todo_id=?', item.id)!;
+    lane.scripts.push(say('补充完成'));
+    app.jobs.input(String(job.id), '再补一句结尾', 'after-accept', 'direct');
+    await wait(() => tasksOf(app, String(job.id)).length === 2 && tasksOf(app, String(job.id))[1].ended_at !== null && idle(app), () => app);
+    expect(app.todos.get(item.id)).toMatchObject({ status: 'done', version: accepted.version, log: accepted.log });
+    // A todo the job could not finish goes back to 未开始; a reply to the job resumes it.
+    const retry = await model.lane('整理发票', tool('blocked', { action: 'job.report', state: 'blocked', summary: '设备离线' }), say('受阻'));
+    const other = app.todos.save({ id: 'todo-blocked', version: 0, title: '整理发票', description: '', owner: bot, date: '', priority: '普通', steps: [] });
+    app.todos.action({ id: other.id, version: other.version, action: 'start', clientId: 'blocked-start' }, app.store.session);
+    await wait(() => app.todos.get(other.id).status === 'todo' && idle(app), () => app);
+    retry.scripts.push(tool('ready-2', { action: 'job.report', state: 'ready', summary: '发票已整理' }), say('完成'));
+    const otherJob = app.store.get('SELECT * FROM agent_jobs WHERE todo_id=?', other.id)!;
+    app.jobs.input(String(otherJob.id), '设备已在线', 'blocked-reply', 'direct');
+    expect(app.todos.get(other.id).status).toBe('running');
+    await wait(() => app.todos.get(other.id).status === 'review' && idle(app), () => app);
+    expect(app.todos.get(other.id).log).toContain('继续执行');
+  }, 60_000);
+
+  it('keeps only a short topic question in the main chat', async () => {
+    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '那个项目怎么部署？', topic: 'memory:x' })).toBe(true);
+    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '整'.repeat(301), topic: 'memory:x' })).toBe(false);
+    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '帮我查资料' })).toBe(false);
+    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '问题', topic: 42 })).toBe(false);
+    expect(ownerMayCall('memory.search', { query: 'x' })).toBe(true);
+    const f = await fixture(), { app, bot, model } = f, peer = app.store.createBot('主题负责人');
+    model.main.scripts.push(tool('long-topic', { action: 'agent.delegate', botId: peer, message: '请完整整理这个项目：' + '步骤'.repeat(200), topic: 'memory:missing-topic' }), say('交给后台'));
+    const owner = app.agents.send(bot, '把项目整理一遍', 'long-topic').taskId;
+    await wait(() => task(app, owner).status === 'succeeded' && idle(app), () => app);
+    expect(JSON.parse(String(app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='long-topic'")!.result_json))).toMatchObject({ useJob: true });
+    expect(app.store.all('SELECT * FROM a2a_messages')).toHaveLength(0);
+  }, 60_000);
+
+  it('lists jobs and builds the main chat\'s job context with a fixed number of queries', async () => {
+    const f = await fixture(), { app, bot } = f, other = app.store.createBot('另一位助手');
+    app.runtime.authorizeTask = async () => false;
+    for (let i = 0; i < 20; i++) app.jobs.start({ botId: bot, title: '批量' + i, prompt: '第 ' + i + ' 项', sourceKey: 'batch-' + i });
+    for (let i = 0; i < 5; i++) app.jobs.start({ botId: other, title: '他人' + i, prompt: '他人 ' + i, sourceKey: 'other-' + i });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const get = vi.spyOn(app.store, 'get'), all = vi.spyOn(app.store, 'all');
+    const queries = () => get.mock.calls.length + all.mock.calls.length;
+    expect(app.jobs.list()).toHaveLength(25);
+    expect(queries()).toBeLessThanOrEqual(6);
+    get.mockClear(); all.mockClear();
+    const context = app.jobs.context(bot);
+    expect(queries()).toBeLessThanOrEqual(7);
+    expect(context.jobs).toHaveLength(20);
+    expect(context.jobs.every(job => job.title.startsWith('批量'))).toBe(true);
+    get.mockRestore(); all.mockRestore();
+  }, 60_000);
+
+  it('never rolls back a task\'s end when settling its job fails, and recovery publishes the report once', async () => {
+    const f = await fixture(), { app, bot, model } = f;
+    const settle = vi.spyOn(app.jobs, 'settle').mockImplementation(() => { throw new Error('synthetic settlement failure'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await model.lane('结算失败', say('已经完成'));
+    const job = app.jobs.start({ botId: bot, title: '结算失败', prompt: '完成即可', sourceKey: 'settle-failure' });
+    model.main.scripts.push(say('主对话回答'));
+    const owner = app.agents.send(bot, '主对话也结束', 'settle-owner').taskId;
+    await wait(() => task(app, job.taskId).status === 'succeeded' && task(app, owner).status === 'succeeded' && idle(app), () => app);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(settle).toHaveBeenCalled();
+    expect(task(app, job.taskId).ended_at).not.toBeNull();
+    expect(reportMessages(app, job.jobId)).toHaveLength(0);
+    settle.mockRestore(); warn.mockRestore();
+    app.jobs.recover(); app.jobs.recover();
+    expect(reportMessages(app, job.jobId)).toHaveLength(1);
+    expect(reportMessages(app, job.jobId)[0].content).toBe('后台任务「结算失败」\n已经完成');
+  }, 60_000);
+
+  it('stops the job when its round is cancelled from outside the job controls (an old client\'s stop key)', async () => {
+    const f = await fixture(), { app, bot, model } = f;
+    const lane = await model.lane('旧客户端停止', { kind: 'hang' });
+    const job = app.jobs.start({ botId: bot, title: '旧客户端停止', prompt: '一直运行', sourceKey: 'old-client-stop' });
+    await wait(() => lane.requests.length === 1, () => app);
+    expect((await f.request('cancel', { taskId: job.taskId })).status).toBe(200);
+    await wait(() => jobRow(app, job.jobId).stopped_at !== null, () => app);
+    expect(view(app, job.jobId)).toMatchObject({ stage: 'stopped', endedAt: expect.any(Number) });
+    expect(() => app.jobs.input(job.jobId, '继续', 'after-cancel', 'direct')).toThrow('已停止');
+  }, 60_000);
+
+  it('treats a failed job as open: it stays in the main chat\'s context and stop-all ends it', async () => {
+    const f = await fixture(), { app, bot, model } = f;
+    await model.lane('会失败', { kind: 'openai-error', status: 400, message: '合成模型错误' });
+    const job = app.jobs.start({ botId: bot, title: '会失败', prompt: '会失败的工作', sourceKey: 'failing' });
+    await wait(() => reportMessages(app, job.jobId).length === 1 && idle(app), () => app);
+    expect(view(app, job.jobId)).toMatchObject({ stage: 'failed', endedAt: null });
+    expect(app.jobs.context(bot).jobs.map(item => item.id)).toEqual([job.jobId]);
+    app.agents.stopAll(bot);
+    expect(view(app, job.jobId).stage).toBe('stopped');
+  }, 60_000);
+
+  it('publishes a job round\'s generated image with its report and binds the attachment to it', async () => {
+    const f = await fixture(), { app, bot } = f;
+    app.runtime.authorizeTask = async () => false;
+    const job = app.jobs.start({ botId: bot, title: '画图', prompt: '画一张图', sourceKey: 'job-media' });
+    const files = new ChatFiles(app.store);
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aEtcAAAAASUVORK5CYII=';
+    const file = files.upload({ botId: bot, name: '合成图片.png', data: png }, app.store.session);
+    const content = `![生成图片](/api/attachments/${file.id})`;
+    app.store.message(String(task(app, job.taskId).conversation_id), job.taskId, 'assistant', content, 'image:synthetic-job-image');
+    app.runtime.onResult?.(task(app, job.taskId), 'assistant', content, 'image:synthetic-job-image');
+    expect(app.store.all("SELECT * FROM agent_messages WHERE source_key='image:synthetic-job-image'")).toHaveLength(0);
+    app.runtime.finishTask(job.taskId, 'succeeded', '图片已画好');
+    await wait(() => reportMessages(app, job.jobId).length === 1, () => app);
+    const report = reportMessages(app, job.jobId)[0];
+    expect(report.content).toBe(`后台任务「画图」\n图片已画好\n\n${content}`);
+    expect(files.authorize(file.id, bot).message_id).toBe(report.id);
   }, 60_000);
 });

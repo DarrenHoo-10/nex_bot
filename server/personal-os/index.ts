@@ -118,8 +118,10 @@ export async function createPersonalApp(options: AppOptions) {
   }); });
   const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   gateway.leases = leases;
+  gateway.onCallSettled = (callId) => jobs.callSettled(callId);
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
-  runtime.onCancel = (taskId) => { jobs.releaseLeases(taskId); gateway.cancelTask(taskId); connectors.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
+  // Device calls are marked unsettled first, so a lease whose call the device has not confirmed stays held.
+  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); jobs.releaseLeases(taskId); connectors.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
   runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed, options.hostDevice !== false);
   function json(response: ServerResponse, status: number, value: unknown) {
@@ -562,6 +564,8 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.memory.ledger.start();
   runtime.memory.personal.start();
   jobs.recover();
+  // A settlement that failed after its round ended is retried here rather than lost.
+  const jobRecovery = setInterval(() => { if (!closing) jobs.recover(); }, 60_000); jobRecovery.unref();
   runtime.startRecovered();
   runtime.scheduleStartupMaintenance();
   routines.start();
@@ -574,7 +578,7 @@ export async function createPersonalApp(options: AppOptions) {
   archiveTimer?.unref(); archive();
   return { server, store, runtime, agents, routines, jobs, todos, gateway, node, memoryPlugin, identity, connectors, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
-    closing = true; clearInterval(heartbeat); clearInterval(archiveTimer); await archiveJob;
+    closing = true; clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob;
     await identity?.close();
     await heartbeatJob;
     routines.close();

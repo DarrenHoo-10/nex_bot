@@ -36,7 +36,13 @@ export class AgentModule {
       const task = store.get("SELECT * FROM tasks WHERE id=?", taskId);
       if (task?.ended_at !== null && task?.status === "succeeded") this.journal(task);
       this.reportRoutine(taskId);
-      this.jobs?.settle(taskId);
+      // onSettled runs inside the transaction that ends the task. A job settlement must never roll that back, so it
+      // runs after the commit; if it fails, the task stays ended and recovery settles it again (publishing once).
+      queueMicrotask(() => {
+        if (this.runtime.closing) return;
+        try { this.jobs?.settle(taskId); }
+        catch (error) { console.warn("Background job settlement will be retried:", error instanceof Error ? error.message : error); }
+      });
       store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id=?", taskId);
     };
     runtime.onDelegation = (link, completed) => this.delegation(link, completed);
@@ -130,7 +136,7 @@ export class AgentModule {
       if (this.store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", botId)) throw new Error("请先停止并核对该 Agent 的未结束工作");
       if (this.store.run("UPDATE bots SET status='archived',version=version+1 WHERE id=? AND version=? AND status='active'", botId, version).changes !== 1) throw new Error("Agent 已变化，请刷新");
       // Jobs waiting for an answer have no unfinished task; archiving ends them too. Finished jobs keep their outcome.
-      for (const job of this.jobs?.list().filter((job) => job.botId === botId && job.endedAt === null) ?? []) this.store.run("UPDATE agent_jobs SET stopped_at=? WHERE id=? AND stopped_at IS NULL", now(), job.id);
+      for (const job of this.jobs?.openFor(botId) ?? []) this.store.run("UPDATE agent_jobs SET stopped_at=? WHERE id=? AND stopped_at IS NULL", now(), job.id);
       this.store.run("UPDATE agent_routines SET enabled=0,version=version+1 WHERE bot_id=?", botId);
       this.store.run("UPDATE routine_occurrences SET status='cancelled',reason='助手已归档',finished_at=? WHERE status='pending' AND routine_id IN (SELECT id FROM agent_routines WHERE bot_id=?)", now(), botId);
       this.store.audit("agent.archive", "bot", botId, { version: version + 1 });
@@ -255,7 +261,7 @@ export class AgentModule {
   stopAll(botId: string, reason = "用户停止了全部工作") {
     this.ensure(botId);
     // Finished jobs keep their outcome; only open ones (running, waiting for an answer, blocked...) are stopped.
-    for (const job of this.jobs?.list().filter((job) => job.botId === botId && job.endedAt === null) ?? []) this.jobs?.stop(job.id, reason);
+    for (const job of this.jobs?.openFor(botId) ?? []) this.jobs?.stop(job.id, reason);
     for (const task of this.store.all("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL ORDER BY created_at", botId)) this.runtime.cancel(String(task.id), reason);
     this.runtime.changed();
     return { stopped: true };
@@ -273,14 +279,26 @@ export class AgentModule {
       const name = String(occurrence?.name || String(task.title).replace(/^例行任务：/, "")).split("\n")[0];
       const result = String(task.result_summary ?? "").trim() || (task.status === "succeeded" ? "已完成" : task.status === "cancelled" ? "已停止" : "执行失败");
       const source = `routine-report:${taskId}`;
-      // Generated files are results too. Deliver them only with settlement, and
-      // bind them to that report so the existing attachment authorization works.
-      const images = task.status === "succeeded" ? this.store.all("SELECT content FROM transcript WHERE task_id=? AND source_key LIKE 'image:%' ORDER BY created_at,rowid", taskId).map(row => String(row.content)).filter(content => ![...content.matchAll(/\/api\/attachments\/([\w-]+)/g)].some(match => result.includes(match[0]))) : [];
+      const images = task.status === "succeeded" ? this.reportImages(taskId, result) : [];
       const content = [`定时任务「${name}」\n${result}`, ...images].join("\n\n");
-      this.publish(String(task.bot_id), task.status === "succeeded" ? "assistant" : "system", task.status === "succeeded" ? "result" : "error", content, source, taskId);
+      return this.publishReport(String(task.bot_id), task.status === "succeeded" ? "assistant" : "system", task.status === "succeeded" ? "result" : "error", content, source, taskId);
+    });
+  }
+  /**
+   * Generated files of a background run (routine or job round) are results too: they are delivered only with its
+   * report. Returns the run's image messages whose attachment the report text does not already show.
+   */
+  reportImages(taskId: string, text: string): string[] {
+    return this.store.all("SELECT content FROM transcript WHERE task_id=? AND source_key LIKE 'image:%' ORDER BY created_at,rowid", taskId).map((row) => String(row.content))
+      .filter((content) => ![...content.matchAll(/\/api\/attachments\/([\w-]+)/g)].some((match) => text.includes(match[0])));
+  }
+  /** Publishes a background run's report once and binds the attachments it shows to it, so attachment authorization works. Returns the message id. */
+  publishReport(botId: string, role: string, kind: string, content: string, source: string, taskId: string): string | undefined {
+    return this.store.transaction(() => {
+      this.publish(botId, role, kind, content, source, taskId);
       const message = this.store.get("SELECT id,content FROM agent_messages WHERE source_key=?", source);
-      if (message) for (const match of String(message.content).matchAll(/\/api\/attachments\/([\w-]+)/g)) this.store.run("UPDATE chat_attachments SET message_id=? WHERE id=? AND bot_id=? AND message_id IS NULL", message.id, match[1], task.bot_id);
-      return message?.id;
+      if (message) for (const match of String(message.content).matchAll(/\/api\/attachments\/([\w-]+)/g)) this.store.run("UPDATE chat_attachments SET message_id=? WHERE id=? AND bot_id=? AND message_id IS NULL", message.id, match[1], botId);
+      return message ? String(message.id) : undefined;
     });
   }
   journal(task: Row) {

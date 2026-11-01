@@ -256,7 +256,7 @@ export class TodoModule {
           row.bot_id,
         );
         const sent = job
-          ? this.jobs.input(String(job.id), feedback ? `修改要求：${feedback}` : prompt, `todo:${clientId}`, feedback ? "direct" : "system", sessionId)
+          ? this.jobs.input(String(job.id), feedback ? `修改要求：${feedback}` : prompt, `todo:${clientId}`, feedback ? "direct" : "system", sessionId, true)
           : this.jobs.start({ botId: String(row.bot_id), title: row.title, prompt, todoId, sourceKey: `todo-job:${clientId}`, sessionId });
         this.store.run(
           "UPDATE todos SET status='running',task_id=?,version=version+1,updated_at=? WHERE id=?",

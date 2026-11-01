@@ -14,6 +14,8 @@ export class DeviceGateway {
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   hostDeviceId?: string;
   leases?: DeviceLeases;
+  /** A device reported the outcome of a call (including a reconciled unknown one). */
+  onCallSettled?: (callId: string) => void;
   private readonly alive = new Set<WebSocket>();
   /** Calls to one device run one at a time; parallel tool calls wait their turn instead of failing. */
   private readonly queues = new Map<string, Promise<unknown>>();
@@ -94,6 +96,8 @@ export class DeviceGateway {
           ws.send(JSON.stringify({ type: "ack", callId, resultHash }));
           const pending = this.pending.get(callId);
           if (pending) { clearTimeout(pending.timer); this.pending.delete(callId); pending.resolve(event.result); }
+          // A lease kept for a stopped round's in-flight call can go now that the device has reported.
+          this.onCallSettled?.(callId);
           this.changed();
         }
         if (event.type === "unknown") {
@@ -127,7 +131,7 @@ export class DeviceGateway {
     const resources = leaseResources(String(call.tool_name), args);
     if (resources.length && this.leases) {
       const lease = this.leases.acquire(String(call.task_id), deviceId, resources);
-      if (!lease.ok) return Promise.resolve({ error: `${resourceNames[lease.resource] ?? lease.resource}正被「${lease.holder.label}」使用`, waitingFor: waitingKey(deviceId, lease.resource) });
+      if (!lease.ok) return Promise.resolve({ error: `${resourceNames[lease.resource] ?? lease.resource}正被「${lease.holder.label}」使用${lease.reason}`, waitingFor: waitingKey(deviceId, lease.resource) });
     }
     const previous = this.queues.get(deviceId) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(() => this.executeNow(call, args));
