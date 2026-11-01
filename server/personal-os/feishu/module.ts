@@ -58,6 +58,14 @@ function markdownCard(markdown: string, actions?: Array<{ text: string; value: R
   });
 }
 
+/** A job report fits one Feishu message: generated images stay in the app, and anything left out says so. */
+export function reportBody(content: string, limit = 3400) {
+  let body = content.replace(/!\[[^\]]*\]\(\/api\/attachments\/[\w-]+\)|\[下载图片\]\(\/api\/attachments\/[\w-]+\)/g, "").replace(/\n{3,}/g, "\n\n").trim();
+  const partial = body !== content.trim() || body.length > limit;
+  if (body.length > limit) body = body.slice(0, limit).trimEnd();
+  return partial ? `${body}\n\n完整结果在 App 中查看` : body;
+}
+
 function splitChunks(text: string, limit = 3500, max = 5): string[] {
   if (text.length <= limit) return [text];
   const parts: string[] = [];
@@ -112,9 +120,28 @@ export class FeishuModule {
     };
   }
 
-  /** 飞书来源的任务以连接为授权锚点：连接开启即允许执行。 */
+  /** 飞书来源的任务以连接为授权锚点：连接开启即允许执行。主对话派出的后台任务沿用派发它的那条飞书消息。 */
   channelAuthorize(task: Row): boolean {
-    return !!this.store.get("SELECT m.task_id FROM personal_feishu_messages m JOIN personal_feishu_apps a ON a.app_id=m.app_id JOIN personal_connectors c ON c.id=a.connector_id WHERE m.task_id=? AND c.enabled=1", String(task.id));
+    const mapping = this.mappingFor(String(task.id));
+    return !!mapping && !!this.store.get("SELECT c.id FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.app_id=? AND c.enabled=1", String(mapping.app_id));
+  }
+
+  /**
+   * 任务对应的飞书来源会话：任务本身来自飞书消息；或者它是后台任务（含其委派子任务），派发它的主人任务来自飞书。
+   * 飞书里直接回复回报消息时，后台任务这一轮本身就有映射。
+   */
+  private mappingFor(taskId: string): Row | undefined {
+    const select = "SELECT m.*,a.app_id FROM personal_feishu_messages m JOIN personal_feishu_apps a ON a.app_id=m.app_id WHERE m.task_id=? ORDER BY m.created_at DESC LIMIT 1";
+    const direct = this.store.get(select, taskId);
+    if (direct) return direct;
+    const root = this.runtime.taskRoot(taskId), job = this.jobOf(taskId);
+    if (!job) return undefined;
+    return (root !== taskId ? this.store.get(select, root) : undefined) ?? (job.origin_task_id ? this.store.get(select, String(job.origin_task_id)) : undefined);
+  }
+
+  /** 后台任务这一轮的标题；不是后台任务时为空。 */
+  private jobOf(taskId: string): Row | undefined {
+    return this.store.get("SELECT j.* FROM agent_jobs j JOIN tasks t ON t.conversation_id=j.conversation_id WHERE t.id=?", this.runtime.taskRoot(taskId));
   }
 
   startRegister(data: Record<string, unknown>) {
@@ -480,12 +507,12 @@ export class FeishuModule {
     return result;
   }
 
-  /** 助手发布最终回复或错误后，送回来源会话。 */
+  /** 助手发布最终回复、错误或后台任务回报后，送回来源会话。定时任务的回报不发飞书。 */
   onPublished(botId: string) {
     if (this.closed) return;
-    const published = this.store.get("SELECT * FROM agent_messages WHERE bot_id=? AND role IN ('assistant','system') AND kind IN ('message','error') ORDER BY seq DESC LIMIT 1", botId);
+    const published = this.store.get("SELECT * FROM agent_messages WHERE bot_id=? AND role IN ('assistant','system') AND (kind IN ('message','error') OR source_key LIKE 'job-report:%') AND source_key NOT LIKE 'routine-report:%' ORDER BY seq DESC LIMIT 1", botId);
     if (!published) return;
-    const mapping = this.store.get("SELECT m.*,a.app_id FROM personal_feishu_messages m JOIN personal_feishu_apps a ON a.app_id=m.app_id WHERE m.task_id=?", String(published.task_id ?? ""));
+    const mapping = this.mappingFor(String(published.task_id ?? ""));
     if (!mapping) return;
     void this.deliverReply(String(mapping.app_id), mapping, published);
   }
@@ -499,9 +526,13 @@ export class FeishuModule {
     try {
       const app = this.store.get("SELECT a.*,c.enabled FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.app_id=?", appId);
       if (!app || app.enabled !== 1) { if (!this.closed) this.store.run("DELETE FROM personal_feishu_outbound WHERE source_key=?", `reply:${message.source_key}`); return; }
-      const body = (message.role === "system" ? `出错了：${message.content}` : String(message.content)).slice(0, 20_000);
-      const chunks = splitChunks(body);
-      for (const [index, chunk] of chunks.entries()) await this.send(app, String(mapping.chat_id), chunk, index === 0 && mapping.chat_type === "group" ? String(mapping.message_id) : undefined);
+      // A background job's report goes back as one message.
+      const report = String(message.source_key).startsWith("job-report:");
+      const chunks = report ? [reportBody(String(message.content))] : splitChunks((message.role === "system" ? `出错了：${message.content}` : String(message.content)).slice(0, 20_000));
+      for (const [index, chunk] of chunks.entries()) {
+        const sent = await this.sendRaw(app, String(mapping.chat_id), markdownCard(chunk), index === 0 && mapping.chat_type === "group" ? String(mapping.message_id) : undefined);
+        if (index === 0 && sent && !this.closed) this.store.run("UPDATE personal_feishu_outbound SET message_id=? WHERE source_key=?", sent, `reply:${message.source_key}`);
+      }
       this.changed();
     } catch {
       // 首次发送失败保留重试机会：删除标记，下次变更再投递。
@@ -515,17 +546,18 @@ export class FeishuModule {
     this.scanning = true;
     void (async () => {
       try {
-        const rows = this.store.all("SELECT a.id approval_id,a.argument_hash,t.tool_name,t.arguments_json,t.task_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' AND a.expires_at>? AND EXISTS(SELECT 1 FROM personal_feishu_messages m WHERE m.task_id=t.task_id) ORDER BY a.created_at", now());
+        const rows = this.store.all("SELECT a.id approval_id,a.argument_hash,t.tool_name,t.arguments_json,t.task_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' AND a.expires_at>? AND NOT EXISTS(SELECT 1 FROM personal_feishu_outbound o WHERE o.source_key='approval:'||a.id) ORDER BY a.created_at", now());
         for (const row of rows) {
-          const mapping = this.store.get("SELECT m.chat_id,m.message_id,m.chat_type,a.app_id FROM personal_feishu_messages m JOIN personal_feishu_apps a ON a.app_id=m.app_id WHERE m.task_id=?", String(row.task_id));
+          const mapping = this.mappingFor(String(row.task_id));
           if (!mapping) continue;
+          const job = this.jobOf(String(row.task_id));
           const sourceKey = `approval:${row.approval_id}`;
           const marked = this.store.run("INSERT OR IGNORE INTO personal_feishu_outbound(source_key,app_id,chat_id,created_at) VALUES(?,?,?,?)", sourceKey, String(mapping.app_id), String(mapping.chat_id), now());
           if (Number(marked.changes) === 0) continue;
           const app = this.store.get("SELECT a.*,c.enabled FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.app_id=?", String(mapping.app_id));
           if (!app || app.enabled !== 1) continue;
           const args = JSON.stringify(record(safeJson(row.arguments_json))).slice(0, 800);
-          const card = markdownCard(`请求批准：${String(row.tool_name)}\n${args}`, [
+          const card = markdownCard(`${job ? `后台任务「${String(job.title)}」\n` : ""}请求批准：${String(row.tool_name)}\n${args}`, [
             { text: "同意", value: { kind: "approval", id: row.approval_id, hash: row.argument_hash, decision: "allow" }, style: "primary" },
             { text: "拒绝", value: { kind: "approval", id: row.approval_id, hash: row.argument_hash, decision: "deny" } },
             { text: "停止任务", value: { kind: "stop", taskId: row.task_id } },
@@ -556,8 +588,11 @@ export class FeishuModule {
       }
       if (value.kind === "stop") {
         const taskId = typeof value.taskId === "string" ? value.taskId : "";
-        if (!taskId || !this.store.get("SELECT task_id FROM personal_feishu_messages WHERE task_id=?", taskId)) return { toast: { type: "error", content: "任务不存在" } };
-        this.runtime.cancel(taskId, "主人已在飞书停止任务");
+        if (!taskId || !this.mappingFor(taskId)) return { toast: { type: "error", content: "任务不存在" } };
+        // A background job is stopped as a whole, so it takes no more input.
+        const job = this.store.get("SELECT j.id FROM agent_jobs j JOIN tasks t ON t.conversation_id=j.conversation_id WHERE t.id=?", taskId);
+        if (job) this.agents.jobs?.stop(String(job.id), "主人已在飞书停止后台任务");
+        else this.runtime.cancel(taskId, "主人已在飞书停止任务");
         this.changed();
         return { toast: { type: "success", content: "已停止" } };
       }
@@ -569,10 +604,13 @@ export class FeishuModule {
     for (const chunk of splitChunks(markdown)) await this.sendRaw(app, chatId, markdownCard(chunk), replyMessageId);
   }
 
+  /** Sends one card and returns the Feishu message id ('' when the response carries none). */
   private async sendRaw(app: Row, chatId: string, content: string, replyMessageId?: string) {
     const credentials = this.credentials(app);
-    if (replyMessageId) await this.api.request(credentials, "POST", `/open-apis/im/v1/messages/${encodeURIComponent(replyMessageId)}/reply`, { msg_type: "interactive", content });
-    else await this.api.request(credentials, "POST", "/open-apis/im/v1/messages?receive_id_type=chat_id", { receive_id: chatId, msg_type: "interactive", content });
+    const result = replyMessageId
+      ? await this.api.request(credentials, "POST", `/open-apis/im/v1/messages/${encodeURIComponent(replyMessageId)}/reply`, { msg_type: "interactive", content })
+      : await this.api.request(credentials, "POST", "/open-apis/im/v1/messages?receive_id_type=chat_id", { receive_id: chatId, msg_type: "interactive", content });
+    return pick(record(record(result).data), ["message_id"]) ?? "";
   }
 
   async close() {

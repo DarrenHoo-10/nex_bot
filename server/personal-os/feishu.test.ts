@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPersonalApp } from "./index.ts";
 import { startFakeFeishu, messageEvent, cardActionEvent } from "./testing/fake-feishu.ts";
+import { reportBody } from "./feishu/module.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -113,6 +114,63 @@ describe("feishu connector in disposable Core", () => {
     const toast = await f.fake.card("cli_fake", cardActionEvent({ openId: "ou_owner", value: { kind: "stop", taskId } }));
     expect(toast).toMatchObject({ toast: { type: "success", content: "已停止" } });
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "cancelled");
+  }, 60_000);
+
+  /** A Feishu turn of the main chat, then a background job it dispatched (started directly so one fake model stays in order). */
+  async function dispatched(f: Awaited<ReturnType<typeof fixture>>, messageId: string, title: string) {
+    f.model.scripts.push({ kind: "openai-text", text: "已交给后台：" + title });
+    f.fake.deliver("cli_fake", messageEvent({ messageId, chatId: "oc_job", senderOpenId: "ou_owner", content: JSON.stringify({ text: "请在后台" + title }) }));
+    await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id=?", messageId)?.task_id);
+    const owner = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id=?", messageId)!.task_id);
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", owner)?.status === "succeeded" && f.app.runtime.workers.size === 0);
+    await until(() => f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("已交给后台：" + title)));
+    return { owner, start: () => f.app.jobs.start({ botId: String(f.bot.id), title, prompt: "请在后台" + title, originTaskId: owner, sourceKey: "feishu-job:" + messageId }) };
+  }
+
+  it("sends a background job's report to the Feishu chat of the turn that dispatched it, as one message", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const { start } = await dispatched(f, "om_job", "整理周报");
+    f.model.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "job-report", name: "broker", args: JSON.stringify({ action: "job.report", state: "ready", summary: "周报已整理" }) }] },
+      { kind: "openai-text", text: "执行细节不发飞书" },
+    );
+    const job = start();
+    await until(() => f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("后台任务「整理周报」")));
+    const sent = f.fake.sent.filter((entry) => JSON.stringify(entry.body).includes("后台任务「整理周报」"));
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toMatchObject({ receive_id: "oc_job", msg_type: "interactive" });
+    expect(String(sent[0].body.content)).toContain(JSON.stringify("后台任务「整理周报」\n周报已整理").slice(1, -1));
+    expect(JSON.stringify(sent[0].body)).not.toContain("完整结果在 App 中查看");
+    // Generated images stay in the app; the one message says so.
+    expect(reportBody("后台任务「画图」\n已画好\n\n![生成图片](/api/attachments/abc-1)\n\n[下载图片](/api/attachments/abc-1)")).toBe("后台任务「画图」\n已画好\n\n完整结果在 App 中查看");
+    expect(f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("执行细节不发飞书"))).toBe(false);
+    const report = f.app.store.get("SELECT r.id FROM agent_job_reports r WHERE r.job_id=?", job.jobId)!;
+    expect(f.app.store.get("SELECT message_id FROM personal_feishu_outbound WHERE source_key=?", `reply:job-report:${report.id}`)?.message_id).toMatch(/^om_out_/);
+    // Routine reports still stay in the app.
+    const routine = f.app.agents.startRoutine(String(f.bot.id), "例行检查", "例行", "feishu-routine");
+    f.model.scripts.push({ kind: "openai-text", text: "例行结果" });
+    f.app.runtime.kick(routine);
+    await until(() => !!f.app.store.get("SELECT id FROM agent_messages WHERE source_key=?", `routine-report:${routine}`));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("例行结果"))).toBe(false);
+  }, 60_000);
+
+  it("sends approval cards for a dispatched job with its title, and the stop button stops the job", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const { start } = await dispatched(f, "om_job_approval", "修改名字");
+    f.model.scripts.push({ kind: "openai-tool", calls: [{ id: "job-rename", name: "broker", args: JSON.stringify({ action: "agent.update", botId: f.bot.id, name: "后台改名" }) }] });
+    const job = start();
+    await until(() => f.fake.sent.some((entry) => String(entry.body.content ?? "").includes("请求批准")));
+    const card = f.fake.sent.find((entry) => String(entry.body.content ?? "").includes("请求批准"))!;
+    expect(String(card.body.content)).toContain("后台任务「修改名字」");
+    expect(card.body).toMatchObject({ receive_id: "oc_job" });
+    const toast = await f.fake.card("cli_fake", cardActionEvent({ openId: "ou_owner", value: { kind: "stop", taskId: job.taskId } }));
+    expect(toast).toMatchObject({ toast: { type: "success", content: "已停止" } });
+    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", job.taskId)?.status === "cancelled");
+    expect(f.app.store.get("SELECT stopped_at FROM agent_jobs WHERE id=?", job.jobId)?.stopped_at).not.toBeNull();
+    expect(f.app.store.get("SELECT name FROM bots WHERE id=?", String(f.bot.id))?.name).toBe("秘书");
   }, 60_000);
 
   it("binds the owner through the bind code for an existing app", async () => {
