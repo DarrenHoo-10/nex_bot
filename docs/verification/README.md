@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [Broker 参数修复：Core 发布记录（2026-11-07）](broker-arguments-release-20261107.md)
 - [Broker 参数契约：本地隔离验证（2026-11-07）](broker-arguments-20261107.md)
 
 - [后台任务：全平台发布记录（2026-11-02）](background-jobs-release-20261102.md)

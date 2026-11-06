@@ -1,5 +1,7 @@
 # Broker 参数契约：本地隔离验证（2026-11-07）
 
+后续经用户授权已完成 [Core 发布部署](broker-arguments-release-20261107.md)；下文保留部署前隔离修复记录及其限制。
+
 ## 范围与来源
 
 - 开始时执行 `git fetch origin main`，工作树 HEAD 与 `origin/main` 均为
