@@ -40,15 +40,16 @@ async function router() {
     async close() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); for (const fake of [main, ...lanes.values()]) await fake.close(); },
   };
 }
-async function fixture(options: { hostDevice?: boolean } = {}) {
+async function fixture(options: { hostDevice?: boolean; provider?: 'openai' | 'anthropic' } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'nex-jobs-')), key = randomBytes(32), model = await router();
   const start = async () => {
-    const app = await createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, hostDevice: options.hostDevice === true ? undefined : false });
+    const app = await createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, hostDevice: options.hostDevice === true ? undefined : false,
+      modelCatalog: { fetchDisabled: true, readSnapshot: () => undefined, log: () => {} } });
     clearInterval(app.runtime.memory.personal.timer);
     return app;
   };
   const app = await start();
-  app.store.saveConfig({ provider: 'openai', endpoint: model.origin + '/v1', model: 'fake', apiKey: 'synthetic-only' });
+  app.store.saveConfig({ provider: options.provider ?? 'openai', endpoint: model.origin + '/v1', model: 'fake', apiKey: 'synthetic-only' });
   const bot = app.store.createBot('后台合成助手');
   const owned = { root, app, close: () => model.close(), release: [] as Array<() => void> }; fixtures.push(owned);
   const gate = () => new Promise<void>(resolve => owned.release.push(resolve));
@@ -83,6 +84,53 @@ afterEach(async () => {
 });
 
 describe('Background jobs in disposable Core fixtures', () => {
+  it.each(['openai', 'anthropic'] as const)('diagnoses an action-only dispatch then preserves all job fields through the %s worker', async (provider) => {
+    const { app, bot, model } = await fixture({ provider });
+    const callTool = (id: string, args: Record<string, unknown>): FakeScript => provider === 'openai' ? tool(id, args)
+      : { kind: 'anthropic-tool', id, name: 'broker', args: JSON.stringify(args) };
+    const reply = (text: string): FakeScript => ({ kind: provider === 'openai' ? 'openai-text' : 'anthropic-text', text });
+    const title = '春天短文', note = '这项任务不使用设备';
+    const lane = await model.lane(title,
+      callTool('article-report', { action: 'job.report', state: 'ready', summary: '春风拂过窗台，一片新叶展开。' }), reply('执行细节不进入主聊天'));
+    const owner = app.agents.send(bot, '你现在能派子agent吗？派一个子agent写一篇关于春天的短文。', `contract-${provider}`).taskId;
+    const source = app.store.get("SELECT id FROM agent_messages WHERE task_id=? AND role='user'", owner)!;
+    const args = { action: 'job.start', title, sources: [`message:${source.id}`], note };
+    model.main.scripts.push(callTool('missing-title', { action: 'job.start' }), callTool('discover-job', { action: 'tool.search', query: 'job.start' }),
+      callTool('article-dispatch', args), reply('已交给后台任务。'));
+    await wait(() => task(app, owner).status === 'succeeded' && app.store.all('SELECT id FROM agent_job_reports WHERE message_id IS NOT NULL').length === 1 && idle(app), () => app);
+    const calls = app.store.all('SELECT * FROM tool_calls WHERE task_id=? ORDER BY created_at,rowid', owner);
+    expect(calls.map(call => [call.provider_tool_call_id, call.status])).toEqual([
+      ['missing-title', 'failed'], ['discover-job', 'succeeded'], ['article-dispatch', 'succeeded'],
+    ]);
+    expect(JSON.parse(String(calls[0].arguments_json))).toEqual({ action: 'job.start' });
+    expect(JSON.parse(String(calls[0].result_json))).toMatchObject({ code: 'invalid_tool_arguments', action: 'job.start', fields: ['title'] });
+    expect(model.main.requests[1].body).toContain('job.start 缺少必填参数');
+    const found = JSON.parse(String(calls[1].result_json));
+    expect(found.items).toHaveLength(1);
+    expect(found.items[0].parameters.required).toContain('title');
+    expect(found.items[0].description).toContain('不完整继承主对话历史');
+    expect(JSON.parse(String(calls[2].arguments_json))).toEqual(args);
+    const { jobId } = JSON.parse(String(calls[2].result_json));
+    const job = jobRow(app, jobId), [round] = tasksOf(app, jobId);
+    expect(job).toMatchObject({ title, origin_task_id: owner, bot_id: bot });
+    expect(JSON.parse(String(job.brief_json))).toEqual({ sources: args.sources, note, deviceId: '' });
+    expect(round.conversation_id).not.toBe(task(app, owner).conversation_id);
+    expect(app.store.all('SELECT id FROM bots')).toHaveLength(1);
+    expect(app.store.all('SELECT id FROM agent_jobs')).toHaveLength(1);
+    expect(reportMessages(app, jobId)).toHaveLength(1);
+    expect(reportMessages(app, jobId)[0].content).toContain('春风拂过窗台');
+    expect(lane.requests[0].body).toContain(note);
+    const request = JSON.parse(model.main.requests[0].body);
+    const schema = provider === 'openai' ? request.tools[0].function.parameters : request.tools[0].input_schema;
+    expect(schema.properties).toMatchObject({ title: { type: 'string' }, sources: { type: 'array' }, note: { type: 'string' }, query: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } });
+    const projection = app.runtime.projection.load(String(app.store.get('SELECT id FROM runtime_sessions WHERE conversation_id=?', task(app, owner).conversation_id)!.id));
+    expect(projection).toBeDefined();
+    const sourceCalls = projection!.flatMap(entry => entry.type === 'message' && entry.message.role === 'assistant'
+      ? entry.message.content.filter(part => part.type === 'toolCall' && part.id === 'article-dispatch') : []);
+    expect(sourceCalls).toHaveLength(1);
+    expect(sourceCalls[0]).toMatchObject({ arguments: args });
+  }, 60_000);
+
   it('dispatches from the main chat into an isolated job that reports back once', async () => {
     const f = await fixture(), { app, bot, model } = f;
     await model.lane('整理下载文件夹', tool('report-ready', { action: 'job.report', state: 'ready', summary: '已整理 12 个文件' }), say('整理完成的执行细节'));

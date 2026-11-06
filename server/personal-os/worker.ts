@@ -6,7 +6,7 @@ import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply 
 import { modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
 import { brokerDescription, brokerParameters } from "./broker-tool.ts";
-import { Check } from "typebox/value";
+import { Check, Errors } from "typebox/value";
 import { toolFields } from "./tool-fields.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
 import { CONTEXT_OVERHEAD, OUTPUT_TRUNCATED, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryTarget, entryText, episodeStart, foldBlocked, foldable, historySource, hygieneScope, imageCandidates, rangeTarget, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, type SourceItem } from './context-tools.ts';
@@ -360,11 +360,19 @@ async function main(value: WorkerConfig) {
   if (!model) throw new Error("Model registration failed");
   const broker = defineTool({ name: "broker", label: "Core Broker", description: brokerDescription,
     parameters: brokerParameters,
-    execute: async (providerId, args) => {
-      // Keep the previous field-type validation without sending every field to the model.
-      if (!Check(toolFields, args)) throw new Error("工具参数类型无效；请用 tool.search 查询用法");
-      const source = manager.getBranch().findLast((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.content.some((p) => p.type === "toolCall" && p.id === providerId));
-      if (!source) throw new Error("Tool proposal source missing");
+    execute: async (providerId) => {
+      const source = manager.getBranch().findLast((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.content.some((p) => p.type === "toolCall" && p.id === providerId && p.name === "broker"));
+      if (!source || source.type !== "message" || source.message.role !== "assistant") throw new Error("Tool proposal source missing");
+      const proposal = source.message.content.find((p) => p.type === "toolCall" && p.id === providerId && p.name === "broker");
+      if (!proposal || proposal.type !== "toolCall") throw new Error("Tool proposal source missing");
+      // The SDK passes a converted clone (e.g. 123 -> "123", optional nulls removed).
+      // Validate and forward the actual model proposal, never silently change what Core
+      // authorizes or break its immutable source/argument provenance check.
+      const args = proposal.arguments;
+      if (!Check(toolFields, args)) {
+        const fields = [...Errors(toolFields, args)].slice(0, 5).map((error) => `${error.instancePath || "/"} ${error.message}`).join("; ");
+        throw new Error(`工具参数类型无效：${fields}；请用 tool.search 查询用法`);
+      }
       const result = await execute(providerId, source.id, args);
       return { content: toolContent(result), details: { source: "core" }, isError: !!(result as { isError?: boolean; error?: string })?.isError || !!(result as { error?: string })?.error };
     } });

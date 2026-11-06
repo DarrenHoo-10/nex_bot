@@ -34,6 +34,8 @@ Android 0.2.3 与 Windows 共用账号设置、模型、记忆服务、连接器
 
 当前下载为 **2026-11-02 预览版**：Windows 0.9.27、Android 0.2.26、Mac / iOS 0.2.20。新增后台任务：长任务交给后台执行，主对话可以继续聊天；后台任务完成、需要你回答或无法继续时，在对话里回报，可直接回复或停止。
 
+**Core 更新（2026-11-07）：** 修复后台任务与工具查询的参数声明，补全缺参提示和目录翻页验证；现有客户端无需重装，安装包版本及下载地址不变。[服务端更新说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.27-preview.2)。
+
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
 | Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.27-preview.1/NexBot-0.9.27-x64-Client-Portable.exe) | 双击运行，免安装 |

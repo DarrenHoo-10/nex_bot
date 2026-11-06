@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { CoreStore } from "./store.ts";
 import { actions, evaluateTool, policyTools } from "./policy.ts";
-import { commonToolPrompt, searchTools, toolCatalog } from "./tool-catalog.ts";
-import { brokerDeclaration } from "./broker-tool.ts";
+import { commonToolPrompt, missingToolArguments, searchTools, toolCatalog } from "./tool-catalog.ts";
+import { brokerDeclaration, brokerParameters } from "./broker-tool.ts";
 import { tokens } from "./assistant-model.ts";
 import { createPersonalApp } from "./index.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
@@ -54,6 +54,8 @@ it("lists authorized tools with pagination and returns usable action-specific sc
   expect(searchTools(store, bot, { query: "job" }).items).toEqual([]);
   expect(searchTools(store, bot, { query: "job.report" }, "owner").items).toEqual([]);
   expect(searchTools(store, bot, { query: "job.start" }, "job").items).toEqual([]);
+  for (const query of ["子代理", "子agent", "subagent"])
+    expect(searchTools(store, bot, { query }, "owner").items.some((item) => item.action === "job.start")).toBe(true);
   const owner = searchTools(store, bot, { query: "device.computer" }, "owner").items[0];
   expect(owner.title).toContain("仅后台任务");
   expect(owner.description).toContain("job.start");
@@ -86,8 +88,74 @@ it("keeps todo resident while bounding common help and the wire declaration", ()
   expect(prompt).not.toContain("scheduleKind");
   expect(prompt).not.toContain("intervalMinutes");
   expect(tokens(prompt)).toBeLessThan(800);
-  expect(tokens(brokerDeclaration)).toBeLessThan(250);
+  // Field types are a wire contract, not an optional instruction manual. Full
+  // action help is still on demand; don't optimize the schema back to action-only.
+  expect(tokens(brokerDeclaration)).toBeLessThan(1400);
+  for (const entry of toolCatalog) for (const key of entry.fields.split(" ").filter(Boolean))
+    expect(brokerParameters.properties, `${entry.action}.${key}`).toHaveProperty(key);
+  expect(brokerParameters.properties).toMatchObject({
+    title: { type: "string" }, sources: { type: "array", items: { type: "string" } }, note: { type: "string" },
+    query: { type: "string" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1 },
+  });
 });
+
+it("diagnoses absent required fields without turning optional search fields into requirements", () => {
+  for (const title of [undefined, null, "", "   "]) {
+    expect(missingToolArguments("job.start", { action: "job.start", title })).toMatchObject({
+      code: "invalid_tool_arguments", action: "job.start", fields: ["title"], error: expect.stringContaining("title"),
+    });
+  }
+  expect(missingToolArguments("job.start", { title: "写文章" })).toBeUndefined();
+  expect(missingToolArguments("tool.search", {})).toBeUndefined();
+  expect(missingToolArguments("routine.toggle", { routineId: "r", expectedVersion: 0, enabled: false })).toBeUndefined();
+});
+
+it.each(["openai", "anthropic"] as const)("preserves query and pagination and returns different pages through the %s worker", async (provider) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "nex-tool-pages-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const model = await startFakeModel(); cleanup.push(() => model.close());
+  const app = await createPersonalApp({ dir, key: randomBytes(32), token: "synthetic", identity: false, memoryRuntime: false, hostDevice: false,
+    modelCatalog: { fetchDisabled: true, readSnapshot: () => undefined, log: () => {} } });
+  cleanup.push(() => app.close());
+  app.store.saveConfig({ provider, endpoint: model.origin + "/v1", model: "grok-4.7-build-fast", apiKey: "synthetic" });
+  const bot = app.store.createBot("翻页验收");
+  const proposals = [
+    { action: "tool.search" }, // An intentional directory request remains valid.
+    { action: "tool.search", query: "", offset: 0, limit: 3 },
+    { action: "tool.search", query: "", offset: 3, limit: 3 },
+    { action: "tool.search", query: "job.start", offset: 0, limit: 1 },
+  ];
+  proposals.forEach((args, i) => model.scripts.push(provider === "openai"
+    ? { kind: "openai-tool", calls: [{ id: `page-${i}`, name: "broker", args: JSON.stringify(args) }] }
+    : { kind: "anthropic-tool", id: `page-${i}`, name: "broker", args: JSON.stringify(args) }));
+  model.scripts.push({ kind: provider === "openai" ? "openai-text" : "anthropic-text", text: "已查询两页和派发用法。" });
+  const sent = app.agents.send(bot, "查看目录并翻页，再查询 job.start", `pages-${provider}`);
+  const deadline = Date.now() + 40000;
+  while (app.store.get("SELECT ended_at FROM tasks WHERE id=?", sent.taskId)?.ended_at == null) {
+    if (Date.now() > deadline) throw new Error("隔离翻页任务超时");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  expect(app.store.get("SELECT status FROM tasks WHERE id=?", sent.taskId)?.status).toBe("succeeded");
+  const calls = app.store.all("SELECT * FROM tool_calls WHERE task_id=? ORDER BY created_at,rowid", sent.taskId);
+  expect(calls.map((call) => call.status)).toEqual(proposals.map(() => "succeeded"));
+  expect(calls.map((call) => JSON.parse(String(call.arguments_json)))).toEqual(proposals);
+  const pages = calls.map((call) => JSON.parse(String(call.result_json)));
+  expect(pages[0].items).toHaveLength(5);
+  expect(pages[0].nextOffset).toBe(5);
+  expect(pages[1].items).toHaveLength(3);
+  expect(pages[1].nextOffset).toBe(3);
+  expect(pages[2].items).toHaveLength(3);
+  expect(pages[2].nextOffset).toBe(6);
+  expect(new Set([...pages[1].items, ...pages[2].items].map((item: { action: string }) => item.action)).size).toBe(6);
+  expect(pages[3]).toMatchObject({ items: [{ action: "job.start" }], total: 1, nextOffset: null });
+  expect(pages[3].items[0].parameters.required).toContain("title");
+  const runtimeId = app.store.get("SELECT runtime_session_id FROM tool_calls WHERE task_id=?", sent.taskId)!.runtime_session_id;
+  const projection = app.runtime.projection.load(String(runtimeId));
+  expect(projection).toBeDefined();
+  const projectedCalls = projection!.flatMap((entry) => entry.type === "message" && entry.message.role === "assistant"
+    ? entry.message.content.filter((part) => part.type === "toolCall").map((part) => part.arguments) : []);
+  expect(projectedCalls).toEqual(proposals);
+}, 60000);
 
 it.each(["openai", "anthropic"] as const)("discovers a rare action then executes its flat call through the %s worker", async (provider) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "nex-tool-discovery-"));
@@ -118,13 +186,22 @@ it.each(["openai", "anthropic"] as const)("discovers a rare action then executes
   expect(JSON.parse(String(calls[0].result_json)).items[0].parameters.properties).toHaveProperty("scheduleKind");
   expect(app.store.all("SELECT * FROM agent_routines WHERE bot_id=?", bot)).toHaveLength(1);
   expect(model.requests[0].body).toContain("todo.save(title");
-  expect(model.requests[0].body).not.toContain("scheduleKind");
-  expect(model.requests[1].body).toContain("scheduleKind");
-  // The compact wire schema must not drop the previous per-field type checks.
-  const badArgs = JSON.stringify({ action: "todo.save", title: 123 });
-  model.scripts.push(provider === "openai"
-    ? { kind: "openai-tool", calls: [{ id: "bad-field", name: "broker", args: badArgs }] }
-    : { kind: "anthropic-tool", id: "bad-field", name: "broker", args: badArgs });
+  const first = JSON.parse(model.requests[0].body);
+  const wireSchema = provider === "openai" ? first.tools[0].function.parameters : first.tools[0].input_schema;
+  expect(wireSchema).toEqual(JSON.parse(JSON.stringify(brokerParameters)));
+  if (provider === "openai") expect(first.tools[0].function).not.toHaveProperty("strict");
+  expect(JSON.stringify(first.messages)).not.toContain("scheduleKind");
+  expect(model.requests[1].body).toContain("最短5分钟");
+  expect(calls.map((call) => JSON.parse(String(call.arguments_json)))).toEqual(proposals);
+  // The explicit wire schema must not drop the previous per-field type checks.
+  const badArgs = [
+    { action: "todo.save", title: 123 },
+    { action: "tool.search", offset: "3" },
+    { action: "job.start", title: "不应创建", note: null },
+  ];
+  badArgs.forEach((args, i) => model.scripts.push(provider === "openai"
+    ? { kind: "openai-tool", calls: [{ id: `bad-field-${i}`, name: "broker", args: JSON.stringify(args) }] }
+    : { kind: "anthropic-tool", id: `bad-field-${i}`, name: "broker", args: JSON.stringify(args) }));
   model.scripts.push({ kind: provider === "openai" ? "openai-text" : "anthropic-text", text: "参数无效，未保存。" });
   const bad = app.agents.send(bot, "测试错误类型的待办参数", `bad-fields-${provider}`);
   const deadline = Date.now() + 20000;
@@ -134,5 +211,9 @@ it.each(["openai", "anthropic"] as const)("discovers a rare action then executes
   }
   expect(app.store.all("SELECT * FROM todos")).toHaveLength(0);
   expect(app.store.all("SELECT * FROM tool_calls WHERE task_id=?", bad.taskId)).toHaveLength(0);
-  expect(model.requests.at(-1)?.body).toContain("工具参数类型无效");
+  expect(app.store.all("SELECT * FROM agent_jobs")).toHaveLength(0);
+  const last = model.requests.at(-1)!.body;
+  expect(last).toContain("工具参数类型无效");
+  for (const field of ["/title", "/offset", "/note"]) expect(last).toContain(field);
+  expect(last).not.toContain("Tool source mismatch");
 }, 60000);

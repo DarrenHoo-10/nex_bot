@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [Broker 参数契约：本地隔离验证（2026-11-07）](broker-arguments-20261107.md)
+
 - [后台任务：全平台发布记录（2026-11-02）](background-jobs-release-20261102.md)
 
 - [待办日期、模型完成与输入框修复：发布记录（2026-11-01）](todo-release-20261101.md)

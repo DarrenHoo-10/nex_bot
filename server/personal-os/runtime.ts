@@ -20,7 +20,7 @@ import { TaskRecall } from './task-recall.ts';
 import { WORKING_NOTE_TARGET, WORKING_NOTE_TOKENS } from './recall-schema.ts';
 import { MAINTAIN_IDLE_MS, OUTPUT_TRUNCATED, entryTarget, maintenanceWork, rangeTarget } from './context-tools.ts';
 import { CompactionFailures, MAINTENANCE_PAUSE_MS } from './compaction-failures.ts';
-import { commonToolPrompt, searchTools, type TaskOrigin } from "./tool-catalog.ts";
+import { commonToolPrompt, missingToolArguments, searchTools, type TaskOrigin } from "./tool-catalog.ts";
 import type { ModelScope } from './calibration.ts';
 import { isolateSource } from './topic-access.ts';
 
@@ -736,6 +736,8 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
       if (policy.version !== snapshot.policyVersion || (local && local.policy_version !== snapshot.localPolicyVersion)) throw new Error("工具或设备权限已变化，请重新发起操作");
       if (approvalRequired && !this.store.get("SELECT id FROM approvals WHERE tool_call_id=? AND status='approved' AND argument_hash=? AND bot_policy_version=?", call.id, call.argument_hash, policy.version)) throw new Error("危险操作尚未获批准");
     } catch (error) { this.resolveCall(call, { error: error instanceof Error ? error.message : "授权失效" }, true, worker); return; }
+    const argumentError = missingToolArguments(String(call.tool_name), args);
+    if (argumentError) { this.resolveCall(call, argumentError, true, worker); return; }
     if (call.tool_name === "agent.delegate") {
       await this.delegate(call, args, worker); return;
     }
