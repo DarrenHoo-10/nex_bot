@@ -5,6 +5,8 @@ context window and maximum output tokens. Overrides are scoped to the normalized
 endpoint, API protocol and exact model ID in each account's Core database. Blank
 fields mean automatic. Changing models restores that model's saved overrides;
 old clients that omit the fields preserve existing overrides.
+Editing the endpoint keeps limits typed but not yet saved; changing the model or
+API protocol discards them. The isolated settings smoke covers both cases.
 
 Opening a model reads its saved settings and local catalog first, then refreshes
 the public models.dev directory when either field is automatic. The directory
