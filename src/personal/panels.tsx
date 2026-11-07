@@ -1,4 +1,4 @@
-﻿import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+﻿import { useEffect, useId, useState, type ReactNode } from "react";
 import { AccountControls, useAccount } from "./auth";
 import { Check, Cpu, Eye, EyeOff, Info, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
 import { AboutSettings } from "./AboutSettings";
@@ -74,12 +74,13 @@ export function ModelSettings({ state, run, refresh = async () => {}, active }: 
   const [visible, setVisible] = useState<string[] | null>(null);
   const [limitsReady, setLimitsReady] = useState("");
   const limitScope = JSON.stringify([provider, endpoint, model]);
-  const keyId = useId(), modelForm = useRef<HTMLFormElement>(null);
+  const [apiKey, setApiKey] = useState(''), [keyEdited, setKeyEdited] = useState(false);
+  const keyId = useId();
+  const keyStatus = keyEdited ? '待保存' : state.config?.configured ? '已保存' : '';
   useEffect(() => { if (!active) setShowKey(false); }, [active]);
-  const clearEnteredKey = () => { const key = modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement | null; if (key) key.value = ""; setShowKey(false); };
+  const clearEnteredKey = () => { setApiKey(''); setKeyEdited(false); setShowKey(false); };
   const resetModels = () => { setCatalogRevision(value => value + 1); setModels([]); setModelNotice(""); setModelError(""); setSaved(false); };
   const loadModels = async () => {
-    const apiKey = (modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement)?.value ?? "";
     setLoadingModels(true); setModelError(""); setModelNotice("");
     try {
       const result = await listModels({ provider, endpoint, apiKey });
@@ -91,23 +92,24 @@ export function ModelSettings({ state, run, refresh = async () => {}, active }: 
   };
   return <section className="preferences-section" data-model-settings>
     <div className="preferences-section-heading"><h3>模型连接</h3><span className="preferences-status">{state.config ? "已配置" : "待配置"}</span></div>
-    <form ref={modelForm} onSubmit={(event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); setPending(true); setSaved(false); setShowKey(false); setModelError(""); const connectionSaved = state.config?.provider_id === provider && str(state.config?.endpoint).replace(/\/+$/, "") === endpoint.replace(/\/+$/, ""), draft = visible; void run(async () => {
+    <form onSubmit={(event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); setPending(true); setSaved(false); setShowKey(false); setModelError(""); const connectionSaved = state.config?.provider_id === provider && str(state.config?.endpoint).replace(/\/+$/, "") === endpoint.replace(/\/+$/, ""), draft = visible; void run(async () => {
       await api("config", data);
       // A new connection's model choice was a draft until the connection existed.
       if (!connectionSaved && draft !== null) { const next = await api<State>("state"); await api("models/visibility", { provider: next.config?.provider_id, endpoint: next.config?.endpoint, models: draft, version: next.modelVisibility?.version ?? 0 }); }
-      setSaved(true);
+      setSaved(true); setKeyEdited(false);
     }).finally(() => setPending(false)); }}>
       <fieldset disabled={pending || loadingModels}>
-          <label className="field">API 协议<select name="provider" value={provider} onChange={(event) => { const next = event.target.value; if (["https://api.openai.com/v1", "https://api.anthropic.com"].includes(endpoint)) setEndpoint(next === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com"); setProvider(next); clearEnteredKey(); resetModels(); }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></label>
-        <label className="field">API 基础地址<input name="endpoint" type="url" required value={endpoint} spellCheck={false} onChange={(event) => { setEndpoint(event.target.value); clearEnteredKey(); resetModels(); }}/></label>
-        <div className="field"><label htmlFor={keyId}>API Key</label><div className="preferences-secret-input"><input id={keyId} name="apiKey" type={showKey ? "text" : "password"} autoComplete="off" spellCheck={false} required={!state.config} placeholder={state.config ? "留空保留已保存的 Key" : "输入 API Key"} onChange={resetModels}/><button type="button" aria-label={showKey ? "隐藏 API Key" : "显示 API Key"} aria-pressed={showKey} onClick={() => setShowKey(value => !value)}>{showKey ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div></div>
+          <label className="field">API 协议<select name="provider" value={provider} onChange={(event) => { const next = event.target.value; setShowKey(false); // The key leaves with a default endpoint that changes vendor; a custom endpoint keeps it.
+          if (["https://api.openai.com/v1", "https://api.anthropic.com"].includes(endpoint)) { setEndpoint(next === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com"); clearEnteredKey(); } setProvider(next); resetModels(); }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></label>
+        <label className="field">API 基础地址<input name="endpoint" type="url" required value={endpoint} spellCheck={false} onChange={(event) => { setEndpoint(event.target.value); setShowKey(false); resetModels(); }}/></label>
+        <div className="field"><div className="preferences-secret-label"><label htmlFor={keyId}>API Key</label>{keyStatus && <span className="preferences-status" data-model-key-status>{keyStatus}</span>}</div><div className="preferences-secret-input"><input id={keyId} name="apiKey" type={showKey ? "text" : "password"} autoComplete="off" spellCheck={false} required={!state.config} placeholder={state.config ? "留空保留已保存的 Key" : "输入 API Key"} value={apiKey} onChange={event => { setApiKey(event.target.value); setKeyEdited(!!event.target.value); resetModels(); }}/><button type="button" disabled={!apiKey} aria-label={showKey ? "隐藏 API Key" : "显示 API Key"} aria-pressed={showKey} onClick={() => setShowKey(value => !value)}>{showKey ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div></div>
         <div className="field"><span>模型列表</span><div className="preferences-model-controls">
           <button type="button" disabled={!endpoint} onClick={() => void loadModels()}>{loadingModels ? "获取中…" : "获取模型列表"}</button>
         </div>
         {modelNotice && <small role="status">{modelNotice}</small>}{modelError && <small className="model-error" role="alert">{modelError}</small>}</div>
         <ModelVisibility key={JSON.stringify(["visible", provider, endpoint])} state={state} refresh={refresh} active={active} scope={{ provider, endpoint }} models={models} onSelection={setVisible}/>
         <div className="field"><span>默认模型</span><div className="preferences-model-controls">
-          <ModelPicker key={JSON.stringify([provider,endpoint,catalogRevision,models.length])} name="model" label="默认模型" value={model} models={visible ?? (models.length ? models : null)} loadModels={() => listModels({provider,endpoint,apiKey:(modelForm.current?.elements.namedItem("apiKey") as HTMLInputElement)?.value ?? ""})} onChange={value => {setModel(value);setSaved(false);}}/>
+          <ModelPicker key={JSON.stringify([provider,endpoint,catalogRevision,models.length])} name="model" label="默认模型" value={model} models={visible ?? (models.length ? models : null)} loadModels={() => listModels({provider,endpoint,apiKey})} onChange={value => {setModel(value);setSaved(false);}}/>
         </div></div>
         <ModelLimitsFields key={limitScope} scopeKey={limitScope} provider={provider} endpoint={endpoint} model={model} active={active} onReady={setLimitsReady} onEdit={() => setSaved(false)}/>
         <div className="preferences-actions"><button className="primary" type="submit" disabled={limitsReady !== limitScope}>{pending ? "保存中…" : "保存配置"}</button>{saved && <span className="preferences-saved" role="status"><Check size={15}/>已保存</span>}</div>

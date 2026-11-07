@@ -58,8 +58,8 @@ the provider rejecting the user's credential.
 
 The field now has an accessible show/hide button. Saving retains this page's
 entered key in memory, remasks it, and allows native discovery immediately
-afterward. Changing settings categories remasks it; changing the provider or
-endpoint clears it to prevent sending it to a different service. No key is
+afterward. Changing settings categories remasks it; at this revision, changing the provider or
+endpoint cleared it (endpoint editing is corrected in the follow-up below). No key is
 written to browser storage or returned from the server. Closing settings or
 restarting still discards the entered value; previously stored server keys
 cannot be revealed by this button. The unsupported-route message now explains
@@ -71,6 +71,32 @@ simulates a 404 model-list route and proves enter, reveal, hide, save, then
 native discovery, plus remasking and endpoint-change clearing. Synthetic-only
 model and mobile reference screenshots were refreshed. Candidate and install
 evidence are in ignored `release/local-key-reveal/`; production was not changed.
+
+## API Key draft and saved state — 2026-10-21
+
+Editing the endpoint used to clear the entered API Key on every keystroke.
+The form now preserves the explicit key draft while editing the endpoint and
+remasks it. Changing the protocol keeps the entered draft on a custom endpoint, but
+discards it when a default OpenAI/Anthropic endpoint is swapped for the other vendor's,
+so a key is never sent to a different vendor's host. The key
+label shows `待保存` for a new draft and `已保存` for confirmed stored credentials.
+Reopening settings leaves the secret input blank, preserves the saved-key
+indicator and disables revealing an empty draft. The server does not return
+the stored key, and no key is added to browser storage. Blank saves keep the
+stored credential; catalog lookup still requires the saved protocol and
+normalized endpoint to match before reusing a stored key.
+
+The isolated renderer reproduced the disappearing draft before the fix. After
+the fix, all 15 model-picker scenarios passed, including endpoint edits,
+category navigation, save/reopen/reload, saved-key catalog requests, blank saves
+and mobile layout. Three backend catalog tests passed, including a new Core
+restart case proving stored-key persistence and omission from client state.
+Frontend/server type checking, the Core/UI build and targeted lint passed; desktop and mobile screenshots were
+visually checked. Evidence stays under ignored
+`release/model-picker-verification/report.json` and `saved-api-key-*.png`.
+All runs use owned temporary Core/Electron profiles, synthetic identity and
+loopback model/MCP providers. The user's open preview and its configuration
+were not used for tests.
 
 
 ## Searchable model picker and visible-model preferences — 2026-10-18

@@ -111,6 +111,7 @@
 @media (prefers-reduced-motion: reduce) {
   .preferences-toggle input, .preferences-toggle input::after { transition: none; }
 }
+.preferences-secret-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .preferences-secret-input { position: relative; display: flex; align-items: center; }
 .rk-workspace .preferences-secret-input input { width: 100%; padding-right: 48px; }
 .rk-workspace .preferences-secret-input button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; background: transparent; color: var(--muted-foreground); }
