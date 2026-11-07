@@ -3,8 +3,10 @@ import { Check, ChevronDown, Search, Square } from 'lucide-react';
 import './model-picker.css';
 
 type Catalog = { models: string[]; hasMore: boolean };
-export function ModelList({ models, value, selected, onSelect, emptyLabel, allowCustom = false, autoFocus = false }: {
+export function ModelList({ models, value, selected, onSelect, onBulk, emptyLabel, allowCustom = false, autoFocus = false }: {
   models: string[]; value?: string; selected?: Set<string>; onSelect: (id: string) => void;
+  /** 全选 / 全不选 over the rows shown: every model, or only those matching the search. */
+  onBulk?: (rows: string[], checked: boolean, filtered: boolean) => void;
   emptyLabel?: string; allowCustom?: boolean; autoFocus?: boolean;
 }) {
   const [query, setQuery] = useState(''), [active, setActive] = useState(0), [top, setTop] = useState(0);
@@ -34,7 +36,12 @@ export function ModelList({ models, value, selected, onSelect, emptyLabel, allow
       } else if (e.key === 'End' && e.ctrlKey) { e.preventDefault(); move(count - 1); }
       else if (e.key === 'Home' && e.ctrlKey) { e.preventDefault(); move(0); }
     }}/></label>
-    <div className="model-list-count">{rows.length} 个模型{selected && ` · 已选 ${selected.size}`}</div>
+    <div className="model-list-count"><span>{rows.length} 个模型{selected && ` · 已选 ${selected.size}`}</span>
+      {selected && onBulk && rows.length > 0 ? <span className="model-list-bulk">
+        <button type="button" onMouseDown={e => e.preventDefault()} disabled={rows.every(model => selected.has(model))} onClick={() => onBulk(rows.filter(Boolean), true, !!query.trim())}>全选</button>
+        <button type="button" onMouseDown={e => e.preventDefault()} disabled={!rows.some(model => selected.has(model))} onClick={() => onBulk(rows.filter(Boolean), false, !!query.trim())}>全不选</button>
+      </span> : null}
+    </div>
     <div ref={viewport} className="model-list-viewport" style={{ height }} onScroll={e => setTop(e.currentTarget.scrollTop)} role="listbox" id={id} aria-label="可用模型" aria-multiselectable={selected ? true : undefined}>
       <div style={{ height: count * 44, position: 'relative' }}>
         {Array.from({ length: Math.max(0, end - start) }, (_, offset) => {
@@ -50,9 +57,9 @@ export function ModelList({ models, value, selected, onSelect, emptyLabel, allow
   </div>;
 }
 
-export function ModelPicker({ value, onChange, models, loadModels, label = '选择模型', emptyLabel, name, disabled, open: controlledOpen, onOpenChange, anchorRef, selected, allowCustom = true, displayValue, triggerClassName }: {
+export function ModelPicker({ value, onChange, models, loadModels, label = '选择模型', emptyLabel, name, disabled, open: controlledOpen, onOpenChange, anchorRef, selected, onBulk, allowCustom = true, displayValue, triggerClassName }: {
   displayValue?: string; triggerClassName?: string;
-  selected?: Set<string>; allowCustom?: boolean;
+  selected?: Set<string>; onBulk?: (rows: string[], checked: boolean, filtered: boolean) => void; allowCustom?: boolean;
   anchorRef?: RefObject<HTMLElement | null>;
   value: string; onChange: (model: string) => void; models?: string[] | null; loadModels?: () => Promise<Catalog>;
   label?: string; emptyLabel?: string; name?: string; disabled?: boolean; open?: boolean; onOpenChange?: (open: boolean) => void;
@@ -95,7 +102,7 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
     {name && <input type="hidden" name={name} value={value}/>}
     {!anchorRef && <button ref={trigger} type="button" className={triggerClassName ?? "model-picker-trigger"} title={displayValue || value || emptyLabel} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}><span>{displayValue || value || emptyLabel || label}</span><ChevronDown size={15}/></button>}
     {open && <div ref={panel} popover="manual" className="model-picker-popover" role="dialog" aria-label={label} onKeyDown={e => { if (e.key === 'Escape' || e.key === 'Tab') { if (e.key === 'Escape') e.preventDefault(); e.stopPropagation(); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}>
-      <ModelList models={options} value={value} selected={selected} emptyLabel={emptyLabel} allowCustom={allowCustom} onSelect={model => { if (disabled) return; onChange(model); if (!selected) { setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}/>
+      <ModelList models={options} value={value} selected={selected} onBulk={disabled ? undefined : onBulk} emptyLabel={emptyLabel} allowCustom={allowCustom} onSelect={model => { if (disabled) return; onChange(model); if (!selected) { setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}/>
       {loading && <div className="model-picker-status" role="status">正在获取模型…</div>}
       {error && <div className="model-picker-status" role="alert">{error}</div>}
       {models == null && catalog?.hasMore && <div className="model-picker-status">服务仍有未返回的模型，可输入完整 ID。</div>}
@@ -105,11 +112,11 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
   </div>;
 }
 
-export function ModelSelection({ models, selected, onSelect, label, disabled, allowCustom = false }: {
-  models: string[]; selected: Set<string>; onSelect: (id: string) => void; label: string; disabled?: boolean; allowCustom?: boolean;
+export function ModelSelection({ models, selected, onSelect, onBulk, label, disabled, allowCustom = false }: {
+  models: string[]; selected: Set<string>; onSelect: (id: string) => void; onBulk?: (rows: string[], checked: boolean, filtered: boolean) => void; label: string; disabled?: boolean; allowCustom?: boolean;
 }) {
   return <div className="model-selection">
-    <ModelPicker value="" models={models} selected={selected} onChange={onSelect} label={label} disabled={disabled} allowCustom={allowCustom}/>
+    <ModelPicker value="" models={models} selected={selected} onBulk={onBulk} onChange={onSelect} label={label} disabled={disabled} allowCustom={allowCustom}/>
     <div className="model-selection-values" aria-label="已选模型">
       {selected.size ? [...selected].map(model => <span key={model} className="model-selection-value">{model}</span>) : <span className="preferences-status">未选择</span>}
     </div>

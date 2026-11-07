@@ -43,5 +43,10 @@ export function useModelSelection(route: string, scope: { provider: unknown; end
     draft.current = [...next]; revision.current++; setSelection(draft.current); setError('');
     void persist();
   };
-  return { selection, toggle, busy, error };
+  /** Replaces the whole selection at once (全选 / 全不选); null means every model, including ones listed later. */
+  const replace = (models: string[] | null) => {
+    draft.current = models; revision.current++; setSelection(models); setError('');
+    void persist();
+  };
+  return { selection, toggle, replace, busy, error };
 }

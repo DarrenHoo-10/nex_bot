@@ -39,8 +39,8 @@ struct ModelVisibilitySection: View {
                 StatusChip(text: selection == nil ? "全部显示" : "已选 \(selection?.count ?? 0) 个", tone: .neutral)
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], alignment: .leading, spacing: 8) {
-                Button("全部显示") { edit(nil) }.buttonStyle(PillButtonStyle())
-                Button("清空选择") { edit([]) }.buttonStyle(PillButtonStyle())
+                Button("全选") { edit(nil) }.disabled(selection == nil).buttonStyle(PillButtonStyle())
+                Button("全不选") { edit([]) }.disabled(selection?.isEmpty == true).buttonStyle(PillButtonStyle())
                 Button(onlySelected ? "查看全部" : "只看已选") { onlySelected.toggle() }.buttonStyle(PillButtonStyle())
                 if !draft { Button(loading ? "获取中…" : "刷新目录") { Task { await load(force: true) } }.buttonStyle(PillButtonStyle()).disabled(loading) }
             }

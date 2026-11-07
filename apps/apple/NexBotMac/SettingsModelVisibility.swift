@@ -43,8 +43,8 @@ struct ModelVisibilitySection: View {
             }
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    MBButton(title: "全部显示") { edit(nil) }
-                    MBButton(title: "清空选择") { edit([]) }
+                    MBButton(title: "全选", enabled: selection != nil) { edit(nil) }
+                    MBButton(title: "全不选", enabled: selection?.isEmpty != true) { edit([]) }
                     MBButton(title: onlySelected ? "查看全部" : "只看已选") { onlySelected.toggle() }
                     if !draft { MBButton(title: loading ? "获取中…" : "刷新目录", enabled: !loading) { Task { await load(force: true) } } }
                     Spacer()

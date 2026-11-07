@@ -38,10 +38,17 @@ export function ModelVisibility({ state, refresh, active, scope, models: fetched
     if (next.has(id)) next.delete(id); else next.add(id);
     setDraft([...next]);
   };
+  // 全选 with no search shows every model (null, so models listed later appear too); otherwise the shown rows are added or removed.
+  const bulk = (rows: string[], checked: boolean, filtered: boolean) => {
+    const next = new Set(selected);
+    for (const id of rows) if (checked) next.add(id); else next.delete(id);
+    const value = checked && !filtered ? null : [...next];
+    if (saved) autosave.replace(value); else setDraft(value);
+  };
   return <section className="preferences-section" data-model-visibility>
     <div className="preferences-section-heading"><h3>显示的模型</h3><span className="preferences-status">{selection === null ? '全部模型' : `已选 ${selection.length} 个`}</span></div>
     <fieldset>
-      <ModelSelection models={all} selected={selected} label="选择显示的模型" disabled={loading} allowCustom onSelect={toggle}/>
+      <ModelSelection models={all} selected={selected} label="选择显示的模型" disabled={loading} allowCustom onSelect={toggle} onBulk={bulk}/>
       {loading && <span role="status" className="preferences-status">获取中…</span>}
       {(autosave.busy || notice) && <span role="status" className="preferences-status">{autosave.busy ? '保存中…' : notice}</span>}
       {saved && autosave.error && <p role="alert" className="model-error">{autosave.error}</p>}
