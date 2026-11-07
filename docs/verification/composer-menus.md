@@ -19,10 +19,12 @@ It retains **Standard / Full access**, the existing server semantics; no
 read-only or workspace-sandbox modes are implied by the reference screenshot.
 The plus and permission buttons sit together below the message input.
 
-The plus menu groups **File** under Add, and **Permissions / Model settings /
+The plus menu groups **File** under Add, and **Permissions / Model /
 Export conversation** under Commands. File opens the system picker, Permissions
-opens the same mode menu, Model settings opens the existing shared settings page,
-and Export downloads Markdown for the selected assistant. Export paginates the
+opens the same mode menu, Model opens a searchable picker for the selected
+assistant, and Export downloads Markdown for that assistant. Selecting a model
+leaves the shared default and other assistants unchanged; choosing Default model
+clears the assistant's override. Export paginates the
 authenticated history instead of exporting only the visible 100 messages and
 checks workspace/privacy identity before releasing the download. It does not
 export diagnostic logs, credentials or an attachment ZIP. The existing copy
@@ -43,13 +45,18 @@ pnpm exec tsc -b
 pnpm exec oxlint --deny-warnings src/personal/components/ComposerControls.tsx src/personal/AgentDesktop.tsx
 ```
 
-The real hidden Electron renderer and disposable Core passed 36 checks. New
+The real hidden Electron renderer and disposable Core passed 38 checks. These
 checks cover the actual file-picker event, upload-only send, full/standard mode
-persistence, selected-mode focus/checkmark, Escape focus return, model settings
-navigation, actual Markdown file download and mobile dark-mode bounds. Fake
+persistence, selected-mode focus/checkmark, Escape focus return, model search,
+assistant-scoped selection, reload persistence, restoration of the default model,
+actual Markdown file download and mobile dark-mode bounds. The smoke now follows
+the current model picker instead of the removed Model settings navigation. Fake
 identity/model/MCP providers and an owned temporary download directory were used;
 the concurrent model-catalog feature is configured not to fetch external data.
-Type checking, targeted lint and the build passed.
+The picker regression run used the existing Core/UI build; targeted script lint
+and `git diff --check` passed. Earlier menu verification also passed type checking
+and the build. The current smoke report and screenshots are under ignored
+`release/workspace-verification-avatars/`.
 
 Screenshots in `doc/ui/`: `composer-add-menu-light.png`,
 `composer-permission-menu-light.png`, `composer-add-menu-mobile-dark.png`, and
@@ -91,3 +98,18 @@ model overrides, model/memory configuration and record counts. Public HTTPS
 health returned 200; HTML and all three referenced assets matched; unauthenticated
 APIs returned 401. The service remained active with zero restarts. Private
 release evidence is under ignored `release/deployment-composer-menus/`.
+
+
+## Upstream sync verification — 2026-10-20
+
+Merged upstream main `ec007388` into the local workspace smoke branch, retaining
+assistant-scoped model selection, reload, Escape focus and default-reset checks.
+The smoke uses the current model picker's listbox options in both the composer
+and settings, including custom model entry and fetched model selection.
+
+Validation passed: TypeScript project and server checks, Core/UI build, targeted
+script lint, and all 38 cases in `node scripts/smoke-personal-workspace.mjs`.
+The run used a disposable Core and Electron profile with synthetic identity,
+model and MCP providers. It issued seven model requests and two fixture MCP
+calls. Evidence: ignored `release/workspace-verification-avatars/result.json`
+and its screenshots. No live account or application data was used.
