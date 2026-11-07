@@ -172,24 +172,18 @@ struct AgentDetailView: View {
             }
 
             if !openJobs.isEmpty {
-                title("后台任务")
-                ForEach(openJobs) { job in
-                    RunEntryRow(symbol: job.isBusy ? "arrow.triangle.2.circlepath" : "exclamationmark.circle", tone: job.isBusy ? .live : .warn, title: job.title,
-                                status: [job.stageText, job.isBusy ? job.progress : nil].compactMap { $0 }.joined(separator: " · "), time: job.createdAt.map { TimeFormat.formatClock($0) }) {
-                        HStack(spacing: 8) {
-                            Button("详情") { sheet = .job(job.id) }.buttonStyle(PillButtonStyle())
-                            Button("停止") { Task { await run(job.id) { try await workspace.stopJob(job.id) } } }.buttonStyle(PillButtonStyle())
-                            if busyTask == job.id { ProgressView() }
-                        }
-                        .disabled(busyTask == job.id)
-                        .padding(.top, 6)
-                    }
+                HStack(alignment: .firstTextBaseline) {
+                    title("后台任务")
+                    Spacer()
+                    Button("停止全部") { confirmStopAll = true }
+                        .font(.footnote).foregroundStyle(Theme.danger)
+                        .confirmationDialog("停止全部工作？", isPresented: $confirmStopAll, titleVisibility: .visible) {
+                            Button("停止全部", role: .destructive) { Task { await run(botID) { try await workspace.stopAll(botID: botID) } } }
+                        } message: { Text("停止主对话和所有后台任务。") }
                 }
-                Button("停止全部") { confirmStopAll = true }
-                    .font(.footnote).foregroundStyle(Theme.danger).padding(.vertical, 6)
-                    .confirmationDialog("停止全部工作？", isPresented: $confirmStopAll, titleVisibility: .visible) {
-                        Button("停止全部", role: .destructive) { Task { await run(botID) { try await workspace.stopAll(botID: botID) } } }
-                    } message: { Text("停止主对话和所有后台任务。") }
+                VStack(spacing: 6) {
+                    ForEach(openJobs) { job in JobFlowRow(job: job) { sheet = .job(job.id) } }
+                }
             }
 
             let runs = recent

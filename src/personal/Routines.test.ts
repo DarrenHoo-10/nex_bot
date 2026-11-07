@@ -7,7 +7,7 @@ const fixture = vi.hoisted(() => ({ api: vi.fn() }));
 vi.mock("./api", async (original) => ({ ...await original<typeof import("./api")>(), api: fixture.api }));
 import { RoutineDetail } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail } from "./components/RoutineOccurrenceDetail";
-import { JobDetail } from "./components/JobDetail";
+import { JobChat } from "./components/JobChat";
 import type { JobDetail as JobDetailData } from "./api";
 let root: Root, container: HTMLDivElement;
 beforeEach(() => {
@@ -85,31 +85,45 @@ const jobDetail = (stage = "running"): JobDetailData => ({
   messages: [{ id: "brief", role: "user", content: "后台任务「整理下载文件夹」。以用户原话为准" }, { id: "m", role: "assistant", content: "正在分类文件" }],
   steps: [{ id: "call", tool_name: "device.list", status: "succeeded", summary: "", preview: "", created_at: 1 }], reports: [], streaming: "",
 });
-async function mountJob() { await act(async () => root.render(createElement(JobDetail, { id: "j", close: vi.fn(), renderContent: (text: string) => text }))); }
-describe("Background job detail", () => {
-  it("shows the latest report over its rounds, the collapsed record and the brief, reusing the routine transcript", async () => {
-    const data = jobDetail("done");
-    data.job.latestReport = { id: "r2", state: "ready", summary: "已整理 12 个文件", question: null, messageId: "m2", createdAt: 1500 };
-    data.reports = [{ id: "r1", state: "question", summary: "要保留截图吗？", created_at: 1200 }, { id: "r2", state: "ready", summary: "已整理 12 个文件", created_at: 1500 }];
-    fixture.api.mockImplementation(async (route: string) => route.startsWith("preview?") ? { kind: "tool", title: "device.list", content: "目录内容" } : data);
+const back = vi.fn();
+async function mountJob() { await act(async () => root.render(createElement(JobChat, { id: "j", botName: "开发专家", avatar: null, back, renderContent: (text: string) => text }))); }
+const bubbles = () => [...container.querySelectorAll("article.message")].map(item => [item.classList.contains("user") ? "user" : "assistant", item.querySelector(".bubble")?.textContent ?? ""]);
+describe("Background job conversation", () => {
+  it("reads as a chat with the sub-agent: brief folded, replies and reports as bubbles, tool calls as one line, no stop", async () => {
+    const data = jobDetail("question");
+    data.messages = [{ id: "brief", role: "user", content: "后台任务「整理下载文件夹」。以用户原话为准", created_at: 1000 }, { id: "m", role: "assistant", content: "正在分类文件", created_at: 1100 }];
+    data.steps = [{ id: "c1", tool_name: "device.list", status: "succeeded", summary: "", preview: "", created_at: 1150 }, { id: "c2", tool_name: "device.list", status: "succeeded", summary: "", preview: "", created_at: 1160 }];
+    data.messages.push({ id: "final", role: "assistant", content: "截图已保留", created_at: 1300 });
+    data.reports = [{ id: "r1", state: "question", summary: "已整理 12 个文件", question: "要保留截图吗？", created_at: 1200 }, { id: "r2", state: "ready", summary: "截图已保留", automatic: 1, created_at: 1301 }];
+    fixture.api.mockResolvedValue(data);
     await mountJob();
     expect(fixture.api).toHaveBeenCalledWith("jobs/detail?id=j", undefined, expect.any(AbortSignal));
-    expect(container.querySelector('[role="status"]')!.textContent).toBe("已完成");
-    expect(container.querySelector('[aria-label="最新回报"]')!.textContent).toContain("已整理 12 个文件");
-    expect(container.textContent).toContain("各轮回报");
-    const process = container.querySelector<HTMLDetailsElement>(".routine-process")!;
-    expect(process.open).toBe(false); expect(process.textContent).toContain("正在分类文件"); expect(process.textContent).not.toContain("以用户原话为准");
-    expect(container.textContent).toContain("任务书");
-    await act(async () => container.querySelector<HTMLButtonElement>(".step-row")!.click());
-    expect(fixture.api).toHaveBeenCalledWith("preview?callId=call", undefined, expect.any(AbortSignal));
-    expect(container.textContent).toContain("目录内容");
+    expect(container.querySelector(".job-chat-bar")!.textContent).toBe("开发专家整理下载文件夹等待你回答");
+    expect(container.querySelector<HTMLDetailsElement>(".job-chat-brief")!.open).toBe(false);
+    expect(bubbles()).toEqual([["assistant", "正在分类文件"], ["assistant", "已整理 12 个文件要保留截图吗？"], ["assistant", "截图已保留"]]);
+    expect(container.querySelector(".job-chat-steps")!.textContent).toBe("2 项操作");
+    expect([...container.querySelectorAll("button")].map(b => b.textContent)).not.toContain("停止");
+    await act(async () => container.querySelector<HTMLButtonElement>(".job-chat-back")!.click());
+    expect(back).toHaveBeenCalled();
   });
-  it("polls while the job is open and stops once it has ended or on close", async () => {
+  it("sends a message to the job as input and shows it at once", async () => {
+    fixture.api.mockImplementation(async (route: string) => route === "jobs/input" ? { jobId: "j" } : jobDetail("question"));
+    await mountJob();
+    const input = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="发送给子代理的消息"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "保留截图"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')!.click());
+    expect(fixture.api).toHaveBeenCalledWith("jobs/input", { jobId: "j", text: "保留截图", clientId: expect.any(String) });
+    expect(bubbles()).toContainEqual(["user", "保留截图"]);
+  });
+  it("shows the sub-agent working while it runs and polls until the job ends", async () => {
     vi.useFakeTimers(); fixture.api.mockResolvedValue(jobDetail("running"));
-    await mountJob(); expect(container.textContent).toContain("已整理一半");
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); }); expect(fixture.api).toHaveBeenCalledTimes(2);
+    await mountJob();
+    expect(container.querySelector('[aria-label="子代理正在工作"]')).not.toBeNull();
+    expect(container.textContent).toContain("已整理一半");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); }); expect(fixture.api).toHaveBeenCalledTimes(2);
     fixture.api.mockResolvedValue(jobDetail("done"));
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); }); expect(fixture.api).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); }); expect(fixture.api).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('[aria-label="子代理正在工作"]')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(9000); }); expect(fixture.api).toHaveBeenCalledTimes(3);
   });
 });

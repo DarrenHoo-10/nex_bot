@@ -303,7 +303,7 @@ async function reduceContext(signal:AbortSignal|undefined,maintain:boolean){
     if(!maintain&&unfit())await guard(trimCurrentTurn);
   }
   refresh();
-  return {messages,count,unfit,calibration,hard};
+  return {messages,count,level,unfit,calibration,hard,ceiling,window:config.contextWindow};
 }
 // Background maintenance: the reduction a turn would start with, run ahead of the turn.
 async function runMaintenance(){
@@ -387,7 +387,13 @@ async function main(value: WorkerConfig) {
     // Only a request that cannot fit the input budget is an error: after the reductions that could be made
     // (failed ones are skipped and leave their originals), or when there was nothing to reduce. Being above the
     // soft threshold or the target is not.
-    if(state.unfit())throw new Error(`当前用户要求与保留资料仍超过输入预算（估算 ${state.count()}${state.calibration===1?'':`，校准后 ${Math.round(state.count()*state.calibration)}`} / ${state.hard} Token）。原文已保留，请分段读取或增大模型窗口。`);
+    // Name the limit that was actually hit: the calibrated count against the input limit, or the raw count against
+    // 90% of the window. Read by the user (on a job's failure card) and by the model, so it leads in plain words.
+    if(state.unfit()){
+      const wan=(value:number)=>`${(value/10_000).toFixed(1)} 万`;
+      const detail=state.level()>=state.hard?`约 ${wan(state.level())} Token，上限 ${wan(state.hard)}`:`约 ${wan(state.count())} Token，已到模型窗口 ${wan(state.window)}的九成`;
+      throw new Error(`资料太多，超过了模型一次能读的量（${detail}）。原文已保留，可分段读取或换用窗口更大的模型。`);
+    }
     return transform?transform(state.messages,signal):state.messages;
   };
   // Anthropic prompt caching: ask for the 1 h tier (cache_control ttl "1h" on the system prompt, the history and the

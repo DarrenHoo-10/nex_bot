@@ -107,6 +107,52 @@ struct JobReportCard<Media: View>: View {
 
 /// A background job's execution over all its rounds: the latest report first, then each round's report, the collapsed
 /// record and the brief. Polls while the job is still open.
+/// One open background job in the inspector: just its name, with a light sweep while it runs. Tapping opens its details.
+struct JobFlowRow: View {
+    let job: Job
+    let open: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var tint: Color { job.isBusy ? Theme.identityAccent : Theme.approval }
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 8) {
+                Text(job.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+                if !job.isBusy { Image(systemName: "exclamationmark.circle").font(.system(size: 12)).foregroundStyle(Theme.approval) }
+            }
+            .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .background { ZStack { tint.opacity(0.07); if job.isBusy && !reduceMotion { flow } } }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tint.opacity(job.isBusy ? 0.18 : 0.35)))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("查看后台任务：\(job.title)")
+        .accessibilityValue(job.stageText)
+    }
+
+    /// A soft band that drifts across the row, plus a thin line running along its bottom edge.
+    private var flow: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+            GeometryReader { proxy in
+                let width = proxy.size.width, time = context.date.timeIntervalSinceReferenceDate
+                let band = (time.truncatingRemainder(dividingBy: 2.2) / 2.2) * (width * 1.6) - width * 0.3
+                let line = (time.truncatingRemainder(dividingBy: 1.6) / 1.6) * (width * 1.5) - width * 0.25
+                ZStack(alignment: .bottomLeading) {
+                    LinearGradient(colors: [.clear, Theme.identityAccent.opacity(0.18), .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: width * 0.6).offset(x: band - width * 0.3)
+                    LinearGradient(colors: [.clear, Theme.identityAccent, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: width * 0.5, height: 2).offset(x: line - width * 0.25)
+                }
+                .frame(width: width, height: proxy.size.height, alignment: .bottomLeading)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 struct JobDetailView: View {
     let workspace: WorkspaceStore
     let jobID: String
@@ -114,6 +160,7 @@ struct JobDetailView: View {
     @State private var detail: JobDetail?
     @State private var error: String?
     @State private var loading = false
+    @State private var stopping = false
 
     private var job: Job? { detail?.job ?? workspace.state?.job(jobID) }
 
@@ -123,6 +170,9 @@ struct JobDetailView: View {
                 Text("后台任务").font(.headline)
                 Spacer()
                 Button("刷新") { Task { await refresh() } }.disabled(loading)
+                if job?.isOpen == true {
+                    Button(stopping ? "停止中…" : "停止") { Task { await stop() } }.foregroundStyle(Theme.danger).disabled(stopping)
+                }
                 Button("关闭") { dismiss() }
             }.buttonStyle(RoutineButtonStyle()).foregroundStyle(Theme.muted).padding(20)
             Divider().overlay(Theme.border)
@@ -187,6 +237,14 @@ struct JobDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(18)
         .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func stop() async {
+        stopping = true
+        defer { stopping = false }
+        do { try await workspace.stopJob(jobID) }
+        catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription; return }
+        await refresh()
     }
 
     private func refresh() async {

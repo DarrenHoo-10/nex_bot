@@ -32,7 +32,7 @@ import { ModelPicker } from "./components/ModelPicker";
 import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail, occurrenceStatus, routineStatusLabel } from "./components/RoutineOccurrenceDetail";
-import { JobDetail } from "./components/JobDetail";
+import { JobChat } from "./components/JobChat";
 import { JobReportCard, type JobCardActions } from "./components/JobReportCard";
 import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
@@ -194,7 +194,7 @@ export function AgentDesktop() {
   const [modelChooserOpen, setModelChooserOpen] = useState(false);
   const [quote, setQuote] = useState<{ author: string; text: string }>(), [copiedId, setCopiedId] = useState(""), [exported, setExported] = useState(false);
   // A reply to a background job goes straight to that job, not to the main chat.
-  const [replyJob, setReplyJob] = useState<{ id: string; title: string }>(), [jobsOpen, setJobsOpen] = useState(false);
+  const [replyJob, setReplyJob] = useState<{ id: string; title: string }>(), [jobsOpen, setJobsOpen] = useState(false), [jobView, setJobView] = useState<string>();
   const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -357,6 +357,7 @@ export function AgentDesktop() {
       setQuote(undefined);
       setReplyJob(undefined);
       setJobsOpen(false);
+      setJobView(undefined);
       setMemoryNotice("");
       setPreview(undefined);
       setMessages([]);
@@ -517,17 +518,19 @@ export function AgentDesktop() {
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
   const viewRoutine = (routine: RecordRow) => setDialog(<RoutineDetail routine={routine} latest={state?.occurrences.find((o) => o.routine_id === routine.id)} close={closeDialog} showResult={(id) => openOccurrence(id)} disable={async () => { await api("routines/toggle", { id: routine.id, version: routine.version, enabled: false }); await reload(); closeDialog(); }} remove={async () => { await api("routines/delete", { id: routine.id, version: routine.version }); await reload(); closeDialog(); }}/>);
   const openOccurrence = (id: string) => setDialog(<RoutineOccurrenceDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>);
-  const openJobDetail = (id: string) => { setJobsOpen(false); setDialog(<JobDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>); };
+  // A job opens as its own conversation in place of the main chat; on a narrow window the profile drawer closes for it.
+  const openJobDetail = (id: string) => { setJobsOpen(false); setJobView(id); if (!wide) setDetail(false); };
   const stopJob = (job: Job) => void run(() => api("jobs/stop", { jobId: job.id }));
   // The card's acceptance and revision are the todo panel's own versioned actions.
   const jobActions: JobCardActions = {
     open: openJobDetail,
     reply: (job) => { setQuote(undefined); setReplyJob({ id: job.id, title: job.title }); composerRef.current?.focus(); },
     stop: stopJob,
+    // A failed job runs a new round in its own conversation when it gets input.
+    retry: (job) => void run(() => api("jobs/input", { jobId: job.id, text: "再试一次", clientId: crypto.randomUUID() })),
     accept: (job) => void run(() => api("todos/action", { id: job.todoId, version: job.todoVersion, action: "complete" })),
     revise: (job) => setDialog(<Editor title="继续修改" onClose={closeDialog} fields={[{ name: "feedback", label: "告诉 AI 要调整什么", multiline: true, required: true }]} onSubmit={(data) => run(async () => { await api("todos/action", { id: job.todoId, version: job.todoVersion, action: "start", clientId: crypto.randomUUID(), feedback: data.feedback }); closeDialog(); })}/>),
   };
-  const stopAll = () => setDialog(<Confirm title="停止全部工作？" detail="停止主对话和所有后台任务。" onClose={closeDialog} onConfirm={() => run(async () => { await api("agents/stop-all", { botId }); closeDialog(); })}/>);
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
@@ -600,7 +603,7 @@ export function AgentDesktop() {
           {page === "agent" && bot && openJobs.length > 0 ? <div className="jobs-pill-anchor">
             <button type="button" className="jobs-pill glass" aria-expanded={jobsOpen} aria-haspopup="dialog" onClick={() => setJobsOpen((open) => !open)}>{openJobs.length} 项后台任务</button>
             {jobsOpen ? <div className="jobs-popover glass" role="dialog" aria-label="后台任务" onKeyDown={(event) => { if (event.key === "Escape") setJobsOpen(false); }}>
-              {openJobs.map((job) => <div className="jobs-popover-row" key={job.id}><button type="button" className="jobs-popover-title" onClick={() => openJobDetail(job.id)}>{job.title}</button><span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span><button type="button" aria-label={`停止 ${job.title}`} disabled={busy} onClick={() => stopJob(job)}><Square size={12}/></button></div>)}
+              {openJobs.map((job) => <div className="jobs-popover-row" key={job.id}><button type="button" className="jobs-popover-title" onClick={() => openJobDetail(job.id)}>{job.title}</button><span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span></div>)}
             </div> : null}
           </div> : null}
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
@@ -618,7 +621,8 @@ export function AgentDesktop() {
         <h1>创建你的第一个 Agent</h1>
         <p>给它一个名字，身份与职责可以之后补充。消息、记忆和工作会持续保留。</p>
         <button className="primary" onClick={() => editBot()}><Plus size={16}/>创建 Agent</button>
-      </div> : page === "agent" ? <>
+      </div> : page === "agent" && jobView ? <JobChat key={jobView} id={jobView} botName={str(bot?.name) || "Agent"} avatar={<Avatar bot={bot} allBots={state.bots} size={26}/>} back={() => setJobView(undefined)} renderContent={(value, pending) => <RichText value={value} pending={pending} onPreviewFile={openFilePreview}/>}/>
+      : page === "agent" ? <>
         <div className="transcript" ref={scroll} onPointerDown={(event) => { const el = scroll.current; if (el && event.target === el && event.nativeEvent.offsetX >= el.clientWidth) setFollowing(false); }} onWheel={(event) => { if (event.deltaY < 0) setFollowing(false); else if (atEnd()) setFollowing(true); }} onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={(event) => { const y = event.touches[0]?.clientY ?? 0; if (y > touchY.current + 4) setFollowing(false); else if (atEnd()) setFollowing(true); }} onScroll={() => { const el = scroll.current; if (!el) return; const scrollTop = el.scrollTop; const resume = shouldResumeBottomFollow({ following: stickToBottom.current, previousScrollTop: previousScrollTop.current, scrollTop, distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight }); previousScrollTop.current = scrollTop; if (resume) setFollowing(true); }}>
           <div className="transcript-inner" ref={transcriptInner}>
           {focusedMessage ? <button type="button" className="older" onClick={latestMessages}>返回最新消息</button> : null}
@@ -734,9 +738,8 @@ export function AgentDesktop() {
           {tasks.length > 0 && <h2>正在处理</h2>}
           {tasks.map((t) => <section className="entry" key={str(t.id)}><span className="ic live"><Loader2 size={14}/></span><div><b>{t.objective || "Agent 工作"}</b><span>{taskPhrase(t)}</span>{t.created_at ? <time>{formatClock(t.created_at)}</time> : null}<div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></div></section>)}
 
-          {openJobs.length > 0 && <h2>后台任务</h2>}
-          {openJobs.map((job) => <section className="entry job-entry" key={job.id}><span className={`ic ${busyJob(job) ? "live" : "warn"}`}>{busyJob(job) ? <Loader2 size={14}/> : <CircleAlert size={14}/>}</span><div><button type="button" className="job-entry-title" onClick={() => openJobDetail(job.id)}><b>{job.title}</b></button><span>{jobStageLabels[job.stage]}{job.progress && busyJob(job) ? ` · ${job.progress}` : ""}</span><time>{formatClock(job.createdAt)}</time><div className="actions"><button onClick={() => stopJob(job)}><Square size={12}/>停止</button></div></div></section>)}
-          {openJobs.length > 0 ? <div className="actions stop-all"><button type="button" className="text-button danger-link" disabled={busy} onClick={stopAll}>停止全部</button></div> : null}
+          {openJobs.length > 0 ? <h2>后台任务</h2> : null}
+          {openJobs.length > 0 ? <div className="job-list">{openJobs.map((job) => <button type="button" key={job.id} className={`job-row ${busyJob(job) ? "busy" : "waiting"}${jobView === job.id ? " active" : ""}`} aria-current={jobView === job.id ? "true" : undefined} aria-label={`查看后台任务：${job.title}`} title={jobStageLabels[job.stage]} onClick={() => openJobDetail(job.id)}><span>{job.title}</span>{busyJob(job) ? null : <CircleAlert size={13} aria-hidden="true"/>}</button>)}</div> : null}
 
           {recentRuns.length > 0 ? <details className="routine-disclosure routine-history"><summary>最近动态<span>{recentRuns.length}</span></summary>
           {recentRuns.map((entry, index) => { const day = formatDay(entry.at), heading = day && (!index || formatDay(recentRuns[index - 1].at) !== day) ? <h3 className="day-label">{day}</h3> : null;

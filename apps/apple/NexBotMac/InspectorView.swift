@@ -140,13 +140,18 @@ struct InspectorWorkTab: View {
             ForEach(tasks) { task in activeTask(task) }
         }
         if !openJobs.isEmpty {
-            InspectorSectionTitle(title: "后台任务")
-            ForEach(openJobs) { job in openJob(job) }
-            Button("停止全部") { confirmStopAll = true }
-                .buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.danger).padding(.vertical, 4)
-                .confirmationDialog("停止全部工作？", isPresented: $confirmStopAll) {
-                    Button("停止全部", role: .destructive) { run { try await workspace.stopAll(botID: botID) } }
-                } message: { Text("停止主对话和所有后台任务。") }
+            HStack(alignment: .firstTextBaseline) {
+                InspectorSectionTitle(title: "后台任务")
+                Spacer()
+                Button("停止全部") { confirmStopAll = true }
+                    .buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.danger)
+                    .confirmationDialog("停止全部工作？", isPresented: $confirmStopAll) {
+                        Button("停止全部", role: .destructive) { run { try await workspace.stopAll(botID: botID) } }
+                    } message: { Text("停止主对话和所有后台任务。") }
+            }
+            VStack(spacing: 6) {
+                ForEach(openJobs) { job in JobFlowRow(job: job) { AgentUI.shared.job = JobSheetItem(id: job.id) } }
+            }
         }
         let runs = recent
         if !runs.isEmpty {
@@ -186,17 +191,6 @@ struct InspectorWorkTab: View {
                     pill("play.fill", "继续") { run { try await workspace.resumeTask(task.id) } }
                 }
                 pill("stop.fill", "停止") { run { try await workspace.cancelTask(task.id) } }
-            }
-            .padding(.top, 6)
-        }
-    }
-
-    private func openJob(_ job: Job) -> some View {
-        RunEntryRow(symbol: job.isBusy ? "arrow.triangle.2.circlepath" : "exclamationmark.circle", tone: job.isBusy ? .live : .warn, title: job.title,
-                    status: [job.stageText, job.isBusy ? job.progress : nil].compactMap { $0 }.joined(separator: " · "), time: job.createdAt.map { TimeFormat.formatClock($0) }) {
-            HStack(spacing: 8) {
-                pill(nil, "详情") { AgentUI.shared.job = JobSheetItem(id: job.id) }
-                pill("stop.fill", "停止") { run { try await workspace.stopJob(job.id) } }
             }
             .padding(.top, 6)
         }

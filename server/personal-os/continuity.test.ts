@@ -72,7 +72,7 @@ describe('Continuous personal assistant and memory',()=>{
     fake.setOverride(body=>body.stream?undefined:{choices:[{message:{content:'长'.repeat(12000)},finish_reason:'length'}],usage:{prompt_tokens:50,completion_tokens:10}});
     const task=app.agents.send(bot,'保留原文，摘要失败不得丢弃内容','pressure-failure').taskId;
     await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',task)?.status==='failed',app);
-    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toContain('仍超过输入预算');
+    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toContain('资料太多，超过了模型一次能读的量');
     expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
     const session=app.store.get('SELECT id FROM runtime_sessions WHERE bot_id=?',bot)!;
     const entries=app.runtime.projection.load(String(session.id))!;
@@ -391,7 +391,8 @@ describe('Continuous personal assistant and memory',()=>{
     expect(app.store.calibration.ratio(app.store.modelConfig())).toBe(.3);
     // About 55,000 raw tokens in one input: 16,500 calibrated, far below the 32,000 trigger, but above the 40,000 window.
     const task=await turn(app,bot,'合成资料'.repeat(8000),'oversize','failed');
-    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toContain('仍超过输入预算');
+    // The raw count tripped the 90% window line, not the calibrated limit: the message names that line.
+    expect(app.store.get('SELECT result_summary FROM tasks WHERE id=?',task)?.result_summary).toMatch(/^资料太多，超过了模型一次能读的量（约 [\d.]+ 万 Token，已到模型窗口 4\.0 万的九成）。/);
     expect(fake.requests).toHaveLength(0);expect(app.store.all('SELECT * FROM context_checkpoints')).toHaveLength(0);
   },60000);
   type Wire={role:string;content:unknown;tool_calls?:unknown};

@@ -439,9 +439,18 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-1" });
     await show([job({ stage: "done", endedAt: 3, latestReport: { ...latest, state: "ready", question: null } })], [report("ready")]);
     expect(cardButtons()).toEqual([]);
-    // A failed job still waits for a person: its card can stop it.
-    await show([job({ stage: "failed", latestReport: { ...latest, state: "failed", question: null } })], [report("failed")]);
-    expect(cardButtons()).toEqual(["停止"]);
+    // A failed job is retried or opened, not stopped; its card leads with the first sentence and folds the rest.
+    await show([job({ stage: "failed", latestReport: { ...latest, state: "failed", question: null } })], [report("failed", { content: "后台任务「整理下载文件夹」\n模型服务连接超时。请求地址：http://127.0.0.1:1/v1。错误代码 ETIMEDOUT" })]);
+    expect(cardButtons()).toEqual(["重试", "查看"]);
+    expect(container.querySelector(".job-card-body > p")?.textContent).toBe("模型服务连接超时。");
+    expect(container.querySelector(".job-card-detail")?.textContent).toBe("详细信息请求地址：http://127.0.0.1:1/v1。错误代码 ETIMEDOUT");
+    await show([job({ stage: "failed", latestReport: { ...latest, state: "failed", question: null } })], [report("failed", { content: '后台任务「整理下载文件夹」\n400: {"type":"rate_limit_error"}' })]);
+    expect(container.querySelector(".job-card-body > p")?.textContent).toBe("执行时出错了。");
+    expect(container.querySelector(".job-card-detail")?.textContent).toBe('详细信息400: {"type":"rate_limit_error"}');
+    await act(async () => cardButton("重试").click());
+    expect(fixture.api).toHaveBeenCalledWith("jobs/input", { jobId: "job-1", text: "再试一次", clientId: expect.any(String) });
+    await act(async () => cardButton("查看").click());
+    expect(container.querySelector(".job-chat-bar")).not.toBeNull();
     // An older report of the job carries no actions.
     await show([job({ stage: "question", latestReport: { ...latest, messageId: "newer" } })], [report("question")]);
     expect(cardButtons()).toEqual([]);
@@ -491,7 +500,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(fixture.api).toHaveBeenCalledWith("agents/input", expect.objectContaining({ text: "主对话的问题" }));
   });
 
-  it("lists open jobs in the header and the profile with their own stop, and the stop key stops only the main chat", async () => {
+  it("lists open jobs by name without stop controls, opens one as its own conversation, and the stop key stops only the main chat", async () => {
     await show([job(), job({ id: "job-2", title: "导出报告", stage: "question", taskId: "job-task-2" }), job({ id: "job-3", title: "旧任务", stage: "done", endedAt: 5 })], [],
       [{ id: "owner-task", bot_id: "agent", origin: "owner", status: "running" }, { id: "job-task", bot_id: "agent", origin: "job", status: "running" }]);
     const pill = container.querySelector<HTMLButtonElement>(".jobs-pill")!;
@@ -499,16 +508,24 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     await act(async () => pill.click());
     const rows = [...container.querySelectorAll(".jobs-popover-row")];
     expect(rows.map(row => row.textContent)).toEqual(["整理下载文件夹执行中", "导出报告等待你回答"]);
-    await act(async () => rows[1].querySelector<HTMLButtonElement>('button[aria-label="停止 导出报告"]')!.click());
-    expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-2" });
+    expect(rows[1].querySelector("button[aria-label^='停止']")).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]')!.click());
     expect(fixture.api).toHaveBeenCalledWith("cancel", { taskId: "owner-task" });
     expect(fixture.api).not.toHaveBeenCalledWith("cancel", { taskId: "job-task" });
-    expect([...container.querySelectorAll(".inspector .job-entry b")].map(item => item.textContent)).toEqual(["整理下载文件夹", "导出报告"]);
+    const jobRows = [...container.querySelectorAll<HTMLButtonElement>(".inspector .job-row")];
+    expect(jobRows.map(item => item.textContent)).toEqual(["整理下载文件夹", "导出报告"]);
+    expect(jobRows.map(item => item.classList.contains("busy"))).toEqual([true, false]);
+    expect(container.querySelector(".inspector .job-list")?.textContent).not.toContain("停止");
     expect(container.querySelector(".inspector .routine-history")?.textContent).toContain("旧任务");
-    await act(async () => container.querySelector<HTMLButtonElement>(".inspector .stop-all button")!.click());
-    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b => b.textContent === "确认")!.click());
-    expect(fixture.api).toHaveBeenCalledWith("agents/stop-all", { botId: "agent" });
+    expect([...container.querySelectorAll(".inspector button")].map(b => b.textContent)).not.toContain("停止全部");
+    await act(async () => jobRows[0].click());
+    expect(fixture.api).toHaveBeenCalledWith("jobs/detail?id=job-1", undefined, expect.any(AbortSignal));
+    expect(container.querySelector(".job-chat-bar")).not.toBeNull();
+    expect(container.querySelector('textarea[aria-label="发送给子代理的消息"]')).not.toBeNull();
+    expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).toBeNull();
+    expect(jobRows[0].getAttribute("aria-current")).toBe("true");
+    await act(async () => container.querySelector<HTMLButtonElement>(".job-chat-back")!.click());
+    expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).not.toBeNull();
     expect(container.querySelector('.contact-item[data-working="true"]')).not.toBeNull();
   });
 });

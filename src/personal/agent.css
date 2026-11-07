@@ -1707,6 +1707,9 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
 .job-stage.done, .job-stage.dropped, .job-stage.stopped { background: color-mix(in srgb, var(--muted-foreground, #647287) 12%, transparent); color: var(--muted-foreground, #647287); }
 .job-card .actions { display: flex; gap: 8px; margin-top: 10px; }
 .job-question { margin: 8px 0 0; font-weight: 600; }
+.job-card-detail { margin-top: 6px; font-size: 12px; color: var(--muted-foreground, #647287); }
+.job-card-detail summary { cursor: pointer; width: fit-content; }
+.job-card-detail p { margin: 6px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .job-reply-label { font-size: 11px; color: var(--muted-foreground, var(--bt-fg-3)); margin-bottom: 3px; text-align: right; }
 .reply-job-bar strong { color: var(--identity-accent, #4d6bfe); }
 .jobs-pill-anchor { position: relative; }
@@ -1715,4 +1718,24 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
 .jobs-popover-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12px; }
 .jobs-popover-title { flex: 1; font-weight: 500; }
 .jobs-popover-row > button:last-child { border: 0; background: transparent; padding: 3px; color: var(--muted-foreground, var(--bt-fg-3)); }
-.inspector .stop-all { margin: 4px 0 12px; }
+.inspector .job-list { display: grid; gap: 6px; margin: 0 0 12px; }
+.job-row { position: relative; overflow: hidden; isolation: isolate; display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 38px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--identity-accent, #4d6bfe) 16%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--identity-accent, #4d6bfe) 6%, var(--card, #fff)); color: var(--foreground, var(--bt-fg)); font-size: 12.5px; font-weight: 600; text-align: left; cursor: pointer; transition: border-color .15s, transform .15s; }
+.job-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-row:hover { border-color: color-mix(in srgb, var(--identity-accent, #4d6bfe) 42%, transparent); background: color-mix(in srgb, var(--identity-accent, #4d6bfe) 9%, var(--card, #fff)); }
+.job-row:active { transform: scale(.99); }
+.job-row.busy::before { content: ""; position: absolute; inset: 0; z-index: -1; background: linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--identity-accent, #4d6bfe) 18%, transparent) 50%, transparent 80%); background-size: 220% 100%; animation: job-row-flow 2.2s linear infinite; }
+.job-row.busy::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--identity-accent, #4d6bfe), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: job-row-line 1.6s ease-in-out infinite; }
+.job-row.active { border-color: var(--identity-accent, #4d6bfe); box-shadow: 0 0 0 1px color-mix(in srgb, var(--identity-accent, #4d6bfe) 30%, transparent); }
+.job-chat-bar { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0 auto; padding: 4px max(24px, calc((100% - 780px) / 2)) 6px; width: 100%; box-sizing: border-box; }
+.job-chat-bar strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.job-chat-back { flex: none; display: inline-flex; align-items: center; gap: 2px; border: 0; background: transparent; padding: 4px 8px 4px 2px; border-radius: 8px; color: var(--muted-foreground, #647287); font-size: 12.5px; cursor: pointer; }
+.job-chat-back:hover { color: var(--foreground, #202b3c); background: var(--wash, rgba(110, 128, 152, .1)); }
+.job-chat-brief { margin: 4px 0 14px; padding: 8px 12px; border-radius: 12px; background: var(--wash, rgba(110, 128, 152, .1)); font-size: 12.5px; color: var(--muted-foreground, #647287); }
+.job-chat-brief summary { cursor: pointer; font-weight: 600; }
+.job-chat-brief p { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.job-chat-steps { margin: 2px 0 8px 36px; font-size: 11.5px; color: var(--muted-foreground, #647287); }
+.job-row.waiting { border-color: color-mix(in srgb, var(--warning, #d97706) 35%, transparent); background: color-mix(in srgb, var(--warning, #d97706) 7%, var(--card, #fff)); }
+.job-row.waiting svg { flex: none; color: var(--warning, #d97706); }
+@keyframes job-row-flow { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+@keyframes job-row-line { from { background-position: -100% 0; } to { background-position: 200% 0; } }
+@media (prefers-reduced-motion: reduce) { .job-row.busy::before, .job-row.busy::after { animation: none; } }
