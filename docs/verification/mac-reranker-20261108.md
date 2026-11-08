@@ -24,4 +24,4 @@
 - 依赖 Mac 在线：`caffeinate` 只阻止空闲睡眠。电池供电时合盖仍会睡眠，此时检索照常进行，只是不重排。
 - 质量与速度都低于原来的云端 8B 模型；Hindsight 每次检索的重排候选数从 300 降到 40–120。
 - 没有在 NexBot 界面里手动点「测试保存」，也没有用真实账户发起对话来触发 Core 检索（那会写入用户数据）。Core 的检索路径只用它自己的客户端代码经代理验证过。
-- Hindsight 的 reflect 当前因为 LLM 返回 `503 auth_unavailable`（`grok-4.7`）而失败，与重排无关。
+- 当天随后把 Hindsight 的反思模型改为 CPA 的 `glm-5.3-flash`（`HINDSIGHT_API_REFLECT_LLM_*`，Key 与地址沿用主模型，备份 `.env.bak-20261108-reflect`）。原来的 `grok-4.7` 返回 `503 auth_unavailable`，反思全部失败。改后真实反思可以完成，日志中没有 LLM 错误；其他操作仍用 `grok-4.7`。
