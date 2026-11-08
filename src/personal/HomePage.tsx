@@ -31,9 +31,9 @@ const features = [
   { icon: FileText, title: "处理文件", text: "上传文档、PDF 和图片，让助手阅读、总结和整理。" },
   { icon: SquareTerminal, title: "操作电脑", text: "Windows 和 Mac 客户端登录后连接本机，助手可读取文件、运行命令。" },
   { icon: Plug, title: "连接工具", text: "添加 MCP 连接器，按助手分别授权可用的工具。" },
-  { icon: CalendarClock, title: "后台与定时任务", text: "长任务交给后台执行，主对话随时能继续聊；定时任务按时独立运行，完成后回到对话汇报。" },
+  { icon: CalendarClock, title: "后台与定时任务", text: "长任务交给后台执行，主对话随时能继续聊，也能点开任务直接和子代理对话；定时任务按时独立运行，完成后回到对话汇报。" },
   { icon: Check, title: "统一待办", text: "在对话里记录、修改、完成或删除待办；未指定日期默认当天，按日、周、月查看。" },
-  { icon: Cpu, title: "自选模型", text: "连接自己的模型服务，按助手切换模型、调整上下文与输出。" },
+  { icon: Cpu, title: "自选模型", text: "接入多个模型供应商，按助手切换模型和思考强度，调整上下文与输出。" },
   { icon: ShieldCheck, title: "关键操作你来定", text: "删除、覆盖、发消息等操作先请你批准，随时可以停止。" },
 ];
 
@@ -134,7 +134,7 @@ export function HomePage({ login, signedIn = false }: { login: ReactNode; signed
         <div className="home-platforms">{platforms(downloads).map(({ icon: Icon, name, detail, note, href, action }) => <a key={name} href={signedIn && href === "#login" ? "#workspace" : href} {...external(href)} onClick={!signedIn && href === "#login" ? toLogin : undefined}>
           <span className="home-icon"><Icon size={19}/></span><strong>{name}</strong><span>{detail}</span><small>{note}</small><b>{signedIn && href === "#login" ? "进入工作台" : action}<ArrowRight size={14}/></b>
         </a>)}</div>
-        <p className="home-release-link"><a href={`${repo}/releases/tag/nexbot-v0.9.27-preview.2`} {...external(repo)}>Core 更新：后台任务参数与工具翻页修复</a> · 客户端无需重装</p>
+        <p className="home-release-link"><a href={`${repo}/releases/tag/nexbot-v0.9.28-preview.1`} {...external(repo)}>0.9.28 预览版：多供应商、思考强度与子代理对话</a> · 各平台安装包已更新</p>
         <p className="home-release-link"><a href={links.releases} {...external(links.releases)}>查看全部版本与校验文件</a></p>
       </section>
       <section id="start" className="home-section">
