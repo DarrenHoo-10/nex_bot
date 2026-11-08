@@ -40,7 +40,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
         <section id={`${sectionId}-model`} hidden={category !== "model"} aria-label="模型" className="preferences-panel">
           <div className="preferences-panel-heading"><h2>模型</h2></div>
           <ProviderSettings state={state} refresh={refresh} active={category === "model"}/>
-          <ImageModelSettings key={JSON.stringify(["image", state.config?.provider_id, state.config?.endpoint])} state={state} refresh={refresh} active={category === "model"}/>
+          <ImageModelSettings state={state} refresh={refresh} active={category === "model"}/>
           <RetrievalSettings active={category === "model"}/>
         </section>
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="长期记忆" className="preferences-panel">

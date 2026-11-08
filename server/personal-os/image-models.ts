@@ -5,9 +5,20 @@ import { text, type CoreStore } from './store.ts';
 
 export class ImageModels {
   constructor(readonly store: CoreStore) {}
+  /**
+   * Image models offered for generation: the selection of every enabled, configured OpenAI-compatible provider, the
+   * default provider first. A model name chosen on two providers is told apart as "model@provider".
+   */
   list() {
-    if (this.store.config()?.provider_id !== 'openai') return [];
-    return this.store.imageModelSelection().models.map(model => ({ id: model, name: model, model }));
+    const rows: Array<{ model: string; connectionId: string; provider: string }> = [];
+    for (const connection of this.store.connectionRows()) {
+      const connectionId = String(connection.id);
+      if (connection.provider_id !== 'openai' || !connection.enabled || connection.status !== 'active' || !this.store.connectionSecret(connectionId)) continue;
+      for (const model of this.store.imageModelSelection(connectionId).models) rows.push({ model, connectionId, provider: String(connection.display_name) });
+    }
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.model, (counts.get(row.model) ?? 0) + 1);
+    return rows.map(row => { const id = (counts.get(row.model) ?? 0) > 1 ? `${row.model}@${row.provider}` : row.model; return { id, name: id, model: row.model, connectionId: row.connectionId }; });
   }
   select(modelId?: unknown) {
     const models = this.list();
@@ -15,9 +26,17 @@ export class ImageModels {
     if (!row) throw new Error(modelId === undefined ? '请先在设置的模型页选择生图模型' : '此模型未被选为生图模型，请重新读取模型列表');
     return row;
   }
+  /** The versions a generation started from; a provider or selection edited meanwhile makes the result stale. */
+  stamp(connectionId: string) {
+    return { connectionId, connection: Number(this.store.connection(connectionId)?.version ?? -1), selection: this.store.imageModelSelection(connectionId).version };
+  }
+  unchanged(stamp: ReturnType<ImageModels['stamp']>) {
+    const now = this.stamp(stamp.connectionId);
+    return now.connection === stamp.connection && now.selection === stamp.selection;
+  }
   async generate(args: Record<string, unknown>, signal: AbortSignal) {
     const row = this.select(args.modelId), prompt = text(args.prompt, 16000);
-    const connection = this.store.modelConfig(), selectionVersion = this.store.imageModelSelection().version;
+    const connection = this.store.modelConfig(undefined, { connectionId: row.connectionId, model: row.model }), stamp = this.stamp(row.connectionId);
     const size = args.size === undefined ? '1024x1024' : text(args.size, 30);
     if (!['1024x1024', '1536x1024', '1024x1536', 'auto'].includes(size)) throw new Error('不支持的图片尺寸');
     const endpoint = normalizeImageGenerationUrl(connection.endpoint);
@@ -57,8 +76,8 @@ export class ImageModels {
     if (image.bytes.length > attachmentLimit) throw new Error('生成的图片超过 5 MB');
     if (image.mime === 'image/gif') throw new Error('生图服务须返回 PNG、JPEG 或 WebP 图片');
     this.select(row.id);
-    if (this.store.modelConfig().version !== connection.version || this.store.imageModelSelection().version !== selectionVersion) throw new Error('模型连接或生图选择已变化，请重新生成');
+    if (!this.unchanged(stamp)) throw new Error('模型连接或生图选择已变化，请重新生成');
     signal.throwIfAborted();
-    return { ...image, modelId: String(row.id), model: String(row.model) };
+    return { ...image, modelId: String(row.id), model: String(row.model), stamp };
   }
 }

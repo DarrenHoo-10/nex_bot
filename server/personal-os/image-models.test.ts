@@ -79,6 +79,27 @@ it('selects existing models, reuses credentials, fences stale edits and scopes s
   f.select([]); expect(models.list()).toEqual([]);
 });
 
+it('generates through an OpenAI-compatible provider that is not the default one', async () => {
+  const f = await fixture(), signal = new AbortController().signal;
+  // The default provider becomes an Anthropic-format one; the OpenAI provider ('default' row) stays enabled.
+  const chat = f.app.store.saveConnection({ name: 'Anthropic 主力', provider: 'anthropic', endpoint: 'https://anthropic.example.test', apiKey: 'synthetic-anthropic-key', defaultModel: 'claude-x' });
+  f.app.store.setDefaultConnection({ id: chat });
+  expect((await f.request('models/images', { provider: 'anthropic', endpoint: 'https://anthropic.example.test', models: ['x'], version: 0 })).status).toBe(400);
+  const saved = await f.request('models/images', { connectionId: 'default', models: ['gpt-image-fixture'], version: 0 });
+  expect(saved.status).toBe(200);
+  const state = f.app.store.state() as unknown as { connections: Array<{ id: string; imageModels?: { models: string[] } }> };
+  expect(state.connections.find(c => c.id === 'default')?.imageModels?.models).toEqual(['gpt-image-fixture']);
+  expect(state.connections.find(c => c.id === chat)?.imageModels).toBeUndefined();
+  const models = new ImageModels(f.app.store);
+  expect(models.list()).toEqual([{ id: 'gpt-image-fixture', name: 'gpt-image-fixture', model: 'gpt-image-fixture', connectionId: 'default' }]);
+  await models.generate({ prompt: '画一只蓝色小鸟' }, signal);
+  expect(f.requests.at(-1)).toMatchObject({ path: '/v1/images/generations', authorization: 'Bearer synthetic-chat-key', body: { model: 'gpt-image-fixture' } });
+  // A disabled provider offers no image models.
+  const row = f.app.store.connection('default')!;
+  f.app.store.saveConnection({ id: 'default', version: Number(row.version), name: String(row.display_name), provider: 'openai', endpoint: f.endpoint, enabled: false });
+  expect(models.list()).toEqual([]);
+});
+
 it('generates through a real worker and publishes a scoped, previewable, downloadable image', async () => {
   const f = await fixture();
   f.select(['gpt-image-fixture']);

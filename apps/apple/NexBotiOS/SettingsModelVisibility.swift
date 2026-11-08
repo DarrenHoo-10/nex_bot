@@ -110,11 +110,40 @@ struct ModelVisibilitySection: View {
     }
 }
 
-/// 生图模型 (web `ImageModelSettings.tsx`): the models image generation may use, saved at once.
-/// Only OpenAI-compatible connections can generate images.
+/// 生图模型 (web `ImageModelSettings.tsx`): image generation uses OpenAI-compatible providers, whichever is the default.
+/// Pick a provider, then its image models; every enabled provider's selection is offered to the assistant.
 struct ImageModelSection: View {
     let workspace: WorkspaceStore
+    @State private var chosen = ""
 
+    private var providers: [ModelConnection] { (workspace.state?.connections ?? []).filter { $0.provider == "openai" && $0.usable } }
+    private var provider: ModelConnection? { providers.first { $0.id == chosen } ?? providers.first(where: \.isDefault) ?? providers.first }
+    private var total: Int { providers.reduce(0) { $0 + ($1.imageModels?.models?.count ?? 0) } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("生图模型").font(.subheadline.weight(.semibold))
+                Spacer()
+                StatusChip(text: providers.isEmpty ? (workspace.state?.connections.isEmpty == false ? "需要 OpenAI 兼容的供应商" : "请先连接模型") : "已选 \(total) 个", tone: .neutral)
+            }
+            if let provider {
+                if providers.count > 1 {
+                    Picker("供应商", selection: Binding(get: { provider.id }, set: { chosen = $0 })) {
+                        ForEach(providers) { Text($0.name).tag($0.id) }
+                    }
+                    .pickerStyle(.menu)
+                }
+                ImageProviderModelsIOS(workspace: workspace, connection: provider).id(provider.id)
+            }
+        }
+        .padding(14).cardStyle()
+    }
+}
+
+private struct ImageProviderModelsIOS: View {
+    let workspace: WorkspaceStore
+    let connection: ModelConnection
     @State private var catalog: [String] = []
     @State private var autosave: ModelSelectionAutosave?
     @State private var loading = false
@@ -122,59 +151,42 @@ struct ImageModelSection: View {
     @State private var error = ""
     @State private var loaded = false
 
-    private var config: ModelConfig? { workspace.state?.config }
-    private var supported: Bool { config?.providerID == "openai" }
-    private var stored: ModelVisibility { workspace.state?.imageModelSelection ?? ModelVisibility(models: []) }
+    private var stored: ModelVisibility { connection.imageModels ?? ModelVisibility(models: []) }
     private var selection: [String] { autosave?.selection ?? stored.models ?? [] }
     private var all: [String] {
         var seen = Set<String>()
-        return (catalog + selection + (workspace.state?.modelVisibility.models ?? []) + [config?.defaultModel ?? ""])
-            .filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
+        return (catalog + selection + (connection.models ?? [])).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("生图模型").font(.subheadline.weight(.semibold))
-                Spacer()
-                StatusChip(text: supported ? "已选 \(selection.count) 个" : config != nil ? "当前模型连接不支持生图" : "请先连接模型", tone: .neutral)
-            }
-            if supported {
-                ModelMultiList(models: all, selected: Set(selection), maxHeight: 260, onToggle: { autosave?.toggle($0, all: all) })
-                    .disabled(loading)
-                let status = loading ? "获取中…" : autosave?.busy == true ? "保存中…" : notice
-                if !status.isEmpty { Text(status).font(.caption).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
-                if let failure = [error, autosave?.error ?? ""].first(where: { !$0.isEmpty }) {
-                    InlineBanner(text: failure)
-                    if !error.isEmpty { Button("重试获取") { Task { await load() } }.buttonStyle(PillButtonStyle()).disabled(loading) }
-                }
+            ModelMultiList(models: all, selected: Set(selection), maxHeight: 260, onToggle: { autosave?.toggle($0, all: all) })
+                .disabled(loading)
+            let status = loading ? "获取中…" : autosave?.busy == true ? "保存中…" : notice
+            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(Theme.muted).accessibilityAddTraits(.updatesFrequently) }
+            if let failure = [error, autosave?.error ?? ""].first(where: { !$0.isEmpty }) {
+                InlineBanner(text: failure)
+                if !error.isEmpty { Button("重试获取") { Task { await load() } }.buttonStyle(PillButtonStyle()).disabled(loading) }
             }
         }
-        .padding(14).cardStyle()
         .onAppear {
             guard autosave == nil else { return }
+            let id = connection.id
             autosave = ModelSelectionAutosave(initial: stored) { [workspace] models, version in
-                try await workspace.saveImageModelSelection(models: models ?? [], version: version)
+                try await workspace.saveImageModelSelection(connectionID: id, models: models ?? [], version: version)
             }
         }
         .onChange(of: stored) { autosave?.sync(stored) }
-        .task(id: supported) { if supported, !loaded { loaded = true; await load() } }
-        .onDebugUI { cmd, arg in
-            switch cmd {
-            case "ig-toggle": autosave?.toggle(arg, all: all)
-            case "ig-status": mbLogUI("images selection=\(selection.joined(separator: ",")) stored=\(stored.models?.joined(separator: ",") ?? "")@\(stored.version) busy=\(autosave?.busy ?? false) error=\(autosave?.error ?? error) supported=\(supported)")
-            default: break
-            }
-        }
+        .task { if !loaded { loaded = true; await load() } }
     }
 
     private func load() async {
-        guard !loading, let source = workspace.savedModelSource() else { return }
+        guard !loading else { return }
         loading = true; error = ""
         defer { loading = false }
-        let loader = ModelCatalogLoader()
-        await loader.load(source, force: false)
-        if let failure = loader.error { error = failure; return }
-        if let result = loader.catalog { catalog = result.models; notice = result.hasMore ? "模型列表未全部返回" : "" }
+        do {
+            let result = try await workspace.listModels(connectionID: connection.id)
+            catalog = result.models; notice = result.hasMore ? "模型列表未全部返回" : ""
+        } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
     }
 }

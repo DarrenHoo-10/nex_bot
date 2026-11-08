@@ -129,7 +129,7 @@ private final class JobFixtureProtocol: URLProtocol, @unchecked Sendable {
              "bots": [["id": "b1", "name": "后台演示助手", "selected_connection": "thinker", "selected_model": "", "selected_reasoning": "max", "model_selection_version": 2]],
              "config": ["id": "default", "provider_id": "openai", "endpoint": "https://api.example.test/v1", "default_model": "fake", "configured": 1],
              "connections": [
-                ["id": "default", "name": "演示供应商", "provider": "openai", "endpoint": "https://api.example.test/v1", "defaultModel": "fake", "enabled": true, "isDefault": true, "configured": true, "version": 3, "models": NSNull(), "modelsVersion": 0, "options": [:]],
+                ["id": "default", "name": "演示供应商", "provider": "openai", "endpoint": "https://api.example.test/v1", "defaultModel": "fake", "enabled": true, "isDefault": true, "configured": true, "version": 3, "models": NSNull(), "modelsVersion": 0, "options": [:], "imageModels": ["models": ["gpt-image-2"], "version": 1]],
                 ["id": "thinker", "name": "推理供应商", "provider": "anthropic", "endpoint": "https://api.example.test/thinker", "defaultModel": "claude-x", "enabled": true, "isDefault": false, "configured": true, "version": 1, "models": ["claude-x"], "modelsVersion": 4, "names": ["claude-x": "Claude X"],
                  "options": ["claude-x": ["imageInput": true, "reasoning": ["low", "high"], "version": 1]]],
              ],
@@ -186,6 +186,8 @@ final class JobRenderingTests: XCTestCase {
         XCTAssertEqual(state.connections.map(\.name), ["演示供应商", "推理供应商"])
         let thinker = try XCTUnwrap(state.connections.last)
         XCTAssertNil(state.connections[0].models)
+        XCTAssertEqual(state.connections[0].imageModels?.models, ["gpt-image-2"])
+        XCTAssertNil(thinker.imageModels)
         XCTAssertEqual(thinker.models, ["claude-x"])
         XCTAssertEqual(thinker.options["claude-x"]?.reasoning, [.low, .high])
         XCTAssertEqual(thinker.options["claude-x"]?.imageInput, true)

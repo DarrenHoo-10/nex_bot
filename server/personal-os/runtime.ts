@@ -768,8 +768,7 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
         result = { models: new ImageModels(this.store).list().map(({ id, name, model }) => ({ id, name, model })) };
       }
       else if (call.tool_name === 'image.generate') {
-        const connectionVersion = this.store.modelConfig().version, selectionVersion = this.store.imageModelSelection().version;
-        const job = new ImageModels(this.store).generate(args, worker.controller.signal);
+        const images = new ImageModels(this.store), job = images.generate(args, worker.controller.signal);
         this.modelJobs.add(job);
         let image: Awaited<typeof job>;
         try { image = await job; } finally { this.modelJobs.delete(job); }
@@ -782,7 +781,7 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
         await files.persist(file.id);
         await this.requireIdentity(worker);
         this.assert(worker);
-        if (this.store.modelConfig().version !== connectionVersion || this.store.imageModelSelection().version !== selectionVersion) throw new Error('模型连接或生图选择已变化，请重新生成');
+        if (!images.unchanged(image.stamp)) throw new Error('模型连接或生图选择已变化，请重新生成');
         if (evaluateTool(this.store, String(call.bot_id), args).policy.version !== JSON.parse(String(call.authorization_snapshot_json)).policyVersion) throw new Error('生图权限已变化');
         this.store.transaction(() => {
           const task = this.assert(worker);

@@ -516,23 +516,25 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
     const row = config && this.get("SELECT models_json,version FROM model_visibility WHERE provider=? AND endpoint=?", config.provider_id, String(config.endpoint).replace(/\/+$/, ""));
     return { models: row?.models_json ? JSON.parse(String(row.models_json)) as string[] : null, version: Number(row?.version ?? 0) };
   }
-  imageModelSelection() {
-    const config = this.config();
+  /** A provider's image generation models (the default provider without an id); always a list. */
+  imageModelSelection(connectionId?: string) {
+    const config = connectionId === undefined ? this.defaultConnection() : this.connection(connectionId);
     const row = config && this.get('SELECT models_json,version FROM image_model_selections WHERE provider=? AND endpoint=?', config.provider_id, String(config.endpoint).replace(/\/+$/, ''));
     return { models: row ? JSON.parse(String(row.models_json)) as string[] : [], version: Number(row?.version ?? 0) };
   }
   saveImageModelSelection(input: Record<string, unknown>) {
-    const config = this.config();
-    if (!config || input.provider !== config.provider_id || input.endpoint !== config.endpoint) throw new Error('模型连接已变化，请重新选择');
+    // With connectionId: that provider; otherwise (older clients) the default provider, named by its format and address.
+    const config = this.connectionFor(input);
+    if (!config || (input.connectionId === undefined && (input.provider !== config.provider_id || input.endpoint !== config.endpoint))) throw new Error('模型连接已变化，请重新选择');
     if (config.provider_id !== 'openai') throw new Error('当前模型连接不支持生图');
     if (!Array.isArray(input.models) || input.models.length > 100 || input.models.some(model => typeof model !== 'string' || !model.trim() || model.length > 200)) throw new Error('生图模型选择无效');
     const models = [...new Set((input.models as string[]).map(model => model.trim()))];
     this.transaction(() => {
-      const previous = this.imageModelSelection();
+      const previous = this.imageModelSelection(String(config.id));
       if (input.version !== previous.version) throw new Error('生图模型选择已变化，请刷新');
       this.run('INSERT INTO image_model_selections VALUES(?,?,?,?) ON CONFLICT(provider,endpoint) DO UPDATE SET models_json=excluded.models_json,version=excluded.version', config.provider_id, String(config.endpoint).replace(/\/+$/, ''), JSON.stringify(models), previous.version + 1);
     });
-    return this.imageModelSelection();
+    return this.imageModelSelection(String(config.id));
   }
   saveModelVisibility(input: Record<string, unknown>) {
     const config = this.connectionFor(input);
@@ -690,7 +692,7 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       const visibility = this.modelVisibility(String(row.id));
       const options = Object.fromEntries(this.all("SELECT model,image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=?", row.id).map((option) => [String(option.model), { imageInput: option.image_input == null ? null : !!option.image_input, reasoning: parseReasoningLevels(JSON.parse(String(option.reasoning_levels_json))), version: Number(option.version) }]));
       const names = Object.fromEntries(this.all("SELECT model,display_name FROM model_display_names WHERE provider=? AND endpoint=?", row.provider_id, String(row.endpoint).replace(/\/+$/, "")).map((item) => [String(item.model), String(item.display_name)]));
-      return { id: String(row.id), name: String(row.display_name), names, provider: String(row.provider_id), endpoint: String(row.endpoint), defaultModel: String(row.default_model), enabled: !!row.enabled, isDefault: !!row.is_default, configured: !!(row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref)), version: Number(row.version), models: visibility.models, modelsVersion: visibility.version, options };
+      return { id: String(row.id), name: String(row.display_name), names, ...(row.provider_id === "openai" ? { imageModels: this.imageModelSelection(String(row.id)) } : {}), provider: String(row.provider_id), endpoint: String(row.endpoint), defaultModel: String(row.default_model), enabled: !!row.enabled, isDefault: !!row.is_default, configured: !!(row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref)), version: Number(row.version), models: visibility.models, modelsVersion: visibility.version, options };
     });
   }
   /** The provider an assistant uses: its own choice while that one is usable, otherwise the default provider. */

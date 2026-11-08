@@ -33,6 +33,8 @@ export interface Connection {
   models: string[] | null; modelsVersion: number; options: Record<string, ModelOptions>;
   /** Display names the provider's model list reported for ids that differ from them; absent on older Cores. */
   names?: Record<string, string>;
+  /** OpenAI-compatible providers only: the models image generation may use there. */
+  imageModels?: { models: string[]; version: number };
 }
 /** What menus show for a model: its provider-reported name, else its id. */
 export const modelName = (connection: Connection | undefined, model: string) => connection?.names?.[model] || model;

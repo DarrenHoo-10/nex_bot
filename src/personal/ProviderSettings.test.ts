@@ -7,6 +7,7 @@ const fixture = vi.hoisted(() => ({ api: vi.fn(), listConnectionModels: vi.fn() 
 vi.mock("./api", async (original) => ({ ...await original<typeof import("./api")>(), api: fixture.api, listConnectionModels: fixture.listConnectionModels }));
 import { ProviderSettings } from "./ProviderSettings";
 import { ModelMenu, type ModelChoice } from "./components/ModelMenu";
+import { ImageModelSettings } from "./ImageModelSettings";
 
 const connection = (patch: Partial<Connection> = {}): Connection => ({ id: "default", name: "CPA", provider: "anthropic", endpoint: "https://api.example.test/cpa", defaultModel: "claude-opus-5-5", enabled: true, isDefault: true, configured: true, version: 3, models: null, modelsVersion: 2, options: {}, ...patch });
 const second = connection({ id: "zhipu", name: "智谱", provider: "openai", endpoint: "https://api.example.test/zhipu/v1", defaultModel: "glm-5.3", isDefault: false, version: 1, models: ["glm-5.3", "glm-5.3-air"], modelsVersion: 4, options: { "glm-5.3": { imageInput: true, reasoning: ["low", "high"], version: 1 } } });
@@ -89,6 +90,24 @@ describe("Provider-reported model names", () => {
     expect(row.textContent).toBe("Grok 4.6");
     await act(async () => row.click());
     expect(onChange).toHaveBeenCalledWith({ connectionId: "default", model: "claude-fable-5-dd-6.4-korg", reasoning: null });
+  });
+});
+
+describe("生图模型", () => {
+  it("uses an OpenAI-compatible provider that is not the default one", async () => {
+    const openai = connection({ id: "cpa", name: "cpa", provider: "openai", isDefault: false, imageModels: { models: [], version: 0 } });
+    fixture.listConnectionModels.mockResolvedValue({ models: ["gpt-image-2", "glm-5.3"], hasMore: false });
+    fixture.api.mockImplementation(async (_route: string, body: { models: string[] }) => ({ models: body.models, version: 1 }));
+    await act(async () => root.render(createElement(ImageModelSettings, { state: { connections: [connection(), openai] } as unknown as State, refresh, active: true })));
+    expect(container.querySelector(".preferences-status")?.textContent).toBe("已选 0 个");
+    expect(fixture.listConnectionModels).toHaveBeenCalledWith("cpa");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="选择生图模型"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLElement>(".model-option")].find(option => option.textContent === "gpt-image-2")!.click());
+    expect(fixture.api).toHaveBeenCalledWith("models/images", { connectionId: "cpa", models: ["gpt-image-2"], version: 0 });
+  });
+  it("asks for an OpenAI-compatible provider when there is none", async () => {
+    await act(async () => root.render(createElement(ImageModelSettings, { state: { connections: [connection()] } as unknown as State, refresh, active: true })));
+    expect(container.querySelector(".preferences-status")?.textContent).toBe("需要 OpenAI 兼容的供应商");
   });
 });
 

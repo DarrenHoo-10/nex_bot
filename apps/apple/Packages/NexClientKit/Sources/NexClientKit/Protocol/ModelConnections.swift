@@ -59,6 +59,11 @@ public struct ModelConnection: RowBacked, Identifiable {
     public var names: [String: String] { (row["names"]?.objectValue ?? [:]).compactMapValues { $0.stringValue.flatMap { $0.isEmpty ? nil : $0 } } }
     /// What menus show for a model: its provider-reported name, else its id.
     public func displayName(_ model: String) -> String { names[model] ?? model }
+    /// OpenAI-compatible providers only: the models image generation may use there (nil on other formats or older Cores).
+    public var imageModels: ModelVisibility? {
+        guard let value = row["imageModels"]?.objectValue else { return nil }
+        return ModelVisibility(models: value["models"]?.arrayValue?.compactMap(\.stringValue) ?? [], version: value["version"]?.intValue ?? 0)
+    }
     /// 「API」 or 「Anthropic」, as the chat menu tags it.
     public var formatTag: String { provider == "anthropic" ? "Anthropic" : "API" }
     public var usable: Bool { enabled && configured }
@@ -143,6 +148,10 @@ extension CoreClient {
     /// `POST /api/models/visibility` for one provider (`nil` = every model).
     public func saveModelVisibility(connectionID: String, models: [String]?, version: Int) async throws -> ModelVisibility {
         try await post("/api/models/visibility", body: ConnectionVisibilityBody(connectionId: connectionID, models: models, version: version))
+    }
+    /// `POST /api/models/images` for one provider (owner only, OpenAI-compatible providers): its image generation models.
+    public func saveImageModelSelection(connectionID: String, models: [String], version: Int) async throws -> ModelVisibility {
+        try await post("/api/models/images", body: ConnectionVisibilityBody(connectionId: connectionID, models: models, version: version))
     }
     /// `POST /api/bots/model` with a provider: model `""` is the provider's default model; `reasoning == nil` keeps the stored effort.
     public func updateModel(id: String, connectionID: String, model: String, reasoning: String?, version: Int) async throws {

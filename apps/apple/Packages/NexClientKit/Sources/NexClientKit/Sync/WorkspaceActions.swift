@@ -442,6 +442,11 @@ extension WorkspaceStore {
     public func saveModelVisibility(connectionID: String, models: [String]?, version: Int) async throws -> ModelVisibility {
         try await act { try await client.saveModelVisibility(connectionID: connectionID, models: models, version: version) }
     }
+    /// Saves a provider's image generation models. `version` is the one the edit started from.
+    @discardableResult
+    public func saveImageModelSelection(connectionID: String, models: [String], version: Int) async throws -> ModelVisibility {
+        try await act { try await client.saveImageModelSelection(connectionID: connectionID, models: models, version: version) }
+    }
     /// Chooses an assistant's provider, model (`""` = that provider's default) and effort (`nil` keeps the stored one).
     public func setAgentModel(botID: String, connectionID: String, model: String, reasoning: String?) async throws {
         guard let b = bot(botID) else { throw CoreError(kind: .unsupported, message: "Agent 不存在") }
