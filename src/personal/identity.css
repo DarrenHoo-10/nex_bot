@@ -143,11 +143,6 @@
 .rk-workspace .routine-row-actions button:hover { color: var(--identity-accent); }
 .rk-workspace .routine-summary strong { font-weight: 600; font-size: 14px; }
 .rk-workspace .routine-summary:hover strong { color: var(--identity-accent); }
-.rk-workspace .routine-occurrence { width: 100%; text-align: left; background: transparent; border: 0; border-radius: 8px; }
-.rk-workspace .routine-occurrence:hover { background: var(--wash); }
-.rk-workspace .routine-occurrence-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.rk-workspace .routine-occurrence-copy b { overflow-wrap: anywhere; }
-.rk-workspace .routine-occurrence-copy > span, .rk-workspace .routine-occurrence-copy time { color: var(--muted-foreground); font-size: 12px; }
 .routine-detail { min-width: 0; }
 .routine-detail .modal-heading h2 .modal-heading h2 { font-size: 22px; letter-spacing: -.03em; line-height: 1.35; }
 .routine-detail-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12px; }
@@ -165,7 +160,6 @@
 .routine-disclosure[open] { padding-bottom: 16px; }
 .routine-disclosure > summary:focus-visible { outline: 2px solid var(--identity-accent); outline-offset: 3px; }
 .routine-disclosure > summary:hover { color: var(--identity-accent); }
-.routine-history { margin-bottom: 20px; }
 @media (max-width: 480px) { .routine-detail-date { flex-basis: 60%; } .routine-result { padding: 16px; } }
 /* Soft outlined controls, using the workspace's glass surface and teal accent. */
 .rk-workspace :is(.routine-detail-toolbar, .routine-row-actions, .routine-empty) button { min-height: 40px; padding: 9px 14px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--border); border-radius: 11px; background: color-mix(in srgb, var(--card) 70%, transparent); color: var(--foreground); box-shadow: inset 0 1px 0 var(--surface-highlight), 0 2px 3px -1px #233d530b; font-size: 12px; font-weight: 500; }
@@ -196,4 +190,3 @@
 .routine-detail .step-row { width: 100%; }
 .routine-detail .step-row strong { min-width: 0; overflow-wrap: anywhere; }
 .routine-detail .step-row small { margin-left: auto; color: var(--muted-foreground); }
-.rk-workspace .routine-occurrence:focus-visible { outline: 2px solid #3566ed; outline-offset: 2px; }

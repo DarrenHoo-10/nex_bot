@@ -512,18 +512,17 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     await act(async () => container.querySelector<HTMLButtonElement>('.composer .send[aria-label="停止任务"]')!.click());
     expect(fixture.api).toHaveBeenCalledWith("cancel", { taskId: "owner-task" });
     expect(fixture.api).not.toHaveBeenCalledWith("cancel", { taskId: "job-task" });
-    const jobRows = [...container.querySelectorAll<HTMLButtonElement>(".inspector .job-row")];
-    expect(jobRows.map(item => item.textContent)).toEqual(["整理下载文件夹", "导出报告"]);
-    expect(jobRows.map(item => item.classList.contains("busy"))).toEqual([true, false]);
-    expect(container.querySelector(".inspector .job-list")?.textContent).not.toContain("停止");
-    expect(container.querySelector(".inspector .routine-history")?.textContent).toContain("旧任务");
-    expect([...container.querySelectorAll(".inspector button")].map(b => b.textContent)).not.toContain("停止全部");
-    await act(async () => jobRows[0].click());
+    // The work tab lists neither the running task, open jobs nor recent runs: jobs open from the pill and their chat cards.
+    const inspector = container.querySelector(".inspector")!;
+    expect([...inspector.querySelectorAll("h2")].map(h => h.textContent)).not.toEqual(expect.arrayContaining(["正在处理"]));
+    expect([...inspector.querySelectorAll("h2")].map(h => h.textContent)).not.toEqual(expect.arrayContaining(["后台任务"]));
+    expect(inspector.querySelector(".job-row, .job-list, .routine-history")).toBeNull();
+    expect([...inspector.querySelectorAll("button")].map(b => b.textContent)).not.toEqual(expect.arrayContaining(["停止", "停止全部"]));
+    await act(async () => container.querySelector<HTMLButtonElement>(".jobs-popover-title")!.click());
     expect(fixture.api).toHaveBeenCalledWith("jobs/detail?id=job-1", undefined, expect.any(AbortSignal));
     expect(container.querySelector(".job-chat-bar")).not.toBeNull();
     expect(container.querySelector('textarea[aria-label="发送给子代理的消息"]')).not.toBeNull();
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).toBeNull();
-    expect(jobRows[0].getAttribute("aria-current")).toBe("true");
     await act(async () => container.querySelector<HTMLButtonElement>(".job-chat-back")!.click());
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).not.toBeNull();
     expect(container.querySelector('.contact-item[data-working="true"]')).not.toBeNull();

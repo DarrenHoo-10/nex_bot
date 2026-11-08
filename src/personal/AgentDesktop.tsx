@@ -9,8 +9,8 @@ import { htmlPreviewParts } from "../../shared/html-preview";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, busyJob, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
+import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
+import { api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
@@ -32,7 +32,7 @@ import { isImageFileName, parseMessageMedia, type MessageImage } from "./message
 import { ModelMenu, type ModelChoice } from "./components/ModelMenu";
 import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
-import { RoutineOccurrenceDetail, occurrenceStatus, routineStatusLabel } from "./components/RoutineOccurrenceDetail";
+import { RoutineOccurrenceDetail } from "./components/RoutineOccurrenceDetail";
 import { JobChat } from "./components/JobChat";
 import { JobReportCard, type JobCardActions } from "./components/JobReportCard";
 import { copyText as writeCopyText } from "../lib/copy-text";
@@ -45,7 +45,6 @@ const formatShortTime = (value: RecordRow[string]) => {
   const date = new Date(Number(value)), now = new Date();
   return date.toDateString() === now.toDateString() ? date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 };
-const formatClock = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "";
 const formatDay = (value: RecordRow[string]) => {
   if (!value) return "";
   const date = new Date(Number(value)), now = new Date();
@@ -585,8 +584,6 @@ export function AgentDesktop() {
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   const panelOpen = page === "agent" && detail && !!bot, railClosed = !rail && wide;
   const routines = state.routines.filter((r) => r.bot_id === botId);
-  // Routine runs and finished background jobs, newest first.
-  const recentRuns: Array<{ at: number; occurrence?: RecordRow; job?: Job }> = [...state.occurrences.filter((o) => o.bot_id === botId).map((o) => ({ at: Number(o.scheduled_at), occurrence: o })), ...botJobs.filter((job) => !openJob(job)).map((job) => ({ at: job.createdAt, job }))].sort((a, b) => b.at - a.at).slice(0, 10);
   const look = appearanceOf(bot, str(state.bots[0]?.id)), accent = look.kind === "companion" ? colors[look.color].value : undefined;
   const heroState = !connected ? companionLabels.offline : tasks.length ? taskPhrase(tasks[0]) : avatarState === "idle" ? "在线" : companionLabels[avatarState];
   void lookRevision;
@@ -742,22 +739,6 @@ export function AgentDesktop() {
         {preview && tab === "profile" ? <section className="preview-card" aria-label="内容预览"><div className="preview-header"><div><strong>{preview.kind === "file" ? preview.title : toolLabels[preview.title] ?? preview.title}</strong><small>{preview.kind === "file" ? `${preview.path ?? preview.title}${preview.size !== undefined ? ` · ${preview.size} B` : ""}` : `${statuses[preview.status ?? ""] ?? preview.status ?? ""}${preview.createdAt ? ` · ${formatTime(preview.createdAt)}` : ""}`}</small></div><div className="preview-actions"><button type="button" onClick={() => copyText("preview", preview.content)}>{copiedId === "preview" ? "已复制" : "复制"}</button><button type="button" aria-label="关闭预览" onClick={() => setPreview(undefined)}><X size={14}/></button></div></div>{preview.arguments ? <details><summary>调用参数</summary><pre>{preview.arguments}</pre></details> : null}<pre>{preview.content || "暂无内容"}</pre></section> : null}
 
         {tab === "profile" ? <>
-
-          {tasks.length > 0 && <h2>正在处理</h2>}
-          {tasks.map((t) => <section className="entry" key={str(t.id)}><span className="ic live"><Loader2 size={14}/></span><div><b>{t.objective || "Agent 工作"}</b><span>{taskPhrase(t)}</span>{t.created_at ? <time>{formatClock(t.created_at)}</time> : null}<div className="actions">{t.status === "paused" ? <button onClick={() => void run(() => api("resume", { taskId: t.id }))}><Play size={12}/>继续</button> : null}<button onClick={() => void run(() => api("cancel", { taskId: t.id }))}><Square size={12}/>停止</button></div></div></section>)}
-
-          {openJobs.length > 0 ? <h2>后台任务</h2> : null}
-          {openJobs.length > 0 ? <div className="job-list">{openJobs.map((job) => <button type="button" key={job.id} className={`job-row ${busyJob(job) ? "busy" : "waiting"}${jobView === job.id ? " active" : ""}`} aria-current={jobView === job.id ? "true" : undefined} aria-label={`查看后台任务：${job.title}`} title={jobStageLabels[job.stage]} onClick={() => openJobDetail(job.id)}><span>{job.title}</span>{busyJob(job) ? null : <CircleAlert size={13} aria-hidden="true"/>}</button>)}</div> : null}
-
-          {recentRuns.length > 0 ? <details className="routine-disclosure routine-history"><summary>最近动态<span>{recentRuns.length}</span></summary>
-          {recentRuns.map((entry, index) => { const day = formatDay(entry.at), heading = day && (!index || formatDay(recentRuns[index - 1].at) !== day) ? <h3 className="day-label">{day}</h3> : null;
-            if (entry.job) { const job = entry.job, good = job.stage === "done" || job.stage === "dropped"; return <div key={job.id}>{heading}
-              <button type="button" className="entry routine-occurrence" aria-label={`查看执行详情：${job.title}`} onClick={() => openJobDetail(job.id)}><span className={`ic ${good ? "" : "warn"}`}>{good ? <Check size={14}/> : <CircleAlert size={14}/>}</span><span className="routine-occurrence-copy"><b>{job.title}</b><span>{jobStageLabels[job.stage]}</span><time>{formatClock(job.createdAt)}</time></span></button>
-            </div>; }
-            const o = entry.occurrence!, status = occurrenceStatus(o), Icon = status === "succeeded" ? Check : status === "running" ? Loader2 : status === "pending" ? Clock : CircleAlert; return <div key={str(o.id)}>
-            {heading}
-            <button type="button" className="entry routine-occurrence" aria-label={`查看执行详情：${o.name}`} onClick={() => openOccurrence(str(o.id))}><span className={`ic ${status === "succeeded" ? "" : status === "running" ? "live" : status === "pending" ? "mem" : "warn"}`}><Icon size={14}/></span><span className="routine-occurrence-copy"><b>{o.name}</b><span>{routineStatusLabel(status)}</span>{o.scheduled_at ? <time>{formatClock(o.scheduled_at)}</time> : null}</span></button>
-          </div>; })}</details> : null}
 
           <h2>定时任务</h2>
           {routines.length ? <div className="routine-list" aria-label="定时任务列表">

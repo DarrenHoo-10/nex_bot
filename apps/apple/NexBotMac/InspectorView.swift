@@ -116,84 +116,16 @@ struct InspectorSectionTitle: View {
 struct InspectorWorkTab: View {
     let workspace: WorkspaceStore
     let botID: String
-    @State private var error: String?
-    @State private var submitting = false
     @State private var selectedOccurrence: RoutineOccurrence?
     @State private var selectedRoutine: Routine?
-    @State private var confirmStopAll = false
 
-    private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
-    private var openJobs: [Job] { workspace.state?.openJobs(botID: botID) ?? [] }
-    /// Routine runs and finished background jobs, newest first.
-    private var recent: [RecentRun] {
-        let runs = (workspace.state?.occurrences(botID: botID) ?? []).map { RecentRun.occurrence($0) }
-        let jobs = (workspace.state?.jobs(botID: botID) ?? []).filter { !$0.isOpen }.map { RecentRun.job($0) }
-        return Array((runs + jobs).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }.prefix(10))
-    }
-
+    // The running task, background jobs and recent results are not listed here: the composer stops work,
+    // jobs open from the chat, and routine results from their row.
     var body: some View {
-        let state = workspace.state
         if let item = AgentUI.shared.preview, AgentUI.shared.previewBotID == botID { PreviewCard(item: item) { AgentUI.shared.preview = nil } }
-        if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
-        if !tasks.isEmpty {
-            InspectorSectionTitle(title: "正在处理")
-            ForEach(tasks) { task in activeTask(task) }
-        }
-        if !openJobs.isEmpty {
-            HStack(alignment: .firstTextBaseline) {
-                InspectorSectionTitle(title: "后台任务")
-                Spacer()
-                Button("停止全部") { confirmStopAll = true }
-                    .buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.danger)
-                    .confirmationDialog("停止全部工作？", isPresented: $confirmStopAll) {
-                        Button("停止全部", role: .destructive) { run { try await workspace.stopAll(botID: botID) } }
-                    } message: { Text("停止主对话和所有后台任务。") }
-            }
-            VStack(spacing: 6) {
-                ForEach(openJobs) { job in JobFlowRow(job: job) { AgentUI.shared.job = JobSheetItem(id: job.id) } }
-            }
-        }
-        let runs = recent
-        if !runs.isEmpty {
-            InspectorSectionTitle(title: "最近结果")
-            ForEach(Array(runs.enumerated()), id: \.element.id) { index, entry in
-                let day = entry.at.map { TimeFormat.dayLabel($0) } ?? ""
-                if !day.isEmpty, index == 0 || day != runs[index - 1].at.map({ TimeFormat.dayLabel($0) }) {
-                    DayLabel(text: day)
-                }
-                switch entry {
-                case .occurrence(let o):
-                    Button { selectedOccurrence = o } label: {
-                        RunEntryRow(symbol: RunPresentation.symbol(o.displayStatus), tone: RunPresentation.tone(o.displayStatus), title: o.name,
-                                    status: RoutineCopy.status(o.displayStatus), time: o.scheduledAt.map { TimeFormat.formatClock($0) })
-                    }.buttonStyle(.plain).help("查看结果")
-                case .job(let job):
-                    Button { AgentUI.shared.job = JobSheetItem(id: job.id) } label: {
-                        let good = job.stage == "done" || job.stage == "dropped"
-                        RunEntryRow(symbol: good ? "checkmark" : "exclamationmark.circle", tone: good ? .success : .warn, title: job.title,
-                                    status: job.stageText, time: job.createdAt.map { TimeFormat.formatClock($0) })
-                    }.buttonStyle(.plain).help("查看结果")
-                }
-            }
-        }
         routines
             .sheet(item: $selectedRoutine) { RoutinePlanDetailView(workspace: workspace, routine: $0) }
             .sheet(item: $selectedOccurrence) { RoutineOccurrenceDetailView(workspace: workspace, occurrence: $0) }
-    }
-
-    // MARK: Cards
-
-    private func activeTask(_ task: AgentTask) -> some View {
-        RunEntryRow(symbol: "arrow.triangle.2.circlepath", tone: .live, title: task.objective.isEmpty ? "Agent 工作" : task.objective,
-                    status: ToolLabels.taskPhrase(task), time: task.createdAt.map { TimeFormat.formatClock($0) }) {
-            HStack(spacing: 8) {
-                if task.status == "paused" {
-                    pill("play.fill", "继续") { run { try await workspace.resumeTask(task.id) } }
-                }
-                pill("stop.fill", "停止") { run { try await workspace.cancelTask(task.id) } }
-            }
-            .padding(.top, 6)
-        }
     }
 
     private var routines: some View {
@@ -212,29 +144,6 @@ struct InspectorWorkTab: View {
                 }.background(Theme.wash, in: RoundedRectangle(cornerRadius: 14))
                     .accessibilityLabel("定时任务列表")
             }
-        }
-    }
-
-    private func pill(_ symbol: String?, _ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if let symbol { Image(systemName: symbol).font(.system(size: 8)) }
-                Text(title).font(.system(size: 11))
-            }
-            .foregroundStyle(Theme.foreground)
-            .padding(.horizontal, 10).frame(height: 26)
-            .background(Theme.card, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.border))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func run(_ body: @escaping () async throws -> Void) {
-        error = nil; submitting = true
-        Task {
-            defer { submitting = false }
-            do { try await body() } catch { self.error = message(of: error) }
         }
     }
 }

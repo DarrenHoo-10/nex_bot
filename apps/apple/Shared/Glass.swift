@@ -315,58 +315,8 @@ struct HeroHalo<Content: View>: View {
     }
 }
 
-/// One journal row: an icon tile, a title, the status and the time.
+/// Tone of a run status.
 enum RunTone { case success, warn, live, pending }
-
-struct RunEntryRow<Footer: View>: View {
-    let symbol: String
-    let tone: RunTone
-    let title: String
-    let status: String
-    var time: String?
-    @ViewBuilder var footer: () -> Footer
-
-    private var tint: Color {
-        switch tone {
-        case .success: Theme.success
-        case .warn: Theme.approval
-        case .live, .pending: Theme.identityAccent
-        }
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(tint)
-                .frame(width: 30, height: 30)
-                .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title).font(.system(size: 12.5, weight: .semibold)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                Text(status).font(.system(size: 11.5)).foregroundStyle(Theme.muted).lineLimit(1)
-                if let time { Text(time).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.muted).padding(.top, 2) }
-                footer()
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 8)
-        .accessibilityElement(children: .contain)
-    }
-}
-
-extension RunEntryRow where Footer == EmptyView {
-    init(symbol: String, tone: RunTone, title: String, status: String, time: String? = nil) {
-        self.init(symbol: symbol, tone: tone, title: title, status: status, time: time) { EmptyView() }
-    }
-}
-
-/// The small day heading above a group of journal rows.
-struct DayLabel: View {
-    let text: String
-    var body: some View {
-        Text(text).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.muted)
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8).padding(.bottom, 2)
-    }
-}
 
 /// Run-status presentation shared by both inspectors.
 enum RunPresentation {

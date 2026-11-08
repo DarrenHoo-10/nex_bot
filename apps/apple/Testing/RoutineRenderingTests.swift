@@ -167,18 +167,6 @@ final class JobRenderingTests: XCTestCase {
         try await snapshot(view, name: "job-report-cards", requested: nil)
     }
 
-    /// Open jobs in the inspector show only their names; a running one carries the flowing sweep, a waiting one a warning mark.
-    @MainActor func testJobRows() async throws {
-        let store = try await workspace()
-        let jobs = store.state?.openJobs(botID: "b1") ?? []
-        XCTAssertFalse(jobs.isEmpty)
-        let view = VStack(spacing: 6) {
-            ForEach(jobs) { job in JobFlowRow(job: job) {} }
-            Spacer()
-        }.padding(20).frame(width: 360).background(Theme.background)
-        try await snapshot(view, name: "job-rows", requested: nil)
-    }
-
     /// Providers decode from the state; the assistant's choice resolves to its provider's default model and the nearest offered effort.
     @MainActor func testModelConnections() async throws {
         let store = try await workspace()

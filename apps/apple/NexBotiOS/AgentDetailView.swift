@@ -10,29 +10,20 @@ struct AgentDetailView: View {
     @State private var sheet: Sheet?
     @State private var errorText: String?
     @State private var busyTask: String?
-    @State private var confirmStopAll = false
 
     enum Sheet: Identifiable {
-        case avatar, routine(Routine), occurrence(RoutineOccurrence), job(String)
+        case avatar, routine(Routine), occurrence(RoutineOccurrence)
         var id: String {
             switch self {
             case .occurrence(let o): "occurrence-\(o.id)"
             case .avatar: "avatar"
             case .routine(let r): "routine-\(r.id)"
-            case .job(let id): "job-\(id)"
             }
         }
     }
 
     private var bot: Bot? { workspace.bot(botID) }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
-    private var openJobs: [Job] { workspace.state?.openJobs(botID: botID) ?? [] }
-    /// Routine runs and finished background jobs, newest first.
-    private var recent: [RecentRun] {
-        let runs = (workspace.state?.occurrences(botID: botID) ?? []).map { RecentRun.occurrence($0) }
-        let jobs = (workspace.state?.jobs(botID: botID) ?? []).filter { !$0.isOpen }.map { RecentRun.job($0) }
-        return Array((runs + jobs).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }.prefix(10))
-    }
 
     var body: some View {
         ScrollView {
@@ -59,7 +50,6 @@ struct AgentDetailView: View {
             case .occurrence(let o): RoutineOccurrenceDetailView(workspace: workspace, occurrence: o)
             case .avatar: AvatarPickerSheet(workspace: workspace, botID: botID)
             case .routine(let routine): RoutinePlanDetailView(workspace: workspace, routine: routine)
-            case .job(let id): JobDetailView(workspace: workspace, jobID: id)
             }
         }
         .errorAlert($errorText)
@@ -150,66 +140,6 @@ struct AgentDetailView: View {
         }
 
         VStack(alignment: .leading, spacing: 0) {
-            if !tasks.isEmpty {
-                title("正在处理")
-                ForEach(tasks) { task in
-                    RunEntryRow(symbol: "arrow.triangle.2.circlepath", tone: .live, title: task.objective.isEmpty ? "Agent 工作" : task.objective,
-                                status: task.phrase, time: task.createdAt.map { TimeFormat.formatClock($0) }) {
-                        HStack(spacing: 8) {
-                            if task.status == "paused" {
-                                Button("继续") { Task { await run(task.id) { try await workspace.resumeTask(task.id) } } }
-                                    .buttonStyle(PillButtonStyle(primary: true))
-                            }
-                            Button("停止") { Task { await run(task.id) { try await workspace.cancelTask(task.id) } } }
-                                .buttonStyle(PillButtonStyle())
-                                .disabled(task.status == "cancelling")
-                            if busyTask == task.id { ProgressView() }
-                        }
-                        .disabled(busyTask == task.id)
-                        .padding(.top, 6)
-                    }
-                }
-            }
-
-            if !openJobs.isEmpty {
-                HStack(alignment: .firstTextBaseline) {
-                    title("后台任务")
-                    Spacer()
-                    Button("停止全部") { confirmStopAll = true }
-                        .font(.footnote).foregroundStyle(Theme.danger)
-                        .confirmationDialog("停止全部工作？", isPresented: $confirmStopAll, titleVisibility: .visible) {
-                            Button("停止全部", role: .destructive) { Task { await run(botID) { try await workspace.stopAll(botID: botID) } } }
-                        } message: { Text("停止主对话和所有后台任务。") }
-                }
-                VStack(spacing: 6) {
-                    ForEach(openJobs) { job in JobFlowRow(job: job) { sheet = .job(job.id) } }
-                }
-            }
-
-            let runs = recent
-            if !runs.isEmpty {
-                title("最近结果")
-                ForEach(Array(runs.enumerated()), id: \.element.id) { index, entry in
-                    let day = entry.at.map { TimeFormat.dayLabel($0) } ?? ""
-                    if !day.isEmpty, index == 0 || day != runs[index - 1].at.map({ TimeFormat.dayLabel($0) }) {
-                        DayLabel(text: day)
-                    }
-                    switch entry {
-                    case .occurrence(let o):
-                        Button { sheet = .occurrence(o) } label: {
-                            RunEntryRow(symbol: RunPresentation.symbol(o.displayStatus), tone: RunPresentation.tone(o.displayStatus), title: o.name,
-                                        status: RoutineCopy.status(o.displayStatus), time: o.scheduledAt.map { TimeFormat.formatClock($0) })
-                        }.buttonStyle(.plain).accessibilityHint("查看结果")
-                    case .job(let job):
-                        let good = job.stage == "done" || job.stage == "dropped"
-                        Button { sheet = .job(job.id) } label: {
-                            RunEntryRow(symbol: good ? "checkmark" : "exclamationmark.circle", tone: good ? .success : .warn, title: job.title,
-                                        status: job.stageText, time: job.createdAt.map { TimeFormat.formatClock($0) })
-                        }.buttonStyle(.plain).accessibilityHint("查看结果")
-                    }
-                }
-            }
-
             let routines = state?.routines(botID: botID) ?? []
             if routines.isEmpty {
                 title("定时任务")

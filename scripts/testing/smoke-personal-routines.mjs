@@ -92,9 +92,9 @@ try {
   core.store.run('UPDATE agent_routines SET next_due_at=? WHERE id=?', Date.now(), routine.id);
   core.routines.tick();
   await until(async () => (await api("state")).occurrences.some(row => row.routine_id === routine.id && row.status === "succeeded"), "real routine worker completes", 60000);
-  await until(() => evaluate("!!document.querySelector('.routine-occurrence')"));
-  await click('.routine-history > summary');
-  await click(".routine-occurrence");
+  // Results open from the routine row; the work tab no longer lists recent runs.
+  await until(() => evaluate("[...document.querySelectorAll('.routine-row-actions button')].some(b => b.textContent === '查看最近结果')"), "latest result button");
+  await evaluate("[...document.querySelectorAll('.routine-row-actions button')].find(b => b.textContent === '查看最近结果').click()");
   await until(() => evaluate("document.querySelector('.routine-detail')?.textContent.includes('定时执行浏览器验收成功。')"), "occurrence transcript");
   assert.match(await evaluate("document.querySelector('.routine-detail').textContent"), /已完成/);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.routine-detail .step-row small')).color === getComputedStyle(document.querySelector('.routine-detail-meta dt')).color"), true);
