@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.darrenhoo.nex-rerank</string>
+  <key>WorkingDirectory</key><string>/Users/darrenhoo/Services/nex-rerank</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- caffeinate keeps the Mac from idle sleep for as long as the service runs (no sudo/pmset needed). -->
+    <string>/usr/bin/caffeinate</string><string>-i</string><string>-s</string><string>-m</string>
+    <string>/Users/darrenhoo/Services/nex-rerank/.venv/bin/uvicorn</string>
+    <string>server:app</string>
+    <string>--host</string><string>0.0.0.0</string>
+    <string>--port</string><string>8081</string>
+    <string>--workers</string><string>1</string>
+    <string>--no-access-log</string>
+    <string>--timeout-keep-alive</string><string>30</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Tokyo's ZeroTier address; Hindsight's container traffic is masqueraded to it. -->
+    <key>RERANK_ALLOW</key><string>127.0.0.1,::1,10.73.236.135</string>
+    <key>RERANK_MAX_TOKENS</key><string>512</string>
+    <key>HF_HUB_OFFLINE</key><string>1</string>
+    <key>PYTORCH_ENABLE_MPS_FALLBACK</key><string>1</string>
+    <key>TOKENIZERS_PARALLELISM</key><string>false</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>/Users/darrenhoo/Services/nex-rerank/logs/rerank.log</string>
+  <key>StandardErrorPath</key><string>/Users/darrenhoo/Services/nex-rerank/logs/rerank.log</string>
+</dict>
+</plist>

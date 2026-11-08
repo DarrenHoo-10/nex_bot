@@ -1,0 +1,20 @@
+[Unit]
+Description=Front for the Mac reranker (Core and Hindsight)
+After=network-online.target docker.service zerotier-one.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/node /opt/nex-rerank-proxy/tokyo-proxy.mjs
+Environment=RERANK_UPSTREAM=http://10.73.236.92:8081
+Environment=RERANK_LISTEN=127.0.0.1:18081,172.18.0.1:18081
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+MemoryMax=256M
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
