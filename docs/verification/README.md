@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [显示供应商提供的模型名称：全平台发布记录（2026-11-08）](model-names-release-20261108.md)
 - [多供应商、思考强度与子代理对话：全平台发布记录（2026-11-08）](model-providers-release-20261108.md)
 - [多供应商与推理强度：本地隔离验证（2026-11-08）](model-providers-20261108.md)
 
