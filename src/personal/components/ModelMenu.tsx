@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
-import { listConnectionModels, reasoningLabels, resolveReasoning, type Connection, type ReasoningChoice } from "../api";
+import { listConnectionModels, modelName, reasoningLabels, resolveReasoning, type Connection, type ReasoningChoice } from "../api";
 import "./model-menu.css";
 
 /** What an assistant uses: a provider, a model there ("" = the provider's default model) and its reasoning effort. */
@@ -59,7 +59,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
     const listed = provider.models ?? catalogs[provider.id]?.models ?? [];
     const all = [...new Set([...listed, ...(provider.defaultModel ? [provider.defaultModel] : []), ...(effective ? [effective] : [])])];
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    return all.filter((model) => terms.every((term) => model.toLowerCase().includes(term)));
+    return all.filter((model) => terms.every((term) => model.toLowerCase().includes(term) || modelName(provider, model).toLowerCase().includes(term)));
   }, [provider, catalogs, effective, query]);
 
   // The slider follows the chosen model on the chosen provider.
@@ -96,7 +96,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
           {models.map((model) => {
             const options = provider?.options[model];
             return <button type="button" role="option" aria-selected={model === effective} key={model} className="model-menu-row" disabled={disabled} onClick={() => pick(model)} title={model}>
-              <span className="model-menu-name">{model}</span>{options?.imageInput ? <span className="model-menu-tag">视觉</span> : null}{model === effective ? <Check size={15} className="model-menu-check"/> : null}
+              <span className="model-menu-name">{modelName(provider, model)}</span>{options?.imageInput ? <span className="model-menu-tag">视觉</span> : null}{model === effective ? <Check size={15} className="model-menu-check"/> : null}
             </button>;
           })}
           {provider && catalogs[provider.id]?.loading ? <div className="model-menu-status" role="status">正在获取模型…</div> : null}

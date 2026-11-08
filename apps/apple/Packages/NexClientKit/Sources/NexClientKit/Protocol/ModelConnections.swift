@@ -55,6 +55,10 @@ public struct ModelConnection: RowBacked, Identifiable {
     public var models: [String]? { if case .null? = row["models"] { nil } else { row["models"]?.arrayValue?.compactMap(\.stringValue) } }
     public var modelsVersion: Int { row.int("modelsVersion") ?? 0 }
     public var options: [String: ModelOptions] { (row["options"]?.objectValue ?? [:]).compactMapValues { $0.objectValue.map(ModelOptions.init(row:)) } }
+    /// Display names the provider's model list reported for ids that differ from them (empty on older Cores).
+    public var names: [String: String] { (row["names"]?.objectValue ?? [:]).compactMapValues { $0.stringValue.flatMap { $0.isEmpty ? nil : $0 } } }
+    /// What menus show for a model: its provider-reported name, else its id.
+    public func displayName(_ model: String) -> String { names[model] ?? model }
     /// 「API」 or 「Anthropic」, as the chat menu tags it.
     public var formatTag: String { provider == "anthropic" ? "Anthropic" : "API" }
     public var usable: Bool { enabled && configured }
@@ -86,7 +90,8 @@ extension WorkspaceState {
     public func modelLabel(forBot bot: Bot?) -> String {
         let choice = modelChoice(forBot: bot)
         guard !choice.model.isEmpty else { return "未连接模型" }
-        return choice.reasoning == "off" ? choice.model : "\(choice.model) · \(ReasoningLevel.label(choice.reasoning))"
+        let name = choice.connection?.displayName(choice.model) ?? choice.model
+        return choice.reasoning == "off" ? name : "\(name) · \(ReasoningLevel.label(choice.reasoning))"
     }
 }
 

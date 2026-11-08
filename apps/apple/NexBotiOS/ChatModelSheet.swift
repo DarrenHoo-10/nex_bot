@@ -29,7 +29,7 @@ struct ChatModelSheet: View {
         let listed = viewed.models ?? catalogs[viewed.id] ?? []
         let all = (listed + [viewed.defaultModel] + (viewed.id == current?.id ? [chosenModel] : [])).filter { !$0.isEmpty && seen.insert($0).inserted }
         let terms = query.lowercased().split(separator: " ").map(String.init)
-        return all.filter { model in terms.allSatisfy { model.lowercased().contains($0) } }
+        return all.filter { model in terms.allSatisfy { (model + " " + viewed.displayName(model)).lowercased().contains($0) } }
     }
 
     var body: some View {
@@ -72,7 +72,7 @@ struct ChatModelSheet: View {
                         ForEach(models, id: \.self) { model in
                             Button { pick(model) } label: {
                                 HStack(spacing: 8) {
-                                    Text(model).font(.body).foregroundStyle(Theme.foreground).lineLimit(1).truncationMode(.middle)
+                                    Text(viewed?.displayName(model) ?? model).font(.body).foregroundStyle(Theme.foreground).lineLimit(1).truncationMode(.middle)
                                     if viewed?.options[model]?.imageInput == true { Text("视觉").font(.caption2).foregroundStyle(Theme.muted).padding(.horizontal, 5).padding(.vertical, 1).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 4)) }
                                     Spacer()
                                     if viewed?.id == current?.id && model == chosenModel { Image(systemName: "checkmark").foregroundStyle(Theme.brand) }

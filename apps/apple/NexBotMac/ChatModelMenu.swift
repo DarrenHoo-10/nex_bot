@@ -47,7 +47,7 @@ struct ChatModelMenu: View {
                 providerButton(title: viewed?.name ?? "", tag: viewed?.formatTag, chevron: usable.count > 1) { if usable.count > 1 { picking = true } }
                 Text("模型").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
                 ModelListView(models: models, value: viewed?.id == current?.id ? chosenModel : "", emptyLabel: nil, allowCustom: false, debugPrefix: "cm",
-                              onSelect: { pick($0) }, onEscape: close)
+                              names: viewed?.names ?? [:], onSelect: { pick($0) }, onEscape: close)
                 if !loadError.isEmpty { Text(loadError).font(.system(size: 11)).foregroundStyle(Theme.danger).padding(.horizontal, 12).padding(.vertical, 6) }
                 if !offered.isEmpty && viewed?.id == current?.id { effort }
             }

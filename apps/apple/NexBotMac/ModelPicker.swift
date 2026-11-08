@@ -85,6 +85,8 @@ struct ModelListView: View {
     var allowCustom = false
     var maxHeight: CGFloat = 264
     var debugPrefix = ""
+    /// Provider-reported display names; rows show and search them, selection still returns the id.
+    var names: [String: String] = [:]
     let onSelect: (String) -> Void
     var onEscape: (() -> Void)?
 
@@ -162,7 +164,7 @@ struct ModelListView: View {
 
     private func rowView(_ row: ModelRowItem, index: Int) -> some View {
         let checked = selected.map { $0.contains(row.model) } ?? (!row.custom && row.model == value)
-        let title = row.custom ? "使用「\(row.model)」" : (row.model.isEmpty ? (emptyLabel ?? "") : row.model)
+        let title = row.custom ? "使用「\(row.model)」" : (row.model.isEmpty ? (emptyLabel ?? "") : names[row.model] ?? row.model)
         return Button { onSelect(row.model) } label: {
             HStack(spacing: 9) {
                 if selected != nil {
@@ -190,7 +192,7 @@ struct ModelListView: View {
         all = all.filter { seen.insert($0).inserted }
         let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
         var next = all.filter { model in
-            let haystack = (model.isEmpty ? emptyLabel ?? "" : model).lowercased()
+            let haystack = (model.isEmpty ? emptyLabel ?? "" : model + " " + (names[model] ?? "")).lowercased()
             return terms.allSatisfy { haystack.contains($0) }
         }.map { ModelRowItem(model: $0, custom: false) }
         let typed = query.trimmingCharacters(in: .whitespaces)

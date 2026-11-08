@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
 import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Play, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, busyJob, desktop, jobStageLabels, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
+import { api, busyJob, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
@@ -580,7 +580,7 @@ export function AgentDesktop() {
   const modelChoice: ModelChoice = { connectionId: botConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null };
   const chosenModel = modelChoice.model || botConnection?.defaultModel || str(state.config?.default_model);
   const effort = resolveReasoning(modelChoice.reasoning, botConnection?.options[chosenModel]?.reasoning ?? []);
-  const modelLabel = chosenModel ? `${chosenModel}${effort !== "off" ? ` · ${reasoningLabels[effort]}` : ""}` : "未连接模型";
+  const modelLabel = chosenModel ? `${modelName(botConnection, chosenModel)}${effort !== "off" ? ` · ${reasoningLabels[effort]}` : ""}` : "未连接模型";
   const chooseModel = (choice: ModelChoice) => void run(() => api("bots/model", { id: botId, connectionId: choice.connectionId, model: choice.model, ...(choice.reasoning ? { reasoning: choice.reasoning } : {}), version: Number(bot?.model_selection_version ?? 0) }));
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   const panelOpen = page === "agent" && detail && !!bot, railClosed = !rail && wide;

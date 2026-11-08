@@ -73,6 +73,25 @@ describe("设置 → 模型: providers", () => {
   });
 });
 
+describe("Provider-reported model names", () => {
+  const proxy = connection({ names: { "claude-fable-5-dd-6.4-korg": "Grok 4.6" } });
+  it("shows the name with the id under it in settings, and searches both", async () => {
+    fixture.listConnectionModels.mockResolvedValue({ models: ["claude-fable-5-dd-6.4-korg", "claude-opus-5-5"], hasMore: false, names: { "claude-opus-5-5": "Claude Opus 5.5" } });
+    await mount([proxy]);
+    const labels = () => [...container.querySelectorAll(".provider-model-label")].map(label => [label.querySelector(".provider-model-name")!.textContent, label.querySelector(".provider-model-id")?.textContent ?? null]);
+    expect(labels()).toEqual([["Grok 4.6", "claude-fable-5-dd-6.4-korg"], ["Claude Opus 5.5", "claude-opus-5-5"]]);
+  });
+  it("shows the name in the chat menu and still saves the id", async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(createElement(ModelMenu, { connections: [{ ...proxy, models: ["claude-fable-5-dd-6.4-korg"] }], choice: { connectionId: "default", model: "", reasoning: null }, onChange, label: "驱动模型" })));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="驱动模型"]')!.click());
+    const row = [...document.querySelectorAll<HTMLButtonElement>(".model-menu-list .model-menu-row")].find(item => item.title === "claude-fable-5-dd-6.4-korg")!;
+    expect(row.textContent).toBe("Grok 4.6");
+    await act(async () => row.click());
+    expect(onChange).toHaveBeenCalledWith({ connectionId: "default", model: "claude-fable-5-dd-6.4-korg", reasoning: null });
+  });
+});
+
 describe("Chat model menu", () => {
   const open = async (choice: ModelChoice, onChange = vi.fn()) => {
     await act(async () => root.render(createElement(ModelMenu, { connections: [connection(), second], choice, onChange, label: "驱动模型" })));

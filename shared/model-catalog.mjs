@@ -15,7 +15,8 @@ export async function fetchModelCatalog(input, fetcher = fetch) {
   const { provider, endpoint, apiKey } = catalogSettings(input);
   const address = endpoint + (provider === "anthropic" && !endpoint.endsWith("/v1") ? "/v1/models" : "/models");
   const headers = provider === "anthropic" ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" } : { Authorization: `Bearer ${apiKey}` };
-  const models = new Set(), seen = new Set();
+  // Anthropic-style lists give each model a display_name; some proxies rewrite the id and keep the real name there.
+  const models = new Set(), seen = new Set(), names = {};
   const signal = AbortSignal.timeout(30000);
   let next = address, totalSize = 0;
   for (let page = 0; page < 100; page++) {
@@ -42,8 +43,13 @@ export async function fetchModelCatalog(input, fetcher = fetch) {
     let body;
     try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("服务返回的模型列表格式无效"); }
     if (!Array.isArray(body.data)) throw new Error("服务返回的模型列表格式无效");
-    for (const item of body.data) if (typeof item?.id === "string" && item.id.trim() && item.id.length <= 200) models.add(item.id.trim());
-    const result = (hasMore) => ({ models: [...models].sort(), hasMore });
+    for (const item of body.data) {
+      if (typeof item?.id !== "string" || !item.id.trim() || item.id.length > 200) continue;
+      const id = item.id.trim(), name = typeof item.display_name === "string" ? item.display_name.trim() : "";
+      models.add(id);
+      if (name && name.length <= 200 && name !== id) names[id] = name;
+    }
+    const result = (hasMore) => ({ models: [...models].sort(), hasMore, names });
     if (body.has_more !== true) return result(false);
     // Never follow provider-supplied URLs with credentials. Only cursors on the original endpoint.
     const cursor = typeof body.next_cursor === "string" ? body.next_cursor : body.last_id;
@@ -53,5 +59,5 @@ export async function fetchModelCatalog(input, fetcher = fetch) {
     url.searchParams.set(typeof body.next_cursor === "string" ? "cursor" : "after_id", cursor);
     next = url.toString();
   }
-  return { models: [...models].sort(), hasMore: true };
+  return { models: [...models].sort(), hasMore: true, names };
 }

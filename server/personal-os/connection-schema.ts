@@ -16,3 +16,15 @@ CREATE TABLE model_options (
 ) STRICT;
 ALTER TABLE agent_model_settings ADD COLUMN reasoning TEXT;
 `;
+
+// Model display names a provider's list reports (migration v46): some proxies rewrite ids and keep the real name in
+// display_name. Keyed like model_visibility, so it applies to whichever provider uses that format and address.
+export const modelNameSchema = `
+CREATE TABLE model_display_names (
+  provider TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  model TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  PRIMARY KEY (provider, endpoint, model)
+) STRICT;
+`;

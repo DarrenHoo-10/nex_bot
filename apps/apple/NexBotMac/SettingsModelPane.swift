@@ -196,7 +196,7 @@ private struct ProviderModels: View {
     private var enabled: Set<String> { Set(selection ?? all) }
     private var rows: [String] {
         let terms = query.lowercased().split(separator: " ").map(String.init)
-        return all.filter { model in terms.allSatisfy { model.lowercased().contains($0) } }
+        return all.filter { model in terms.allSatisfy { (model + " " + connection.displayName(model)).lowercased().contains($0) } }
     }
 
     var body: some View {
@@ -250,7 +250,10 @@ private struct ProviderModels: View {
         let options = connection.options[model], on = enabled.contains(model), isDefault = model == connection.defaultModel
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Text(model).font(.system(size: 12, design: .monospaced)).foregroundStyle(on ? Theme.foreground : Theme.muted).lineLimit(1).truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(connection.displayName(model)).font(.system(size: 12.5, weight: .medium)).foregroundStyle(on ? Theme.foreground : Theme.muted).lineLimit(1).truncationMode(.middle)
+                    if connection.displayName(model) != model { Text(model).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle) }
+                }
                 if isDefault { tag("默认", accent: true) }
                 if options?.imageInput == true { tag("视觉") }
                 if let levels = options?.reasoning, let first = levels.first { tag("推理 \(first.label)\(levels.count > 1 ? "–\(levels.last!.label)" : "")") }

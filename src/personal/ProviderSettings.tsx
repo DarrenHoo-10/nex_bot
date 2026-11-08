@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Box, Check, Eye, EyeOff, MoreHorizontal, Pencil, Plus, Search, Star } from "lucide-react";
-import { api, listConnectionModels, reasoningLabels, reasoningOrder, type Connection, type ReasoningLevel, type State } from "./api";
+import { api, listConnectionModels, modelName, reasoningLabels, reasoningOrder, type Connection, type ReasoningLevel, type State } from "./api";
 import { useModelSelection } from "./useModelSelection";
 import "./components/model-picker.css";
 import "./provider-settings.css";
@@ -97,6 +97,7 @@ function ProviderDetail({ connection, refresh, active }: { connection: Connectio
 
 /** The provider's models: 启用 toggles (全选 / 全不选), the default model, and per-model settings. */
 function ProviderModels({ connection, refresh, active }: { connection: Connection; refresh: () => Promise<void>; active: boolean }) {
+  const [fetchedNames, setFetchedNames] = useState<Record<string, string>>({});
   const [fetched, setFetched] = useState<string[]>([]), [loading, setLoading] = useState(false), [notice, setNotice] = useState(""), [error, setError] = useState("");
   const [query, setQuery] = useState(""), [custom, setCustom] = useState(""), [adding, setAdding] = useState(false), [editing, setEditing] = useState(""), [defaultError, setDefaultError] = useState("");
   const loaded = useRef(false), alive = useRef(true);
@@ -104,7 +105,7 @@ function ProviderModels({ connection, refresh, active }: { connection: Connectio
   const autosave = useModelSelection("models/visibility", { connectionId: connection.id }, { models: connection.models, version: connection.modelsVersion }, refresh);
   const load = async () => {
     setLoading(true); setError("");
-    try { const result = await listConnectionModels(connection.id); if (alive.current) { setFetched(result.models); setNotice(result.hasMore ? "服务仍有未返回的模型，可手动添加。" : ""); } }
+    try { const result = await listConnectionModels(connection.id); if (alive.current) { setFetched(result.models); setFetchedNames(result.names ?? {}); setNotice(result.hasMore ? "服务仍有未返回的模型，可手动添加。" : ""); } }
     catch (failure) { if (alive.current) setError(errorText(failure)); }
     finally { if (alive.current) setLoading(false); }
   };
@@ -113,7 +114,9 @@ function ProviderModels({ connection, refresh, active }: { connection: Connectio
   const all = useMemo(() => [...new Set([...fetched, ...(selection ?? []), ...(connection.defaultModel ? [connection.defaultModel] : []), ...Object.keys(connection.options)])].sort(), [fetched, selection, connection.defaultModel, connection.options]);
   const enabled = useMemo(() => new Set(selection ?? all), [selection, all]);
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const rows = all.filter((model) => terms.every((term) => model.toLowerCase().includes(term)));
+  // A freshly fetched list's names win over the stored ones until the state catches up.
+  const nameOf = (model: string) => fetchedNames[model] || modelName(connection, model);
+  const rows = all.filter((model) => terms.every((term) => model.toLowerCase().includes(term) || nameOf(model).toLowerCase().includes(term)));
   const bulk = (checked: boolean) => {
     const next = new Set(enabled);
     for (const model of rows) if (checked) next.add(model); else next.delete(model);
@@ -156,7 +159,7 @@ function ProviderModels({ connection, refresh, active }: { connection: Connectio
         const levels = options?.reasoning ?? [];
         return <li key={model} className={on ? "" : "off"}>
           <div className="provider-model-row">
-            <span className="provider-model-name" title={model}>{model}</span>
+            <span className="provider-model-label"><span className="provider-model-name" title={model}>{nameOf(model)}</span>{nameOf(model) !== model ? <small className="provider-model-id" title={model}>{model}</small> : null}</span>
             {isDefault ? <span className="provider-tag accent">默认</span> : null}
             {options?.imageInput ? <span className="provider-tag">视觉</span> : null}
             {levels.length ? <span className="provider-tag" title={levels.map((level) => reasoningLabels[level]).join("、")}>推理 {reasoningLabels[levels[0]]}{levels.length > 1 ? `–${reasoningLabels[levels[levels.length - 1]]}` : ""}</span> : null}

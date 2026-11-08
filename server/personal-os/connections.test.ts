@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createServer } from 'node:http';
 import { createPersonalApp } from './index.ts';
 import { startFakeModel, type FakeModel } from '../runtime/pi/p0/fake-model.ts';
 import { resolveReasoning } from './reasoning.ts';
@@ -62,7 +63,8 @@ describe('Model providers (供应商)', () => {
     await f.request('bots/model', { id: bot, model: 'legacy-chosen', provider: 'anthropic', endpoint: f.first.origin, version: 0 });
     // Turn the database back into v44: no provider columns, no options table, no reasoning column, no migration row.
     const db = f.app.store;
-    db.run('DELETE FROM schema_migrations WHERE version=45');
+    db.run('DELETE FROM schema_migrations WHERE version IN (45,46)');
+    db.run('DROP TABLE model_display_names');
     for (const column of ['enabled', 'is_default', 'sort_order']) db.run(`ALTER TABLE model_connections DROP COLUMN ${column}`);
     db.run('DROP TABLE model_options');
     db.run('ALTER TABLE agent_model_settings DROP COLUMN reasoning');
@@ -150,6 +152,27 @@ describe('Model providers (供应商)', () => {
     const thinking = await turn('thinking');
     if (provider === 'openai') expect(thinking.reasoning_effort).toBe('high');
     else expect(thinking.thinking ?? thinking.output_config).toBeTruthy();
+  });
+
+  it('keeps the display names a provider lists for rewritten ids and shows them with its connection', async () => {
+    const f = await fixture();
+    let list = [{ id: 'claude-fable-5-dd-6.4-korg', display_name: 'Grok 4.6' }, { id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5' }, { id: 'same', display_name: 'same' }];
+    const server = createServer((request, response) => { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify(request.url === '/v1/models' ? { data: list, has_more: false } : {})); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      await f.request('config', { provider: 'anthropic', endpoint, model: 'claude-opus-5-5', apiKey: 'synthetic-proxy' });
+      await f.request('models/list', { connectionId: 'default' });
+      expect((await f.state()).connections[0].names).toEqual({ 'claude-fable-5-dd-6.4-korg': 'Grok 4.6', 'claude-opus-5-5': 'Claude Opus 5.5' });
+      // A fresh complete list replaces the names; the request still uses the original id.
+      list = [{ id: 'claude-fable-5-dd-6.4-korg', display_name: 'Grok 4.6 Fast' }];
+      await f.request('models/list', { connectionId: 'default' });
+      expect((await f.state()).connections[0].names).toEqual({ 'claude-fable-5-dd-6.4-korg': 'Grok 4.6 Fast' });
+      expect(f.app.store.modelConfig().model).toBe('claude-opus-5-5');
+      // A list fetched for an address no provider uses is not kept.
+      await f.request('models/list', { provider: 'anthropic', endpoint: endpoint + '/other', apiKey: 'x' }).catch(() => undefined);
+      expect(f.app.store.all('SELECT DISTINCT endpoint FROM model_display_names').map(row => row.endpoint)).toEqual([endpoint]);
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 
   it('picks the nearest offered reasoning level', () => {

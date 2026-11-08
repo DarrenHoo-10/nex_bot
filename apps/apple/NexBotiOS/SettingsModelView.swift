@@ -241,7 +241,7 @@ private struct ProviderModelsIOS: View {
     private var enabled: Set<String> { Set(selection ?? all) }
     private var rows: [String] {
         let terms = query.lowercased().split(separator: " ").map(String.init)
-        return all.filter { model in terms.allSatisfy { model.lowercased().contains($0) } }
+        return all.filter { model in terms.allSatisfy { (model + " " + connection.displayName(model)).lowercased().contains($0) } }
     }
 
     var body: some View {
@@ -294,7 +294,8 @@ private struct ProviderModelsIOS: View {
         let options = connection.options[model], isDefault = model == connection.defaultModel
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(model).font(.callout.monospaced()).foregroundStyle(enabled.contains(model) ? Theme.foreground : Theme.muted).lineLimit(1).truncationMode(.middle)
+                Text(connection.displayName(model)).font(.callout.weight(.medium)).foregroundStyle(enabled.contains(model) ? Theme.foreground : Theme.muted).lineLimit(1).truncationMode(.middle)
+                if connection.displayName(model) != model { Text(model).font(.caption2.monospaced()).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle) }
                 let tags = [isDefault ? "默认" : nil, options?.imageInput == true ? "视觉" : nil, options?.reasoning.first.map { "推理 \($0.label)\(options!.reasoning.count > 1 ? "–\(options!.reasoning.last!.label)" : "")" }].compactMap { $0 }
                 if !tags.isEmpty { Text(tags.joined(separator: " · ")).font(.caption2).foregroundStyle(Theme.muted) }
             }

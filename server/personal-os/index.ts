@@ -477,6 +477,7 @@ export async function createPersonalApp(options: AppOptions) {
         const connection = data.connectionId === undefined ? undefined : store.connection(text(data.connectionId, 100));
         const settings = catalogSettings(connection && data.endpoint === undefined ? { provider: connection.provider_id, endpoint: connection.endpoint, apiKey: data.apiKey } : data, saved);
         const result = await fetchModelCatalog(settings);
+        store.saveModelNames(settings.provider, settings.endpoint, result.models, result.names ?? {}, !result.hasMore);
         if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
         json(response, 200, result); return;
       }

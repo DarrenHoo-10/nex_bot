@@ -17,7 +17,7 @@ it("authenticated catalog lookup keeps saved keys and configuration private and 
     const request = (data: unknown, authenticated = true) => fetch(app.origin + "/api/models/list", { method: "POST", headers: { "Content-Type": "application/json", ...(authenticated ? { Authorization: "Bearer " + token } : {}) }, body: JSON.stringify(data) });
     expect((await request(query, false)).status).toBe(401);
     const response = await request(query); expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ models: ["fixture-model", "fixture-reasoning"], hasMore: false });
+    expect(await response.json()).toEqual({ models: ["fixture-model", "fixture-reasoning"], hasMore: false, names: {} });
     const changed = await request({ ...query, endpoint: fake.origin + "/other" });
     expect(changed.ok).toBe(false); expect(await changed.text()).not.toContain("synthetic-key");
     expect(app.store.modelConfig()).toMatchObject({ model: "original-model", apiKey: "synthetic-key" });

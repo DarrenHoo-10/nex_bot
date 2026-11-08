@@ -14,7 +14,7 @@ test("model catalogs use correct credentials, disable redirects, deduplicate and
     calls++; assert.equal(url, saved.endpoint + "/models"); assert.equal(init.headers.Authorization, "Bearer synthetic-secret"); assert.equal(init.redirect, "error");
     return Response.json({ data: [{ id: "b" }, { id: "a" }, { id: "b" }, {}, { id: 42 }], has_more: true });
   });
-  assert.deepEqual(result, { models: ["a", "b"], hasMore: true }); assert.equal(calls, 1);
+  assert.deepEqual(result, { models: ["a", "b"], hasMore: true, names: {} }); assert.equal(calls, 1);
   for (const endpoint of ["https://models.example", "https://models.example/v1"]) await fetchModelCatalog({ ...saved, provider: "anthropic", endpoint }, async (url, init) => {
     assert.equal(url, "https://models.example/v1/models"); assert.equal(init.headers["x-api-key"], saved.apiKey); assert.equal(init.headers.Authorization, undefined); return Response.json({ data: [] });
   });
@@ -41,5 +41,14 @@ test("large catalogs are complete and cursor pages stay on the original endpoint
 test("repeated cursors terminate and report partial catalogs", async () => {
   let calls = 0;
   const result = await fetchModelCatalog(saved, async () => { calls++; return Response.json({ data: [{ id: " a " }], has_more: true, next_cursor: "same" }); });
-  assert.equal(calls, 2); assert.deepEqual(result, { models: ["a"], hasMore: true });
+  assert.equal(calls, 2); assert.deepEqual(result, { models: ["a"], hasMore: true, names: {} });
+});
+
+test("display names are kept when they differ from a rewritten id", async () => {
+  const result = await fetchModelCatalog({ ...saved, provider: "anthropic" }, async () => Response.json({ data: [
+    { id: "claude-fable-5-dd-6.4-korg", display_name: "Grok 4.6" }, { id: "plain", display_name: "plain" },
+    { id: "blank", display_name: "  " }, { id: "long", display_name: "x".repeat(201) }, { id: "odd", display_name: 7 },
+  ] }));
+  assert.deepEqual(result.names, { "claude-fable-5-dd-6.4-korg": "Grok 4.6" });
+  assert.deepEqual(result.models, ["blank", "claude-fable-5-dd-6.4-korg", "long", "odd", "plain"]);
 });

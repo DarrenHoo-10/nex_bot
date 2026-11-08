@@ -31,7 +31,11 @@ export interface Connection {
   id: string; name: string; provider: "openai" | "anthropic" | string; endpoint: string; defaultModel: string;
   enabled: boolean; isDefault: boolean; configured: boolean; version: number;
   models: string[] | null; modelsVersion: number; options: Record<string, ModelOptions>;
+  /** Display names the provider's model list reported for ids that differ from them; absent on older Cores. */
+  names?: Record<string, string>;
 }
+/** What menus show for a model: its provider-reported name, else its id. */
+export const modelName = (connection: Connection | undefined, model: string) => connection?.names?.[model] || model;
 export type ReasoningLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningChoice = ReasoningLevel | "off";
 export const reasoningOrder: ReasoningLevel[] = ["low", "medium", "high", "xhigh", "max"];
@@ -45,7 +49,7 @@ export function resolveReasoning(choice: string | null | undefined, offered: rea
   return [...offered].sort((a, b) => Math.abs(reasoningOrder.indexOf(a) - at) - Math.abs(reasoningOrder.indexOf(b) - at) || reasoningOrder.indexOf(a) - reasoningOrder.indexOf(b))[0];
 }
 /** The models a provider lists, with its saved key unless one is typed. */
-export const listConnectionModels = (connectionId: string, apiKey = "") => api<{ models: string[]; hasMore: boolean }>("models/list", { connectionId, ...(apiKey.trim() ? { apiKey } : {}) });
+export const listConnectionModels = (connectionId: string, apiKey = "") => api<{ models: string[]; hasMore: boolean; names?: Record<string, string> }>("models/list", { connectionId, ...(apiKey.trim() ? { apiKey } : {}) });
 export interface State {
   connections?: Connection[];
   imageModelSelection?: { models: string[]; version: number };

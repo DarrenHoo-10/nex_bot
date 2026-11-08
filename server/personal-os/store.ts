@@ -22,7 +22,7 @@ import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, typ
 
 import { todoSchema } from "./todo-schema.ts";
 import { jobSchema } from "./job-schema.ts";
-import { connectionSchema } from "./connection-schema.ts";
+import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
 import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
 
 export type Row = Record<string, string | number | null>;
@@ -455,6 +455,11 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.db.exec(connectionSchema);
       this.insert("schema_migrations", { version: 45, checksum: hash(connectionSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=46")) this.transaction(() => {
+      // Display names from providers' model lists; see connection-schema.ts. A new, empty table only.
+      this.db.exec(modelNameSchema);
+      this.insert("schema_migrations", { version: 46, checksum: hash(modelNameSchema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -664,12 +669,28 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
     });
     return this.modelOptions(String(row.id), model);
   }
+  /**
+   * Remembers the display names a saved provider's model list reported, replacing what that list said before; a list
+   * for an address no provider uses is not kept. Partial lists only add names.
+   */
+  saveModelNames(provider: string, endpoint: string, models: string[], names: Record<string, string>, complete: boolean) {
+    const address = endpoint.replace(/\/+$/, "");
+    if (!this.get("SELECT id FROM model_connections WHERE provider_id=? AND endpoint=? AND status!='revoked'", provider, address)) return;
+    this.transaction(() => {
+      if (complete) this.run("DELETE FROM model_display_names WHERE provider=? AND endpoint=?", provider, address);
+      else for (const model of models) this.run("DELETE FROM model_display_names WHERE provider=? AND endpoint=? AND model=?", provider, address, model);
+      for (const [model, name] of Object.entries(names).slice(0, 10000)) {
+        if (model.length <= 200 && typeof name === "string" && name.trim() && name.length <= 200) this.run("INSERT OR REPLACE INTO model_display_names VALUES(?,?,?,?)", provider, address, model, name.trim());
+      }
+    });
+  }
   /** Every provider for /api/state, without keys: its enabled models and the settings of models that have any. */
   connections() {
     return this.connectionRows().map((row) => {
       const visibility = this.modelVisibility(String(row.id));
       const options = Object.fromEntries(this.all("SELECT model,image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=?", row.id).map((option) => [String(option.model), { imageInput: option.image_input == null ? null : !!option.image_input, reasoning: parseReasoningLevels(JSON.parse(String(option.reasoning_levels_json))), version: Number(option.version) }]));
-      return { id: String(row.id), name: String(row.display_name), provider: String(row.provider_id), endpoint: String(row.endpoint), defaultModel: String(row.default_model), enabled: !!row.enabled, isDefault: !!row.is_default, configured: !!(row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref)), version: Number(row.version), models: visibility.models, modelsVersion: visibility.version, options };
+      const names = Object.fromEntries(this.all("SELECT model,display_name FROM model_display_names WHERE provider=? AND endpoint=?", row.provider_id, String(row.endpoint).replace(/\/+$/, "")).map((item) => [String(item.model), String(item.display_name)]));
+      return { id: String(row.id), name: String(row.display_name), names, provider: String(row.provider_id), endpoint: String(row.endpoint), defaultModel: String(row.default_model), enabled: !!row.enabled, isDefault: !!row.is_default, configured: !!(row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref)), version: Number(row.version), models: visibility.models, modelsVersion: visibility.version, options };
     });
   }
   /** The provider an assistant uses: its own choice while that one is usable, otherwise the default provider. */

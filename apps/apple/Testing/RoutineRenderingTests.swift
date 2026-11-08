@@ -130,7 +130,7 @@ private final class JobFixtureProtocol: URLProtocol, @unchecked Sendable {
              "config": ["id": "default", "provider_id": "openai", "endpoint": "https://api.example.test/v1", "default_model": "fake", "configured": 1],
              "connections": [
                 ["id": "default", "name": "演示供应商", "provider": "openai", "endpoint": "https://api.example.test/v1", "defaultModel": "fake", "enabled": true, "isDefault": true, "configured": true, "version": 3, "models": NSNull(), "modelsVersion": 0, "options": [:]],
-                ["id": "thinker", "name": "推理供应商", "provider": "anthropic", "endpoint": "https://api.example.test/thinker", "defaultModel": "claude-x", "enabled": true, "isDefault": false, "configured": true, "version": 1, "models": ["claude-x"], "modelsVersion": 4,
+                ["id": "thinker", "name": "推理供应商", "provider": "anthropic", "endpoint": "https://api.example.test/thinker", "defaultModel": "claude-x", "enabled": true, "isDefault": false, "configured": true, "version": 1, "models": ["claude-x"], "modelsVersion": 4, "names": ["claude-x": "Claude X"],
                  "options": ["claude-x": ["imageInput": true, "reasoning": ["low", "high"], "version": 1]]],
              ],
              "approvals": [], "tasks": [], "routines": [], "occurrences": [], "devices": [], "conversations": [], "onlineDevices": [], "memories": [], "jobs": Self.jobs]
@@ -193,7 +193,9 @@ final class JobRenderingTests: XCTestCase {
         XCTAssertEqual(state.connection(forBot: bot)?.id, "thinker")
         XCTAssertEqual(state.modelChoice(forBot: bot).model, "claude-x")
         XCTAssertEqual(state.modelChoice(forBot: bot).reasoning, "high")
-        XCTAssertEqual(state.modelLabel(forBot: bot), "claude-x · 高")
+        XCTAssertEqual(thinker.displayName("claude-x"), "Claude X")
+        XCTAssertEqual(thinker.displayName("unnamed"), "unnamed")
+        XCTAssertEqual(state.modelLabel(forBot: bot), "Claude X · 高")
         XCTAssertEqual(ReasoningLevel.resolve(nil, offered: [.low, .medium, .high]), "medium")
         XCTAssertEqual(ReasoningLevel.resolve("medium", offered: [.low, .high]), "low")
         XCTAssertEqual(ReasoningLevel.resolve("high", offered: []), "off")
