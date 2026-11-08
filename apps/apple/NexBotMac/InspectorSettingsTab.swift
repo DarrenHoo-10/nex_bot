@@ -26,13 +26,11 @@ struct InspectorSettingsTab: View {
                 VStack(spacing: 12) {
                     row(symbol: "bolt", title: "驱动模型") {
                         // Picks the assistant's model in place, like the composer's ＋ › 模型; 设置 only when nothing is connected.
-                        pillButton(bot?.selectedModel ?? workspace.state?.config?.defaultModel.nilIfEmpty ?? "未连接模型") {
+                        pillButton(workspace.state?.modelLabel(forBot: bot) ?? "未连接模型") {
                             if workspace.state?.config == nil { ui.openSettings(.model) } else { modelOpen = true }
                         }
                         .popover(isPresented: $modelOpen, arrowEdge: .leading) {
-                            ModelPickerPopover(label: "选择聊天模型", value: bot?.selectedModel ?? "", emptyLabel: "默认 · \(workspace.state?.config?.defaultModel ?? "")",
-                                               models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(),
-                                               onSelect: setModel, close: { modelOpen = false })
+                            ChatModelMenu(workspace: workspace, botID: botID, close: { modelOpen = false }, onError: { error = $0 })
                         }
                     }
                     row(symbol: "shield", title: "工具权限") {

@@ -236,7 +236,7 @@ export class AssistantMemory {
   async call(settings: Row, purpose: string, instruction: string, content: unknown, signal: AbortSignal) {
     this.check(settings, signal);
     const controller=new AbortController();
-    const job=assistantCompletion(this.store, { botId: String(settings.bot_id), purpose, model: String(settings.model) || this.store.modelConfig().model, dailyBudget: Number(settings.daily_budget), instruction: rules + '\n' + instruction, content: JSON.stringify(content), signal:AbortSignal.any([signal,controller.signal]) });
+    const job=assistantCompletion(this.store, { botId: String(settings.bot_id), purpose, connectionId: this.store.defaultConnection()?.id as string | undefined, model: String(settings.model) || this.store.modelConfig().model, dailyBudget: Number(settings.daily_budget), instruction: rules + '\n' + instruction, content: JSON.stringify(content), signal:AbortSignal.any([signal,controller.signal]) });
     this.requests.set(controller,{botId:String(settings.bot_id),job});
     let result:string;try{result=await job;}finally{this.requests.delete(controller);}
     if(controller.signal.aborted)throw new Error('记忆请求已取消');

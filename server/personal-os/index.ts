@@ -460,9 +460,22 @@ export async function createPersonalApp(options: AppOptions) {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有修改模型配置的权限" }); return; }
         const result = store.saveModelVisibility(data); changed(); json(response, 200, result); return;
       }
+      if (url.pathname.startsWith("/api/connections/")) {
+        if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有修改模型配置的权限" }); return; }
+        // Changing a provider under a running model request would mix keys or endpoints within one task.
+        if (url.pathname !== "/api/connections/model" && runtime.workers.size) throw new Error("请先等待模型请求结束再修改供应商");
+        if (url.pathname === "/api/connections/save") { const connectionId = store.saveConnection(data); changed(); json(response, 200, { id: connectionId }); return; }
+        if (url.pathname === "/api/connections/default") { store.setDefaultConnection(data); changed(); json(response, 200, { ok: true }); return; }
+        if (url.pathname === "/api/connections/remove") { store.removeConnection(data); changed(); json(response, 200, { ok: true }); return; }
+        if (url.pathname === "/api/connections/model") { const options = store.saveModelOptions(data); changed(); json(response, 200, options); return; }
+      }
       if (url.pathname === "/api/models/list") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取模型列表的权限" }); return; }
-        const settings = catalogSettings(data, store.config() ? store.modelConfig() : undefined);
+        // With connectionId: that provider's saved key and address (a typed key still wins); otherwise the legacy form.
+        const saved = data.connectionId === undefined ? (store.config()?.configured ? store.modelConfig() : undefined) : store.connectionSecret(text(data.connectionId, 100));
+        if (data.connectionId !== undefined && !saved && !(typeof data.apiKey === "string" && data.apiKey.trim())) throw new Error("请先填写这个供应商的 API Key");
+        const connection = data.connectionId === undefined ? undefined : store.connection(text(data.connectionId, 100));
+        const settings = catalogSettings(connection && data.endpoint === undefined ? { provider: connection.provider_id, endpoint: connection.endpoint, apiKey: data.apiKey } : data, saved);
         const result = await fetchModelCatalog(settings);
         if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
         json(response, 200, result); return;

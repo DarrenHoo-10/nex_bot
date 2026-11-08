@@ -25,7 +25,29 @@ export const openJob = (job: Job) => job.endedAt === null && job.stage !== "stop
 /** Jobs running or about to run (they make the assistant "working"). */
 export const busyJob = (job: Job) => job.stage === "running" || job.stage === "queued" || job.stage === "approval";
 export interface PreviewItem { kind: "file" | "tool"; id?: string; path?: string; title: string; status?: string; exists?: boolean; size?: number; updatedAt?: number; createdAt?: number; arguments?: string; content: string }
+/** A model provider ("供应商"). `models` is its 启用 list; null means every model the provider lists. */
+export interface ModelOptions { imageInput: boolean | null; reasoning: ReasoningLevel[]; version: number }
+export interface Connection {
+  id: string; name: string; provider: "openai" | "anthropic" | string; endpoint: string; defaultModel: string;
+  enabled: boolean; isDefault: boolean; configured: boolean; version: number;
+  models: string[] | null; modelsVersion: number; options: Record<string, ModelOptions>;
+}
+export type ReasoningLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export type ReasoningChoice = ReasoningLevel | "off";
+export const reasoningOrder: ReasoningLevel[] = ["low", "medium", "high", "xhigh", "max"];
+export const reasoningLabels: Record<ReasoningChoice, string> = { off: "关闭", low: "低", medium: "中", high: "高", xhigh: "很高", max: "最高" };
+/** Same rule as Core: the choice when offered, else the nearest offered level (lower on a tie); medium when unset. */
+export function resolveReasoning(choice: string | null | undefined, offered: readonly ReasoningLevel[]): ReasoningChoice {
+  if (!offered.length || choice === "off") return "off";
+  const wanted = (reasoningOrder as string[]).includes(String(choice)) ? choice as ReasoningLevel : "medium";
+  if (offered.includes(wanted)) return wanted;
+  const at = reasoningOrder.indexOf(wanted);
+  return [...offered].sort((a, b) => Math.abs(reasoningOrder.indexOf(a) - at) - Math.abs(reasoningOrder.indexOf(b) - at) || reasoningOrder.indexOf(a) - reasoningOrder.indexOf(b))[0];
+}
+/** The models a provider lists, with its saved key unless one is typed. */
+export const listConnectionModels = (connectionId: string, apiKey = "") => api<{ models: string[]; hasMore: boolean }>("models/list", { connectionId, ...(apiKey.trim() ? { apiKey } : {}) });
 export interface State {
+  connections?: Connection[];
   imageModelSelection?: { models: string[]; version: number };
   modelVisibility?: { models: string[] | null; version: number };
   connectors?: ConnectorView[];

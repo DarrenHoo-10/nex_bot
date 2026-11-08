@@ -32,12 +32,12 @@ export class TruncatedOutput extends Error {
 }
 /** The daily allowance of background work is spent: no fault of the target being summarized. */
 export class BudgetSpent extends Error {}
-interface CompletionArgs { botId: string; taskId?: string; conversationId?: string; purpose: string; model?: string; instruction: string; content: string; maxOutput?: number; signal?: AbortSignal; dailyBudget?: number; maintainBudget?: number }
+interface CompletionArgs { botId: string; taskId?: string; conversationId?: string; purpose: string; connectionId?: string; model?: string; instruction: string; content: string; maxOutput?: number; signal?: AbortSignal; dailyBudget?: number; maintainBudget?: number }
 export async function assistantCompletion(store: CoreStore, args: CompletionArgs & { allowTruncated: true }): Promise<{ text: string; truncated: boolean }>;
 export async function assistantCompletion(store: CoreStore, args: CompletionArgs & { allowTruncated?: false }): Promise<string>;
 export async function assistantCompletion(store: CoreStore, args: CompletionArgs & { allowTruncated?: boolean }): Promise<string | { text: string; truncated: boolean }> {
-  const model = store.modelConfig(args.botId);
-  if (args.model) model.model = args.model;
+  // Memory and tidy-up name their provider and model; without them the assistant's chat model is used.
+  const model = store.modelConfig(args.botId, { connectionId: args.connectionId, model: args.model });
   const limits = store.modelLimitSettings(model);
   const maximum = Math.min(args.maxOutput ?? 4096, limits.maxOutputTokens, Math.floor(limits.contextWindow / 4));
   const reserved = tokens(args.instruction + args.content) + 128 + maximum;

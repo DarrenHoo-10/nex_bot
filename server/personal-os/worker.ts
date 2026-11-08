@@ -355,7 +355,9 @@ async function main(value: WorkerConfig) {
   const runtime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const api = config.provider === "anthropic" ? "anthropic-messages" : "openai-completions";
   runtime.registerProvider("nex", { name: "NexBot API", apiKey: config.apiKey, baseUrl: config.endpoint, api,
-    models: [{ id: config.model, name: config.model, api, reasoning: false, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: config.contextWindow, maxTokens: config.maxOutputTokens }] });
+    // Reasoning is declared only for a model whose provider settings offer levels; otherwise nothing is sent, so a
+    // service without reasoning support never receives reasoning_effort or thinking.
+    models: [{ id: config.model, name: config.model, api, reasoning: !!config.reasoning && config.reasoning !== "off", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: config.contextWindow, maxTokens: config.maxOutputTokens }] });
   const model = runtime.getModel("nex", config.model);
   if (!model) throw new Error("Model registration failed");
   const broker = defineTool({ name: "broker", label: "Core Broker", description: brokerDescription,
@@ -380,7 +382,7 @@ async function main(value: WorkerConfig) {
   const settings = SettingsManager.inMemory({ defaultTools: [], cacheWarming: "off", defaultProjectTrust: "always", compaction: { enabled: false, reserveTokens: config.contextWindow - inputBudget, keepRecentTokens: Math.min(20_000, Math.floor(inputBudget / 3)) }, retry: { enabled: false, provider: { maxRetries: 0 } } });
   const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: config.systemPrompt });
   await loader.reload();
-  session = (await createAgentSession({ cwd, agentDir, model, modelRuntime: runtime, sessionManager: manager, settingsManager: settings, resourceLoader: loader, noTools: "all", tools: ["broker"], customTools: [broker], thinkingLevel: "off" })).session;
+  session = (await createAgentSession({ cwd, agentDir, model, modelRuntime: runtime, sessionManager: manager, settingsManager: settings, resourceLoader: loader, noTools: "all", tools: ["broker"], customTools: [broker], thinkingLevel: config.reasoning ?? "off" })).session;
   const transform=session.agent.transformContext;
   session.agent.transformContext=async (_messages,signal)=>{
     const state=await reduceContext(signal,false);

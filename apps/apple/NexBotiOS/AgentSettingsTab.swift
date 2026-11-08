@@ -27,7 +27,7 @@ struct AgentSettingsTab: View {
                 row("驱动模型") {
                     // Picks the assistant's model in place; 设置 only when nothing is connected.
                     Button { if state?.config == nil { nav.openSettings(.model) } else { showModels = true } } label: {
-                        Text(bot?.selectedModel ?? (state?.config?.defaultModel.isEmpty == false ? state!.config!.defaultModel : "未连接模型"))
+                        Text(state?.modelLabel(forBot: bot) ?? "未连接模型")
                             .font(.caption.weight(.medium)).lineLimit(1)
                             .padding(.horizontal, 10).padding(.vertical, 4)
                             .background(Theme.secondary, in: Capsule())
@@ -68,8 +68,7 @@ struct AgentSettingsTab: View {
         }
         .sheet(isPresented: $showPolicy) { PolicyEditorSheet(workspace: workspace, botID: botID) }
         .sheet(isPresented: $showModels) {
-            ModelPickerSheet(title: "选择聊天模型", value: bot?.selectedModel ?? "", emptyLabel: "默认 · \(state?.config?.defaultModel ?? "")",
-                             models: state?.modelVisibility.models, source: workspace.savedModelSource(), onSelect: setModel)
+            ChatModelSheet(workspace: workspace, botID: botID, onError: { errorText = $0 })
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
         .alert("归档这个 Agent？", isPresented: $confirmArchive) {

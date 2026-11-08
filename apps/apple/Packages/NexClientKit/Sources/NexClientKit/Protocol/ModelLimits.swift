@@ -98,6 +98,9 @@ public struct ModelLimitInfo: Decodable, Sendable, Hashable {
     public var automatic: ModelLimitAutomatic
     /// Result of the online lookup, only on `/refresh`: for example `updated`, `fresh`, `failed` or `disabled`. Unknown values pass through.
     public var refresh: String?
+    /// What the catalog says the model can do (reasoning, image input); nil when it is not in the catalog or on older Cores.
+    public struct Capabilities: Sendable, Hashable { public var reasoning: Bool, imageInput: Bool }
+    public var capabilities: Capabilities?
     /// The online lookup failed; the web shows "联网识别失败，使用缓存或默认值".
     public var refreshFailed: Bool { refresh == "failed" }
 
@@ -121,6 +124,7 @@ public struct ModelLimitInfo: Decodable, Sendable, Hashable {
                                         contextBudget: a?["contextBudget"]?.intValue ?? ModelLimits.defaultContextBudget,
                                         source: sources(a?["source"]))
         refresh = c.lenient(.init("refresh"))?.stringValue
+        capabilities = c.lenient(.init("capabilities"))?.objectValue.map { Capabilities(reasoning: $0["reasoning"]?.boolValue ?? false, imageInput: $0["imageInput"]?.boolValue ?? false) }
     }
 }
 

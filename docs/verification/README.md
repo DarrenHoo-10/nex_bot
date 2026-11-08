@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [多供应商与推理强度：本地隔离验证（2026-11-08）](model-providers-20261108.md)
+
 - [Broker 参数修复：Core 发布记录（2026-11-07）](broker-arguments-release-20261107.md)
 - [Broker 参数契约：本地隔离验证（2026-11-07）](broker-arguments-20261107.md)
 

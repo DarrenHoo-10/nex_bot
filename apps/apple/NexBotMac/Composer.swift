@@ -183,7 +183,7 @@ struct Composer: View {
             .heading("指令"),
             .row(.init(id: "permission", icon: full ? "exclamationmark.shield" : "checkmark.shield", title: "权限", key: "permission", value: mode.title,
                        action: { ui.composerMenu = .permissions })),
-            .row(.init(id: "model", icon: "slider.horizontal.3", title: "模型", key: "model", value: chatModel.isEmpty ? defaultModel : chatModel,
+            .row(.init(id: "model", icon: "slider.horizontal.3", title: "模型", key: "model", value: workspace.state?.modelLabel(forBot: bot) ?? (chatModel.isEmpty ? defaultModel : chatModel),
                        enabled: config != nil, action: { ui.composerMenu = .models })),
             .row(.init(id: "topic", icon: "plus.bubble", title: "新话题", key: "topic",
                        enabled: !conversation.messages.isEmpty, action: { close(); startNewTopic() })),
@@ -229,9 +229,7 @@ struct Composer: View {
     }
 
     private var modelMenu: some View {
-        ModelPickerPopover(label: "选择聊天模型", value: chatModel, emptyLabel: "默认 · \(defaultModel)",
-                           models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(),
-                           onSelect: { setModel($0) }, close: close)
+        ChatModelMenu(workspace: workspace, botID: botID, close: close, onError: { menuError = $0 })
     }
 
     private func setModel(_ next: String) {

@@ -224,7 +224,7 @@ export class TaskRuntime {
     this.store.transaction(() => {
       this.store.run("UPDATE tasks SET status='running',run_generation=?,version=version+1 WHERE id=?", generation, taskId);
       if (occurrence) this.store.run("UPDATE routine_occurrences SET started_at=COALESCE(started_at,?) WHERE id=?", now(), occurrence.id);
-      this.store.insert("task_runs", { id: runId, task_id: taskId, ...this.store.scope(), conversation_id: task.conversation_id, bot_id: task.bot_id, runtime_session_id: runtimeId, run_no: generation, worker_instance_id: id(), model_connection_id: "default", model_connection_version: model.version, model_id: model.model, status: "active", started_at: now() });
+      this.store.insert("task_runs", { id: runId, task_id: taskId, ...this.store.scope(), conversation_id: task.conversation_id, bot_id: task.bot_id, runtime_session_id: runtimeId, run_no: generation, worker_instance_id: id(), model_connection_id: model.connectionId, model_connection_version: model.version, model_id: model.model, status: "active", started_at: now() });
     });
     const child = this.spawnWorker(workerDir);
     const scope: ModelScope = { provider: model.provider, endpoint: model.endpoint, model: model.model };
@@ -277,8 +277,11 @@ export class TaskRuntime {
     const chat = this.store.modelConfig(botId);
     let configured = "";
     try { configured = String(this.memory.personal.settings(botId).model ?? "").trim(); } catch { /* unknown assistant: chat model */ }
-    const model = configured || chat.model, limits = this.store.modelLimitSettings({ provider: chat.provider, endpoint: chat.endpoint, model });
-    return { model, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens };
+    // A configured memory model is one of the default provider's models; otherwise tidy-up uses the chat model.
+    const connection = configured ? this.store.defaultConnection() : undefined;
+    const provider = connection ? String(connection.provider_id) : chat.provider, endpoint = connection ? String(connection.endpoint) : chat.endpoint;
+    const model = configured || chat.model, limits = this.store.modelLimitSettings({ provider, endpoint, model });
+    return { connectionId: connection ? String(connection.id) : chat.connectionId, model, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens };
   }
   /**
    * Replaces the conversation's working note when it is still the version the summarizer was shown; a newer note
@@ -295,7 +298,7 @@ export class TaskRuntime {
    * when the compression fails or is still over the cap: the old note then stays (a cut note is never written).
    */
   private async compressNote(who: { botId: string; conversationId: string; taskId?: string; purpose: "compact" | "maintain"; signal: AbortSignal }, tidy: ReturnType<TaskRuntime["tidyModel"]>, note: string): Promise<string | undefined> {
-    const job = assistantCompletion(this.store, { signal: who.signal, botId: who.botId, taskId: who.taskId, conversationId: who.conversationId, purpose: who.purpose, model: tidy.model, maintainBudget: who.purpose === "maintain" ? MAINTAIN_DAILY_TOKENS : undefined, instruction: NOTE_INSTRUCTION, content: note, maxOutput: Math.min(4096, Math.floor(tidy.contextWindow * .1)) });
+    const job = assistantCompletion(this.store, { signal: who.signal, botId: who.botId, taskId: who.taskId, conversationId: who.conversationId, purpose: who.purpose, connectionId: tidy.connectionId, model: tidy.model, maintainBudget: who.purpose === "maintain" ? MAINTAIN_DAILY_TOKENS : undefined, instruction: NOTE_INSTRUCTION, content: note, maxOutput: Math.min(4096, Math.floor(tidy.contextWindow * .1)) });
     this.modelJobs.add(job);
     try {
       const value = (await job).trim();
@@ -338,7 +341,7 @@ export class TaskRuntime {
     let summary:string,workingNote:string|undefined,archive:ReturnType<typeof parseArchive>|undefined;
     try{
       // Whole-history batches get an output cap that grows with the batch (the worker sizes it); a digest stays small.
-      const job=assistantCompletion(this.store,{signal:who.signal,botId:who.botId,taskId:who.taskId,conversationId:who.conversationId,purpose:who.purpose,model:tidy.model,maintainBudget:maintain?MAINTAIN_DAILY_TOKENS:undefined,instruction:kind==='episode'?EPISODE_INSTRUCTION:kind==='result'?DIGEST_INSTRUCTION:HISTORY_INSTRUCTION,content,maxOutput:Math.min(event.summaryMaxTokens??4096,8192,Math.floor(tidy.contextWindow*.1)),allowTruncated:true});
+      const job=assistantCompletion(this.store,{signal:who.signal,botId:who.botId,taskId:who.taskId,conversationId:who.conversationId,purpose:who.purpose,connectionId:tidy.connectionId,model:tidy.model,maintainBudget:maintain?MAINTAIN_DAILY_TOKENS:undefined,instruction:kind==='episode'?EPISODE_INSTRUCTION:kind==='result'?DIGEST_INSTRUCTION:HISTORY_INSTRUCTION,content,maxOutput:Math.min(event.summaryMaxTokens??4096,8192,Math.floor(tidy.contextWindow*.1)),allowTruncated:true});
       this.modelJobs.add(job);
       let done:{text:string;truncated:boolean};try{done=await job;}finally{this.modelJobs.delete(job);}
       summary=done.text;

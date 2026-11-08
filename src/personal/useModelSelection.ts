@@ -3,7 +3,7 @@ import { api } from './api';
 
 type Selection = { models: string[] | null; version: number };
 
-export function useModelSelection(route: string, scope: { provider: unknown; endpoint: unknown }, initial: Selection, refresh: () => Promise<void>) {
+export function useModelSelection(route: string, scope: Record<string, unknown>, initial: Selection, refresh: () => Promise<void>) {
   const [selection, setSelection] = useState(initial.models), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const confirmed = useRef(initial), draft = useRef(initial.models), revision = useRef(0), saving = useRef(false), alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);

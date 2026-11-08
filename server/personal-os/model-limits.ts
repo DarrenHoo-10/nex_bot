@@ -93,7 +93,9 @@ export class ModelLimits {
     const detectedOutput = output && Number.isSafeInteger(output) && output > 0 && output <= (match.model?.limit?.context ?? 0) ? output : undefined;
     const maxOutputTokens = manual.maxOutputTokens ?? detectedOutput ?? DEFAULT_MODEL_LIMITS.maxOutputTokens;
     const contextBudget = workingContextBudget(manual.contextBudget, hardInputLimit(contextWindow, maxOutputTokens), contextWindow);
-    return { manual, contextWindow, maxOutputTokens, contextBudget, matched: match.matched ?? null,
+    // What the catalog says the model can do, as defaults for its provider settings (reasoning levels, image input).
+    const capabilities = match.model ? { reasoning: !!match.model.reasoning, imageInput: !!match.model.modalities?.input?.includes("image") } : null;
+    return { manual, contextWindow, maxOutputTokens, contextBudget, capabilities, matched: match.matched ?? null,
       status: match.ambiguous ? "ambiguous" : match.model ? "matched" : "unknown",
       source: { contextWindow: manual.contextWindow !== null ? "manual" : match.model ? "models.dev" : "default", maxOutputTokens: manual.maxOutputTokens !== null ? "manual" : detectedOutput ? "models.dev" : "default", contextBudget: manual.contextBudget !== null ? "manual" : "default" },
       updatedAt: catalog.updatedAt || null };

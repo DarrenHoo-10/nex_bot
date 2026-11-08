@@ -127,8 +127,7 @@ struct ComposerView: View {
             Task { await addPhotos(items) }
         }
         .sheet(isPresented: $showModels) {
-            ModelPickerSheet(title: "选择聊天模型", value: chatModel, emptyLabel: "默认 · \(defaultModel)",
-                             models: workspace.state?.modelVisibility.models, source: workspace.savedModelSource(), onSelect: { setModel($0) })
+            ChatModelSheet(workspace: workspace, botID: botID, onError: { actionError = $0 })
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
         .sheet(item: $exportFile) { file in ShareSheet(url: file.url).presentationDetents([.medium, .large]) }
@@ -236,7 +235,7 @@ struct ComposerView: View {
             pasteRow
             heading("指令")
             menuRow(mode == .full ? "exclamationmark.shield" : "checkmark.shield", "权限", "permission", value: mode.title, disabled: bot == nil) { menu = .permissions }
-            menuRow("slider.horizontal.3", "模型", "model", value: chatModel.isEmpty ? (defaultModel.isEmpty ? "未连接模型" : defaultModel) : chatModel, disabled: config == nil || bot == nil) { menu = nil; showModels = true }
+            menuRow("slider.horizontal.3", "模型", "model", value: workspace.state?.modelLabel(forBot: bot) ?? (chatModel.isEmpty ? (defaultModel.isEmpty ? "未连接模型" : defaultModel) : chatModel), disabled: config == nil || bot == nil) { menu = nil; showModels = true }
             menuRow("plus.bubble", "新话题", "topic", disabled: conversation.messages.isEmpty || bot == nil) { menu = nil; Task { await startNewTopic() } }
             menuRow("square.and.arrow.down", "导出对话", "export", value: exporting ? "导出中…" : "Markdown", disabled: conversation.messages.isEmpty || exporting) { menu = nil; Task { await export() } }
         }

@@ -417,3 +417,34 @@ extension WorkspaceStore {
         do { return try await client.saveMemorySettings(enabled: enabled, model: model, version: version) } catch { throw report(error) }
     }
 }
+
+// MARK: - Model providers ("供应商") and reasoning effort
+
+extension WorkspaceStore {
+    /// Adds (`id == nil`) or edits a provider; returns its id. An empty key keeps the saved one. Owner only.
+    @discardableResult
+    public func saveConnection(id: String?, version: Int?, name: String, provider: String, endpoint: String, apiKey: String = "", enabled: Bool? = nil, defaultModel: String? = nil) async throws -> String {
+        try await act { try await client.saveConnection(id: id, version: version, name: name, provider: provider, endpoint: endpoint, apiKey: apiKey, enabled: enabled, defaultModel: defaultModel) }
+    }
+    /// Re-saves a provider unchanged except for `enabled` / `defaultModel`.
+    public func updateConnection(_ connection: ModelConnection, enabled: Bool? = nil, defaultModel: String? = nil) async throws {
+        try await saveConnection(id: connection.id, version: connection.version, name: connection.name, provider: connection.provider, endpoint: connection.endpoint, enabled: enabled ?? connection.enabled, defaultModel: defaultModel)
+    }
+    public func setDefaultConnection(id: String) async throws { try await act { try await client.setDefaultConnection(id: id) } }
+    public func removeConnection(_ connection: ModelConnection) async throws { try await act { try await client.removeConnection(id: connection.id, version: connection.version) } }
+    public func saveModelOptions(connectionID: String, model: String, version: Int, imageInput: Bool, reasoning: [ReasoningLevel], contextWindow: Int?, maxOutputTokens: Int?) async throws {
+        try await act { try await client.saveModelOptions(connectionID: connectionID, model: model, version: version, imageInput: imageInput, reasoning: reasoning, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens) }
+    }
+    /// Lists a saved provider's models with its saved key; saves nothing.
+    public func listModels(connectionID: String) async throws -> ModelCatalog { try await act(refresh: false) { try await client.listModels(connectionID: connectionID) } }
+    /// Saves which models a provider offers (`nil` = every model). `version` is the one the edit started from.
+    @discardableResult
+    public func saveModelVisibility(connectionID: String, models: [String]?, version: Int) async throws -> ModelVisibility {
+        try await act { try await client.saveModelVisibility(connectionID: connectionID, models: models, version: version) }
+    }
+    /// Chooses an assistant's provider, model (`""` = that provider's default) and effort (`nil` keeps the stored one).
+    public func setAgentModel(botID: String, connectionID: String, model: String, reasoning: String?) async throws {
+        guard let b = bot(botID) else { throw CoreError(kind: .unsupported, message: "Agent 不存在") }
+        try await act { try await client.updateModel(id: botID, connectionID: connectionID, model: model, reasoning: reasoning, version: b.modelSelectionVersion) }
+    }
+}

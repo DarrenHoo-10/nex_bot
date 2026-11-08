@@ -1,17 +1,18 @@
 import { useEffect, useLayoutEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Check, Download, MessageSquarePlus, Paperclip, Plus, Settings2, ShieldAlert, ShieldCheck } from "lucide-react";
 
-import { ModelPicker } from "./ModelPicker";
+import type { Connection } from "../api";
+import { ModelMenu, type ModelChoice } from "./ModelMenu";
 
 type Props = {
   mode: string; disabled: boolean; uploading: boolean; canExport: boolean;
-  onMode: (mode: string) => void; onFile: () => void; onModel: (model: string) => Promise<unknown>;
-  visibleModels?: string[] | null; model: string; defaultModel: string; loadModels: () => Promise<{ models: string[]; hasMore: boolean }>;
+  onMode: (mode: string) => void; onFile: () => void; onModel: (choice: ModelChoice) => void;
+  connections: Connection[]; choice: ModelChoice; modelLabel: string;
   onExport: () => void; onNewTopic?: () => void; children: ReactNode;
   approvalRules?: Array<{ id: string; label: string; active?: boolean }>; onRevokeRule?: (id: string) => void;
 };
 
-export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, onNewTopic, children, model, defaultModel, loadModels, visibleModels, approvalRules = [], onRevokeRule }: Props) {
+export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, onNewTopic, children, connections, choice, modelLabel, approvalRules = [], onRevokeRule }: Props) {
   const [menu, setMenu] = useState<"add" | "permissions" | "models" | null>(null);
   const root = useRef<HTMLDivElement>(null), add = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null), id = useId();
@@ -63,11 +64,11 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
       <button type="button" role="menuitem" disabled={disabled || uploading} onClick={() => { close(); onFile(); }}><Paperclip size={18}/><span>文件</span><small>file</small></button>
       <div className="composer-menu-heading" role="presentation">指令</div>
       <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("permissions")}><ModeIcon size={18}/><span>权限</span><small>permission</small><span className="menu-value">{full ? "完全权限" : "标准权限"}</span></button>
-      <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("models")}><Settings2 size={18}/><span>模型</span><small>model</small><span className="menu-value">{model || defaultModel}</span></button>
+      <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("models")}><Settings2 size={18}/><span>模型</span><small>model</small><span className="menu-value">{modelLabel}</span></button>
       {onNewTopic && <button type="button" role="menuitem" disabled={disabled || !canExport} onClick={() => { close(); onNewTopic(); }}><MessageSquarePlus size={18}/><span>新话题</span><small>topic</small></button>}
       <button type="button" role="menuitem" disabled={disabled || !canExport} onClick={() => { close(); onExport(); }}><Download size={18}/><span>导出对话</span><small>export</small><span className="menu-value">Markdown</span></button>
     </div>}
-    <ModelPicker anchorRef={add} value={model} emptyLabel={`默认 · ${defaultModel}`} label="选择聊天模型" models={visibleModels} loadModels={loadModels} onChange={value => { if (value !== model) void onModel(value); }} disabled={disabled} open={menu === "models"} onOpenChange={open => setMenu(open ? "models" : null)}/>
+    <ModelMenu anchorRef={add} label="选择聊天模型" connections={connections} choice={choice} onChange={onModel} disabled={disabled} open={menu === "models"} onOpenChange={open => setMenu(open ? "models" : null)}/>
     {children}
   </div>;
 }

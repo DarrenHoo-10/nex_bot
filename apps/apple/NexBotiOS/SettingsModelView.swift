@@ -74,242 +74,319 @@ final class ModelForm {
 }
 
 /// Settings 模型 category content (embedded in SettingsView's scroll view).
+/// Settings 模型 (web `ProviderSettings`): the providers ("供应商"), then one provider's name, base URL, API format, key,
+/// 启用 and models. `form` is kept for callers; the provider screens hold their own drafts.
 struct SettingsModelView: View {
     let workspace: WorkspaceStore
     @Bindable var form: ModelForm
-    @State private var pickerOpen = false
-    /// The 显示的模型 choice shown in the form; for a new connection it is saved after the connection.
-    @State private var visible: [String]?
+    @State private var selected: String?
 
-    private var config: ModelConfig? { workspace.state?.config }
-    private var keyRequired: Bool { config == nil }
-    private var canSave: Bool {
-        !form.model.trimmingCharacters(in: .whitespaces).isEmpty && !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty
-            && (!keyRequired || !form.apiKey.isEmpty) && !form.saving
-    }
-
-    /// The form addresses the saved connection, whose 显示的模型 save on their own.
-    private var connectionSaved: Bool {
-        let slash = CharacterSet(charactersIn: "/")
-        return config.map { $0.providerID == form.provider && $0.endpoint.trimmingCharacters(in: slash) == form.endpoint.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: slash) } ?? false
-    }
-
-    private var loadable: Bool { !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty && !form.loadingModels && !form.saving }
+    private var connections: [ModelConnection] { workspace.state?.connections ?? [] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PageHeading(title: "模型")
-            HStack {
-                Text("模型连接").font(.subheadline.weight(.semibold))
+            if let selected {
+                Button { self.selected = nil } label: { Label("供应商", systemImage: "chevron.left").font(.subheadline) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
+                if selected == "new" {
+                    ProviderFormIOS(workspace: workspace, connection: nil, onDone: { self.selected = $0 }).padding(14).cardStyle()
+                } else if let connection = connections.first(where: { $0.id == selected }) {
+                    ProviderFormIOS(workspace: workspace, connection: connection, onDone: { _ in }).padding(14).cardStyle().id("\(connection.id)-\(connection.version)")
+                    if connection.configured { ProviderModelsIOS(workspace: workspace, connection: connection).padding(14).cardStyle().id("models-\(connection.id)") }
+                } else {
+                    Text("这个供应商已删除").foregroundStyle(Theme.muted)
+                }
+            } else {
+                PageHeading(title: "模型")
+                VStack(spacing: 0) {
+                    ForEach(Array(connections.enumerated()), id: \.element.id) { index, connection in
+                        if index > 0 { Divider() }
+                        Button { selected = connection.id } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "shippingbox").foregroundStyle(Theme.muted)
+                                Text(connection.name).foregroundStyle(Theme.foreground).lineLimit(1)
+                                if connection.isDefault { StatusChip(text: "默认", tone: .good) }
+                                Spacer()
+                                Circle().fill(connection.usable ? Theme.success : Theme.offline.opacity(0.5)).frame(width: 8, height: 8)
+                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.muted)
+                            }
+                            .padding(.horizontal, 14).frame(minHeight: 50).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).accessibilityLabel(connection.name)
+                    }
+                    if !connections.isEmpty { Divider() }
+                    Button { selected = "new" } label: {
+                        Label("添加供应商", systemImage: "plus").font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14).frame(minHeight: 50).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.brand)
+                }
+                .cardStyle()
+                if let config = workspace.state?.config { ImageModelSection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)") }
+                RetrievalSection(workspace: workspace)
+            }
+        }
+    }
+}
+
+/// Name, API format, base URL and key; for a saved provider also 启用, 设为默认 and 删除.
+private struct ProviderFormIOS: View {
+    let workspace: WorkspaceStore
+    let connection: ModelConnection?
+    let onDone: (String) -> Void
+    @State private var name = ""
+    @State private var provider = "openai"
+    @State private var endpoint = ""
+    @State private var apiKey = ""
+    @State private var showKey = false
+    @State private var saving = false
+    @State private var saved = false
+    @State private var error: String?
+    @State private var confirmRemove = false
+
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty && !endpoint.trimmingCharacters(in: .whitespaces).isEmpty && (connection?.configured == true || !apiKey.isEmpty) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Text(connection?.name ?? "添加供应商").font(.headline).lineLimit(1)
                 Spacer()
-                StatusChip(text: config == nil ? "待配置" : "已配置", tone: config == nil ? .warn : .good)
-            }
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("API 协议").font(.footnote.weight(.semibold))
-                    Picker("API 协议", selection: Binding(get: { form.provider }, set: { form.changeProvider(to: $0) })) {
-                        Text("OpenAI 兼容").tag("openai")
-                        Text("Anthropic").tag("anthropic")
-                    }
-                    .pickerStyle(.segmented)
-                }
-                FormField(title: "API 基础地址") {
-                    TextField(ModelForm.openAIDefault, text: $form.endpoint)
-                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                }
-                FormField(title: "API Key") {
-                    HStack(spacing: 8) {
-                        Group {
-                            if form.showKey { TextField(keyPlaceholder, text: $form.apiKey) } else { SecureField(keyPlaceholder, text: $form.apiKey) }
-                        }
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.oneTimeCode)
-                        Button { form.showKey.toggle() } label: {
-                            Image(systemName: form.showKey ? "eye.slash" : "eye").foregroundStyle(Theme.muted)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(form.showKey ? "隐藏 API Key" : "显示 API Key")
-                    }
-                }
-                listField
-                ModelVisibilitySection(workspace: workspace, fetched: form.models, draft: !connectionSaved, onSelection: { visible = $0 })
-                    .id("\(form.provider)|\(form.endpoint.trimmingCharacters(in: .whitespaces))|\(connectionSaved)")
-                modelField
-                limitsSection
-                if let message = form.errorText { InlineBanner(text: message) }
-                HStack(spacing: 12) {
-                    PrimaryButton(title: form.saving ? "保存中…" : "保存配置", busy: form.saving, brand: true) { Task { await save() } }.disabled(!canSave)
-                    if form.saved {
-                        Label("已保存", systemImage: "checkmark").font(.subheadline.weight(.medium)).foregroundStyle(Theme.success).fixedSize()
-                    }
+                if let connection {
+                    Toggle("启用供应商", isOn: Binding(get: { connection.enabled }, set: { value in run { try await workspace.updateConnection(connection, enabled: value) } }))
+                        .labelsHidden().disabled(saving || connection.isDefault)
+                    Menu {
+                        Button(connection.isDefault ? "已是默认供应商" : "设为默认供应商") { run { try await workspace.setDefaultConnection(id: connection.id) } }.disabled(connection.isDefault)
+                        Button("删除供应商", role: .destructive) { confirmRemove = true }.disabled(connection.isDefault)
+                    } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted) }
+                        .accessibilityLabel("更多操作")
                 }
             }
-            .padding(14).cardStyle()
-            if let config { ImageModelSection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)") }
-            RetrievalSection(workspace: workspace)
-        }
-        .onDisappear { form.showKey = false }
-        .task(id: form.scopeKey) { await loadLimits() }
-        .onDebugUI { cmd, arg in
-            switch cmd {
-            case "m-provider": form.changeProvider(to: arg)
-            case "m-model": form.model = arg
-            case "m-endpoint": form.endpoint = arg
-            case "m-key": form.apiKey = arg
-            case "m-list": Task { await loadModels() }
-            case "m-pick": if form.models.contains(arg) { form.model = arg }
-            case "m-open": pickerOpen = true
-            case "m-close": pickerOpen = false
-            case "m-save": Task { await save() }
-            case "m-context": form.contextEdited = true; form.contextText = arg
-            case "m-output": form.outputEdited = true; form.outputText = arg
-            case "m-budget": form.budgetEdited = true; form.budgetText = arg
-            case "m-lookup": Task { await lookup(force: true) }
-            default: break
+            FormField(title: "名称") { TextField("例如：公司 API", text: edited($name)).autocorrectionDisabled() }
+            FormField(title: "Base URL") {
+                TextField("https://api.example.com/v1", text: edited($endpoint)).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
             }
-        }
-    }
-
-    /// The 显示的模型 choice, else a list fetched with 获取模型列表, else nil (the picker fetches it).
-    private var pickerModels: [String]? {
-        if let visible { return visible }
-        return form.models.isEmpty ? nil : form.models
-    }
-    private var pickerSource: ModelSource? {
-        let endpoint = form.endpoint.trimmingCharacters(in: .whitespaces)
-        return endpoint.isEmpty ? nil : workspace.formModelSource(provider: form.provider, endpoint: endpoint, apiKey: form.apiKey)
-    }
-
-    private var keyPlaceholder: String { config == nil ? "输入 API Key" : "留空保留已保存的 Key" }
-
-    private var modelField: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("默认模型").font(.footnote.weight(.semibold))
-            ModelPickerField(label: "默认模型", value: form.model, models: pickerModels, source: pickerSource, isOpen: $pickerOpen, onChange: { form.model = $0 })
-        }
-    }
-
-    private var listField: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("模型列表").font(.footnote.weight(.semibold))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("API 格式").font(.footnote.weight(.semibold))
+                Picker("API 格式", selection: edited($provider)) {
+                    Text("OpenAI 兼容").tag("openai")
+                    Text("Anthropic").tag("anthropic")
+                }
+                .pickerStyle(.segmented)
+            }
+            FormField(title: "API Key") {
+                HStack(spacing: 8) {
+                    Group {
+                        let placeholder = connection?.configured == true ? "留空保留已保存的 Key" : "输入 API Key"
+                        if showKey { TextField(placeholder, text: edited($apiKey)) } else { SecureField(placeholder, text: edited($apiKey)) }
+                    }
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.oneTimeCode)
+                    Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye").foregroundStyle(Theme.muted) }
+                        .buttonStyle(.plain).accessibilityLabel(showKey ? "隐藏 API Key" : "显示 API Key")
+                }
+            }
+            if let error { InlineBanner(text: error) }
             HStack(spacing: 12) {
-                Button { Task { await loadModels() } } label: {
-                    HStack(spacing: 6) {
-                        if form.loadingModels { ProgressView().controlSize(.small) }
-                        Text(form.loadingModels ? "获取中…" : "获取模型列表")
-                    }
-                }
-                .buttonStyle(PillButtonStyle()).disabled(!loadable)
+                PrimaryButton(title: saving ? "保存中…" : connection == nil ? "添加" : "保存", busy: saving, brand: true) { save() }.disabled(!valid || saving)
+                if saved { Label("已保存", systemImage: "checkmark").font(.subheadline.weight(.medium)).foregroundStyle(Theme.success).fixedSize() }
             }
-            if let notice = form.modelNotice { Text(notice).font(.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
-            if let error = form.modelError { Text(error).font(.caption).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true) }
         }
+        .onAppear { name = connection?.name ?? ""; provider = connection?.provider ?? "openai"; endpoint = connection?.endpoint ?? "" }
+        .confirmationDialog("删除供应商「\(connection?.name ?? "")」？", isPresented: $confirmRemove, titleVisibility: .visible) {
+            Button("删除", role: .destructive) { if let connection { run { try await workspace.removeConnection(connection) } } }
+        } message: { Text("它的 API Key 会被清除，正在用它的助手会改用默认供应商。") }
     }
 
-    // MARK: 模型参数
+    private func edited(_ binding: Binding<String>) -> Binding<String> { Binding(get: { binding.wrappedValue }, set: { binding.wrappedValue = $0; saved = false }) }
 
-    private var limitsModelReady: Bool { !form.model.trimmingCharacters(in: .whitespaces).isEmpty && !form.endpoint.trimmingCharacters(in: .whitespaces).isEmpty }
+    private func run(_ body: @escaping () async throws -> Void) {
+        saving = true; error = nil
+        Task { defer { saving = false }; do { try await body() } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription } }
+    }
 
-    private func separated(_ n: Int?) -> String { n.map { $0.formatted(.number.grouping(.automatic)) } ?? "—" }
+    private func save() {
+        guard valid, !saving else { return }
+        let key = apiKey
+        saving = true; error = nil
+        Task {
+            defer { saving = false }
+            do {
+                let id = try await workspace.saveConnection(id: connection?.id, version: connection?.version, name: name.trimmingCharacters(in: .whitespaces), provider: provider,
+                                                            endpoint: endpoint.trimmingCharacters(in: .whitespaces), apiKey: key, enabled: connection?.enabled)
+                apiKey = ""; showKey = false; saved = true
+                if connection == nil { onDone(id) }
+            } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
+        }
+    }
+}
 
-    private var limitsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
+/// A provider's models: 启用 (全选 / 全不选), 设为默认模型 and each model's settings.
+private struct ProviderModelsIOS: View {
+    let workspace: WorkspaceStore
+    let connection: ModelConnection
+    @State private var fetched: [String] = []
+    @State private var loading = false
+    @State private var error = ""
+    @State private var custom = ""
+    @State private var query = ""
+    @State private var editing: String?
+    @State private var autosave: ModelSelectionAutosave?
+    @State private var loaded = false
+
+    private var stored: ModelVisibility { ModelVisibility(models: connection.models, version: connection.modelsVersion) }
+    private var selection: [String]? { autosave?.selection ?? stored.models }
+    private var all: [String] {
+        var seen = Set<String>()
+        return (fetched + (selection ?? []) + [connection.defaultModel] + Array(connection.options.keys)).filter { !$0.isEmpty && seen.insert($0).inserted }.sorted()
+    }
+    private var enabled: Set<String> { Set(selection ?? all) }
+    private var rows: [String] {
+        let terms = query.lowercased().split(separator: " ").map(String.init)
+        return all.filter { model in terms.allSatisfy { model.lowercased().contains($0) } }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("模型参数").font(.subheadline.weight(.semibold))
+                Text("模型列表").font(.subheadline.weight(.semibold))
                 Spacer()
-                Button { Task { await lookup(force: true) } } label: {
-                    HStack(spacing: 6) {
-                        if form.limitsLoading { ProgressView().controlSize(.small) }
-                        Text(form.limitsLoading ? "识别中…" : "联网识别")
+                Button(loading ? "获取中…" : "获取模型") { Task { await load() } }.buttonStyle(PillButtonStyle()).disabled(loading)
+            }
+            HStack(spacing: 8) {
+                TextField("手动添加模型 ID", text: $custom).textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.done).onSubmit(addCustom)
+                    .padding(.horizontal, 12).padding(.vertical, 9).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Button("添加", action: addCustom).buttonStyle(PillButtonStyle()).disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if !error.isEmpty { InlineBanner(text: error) }
+            if let failure = autosave?.error, !failure.isEmpty { InlineBanner(text: failure) }
+            if all.count > 12 || !query.isEmpty {
+                TextField("搜索模型", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .padding(.horizontal, 12).padding(.vertical, 9).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            HStack {
+                Text("\(all.count) 个模型 · 已启用 \(enabled.count)\(autosave?.busy == true ? " · 保存中…" : "")").font(.caption).foregroundStyle(Theme.muted)
+                Spacer()
+                Button("全选") { bulk(true) }.font(.caption).disabled(rows.isEmpty || rows.allSatisfy(enabled.contains))
+                Button("全不选") { bulk(false) }.font(.caption).disabled(!rows.contains(where: enabled.contains))
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element) { index, model in
+                    if index > 0 { Divider() }
+                    row(model)
+                }
+                if rows.isEmpty { Text(loading ? "正在获取模型…" : "没有模型，可点「获取模型」或手动添加").font(.footnote).foregroundStyle(Theme.muted).padding(12) }
+            }
+        }
+        .onAppear {
+            guard autosave == nil else { return }
+            let id = connection.id
+            autosave = ModelSelectionAutosave(initial: stored) { [workspace] models, version in try await workspace.saveModelVisibility(connectionID: id, models: models, version: version) }
+        }
+        .onChange(of: stored) { autosave?.sync(stored) }
+        .task { if !loaded { loaded = true; await load() } }
+        .sheet(item: Binding(get: { editing.map(EditingModel.init) }, set: { editing = $0?.id })) { item in
+            ModelOptionsSheetIOS(workspace: workspace, connection: connection, model: item.id).presentationDetents([.medium, .large])
+        }
+    }
+
+    private struct EditingModel: Identifiable { let id: String }
+
+    @ViewBuilder private func row(_ model: String) -> some View {
+        let options = connection.options[model], isDefault = model == connection.defaultModel
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model).font(.callout.monospaced()).foregroundStyle(enabled.contains(model) ? Theme.foreground : Theme.muted).lineLimit(1).truncationMode(.middle)
+                let tags = [isDefault ? "默认" : nil, options?.imageInput == true ? "视觉" : nil, options?.reasoning.first.map { "推理 \($0.label)\(options!.reasoning.count > 1 ? "–\(options!.reasoning.last!.label)" : "")" }].compactMap { $0 }
+                if !tags.isEmpty { Text(tags.joined(separator: " · ")).font(.caption2).foregroundStyle(Theme.muted) }
+            }
+            Spacer(minLength: 6)
+            Menu {
+                if !isDefault { Button("设为默认模型") { Task { try? await workspace.updateConnection(connection, defaultModel: model) } } }
+                Button("编辑") { editing = model }
+            } label: { Image(systemName: "ellipsis").foregroundStyle(Theme.muted).frame(width: 30, height: 30) }
+                .accessibilityLabel("\(model) 的操作")
+            Toggle("启用 \(model)", isOn: Binding(get: { enabled.contains(model) }, set: { _ in autosave?.toggle(model, all: all) })).labelsHidden()
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func bulk(_ checked: Bool) {
+        var next = enabled
+        for model in rows { if checked { next.insert(model) } else { next.remove(model) } }
+        autosave?.set(checked && query.isEmpty ? nil : next.sorted())
+    }
+
+    private func addCustom() {
+        let id = custom.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty, id.count <= 200 else { return }
+        if !enabled.contains(id) { autosave?.set(Array(Set(selection ?? all).union([id])).sorted()) }
+        custom = ""
+    }
+
+    private func load() async {
+        guard !loading else { return }
+        loading = true; error = ""
+        defer { loading = false }
+        do { fetched = try await workspace.listModels(connectionID: connection.id).models }
+        catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
+    }
+}
+
+/// One model's settings: context window, output ceiling, image input and the reasoning levels it offers.
+private struct ModelOptionsSheetIOS: View {
+    let workspace: WorkspaceStore
+    let connection: ModelConnection
+    let model: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var info: ModelLimitInfo?
+    @State private var context = ""
+    @State private var output = ""
+    @State private var imageInput = false
+    @State private var levels: [ReasoningLevel] = []
+    @State private var saving = false
+    @State private var error = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("上下文") {
+                    TextField(info.map { "上下文窗口（自动 · \($0.automatic.contextWindow.formatted())）" } ?? "上下文窗口（自动）", text: $context).keyboardType(.numberPad)
+                    TextField(info.map { "最大输出（自动 · \($0.automatic.maxOutputTokens.formatted())）" } ?? "最大输出（自动）", text: $output).keyboardType(.numberPad)
+                }
+                Section { Toggle("支持图片输入", isOn: $imageInput) }
+                Section("推理档位") {
+                    ForEach(ReasoningLevel.allCases, id: \.self) { level in
+                        Toggle(level.label, isOn: Binding(get: { levels.contains(level) }, set: { on in levels = ReasoningLevel.allCases.filter { $0 == level ? on : levels.contains($0) } }))
                     }
                 }
-                .buttonStyle(PillButtonStyle()).disabled(form.limitsLoading || !limitsModelReady || form.limitsScope != form.scopeKey)
+                if !error.isEmpty { Section { Text(error).foregroundStyle(Theme.danger) } }
             }
-            limitField("上下文窗口（Token）", text: $form.contextText, edited: { form.contextEdited = true },
-                       automatic: form.limits?.automatic.contextWindow, source: form.limits?.automatic.source.contextWindow, name: "context")
-            limitField("最大输出 Token", text: $form.outputText, edited: { form.outputEdited = true },
-                       automatic: form.limits?.automatic.maxOutputTokens, source: form.limits?.automatic.source.maxOutputTokens, name: "output")
-            limitField("压缩阈值（Token）", text: $form.budgetText, edited: { form.budgetEdited = true },
-                       automatic: form.limits?.automatic.contextBudget, source: form.limits?.automatic.source.contextBudget, name: "budget")
-            Text((form.limits?.status ?? .matched).text).font(.caption).foregroundStyle(Theme.muted)
-            if let error = form.limitsError { Text(error).font(.caption).foregroundStyle(Theme.danger) }
-        }
-    }
-
-    private func limitField(_ title: String, text: Binding<String>, edited: @escaping () -> Void, automatic: Int?, source: ModelLimitSource?, name: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.footnote.weight(.semibold))
-            TextField(automatic.map { "自动 · \(separated($0))" } ?? "读取中…", text: Binding(get: { text.wrappedValue }, set: { edited(); text.wrappedValue = $0 }))
-                .keyboardType(.numberPad)
-                .disabled(form.limits == nil)
-                .padding(.horizontal, 12).padding(.vertical, 11)
-                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .accessibilityLabel(title)
-            Text(text.wrappedValue.isEmpty ? "\(source == .modelsDev ? "models.dev" : "默认") · \(separated(automatic))" : "手动配置")
-                .font(.caption).foregroundStyle(Theme.muted)
-        }
-    }
-
-    /// Saved overrides and the cached answer first, then the public directory while a field is automatic.
-    private func loadLimits() async {
-        guard limitsModelReady else { return }
-        try? await Task.sleep(for: .milliseconds(400))
-        guard !Task.isCancelled else { return }
-        await lookup(force: false)
-    }
-
-    private func lookup(force: Bool) async {
-        guard limitsModelReady else { return }
-        let scope = form.scopeKey
-        let (provider, endpoint, model) = (form.provider, form.endpoint.trimmingCharacters(in: .whitespaces), form.model.trimmingCharacters(in: .whitespaces))
-        form.limitsError = nil
-        do {
-            if !force || form.limitsScope != scope {
-                let cached = try await workspace.modelLimits(provider: provider, endpoint: endpoint, model: model)
-                form.apply(cached, scope: scope)
-                guard scope == form.scopeKey else { return }
-                if !force && cached.manual.contextWindow != nil && cached.manual.maxOutputTokens != nil { return }
+            .navigationTitle(model).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中…" : "保存", action: save).disabled(saving) }
             }
-            form.limitsLoading = true
-            defer { if scope == form.scopeKey { form.limitsLoading = false } }
-            let result = try await workspace.refreshModelLimits(provider: provider, endpoint: endpoint, model: model, force: force)
-            form.apply(result, scope: scope)
-            if scope == form.scopeKey, result.refreshFailed { form.limitsError = "联网识别失败，使用缓存或默认值" }
-        } catch {
-            if scope == form.scopeKey { form.limitsError = coreMessage(error) }
+        }
+        .task {
+            let stored = connection.options[model]
+            imageInput = stored?.imageInput ?? false; levels = stored?.reasoning ?? []
+            guard let result = try? await workspace.modelLimits(provider: connection.provider, endpoint: connection.endpoint, model: model) else { return }
+            info = result
+            context = result.manual.contextWindow.map(String.init) ?? ""; output = result.manual.maxOutputTokens.map(String.init) ?? ""
+            if stored == nil, let capabilities = result.capabilities { imageInput = capabilities.imageInput; if capabilities.reasoning { levels = [.low, .medium, .high] } }
         }
     }
 
-    /// Fetches the provider's catalog with the typed provider/endpoint/key (an empty key reuses the saved one). Never saves.
-    private func loadModels() async {
-        guard loadable else { return }
-        form.loadingModels = true; form.modelError = nil; form.modelNotice = nil
-        defer { form.loadingModels = false }
-        do {
-            let catalog = try await workspace.listModels(provider: form.provider, endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey)
-            form.models = catalog.models; form.hasMore = catalog.hasMore; form.manual = false
-            if form.model.trimmingCharacters(in: .whitespaces).isEmpty, let first = catalog.models.first { form.model = first }
-            form.modelNotice = catalog.models.isEmpty
-                ? "服务未返回可用模型，可手动填写模型 ID"
-                : "已获取 \(catalog.models.count) 个模型" + (catalog.hasMore ? "（服务仅返回部分结果，可手动填写其他模型）" : "")
-        } catch { form.modelError = coreMessage(error) }
-    }
-
-    private func save() async {
-        guard canSave else { return }
-        form.saving = true; form.errorText = nil
-        defer { form.saving = false }
-        do {
-            // Untouched or not yet loaded fields keep what Core has saved; blank edited fields clear to automatic.
-            let ready = form.limitsScope == form.scopeKey
-            let context = ready ? try ModelLimits.parse(form.contextText, field: .contextWindow) : LimitSetting.preserve
-            let output = ready ? try ModelLimits.parse(form.outputText, field: .maxOutputTokens) : LimitSetting.preserve
-            let budget = ready ? try ModelLimits.parse(form.budgetText, field: .contextBudget) : LimitSetting.preserve
-            let wasSaved = connectionSaved, draft = visible
-            try await workspace.saveModel(provider: form.provider, model: form.model.trimmingCharacters(in: .whitespaces), endpoint: form.endpoint.trimmingCharacters(in: .whitespaces), apiKey: form.apiKey,
-                                          contextWindow: context, maxOutputTokens: output, contextBudget: budget)
-            // A new connection's 显示的模型 were a draft until the connection existed.
-            if !wasSaved, let draft { try await workspace.saveModelVisibility(models: draft) }
-            form.showKey = false; form.saved = true
-        } catch { form.errorText = coreMessage(error) }
+    private func save() {
+        let trimmedContext = context.trimmingCharacters(in: .whitespaces), trimmedOutput = output.trimmingCharacters(in: .whitespaces)
+        guard trimmedContext.isEmpty || Int(trimmedContext) != nil, trimmedOutput.isEmpty || Int(trimmedOutput) != nil else { error = "请输入整数"; return }
+        saving = true; error = ""
+        Task {
+            defer { saving = false }
+            do {
+                try await workspace.saveModelOptions(connectionID: connection.id, model: model, version: connection.options[model]?.version ?? 0, imageInput: imageInput, reasoning: levels,
+                                                     contextWindow: Int(trimmedContext), maxOutputTokens: Int(trimmedOutput))
+                dismiss()
+            } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
+        }
     }
 }

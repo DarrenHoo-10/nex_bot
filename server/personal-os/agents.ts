@@ -74,13 +74,10 @@ export class AgentModule {
       this.ensure(botId);
       if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active'", botId)) throw new Error("助手已归档");
       if (this.store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", botId)) throw new Error("请等待当前任务结束或停止任务后切换模型");
-      const config = this.store.config();
-      if (!config) throw new Error("请先配置模型连接");
-      if (data.provider !== config.provider_id || data.endpoint !== config.endpoint) throw new Error("模型连接已变化，请重新选择");
-      if (data.version !== (this.store.botModelSelection(botId)?.model_selection_version ?? 0)) throw new Error("模型已在其他设备更新，请重新选择");
-      this.store.run("INSERT INTO agent_model_settings(bot_id,provider,endpoint,model,version) VALUES(?,?,?,?,1) ON CONFLICT(bot_id,provider,endpoint) DO UPDATE SET model=excluded.model,version=version+1", botId, config.provider_id, config.endpoint, model);
+      // With connectionId the assistant may switch provider; without it (older clients) the provider must not have changed.
+      const saved = this.store.saveBotModel(botId, { ...data, model });
       this.store.modelConfig(botId);
-      this.store.audit("agent.model.update", "bot", botId, { model });
+      this.store.audit("agent.model.update", "bot", botId, { model, connectionId: this.store.botModelSelection(botId)?.selected_connection, reasoning: saved.reasoning });
     });
     this.runtime.changed();
   }

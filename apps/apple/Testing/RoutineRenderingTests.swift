@@ -125,7 +125,14 @@ private final class JobFixtureProtocol: URLProtocol, @unchecked Sendable {
             "messages": [["id": "brief", "role": "user", "content": "后台任务「整理下载文件夹」。以用户原话为准"], ["id": "m1", "role": "assistant", "content": "正在按类型整理。", "created_at": 1800000000000]],
             "steps": [["id": "s1", "tool_name": "device.list", "status": "succeeded", "summary": "device.list", "preview": "", "created_at": 1800000000000]],
             "reports": [["id": "r1", "state": "question", "summary": "已按类型整理 12 个文件。", "created_at": 1800000001000]], "streaming": "",
-        ] : ["sync": ["cursor": 1, "privacyEpoch": 0, "coreId": "fixture", "bootId": "fixture"], "bots": [["id": "b1", "name": "后台演示助手"]],
+        ] : ["sync": ["cursor": 1, "privacyEpoch": 0, "coreId": "fixture", "bootId": "fixture"],
+             "bots": [["id": "b1", "name": "后台演示助手", "selected_connection": "thinker", "selected_model": "", "selected_reasoning": "max", "model_selection_version": 2]],
+             "config": ["id": "default", "provider_id": "openai", "endpoint": "https://api.example.test/v1", "default_model": "fake", "configured": 1],
+             "connections": [
+                ["id": "default", "name": "演示供应商", "provider": "openai", "endpoint": "https://api.example.test/v1", "defaultModel": "fake", "enabled": true, "isDefault": true, "configured": true, "version": 3, "models": NSNull(), "modelsVersion": 0, "options": [:]],
+                ["id": "thinker", "name": "推理供应商", "provider": "anthropic", "endpoint": "https://api.example.test/thinker", "defaultModel": "claude-x", "enabled": true, "isDefault": false, "configured": true, "version": 1, "models": ["claude-x"], "modelsVersion": 4,
+                 "options": ["claude-x": ["imageInput": true, "reasoning": ["low", "high"], "version": 1]]],
+             ],
              "approvals": [], "tasks": [], "routines": [], "occurrences": [], "devices": [], "conversations": [], "onlineDevices": [], "memories": [], "jobs": Self.jobs]
         let data = try! JSONSerialization.data(withJSONObject: payload)
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
@@ -170,6 +177,26 @@ final class JobRenderingTests: XCTestCase {
             Spacer()
         }.padding(20).frame(width: 360).background(Theme.background)
         try await snapshot(view, name: "job-rows", requested: nil)
+    }
+
+    /// Providers decode from the state; the assistant's choice resolves to its provider's default model and the nearest offered effort.
+    @MainActor func testModelConnections() async throws {
+        let store = try await workspace()
+        let state = try XCTUnwrap(store.state)
+        XCTAssertEqual(state.connections.map(\.name), ["演示供应商", "推理供应商"])
+        let thinker = try XCTUnwrap(state.connections.last)
+        XCTAssertNil(state.connections[0].models)
+        XCTAssertEqual(thinker.models, ["claude-x"])
+        XCTAssertEqual(thinker.options["claude-x"]?.reasoning, [.low, .high])
+        XCTAssertEqual(thinker.options["claude-x"]?.imageInput, true)
+        let bot = state.bots.first
+        XCTAssertEqual(state.connection(forBot: bot)?.id, "thinker")
+        XCTAssertEqual(state.modelChoice(forBot: bot).model, "claude-x")
+        XCTAssertEqual(state.modelChoice(forBot: bot).reasoning, "high")
+        XCTAssertEqual(state.modelLabel(forBot: bot), "claude-x · 高")
+        XCTAssertEqual(ReasoningLevel.resolve(nil, offered: [.low, .medium, .high]), "medium")
+        XCTAssertEqual(ReasoningLevel.resolve("medium", offered: [.low, .high]), "low")
+        XCTAssertEqual(ReasoningLevel.resolve("high", offered: []), "off")
     }
 
     @MainActor func testJobDetail() async throws {

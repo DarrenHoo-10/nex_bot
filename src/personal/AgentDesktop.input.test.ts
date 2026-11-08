@@ -171,11 +171,11 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     const toggle = container.querySelector<HTMLButtonElement>(".model-chooser-notice button")!;
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector(".model-chooser-notice [data-model-settings]")).not.toBeNull();
+    expect(container.querySelector(".model-chooser-notice [data-provider-settings]")).not.toBeNull();
     expect(container.querySelector(".preferences-page")).toBeNull();
     expect(composer().value).toBe("保留的草稿");
     await act(async () => { toggle.click(); });
-    expect(container.querySelector("[data-model-settings]")).toBeNull();
+    expect(container.querySelector("[data-provider-settings]")).toBeNull();
     expect(composer().value).toBe("保留的草稿");
   });
 

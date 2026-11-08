@@ -124,6 +124,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var lanEnabled: Bool
     /// Models the pickers offer for the current connection (`nil` models = all). Absent on older Cores.
     public var modelVisibility: ModelVisibility
+    /// `connections`: the model providers (see ``connections``). Empty on older Cores.
+    public var connectionRows: [Row] = []
     /// `imageModelSelection`: the models offered for image generation (always a list; OpenAI-compatible connections only).
     public var imageModelSelection: ModelVisibility = ModelVisibility(models: [])
 
@@ -159,6 +161,7 @@ public struct WorkspaceState: Codable, Sendable {
         address = c.lenient(.init("address"))?.stringValue ?? ""; dataDir = c.lenient(.init("dataDir"))?.stringValue ?? ""
         runtime = c.lenient(.init("runtime"))?.stringValue ?? ""; lanEnabled = c.lenient(.init("lanEnabled"))?.boolValue ?? false
         modelVisibility = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("modelVisibility"))) ?? ModelVisibility()
+        connectionRows = rows("connections")
         imageModelSelection = (try? c.decodeIfPresent(ModelVisibility.self, forKey: .init("imageModelSelection"))) ?? ModelVisibility(models: [])
         if imageModelSelection.models == nil { imageModelSelection.models = [] }
     }

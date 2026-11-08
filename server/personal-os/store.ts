@@ -22,11 +22,24 @@ import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, typ
 
 import { todoSchema } from "./todo-schema.ts";
 import { jobSchema } from "./job-schema.ts";
+import { connectionSchema } from "./connection-schema.ts";
+import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const now = () => Date.now();
+/** A provider's base URL: HTTPS, or HTTP on this machine for local models; no credentials, query or fragment. */
+export function connectionEndpoint(value: unknown) {
+  const endpoint = new URL(text(value, 2048));
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)))) throw new Error("API 地址须为 HTTPS；本地模型可使用 HTTP localhost");
+  return endpoint.toString().replace(/\/+$/, "");
+}
+export function connectionProvider(value: unknown) {
+  const provider = text(value, 30);
+  if (!["openai", "anthropic"].includes(provider)) throw new Error("不支持的协议");
+  return provider;
+}
 export function text(value: unknown, max = 32_000): string {
   if (typeof value !== "string" || !value.trim() || value.length > max) throw new Error("请输入有效内容（长度超出限制或为空）");
   return value.trim();
@@ -437,6 +450,11 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       if (!this.all("PRAGMA table_info(personal_feishu_outbound)").some((column) => column.name === "job_id")) this.db.exec(schema);
       this.insert("schema_migrations", { version: 44, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=45")) this.transaction(() => {
+      // Several model providers; see connection-schema.ts. The existing connection becomes the default provider.
+      this.db.exec(connectionSchema);
+      this.insert("schema_migrations", { version: 45, checksum: hash(connectionSchema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -462,13 +480,34 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
     decipher.setAuthTag(buffer.subarray(-16));
     return Buffer.concat([decipher.update(buffer.subarray(12, -16)), decipher.final()]).toString("utf8");
   }
-  config(): Row | undefined {
-    const row = this.get("SELECT * FROM model_connections WHERE id='default'");
-    if (!row) return;
-    return { id: row.id, provider_id: row.provider_id, endpoint: row.endpoint, default_model: row.default_model, configured: row.credential_ref ? 1 : 0 };
+  // ── Model providers ("供应商") ──────────────────────────────────────────────────────────────────────────────
+  // Several connections may exist; exactly one is the default. The legacy single-connection API (config, /api/config,
+  // modelVisibility without a connection, bots/model without connectionId) keeps working against the default one.
+  /** The default provider (any status, like the single row was), or undefined before one is configured. */
+  defaultConnection(): Row | undefined {
+    return this.get("SELECT * FROM model_connections WHERE is_default=1 AND status!='revoked'") ?? this.get("SELECT * FROM model_connections WHERE id='default' AND status!='revoked'");
   }
-  modelVisibility() {
-    const config = this.config();
+  /** A provider that has not been removed. */
+  connection(connectionId: string): Row | undefined {
+    return this.get("SELECT * FROM model_connections WHERE id=? AND status!='revoked'", connectionId);
+  }
+  connectionRows(): Row[] {
+    return this.all("SELECT * FROM model_connections WHERE status!='revoked' ORDER BY is_default DESC,sort_order,created_at,rowid");
+  }
+  private connectionFor(input: Record<string, unknown>): Row | undefined {
+    if (input.connectionId === undefined) return this.defaultConnection();
+    const row = this.connection(text(input.connectionId, 100));
+    if (!row) throw new Error("供应商不存在或已删除");
+    return row;
+  }
+  config(): Row | undefined {
+    const row = this.defaultConnection();
+    if (!row) return;
+    return { id: row.id, provider_id: row.provider_id, endpoint: row.endpoint, default_model: row.default_model, configured: row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref) ? 1 : 0 };
+  }
+  /** Models a provider offers in pickers (its 启用 models): null means every model its directory lists. */
+  modelVisibility(connectionId?: string) {
+    const config = connectionId === undefined ? this.defaultConnection() : this.connection(connectionId);
     const row = config && this.get("SELECT models_json,version FROM model_visibility WHERE provider=? AND endpoint=?", config.provider_id, String(config.endpoint).replace(/\/+$/, ""));
     return { models: row?.models_json ? JSON.parse(String(row.models_json)) as string[] : null, version: Number(row?.version ?? 0) };
   }
@@ -491,16 +530,17 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
     return this.imageModelSelection();
   }
   saveModelVisibility(input: Record<string, unknown>) {
-    const scope = modelLimitScope({ ...input, model: "visibility" }), config = this.config();
+    const config = this.connectionFor(input);
+    const scope = input.connectionId === undefined ? modelLimitScope({ ...input, model: "visibility" }) : modelLimitScope({ provider: config?.provider_id, endpoint: config?.endpoint, model: "visibility" });
     if (!config || config.provider_id !== scope.provider || String(config.endpoint).replace(/\/+$/, "") !== scope.endpoint) throw new Error("模型连接已变化，请重新打开设置");
     if (input.models !== null && (!Array.isArray(input.models) || input.models.length > 10000 || input.models.some(value => typeof value !== "string" || !value.trim() || value.length > 200))) throw new Error("显示模型列表无效");
     const models = input.models === null ? null : [...new Set((input.models as string[]).map(value => value.trim()))];
     this.transaction(() => {
-      const previous = this.modelVisibility();
+      const previous = this.modelVisibility(String(config.id));
       if (input.version !== previous.version) throw new Error("显示模型已被修改，请重新打开设置");
       this.run("INSERT INTO model_visibility VALUES(?,?,?,?) ON CONFLICT(provider,endpoint) DO UPDATE SET models_json=excluded.models_json,version=excluded.version", scope.provider, scope.endpoint, models === null ? null : JSON.stringify(models), previous.version + 1);
     });
-    return this.modelVisibility();
+    return this.modelVisibility(String(config.id));
   }
   modelLimitSettings(input: Record<string, unknown>) {
     const scope = modelLimitScope(input);
@@ -508,13 +548,11 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
     const manual: ModelLimitOverrides = { contextWindow: row?.context_window == null ? null : Number(row.context_window), maxOutputTokens: row?.max_output_tokens == null ? null : Number(row.max_output_tokens), contextBudget: row?.context_budget == null ? null : Number(row.context_budget) };
     return this.modelLimits.resolve(scope, manual);
   }
+  /** The legacy single-connection form: provider, endpoint, key, default model and its limits, for the default provider. */
   saveConfig(value: Record<string, unknown>) {
-    const endpoint = new URL(text(value.endpoint, 2048));
-    if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)))) throw new Error("API 地址须为 HTTPS；本地模型可使用 HTTP localhost");
-    const provider = text(value.provider, 30);
-    if (!["openai", "anthropic"].includes(provider)) throw new Error("不支持的协议");
+    const endpoint = connectionEndpoint(value.endpoint), provider = connectionProvider(value.provider);
     const model = text(value.model, 200);
-    const scope = modelLimitScope({ provider, endpoint: endpoint.toString(), model });
+    const scope = modelLimitScope({ provider, endpoint, model });
     const previous = this.modelLimitSettings(scope).manual;
     const manual = {
       contextWindow: value.contextWindow === undefined ? previous.contextWindow : parseModelLimit(value.contextWindow, "contextWindow"),
@@ -522,33 +560,169 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       contextBudget: value.contextBudget === undefined ? previous.contextBudget : parseModelLimit(value.contextBudget, "contextBudget"),
     };
     validateModelLimits(this.modelLimits.resolve(scope, manual));
-    const secret = typeof value.apiKey === "string" && value.apiKey.trim() ? text(value.apiKey, 8192) : undefined;
-    if (!secret && !this.get("SELECT id FROM secrets WHERE id='model-key'")) throw new Error("请配置 API Key");
+    const current = this.defaultConnection();
     this.transaction(() => {
       this.run("INSERT INTO model_limit_overrides(provider,endpoint,model,context_window,max_output_tokens,context_budget) VALUES(?,?,?,?,?,?) ON CONFLICT(provider,endpoint,model) DO UPDATE SET context_window=excluded.context_window,max_output_tokens=excluded.max_output_tokens,context_budget=excluded.context_budget", scope.provider, scope.endpoint, scope.model, manual.contextWindow, manual.maxOutputTokens, manual.contextBudget);
-      if (secret) this.run("INSERT INTO secrets VALUES('model-key',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", this.encrypt(secret));
-      this.run("INSERT INTO model_connections(id,workspace_id,owner_user_id,display_name,provider_id,endpoint,credential_ref,default_model,status,created_at) VALUES('default',?,?,?,?,?,'model-key',?,'active',?) ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,endpoint=excluded.endpoint,default_model=excluded.default_model,version=version+1", this.workspace, this.owner, "Default", provider, endpoint.toString().replace(/\/$/, ""), model, now());
-      this.run("UPDATE bots SET model_connection_id='default' WHERE model_connection_id IS NULL");
-      this.audit("model.configure", "connection", "default", { provider, model });
+      const connectionId = this.writeConnection(current, { name: current ? String(current.display_name) : "Default", provider, endpoint, apiKey: value.apiKey, defaultModel: model, enabled: true });
+      this.audit("model.configure", "connection", connectionId, { provider, model });
     });
   }
-  botModelSelection(botId: string) {
-    const config = this.config();
-    return config ? this.get("SELECT model selected_model,version model_selection_version FROM agent_model_settings WHERE bot_id=? AND provider=? AND endpoint=?", botId, config.provider_id, config.endpoint) : undefined;
+  /** Adds or edits a provider ("供应商"): name, API format, base URL, key (kept when left empty), default model, 启用. */
+  saveConnection(value: Record<string, unknown>) {
+    const existing = value.id === undefined || value.id === null || value.id === "" ? undefined : this.connection(text(value.id, 100));
+    if (value.id && !existing) throw new Error("供应商不存在或已删除");
+    if (existing && value.version !== Number(existing.version)) throw new Error("供应商已在其他设备修改，请刷新后再试");
+    if (typeof value.name !== "string" || !value.name.trim()) throw new Error("请填写供应商名称");
+    const name = text(value.name, 60);
+    const enabled = value.enabled !== false;
+    if (existing?.is_default && !enabled) throw new Error("默认供应商不能停用，请先把其他供应商设为默认");
+    return this.transaction(() => {
+      const connectionId = this.writeConnection(existing, { name, provider: connectionProvider(value.provider), endpoint: connectionEndpoint(value.endpoint), apiKey: value.apiKey, defaultModel: value.defaultModel, enabled });
+      this.audit(existing ? "model.connection.update" : "model.connection.create", "connection", connectionId, { provider: value.provider, enabled });
+      return connectionId;
+    });
   }
-  modelConfig(botId?: string) {
-    const row = this.get("SELECT * FROM model_connections WHERE id='default' AND status='active'");
-    const secret = this.get("SELECT ciphertext FROM secrets WHERE id='model-key'");
-    if (!row || !secret) throw new Error("请先在设置中配置 API Key 和模型");
-    const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model: (botId && this.botModelSelection(botId)?.selected_model) || row.default_model });
+  private writeConnection(existing: Row | undefined, value: { name: string; provider: string; endpoint: string; apiKey: unknown; defaultModel: unknown; enabled: boolean }) {
+    if (!value.name) throw new Error("请填写供应商名称");
+    const duplicate = this.get("SELECT display_name FROM model_connections WHERE provider_id=? AND endpoint=? AND status!='revoked' AND id!=?", value.provider, value.endpoint, existing?.id ?? "");
+    if (duplicate) throw new Error(`「${duplicate.display_name}」已使用相同的 API 格式和地址`);
+    const secret = typeof value.apiKey === "string" && value.apiKey.trim() ? text(value.apiKey.trim(), 8192) : undefined;
+    const fresh = !this.defaultConnection();
+    // The first provider keeps the legacy id and key slot, so older clients and code paths still find it.
+    const connectionId = existing ? String(existing.id) : fresh ? "default" : id();
+    const legacy = !existing && fresh ? this.get("SELECT credential_ref FROM model_connections WHERE id='default'") : undefined;
+    const credential = existing?.credential_ref ? String(existing.credential_ref) : legacy?.credential_ref ? String(legacy.credential_ref) : connectionId === "default" ? "model-key" : `model-key:${connectionId}`;
+    if (!secret && !this.get("SELECT id FROM secrets WHERE id=?", credential)) throw new Error("请配置 API Key");
+    const defaultModel = value.defaultModel === undefined ? String(existing?.default_model ?? "") : value.defaultModel === "" || value.defaultModel === null ? "" : text(value.defaultModel, 200);
+    if (secret) this.run("INSERT INTO secrets VALUES(?,?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", credential, this.encrypt(secret));
+    if (existing) {
+      this.run("UPDATE model_connections SET display_name=?,provider_id=?,endpoint=?,default_model=?,enabled=?,version=version+1 WHERE id=?", value.name, value.provider, value.endpoint, defaultModel, value.enabled ? 1 : 0, connectionId);
+    } else {
+      const order = Number(this.get("SELECT COALESCE(MAX(sort_order),0)+1 next FROM model_connections")?.next ?? 1);
+      this.run("INSERT INTO model_connections(id,workspace_id,owner_user_id,display_name,provider_id,endpoint,credential_ref,default_model,status,created_at,enabled,is_default,sort_order) VALUES(?,?,?,?,?,?,?,?,'active',?,?,?,?) ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,provider_id=excluded.provider_id,endpoint=excluded.endpoint,credential_ref=excluded.credential_ref,default_model=excluded.default_model,status='active',enabled=excluded.enabled,is_default=excluded.is_default,version=version+1", connectionId, this.workspace, this.owner, value.name, value.provider, value.endpoint, credential, defaultModel, now(), value.enabled ? 1 : 0, fresh ? 1 : 0, order);
+    }
+    if (fresh) this.run("UPDATE bots SET model_connection_id=? WHERE model_connection_id IS NULL", connectionId);
+    return connectionId;
+  }
+  /** Makes a provider the default: new assistants and the legacy single-connection API use it. */
+  setDefaultConnection(value: Record<string, unknown>) {
+    const row = this.connection(text(value.id, 100));
+    if (!row) throw new Error("供应商不存在或已删除");
+    if (!row.enabled) throw new Error("请先启用这个供应商");
+    if (!String(row.default_model)) throw new Error("请先为这个供应商选择默认模型");
+    this.transaction(() => {
+      this.run("UPDATE model_connections SET is_default=CASE WHEN id=? THEN 1 ELSE 0 END,version=version+1 WHERE is_default=1 OR id=?", row.id, row.id);
+      this.audit("model.connection.default", "connection", String(row.id), {});
+    });
+  }
+  /** Removes a provider: its key is erased and assistants using it go back to the default provider. */
+  removeConnection(value: Record<string, unknown>) {
+    const row = this.connection(text(value.id, 100));
+    if (!row) throw new Error("供应商不存在或已删除");
+    if (value.version !== Number(row.version)) throw new Error("供应商已在其他设备修改，请刷新后再试");
+    if (row.is_default) throw new Error("默认供应商不能删除，请先把其他供应商设为默认");
+    const fallback = this.defaultConnection();
+    this.transaction(() => {
+      this.run("UPDATE bots SET model_connection_id=? WHERE model_connection_id=?", fallback?.id ?? null, row.id);
+      this.run("DELETE FROM secrets WHERE id=?", row.credential_ref);
+      this.run("DELETE FROM model_options WHERE connection_id=?", row.id);
+      // task_runs keep a foreign key to the row, so it stays, revoked and without a key.
+      this.run("UPDATE model_connections SET status='revoked',enabled=0,version=version+1 WHERE id=?", row.id);
+      this.audit("model.connection.remove", "connection", String(row.id), {});
+    });
+  }
+  /** The key of a provider, for listing its models; undefined when none is saved. */
+  connectionSecret(connectionId: string) {
+    const row = this.connection(connectionId);
+    const secret = row?.credential_ref ? this.get("SELECT ciphertext FROM secrets WHERE id=?", row.credential_ref) : undefined;
+    return row && secret ? { provider: String(row.provider_id), endpoint: String(row.endpoint), apiKey: this.decrypt(String(secret.ciphertext)) } : undefined;
+  }
+  /** A model's settings on a provider: image input (null: not set) and the reasoning levels it offers. */
+  modelOptions(connectionId: string, model: string) {
+    const row = this.get("SELECT image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=? AND model=?", connectionId, model);
+    return { imageInput: row?.image_input == null ? null : !!row.image_input, reasoning: row ? parseReasoningLevels(JSON.parse(String(row.reasoning_levels_json))) : [] as ReasoningLevel[], version: Number(row?.version ?? 0) };
+  }
+  saveModelOptions(value: Record<string, unknown>) {
+    const row = this.connection(text(value.connectionId, 100));
+    if (!row) throw new Error("供应商不存在或已删除");
+    const model = text(value.model, 200), previous = this.modelOptions(String(row.id), model);
+    if (value.version !== previous.version) throw new Error("模型设置已在其他设备修改，请刷新后再试");
+    const reasoning = value.reasoning === undefined ? previous.reasoning : parseReasoningLevels(value.reasoning);
+    const imageInput = value.imageInput === undefined ? previous.imageInput : value.imageInput === null ? null : !!value.imageInput;
+    // The model's context window and output ceiling may be set here too (null: automatic); its budget is kept.
+    const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model });
+    const limits = value.contextWindow === undefined && value.maxOutputTokens === undefined ? undefined : (() => {
+      const manual = this.modelLimitSettings(scope).manual;
+      const next = { contextWindow: value.contextWindow === undefined ? manual.contextWindow : parseModelLimit(value.contextWindow, "contextWindow"), maxOutputTokens: value.maxOutputTokens === undefined ? manual.maxOutputTokens : parseModelLimit(value.maxOutputTokens, "maxOutputTokens"), contextBudget: manual.contextBudget };
+      validateModelLimits(this.modelLimits.resolve(scope, next));
+      return next;
+    })();
+    this.transaction(() => {
+      if (limits) this.run("INSERT INTO model_limit_overrides(provider,endpoint,model,context_window,max_output_tokens,context_budget) VALUES(?,?,?,?,?,?) ON CONFLICT(provider,endpoint,model) DO UPDATE SET context_window=excluded.context_window,max_output_tokens=excluded.max_output_tokens,context_budget=excluded.context_budget", scope.provider, scope.endpoint, scope.model, limits.contextWindow, limits.maxOutputTokens, limits.contextBudget);
+      this.run("INSERT INTO model_options(connection_id,model,image_input,reasoning_levels_json,version) VALUES(?,?,?,?,1) ON CONFLICT(connection_id,model) DO UPDATE SET image_input=excluded.image_input,reasoning_levels_json=excluded.reasoning_levels_json,version=version+1", row.id, model, imageInput === null ? null : imageInput ? 1 : 0, JSON.stringify(reasoning));
+      this.audit("model.options.update", "connection", String(row.id), { model, reasoning, imageInput });
+    });
+    return this.modelOptions(String(row.id), model);
+  }
+  /** Every provider for /api/state, without keys: its enabled models and the settings of models that have any. */
+  connections() {
+    return this.connectionRows().map((row) => {
+      const visibility = this.modelVisibility(String(row.id));
+      const options = Object.fromEntries(this.all("SELECT model,image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=?", row.id).map((option) => [String(option.model), { imageInput: option.image_input == null ? null : !!option.image_input, reasoning: parseReasoningLevels(JSON.parse(String(option.reasoning_levels_json))), version: Number(option.version) }]));
+      return { id: String(row.id), name: String(row.display_name), provider: String(row.provider_id), endpoint: String(row.endpoint), defaultModel: String(row.default_model), enabled: !!row.enabled, isDefault: !!row.is_default, configured: !!(row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref)), version: Number(row.version), models: visibility.models, modelsVersion: visibility.version, options };
+    });
+  }
+  /** The provider an assistant uses: its own choice while that one is usable, otherwise the default provider. */
+  botConnection(botId: string): Row | undefined {
+    const chosen = this.get("SELECT c.* FROM bots b JOIN model_connections c ON c.id=b.model_connection_id WHERE b.id=? AND c.status='active' AND c.enabled=1", botId);
+    return chosen ?? this.defaultConnection();
+  }
+  botModelSelection(botId: string) {
+    const connection = this.botConnection(botId);
+    if (!connection) return undefined;
+    const row = this.get("SELECT model,reasoning,version FROM agent_model_settings WHERE bot_id=? AND provider=? AND endpoint=?", botId, connection.provider_id, connection.endpoint);
+    return { selected_connection: String(connection.id), selected_model: row ? String(row.model) : "", selected_reasoning: row?.reasoning == null ? null : String(row.reasoning), model_selection_version: Number(row?.version ?? 0) };
+  }
+  /** Chooses an assistant's provider, model and reasoning effort; the version is the one /api/state showed. */
+  saveBotModel(botId: string, value: Record<string, unknown>) {
+    const current = this.botModelSelection(botId);
+    if (!current) throw new Error("请先配置模型连接");
+    const connection = value.connectionId === undefined ? this.botConnection(botId)! : this.connection(text(value.connectionId, 100));
+    if (!connection || connection.status !== "active") throw new Error("供应商不存在或已删除");
+    if (!connection.enabled) throw new Error("这个供应商已停用");
+    if (value.connectionId === undefined && (value.provider !== connection.provider_id || value.endpoint !== connection.endpoint)) throw new Error("模型连接已变化，请重新选择");
+    if (value.version !== current.model_selection_version) throw new Error("模型已在其他设备更新，请重新选择");
+    const model = value.model === "" ? "" : text(value.model, 200), reasoning = parseReasoningChoice(value.reasoning);
+    const stored = this.get("SELECT reasoning,version FROM agent_model_settings WHERE bot_id=? AND provider=? AND endpoint=?", botId, connection.provider_id, connection.endpoint);
+    // The new row's version moves past the one the client saw, so a write from a client that saw the old provider is refused.
+    const version = Math.max(Number(stored?.version ?? 0), current.model_selection_version) + 1;
+    this.run("UPDATE bots SET model_connection_id=? WHERE id=?", connection.id, botId);
+    this.run("INSERT INTO agent_model_settings(bot_id,provider,endpoint,model,reasoning,version) VALUES(?,?,?,?,?,?) ON CONFLICT(bot_id,provider,endpoint) DO UPDATE SET model=excluded.model,reasoning=excluded.reasoning,version=excluded.version", botId, connection.provider_id, connection.endpoint, model, reasoning ?? (stored?.reasoning == null ? null : String(stored.reasoning)), version);
+    return { model, reasoning };
+  }
+  /**
+   * What a request uses: the assistant's provider, its model there (or the provider's default model) and the reasoning
+   * level the model offers nearest to the assistant's choice. Without an assistant: the default provider and model.
+   * `use` names another provider and/or model, for work that is not the assistant's chat (memory, tidy-up).
+   */
+  modelConfig(botId?: string, use: { connectionId?: string; model?: string } = {}) {
+    const row = use.connectionId ? this.connection(use.connectionId) : botId ? this.botConnection(botId) : this.defaultConnection();
+    const usable = row && row.status === "active" ? row : undefined;
+    const secret = usable?.credential_ref ? this.get("SELECT ciphertext FROM secrets WHERE id=?", usable.credential_ref) : undefined;
+    if (!usable || !secret) throw new Error("请先在设置中配置 API Key 和模型");
+    const selection = botId ? this.get("SELECT model,reasoning FROM agent_model_settings WHERE bot_id=? AND provider=? AND endpoint=?", botId, usable.provider_id, usable.endpoint) : undefined;
+    const model = String(use.model || selection?.model || usable.default_model);
+    if (!model) throw new Error(`请先为「${usable.display_name}」选择模型`);
+    const scope = modelLimitScope({ provider: usable.provider_id, endpoint: usable.endpoint, model });
     const limits = this.modelLimitSettings(scope);
     validateModelLimits(limits);
-    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(row.version) };
+    const reasoning = resolveReasoning(selection?.reasoning == null ? null : String(selection.reasoning), this.modelOptions(String(usable.id), model).reasoning);
+    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(usable.version), connectionId: String(usable.id), reasoning };
   }
   createBot(name: string, instructions?: unknown) {
     const botId = id();
     this.transaction(() => {
-      this.insert("bots", { id: botId, ...this.scope(), name: text(name, 80), instructions: optionalText(instructions), model_connection_id: this.config() ? "default" : null, status: "active", created_at: now() });
+      this.insert("bots", { id: botId, ...this.scope(), name: text(name, 80), instructions: optionalText(instructions), model_connection_id: this.defaultConnection()?.id ?? null, status: "active", created_at: now() });
       this.insert("bot_policies", { bot_id: botId, ...this.scope(), policy_json: JSON.stringify({ tools: basicActions, inheritDefaults: true }), approval_mode: "allow_scoped" });
       this.run("INSERT INTO agent_inboxes(bot_id,workspace_id,owner_user_id) VALUES(?,?,?)", botId, this.workspace, this.owner);
       this.insert("memory_bank_bindings", { id: id(), ...this.scope(), scope: "bot", bot_id: botId, provider_bank_id: id(), state: "provisioning" });
@@ -612,6 +786,7 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
   state() {
     return {
       config: this.config(),
+      connections: this.connections(),
       modelVisibility: this.modelVisibility(),
       imageModelSelection: this.imageModelSelection(),
       bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"),
