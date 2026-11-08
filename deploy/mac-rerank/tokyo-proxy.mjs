@@ -48,13 +48,17 @@ function handle(request, response) {
     method: request.method, agent, timeout: REQUEST_TIMEOUT_MS,
     headers: { 'content-type': request.headers['content-type'] || 'application/json', ...(request.headers['content-length'] ? { 'content-length': request.headers['content-length'] } : {}) },
   }, (answer) => {
-    response.writeHead(answer.statusCode ?? 502, { 'Content-Type': answer.headers['content-type'] || 'application/json', ...(answer.headers['retry-after'] ? { 'Retry-After': answer.headers['retry-after'] } : {}) });
+    // A full queue on the Mac (429) is answered as 424 too: a retry would only queue again, so fall back now.
+    if (answer.statusCode === 429) { answer.resume(); return reply(response, 424, { error: 'reranker busy', error_type: 'Overloaded' }); }
+    response.writeHead(answer.statusCode ?? 502, { 'Content-Type': answer.headers['content-type'] || 'application/json' });
     answer.pipe(response);
   });
-  forward.on('timeout', () => forward.destroy(new Error('upstream timeout')));
+  // A slow answer means the Mac is busy, not gone: fail this request only and leave the probe to decide.
+  let timedOut = false;
+  forward.on('timeout', () => { timedOut = true; forward.destroy(new Error('upstream timeout')); });
   forward.on('error', (error) => {
-    if (error.code !== 'ECONNRESET' || !response.headersSent) mark(false, error.message);
-    reply(response, 424, { error: 'reranker unreachable', error_type: 'Unavailable', detail: error.message });
+    if (!timedOut && !response.headersSent) mark(false, error.message);
+    reply(response, 424, { error: timedOut ? 'reranker busy' : 'reranker unreachable', error_type: timedOut ? 'Overloaded' : 'Unavailable', detail: error.message });
   });
   request.pipe(forward);
 }
