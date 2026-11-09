@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [助手「工作」页只保留定时任务：全平台发布记录（2026-11-09）](inspector-release-20261109.md)
 - [自建重排：Mac Air 上的 bge-reranker-v2-m3（2026-11-08）](mac-reranker-20261108.md)
 - [任一 OpenAI 兼容供应商都可生图：全平台发布记录（2026-11-08）](image-providers-release-20261108.md)
 - [显示供应商提供的模型名称：全平台发布记录（2026-11-08）](model-names-release-20261108.md)
