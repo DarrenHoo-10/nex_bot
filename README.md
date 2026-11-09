@@ -32,17 +32,17 @@ Android 0.2.3 与 Windows 共用账号设置、模型、记忆服务、连接器
 
 ## 下载与安装
 
-当前下载为 **2026-11-08 预览版**：Windows 0.9.30、Android 0.2.29、Mac / iOS 0.2.23。生图可用任一 OpenAI 兼容的供应商，不再要求它是默认供应商；模型列表显示供应商提供的模型名称。模型设置支持多个供应商，可为每个模型勾选推理档位，聊天里按助手选择思考强度；后台任务只显示名称，点进去直接和子代理对话；失败的任务可一键重试。
+当前下载为 **2026-11-09 预览版**：Windows 0.9.31、Android 0.2.30、Mac / iOS 0.2.24。助手详情的「工作」页只保留定时任务，后台任务从聊天里的卡片和顶部按钮打开。生图可用任一 OpenAI 兼容的供应商，不再要求它是默认供应商；模型列表显示供应商提供的模型名称。模型设置支持多个供应商，可为每个模型勾选推理档位，聊天里按助手选择思考强度；后台任务只显示名称，点进去直接和子代理对话；失败的任务可一键重试。
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.30-preview.1/NexBot-0.9.30-x64-Client-Portable.exe) | 双击运行，免安装 |
-| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.30-preview.1/nexbot-0.2.29-debug.apk) | 在手机上打开并安装，测试版 |
-| Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.30-preview.1/NexBot-0.2.23-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
-| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.30-preview.1/NexBot-0.2.23-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
-| 校验文件 | [全部平台](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.30-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
+| Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.31-preview.1/NexBot-0.9.31-x64-Client-Portable.exe) | 双击运行，免安装 |
+| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.31-preview.1/nexbot-0.2.30-debug.apk) | 在手机上打开并安装，测试版 |
+| Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.31-preview.1/NexBot-0.2.24-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
+| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.31-preview.1/NexBot-0.2.24-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
+| 校验文件 | [全部平台](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.31-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
-[0.9.30 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.30-preview.1)包含各平台安装包、校验值与验证范围。Windows 包尚无发布者数字签名；Mac 应用使用临时签名，尚未公证；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+[0.9.31 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.31-preview.1)包含各平台安装包、校验值与验证范围。Windows 包尚无发布者数字签名；Mac 应用使用临时签名，尚未公证；Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
 
 Android 0.2.3 已包含完整设置和助手管理。自行构建请参阅 [Android 安装包说明](android/README.md)。
 
