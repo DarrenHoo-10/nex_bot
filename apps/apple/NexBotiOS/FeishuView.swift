@@ -31,7 +31,8 @@ struct FeishuSection: View {
 struct FeishuDetailView: View {
     let workspace: WorkspaceStore
     @Environment(\.dismiss) private var dismiss
-    @State private var botID = ""
+    @State private var selectedBotID = ""
+    private var botID: String { workspace.feishuReceiverID(selection: selectedBotID) }
     @State private var manual = false
     @State private var bindCode = ""
     @State private var busy = false
@@ -63,7 +64,6 @@ struct FeishuDetailView: View {
             FeishuManualSheet(workspace: workspace, botID: botID) { manual = false }
         }
         .task(id: feishu?.needsPolling == true) { await poll() }
-        .onAppear { if botID.isEmpty { botID = workspace.bots.first?.id ?? "" } }
     }
 
     @ViewBuilder private func connected(_ app: FeishuAppView) -> some View {
@@ -116,7 +116,7 @@ struct FeishuDetailView: View {
                 HStack(spacing: 8) { ProgressView().controlSize(.small); Text("正在生成二维码…").font(.footnote).foregroundStyle(Theme.muted) }
             } else {
                 if let job, job.stage == "error", let jobError = job.error { InlineBanner(text: jobError) }
-                Picker("接收助手", selection: $botID) {
+                Picker("接收助手", selection: Binding(get: { botID }, set: { selectedBotID = $0 })) {
                     ForEach(workspace.bots) { bot in Text(bot.name).tag(bot.id) }
                 }
                 .pickerStyle(.menu)

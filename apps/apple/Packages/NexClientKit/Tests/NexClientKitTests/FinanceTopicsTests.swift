@@ -33,11 +33,14 @@ final class FinanceTopicsTests:XCTestCase {
         let core=StubCore()
         core.handle {request in
             if request.path == "/api/agents/finance" {return .json(["botId":"finance-role"])}
-            return .json(stateJSON())
+            return .json(stateJSON(bots: ["first", "finance-role"]))
         }
         let store=WorkspaceStore(client:core.client())
         await store.refresh();await store.loadFinanceAssistant()
         XCTAssertEqual(store.financeBotID,"finance-role");XCTAssertEqual(store.selectedBotID,"finance-role")
+        XCTAssertEqual(store.feishuReceiverID(selection: ""), "finance-role")
+        XCTAssertEqual(store.feishuReceiverID(selection: "first"), "first")
+        XCTAssertEqual(store.feishuReceiverID(selection: "deleted"), "finance-role")
         XCTAssertEqual(core.recorded("/api/agents/finance").count,1)
         store.stop()
     }

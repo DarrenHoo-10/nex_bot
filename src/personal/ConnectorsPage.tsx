@@ -16,7 +16,7 @@ const ready = (item: ConnectorView) => item.enabled && !!item.checkedAt && !item
 const connectionStatus = (item: ConnectorView) => !item.enabled ? "已停用" : item.provider === "gmail" && !item.hasToken ? "需要重新授权" : item.error ? "连接异常" : item.checkedAt ? item.provider === "gmail" ? "已连接" : "连接测试通过" : "等待测试";
 const ConnectorIcon = ({ gmail = false }: { gmail?: boolean }) => <span className={`connector-icon ${gmail ? "is-gmail" : ""}`} aria-hidden="true">{gmail ? <img src={gmailIcon} alt="" width="48" height="48"/> : <Plug size={24}/>}</span>;
 
-export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Promise<void> }) {
+export function ConnectorsPage({ state, financeBotId, refresh }: { state: State; financeBotId?: string; refresh(): Promise<void> }) {
   const [view, setView] = useState<"catalog" | "gmail" | "mcp">("catalog");
   const [editing, setEditing] = useState<ConnectorView | "new" | null>(null);
   const [selectedId, setSelectedId] = useState("");
@@ -69,7 +69,7 @@ export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Pr
     return () => { document.removeEventListener("keydown", trap); if (previous?.isConnected) previous.focus(); };
   }, [editing]);
   const connections = (state.connectors ?? []).filter((item) => item.provider !== "gmail");
-  const feishu = <FeishuCard state={state} refresh={refresh}/>;
+  const feishu = <FeishuCard state={state} financeBotId={financeBotId} refresh={refresh}/>;
   const selected = connections.find((item) => item.id === selectedId);
   const accounts = connections.filter((item) => item.provider === "gmail");
   const gmailAvailable = state.connectorCatalog?.find((item) => item.id === "gmail")?.available === true;

@@ -38,7 +38,18 @@ if (process.platform === "win32") await import("./build-personal-computer.mjs");
 await viteBuild({ configFile: false, root, plugins: [react()], build: { outDir: path.join(serverOutput, "ui"), emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
 copyFileSync(path.join(serverOutput, "ui", "personal.html"), path.join(serverOutput, "ui", "index.html"));
 writeFileSync(path.join(serverOutput, "ui", "html-preview.html"), htmlPreviewShell);
-await build({ entryPoints: ["server/personal-os/index.ts", "server/personal-os/workspaces.ts", "server/personal-os/worker.ts"].map((file) => path.join(root, file)), outdir: path.join(serverOutput, "core"), bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "linked", define: { PI_BUNDLED_NODE: "true" }, external: ["pdfjs-dist/legacy/build/pdf.mjs"], banner: { js: "import { createRequire as nexCreateRequire } from 'node:module'; const require = nexCreateRequire(import.meta.url);" } });
+// The Feishu SDK reads its own package.json relative to its CommonJS entry at load time.
+const larkPackage = realpathSync(path.join(root, "node_modules/@larksuiteoapi/node-sdk/package.json"));
+const lark = JSON.parse(readFileSync(larkPackage, "utf8"));
+const larkOutput = path.join(serverOutput, "core/node_modules", lark.name);
+await build({
+  entryPoints: [path.resolve(path.dirname(larkPackage), lark.main)],
+  outfile: path.resolve(larkOutput, lark.main),
+  bundle: true, platform: "node", target: "node22", format: "cjs", legalComments: "linked",
+});
+copyFileSync(larkPackage, path.join(larkOutput, "package.json"));
+copyFileSync(path.join(path.dirname(larkPackage), "LICENSE"), path.join(larkOutput, "LICENSE"));
+await build({ entryPoints: ["server/personal-os/index.ts", "server/personal-os/workspaces.ts", "server/personal-os/worker.ts"].map((file) => path.join(root, file)), outdir: path.join(serverOutput, "core"), bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "linked", define: { PI_BUNDLED_NODE: "true" }, external: ["pdfjs-dist/legacy/build/pdf.mjs", lark.name], banner: { js: "import { createRequire as nexCreateRequire } from 'node:module'; const require = nexCreateRequire(import.meta.url);" } });
 await build({ entryPoints: [path.join(root, "server/personal-os/service.ts")], outfile: path.join(serverOutput, "core/service.js"), bundle: true, platform: "node", target: "node24", format: "esm", legalComments: "linked" });
 for (const file of ["schema.sql", "node-schema.sql", "agent-schema.sql", "memory-schema.sql", "memory-lifecycle-schema.sql", "client-schema.sql", "task-control-schema.sql", "identity-schema.sql"]) copyFileSync(path.join(root, "server", "personal-os", file), path.join(serverOutput, "core", file));
 cpSync(path.join(root, "server/personal-os/skills"), path.join(serverOutput, "core/skills"), { recursive: true });
@@ -66,4 +77,7 @@ copyFileSync(path.join(root, "third_party/agent-reach/LICENSE"), path.join(licen
 copyFileSync(path.join(root, "LICENSE"), path.join(serverOutput, "LICENSE-OpenMausBot.txt"));
 copyFileSync(path.join(root, "NOTICE"), path.join(serverOutput, "NOTICE"));
 copyFileSync(path.join(root, "deploy/core/README.md"), path.join(serverOutput, "README.md"));
+const feishuSmoke = spawnSync(process.execPath, [path.join(root, "scripts/verify-packaged-feishu.mjs"), serverOutput], { stdio: "inherit" });
+if (feishuSmoke.error) throw feishuSmoke.error;
+if (feishuSmoke.status !== 0) throw new Error("Packaged Feishu registration check failed");
 console.log("Backend service build complete:", serverOutput);

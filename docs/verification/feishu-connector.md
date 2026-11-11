@@ -5,6 +5,15 @@ authorization) implemented and fixture-verified; not yet accepted against a
 real Feishu tenant. Design:
 [`docs/plans/2026-10-24-feishu-connector.md`](../plans/2026-10-24-feishu-connector.md).
 
+The production Core build ships the official SDK as CommonJS alongside its
+package manifest. Each build runs `node scripts/verify-packaged-feishu.mjs dist-personal/server`
+against the emitted Core, with a disposable workspace and a synthetic HTTP provider.
+It opens registration for the finance assistant, checks the SDK version sent to the
+provider, reads the generated QR from the settings API and cancels the job.
+Web and native Apple settings prefer the workspace finance role and preserve an
+explicit receiver selection. Tenant authorization and live message delivery need
+an application owner and are outside this isolated check.
+
 ## What P1 covers
 
 Scan-to-create a self-built Feishu app via the official SDK `registerApp`

@@ -6,12 +6,15 @@ import { api, type State } from "./api";
 const statusText: Record<string, string> = { idle: "未连接", preparing: "正在生成二维码", qr: "等待扫码", connected: "已连接", busy: "已在其他位置连接", disabled: "已停用", error: "连接异常" };
 
 /** 飞书连接卡片：扫码建应用、已有应用兜底、绑定码、启停与移除。 */
-export function FeishuCard({ state, refresh }: { state: State; refresh(): Promise<void> }) {
+export function FeishuCard({ state, financeBotId, refresh }: { state: Pick<State, "bots" | "feishu">; financeBotId?: string; refresh(): Promise<void> }) {
   const feishu = state.feishu ?? { apps: [] };
   const app = feishu.apps[0];
   const job = feishu.job;
   const [sharedAvailable,setSharedAvailable]=useState(false);
-  const [botId, setBotId] = useState("");
+  const [selectedBotId, setBotId] = useState("");
+  const botId = String((state.bots.find(bot => bot.id === selectedBotId)
+    ?? state.bots.find(bot => bot.id === financeBotId)
+    ?? state.bots[0])?.id ?? "");
   const [manual, setManual] = useState(false);
   const [bindCode, setBindCode] = useState("");
   const [confirmRemove, setConfirmRemove] = useState(false);

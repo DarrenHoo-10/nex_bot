@@ -5,7 +5,8 @@ import NexClientKit
 /// 连接器页的飞书卡片：扫码建应用、已有应用、绑定码、主人授权与启停。
 struct SettingsFeishuCard: View {
     let workspace: WorkspaceStore
-    @State private var botID = ""
+    @State private var selectedBotID = ""
+    private var botID: String { workspace.feishuReceiverID(selection: selectedBotID) }
     @State private var manual = false
     @State private var manualAppID = ""
     @State private var manualSecret = ""
@@ -92,7 +93,7 @@ struct SettingsFeishuCard: View {
         } else {
             VStack(alignment: .leading, spacing: 12) {
                 if let job, job.stage == "error", let jobError = job.error { errorText(jobError) }
-                MBSelect(label: "接收助手", selection: $botID, options: workspace.bots.map { ($0.id, $0.name) })
+                MBSelect(label: "接收助手", selection: Binding(get: { botID }, set: { selectedBotID = $0 }), options: workspace.bots.map { ($0.id, $0.name) })
                 HStack(spacing: 8) {
                     MBButton(title: "扫码连接飞书", kind: .primary, busy: busy, enabled: !botID.isEmpty) {
                         perform { try await workspace.startFeishuRegister(botID: botID) }
@@ -100,7 +101,6 @@ struct SettingsFeishuCard: View {
                     MBButton(title: "使用已有应用", enabled: !busy) { error = nil; notice = nil; manual = true }
                 }
             }
-            .onAppear { if botID.isEmpty { botID = workspace.bots.first?.id ?? "" } }
         }
     }
 

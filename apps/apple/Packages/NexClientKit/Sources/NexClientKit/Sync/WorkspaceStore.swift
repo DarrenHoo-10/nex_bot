@@ -52,6 +52,12 @@ public final class WorkspaceStore {
     @ObservationIgnored public var onSessionEnded: (@MainActor (SessionEnd) -> Void)?
 
     public var bots: [Bot] { state?.bots ?? [] }
+
+    public func feishuReceiverID(selection: String) -> String {
+        if bots.contains(where: { $0.id == selection }) { return selection }
+        if let financeBotID, bots.contains(where: { $0.id == financeBotID }) { return financeBotID }
+        return bots.first?.id ?? ""
+    }
     public var approvals: [Approval] { state?.approvals ?? [] }
     public func approvalRules(botID: String) -> [ApprovalRule] { state?.approvalRules.filter { $0.botID == botID } ?? [] }
     public var pendingApprovalCount: Int { approvals.count }

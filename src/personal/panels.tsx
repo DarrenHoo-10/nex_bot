@@ -17,7 +17,7 @@ export function Confirm({ title, detail, onClose, onConfirm }: { title: string; 
   return <><h2>{title}</h2><p>{detail}</p><div className="actions"><button className="danger" onClick={() => void onConfirm()}>确认</button><button autoFocus onClick={onClose}>取消</button></div></>;
 }
 export type SettingsCategory = "account" | "model" | "memory" | "connectors" | "devices" | "about";
-export function SettingsPage({ state, run, category, onCategory, refresh, setDialog, closeDialog }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; category: SettingsCategory; onCategory: (category: SettingsCategory) => void; refresh: () => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
+export function SettingsPage({ state, financeBotId, run, category, onCategory, refresh, setDialog, closeDialog }: { state: State; financeBotId?: string; run: (fn: () => Promise<unknown>) => Promise<void>; category: SettingsCategory; onCategory: (category: SettingsCategory) => void; refresh: () => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
   const sectionId = useId();
   const categories: Array<{ id: SettingsCategory; label: string; icon: typeof UserRound }> = [
     { id: "account", label: "账号与登录设备", icon: UserRound },
@@ -48,7 +48,7 @@ export function SettingsPage({ state, run, category, onCategory, refresh, setDia
           <MemoryDashboard state={state} active={category==='memory'}/>
         </section>
         <section id={`${sectionId}-connectors`} hidden={category !== "connectors"} aria-label="连接器" className="preferences-panel">
-          <ConnectorsPage state={state} refresh={refresh}/>
+          <ConnectorsPage state={state} financeBotId={financeBotId} refresh={refresh}/>
         </section>
         <section id={`${sectionId}-devices`} hidden={category !== "devices"} aria-label="设备" className="preferences-panel">
           <Devices state={state} run={run} setDialog={setDialog} closeDialog={closeDialog}/>
