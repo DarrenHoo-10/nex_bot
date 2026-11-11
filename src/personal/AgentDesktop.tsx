@@ -1,4 +1,4 @@
-import { TopicBubble, TopicTasks, topicTimeline, type FinanceTopic, type FinanceTask } from './FinanceTopics';
+import { TopicBubble, topicTimeline, type FinanceTopic } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
 import { createContext, memo, useMemo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
@@ -116,7 +116,6 @@ export function AgentDesktop() {
   const [topicId, setTopicId] = useState<string>();
   const [topics,setTopics] = useState<FinanceTopic[]>([]);
   const [olderEnd,setOlderEnd] = useState(false);
-  const [topicTasks,setTopicTasks] = useState<FinanceTask[]>([]);
   const [editInput,setEditInput] = useState<string>();
   const conversation = finance ? topicId : undefined;
   const draftKey = conversation ? JSON.stringify([botId,conversation]) : botId;
@@ -298,12 +297,10 @@ export function AgentDesktop() {
     ]);
     if (request !== serial.current) return;
     if (conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
-      loaded.current = undefined; setMessages([]); setStreaming([]); setTopicTasks([]);
+      loaded.current = undefined; setMessages([]); setStreaming([]);
       setTopics(topicList?.topics ?? []); setTopicId(undefined); setError("");
       return;
     }
-    const taskList = conversation ? await api<{tasks:FinanceTask[]}>(`agents/tasks?bot=${encodeURIComponent(current)}${scope}`) : undefined;
-    if (request !== serial.current) return;
     if (memoryVersions.current.size > 0) {
       const updated = next.memories.find((m) => (m.scope === "workspace" || m.bot_id === current) && memoryVersions.current.get(str(m.id)) !== `${m.version}:${m.updated_at}`);
       if (updated) setMemoryNotice(str(updated.title));
@@ -354,7 +351,6 @@ export function AgentDesktop() {
       feedRetry.current = false;
       setMessages((shown) => withPendingOptimistic(history, shown));
       setTopics(topicList?.topics ?? []);
-      setTopicTasks(taskList?.tasks ?? []);
       setStreaming(feed.streaming.filter((s) => s.text));
       setHistoryLoading(false);
       const through = Number(history.at(-1)?.seq ?? 0);
@@ -389,7 +385,7 @@ export function AgentDesktop() {
     const switched = loadedBot.current !== draftKey;
     loadedBot.current = draftKey;
     if (switched) {
-      loaded.current = undefined; setTopicTasks([]); setEditInput(undefined); setOlderEnd(false);
+      loaded.current = undefined; setEditInput(undefined); setOlderEnd(false);
       stickToBottom.current = !historyTarget.current;
       setShowScrollPill(false);
       setQuote(undefined);
@@ -427,7 +423,7 @@ export function AgentDesktop() {
     historyTarget.current = undefined;
     loaded.current = undefined;
     setFocusedMessage("");
-    setMessages([]); setStreaming([]); setTopicTasks([]); setEditInput(undefined);
+    setMessages([]); setStreaming([]); setEditInput(undefined);
     setTopicId(id);
     stickToBottom.current = true;
   };
@@ -738,7 +734,6 @@ export function AgentDesktop() {
         <div className="composer-area">
           {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准{(() => { const job = botJobs.find((item) => item.taskId === a.task_id); return job ? ` · 后台任务「${job.title}」` : ""; })()}</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
-          {conversation && <TopicTasks key={conversation} tasks={topicTasks} conversationId={conversation} botId={botId} run={run}/>}
           {replyJob ? <div className="quote-bar reply-job-bar"><div><strong>回复后台任务：{replyJob.title}</strong></div><button type="button" aria-label="取消回复" onClick={() => setReplyJob(undefined)}><X size={14}/></button></div> : null}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}

@@ -2,6 +2,4 @@
 .topic-bubble strong{white-space:normal}
 .topic-bubble small,.topic-context small{font-size:12px;opacity:.78}
 .topic-context{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.finance-task-history{font-size:12px;max-height:130px;overflow:auto}
-.finance-task-history small{display:block}
 .topic-preview{display:block;max-width:min(48ch,100%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;opacity:.88}
