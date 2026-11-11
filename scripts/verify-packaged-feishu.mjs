@@ -35,7 +35,7 @@ sdk.defaultHttpInstance.defaults.adapter = async (config) => {
   }
   assert.equal(action, "begin");
   return { config, status: 200, statusText: "OK", headers: {}, data: {
-    verification_uri_complete: "https://fixture.invalid/feishu", device_code: "fixture", expires_in: 300, interval: 60,
+    verification_uri_complete: "https://accounts.feishu.cn/fixture?code=synthetic", device_code: "fixture", expires_in: 300, interval: 60,
   } };
 };
 
@@ -64,11 +64,19 @@ try {
   } while (Date.now() < deadline);
   assert.equal(job?.stage, "qr", job?.error);
   const qr = new URL(job.url);
-  assert.equal(qr.origin, "https://fixture.invalid");
+  assert.equal(qr.origin, "https://accounts.feishu.cn");
   assert.equal(qr.searchParams.get("createOnly"), "true");
   assert.equal(qr.searchParams.get("name"), "金融助手");
+  assert.match(job.scanPath, /^\/feishu\/s\/[\w-]{22}$/);
+  const scan = new URL(job.scanPath, app.origin);
+  const landing = await fetch(scan, { redirect: "manual" });
+  assert.equal(landing.status, 302);
+  assert.equal(landing.headers.get("location"), job.url);
+  assert.equal(landing.headers.get("cache-control"), "no-store");
+  assert.equal(landing.headers.get("referrer-policy"), "no-referrer");
   await api("feishu/register/cancel", {});
   assert.equal((await api("state")).feishu.job ?? null, null);
+  assert.equal((await fetch(scan, { redirect: "manual" })).status, 410);
   assert.equal(actions[0], "begin");
   assert.equal(actions.filter(action => action === "begin").length, 1);
   console.log("Packaged Feishu SDK: registration QR, SDK version and cancellation verified.");

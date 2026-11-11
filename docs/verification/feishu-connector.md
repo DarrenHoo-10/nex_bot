@@ -10,6 +10,15 @@ package manifest. Each build runs `node scripts/verify-packaged-feishu.mjs dist-
 against the emitted Core, with a disposable workspace and a synthetic HTTP provider.
 It opens registration for the finance assistant, checks the SDK version sent to the
 provider, reads the generated QR from the settings API and cancels the job.
+The Web QR encodes a short, same-origin registration link. A phone can follow
+it without a NexBot login. The active workspace registration redirects to the exact
+Feishu or Lark URL, including the SDK's requested permissions. The link expires
+with the registration and returns HTTP 410 after cancellation. The packaged
+regression exercises the redirect without following the synthetic provider URL.
+Chrome screenshots at 1280- and 390-pixel viewport widths both produced a
+246-pixel QR with 33 modules and a four-module quiet zone. Independent jsQR and
+ZXing decoders read the short link. The fixture redirected to the original
+2,328-character SDK URL. This check stops before a user approves the application.
 Web and native Apple settings prefer the workspace finance role and preserve an
 explicit receiver selection. Tenant authorization and live message delivery need
 an application owner and are outside this isolated check.

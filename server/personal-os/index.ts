@@ -23,7 +23,7 @@ import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
-import { FeishuModule, type FeishuModuleOptions } from "./feishu/module.ts";
+import { FeishuModule, feishuScanPrefix, feishuScanToken, type FeishuModuleOptions } from "./feishu/module.ts";
 import { sdkRegisterApp, wsTransportFactory } from "./feishu/transport.ts";
 import { GOOGLE_CALLBACK, type GmailConfiguration } from "./gmail-provider.ts";
 import type { AttachmentObjects } from './attachment-objects.ts';
@@ -232,6 +232,17 @@ export async function createPersonalApp(options: AppOptions) {
     const requestOrigin = options.publicOrigin && request.headers.host === new URL(options.publicOrigin).host ? new URL(options.publicOrigin).origin : `http://${request.headers.host}`;
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
+    if (url.pathname.startsWith(feishuScanPrefix)) {
+      response.setHeader("Cache-Control", "no-store");
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        response.writeHead(405, { Allow: "GET, HEAD" }); response.end(); return;
+      }
+      const token = feishuScanToken(url.pathname);
+      const target = token && feishu.registrationTarget(token);
+      if (target) { response.writeHead(302, { Location: target }); response.end(); return; }
+      response.writeHead(410, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("二维码已失效，请回到 NexBot 重新生成。"); return;
+    }
     response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     if (url.pathname === '/html-preview.html' && request.method === 'GET') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_PREVIEW_CSP + "; sandbox allow-scripts; frame-ancestors 'self'" });

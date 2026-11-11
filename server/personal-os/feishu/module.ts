@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { now, text, id, hash, canonical, type CoreStore, type Row } from "../store.ts";
 import type { AgentModule } from "../agents.ts";
 import type { TaskRuntime } from "../runtime.ts";
@@ -83,9 +84,24 @@ interface RegisterJob {
   stage: "preparing" | "qr" | "done" | "error";
   botId: string;
   url?: string;
+  scanToken?: string;
   expiresAt?: number;
   error?: string;
   controller: AbortController;
+}
+
+export const feishuScanPrefix = "/feishu/s/";
+export function feishuScanToken(pathname: string) {
+  if (!pathname.startsWith(feishuScanPrefix)) return undefined;
+  const token = pathname.slice(feishuScanPrefix.length);
+  return /^[A-Za-z0-9_-]{22}$/.test(token) ? token : undefined;
+}
+
+function officialRegistrationUrl(value: string) {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return url.protocol === "https:" && !url.username && !url.password && !url.port
+    && /(?:^|\.)(?:feishu\.cn|larksuite\.com)$/.test(url.hostname);
 }
 
 export interface FeishuModuleOptions { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch; grantTools?: (connectorId: string, version: number, botId: string, tools: string[]) => void; devicePollMs?: number;
@@ -132,7 +148,7 @@ export class FeishuModule {
 
   state() {
     return {
-      ...(this.job ? { job: { stage: this.job.stage, ...(this.job.url ? { url: this.job.url } : {}), ...(this.job.expiresAt ? { expiresAt: this.job.expiresAt } : {}), ...(this.job.error ? { error: this.job.error } : {}) } } : {}),
+      ...(this.job ? { job: { stage: this.job.stage, ...(this.job.url ? { url: this.job.url } : {}), ...(this.job.stage === "qr" && this.job.scanToken ? { scanPath: feishuScanPrefix + this.job.scanToken } : {}), ...(this.job.expiresAt ? { expiresAt: this.job.expiresAt } : {}), ...(this.job.error ? { error: this.job.error } : {}) } } : {}),
       ...(this.userAuth ? { userAuth: { stage: this.userAuth.stage, ...(this.userAuth.url ? { url: this.userAuth.url } : {}), ...(this.userAuth.expiresAt ? { expiresAt: this.userAuth.expiresAt } : {}), ...(this.userAuth.error ? { error: this.userAuth.error } : {}) } } : {}),
       apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id ORDER BY a.created_at")
         .map((row) => ({
@@ -193,6 +209,12 @@ export class FeishuModule {
     return { started: true };
   }
 
+  registrationTarget(token: string) {
+    const job = this.job;
+    if (this.closed || job?.stage !== "qr" || job.scanToken !== token || !job.expiresAt || job.expiresAt <= now()) return undefined;
+    return job.url;
+  }
+
   cancelRegister() {
     if (!this.job) return;
     this.job.controller.abort();
@@ -209,7 +231,9 @@ export class FeishuModule {
         addons: { scopes: scopeManifest.scopes, events: { items: { tenant: [...baselineEvents] } }, callbacks: { items: ["card.action.trigger"] } },
         onQRCodeReady: (info) => {
           if (job.controller.signal.aborted) return;
-          job.stage = "qr"; job.url = info.url; job.expiresAt = now() + Math.max(60, Math.min(info.expireIn || 300, 900)) * 1000;
+          job.stage = "qr"; job.url = info.url;
+          job.expiresAt = now() + Math.max(0, Math.min(info.expireIn ?? 300, 900)) * 1000;
+          job.scanToken = officialRegistrationUrl(info.url) ? randomBytes(16).toString("base64url") : undefined;
           this.changed();
         },
         signal: job.controller.signal,

@@ -10,6 +10,8 @@ export function FeishuCard({ state, financeBotId, refresh }: { state: Pick<State
   const feishu = state.feishu ?? { apps: [] };
   const app = feishu.apps[0];
   const job = feishu.job;
+  const webScan = job?.scanPath && typeof window !== "undefined" && /^https?:$/.test(window.location.protocol)
+    ? window.location.origin + job.scanPath : job?.url;
   const [sharedAvailable,setSharedAvailable]=useState(false);
   const [selectedBotId, setBotId] = useState("");
   const botId = String((state.bots.find(bot => bot.id === selectedBotId)
@@ -39,7 +41,7 @@ export function FeishuCard({ state, financeBotId, refresh }: { state: Pick<State
       {app.error && <p className="connector-feedback is-error">{app.error}</p>}
       {!app.ownerBound && (bindCode ? <p className="connector-feedback">绑定码 {bindCode}：在飞书私聊机器人发送这串数字，10 分钟内有效。</p> : <div className="actions"><button disabled={!!busy} onClick={() => void action("bind", async () => { const result = await api<{ code: string }>("feishu/bind/start", { id: app.id }); setBindCode(String(result.code ?? "")); })}>生成绑定码</button></div>)}
       {feishu.userAuth?.stage === "polling" && feishu.userAuth.url ? <div className="actions" style={{ alignItems: "center" }}>
-        <QRCodeSVG value={feishu.userAuth.url} size={148} level="M" bgColor="#ffffff" fgColor="#111111" />
+        <QRCodeSVG value={feishu.userAuth.url} size={246} marginSize={4} level="M" bgColor="#ffffff" fgColor="#111111" style={{ maxWidth: "100%", height: "auto", flexShrink: 0 }} />
         <span>用飞书扫码完成主人身份授权。</span><button disabled={!!busy} onClick={() => void action("usercancel", () => api("feishu/user-auth/cancel", {}))}>取消</button>
       </div> : feishu.userAuth?.stage === "error" ? <p className="connector-feedback is-error">{feishu.userAuth.error}</p> : null}
       <div className="actions">
@@ -47,9 +49,9 @@ export function FeishuCard({ state, financeBotId, refresh }: { state: Pick<State
         <button disabled={!!busy} onClick={() => void action("toggle", () => api("feishu/toggle", { id: app.id, version: app.version, enabled: !app.enabled }))}>{app.enabled ? "停用" : "启用"}</button>
         {confirmRemove ? <><span>移除飞书连接？</span><button className="danger-link" disabled={!!busy} onClick={() => { setConfirmRemove(false); setBindCode(""); void action("delete", () => api("feishu/delete", { id: app.id, version: app.version })); }}>确认移除</button><button onClick={() => setConfirmRemove(false)}>取消</button></> : <button className="text-button danger-link" disabled={!!busy} onClick={() => setConfirmRemove(true)}>移除</button>}
       </div>
-    </> : sharedAvailable ? <p className="muted">使用已连接的金融助手应用</p> : job?.stage === "qr" && job.url ? <div className="actions" style={{ alignItems: "center" }}>
-      <QRCodeSVG value={job.url} size={148} level="M" bgColor="#ffffff" fgColor="#111111" />
-      <span>用飞书扫码并确认，完成后自动连接。</span><button disabled={!!busy} onClick={() => void action("cancel", () => api("feishu/register/cancel", {}))}>取消</button>
+    </> : sharedAvailable ? <p className="muted">使用已连接的金融助手应用</p> : job?.stage === "qr" && job.url && webScan ? <div className="actions" style={{ alignItems: "center", flexWrap: "wrap" }}>
+      <QRCodeSVG value={webScan} title="飞书连接二维码" size={246} marginSize={4} level="M" bgColor="#ffffff" fgColor="#111111" style={{ maxWidth: "100%", height: "auto", flexShrink: 0 }} />
+      <span>用飞书「扫一扫」扫码并确认。</span><a href={job.url} target="_blank" rel="noreferrer">打开飞书授权页</a><button disabled={!!busy} onClick={() => void action("cancel", () => api("feishu/register/cancel", {}))}>取消</button>
     </div> : job?.stage === "preparing" ? <p className="muted">正在生成二维码…</p> : <>
       {job?.stage === "error" && <p className="connector-feedback is-error">{job.error}</p>}
       <label className="field">接收助手<select value={botId} onChange={(event) => setBotId(event.target.value)}>{state.bots.map((bot) => <option key={String(bot.id)} value={String(bot.id)}>{String(bot.name)}</option>)}</select></label>

@@ -8,7 +8,7 @@ const repo = "https://github.com/DarrenHoo-10/nex_bot";
 export const registerUrl = "https://user.nexorai.com.cn/register/nexbot";
 const links = { releases: `${repo}/releases` };
 
-interface ClientDownload { url: string; version: string; publishedAt: string }
+interface ClientDownload { url: string; version: string; publishedAt: string; tag?: string }
 interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload; mac?: ClientDownload; ios?: ClientDownload }
 /** Core resolves the shared release manifest; unavailable platforms fall back to the release list. */
 function useClientDownloads() {
@@ -104,6 +104,7 @@ function ProductPreview() {
 
 export function HomePage({ login, signedIn = false }: { login: ReactNode; signedIn?: boolean }) {
   const downloads = useClientDownloads();
+  const publishedClient = downloads.windows;
   return <div className="home">
     <header className="home-nav">
       <a className="home-logo" href="#top"><BrandMark size={30}/><strong>NexBot</strong></a>
@@ -134,7 +135,7 @@ export function HomePage({ login, signedIn = false }: { login: ReactNode; signed
         <div className="home-platforms">{platforms(downloads).map(({ icon: Icon, name, detail, note, href, action }) => <a key={name} href={signedIn && href === "#login" ? "#workspace" : href} {...external(href)} onClick={!signedIn && href === "#login" ? toLogin : undefined}>
           <span className="home-icon"><Icon size={19}/></span><strong>{name}</strong><span>{detail}</span><small>{note}</small><b>{signedIn && href === "#login" ? "进入工作台" : action}<ArrowRight size={14}/></b>
         </a>)}</div>
-        <p className="home-release-link"><a href={`${repo}/releases/tag/nexbot-v0.9.32-preview.1`} {...external(repo)}>0.9.32 预览版 · 金融助手与飞书话题</a></p>
+        <p className="home-release-link"><a href={publishedClient?.tag ? `${links.releases}/tag/${encodeURIComponent(publishedClient.tag)}` : links.releases} {...external(repo)}>{publishedClient?.version ? `${publishedClient.version} 预览版发布说明` : "客户端发布说明"}</a></p>
         <p className="home-release-link"><a href={links.releases} {...external(links.releases)}>查看全部版本与校验文件</a></p>
       </section>
       <section id="start" className="home-section">
