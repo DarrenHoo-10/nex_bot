@@ -339,7 +339,7 @@ export async function createPersonalApp(options: AppOptions) {
         const botId = agents.finance().botId;
         const route = request.method + " " + url.pathname;
         const get = ["GET /api/agents/topics", "GET /api/agents/messages", "GET /api/agents/tasks"];
-        const post = ["POST /api/agents/input", "POST /api/agents/read", "POST /api/agents/cancel", "POST /api/agents/retry", "POST /api/agents/edit"];
+        const post = ["POST /api/agents/input", "POST /api/agents/read", "POST /api/agents/cancel", "POST /api/agents/retry", "POST /api/agents/edit", "POST /api/agents/delete-topic"];
         const scopedFinance = ["GET /api/agents/finance", "GET /api/finance/models", "GET /api/finance/alias",
           "GET /api/finance/aliases", "GET /api/finance/alias/context", "POST /api/finance/alias",
           "POST /api/finance/alias/compact", "POST /api/finance/alias/delete"];
@@ -557,6 +557,10 @@ export async function createPersonalApp(options: AppOptions) {
       }
       if (url.pathname === "/api/jobs/input") { json(response, 202, jobs.input(text(data.jobId, 100), text(data.text), text(data.clientId, 100), "direct", String(session.id))); return; }
       if (url.pathname === "/api/jobs/stop") { json(response, 200, jobs.stop(text(data.jobId, 100))); return; }
+      if (url.pathname === '/api/agents/delete-topic') {
+        const result = stockHistory.removeTopic(text(data.botId,100), text(data.conversationId,100));
+        changed(); json(response,200,result); return;
+      }
       if (url.pathname === '/api/agents/retry') { json(response,202,agents.retryTopic(text(data.botId,100),text(data.conversationId,100),text(data.taskId,100),text(data.clientId,200),String(session.id))); return; }
       if (url.pathname === '/api/agents/edit') { json(response,202,agents.editTopic(text(data.botId,100),text(data.conversationId,100),text(data.messageId,100),text(data.text),text(data.clientId,200),String(session.id))); return; }
       if (url.pathname === '/api/agents/cancel') { json(response,200,typeof data.messageId==='string'?agents.cancelMessage(text(data.botId,100),text(data.conversationId,100),text(data.messageId,100)):agents.cancelTopic(text(data.botId,100),text(data.conversationId,100))); return; }

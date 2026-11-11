@@ -739,6 +739,7 @@ export class FeishuModule {
     const aliases = [...refs,messageId].map((ref) => this.store.get("SELECT * FROM feishu_topic_aliases WHERE app_id=? AND chat_id=? AND alias=?", appId, chatId, ref)).filter((v): v is Row => !!v);
     if (new Set(aliases.map((v) => v.conversation_id)).size > 1) throw new Error("conflicting_topic_aliases");
     const alias = aliases[0];
+    if (alias && this.store.get("SELECT id FROM conversations WHERE id=? AND status='deleted'", alias.conversation_id)) { ignore(); return; }
     const destination = this.store.get("SELECT * FROM feishu_destinations WHERE app_id=? AND chat_id=? AND enabled=1", appId, chatId);
     if (row.chat_type === "group") {
       // An unclaimed group cannot execute in the owner's workspace.
@@ -803,7 +804,7 @@ export class FeishuModule {
     for (const message of rows) {
       if(!["assistant","system"].includes(String(message.role)) || !(message.kind === "message" || message.kind === "error" || String(message.source_key).startsWith("job-report:")) || String(message.source_key).startsWith("routine-report:"))continue;
       const mapping = this.mappingFor(String(message.task_id ?? ""));
-      if (!mapping) continue;
+      if (!mapping || this.store.get("SELECT id FROM conversations WHERE id=? AND status='deleted'", mapping.conversation_id)) continue;
       this.queueReply(mapping, message);
     }
     void this.flushOutbox();
@@ -884,6 +885,7 @@ export class FeishuModule {
 
   /** One synchronous predicate is reused at claim time and immediately before each provider fetch. */
   private deliveryAllowed(part:Row):boolean {
+    if (part.conversation_id && this.store.get("SELECT id FROM conversations WHERE id=? AND status='deleted'", part.conversation_id)) return false;
     if(this.closed||this.quiesced.has(String(part.app_id)))return false;
     const app=this.app(String(part.app_id));
     const destination=this.store.get("SELECT * FROM feishu_destinations WHERE app_id=? AND chat_id=? AND enabled=1",part.app_id,part.chat_id);

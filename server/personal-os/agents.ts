@@ -10,6 +10,8 @@ import { parseAppearance } from "../../shared/personal-appearance.ts";
 // sessions belong to work, and never define the identity visible to the owner.
 export type TopicInputOptions = { conversationId?: string; newConversation?: boolean; sourceContext?: Record<string, unknown>; audience?: 'private' | 'public';modelSelection?:{connectionId?:string;model?:string;reasoning?:string} };
 export type PublishedMessage = { botId: string; messageId: string; conversationId: string | null; taskId: string | null };
+// Keep receipts and referenced rows in storage while excluding removed conversations from inbox reads.
+const visibleInbox = "(SELECT m.*,m.rowid AS rowid FROM agent_messages m WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=m.conversation_id AND c.status='deleted'))";
 export class AgentModule {
   beforeTopicInput?: (botId:string,conversationId:string)=>void;
   onPublished?: (botId: string, event: PublishedMessage) => void;
@@ -155,6 +157,7 @@ export class AgentModule {
       const messageId = id();
       conversationId ??= taskId ? String(this.store.get("SELECT conversation_id FROM tasks WHERE id=?", taskId)?.conversation_id ?? "") || null : null;
       if(taskId && conversationId) conversationId=String(this.store.get('SELECT root_conversation_id FROM agent_topic_children WHERE conversation_id=?',conversationId)?.root_conversation_id??conversationId);
+      if (conversationId && this.store.get("SELECT id FROM conversations WHERE id=? AND status='deleted'", conversationId)) return;
       this.store.insert("agent_messages", { id: messageId, bot_id: botId, ...this.store.scope(), seq: inbox.next_seq, role, kind, sender_bot_id: sender, task_id: taskId, content, source_key: source, created_at: timestamp, conversation_id: conversationId });
       this.runtime.memory.ledger.message(this.store.get("SELECT * FROM agent_messages WHERE id=?", messageId)!);
       this.store.run("UPDATE agent_inboxes SET next_seq=next_seq+1 WHERE bot_id=?", botId);
@@ -473,7 +476,7 @@ export class AgentModule {
   search(botId: string, query: string): Row[];
   search(botId: string, query: string, page?: { offset?: number; limit?: number }): Array<Row | ReturnType<typeof entryPage>>;
   search(botId: string, query: string, page?: { offset?: number; limit?: number }) {
-    if(query.startsWith('message:')) return this.store.all('SELECT id,role,content,created_at FROM agent_messages WHERE bot_id=? AND id=?',botId,query.slice(8));
+    if(query.startsWith('message:')) return this.store.all('SELECT id,role,content,created_at FROM ' + visibleInbox + ' WHERE bot_id=? AND id=?',botId,query.slice(8));
     if(query.startsWith('episode:')) { const episode=this.runtime.episodes.get(botId,query.slice(8)); return episode ? [this.runtime.episodes.view(episode) as unknown as Row] : []; }
     if(query.startsWith('entry:')) {
       const entryId=query.slice(6);
@@ -487,12 +490,12 @@ export class AgentModule {
       return [];
     }
     const needle = "%" + text(query, 200).replace(/[\\%_]/g, "\\$&") + "%";
-    return this.store.all("SELECT id,role,kind,content,created_at FROM agent_messages WHERE bot_id=? AND content LIKE ? ESCAPE '\\' ORDER BY seq DESC LIMIT 10", botId, needle);
+    return this.store.all("SELECT id,role,kind,content,created_at FROM " + visibleInbox + " WHERE bot_id=? AND content LIKE ? ESCAPE '\\' ORDER BY seq DESC LIMIT 10", botId, needle);
   }
   searchConversations(query: string, before?: number) {
     const value = text(query,200), needle = '%' + value.replace(/[\\%_]/g,'\\$&') + '%';
     if (before!==undefined && (!Number.isSafeInteger(before)||before<=0)) throw new Error('搜索位置无效');
-    const rows = this.store.all("SELECT m.rowid position,m.id,m.bot_id,m.seq,m.content,m.created_at,b.name bot_name FROM agent_messages m JOIN bots b ON b.id=m.bot_id WHERE b.workspace_id=? AND b.owner_user_id=? AND b.status='active' AND m.rowid<? AND m.content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id) AND m.content LIKE ? ESCAPE '\\' ORDER BY m.rowid DESC LIMIT 51",this.store.workspace,this.store.owner,before??Number.MAX_SAFE_INTEGER,needle);
+    const rows = this.store.all("SELECT m.rowid position,m.id,m.bot_id,m.seq,m.content,m.created_at,b.name bot_name FROM " + visibleInbox + " m JOIN bots b ON b.id=m.bot_id WHERE b.workspace_id=? AND b.owner_user_id=? AND b.status='active' AND m.rowid<? AND m.content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id) AND m.content LIKE ? ESCAPE '\\' ORDER BY m.rowid DESC LIMIT 51",this.store.workspace,this.store.owner,before??Number.MAX_SAFE_INTEGER,needle);
     const page=rows.slice(0,50);
     return { results:page.map(row=>{
       const content=String(row.content),index=content.toLowerCase().indexOf(value.toLowerCase()),start=Math.max(0,index-45);
@@ -501,10 +504,10 @@ export class AgentModule {
   }
   messagesAround(botId: string, messageId: string) {
     this.ensure(botId);
-    const target=this.store.get("SELECT seq FROM agent_messages m WHERE bot_id=? AND id=? AND content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id)",botId,messageId);
+    const target=this.store.get("SELECT seq FROM " + visibleInbox + " m WHERE bot_id=? AND id=? AND content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id)",botId,messageId);
     if (!target) throw new Error('该消息已不存在或已遗忘');
-    const before=this.store.all('SELECT * FROM (SELECT * FROM agent_messages WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 40) ORDER BY seq',botId,target.seq);
-    const after=this.store.all('SELECT * FROM agent_messages WHERE bot_id=? AND seq>=? ORDER BY seq LIMIT 60',botId,target.seq);
+    const before=this.store.all('SELECT * FROM (SELECT * FROM ' + visibleInbox + ' WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 40) ORDER BY seq',botId,target.seq);
+    const after=this.store.all('SELECT * FROM ' + visibleInbox + ' WHERE bot_id=? AND seq>=? ORDER BY seq LIMIT 60',botId,target.seq);
     return this.projectMessages([...before,...after]);
   }
   read(botId: string, seq: number, conversationId?: string) {
@@ -515,11 +518,11 @@ export class AgentModule {
   }
   messages(botId: string, before?: number) {
     this.ensure(botId);
-    return this.projectMessages(this.store.all("SELECT * FROM (SELECT * FROM agent_messages WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 100) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER));
+    return this.projectMessages(this.store.all("SELECT * FROM (SELECT * FROM " + visibleInbox + " WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 100) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER));
   }
   messagesAfter(botId: string, after: number) {
     this.ensure(botId);
-    return this.projectMessages(this.store.all("SELECT * FROM agent_messages WHERE bot_id=? AND seq>? ORDER BY seq LIMIT 200", botId, after));
+    return this.projectMessages(this.store.all("SELECT * FROM " + visibleInbox + " WHERE bot_id=? AND seq>? ORDER BY seq LIMIT 200", botId, after));
   }
   private projectMessages(messages: Row[]) {
     return messages.map((message) => {
@@ -583,6 +586,6 @@ export class AgentModule {
     });
   }
   contacts() {
-    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM agent_messages m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT content FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
+    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM " + visibleInbox + " m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT content FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
   }
 }

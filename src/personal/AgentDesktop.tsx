@@ -292,11 +292,17 @@ export function AgentDesktop() {
     const guess = !target && !conversation && loaded.current?.botId === current ? loaded.current : undefined;
     const early = current ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
     early?.catch(() => undefined);
-    const [next, topicList, taskList] = await Promise.all([
+    const [next, topicList] = await Promise.all([
       api<State>("state"),
       finance ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`) : undefined,
-      conversation ? api<{tasks:FinanceTask[]}>(`agents/tasks?bot=${encodeURIComponent(current)}${scope}`) : undefined,
     ]);
+    if (request !== serial.current) return;
+    if (conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
+      loaded.current = undefined; setMessages([]); setStreaming([]); setTopicTasks([]);
+      setTopics(topicList?.topics ?? []); setTopicId(undefined); setError("");
+      return;
+    }
+    const taskList = conversation ? await api<{tasks:FinanceTask[]}>(`agents/tasks?bot=${encodeURIComponent(current)}${scope}`) : undefined;
     if (request !== serial.current) return;
     if (memoryVersions.current.size > 0) {
       const updated = next.memories.find((m) => (m.scope === "workspace" || m.bot_id === current) && memoryVersions.current.get(str(m.id)) !== `${m.version}:${m.updated_at}`);

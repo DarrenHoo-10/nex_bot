@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS stock_history_compactions(conversation_id TEXT PRIMAR
             if (old?.message_id) {
                 this.store.run("UPDATE agent_messages SET content='[已遗忘]' WHERE id=?", old.message_id);
             }
-            if (alias?.conversation_id) {
+            if (alias?.conversation_id && !alias.deleted_at) {
                 this.invalidate(String(alias.conversation_id));
             }
         }
@@ -235,13 +235,22 @@ CREATE TABLE IF NOT EXISTS stock_history_compactions(conversation_id TEXT PRIMAR
         this.store.run('DELETE FROM context_checkpoints WHERE conversation_id=?', conversationId);
     }
     private removeAlias(alias: Row) {
-        if (alias.conversation_id) {
-            const conv = String(alias.conversation_id);
-            this.invalidate(conv);
-            this.store.run("UPDATE agent_messages SET content='[已遗忘]' WHERE conversation_id=?", conv);
-            this.store.run("UPDATE conversations SET status='deleted',version=version+1 WHERE id=?", conv);
-        }
-        this.store.run('UPDATE stock_history_aliases SET deleted_at=COALESCE(deleted_at,?) WHERE scope_id=? AND session_id=?', now(), alias.scope_id, alias.session_id);
+        if (alias.conversation_id) this.removeTopic(String(alias.bot_id), String(alias.conversation_id));
+        else this.store.run('UPDATE stock_history_aliases SET deleted_at=COALESCE(deleted_at,?) WHERE scope_id=? AND session_id=?', now(), alias.scope_id, alias.session_id);
+    }
+    removeTopic(botId: string, conversationId: string) {
+        return this.store.transaction(() => {
+            const row = this.store.get('SELECT c.status FROM conversations c JOIN agent_topics p ON p.conversation_id=c.id WHERE c.id=? AND p.bot_id=? AND c.workspace_id=? AND c.owner_user_id=?',
+                conversationId, botId, this.store.workspace, this.store.owner);
+            if (!row) throw new IdentityError(404, '话题不存在');
+            if (row.status !== 'deleted') {
+                this.invalidate(conversationId);
+                this.store.run("UPDATE agent_messages SET content='[已遗忘]' WHERE conversation_id=?", conversationId);
+                this.store.run("UPDATE conversations SET status='deleted',version=version+1 WHERE id=?", conversationId);
+            }
+            this.store.run('UPDATE stock_history_aliases SET deleted_at=? WHERE conversation_id=? AND deleted_at IS NULL', now(), conversationId);
+            return { deleted: true, conversationId };
+        });
     }
     private async resolved(sessionId: string, legacySessionId: string, create = false, sourceContext?: Record<string, unknown>) {
         const scope = await this.sync(sessionId);

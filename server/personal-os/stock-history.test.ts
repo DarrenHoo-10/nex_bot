@@ -62,6 +62,11 @@ it('imports exact pages once, scopes aliases, does not publish/run/retain, suppo
         await f.restart();
         expect((await f.history.list('owner-a')).aliases[0].conversationId).toBe(conversation);
         expect(f.calls.at(-1)).toBe(18);
+        expect(() => f.history.removeTopic('wrong-bot', conversation)).toThrow('话题不存在');
+        expect(f.history.removeTopic(bot, conversation).deleted).toBe(true);
+        expect(f.history.removeTopic(bot, conversation).deleted).toBe(true);
+        expect(f.app.agents.messages(bot)).toHaveLength(0);
+        expect(f.app.agents.topics(bot)).toHaveLength(0);
         await f.history.remove('owner-a', 'legacy-session');
         await expect(f.history.send('owner-a', { sessionId: 'legacy-session', text: 'resume deleted', clientId: 'deleted' })).rejects.toThrow('已移除');
         f.events.push({ id: 2, cursor: 19, sessionId: 'legacy-session', role: 'assistant', content: 'resurrection attempt', createdAt: 1700000000020 });
