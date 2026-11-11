@@ -1,4 +1,4 @@
-# Install in nginx's http context after replacing TOKYO_ORIGIN_IP.
+# Register nexbot-origin.nex.internal with Tokyo's ZeroTier address on the relay before reload.
 # Issue the public certificate with the webroot before enabling the TLS server.
 # The upstream trust bundle must validate Tokyo's certificate and hostname.
 map $http_upgrade $nexbot_relay_connection {
@@ -7,10 +7,10 @@ map $http_upgrade $nexbot_relay_connection {
 }
 
 log_format nexbot_relay '$time_iso8601 $request_method $uri $status '
-                        'request=$request_time upstream=$upstream_response_time';
+                        'request=$request_time upstream=$upstream_response_time peer=$upstream_addr';
 
 upstream nexbot_tokyo {
-    server TOKYO_ORIGIN_IP:443;
+    server nexbot-origin.nex.internal:443;
     keepalive 32;
 }
 

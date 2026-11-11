@@ -82,3 +82,7 @@ to a direct Tokyo origin, first restore the prior Tokyo virtual-host TLS
 configuration and validate the original Cloudflare TLS mode, then update the
 DNS record to Tokyo's **current** public address. Never reuse the pre-restart
 address without confirming it still belongs to the instance.
+
+## 2026-11-12 private upstream
+
+The Seoul gateway resolves `nexbot-origin.nex.internal` to the Tokyo ZeroTier address from its deployment-owned host inventory. The TLS name and origin CA remain the same. Tokyo trusts the Seoul ZeroTier relay address for forwarded client identity. After a graceful reload, Seoul recorded successful authenticated topic and message reads with the overlay address as the actual upstream; a tagged request from the Stock host retained its client address at the origin. The production Core process was not restarted. When changing the origin, update the private registry and the relay's local origin records, test Nginx configuration and reload. Restore the corresponding trusted relay address before rolling back to a previous network path.
