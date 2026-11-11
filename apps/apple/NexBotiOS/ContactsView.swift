@@ -23,6 +23,9 @@ struct ContactsView: View {
                         .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
                         .padding(14).glass(RoundedRectangle(cornerRadius: 16))
                 }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
+                if let finance = workspace.financeBotID {
+                    Button { nav.openChat(finance) } label: { HStack { Label(workspace.bot(finance)?.name ?? "金融助手",systemImage:"bubble.left.and.bubble.right");Spacer();Image(systemName:"chevron.right") }.padding(14) }.buttonStyle(.plain).padding(.horizontal,16)
+                }
                 content
             }
             .background { WorkspaceSurface(kind: .stage) }

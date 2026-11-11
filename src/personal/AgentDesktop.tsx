@@ -1,3 +1,4 @@
+import { FinanceTopics } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
 import { createContext, memo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
@@ -105,9 +106,11 @@ export const RichText = memo(function RichText({ value, onPreviewFile, pending =
 
 export function AgentDesktop() {
   const { status: accountStatus, logout } = useAccount();
-  const [state, setState] = useState<State>(), [page, setPage] = useState("agent");
-  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("account");
+  const [state, setState] = useState<State>();
+  const [page, setPage] = useState(() => new URLSearchParams(window.location.search).get("settings") === "feishu" ? "settings" : "agent");
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>(page === "settings" ? "connectors" : "account");
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
+  const [financeBotId,setFinanceBotId]=useState<string>();
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
   const [pinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
@@ -258,6 +261,7 @@ export function AgentDesktop() {
     localStorage.setItem("nexbot.dark", dark ? "1" : "0");
   }, [dark]);
 
+  useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);setBotId(result.botId);}}).catch((error:Error)=>setError(error.message));return()=>{stopped=true;};},[]);
   const reload = useCallback(async () => {
     const request = ++serial.current, current = selected.current;
     const releaseSend = () => {
@@ -626,7 +630,8 @@ export function AgentDesktop() {
         <h1>创建你的第一个 Agent</h1>
         <p>给它一个名字，身份与职责可以之后补充。消息、记忆和工作会持续保留。</p>
         <button className="primary" onClick={() => editBot()}><Plus size={16}/>创建 Agent</button>
-      </div> : page === "agent" && jobView ? <JobChat key={jobView} id={jobView} botName={str(bot?.name) || "Agent"} avatar={<Avatar bot={bot} allBots={state.bots} size={26}/>} back={() => setJobView(undefined)} renderContent={(value, pending) => <RichText value={value} pending={pending} onPreviewFile={openFilePreview}/>}/>
+      </div> : page === "agent" && botId===financeBotId ? <FinanceTopics key={botId} botId={botId} render={value=><RichText value={value}/>} settings={<><ModelMenu connections={connections} choice={modelChoice} onChange={chooseModel} displayValue={modelLabel} disabled={busy||!connected}/><button type="button" onClick={()=>{setDetail(true);setTab('profile');}}>助手设置</button></>}/>
+      : page === "agent" && jobView ? <JobChat key={jobView} id={jobView} botName={str(bot?.name) || "Agent"} avatar={<Avatar bot={bot} allBots={state.bots} size={26}/>} back={() => setJobView(undefined)} renderContent={(value, pending) => <RichText value={value} pending={pending} onPreviewFile={openFilePreview}/>}/>
       : page === "agent" ? <>
         <div className="transcript" ref={scroll} onPointerDown={(event) => { const el = scroll.current; if (el && event.target === el && event.nativeEvent.offsetX >= el.clientWidth) setFollowing(false); }} onWheel={(event) => { if (event.deltaY < 0) setFollowing(false); else if (atEnd()) setFollowing(true); }} onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={(event) => { const y = event.touches[0]?.clientY ?? 0; if (y > touchY.current + 4) setFollowing(false); else if (atEnd()) setFollowing(true); }} onScroll={() => { const el = scroll.current; if (!el) return; const scrollTop = el.scrollTop; const resume = shouldResumeBottomFollow({ following: stickToBottom.current, previousScrollTop: previousScrollTop.current, scrollTop, distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight }); previousScrollTop.current = scrollTop; if (resume) setFollowing(true); }}>
           <div className="transcript-inner" ref={transcriptInner}>

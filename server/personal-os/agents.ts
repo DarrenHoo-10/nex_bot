@@ -1,4 +1,4 @@
-import { CoreStore, hash, id, now, optionalText, text, type Row } from "./store.ts";
+import { CoreStore, hash, id, now, optionalText, text, canonical, type Row } from "./store.ts";
 import { entryPage, entryText } from './context-tools.ts';
 import type { TaskRuntime } from "./runtime.ts";
 import type { JobModule } from "./jobs.ts";
@@ -8,8 +8,11 @@ import { parseAppearance } from "../../shared/personal-appearance.ts";
 
 // The contact and its inbox survive any number of execution contexts. Pi
 // sessions belong to work, and never define the identity visible to the owner.
+export type TopicInputOptions = { conversationId?: string; newConversation?: boolean; sourceContext?: Record<string, unknown>; audience?: 'private' | 'public';modelSelection?:{connectionId?:string;model?:string;reasoning?:string} };
+export type PublishedMessage = { botId: string; messageId: string; conversationId: string | null; taskId: string | null };
 export class AgentModule {
-  onPublished?: (botId: string) => void;
+  beforeTopicInput?: (botId:string,conversationId:string)=>void;
+  onPublished?: (botId: string, event: PublishedMessage) => void;
   /** Background jobs; set by the app once the job module exists. */
   jobs?: JobModule;
   constructor(readonly store: CoreStore, readonly runtime: TaskRuntime) {
@@ -29,6 +32,7 @@ export class AgentModule {
       for (const link of store.all("SELECT * FROM a2a_messages")) { this.delegation(link, false); if (link.finished_at !== null) this.delegation(link, true); }
       store.insert("agent_bootstrap", { id: 1, completed_at: now() });
     });
+    queueMicrotask(() => { if (!runtime.closing) this.drainTopics(); });
     runtime.onResult = (task, role, content, source) => {
       if (source.startsWith("image:") || store.get("SELECT task_id FROM agent_task_links WHERE task_id=?", task.id)) this.publish(String(task.bot_id), role, role === "system" ? "error" : "message", content, source, task.id);
     };
@@ -40,7 +44,7 @@ export class AgentModule {
       // runs after the commit; if it fails, the task stays ended and recovery settles it again (publishing once).
       queueMicrotask(() => {
         if (this.runtime.closing) return;
-        try { this.jobs?.settle(taskId); }
+        try { this.jobs?.settle(taskId); this.drainTopics(); }
         catch (error) { console.warn("Background job settlement will be retried:", error instanceof Error ? error.message : error); }
       });
       store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id=?", taskId);
@@ -140,7 +144,7 @@ export class AgentModule {
     });
     this.runtime.changed();
   }
-  publish(botId: string, role: string, kind: string, content: string, source: string, taskId: Row[string] = null, sender: Row[string] = null, timestamp = now()) {
+  publish(botId: string, role: string, kind: string, content: string, source: string, taskId: Row[string] = null, sender: Row[string] = null, timestamp = now(), conversationId: string | null = null) {
     // Routine and background job transcripts (including delegated work and generated media) belong to execution
     // details. Only the durable settlement reports, and the user's own direct replies to a job, reach the inbox.
     if (taskId && this.isBackground(String(taskId)) && source !== `routine-report:${taskId}` && !source.startsWith("job-report:") && !source.startsWith("job-input:")) return;
@@ -149,24 +153,31 @@ export class AgentModule {
       if (this.store.get("SELECT id FROM agent_messages WHERE source_key=?", source)) return;
       const inbox = this.store.get("SELECT next_seq FROM agent_inboxes WHERE bot_id=?", botId)!;
       const messageId = id();
-      this.store.insert("agent_messages", { id: messageId, bot_id: botId, ...this.store.scope(), seq: inbox.next_seq, role, kind, sender_bot_id: sender, task_id: taskId, content, source_key: source, created_at: timestamp });
+      conversationId ??= taskId ? String(this.store.get("SELECT conversation_id FROM tasks WHERE id=?", taskId)?.conversation_id ?? "") || null : null;
+      if(taskId && conversationId) conversationId=String(this.store.get('SELECT root_conversation_id FROM agent_topic_children WHERE conversation_id=?',conversationId)?.root_conversation_id??conversationId);
+      this.store.insert("agent_messages", { id: messageId, bot_id: botId, ...this.store.scope(), seq: inbox.next_seq, role, kind, sender_bot_id: sender, task_id: taskId, content, source_key: source, created_at: timestamp, conversation_id: conversationId });
       this.runtime.memory.ledger.message(this.store.get("SELECT * FROM agent_messages WHERE id=?", messageId)!);
       this.store.run("UPDATE agent_inboxes SET next_seq=next_seq+1 WHERE bot_id=?", botId);
-      if (role !== "user") queueMicrotask(() => { if (!this.runtime.closing && this.store.get("SELECT id FROM agent_messages WHERE source_key=?", source)) this.onPublished?.(botId); });
+      if (role !== "user") queueMicrotask(() => { if (!this.runtime.closing && this.store.get("SELECT id FROM agent_messages WHERE source_key=?", source)) this.onPublished?.(botId, {botId,messageId,conversationId,taskId: taskId ? String(taskId) : null}); });
+      return messageId;
     });
   }
   active(botId: string) {
     // Only direct owner work can be steered by the primary conversation.
-    return this.store.get("SELECT t.* FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.bot_id=? AND l.origin='owner' AND t.ended_at IS NULL ORDER BY t.created_at LIMIT 1", botId);
+    return this.store.get("SELECT t.* FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE l.bot_id=? AND l.origin='owner' AND NOT EXISTS(SELECT 1 FROM agent_topics p WHERE p.conversation_id=t.conversation_id) AND t.ended_at IS NULL ORDER BY t.created_at LIMIT 1", botId);
   }
-  send(botId: string, content: string, clientId: string, sessionId = this.store.session) {
+  send(botId: string, content: string, clientId: string, sessionId?: string): {taskId:string;conversationId:string;messageId:string};
+  send(botId: string, content: string, clientId: string, sessionId: string | undefined, options: TopicInputOptions): {taskId:string|null;conversationId:string;messageId:string;queued?:boolean};
+  send(botId: string, content: string, clientId: string, sessionId = this.store.session, options: TopicInputOptions = {}) {
+    if (options.newConversation || options.conversationId) return this.sendTopic(botId, content, clientId, sessionId, options);
+    if(this.store.get('SELECT position FROM agent_topic_inputs WHERE bot_id=? AND client_id=?',botId,clientId)) throw new Error('消息 ID 已用于话题');
     content = text(content); clientId = text(clientId, 200);
     const digest = hash(content);
     this.ensure(botId);
     const existingReceipt = this.store.get("SELECT * FROM agent_input_receipts WHERE bot_id=? AND client_message_id=?", botId, clientId);
     if (existingReceipt) {
       if (existingReceipt.request_hash !== digest) throw new Error("同一消息 ID 的内容不同");
-      return { taskId: String(existingReceipt.task_id) };
+      return { taskId: String(existingReceipt.task_id), conversationId: String(existingReceipt.conversation_id), messageId: String(this.store.get("SELECT id FROM agent_messages WHERE source_key=?", `agent-input:${botId}:${clientId}`)?.id ?? "") };
     }
     const accepted = this.store.transaction(() => {
       const receipt = this.store.get("SELECT * FROM agent_input_receipts WHERE bot_id=? AND client_message_id=?", botId, clientId);
@@ -183,7 +194,130 @@ export class AgentModule {
       return { taskId, conversationId, replay: false };
     });
     if (!accepted.replay) this.runtime.input(accepted.conversationId, content, clientId, sessionId);
-    this.runtime.changed(); return { taskId: accepted.taskId };
+    this.runtime.changed(); return { taskId: accepted.taskId, conversationId: accepted.conversationId, messageId: String(this.store.get("SELECT id FROM agent_messages WHERE source_key=?", `agent-input:${botId}:${clientId}`)?.id ?? "") };
+  }
+  finance() {
+    return this.store.transaction(() => {
+      const bound = this.store.get("SELECT bot_id FROM agent_roles WHERE workspace_id=? AND owner_user_id=? AND role='finance_assistant'", this.store.workspace, this.store.owner);
+      if (bound) { this.ensure(String(bound.bot_id)); return {botId: String(bound.bot_id)}; }
+      const botId = this.store.createBot('金融助手', '研究金融市场、证券与策略，基于证据回答。来源对象只是研究起点，可以跨标的查证。');
+      this.store.insert('agent_roles', {...this.store.scope(), role:'finance_assistant',bot_id:botId});
+      this.store.run("INSERT INTO agent_approval_settings(bot_id,mode,version) VALUES(?,'full',1)",botId);
+      return {botId};
+    });
+  }
+  createTopic(botId: string, options: {title:string;audience:'private'|'public';sourceContext?:Record<string,unknown>}) {
+    this.ensure(botId);
+    if(!['private','public'].includes(options.audience)) throw new Error('受众无效');
+    return this.store.transaction(() => {
+      const conversationId=this.store.createConversation(botId,text(options.title,160));
+      this.store.insert('agent_topics',{conversation_id:conversationId,bot_id:botId,audience:options.audience,source_context:canonical(options.sourceContext??{}),created_at:now()});
+      return {id:conversationId,conversationId};
+    });
+  }
+  topic(botId: string, conversationId: string) {
+    this.ensure(botId);
+    const topic = this.store.get('SELECT p.*,c.title,c.status FROM agent_topics p JOIN conversations c ON c.id=p.conversation_id WHERE p.bot_id=? AND p.conversation_id=? AND c.workspace_id=? AND c.owner_user_id=?',botId,conversationId,this.store.workspace,this.store.owner);
+    if (!topic||topic.status==='deleted') throw new Error('话题不存在');
+    return topic;
+  }
+  topics(botId: string) {
+    this.ensure(botId);
+    return this.store.all(`SELECT p.*,c.title,c.status,COALESCE(MAX(m.created_at),p.created_at) last_activity_at,COUNT(m.id) message_count,SUM(CASE WHEN m.role!='user' AND m.source_key NOT LIKE 'stock-history:%' AND m.seq>p.read_seq THEN 1 ELSE 0 END) unread_count FROM agent_topics p JOIN conversations c ON c.id=p.conversation_id LEFT JOIN agent_messages m ON m.conversation_id=p.conversation_id AND m.bot_id=p.bot_id WHERE p.bot_id=? AND c.status!='deleted' GROUP BY p.conversation_id ORDER BY last_activity_at DESC`,botId).map(row => ({...row, conversationId:row.conversation_id,unread_count:Number(row.unread_count??0),sourceContext:JSON.parse(String(row.source_context)),messages:this.topicMessages(botId,String(row.conversation_id)).slice(-2),activeTask:this.store.get('SELECT id,status FROM tasks WHERE (conversation_id=? OR conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?)) AND ended_at IS NULL ORDER BY created_at LIMIT 1',row.conversation_id,row.conversation_id)??null}));
+  }
+  topicMessages(botId: string, conversationId: string, before = Number.MAX_SAFE_INTEGER, after = -1) {
+    this.topic(botId,conversationId);
+    return this.projectMessages(this.store.all(`SELECT m.*,(SELECT status FROM agent_topic_inputs i WHERE i.message_id=m.id) input_status FROM (SELECT * FROM agent_messages WHERE bot_id=? AND conversation_id=? AND seq<? AND seq>? ORDER BY seq ${after>=0?'ASC':'DESC'} LIMIT 200) m ORDER BY seq`,botId,conversationId,before,after));
+  }
+  private sendTopic(botId: string, content: string, clientId: string, sessionId: string, options: TopicInputOptions) {
+    this.ensure(botId); content=text(content); clientId=text(clientId,200);
+    if (options.newConversation && options.conversationId) throw new Error('新话题与已有话题不能同时指定');
+    if (options.audience && !['private','public'].includes(options.audience)) throw new Error('受众无效');
+    const source=canonical(options.sourceContext??{});
+    if (source.length>8000) throw new Error('来源过长');
+    const digest=hash(canonical({content,options}));
+    const accepted=this.store.transaction(() => {
+      const prior=this.store.get('SELECT * FROM agent_topic_inputs WHERE bot_id=? AND client_id=?',botId,clientId);
+      if (prior) { if (prior.request_hash!==digest) throw new Error('同一消息 ID 的请求不同'); return prior; }
+      if(this.store.get('SELECT task_id FROM agent_input_receipts WHERE bot_id=? AND client_message_id=?',botId,clientId)) throw new Error('消息 ID 已使用');
+      const modelSelection=options.modelSelection!==undefined?this.store.resolveInputModel(botId,options.modelSelection):null;
+      if(!modelSelection)this.store.modelConfig(botId);
+      const conversationId=options.conversationId ? text(options.conversationId,100) : this.store.createConversation(botId,content.slice(0,60));
+      if(options.conversationId) {
+        const topic=this.topic(botId,conversationId);
+        this.beforeTopicInput?.(botId,conversationId);
+        if(topic.status!=='open'||options.audience&&options.audience!==topic.audience||options.sourceContext&&source!==topic.source_context) throw new Error('话题受众或来源不可更改');
+      } else this.store.insert('agent_topics',{conversation_id:conversationId,bot_id:botId,audience:options.audience??'private',source_context:source,created_at:now()});
+      const messageId=this.publish(botId,'user','message',content,`agent-input:${botId}:${clientId}`,null,null,now(),conversationId)!;
+      this.store.insert('agent_topic_inputs',{bot_id:botId,client_id:clientId,request_hash:digest,conversation_id:conversationId,message_id:messageId,content,session_id:sessionId,status:'pending',model_selection_json:modelSelection?JSON.stringify(modelSelection):null});
+      return this.store.get('SELECT * FROM agent_topic_inputs WHERE bot_id=? AND client_id=?',botId,clientId)!;
+    });
+    this.drainTopics(); this.runtime.changed();
+    const receipt=this.store.get('SELECT * FROM agent_topic_inputs WHERE position=?',accepted.position)!;
+    return {taskId:receipt.task_id ? String(receipt.task_id) : null,conversationId:String(receipt.conversation_id),messageId:String(receipt.message_id),queued:receipt.status==='pending'};
+  }
+  drainTopics() {
+    for (const input of this.store.all("SELECT * FROM agent_topic_inputs WHERE status='pending' ORDER BY position")) {
+      if(this.store.get('SELECT id FROM tasks WHERE conversation_id=? AND ended_at IS NULL',input.conversation_id)) continue;
+      this.store.transaction(() => {
+        const taskId=this.store.accept(String(input.conversation_id),String(input.content),String(input.client_id),String(input.session_id),input.model_selection_json?JSON.parse(String(input.model_selection_json)):undefined);
+        this.store.run('INSERT OR IGNORE INTO agent_task_links VALUES(?,?,?,?)',taskId,input.bot_id,'owner',`owner-task:${taskId}`);
+        if(input.model_selection_json)this.store.run('INSERT OR IGNORE INTO task_model_selections VALUES(?,?)',taskId,input.model_selection_json);
+        this.store.run("UPDATE agent_topic_inputs SET status='accepted',task_id=? WHERE position=? AND status='pending'",taskId,input.position);
+        this.store.run('UPDATE agent_messages SET task_id=? WHERE id=?',taskId,input.message_id);
+      });
+      const taskId=String(this.store.get('SELECT task_id FROM agent_topic_inputs WHERE position=?',input.position)!.task_id);
+      queueMicrotask(()=>{if(!this.runtime.closing)this.runtime.kick(taskId);});
+    }
+  }
+  topicTasks(botId: string, conversationId: string) {
+    this.topic(botId,conversationId);
+    return this.store.all('SELECT id,bot_id,conversation_id,objective,status,result_summary,created_at,ended_at FROM tasks WHERE conversation_id=? OR conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?) ORDER BY created_at,rowid',conversationId,conversationId).map(task=>({...task,effects:this.store.all('SELECT id,tool_name,status FROM tool_calls WHERE task_id=? ORDER BY created_at,rowid',task.id)}));
+  }
+  retryTopic(botId: string, conversationId: string, taskId: string, clientId: string, sessionId = this.store.session) {
+    this.topic(botId,conversationId);
+    const task=this.store.get('SELECT * FROM tasks WHERE id=? AND conversation_id=?',taskId,conversationId);
+    if(!task||task.ended_at===null||!['failed','cancelled'].includes(String(task.status))) throw new Error('本任务不可重试');
+    const tree=this.store.all(`WITH RECURSIVE work(id) AS (SELECT ? UNION SELECT a.child_task_id FROM a2a_messages a JOIN work w ON a.parent_task_id=w.id UNION SELECT t.id FROM tasks t JOIN agent_jobs j ON t.conversation_id=j.conversation_id JOIN work w ON j.origin_task_id=w.id) SELECT id FROM work`,taskId).map(row=>String(row.id));
+    const marks=tree.map(()=>'?').join(',');
+    if(this.store.get(`SELECT id FROM tasks WHERE id IN (${marks}) AND ended_at IS NULL LIMIT 1`,...tree)) throw new Error('子任务仍在进行，请先核对并停止');
+    const unsafe=this.store.get(`SELECT id FROM tool_calls WHERE task_id IN (${marks}) AND status IN ('succeeded','executing','unknown') AND tool_name NOT IN ('tool.search','memory.search','memory.read','connector.list','connector.tools','device.inventory','device.info','device.list','device.read','skill.list','skill.read') LIMIT 1`,...tree);
+    if(unsafe) throw new Error('本任务含已执行或结果未知的操作，请核对效果后发送新的要求');
+    return this.send(botId,String(task.objective),text(clientId,200),sessionId,{conversationId,...(this.store.get('SELECT selection_json FROM task_model_selections WHERE task_id=?',taskId)?{modelSelection:JSON.parse(String(this.store.get('SELECT selection_json FROM task_model_selections WHERE task_id=?',taskId)!.selection_json))}:{})});
+  }
+  editTopic(botId: string, conversationId: string, messageId: string, content: string, clientId: string, sessionId=this.store.session) {
+    this.topic(botId,conversationId); content=text(content);clientId=text(clientId,200);
+    const digest=hash(canonical({conversationId,messageId,content}));
+    return this.store.transaction(()=>{
+      const edit=this.store.get('SELECT * FROM agent_topic_edits WHERE bot_id=? AND client_id=?',botId,clientId);
+      if(edit) { if(edit.request_hash!==digest) throw new Error('编辑请求标识已用于不同内容'); const replay=this.store.get('SELECT model_selection_json FROM agent_topic_inputs WHERE bot_id=? AND client_id=?',botId,clientId);return this.send(botId,content,clientId,sessionId,{conversationId,...(replay?.model_selection_json?{modelSelection:JSON.parse(String(replay.model_selection_json))}:{})}); }
+      const pending=this.store.get("SELECT * FROM agent_topic_inputs WHERE bot_id=? AND conversation_id=? AND message_id=? AND status='pending' AND task_id IS NULL",botId,conversationId,messageId);
+      if(!pending) throw new Error('只能编辑尚未开始的排队消息，执行后的操作须先核对');
+      this.store.run("UPDATE agent_topic_inputs SET status='cancelled' WHERE position=?",pending.position);
+      this.store.run("UPDATE agent_messages SET content='[已替换]' WHERE id=?",messageId);
+      const result=this.send(botId,content,clientId,sessionId,{conversationId,...(pending.model_selection_json?{modelSelection:JSON.parse(String(pending.model_selection_json))}:{})});
+      this.store.insert('agent_topic_edits',{bot_id:botId,client_id:clientId,request_hash:digest});
+      return result;
+    });
+  }
+  cancelMessage(botId:string,conversationId:string,messageId:string){
+    this.topic(botId,conversationId);
+    const input=this.store.get('SELECT * FROM agent_topic_inputs WHERE bot_id=? AND conversation_id=? AND message_id=?',botId,conversationId,messageId);
+    if(!input)throw new Error('话题输入不存在');
+    if(input.status==='pending')this.store.run("UPDATE agent_topic_inputs SET status='cancelled' WHERE position=?",input.position);
+    if(input.task_id){
+      const tree=this.store.all(`WITH RECURSIVE work(id) AS (SELECT ? UNION SELECT a.child_task_id FROM a2a_messages a JOIN work w ON a.parent_task_id=w.id UNION SELECT t.id FROM tasks t JOIN agent_jobs j ON t.conversation_id=j.conversation_id JOIN work w ON j.origin_task_id=w.id) SELECT id FROM work`,input.task_id);
+      for(const task of tree)if(this.store.get('SELECT id FROM tasks WHERE id=? AND ended_at IS NULL',task.id))this.runtime.cancel(String(task.id),'用户停止了这条消息的任务');
+      this.store.run('UPDATE agent_jobs SET stopped_at=? WHERE origin_task_id=? AND stopped_at IS NULL',now(),input.task_id);
+    }
+    this.runtime.changed();return {stopped:true,messageId};
+  }
+  cancelTopic(botId: string, conversationId: string) {
+    this.topic(botId,conversationId);
+    this.store.run("UPDATE agent_topic_inputs SET status='cancelled' WHERE conversation_id=? AND status='pending'",conversationId);
+    for(const task of this.store.all('SELECT id FROM tasks WHERE (conversation_id=? OR conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?)) AND ended_at IS NULL',conversationId,conversationId)) this.runtime.cancel(String(task.id),'用户停止了本话题');
+    this.store.run('UPDATE agent_jobs SET stopped_at=? WHERE conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?) AND stopped_at IS NULL',now(),conversationId);
+    this.runtime.changed(); return {stopped:true};
   }
   /** The user starts a new topic: the assistant's next input opens a new episode (the previous one is archived and folded). */
   newTopic(botId: string) {
@@ -257,6 +391,7 @@ export class AgentModule {
   /** Stops every unfinished piece of an assistant's work: its background jobs (marked stopped) and then the rest. */
   stopAll(botId: string, reason = "用户停止了全部工作") {
     this.ensure(botId);
+    this.store.run("UPDATE agent_topic_inputs SET status='cancelled' WHERE bot_id=? AND status='pending'",botId);
     // Finished jobs keep their outcome; only open ones (running, waiting for an answer, blocked...) are stopped.
     for (const job of this.jobs?.openFor(botId) ?? []) this.jobs?.stop(job.id, reason);
     for (const task of this.store.all("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL ORDER BY created_at", botId)) this.runtime.cancel(String(task.id), reason);
@@ -315,6 +450,7 @@ export class AgentModule {
   }
   context(botId: string, taskId: string) {
     const conversation = this.store.get('SELECT conversation_id FROM tasks WHERE id=?',taskId)?.conversation_id;
+    if(this.store.get('SELECT conversation_id FROM agent_topics WHERE conversation_id=?',conversation??null)) return JSON.stringify({conversationId:conversation,workingNote:this.store.get('SELECT content,version FROM conversation_working_notes WHERE conversation_id=?',conversation??null)??null});
     const checkpoint = this.store.get('SELECT id,summary FROM context_checkpoints WHERE bot_id=? AND conversation_id=? ORDER BY created_at DESC LIMIT 1',botId,conversation ?? null);
     // Full recent turns live in the persistent Pi projection. Of everything else only this conversation's working
     // note is here: other conversations, earlier messages and archives are recalled once per task for the user's
@@ -371,9 +507,10 @@ export class AgentModule {
     const after=this.store.all('SELECT * FROM agent_messages WHERE bot_id=? AND seq>=? ORDER BY seq LIMIT 60',botId,target.seq);
     return this.projectMessages([...before,...after]);
   }
-  read(botId: string, seq: number) {
+  read(botId: string, seq: number, conversationId?: string) {
     this.ensure(botId);
     if (!Number.isSafeInteger(seq) || seq < 0) throw new Error("读取位置无效");
+    if(conversationId) { this.topic(botId,conversationId); this.store.run('UPDATE agent_topics SET read_seq=MAX(read_seq,MIN(?,COALESCE((SELECT MAX(seq) FROM agent_messages WHERE conversation_id=?),0))) WHERE conversation_id=?',seq,conversationId,conversationId); return; }
     this.store.run("UPDATE agent_inboxes SET read_seq=MAX(read_seq,MIN(?,next_seq-1)) WHERE bot_id=?", seq, botId);
   }
   messages(botId: string, before?: number) {
@@ -446,6 +583,6 @@ export class AgentModule {
     });
   }
   contacts() {
-    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM agent_messages m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user') unread_count,(SELECT content FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
+    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM agent_messages m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT content FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM agent_messages WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
   }
 }

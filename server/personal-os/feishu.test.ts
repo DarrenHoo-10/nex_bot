@@ -12,13 +12,28 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 25_000; while (!await check()) { if (Date.now() > end) throw new Error("Feishu fixture timed out"); await new Promise((resolve) => setTimeout(resolve, 30)); } }
 
+async function startReachable<T extends { origin: string; close(): Promise<void> }>(start: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const service = await start();
+    try {
+      // This host's ephemeral pool includes ports rejected by Fetch. Probe before any chat operation.
+      const probe = await fetch(service.origin + "/health", { signal: AbortSignal.timeout(5_000) });
+      await probe.arrayBuffer();
+      return service;
+    } catch (error) {
+      await service.close();
+      if (attempt >= 8 || !(error instanceof Error && error.cause instanceof Error && error.cause.message === "bad port")) throw error;
+    }
+  }
+}
+
 async function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-feishu-fixture-")), key = randomBytes(32), token = "synthetic-owner";
   cleanup.push(async () => { if (path.dirname(root).toLowerCase() !== os.tmpdir().toLowerCase() || !path.basename(root).startsWith("nex-feishu-fixture-")) throw new Error("Unsafe cleanup"); rmSync(root, { recursive: true, force: true }); });
-  const fake = await startFakeFeishu(), model = await startFakeModel();
+  const fake = await startReachable(() => startFakeFeishu()), model = await startFakeModel();
   cleanup.push(() => fake.close(), () => model.close());
   const proxyFetch: typeof fetch = (input, init) => fetch(String(input).replaceAll("https://open.feishu.cn", fake.origin).replaceAll("https://accounts.feishu.cn", fake.origin), init);
-  const app = await createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, feishu: { registerApp: fake.registerApp, transport: fake.createTransport, fetchImpl: proxyFetch } });
+  const app = await startReachable(() => createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, feishu: { registerApp: fake.registerApp, transport: fake.createTransport, fetchImpl: proxyFetch } }));
   cleanup.push(() => app.close());
   app.store.saveConfig({ provider: "openai", endpoint: model.origin + "/v1", model: "fixture", apiKey: "synthetic-only" });
   app.store.createBot("秘书");
@@ -50,8 +65,8 @@ describe("feishu connector in disposable Core", () => {
     const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_1'")?.task_id);
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
     await until(() => f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("好的，已收到")));
-    expect(f.fake.sent[0]).toMatchObject({ path: "send" });
-    expect(f.fake.sent[0].body).toMatchObject({ receive_id: "oc_chat1", msg_type: "interactive" });
+    expect(f.fake.sent[0]).toMatchObject({ path: "reply" });
+    expect(f.fake.sent[0].body).toMatchObject({ receive_id: "oc_chat1", msg_type: "interactive",reply_in_thread:true });
   }, 60_000);
 
   it("dedupes message_id, ignores strangers and unmentioned group text, handles group mention", async () => {
@@ -77,7 +92,7 @@ describe("feishu connector in disposable Core", () => {
     await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_g1'")?.task_id);
     const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_g1'")?.task_id);
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
-    await until(() => f.fake.sent.some((entry) => entry.path === "reply" && JSON.stringify(entry.body).includes("群里回复")));
+    await until(() => f.fake.sent.some((entry) => ["reply","patch"].includes(entry.path) && JSON.stringify(entry.body).includes("群里回复")));
   }, 60_000);
 
   it("sends approval cards for Feishu tasks and only the owner's click decides", async () => {
@@ -210,10 +225,10 @@ describe("feishu connector in disposable Core", () => {
     const bind = await f.api("feishu/bind/start", { id: snapshot.apps[0].id });
     const code = String(bind.body.code);
     expect(String(f.app.store.get("SELECT bind_code FROM personal_feishu_apps")?.bind_code)).not.toBe(code);
-    f.fake.deliver("cli_manual", messageEvent({ messageId: "om_bind", chatId: "oc_bind", senderOpenId: "ou_newowner", content: JSON.stringify({ text: code }) }));
+    f.fake.deliver("cli_manual", messageEvent({ appId:"cli_manual",messageId: "om_bind", chatId: "oc_bind", senderOpenId: "ou_newowner", content: JSON.stringify({ text: code }) }));
     await until(async () => (await f.state()).apps[0].ownerBound === true);
     f.model.scripts.push({ kind: "openai-text", text: "绑定成功" });
-    f.fake.deliver("cli_manual", messageEvent({ messageId: "om_after", chatId: "oc_bind", senderOpenId: "ou_newowner", content: JSON.stringify({ text: "现在能听见吗" }) }));
+    f.fake.deliver("cli_manual", messageEvent({ appId:"cli_manual",messageId: "om_after", chatId: "oc_bind", senderOpenId: "ou_newowner", content: JSON.stringify({ text: "现在能听见吗" }) }));
     await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_after'")?.task_id);
   }, 60_000);
 

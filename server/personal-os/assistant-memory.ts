@@ -342,7 +342,7 @@ export class AssistantMemory {
     const botId = String(settings.bot_id);
     const imported = this.store.get('SELECT * FROM assistant_memory_imports WHERE bot_id=? ORDER BY rowid LIMIT 1', botId);
     const cursor = imported ? Number(imported.from_seq)-1 : Number(settings.cursor_seq), offset = imported ? Number(imported.offset) : Number(settings.cursor_offset);
-    const messages = this.store.all("SELECT * FROM agent_messages WHERE bot_id=? AND seq>=? AND seq<=? AND role IN ('user','assistant','peer') ORDER BY seq LIMIT 20", botId, cursor+(offset ? 0 : 1), imported?.to_seq ?? Number.MAX_SAFE_INTEGER);
+    const messages = this.store.all("SELECT * FROM agent_messages WHERE bot_id=? AND seq>=? AND seq<=? AND role IN ('user','assistant','peer') AND (source_key NOT LIKE 'stock-history:%' OR ?) ORDER BY seq LIMIT 20", botId, cursor+(offset ? 0 : 1), imported?.to_seq ?? Number.MAX_SAFE_INTEGER, imported?1:0);
     const batch: Array<{ id: string; role: string; text: string; at: number }> = []; const refs: Source[] = [];
     let remaining = Math.min(12000, Math.floor(this.store.modelLimitSettings({ ...this.store.modelConfig(botId), model: String(settings.model) || this.store.modelConfig().model }).contextWindow / 4));
     let nextSeq = cursor, nextOffset = offset;

@@ -460,6 +460,20 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
       this.db.exec(modelNameSchema);
       this.insert("schema_migrations", { version: 46, checksum: hash(modelNameSchema), applied_at: now() });
     });
+    if (!this.get('SELECT version FROM schema_migrations WHERE version=47')) this.transaction(() => {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS agent_topic_edits(bot_id TEXT NOT NULL REFERENCES bots(id),client_id TEXT NOT NULL,request_hash TEXT NOT NULL,PRIMARY KEY(bot_id,client_id)) STRICT;
+CREATE TABLE IF NOT EXISTS agent_topic_children(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),root_conversation_id TEXT NOT NULL REFERENCES conversations(id)) STRICT;
+CREATE TABLE IF NOT EXISTS agent_roles(workspace_id TEXT NOT NULL,owner_user_id TEXT NOT NULL,role TEXT NOT NULL,bot_id TEXT NOT NULL REFERENCES bots(id),PRIMARY KEY(workspace_id,owner_user_id,role)) STRICT;
+CREATE TABLE IF NOT EXISTS agent_topics(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),bot_id TEXT NOT NULL REFERENCES bots(id),audience TEXT NOT NULL CHECK(audience IN ('private','public')),source_context TEXT NOT NULL,read_seq INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOINCREMENT,bot_id TEXT NOT NULL REFERENCES bots(id),client_id TEXT NOT NULL,request_hash TEXT NOT NULL,conversation_id TEXT NOT NULL REFERENCES agent_topics(conversation_id),message_id TEXT NOT NULL,content TEXT NOT NULL,session_id TEXT NOT NULL,task_id TEXT REFERENCES tasks(id),status TEXT NOT NULL CHECK(status IN ('pending','accepted','cancelled')),UNIQUE(bot_id,client_id)) STRICT;`);
+    if (!this.all('PRAGMA table_info(agent_messages)').some(c => c.name === 'conversation_id')) this.db.exec('ALTER TABLE agent_messages ADD COLUMN conversation_id TEXT REFERENCES conversations(id)');
+    this.run('UPDATE agent_messages SET conversation_id=(SELECT conversation_id FROM tasks WHERE tasks.id=agent_messages.task_id) WHERE conversation_id IS NULL AND task_id IS NOT NULL');
+    this.db.exec('CREATE INDEX IF NOT EXISTS agent_messages_conversation ON agent_messages(conversation_id,seq); CREATE INDEX IF NOT EXISTS agent_topic_pending ON agent_topic_inputs(status,conversation_id,position);');
+    for(const table of ['agent_topics','agent_topic_inputs']) for(const operation of ['INSERT','UPDATE','DELETE']) this.db.exec(`CREATE TRIGGER IF NOT EXISTS sync_${table}_${operation} AFTER ${operation} ON ${table} BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
+      this.insert('schema_migrations',{version:47,checksum:hash('finance-topics-v1'),applied_at:now()});
+    });
+    if(!this.all('PRAGMA table_info(agent_topic_inputs)').some(column=>column.name==='model_selection_json'))this.db.exec('ALTER TABLE agent_topic_inputs ADD COLUMN model_selection_json TEXT');
+    this.db.exec('CREATE TABLE IF NOT EXISTS task_model_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id),selection_json TEXT NOT NULL) STRICT;');
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -742,6 +756,30 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
     const reasoning = resolveReasoning(selection?.reasoning == null ? null : String(selection.reasoning), this.modelOptions(String(usable.id), model).reasoning);
     return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(usable.version), connectionId: String(usable.id), reasoning };
   }
+  /** Resolve a turn override through the same owned provider/configuration entry points as normal chat. No secret is persisted. */
+  resolveInputModel(botId:string,value:unknown){
+    if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('单轮模型选择无效');
+    const input=value as Record<string,unknown>;
+    const connectionId=input.connectionId===undefined?this.botModelSelection(botId)?.selected_connection:text(input.connectionId,100);
+    if(!connectionId)throw new Error('请先配置模型连接');
+    const row=this.connection(connectionId);
+    if(!row||row.workspace_id!==this.workspace||row.owner_user_id!==this.owner||!row.enabled)throw new Error('单轮模型连接不可用');
+    const model=this.modelConfig(botId,{connectionId,...(input.model!==undefined&&input.model!==''?{model:text(input.model,200)}:{})});
+    const enabled=this.modelVisibility(connectionId).models;
+    if(enabled&&!enabled.includes(model.model))throw new Error('此模型未在本人连接中启用');
+    if(input.provider!==undefined&&input.provider!==model.provider||input.endpoint!==undefined&&input.endpoint!==model.endpoint)throw new Error('单轮模型连接已变化');
+    const reasoning=input.reasoning===undefined?model.reasoning:parseReasoningChoice(input.reasoning)!;
+    if(reasoning!=='off'&&!this.modelOptions(connectionId,model.model).reasoning.includes(reasoning))throw new Error('此模型不支持指定的思考强度');
+    return {connectionId,model:model.model,reasoning,provider:model.provider,endpoint:model.endpoint};
+  }
+  taskModelConfig(taskId:string){
+    const task=this.get('SELECT bot_id FROM tasks WHERE id=?',taskId);
+    if(!task)throw new Error('任务不存在');
+    const saved=this.get('SELECT selection_json FROM task_model_selections WHERE task_id=?',taskId);
+    if(!saved)return this.modelConfig(String(task.bot_id));
+    const selection=this.resolveInputModel(String(task.bot_id),JSON.parse(String(saved.selection_json)));
+    return {...this.modelConfig(String(task.bot_id),{connectionId:selection.connectionId,model:selection.model}),reasoning:selection.reasoning};
+  }
   createBot(name: string, instructions?: unknown) {
     const botId = id();
     this.transaction(() => {
@@ -765,14 +803,14 @@ CREATE INDEX IF NOT EXISTS assistant_usage_maintain ON assistant_usage(conversat
     });
     return conversationId;
   }
-  accept(conversationId: string, content: string, clientId: string, sessionId = this.session) {
-    content = text(content); clientId = text(clientId, 100);
+  accept(conversationId: string, content: string, clientId: string, sessionId = this.session, modelUse?:{connectionId?:string;model?:string}) {
+    content = text(content); clientId = text(clientId, 200);
     const requestHash = hash(content);
     const old = this.get("SELECT * FROM conversation_inputs WHERE conversation_id=? AND client_message_id=?", conversationId, clientId);
     if (old) { if (old.request_hash !== requestHash) throw new Error("消息标识已用于不同内容"); return String(old.task_id); }
     const conv = this.get("SELECT * FROM conversations WHERE id=? AND status='open'", conversationId);
     if (!conv) throw new Error("对话不存在");
-    this.modelConfig();
+    this.modelConfig(String(conv.bot_id),modelUse);
     return this.transaction(() => {
       let task = this.get("SELECT * FROM tasks WHERE conversation_id=? AND ended_at IS NULL", conversationId);
       let kind = "start";

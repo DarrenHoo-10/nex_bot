@@ -9,7 +9,7 @@ import { TopicAccess } from "./topic-access.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render", "tool.search"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "agent.feishuDelivery", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render", "tool.search"] as const;
 // Device binding, Agent policy and effect-specific approval remain independent.
 export const basicActions = [...actions];
 export function policyTools(policy: Row): string[] {
@@ -64,6 +64,9 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     text(args.message, 16_000);
     if (args.topic !== undefined) text(args.topic, 200);
     if (!store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", text(args.botId, 100), store.workspace, store.owner)) throw new Error("目标 Agent 不存在或已停用");
+  } else if (action === 'agent.feishuDelivery') {
+    if(!['list','upsert'].includes(String(args.operation))) throw new Error('投递操作无效');
+    if(args.operation==='upsert') {text(args.appId,200);text(args.chatId,200);text(args.instanceId,200);}
   } else if (action === "agent.create") {
     text(args.name, 80);
     if (args.instructions !== undefined) optionalText(args.instructions, 8000);

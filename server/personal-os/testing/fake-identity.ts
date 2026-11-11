@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 
 // Strict synthetic nex_user contract. Never opens a real account or service.
-export async function startFakeIdentity({ displayName = "合成用户" } = {}) {
+export async function startFakeIdentity({ displayName = "合成用户", hexCookies = false, includeRole = false } = {}) {
   const sessions = new Map<string, { subject: string; csrf: string; active: boolean }>();
   const state = { status: 200, loginCount: 0, logoutCount: 0, maxAge: 30 * 86400, logoutStatus: 204 };
   const server = createServer((request, response) => {
@@ -13,16 +13,16 @@ export async function startFakeIdentity({ displayName = "合成用户" } = {}) {
         let body = ""; for await (const chunk of request) body += chunk;
         const data = JSON.parse(body); state.loginCount++;
         if (!["owner@example.test", "other@example.test"].includes(data.email) || data.password !== " synthetic password ") { send(401); return; }
-        const token = randomBytes(32).toString("base64url"), csrf = randomBytes(24).toString("base64url"), subject = data.email === "owner@example.test" ? "synthetic-owner-uid" : "synthetic-other-uid";
+        const token = hexCookies ? randomBytes(32).toString("hex") : randomBytes(32).toString("base64url"), csrf = randomBytes(24).toString("base64url"), subject = data.email === "owner@example.test" ? "synthetic-owner-uid" : "synthetic-other-uid";
         sessions.set(token, { subject, csrf, active: true });
         response.setHeader("Set-Cookie", [`user_session=; HttpOnly; Max-Age=-1; Path=/`, `user_session=${token}; HttpOnly; SameSite=Lax; Domain=example.test; Path=/; Max-Age=${state.maxAge}`]);
-        send(200, { user: { userId: subject, displayName }, csrfToken: csrf }); return;
+        send(200, { user: { userId: subject, displayName, ...(includeRole ? {role:"user",handle:subject} : {}) }, csrfToken: csrf }); return;
       }
       const session = cookie ? sessions.get(cookie) : undefined;
       if (request.url === "/v1/session") {
         if (state.status !== 200) { send(state.status); return; }
         if (!session?.active) { send(401); return; }
-        send(200, { user: { userId: session.subject, displayName }, csrfToken: session.csrf }); return;
+        send(200, { user: { userId: session.subject, displayName, ...(includeRole ? {role:"user",handle:session.subject} : {}) }, csrfToken: session.csrf }); return;
       }
       if (request.url === "/v1/logout" && request.method === "POST") {
         state.logoutCount++;

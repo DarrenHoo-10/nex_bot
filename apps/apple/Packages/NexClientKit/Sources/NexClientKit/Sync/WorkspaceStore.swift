@@ -42,6 +42,7 @@ public final class WorkspaceStore {
     /// Human-readable status such as "正在重新同步…"; nil when healthy.
     public private(set) var notice: String?
     /// The bot whose conversation is kept in sync. Set with ``select(_:)``.
+    public private(set) var financeBotID: String?
     public private(set) var selectedBotID: String?
     public private(set) var sessions: [ClientSession] = []
     public private(set) var currentSessionID: String?
@@ -76,6 +77,18 @@ public final class WorkspaceStore {
 
     public init(client: CoreClient, timing: SyncTiming = SyncTiming()) {
         self.client = client; self.timing = timing
+    }
+
+    public func loadFinanceAssistant() async {
+        guard connection == .connected else { return }
+        let token = client.token
+        do {
+            let assistant = try await client.financeAssistant()
+            guard !ended, token == client.token, connection == .connected else { return }
+            financeBotID = assistant.botId
+            await refresh()
+            if selectedBotID == nil { select(assistant.botId) }
+        } catch { if selectedBotID == nil { select(bots.first?.id) } }
     }
 
     /// The (cached) conversation for a bot. Drafts and the send retry record live as long as the store.
@@ -267,7 +280,7 @@ public final class WorkspaceStore {
     /// Drops every cached message, streaming text and snapshot; in-flight responses become stale.
     func clearContent() {
         serial += 1
-        state = nil; sync = nil; sessions = []
+        state = nil; sync = nil; sessions = []; financeBotID = nil
         for c in conversations.values { c.reset() }
     }
 

@@ -54,7 +54,9 @@ final class Navigation {
     @ViewBuilder
     func destination(for route: Route, model: AppModel, workspace: WorkspaceStore) -> some View {
         switch route {
-        case .chat(let id): ChatView(workspace: workspace, botID: id)
+        case .chat(let id):
+            if id == workspace.financeBotID { FinanceTopicsView(workspace: workspace, botID: id) }
+            else { ChatView(workspace: workspace, botID: id) }
         case .approvals: ApprovalsView(workspace: workspace)
         case .todos: TodosView(workspace: workspace) { id in workspace.select(id); self.openChat(id) }.toolbar(.visible, for: .navigationBar)
         case .settings: SettingsView(model: model, workspace: workspace)

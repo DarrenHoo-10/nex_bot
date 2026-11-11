@@ -80,6 +80,28 @@ async function enter(options: KeyboardEventInit = {}) {
   return event;
 }
 
+it("opens the authenticated Feishu settings from a Stock management link", async () => {
+  const previous = location.href;
+  try {
+    history.replaceState(null, "", "?settings=feishu");
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "state") return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [] };
+      if (route === "clients") return { sessions: [] };
+      if (route === "feishu/deliveries") return { parts: [] };
+      if (route.startsWith("feishu/")) return [];
+      return {};
+    });
+    await act(async () => { root.render(createElement(AgentDesktop, { key: "from-stock" })); });
+    expect(container.querySelector('.preferences-nav [aria-current="page"]')?.textContent).toBe("连接器");
+    const panel = container.querySelector('section[aria-label="连接器"]:not([hidden])');
+    expect(panel?.querySelector('section[aria-label="飞书"]')).toBeTruthy();
+    expect(fixture.api.mock.calls.some(([route, body]) => route.startsWith("feishu/") && body)).toBe(false);
+  } finally {
+    history.replaceState(null, "", previous);
+  }
+});
+
 describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("reuses unchanged rich history while typing, sending and syncing", async () => {
     const content = "## 已有结果\n\n| 项目 | 状态 |\n| --- | --- |\n| 设备 | 在线 |";

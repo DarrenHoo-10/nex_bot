@@ -25,17 +25,24 @@ export interface FeishuTransport {
 }
 export interface TransportHandlers {
   /** Must not block: the SDK acks the event when the handler returns. */
-  onMessage(event: unknown): void;
+  onMessage(event: unknown): void | Promise<void>;
   onCardAction(event: unknown): Promise<unknown>;
 }
 export type TransportFactory = (app: { appId: string; appSecret: string; brand: Brand }, handlers: TransportHandlers) => Promise<FeishuTransport>;
+
+/** The SDK invokes v2 handlers with the event body; fixture/webhook callers may supply the envelope. */
+export function normalizeFeishuEvent(raw: unknown): Record<string, unknown> {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const nested = value.event;
+  return nested && typeof nested === "object" ? nested as Record<string, unknown> : value;
+}
 
 /** 真实传输：官方 SDK 长连接（WSClient）。SDK 自带断线重连；进程内只持有一个连接。 */
 export const wsTransportFactory: TransportFactory = async (app, handlers) => {
   const Lark = await import("@larksuiteoapi/node-sdk");
   const dispatcher = new Lark.EventDispatcher({}).register({
-    "im.message.receive_v1": (data: unknown) => { handlers.onMessage(data); },
-    "card.action.trigger": (data: unknown) => handlers.onCardAction(data),
+    "im.message.receive_v1": (data: unknown) => handlers.onMessage(normalizeFeishuEvent(data)),
+    "card.action.trigger": (data: unknown) => handlers.onCardAction(normalizeFeishuEvent(data)),
   } as never);
   const client = new Lark.WSClient({ appId: app.appId, appSecret: app.appSecret, domain: app.brand === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu, loggerLevel: Lark.LoggerLevel.error });
   await client.start({ eventDispatcher: dispatcher });

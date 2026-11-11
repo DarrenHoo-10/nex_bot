@@ -23,8 +23,8 @@ import { directory } from "./policy.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { ExternalMemoryPlugin } from "./memory-plugin.ts";
 import { ConnectorModule } from "./connectors.ts";
-import { FeishuModule, type RegisterAppFn } from "./feishu/module.ts";
-import { sdkRegisterApp, wsTransportFactory, type TransportFactory } from "./feishu/transport.ts";
+import { FeishuModule, type FeishuModuleOptions } from "./feishu/module.ts";
+import { sdkRegisterApp, wsTransportFactory } from "./feishu/transport.ts";
 import { GOOGLE_CALLBACK, type GmailConfiguration } from "./gmail-provider.ts";
 import type { AttachmentObjects } from './attachment-objects.ts';
 export { OssAttachmentObjects } from './attachment-objects.ts';
@@ -35,28 +35,49 @@ import { ClientDownloadsSource, type ClientDownloadsOptions } from "./client-dow
 import { approvalRuleLabel, approvalRuleScope, approvalRules, revokeApprovalRule } from "./approval-rules.ts";
 import { ClientUpdateSource, type OssReleaseMirror } from "./client-updates.ts";
 import type { RetrievalDefaults } from "./retrieval-config.ts";
+import {StockHistory} from "./stock-history.ts";
+import { StockFinance, stockConnectionFromEnv, type StockConnection } from "./stock-finance.ts";
 
-export interface AppOptions { /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch } }
+export interface AppOptions { stock?: StockConnection; /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; sharedFeishuAppId?: string; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: FeishuModuleOptions }
+
 
 export async function createPersonalApp(options: AppOptions) {
   if (options.publicOrigin) { const publicUrl = new URL(options.publicOrigin); if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) throw new Error("公共 Core 地址须为 HTTPS 根地址"); }
   const store = new CoreStore(options.dir, options.key, options.token, options.modelCatalog);
   store.attachmentObjects = options.attachmentObjects;
   const clients = new ClientIdentity(store, options.publicCoreId), sync = new ClientSync(store);
+  const finance = new StockFinance(store, clients, options.stock ?? stockConnectionFromEnv());
   const downloads = new ClientDownloadsSource(options.clientDownloads), updates = new ClientUpdateSource(options.releaseMirror);
   const identity = options.identity === false ? undefined : new CoreIdentity(store, clients, options.identity?.fixtureOrigin);
   const authenticate = async (token: string) => {
-    const session = identity ? await identity.authenticate(token) : clients.authenticate(token);
+    if (token.startsWith("stock_")) return finance.authenticate(token);
+    const session = identity ? await identity.authenticate(token, finance.hasBinding()) : clients.authenticate(token);
     return session;
   };
   const streams = new Map<ServerResponse, string>();
+  const verifyingStreams = new Set<ServerResponse>();
   let closing = false;
   let feishu!: FeishuModule;
+  let feishuAccounts: ((action:string,data:Record<string,unknown>)=>unknown|Promise<unknown>) | undefined;
   const changed = () => {
     if (closing) return;
     sync.prune(); const snapshot = sync.snapshot();
     for (const [response, token] of streams) {
-      if (!(identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
+      if (finance.hasBinding() && identity) {
+        if (!verifyingStreams.has(response)) {
+          verifyingStreams.add(response);
+          void authenticate(token).catch(() => undefined).then(verified => {
+            if (closing || !streams.has(response) || response.destroyed) return;
+            if (!verified) {
+              response.end("event: revoked\ndata: {}\n\n"); streams.delete(response); return;
+            }
+            const latest = sync.snapshot();
+            response.write(`id: ${latest.cursor}\nevent: change\ndata: ${JSON.stringify(latest)}\n\n`);
+          }).finally(() => verifyingStreams.delete(response));
+        }
+        continue;
+      }
+      if (!(token.startsWith("stock_") ? finance.locallyAllowed(token) : identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
       else response.write(`id: ${snapshot.cursor}\nevent: change\ndata: ${JSON.stringify(snapshot)}\n\n`);
     }
     feishu?.scanApprovals();
@@ -64,10 +85,10 @@ export async function createPersonalApp(options: AppOptions) {
   const runtime = new TaskRuntime(store, changed);
   runtime.memory.retrieval.config.defaults = options.retrieval ?? {};
   const connectors = new ConnectorModule(store, changed, options.gmail);
-  runtime.connectorExecutor = (call, args, authorize) => feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
+  runtime.connectorExecutor = (call, args, authorize) => finance.handles(args) ? finance.execute(call, args, authorize, runtime.isTopicTask(String(call.task_id))?.audience === "public" ? "public" : "private") : feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
-    runtime.authorizeTask = (task) => identity.authorizeTask(task);
+    runtime.authorizeTask = (task) => finance.hasSession(String(task.authorized_session_id)) ? finance.authorizeTask(String(task.authorized_session_id)) : identity.authorizeTask(task, finance.hasBinding());
     identity.onSessionLost = (sessionId) => {
       connectors.oauth.cancelSession(sessionId);
       for (const task of store.all("SELECT id FROM tasks WHERE authorized_session_id=? AND ended_at IS NULL", sessionId)) runtime.cancel(String(task.id), "登录失效或无法验证，任务已停止");
@@ -78,12 +99,16 @@ export async function createPersonalApp(options: AppOptions) {
     };
   }
   if (identity) {
-    runtime.memory.ledger.authorizeWork = () => identity.authorizeTask({ authorized_session_id: store.session });
-    runtime.memory.personal.authorize = () => identity.authorizeTask({ authorized_session_id: store.session });
+    runtime.memory.ledger.authorizeWork = () => identity.authorizeTask({ authorized_session_id: store.session }, finance.hasBinding());
+    runtime.memory.personal.authorize = () => identity.authorizeTask({ authorized_session_id: store.session }, finance.hasBinding());
   }
   const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
 
   const agents = new AgentModule(store, runtime);
+  const stockHistory=new StockHistory(store,agents,runtime,finance);
+  finance.onHistorySession=(sessionId)=>stockHistory.schedule(sessionId);
+  runtime.prepareConversation=(conversationId)=>stockHistory.prepare(conversationId);
+  stockHistory.start();
   runtime.memory.retrieval.resolveEntry = (botId, entryId) => {
     const [entry] = agents.search(botId, `entry:${entryId}`) as Array<{ id?: string; content?: unknown }>;
     return entry && typeof entry.content === "string" ? { id: entryId, content: entry.content } : undefined;
@@ -96,17 +121,19 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.jobExecutor = (call, args) => jobs.tool(call, args);
   runtime.todoExecutor = (call, args) => todos.tool(call, args);
   runtime.routineExecutor = (call, args) => routines.tool(call, args);
-  runtime.agentExecutor = (call, args) => agents.tool(call, args);
+  runtime.agentExecutor = (call, args) => args.action === "agent.feishuDelivery" ? feishu.manageDelivery(call,args) : agents.tool(call, args);
   // A change of who may see a topic is told in the conversation where the user asked for it.
   runtime.memory.personal.tree.notify = (botId, taskId, text, key) => agents.publish(botId, "system", "activity", text, key, taskId);
   feishu = new FeishuModule(store, changed, agents, runtime, {
     ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
+    ownershipAllowed: options.feishu?.ownershipAllowed ?? ((appId: string) => finance.mayUseChannel(appId)),
     grantTools: (connectorId, version, botId, tools) => { connectors.grant({ id: connectorId, version, botId, tools }); },
   });
+  finance.startReports(report => feishu.ingestReport(report));
   if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
-  agents.onPublished = (botId) => {
+  agents.onPublished = (botId, publication) => {
     if (closing) return;
-    feishu.onPublished(botId);
+    feishu.onPublished(botId,publication);
     const unread = agents.contacts().reduce((count, bot) => count + Number(bot.unread_count), 0);
     process.send?.({ type: "inbox", unread, botId, name: store.get("SELECT name FROM bots WHERE id=?", botId)?.name });
   };
@@ -121,7 +148,7 @@ export async function createPersonalApp(options: AppOptions) {
   gateway.onCallSettled = (callId) => jobs.callSettled(callId);
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
   // Device calls are marked unsettled first, so a lease whose call the device has not confirmed stays held.
-  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); jobs.releaseLeases(taskId); connectors.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
+  runtime.onCancel = (taskId) => { gateway.cancelTask(taskId); jobs.releaseLeases(taskId); connectors.cancelTask(taskId); finance.cancelTask(taskId); feishu?.cancelTask(taskId); runtime.memory.ledger.client?.cancelTask(taskId); };
   runtime.deviceDirectory = () => gateway.inventory();
   const node = new DeviceNode(store, changed, options.hostDevice !== false);
   function json(response: ServerResponse, status: number, value: unknown) {
@@ -186,7 +213,7 @@ export async function createPersonalApp(options: AppOptions) {
       for (const worker of runtime.workers.values()) {
         if (closing) return;
         const task = store.get("SELECT * FROM tasks WHERE id=?", worker.taskId);
-        if (task && !await identity.authorizeTask(task).catch(() => false)) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
+        if (task && !await runtime.authorizeTask!(task).catch(() => false)) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
       }
     })().catch(() => {}).finally(() => { checkingSessions = false; });
   }, 15_000); heartbeat.unref();
@@ -215,6 +242,11 @@ export async function createPersonalApp(options: AppOptions) {
     if (mutating && request.headers.origin && request.headers.origin !== requestOrigin) { json(response, 403, { error: "Invalid origin" }); return; }
     const cookieValue = (name: string) => request.headers.cookie?.split(";").map((v) => v.trim()).find((v) => v.startsWith(name + "="))?.slice(name.length + 1) ?? "";
     const token = request.headers.authorization?.replace(/^Bearer /, "") ?? cookieValue("nex");
+    if (url.pathname === "/api/finance/exchange" && request.method === "POST") {
+      if (request.headers.origin || request.headers["sec-fetch-site"]) throw new IdentityError(403, "金融会话交换仅供服务端使用");
+      const exchange = await finance.exchange(request.headers.authorization, await body(request), () => agents.finance().botId);
+      changed(); json(response, 200, exchange); return;
+    }
     if (url.pathname === GOOGLE_CALLBACK && request.method === "GET") {
       let connected = false;
       try { await connectors.oauth.callback(url.searchParams); connected = true; } catch { /* Details are available only to the initiating authenticated client. */ }
@@ -292,6 +324,37 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname.startsWith("/api/")) {
       const session = await authenticate(token);
       if (!session) { json(response, 401, { error: "Unauthorized" }); return; }
+      if (finance.hasSession(String(session.id))) {
+        const botId = agents.finance().botId;
+        const route = request.method + " " + url.pathname;
+        const get = ["GET /api/agents/topics", "GET /api/agents/messages", "GET /api/agents/tasks"];
+        const post = ["POST /api/agents/input", "POST /api/agents/read", "POST /api/agents/cancel", "POST /api/agents/retry", "POST /api/agents/edit"];
+        const scopedFinance = ["GET /api/agents/finance", "GET /api/finance/models", "GET /api/finance/alias",
+          "GET /api/finance/aliases", "GET /api/finance/alias/context", "POST /api/finance/alias",
+          "POST /api/finance/alias/compact", "POST /api/finance/alias/delete"];
+        const allowed = get.includes(route) ? url.searchParams.get("bot") === botId : post.includes(route) ? (await body(request)).botId === botId :
+          route === "POST /api/bots/model" ? (await body(request)).id === botId : scopedFinance.includes(route);
+        if (!allowed) throw new IdentityError(403, "此委托只可访问本人的金融助手");
+      }
+      if (url.pathname === "/api/finance/models" && request.method === "GET") {
+        const {botId} = agents.finance();
+        const profile = store.get("SELECT version FROM bots WHERE id=?", botId);
+        json(response, 200, {botId, version: profile?.version, selection: store.botModelSelection(botId), connections: store.connections()}); return;
+      }
+      if (url.pathname === "/api/finance/channel") {
+        const appId = finance.config?.managedAppId;
+        if (!appId || !store.get("SELECT connector_id FROM personal_feishu_apps WHERE app_id=?", appId) || session.user_id !== store.owner || finance.hasSession(String(session.id))) throw new IdentityError(403, "仅受管飞书应用的工作区主人可以移交通道");
+        if (request.method === "GET") {
+          json(response, 200, {...await finance.channelOwnership(), reports: finance.reportStatus}); return;
+        }
+        if (request.method !== "POST") throw new IdentityError(405, "请求方法无效");
+        const input = await body(request), current = await finance.channelOwnership();
+        if (current.version !== input.expectedVersion || input.appId !== appId) throw new IdentityError(409, "应用或版本已变化");
+        if (current.owner === "core" && input.owner === "paused") await feishu.quiesceApp(appId);
+        try { const result = await finance.changeChannel(input.expectedVersion, input.owner); if (result.owner === "core") await feishu.resumeApp(appId); json(response, 200, result); }
+        catch (error) { if ((await finance.channelOwnership()).owner === "core") await feishu.resumeApp(appId); throw error; }
+        return;
+      }
       if (url.pathname.startsWith("/api/connectors/") && session.user_id !== store.owner) { json(response, 403, { error: "此账号没有管理连接器的权限" }); return; }
       if (url.pathname === "/api/connectors/oauth/status" && request.method === "GET") { json(response, 200, connectors.oauth.status(text(url.searchParams.get("id"), 100), String(session.id))); return; }
       if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
@@ -318,6 +381,13 @@ export async function createPersonalApp(options: AppOptions) {
         if (session.user_id !== store.owner) { json(response,403,{error:"此账号没有管理待办的权限"});return; }
         if (url.pathname === "/api/todos" && request.method === "GET") { json(response,200,{items:todos.list()});return; }
       }
+      if(url.pathname === "/api/feishu/destinations" && request.method === "GET"){json(response,200,feishu.destinations());return;}
+      if(url.pathname === "/api/feishu/subscriptions" && request.method === "GET") { json(response,200,feishu.subscriptions());return; }
+      if(url.pathname === "/api/feishu/deliveries" && request.method === "GET") {
+        if(session.user_id!==store.owner){json(response,403,{error:"仅主人可查看投递对账"});return;}
+        json(response,200,{parts:feishu.deliveries()});return;
+      }
+      if(url.pathname === "/api/feishu/accounts" && request.method === "GET") {json(response,200,await feishuAccounts?.("list",{}) ?? []);return;}
       if (url.pathname === "/api/state") {
         const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
         json(response, 200, stateBody(view, requestOrigin)); return;
@@ -327,6 +397,24 @@ export async function createPersonalApp(options: AppOptions) {
         const result=agents.searchConversations(text(url.searchParams.get('q'),200),url.searchParams.has('before')?Number(url.searchParams.get('before')):undefined);
         json(response,200,{...result,sync:sync.snapshot()});return;
       }
+      if(url.pathname==='/api/finance/aliases'&&request.method==='GET'){json(response,200,await stockHistory.list(String(session.id)));return;}
+      if(url.pathname==='/api/finance/alias/context'&&request.method==='GET'){json(response,200,await stockHistory.context(String(session.id),text(url.searchParams.get('sessionId'),200)));return;}
+      if(url.pathname==='/api/finance/alias'&&request.method==='GET'){
+        const before=url.searchParams.has('before')?Number(url.searchParams.get('before')):undefined,after=url.searchParams.has('after')?Number(url.searchParams.get('after')):undefined;
+        if(before!==undefined&&(!Number.isSafeInteger(before)||before<=0)||after!==undefined&&(!Number.isSafeInteger(after)||after<0||before!==undefined))throw new Error('历史消息位置无效');
+        json(response,200,await stockHistory.get(String(session.id),text(url.searchParams.get('sessionId'),200),before,after));return;
+      }
+      if (url.pathname === '/api/agents/tasks' && request.method === 'GET') { json(response,200,{tasks:agents.topicTasks(text(url.searchParams.get('bot'),100),text(url.searchParams.get('conversationId'),100))}); return; }
+      if (url.pathname === '/api/agents/finance' && request.method === 'GET') {
+        const result = agents.finance();
+        if (finance.hasBinding()) stockHistory.schedule(String(session.id));
+        json(response, 200, result); return;
+      }
+      if (url.pathname === '/api/agents/topics' && request.method === 'GET') {
+        const botId = text(url.searchParams.get('bot'), 100);
+        if (finance.hasBinding() && agents.finance().botId === botId) stockHistory.schedule(String(session.id));
+        json(response, 200, {topics: agents.topics(botId)}); return;
+      }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
@@ -334,8 +422,10 @@ export async function createPersonalApp(options: AppOptions) {
         if (after !== undefined && (!Number.isSafeInteger(after) || after < 0 || before !== undefined)) throw new Error("消息位置无效");
         const around=url.searchParams.get('around');
         if(around&&(before!==undefined||after!==undefined))throw new Error('消息位置无效');
-        const messages = around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before) : agents.messagesAfter(botId, after);
-        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && messages.length === 200, streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT t.bot_id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='owner'", w.taskId)?.bot_id === botId).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
+        const conversationId=url.searchParams.get('conversationId');
+        if(conversationId && around) throw new Error('话题内不支持 around');
+        const messages = conversationId ? agents.topicMessages(botId,text(conversationId,100),before,after) : around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before) : agents.messagesAfter(botId, after);
+        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && messages.length === 200, streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT t.bot_id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='owner'", w.taskId)?.bot_id === botId && (!conversationId || store.get("SELECT conversation_id FROM tasks WHERE id=?",w.taskId)?.conversation_id===conversationId)).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
       }
       if (url.pathname === "/api/routines/occurrence" && request.method === "GET") {
         json(response, 200, routines.occurrence(text(url.searchParams.get("id"), 256))); return;
@@ -405,10 +495,27 @@ export async function createPersonalApp(options: AppOptions) {
       }
       if (url.pathname === "/api/connectors/oauth/cancel") { json(response, 200, connectors.oauth.cancel(text(data.id, 100), String(session.id))); return; }
       if (url.pathname === "/api/connectors/save") { json(response, 200, connectors.save(data)); return; }
-      if (url.pathname === "/api/connectors/test") { json(response, 200, await connectors.test(data, async () => { if (!await authenticate(token)) throw new IdentityError(401, "登录已失效"); })); return; }
+      if (url.pathname === "/api/connectors/test") {
+        const authorize = async () => { if (!await authenticate(token)) throw new IdentityError(401, "登录已失效"); };
+        const result = finance.handles({connectorId: data.id})
+          ? await finance.testConnector(String(data.id), data.version, authorize)
+          : await connectors.test(data, authorize);
+        changed(); json(response, 200, result); return;
+      }
       if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, await connectors.remove(data)); return; }
+      if(url.pathname === "/api/feishu/subscriptions") {json(response,200,feishu.updateSubscription(data));return;}
+      if(url.pathname === "/api/feishu/deliveries/reconcile") {
+        if(session.user_id!==store.owner){json(response,403,{error:"仅主人可处理投递对账"});return;}
+        json(response,200,await feishu.reconcileDelivery(data,String(session.user_id),async()=>{
+          const current=await authenticate(token);
+          if(!current || current.user_id!==store.owner)throw new IdentityError(401,"登录已失效，请重新登录");
+        }));return;
+      }
+      if(["/api/feishu/accounts/bind","/api/feishu/accounts/unbind","/api/feishu/accounts/claim"].includes(url.pathname)) {
+        if(!feishuAccounts)throw new Error("账号路由未启用");json(response,200,await feishuAccounts(url.pathname.split("/").at(-1)!,data));return;
+      }
       if (url.pathname === "/api/feishu/register/start") { json(response, 200, feishu.startRegister(data)); return; }
       if (url.pathname === "/api/feishu/register/cancel") { feishu.cancelRegister(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/feishu/save") { json(response, 200, feishu.save(data)); return; }
@@ -426,17 +533,24 @@ export async function createPersonalApp(options: AppOptions) {
         json(response, 410, { error: '请刷新页面，从现有模型列表选择生图模型' }); return;
       }
       if (url.pathname === "/api/attachments") { const file = files.upload(data, String(session.id)); await files.persist(file.id); if (!await authenticate(token)) { json(response, 401, { error: "Unauthorized" }); return; } json(response, 200, file); return; }
+      if(url.pathname==='/api/finance/alias'){json(response,202,await stockHistory.send(String(session.id),data));return;}
+      if(url.pathname==='/api/finance/alias/compact'){json(response,200,await stockHistory.compact(String(session.id),text(data.sessionId,200)));return;}
+      if(url.pathname==='/api/finance/alias/delete'){json(response,200,await stockHistory.remove(String(session.id),text(data.sessionId,200)));return;}
       if (url.pathname === "/api/agents/input") {
         const botId = text(data.botId, 100), clientId = text(data.clientId, 200), attachments = data.attachments ?? [];
+        if(data.newConversation!==undefined&&typeof data.newConversation!=='boolean'||data.conversationId!==undefined&&typeof data.conversationId!=='string'||data.sourceContext!==undefined&&(!data.sourceContext||typeof data.sourceContext!=='object'||Array.isArray(data.sourceContext))) throw new Error('话题参数无效');
         const links = files.references(botId, attachments, String(session.id));
         const content = text(`${typeof data.text === "string" ? data.text.trim() : ""}${links ? "\n\n" + links : ""}`);
-        const result = store.transaction(() => { const sent = agents.send(botId, content, clientId, String(session.id)); files.bind(attachments as string[], botId, clientId); return sent; });
+        const result = store.transaction(() => { const sent = agents.send(botId, content, clientId, String(session.id), { ...(data.newConversation===true ? {newConversation:true} : {}), ...(typeof data.conversationId==="string" ? {conversationId:data.conversationId} : {}), ...(data.sourceContext && typeof data.sourceContext==="object" && !Array.isArray(data.sourceContext) ? {sourceContext:data.sourceContext as Record<string,unknown>} : {}), ...(data.audience ? {audience:data.audience as "private"|"public"} : {}) }); files.bind(attachments as string[], botId, clientId); return sent; });
         json(response, 202, result); return;
       }
       if (url.pathname === "/api/jobs/input") { json(response, 202, jobs.input(text(data.jobId, 100), text(data.text), text(data.clientId, 100), "direct", String(session.id))); return; }
       if (url.pathname === "/api/jobs/stop") { json(response, 200, jobs.stop(text(data.jobId, 100))); return; }
+      if (url.pathname === '/api/agents/retry') { json(response,202,agents.retryTopic(text(data.botId,100),text(data.conversationId,100),text(data.taskId,100),text(data.clientId,200),String(session.id))); return; }
+      if (url.pathname === '/api/agents/edit') { json(response,202,agents.editTopic(text(data.botId,100),text(data.conversationId,100),text(data.messageId,100),text(data.text),text(data.clientId,200),String(session.id))); return; }
+      if (url.pathname === '/api/agents/cancel') { json(response,200,typeof data.messageId==='string'?agents.cancelMessage(text(data.botId,100),text(data.conversationId,100),text(data.messageId,100)):agents.cancelTopic(text(data.botId,100),text(data.conversationId,100))); return; }
       if (url.pathname === "/api/agents/stop-all") { json(response, 200, agents.stopAll(text(data.botId, 100))); return; }
-      if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq)); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/agents/read") { agents.read(text(data.botId, 100), Number(data.seq), typeof data.conversationId==="string" ? text(data.conversationId,100) : undefined); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/agents/topic") { json(response, 200, agents.newTopic(text(data.botId, 100))); return; }
       if (url.pathname === "/api/agents/messages/image/delete") {
         const result = await files.deleteMessageImage(text(data.botId, 100), text(data.messageId, 100), text(data.attachmentId, 100));
@@ -590,13 +704,14 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
   archiveTimer?.unref(); archive();
-  return { server, store, runtime, agents, routines, jobs, todos, gateway, node, memoryPlugin, identity, connectors, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  if(!options.accountWorkspaces) feishu.start();
+  return { server, store, runtime, agents, routines, jobs, todos, gateway, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
-    closing = true; clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob;
+    closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob;
     await identity?.close();
     await heartbeatJob;
     routines.close();
-    await feishu.close(); await connectors.close(); await memoryPlugin.close();
+    await finance.close(); await stockHistory.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close();
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();

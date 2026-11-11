@@ -28,7 +28,8 @@ struct MainView: View {
                     if ui.todosVisible {
                         TodosView(workspace: workspace) { id in ui.todosVisible = false; workspace.select(id) }
                     } else if let id = workspace.selectedBotID, workspace.bot(id) != nil {
-                        ConversationView(workspace: workspace, botID: id).id(id)
+                        if id == workspace.financeBotID { FinanceTopicsView(workspace: workspace, botID: id).id(id) }
+                        else { ConversationView(workspace: workspace, botID: id).id(id) }
                     } else {
                         if workspace.bots.isEmpty && workspace.state != nil { NoAgentsWelcome() }
                         else { EmptyChat(noAgents: false) }
@@ -57,9 +58,7 @@ struct MainView: View {
         #endif
         .onAppear { AppUpdater.shared.start { workspace.client } }
         .onDisappear { AppUpdater.shared.stop() }
-        .onChange(of: workspace.bots.first?.id, initial: true) {
-            if workspace.selectedBotID == nil, let first = workspace.bots.first { workspace.select(first.id) }
-        }
+        .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
     }
 
     /// Click-away layer plus the account menu card above the account button, as in the web sidebar.

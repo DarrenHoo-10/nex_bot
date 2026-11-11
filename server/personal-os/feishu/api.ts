@@ -63,10 +63,11 @@ export class FeishuApi {
     this.tokens.set(app.appId, { token, expiresAt: Date.now() + expire * 1000 });
     return token;
   }
-  async request<T = Record<string, unknown>>(app: FeishuCredentials, method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+  async request<T = Record<string, unknown>>(app: FeishuCredentials, method: "GET" | "POST" | "PUT" | "PATCH", path: string, body?: unknown, beforeSend?: () => void): Promise<T> {
     for (let attempt = 0;; attempt++) {
       await this.gate(app.appId).wait();
       const token = await this.tenantToken(app);
+      beforeSend?.();
       const response = await this.fetchImpl(`${feishuOrigins(app.brand).open}${path}${path.includes("?") ? "&" : "?"}lang=zh_cn`, {
         method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body),
       }).catch(async (error) => { if (attempt >= 2) throw error; await sleep(500 * 2 ** attempt); return undefined; });
@@ -94,7 +95,7 @@ export class FeishuApi {
   }
 
   /** 用户身份调用：与 request 相同的限流与重试，Bearer 换成 user_access_token。 */
-  async userRequest<T = Record<string, unknown>>(app: FeishuCredentials, userToken: string, method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+  async userRequest<T = Record<string, unknown>>(app: FeishuCredentials, userToken: string, method: "GET" | "POST" | "PUT" | "PATCH", path: string, body?: unknown): Promise<T> {
     for (let attempt = 0;; attempt++) {
       await this.gate(app.appId).wait();
       const response = await this.fetchImpl(`${feishuOrigins(app.brand).open}${path}${path.includes("?") ? "&" : "?"}lang=zh_cn`, {

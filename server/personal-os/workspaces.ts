@@ -5,6 +5,7 @@ import { createPersonalApp, type AppOptions } from "./index.ts";
 import { hash } from "./store.ts";
 import { IdentityError, type UpstreamSession } from "./identity-provider.ts";
 import { requestBody } from "./http-body.ts";
+import { FeishuWorkspaceRouter } from "./feishu/workspace-router.ts";
 import { GOOGLE_CALLBACK } from "./gmail-provider.ts";
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
@@ -21,6 +22,14 @@ export async function createWorkspaceService(options: AppOptions) {
   const workspaceKey = (subject: string) => hash(JSON.stringify([issuer, subject]));
   let closing = false;
   const apps = () => [primary, ...workspaces.values()];
+  const feishuRouter=new FeishuWorkspaceRouter(primary.store,apps);
+  feishuRouter.setSharedApp(options.sharedFeishuAppId ?? options.stock?.managedAppId ?? process.env.NEX_CORE_STOCK_FEISHU_APP_ID);
+  function installFeishu(app:App) {
+    feishuRouter.install(app);
+    app.setFeishuAccounts((action,data)=> action==='list'?feishuRouter.appsFor(app):action==='bind'?feishuRouter.startBinding(app,data):action==='unbind'?feishuRouter.unbind(app,data):feishuRouter.claim(app,data));
+  }
+  installFeishu(primary);
+  const feishuRecovery=setInterval(()=>{if(!closing)void feishuRouter.recover();},1000);feishuRecovery.unref();
   function existingSubject(app: App) {
     return app.store.get("SELECT e.subject FROM external_identities e JOIN identity_provider p ON p.external_identity_id=e.id WHERE e.issuer=? AND e.status='active'", issuer)?.subject;
   }
@@ -34,10 +43,10 @@ export async function createWorkspaceService(options: AppOptions) {
       // Subject-derived directory names are server-owned; never accept a path from HTTP.
       const keyMaterial = createHmac("sha256", options.key).update("nexbot-workspace-v1:" + key).digest();
       const app = await createPersonalApp({ ...options, dir, key: keyMaterial, token: randomBytes(32).toString("base64url"),
-        listen: false, serviceOrigin: primary.origin, publicCoreId, hostDevice: false });
+        listen: false, serviceOrigin: primary.origin, publicCoreId, hostDevice: false,accountWorkspaces:true });
       const subject = existingSubject(app);
       if (subject && workspaceKey(String(subject)) !== key) { await app.close(); throw new Error("工作区身份索引不一致"); }
-      workspaces.set(key, app); return app;
+      workspaces.set(key, app); installFeishu(app); app.feishu.start(); return app;
     })();
     pending.set(key, promise);
     try { return await promise; } finally { pending.delete(key); }
@@ -47,6 +56,14 @@ export async function createWorkspaceService(options: AppOptions) {
       if (!/^[a-f0-9]{64}$/.test(entry.name) || !entry.isDirectory() || lstatSync(path.join(directory, entry.name)).isSymbolicLink()) throw new Error("工作区目录无效");
       await load(entry.name);
     }
+    primary.feishu.start();
+    primary.finance.routeGrant = async (grant) => {
+      if (closing || grant.issuer !== issuer) throw new IdentityError(403, "金融账号的签发方不匹配");
+      const target = existingSubject(primary) === grant.subject ? primary : await load(workspaceKey(grant.subject));
+      if (closing) throw new IdentityError(503, "服务正在重启");
+      const session = await target.finance.accept(grant, () => target.agents.finance().botId, target !== primary);
+      target.runtime.startRecovered(); target.changed(); return session;
+    };
     primary.identity!.routeVerified = async (upstream: UpstreamSession, name: string) => {
       if (closing) throw new IdentityError(503, "服务正在重启，请稍后重试");
       const target = existingSubject(primary) === upstream.subject ? primary : await load(workspaceKey(upstream.subject));
@@ -83,14 +100,14 @@ export async function createWorkspaceService(options: AppOptions) {
       if (!target) { socket.destroy(); return; }
       target.gateway.handleUpgrade(request, socket, head);
     });
-    return { ...primary, workspaces, async close() {
-      closing = true;
+    return { ...primary, workspaces,feishuRouter, async close() {
+      closing = true;clearInterval(feishuRecovery);
       await Promise.allSettled(pending.values());
       await Promise.all([...workspaces.values()].map((app) => app.close()));
       await primary.close();
     } };
   } catch (error) {
-    closing = true;
+    closing = true;clearInterval(feishuRecovery);
     await Promise.allSettled([...workspaces.values()].map((app) => app.close()));
     await primary.close(); throw error;
   }

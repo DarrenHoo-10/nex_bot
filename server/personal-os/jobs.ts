@@ -39,9 +39,11 @@ export class JobModule {
   /** The user messages a brief cites: at most five of this assistant's own, unforgotten user messages, and always the one that triggered the dispatch. */
   private sources(botId: string, value: unknown, originTaskId?: string) {
     if (value !== undefined && (!Array.isArray(value) || value.length > 5 || value.some((ref) => typeof ref !== "string" || !/^message:[\w-]{1,100}$/.test(ref)))) throw new Error("sources 须为 1 到 5 个 message:<id> 引用");
+    const topic=originTaskId ? this.runtime.isTopicTask(originTaskId) : undefined;
     const usable = "bot_id=? AND role='user' AND content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=agent_messages.task_id)";
     const rows = ((value ?? []) as string[]).map((ref) => {
       const row = this.store.get(`SELECT id,seq,content,created_at FROM agent_messages WHERE id=? AND ${usable}`, ref.slice(8), botId);
+      if (row && topic && !this.store.get('SELECT id FROM agent_messages WHERE id=? AND conversation_id=?',row.id,topic.conversation_id)) throw new Error('引用不属于本话题');
       if (!row) throw new Error(`${ref} 不存在、不是用户原话或已遗忘`);
       return row;
     });
@@ -74,7 +76,10 @@ export class JobModule {
       const sessionId = input.sessionId ?? String(input.originTaskId ? this.store.get("SELECT authorized_session_id FROM tasks WHERE id=?", input.originTaskId)?.authorized_session_id ?? this.store.session : this.store.session);
       const conversation = this.store.createConversation(botId, `后台任务：${title}`), jobId = id(), clientId = `job:${jobId}:1`;
       this.store.insert("agent_jobs", { id: jobId, bot_id: botId, conversation_id: conversation, origin_task_id: input.originTaskId ?? null, todo_id: input.todoId ?? null, title, brief_json: JSON.stringify({ sources: sources.map((row) => `message:${row.id}`), note, deviceId }), source_key: sourceKey, created_at: now() });
-      const taskId = this.store.accept(conversation, brief, clientId, sessionId);
+      if(input.originTaskId) this.runtime.inheritTopic(input.originTaskId,conversation);
+      const inherited=input.originTaskId?this.store.get('SELECT selection_json FROM task_model_selections WHERE task_id=?',input.originTaskId):undefined;
+      const taskId = this.store.accept(conversation, brief, clientId, sessionId,inherited?JSON.parse(String(inherited.selection_json)):undefined);
+      if(input.originTaskId)this.runtime.inheritTaskModel(input.originTaskId,taskId);
       // accept names the conversation after its first input; the job keeps its title.
       this.store.run("UPDATE conversations SET title=? WHERE id=?", `后台任务：${title}`, conversation);
       this.store.insert("agent_task_links", { task_id: taskId, bot_id: botId, origin: "job", source_key: `job-task:${taskId}` });
@@ -262,13 +267,20 @@ export class JobModule {
     return this.views(rows).filter((job) => job.endedAt === null || closed++ < 50);
   }
   /** One assistant's open jobs: its jobs not stopped, among its recent ones or with a round still running. */
-  openFor(botId: string) {
-    return this.views(this.store.all("SELECT * FROM agent_jobs j WHERE j.bot_id=? AND j.stopped_at IS NULL AND (j.id IN (SELECT id FROM agent_jobs WHERE bot_id=? ORDER BY created_at DESC LIMIT 200) OR EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=j.conversation_id AND t.ended_at IS NULL)) ORDER BY j.created_at DESC,j.rowid DESC", botId, botId)).filter((job) => job.endedAt === null);
+  openFor(botId: string, legacyOnly = false) {
+    return this.views(this.store.all("SELECT * FROM agent_jobs j WHERE j.bot_id=? AND j.stopped_at IS NULL AND (?=0 OR NOT EXISTS(SELECT 1 FROM agent_topic_children ch WHERE ch.conversation_id=j.conversation_id)) AND (j.id IN (SELECT id FROM agent_jobs WHERE bot_id=? ORDER BY created_at DESC LIMIT 200) OR EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=j.conversation_id AND t.ended_at IS NULL)) ORDER BY j.created_at DESC,j.rowid DESC", botId, legacyOnly?1:0, botId)).filter((job) => job.endedAt === null);
+  }
+  listForTask(botId:string,taskId:string){
+    if(this.runtime.taskOrigin(taskId)!=='owner')return {error:'只有主对话可以列出后台任务'};
+    const topic=this.runtime.isTopicTask(taskId);
+    if(!topic)return {jobs:this.context(botId).jobs};
+    const visible=new Set(this.store.all('SELECT j.id FROM agent_jobs j JOIN agent_topic_children ch ON ch.conversation_id=j.conversation_id WHERE j.bot_id=? AND ch.root_conversation_id=?',botId,topic.conversation_id).map(row=>String(row.id)));
+    return {jobs:this.openFor(botId).filter(job=>visible.has(job.id))};
   }
   /** The main chat's read-only view of its jobs: the open ones and the latest published reports. */
   context(botId: string) {
-    const jobs = this.openFor(botId).map((job) => ({ id: job.id, title: job.title, stage: job.stage, ...(job.progress ? { progress: job.progress } : {}), ...(job.stage === "question" && job.latestReport?.question ? { question: job.latestReport.question } : {}) }));
-    const jobReports = this.store.all("SELECT m.id,m.content,m.created_at,r.job_id,r.state FROM agent_messages m JOIN agent_job_reports r ON m.source_key='job-report:'||r.id WHERE m.bot_id=? AND m.content!='[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id) ORDER BY m.seq DESC LIMIT 6", botId).reverse()
+    const jobs = this.openFor(botId,true).map((job) => ({ id: job.id, title: job.title, stage: job.stage, ...(job.progress ? { progress: job.progress } : {}), ...(job.stage === "question" && job.latestReport?.question ? { question: job.latestReport.question } : {}) }));
+    const jobReports = this.store.all("SELECT m.id,m.content,m.created_at,r.job_id,r.state FROM agent_messages m JOIN agent_job_reports r ON m.source_key='job-report:'||r.id WHERE m.bot_id=? AND m.content!='[已遗忘]' AND NOT EXISTS(SELECT 1 FROM agent_topics p WHERE p.conversation_id=m.conversation_id) AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id) ORDER BY m.seq DESC LIMIT 6", botId).reverse()
       .map((row) => ({ ref: `message:${row.id}`, jobId: row.job_id, state: row.state, reportedAt: row.created_at, summary: String(row.content).slice(0, 1200), truncated: String(row.content).length > 1200 }));
     return { jobs, jobReports };
   }
@@ -289,7 +301,7 @@ export class JobModule {
     const receipt = this.store.get("SELECT * FROM job_tool_receipts WHERE call_id=?", call.id);
     if (receipt) {
       if (receipt.argument_hash !== call.argument_hash) throw new Error("后台任务调用身份冲突");
-      return call.tool_name === "job.list" ? { jobs: this.context(String(call.bot_id)).jobs } : JSON.parse(String(receipt.result_json));
+      return call.tool_name === "job.list" ? this.listForTask(String(call.bot_id),String(call.task_id)) : JSON.parse(String(receipt.result_json));
     }
     let value: unknown;
     try { value = this.run(call, args); } catch (error) { value = { error: error instanceof Error ? error.message : "后台任务操作失败" }; }
@@ -301,7 +313,7 @@ export class JobModule {
     const action = String(call.tool_name), botId = String(call.bot_id), taskId = String(call.task_id), origin = this.runtime.taskOrigin(taskId);
     if (["job.start", "job.list", "job.message", "job.stop"].includes(action)) {
       if (origin !== "owner") return { error: "只有主对话可以派发、转交或停止后台任务" };
-      if (action === "job.list") return { jobs: this.context(botId).jobs };
+      if (action === "job.list") return this.listForTask(botId,taskId);
       if (action === "job.start") {
         const started = this.start({ botId, title: args.title, sources: args.sources, note: args.note, deviceId: args.deviceId, originTaskId: taskId, sourceKey: `job-start:${call.id}` });
         return { jobId: started.jobId, stage: this.stage(this.row(started.jobId)) };

@@ -13,6 +13,7 @@ struct ConnectedView: View {
 
     var body: some View {
         ContactsView(model: model, workspace: workspace, nav: nav)
+            .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
             .environment(nav)
             .environment(preferences)
             .sheet(isPresented: $nav.showMenu) {

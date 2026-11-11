@@ -2,10 +2,10 @@ import { createServer, type Server } from "node:http";
 
 export interface FakeTransportEntry { handlers: { onMessage(event: unknown): void; onCardAction(event: unknown): Promise<unknown> } }
 
-export function messageEvent(input: { messageId: string; chatId: string; chatType?: "p2p" | "group"; senderOpenId: string; senderType?: string; messageType?: string; content: string; mentions?: unknown[]; parentId?: string }) {
+export function messageEvent(input: { appId?: string; messageId: string; chatId: string; chatType?: "p2p" | "group"; senderOpenId: string; senderType?: string; messageType?: string; content: string; mentions?: unknown[]; parentId?: string }) {
   return {
     schema: "2.0",
-    header: { event_id: `evt_${input.messageId}`, event_type: "im.message.receive_v1", create_time: String(Date.now()), tenant_key: "fake", app_id: "cli_fake" },
+    header: { event_id: `evt_${input.messageId}`, event_type: "im.message.receive_v1", create_time: String(Date.now()), tenant_key: "fake", app_id: input.appId ?? "cli_fake" },
     event: {
       sender: { sender_id: { union_id: "un_x", user_id: "u_x", open_id: input.senderOpenId }, sender_type: input.senderType ?? "user", tenant_key: "fake" },
       message: { message_id: input.messageId, root_id: input.parentId ?? "", parent_id: input.parentId ?? "", create_time: String(Date.now()), chat_id: input.chatId, chat_type: input.chatType ?? "p2p", message_type: input.messageType ?? "text", content: input.content, ...(input.mentions ? { mentions: input.mentions } : {}) },
@@ -88,6 +88,9 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
       sent.push({ path: "reply", body: payload });
       json({ code: 0, msg: "success", data: { message_id: `om_out_${sent.length}` } });
       return;
+    }
+    if (request.method === "PATCH" && /^\/open-apis\/im\/v1\/messages\/[^/]+$/.test(url.pathname)) {
+      sent.push({path:"patch",body:payload});json({code:0,data:{}});return;
     }
     if (url.pathname.startsWith("/open-apis/")) {
       apiCalls.push({ method: request.method ?? "GET", path: url.pathname, authorization: String(request.headers.authorization ?? ""), body: payload });

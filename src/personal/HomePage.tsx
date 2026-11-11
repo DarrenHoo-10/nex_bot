@@ -134,7 +134,7 @@ export function HomePage({ login, signedIn = false }: { login: ReactNode; signed
         <div className="home-platforms">{platforms(downloads).map(({ icon: Icon, name, detail, note, href, action }) => <a key={name} href={signedIn && href === "#login" ? "#workspace" : href} {...external(href)} onClick={!signedIn && href === "#login" ? toLogin : undefined}>
           <span className="home-icon"><Icon size={19}/></span><strong>{name}</strong><span>{detail}</span><small>{note}</small><b>{signedIn && href === "#login" ? "进入工作台" : action}<ArrowRight size={14}/></b>
         </a>)}</div>
-        <p className="home-release-link"><a href={`${repo}/releases/tag/nexbot-v0.9.31-preview.1`} {...external(repo)}>0.9.31 预览版：助手工作页更简洁</a> · 各平台安装包已更新</p>
+        <p className="home-release-link"><a href={`${repo}/releases/tag/nexbot-v0.9.32-preview.1`} {...external(repo)}>0.9.32 预览版 · 金融助手与飞书话题</a></p>
         <p className="home-release-link"><a href={links.releases} {...external(links.releases)}>查看全部版本与校验文件</a></p>
       </section>
       <section id="start" className="home-section">

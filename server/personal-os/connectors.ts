@@ -58,6 +58,7 @@ export class ConnectorModule {
   }
   save(data: Record<string, unknown>) {
     const previous = data.id ? this.row(text(data.id, 100)) : undefined;
+    if (previous?.kind === "stock-finance") throw new Error("金融服务地址和凭据由已绑定的 Stock 实例管理");
     if (previous && previous.provider !== "mcp") throw new Error("Gmail 连接请使用 Google 重新授权");
     if (previous && previous.version !== data.version) throw new Error("连接器已被修改，请刷新后重试");
     const name = text(data.name, 80), url = connectorUrl(data.url), transport = data.transport === "sse" ? "sse" : "http";
@@ -87,6 +88,11 @@ export class ConnectorModule {
     this.abortConnector(String(row.id));
     this.store.transaction(() => {
       this.store.run("INSERT INTO personal_connector_grants VALUES(?,?,?) ON CONFLICT(connector_id,bot_id) DO UPDATE SET tools_json=excluded.tools_json", row.id, botId, JSON.stringify(tools));
+      if (row.kind === "stock-finance") {
+        this.store.run(`UPDATE stock_finance_bindings SET auto_grant=0 WHERE connector_id=? AND EXISTS (
+          SELECT 1 FROM agent_roles WHERE workspace_id=? AND owner_user_id=? AND role='finance_assistant' AND bot_id=?)`,
+          row.id, this.store.workspace, this.store.owner, botId);
+      }
       const policy = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", botId)!;
       const parsed = JSON.parse(String(policy.policy_json));
       if (tools.length) parsed.tools = [...new Set([...(parsed.tools ?? []), "connector.list", "connector.tools", "connector.call"])];

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { FeishuDeliverySettings } from "./FeishuDeliverySettings";
 import { api, type State } from "./api";
 
 const statusText: Record<string, string> = { idle: "未连接", preparing: "正在生成二维码", qr: "等待扫码", connected: "已连接", busy: "已在其他位置连接", disabled: "已停用", error: "连接异常" };
@@ -9,6 +10,7 @@ export function FeishuCard({ state, refresh }: { state: State; refresh(): Promis
   const feishu = state.feishu ?? { apps: [] };
   const app = feishu.apps[0];
   const job = feishu.job;
+  const [sharedAvailable,setSharedAvailable]=useState(false);
   const [botId, setBotId] = useState("");
   const [manual, setManual] = useState(false);
   const [bindCode, setBindCode] = useState("");
@@ -42,7 +44,7 @@ export function FeishuCard({ state, refresh }: { state: State; refresh(): Promis
         <button disabled={!!busy} onClick={() => void action("toggle", () => api("feishu/toggle", { id: app.id, version: app.version, enabled: !app.enabled }))}>{app.enabled ? "停用" : "启用"}</button>
         {confirmRemove ? <><span>移除飞书连接？</span><button className="danger-link" disabled={!!busy} onClick={() => { setConfirmRemove(false); setBindCode(""); void action("delete", () => api("feishu/delete", { id: app.id, version: app.version })); }}>确认移除</button><button onClick={() => setConfirmRemove(false)}>取消</button></> : <button className="text-button danger-link" disabled={!!busy} onClick={() => setConfirmRemove(true)}>移除</button>}
       </div>
-    </> : job?.stage === "qr" && job.url ? <div className="actions" style={{ alignItems: "center" }}>
+    </> : sharedAvailable ? <p className="muted">使用已连接的金融助手应用</p> : job?.stage === "qr" && job.url ? <div className="actions" style={{ alignItems: "center" }}>
       <QRCodeSVG value={job.url} size={148} level="M" bgColor="#ffffff" fgColor="#111111" />
       <span>用飞书扫码并确认，完成后自动连接。</span><button disabled={!!busy} onClick={() => void action("cancel", () => api("feishu/register/cancel", {}))}>取消</button>
     </div> : job?.stage === "preparing" ? <p className="muted">正在生成二维码…</p> : <>
@@ -51,5 +53,6 @@ export function FeishuCard({ state, refresh }: { state: State; refresh(): Promis
       {manual ? <form onSubmit={saveManual}><label className="field">App ID<input name="appId" required placeholder="cli_xxx"/></label><label className="field">App Secret<input name="appSecret" type="password" required autoComplete="new-password"/></label><label className="field">品牌<select name="brand" defaultValue="feishu"><option value="feishu">飞书</option><option value="lark">Lark</option></select></label><div className="actions"><button className="primary" disabled={!!busy || !botId}>保存并连接</button><button type="button" onClick={() => setManual(false)}>返回扫码</button></div></form>
         : <div className="actions"><button className="primary" disabled={!!busy || !botId} onClick={() => void action("register", () => api("feishu/register/start", { botId }))}>扫码连接飞书</button><button disabled={!!busy} onClick={() => setManual(true)}>使用已有应用</button></div>}
     </>}
+    <FeishuDeliverySettings revision={state.feishu} onSharedAvailable={setSharedAvailable}/>
   </section>;
 }

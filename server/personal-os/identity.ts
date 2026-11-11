@@ -41,9 +41,9 @@ export class CoreIdentity {
     const config = this.configuration()!;
     return session.protocol === "native-v1" && session.external_identity_id === config.external_identity_id && this.store.get("SELECT id FROM external_identities WHERE id=? AND status='active'", session.external_identity_id) ? session : undefined;
   }
-  async authenticate(token: string) {
+  async authenticate(token: string, fresh = false) {
     const session = this.locallyAllowed(token);
-    return session?.protocol === "native-v1" ? this.verify(session) : session;
+    return session?.protocol === "native-v1" ? this.verify(session, fresh) : session;
   }
   async status(token: string, bootstrap?: Row) {
     const session = await this.authenticate(token);
@@ -131,9 +131,9 @@ export class CoreIdentity {
     this.checked.set(sessionId, { version: 1, wall: now(), mono: performance.now() });
     return { token, sessionId, expiresAt, coreId: this.clients.coreId(), protocol: "native-v1", version: 1 };
   }
-  private async verify(session: Row): Promise<Row | undefined> {
+  private async verify(session: Row, fresh = false): Promise<Row | undefined> {
     const sessionId = String(session.id), cached = this.checked.get(sessionId);
-    if (cached?.version === session.version && now() >= cached.wall && now() - cached.wall < 60_000 && performance.now() >= cached.mono && performance.now() - cached.mono < 60_000) return session;
+    if (!fresh && cached?.version === session.version && now() >= cached.wall && now() - cached.wall < 60_000 && performance.now() >= cached.mono && performance.now() - cached.mono < 60_000) return session;
     const pending = this.checking.get(sessionId); if (pending) return pending;
     const check = (async () => {
       const encrypted = this.store.get("SELECT ciphertext FROM secrets WHERE id=?", session.upstream_session_ref);
@@ -237,13 +237,13 @@ export class CoreIdentity {
     if (current) this.checked.set(String(session.id), { version: Number(current.version), wall: at, mono: performance.now() });
     return { token: next, sessionId: String(session.id), expiresAt, coreId: this.clients.coreId(), protocol: "native-v1", version: 1 };
   }
-  async authorizeTask(task: Row) {
+  async authorizeTask(task: Row, fresh = false) {
     const sessionId = String(task.authorized_session_id);
     if (!this.connected()) return false;
     if (sessionId === this.store.session) {
       // Core-owned routines have no browser principal. They still need a live
       // associated owner session; one client's logout does not revoke another.
-      for (const candidate of this.store.all("SELECT * FROM user_sessions WHERE protocol='native-v1' AND external_identity_id=? AND workspace_id=? AND user_id=? AND revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC", this.configuration()!.external_identity_id, this.store.workspace, this.store.owner, now())) if (this.clients.authenticateTokenSession(String(candidate.id)) && await this.verify(candidate)) return true;
+      for (const candidate of this.store.all("SELECT * FROM user_sessions WHERE protocol='native-v1' AND external_identity_id=? AND workspace_id=? AND user_id=? AND revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC", this.configuration()!.external_identity_id, this.store.workspace, this.store.owner, now())) if (this.clients.authenticateTokenSession(String(candidate.id)) && await this.verify(candidate, fresh)) return true;
       // A channel task keeps working while its channel is connected; disconnecting the channel revokes it.
       if (this.channelAuthorize && await this.channelAuthorize(task)) return true;
       return false;
@@ -251,7 +251,7 @@ export class CoreIdentity {
     const session = this.clients.authenticateTokenSession(sessionId);
     if (!session) return false;
     if (session.protocol !== "native-v1" || session.external_identity_id !== this.configuration()!.external_identity_id) return false;
-    return session.protocol !== "native-v1" || !!await this.verify(session);
+    return session.protocol !== "native-v1" || !!await this.verify(session, fresh);
   }
   prune() {
     for (const txn of this.store.all("SELECT id,secret_ref FROM login_transactions WHERE status='pending' AND expires_at<=?", now())) {

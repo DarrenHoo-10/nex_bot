@@ -12,13 +12,19 @@ export const feishuTools = [
   },
   {
     name: "feishu_write",
-    description: "调用飞书开放平台写入接口（POST/PUT），需要用户逐次批准。path 形如 /open-apis/...；body 为请求体；as=user 表示以主人身份调用。",
+    description: "调用飞书开放平台写入接口（POST/PUT），按当前有效授权执行。path 形如 /open-apis/...；body 为请求体；as=user 表示以主人身份调用。",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" }, body: { type: "object", additionalProperties: true }, as: { type: "string", enum: ["bot", "user"] } },
       required: ["path"],
     },
     annotations: { readOnlyHint: false, destructiveHint: true },
+  },
+  {
+    name: "feishu_delivery",
+    description: "查看、创建、修改或暂停本人的飞书目的地订阅；只投递明确选择的内容类型，不改变普通话题问答。修改已有订阅时先读取 version。",
+    inputSchema: { type: "object", properties: { operation: { type: "string", enum: ["list", "upsert"] }, appId: { type: "string" }, chatId: { type: "string" }, instanceId: { type: "string" }, kinds: { type: "array", items: { type: "string" } }, scenarios: { type: "array", items: { type: "string" } }, audience: { type: "string", enum: ["private", "public"] }, enabled: { type: "boolean" }, version: { type: "integer" } }, required: ["operation"] },
+    annotations: { readOnlyHint: false },
   },
 ] as const;
 
