@@ -31,7 +31,7 @@
   - 推理强度端到端，OpenAI 和 Anthropic 各一遍：模拟模型记录请求体。没配档位时不发任何推理参数；配了档位、选「高」后，OpenAI 发 `reasoning_effort: "high"`，Anthropic 发 thinking。
   - 档位就近取值。
 - **Core 全量**：536 通过，4 失败，3 跳过。4 项失败分别是 compaction-timing 2 项、image-models 1 项、sender-device 1 项，都在之前记录的「`origin/main` 上同样失败」名单里。其中 image-models 和 sender-device 两项又在上一提交 `dcead93e` 的干净检出上复跑，同样失败。
-- **Web**：新增 `ProviderSettings.test.ts`，共 6 项，覆盖设置页和模型菜单。personal 共 135 项，全部通过。`src` 全量 3723 通过、2 失败；这 2 项依赖机器的语言设置（期望英文日期，实际是中文），和本改动无关。
+- **Web**：新增 `src/personal/ProviderSettings.test.ts`，共 6 项，覆盖设置页和模型菜单。personal 共 135 项，全部通过。`src` 全量 3723 通过、2 失败；这 2 项依赖机器的语言设置（期望英文日期，实际是中文），和本改动无关。
 - **typecheck 和 lint**：Web、server 的 typecheck 都通过；`oxlint --deny-warnings` 检查 `server/personal-os` 和 `src/personal`，通过。
 - **本地预览**：真实构建的 Core 加 Web，两个模拟供应商，其中一个的模型配了 5 个推理档位，用临时数据和模拟账号。
   - 设置页左右分栏正常显示。

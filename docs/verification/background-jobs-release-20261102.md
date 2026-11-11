@@ -15,7 +15,7 @@
 - typecheck、lint 通过；网页 128 项全部通过。
 - `server/personal-os`：520 项通过，8 项失败，3 项跳过。
   - 其中 7 项在 `origin/main` 上同样失败：compaction-timing 2 项、image-models 1 项、memory-recall 3 项、sender-device 1 项，已在 `9b60e4e2` 的独立检出中复现。
-  - 另 1 项是 `maintenance.test.ts`「clears the pending run when a task comes first」。当时机器同时在打 Windows 和 Android 包，它失败了；单独重跑两次 15/15 通过，合并后第一次完整运行时也通过。
+  - 另 1 项是 `server/personal-os/maintenance.test.ts`「clears the pending run when a task comes first」。当时机器同时在打 Windows 和 Android 包，它失败了；单独重跑两次 15/15 通过，合并后第一次完整运行时也通过。
 - 隔离验证：`release/deployment-background-jobs/verify.mjs` 用实际构建的 Core 和合成模型逐项验证了以下内容：
   - 主对话派发；
   - 后台任务运行在独立的 Conversation 中；

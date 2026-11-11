@@ -81,10 +81,11 @@ describe("docs/verification recipes cite things that exist", () => {
       const source = path.startsWith("/hooks/") ? hooksSource : `${serverSource}\n${personalSource}`;
       const segments = path.split("/").slice(1);
       const literal = segments.findIndex((segment) => PLACEHOLDER.test(segment));
-      if (literal === -1) return source.includes(`"${path}"`) || routePatterns.some((pattern) => pattern.test(path));
+      const quotes = ['"', "'"];
+      if (literal === -1) return quotes.some((quote) => source.includes(`${quote}${path}${quote}`)) || routePatterns.some((pattern) => pattern.test(path));
       // a placeholder path is known by its first two segments
       const prefix = `/${segments.slice(0, Math.min(2, literal)).join("/")}`;
-      return source.includes(`"${prefix}`) || source.includes(`${prefix}/`)
+      return quotes.some((quote) => source.includes(`${quote}${prefix}`)) || source.includes(`${prefix}/`)
         || routePatterns.some((pattern) => pattern.test(segments.map((segment) => PLACEHOLDER.test(segment) ? "x-1" : segment).join("/").replace(/^/, "/")));
     };
     expect([...new Set(refs.filter((hit) => !registered(target(hit))))]).toEqual([]);

@@ -115,7 +115,7 @@ loopback 合成模型、随机测试密钥、临时数据库；关闭真实身�
 - `node scripts/build-personal.mjs --core`：通过（既有前端 chunk 大小警告仍存在）。
 - `node scripts/smoke-core-service.mjs`：13/13 检查通过。
 - 扩展回归：9 个测试文件通过，**138 passed / 1 skipped**。唯一跳过是
-  `app.test.ts` 的旧 0.4 迁移测试，未提供 `NEX_TEST_LEGACY_04_BUNDLE`。
+  `server/personal-os/app.test.ts` 的旧 0.4 迁移测试，未提供 `NEX_TEST_LEGACY_04_BUNDLE`。
 - `pnpm typecheck`：前端与服务端均通过；本次修改的七个 TS 文件 oxlint 通过。
 - `git diff --check`：通过。构建引起的 Apple HTML 资源纯行尾改动已撤回，没有客户端改动。
 
