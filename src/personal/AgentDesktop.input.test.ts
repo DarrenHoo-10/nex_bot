@@ -550,3 +550,25 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(container.querySelector('.contact-item[data-working="true"]')).not.toBeNull();
   });
 });
+
+it("opens an inline finance topic in the shared chat and replies to its original conversation", async () => {
+  const topic = {conversationId:"finance-test-thread", title:"示例讨论", audience:"private", sourceContext:{}, last_activity_at:1, message_count:1, unread_count:0, activeTask:null};
+  const message = {id:"original", seq:1, role:"user", kind:"message", content:"主题内容", conversation_id:topic.conversationId, created_at:1};
+  fixture.api.mockImplementation(async (route:string) => {
+    if (route === "state") return state;
+    if (route === "agents/finance") return {botId:"agent"};
+    if (route.startsWith("agents/topics?")) return {topics:[topic]};
+    if (route.startsWith("agents/tasks?")) return {tasks:[]};
+    if (route.startsWith("agents/messages?")) return {messages: route.includes("after=") ? [] : [message], sync, streaming:[], hasMore:false};
+    return {conversationId:topic.conversationId};
+  });
+  await act(async () => { root.render(createElement(AgentDesktop, {key:"finance-inline"})); });
+  const thread = container.querySelector<HTMLButtonElement>(".transcript-inner .topic-bubble");
+  expect(thread?.textContent).toContain("示例讨论");
+  expect(container.querySelector(".composer-dock textarea")).toBeTruthy();
+  expect(container.querySelector(".transcript")?.textContent).not.toContain("主题内容");
+  await act(async () => {thread!.click();});
+  expect(container.querySelector(".transcript")?.textContent).toContain("主题内容");
+  await type("继续会话"); await enter();
+  expect(fixture.api).toHaveBeenCalledWith("agents/input",expect.objectContaining({conversationId:topic.conversationId,text:"继续会话"}));
+});

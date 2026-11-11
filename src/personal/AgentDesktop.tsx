@@ -1,6 +1,6 @@
-import { FinanceTopics } from './FinanceTopics';
+import { TopicBubble, TopicTasks, topicTimeline, type FinanceTopic, type FinanceTask } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
-import { createContext, memo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { createContext, memo, useMemo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
@@ -112,6 +112,17 @@ export function AgentDesktop() {
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [financeBotId,setFinanceBotId]=useState<string>();
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
+  const finance = Boolean(financeBotId && financeBotId === botId);
+  const [topicId, setTopicId] = useState<string>();
+  const [topics,setTopics] = useState<FinanceTopic[]>([]);
+  const [olderEnd,setOlderEnd] = useState(false);
+  const [topicTasks,setTopicTasks] = useState<FinanceTask[]>([]);
+  const [editInput,setEditInput] = useState<string>();
+  const conversation = finance ? topicId : undefined;
+  const draftKey = conversation ? JSON.stringify([botId,conversation]) : botId;
+  const destination = useRef(draftKey);
+  destination.current = draftKey;
+  const topic = topics.find(item => item.conversationId === conversation);
   const [pinned] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("nexbot.pinnedAgents") || "[]") as string[]; } catch { return []; } });
   const [dark, setDark] = useState(() => localStorage.getItem("nexbot.dark") === "1");
   const [sidebarOpen, setSidebarOpen] = useState(desktop?.platform === "android" && window.innerWidth <= 720);
@@ -127,18 +138,18 @@ export function AgentDesktop() {
   const uploading = pending.length > 0;
   const setFiles = (target: string, files: Attachment[]) => {
     attachmentDrafts.current.set(target, files);
-    if (selected.current === target) setAttachments(files);
+    if (destination.current === target) setAttachments(files);
   };
   const setPendingFiles = (target: string, files: PendingUpload[]) => {
     pendingDrafts.current.set(target, files);
-    if (selected.current === target) setPending(files);
+    if (destination.current === target) setPending(files);
   };
   const readFile = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("文件读取失败")); reader.readAsDataURL(file); });
   const uploadOne = async (target: string, item: PendingUpload) => {
     try {
       const data = await readFile(item.file);
       if (item.controller.signal.aborted) return;
-      const uploaded = await api<Attachment>("attachments", { botId: target, name: item.file.name.trim() || "截图.png", data });
+      const uploaded = await api<Attachment>("attachments", { botId, name: item.file.name.trim() || "截图.png", data });
       if (item.controller.signal.aborted) return;
       setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).filter((entry) => entry.key !== item.key));
       const mime = item.file.type || uploaded.mime || "";
@@ -152,7 +163,7 @@ export function AgentDesktop() {
   const upload = async (files: FileList | readonly File[] | null) => {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
-    const target = botId, current = attachmentDrafts.current.get(target) ?? [], waiting = pendingDrafts.current.get(target) ?? [];
+    const target = draftKey, current = attachmentDrafts.current.get(target) ?? [], waiting = pendingDrafts.current.get(target) ?? [];
     if (current.length + waiting.length + list.length > 5) { setError("最多添加 5 个附件"); if (fileInput.current) fileInput.current.value = ""; return; }
     if (list.some((file) => !file.size || file.size > 5 * 1024 * 1024)) { setError("请选择 5 MB 以内的非空文件"); if (fileInput.current) fileInput.current.value = ""; return; }
     setError("");
@@ -170,16 +181,16 @@ export function AgentDesktop() {
   };
   const retryUpload = (item: PendingUpload) => {
     const controller = new AbortController();
-    setPendingFiles(botId, (pendingDrafts.current.get(botId) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: undefined, controller } : entry));
-    void uploadOne(botId, { ...item, controller, error: undefined });
+    setPendingFiles(draftKey, (pendingDrafts.current.get(draftKey) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: undefined, controller } : entry));
+    void uploadOne(draftKey, { ...item, controller, error: undefined });
   };
   const removePending = (item: PendingUpload) => {
     item.controller.abort();
-    setPendingFiles(botId, (pendingDrafts.current.get(botId) ?? []).filter((entry) => entry.key !== item.key));
+    setPendingFiles(draftKey, (pendingDrafts.current.get(draftKey) ?? []).filter((entry) => entry.key !== item.key));
   };
-  const removeAttachment = (file: Attachment) => setFiles(botId, (attachmentDrafts.current.get(botId) ?? []).filter((entry) => entry.id !== file.id));
+  const removeAttachment = (file: Attachment) => setFiles(draftKey, (attachmentDrafts.current.get(draftKey) ?? []).filter((entry) => entry.id !== file.id));
   const removeDraftImage = (src: string) => {
-    const uploaded = (attachmentDrafts.current.get(botId) ?? []).find((file) => file.previewUrl === src);
+    const uploaded = (attachmentDrafts.current.get(draftKey) ?? []).find((file) => file.previewUrl === src);
     if (uploaded) removeAttachment(uploaded);
   };
   useEffect(() => () => {
@@ -189,7 +200,7 @@ export function AgentDesktop() {
   const [motion] = useState(() => localStorage.getItem("nexbot.motion") !== "0");
   const [settledState, setSettledState] = useState<CompanionState>("idle");
   const previousTask = useRef<{ botId: string; taskId: string } | undefined>(undefined);
-  const [messages, setMessages] = useState<RecordRow[]>([]), [streaming, setStreaming] = useState<Array<{ taskId: string; text: string }>>([]);
+  const [rawMessages, setMessages] = useState<RecordRow[]>([]), [streaming, setStreaming] = useState<Array<{ taskId: string; text: string }>>([]);
   const [draft, setDraft] = useState(""), [search, setSearch] = useState(""), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const [sendingBotId, setSendingBotId] = useState<string>();
   const [connected, setConnected] = useState(true), [detail, setDetail] = useState(() => window.innerWidth > 1040), [tab, setTab] = useState("profile"), [dialog, setDialog] = useState<ReactNode>(null);
@@ -202,6 +213,7 @@ export function AgentDesktop() {
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
   const [focusedMessage,setFocusedMessage]=useState("");
+  const messages = useMemo(() => finance && !conversation && !focusedMessage ? topicTimeline(rawMessages,topics) : rawMessages, [finance, conversation, focusedMessage, rawMessages, topics]);
   const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), transcriptInner = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
   // Set once Core has accepted the send. Cleared only when a later reload publishes
@@ -225,7 +237,7 @@ export function AgentDesktop() {
       if (!sidebarOpen) { setSidebarOpen(true); return; }
       void desktop?.minimize?.();
     };
-    const select = (event: Event) => { historyTarget.current=undefined;setFocusedMessage("");loaded.current=undefined;setBotId(String((event as CustomEvent).detail)); setPage("agent"); setSidebarOpen(false); };
+    const select = (event: Event) => { historyTarget.current=undefined;setFocusedMessage("");loaded.current=undefined;setTopicId(undefined);setBotId(String((event as CustomEvent).detail)); setPage("agent"); setSidebarOpen(false); };
     const downloadError = () => setError("附件下载失败，请重试");
     window.addEventListener("nex-android-back", back);
     window.addEventListener("nex-android-agent", select);
@@ -261,8 +273,9 @@ export function AgentDesktop() {
     localStorage.setItem("nexbot.dark", dark ? "1" : "0");
   }, [dark]);
 
-  useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);setBotId(result.botId);}}).catch((error:Error)=>setError(error.message));return()=>{stopped=true;};},[]);
+  useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);if (!selected.current && result.botId) setBotId(result.botId);}}).catch((error:Error)=>setError(error.message));return()=>{stopped=true;};},[]);
   const reload = useCallback(async () => {
+    if (destination.current !== draftKey || selected.current !== botId) return;
     const request = ++serial.current, current = selected.current;
     const releaseSend = () => {
       const pending = pendingSend.current;
@@ -272,13 +285,18 @@ export function AgentDesktop() {
     };
     type Feed = { messages: RecordRow[]; streaming: Array<{ taskId: string; text: string }>; sync: State["sync"]; hasMore: boolean };
     const target=historyTarget.current?.botId===current?historyTarget.current:undefined;
-    const base = `agents/messages?bot=${encodeURIComponent(current)}${target?`&around=${encodeURIComponent(target.id)}`:""}`;
+    const scope = conversation ? "&conversationId=" + encodeURIComponent(conversation) : "";
+    const base = `agents/messages?bot=${encodeURIComponent(current)}${scope}${target?`&around=${encodeURIComponent(target.id)}`:""}`;
     // Over a slow link every round trip is visible, so the first page of messages is requested together with the state
     // and checked against the state's sync identity afterwards.
-    const guess = !target && loaded.current?.botId === current ? loaded.current : undefined;
+    const guess = !target && !conversation && loaded.current?.botId === current ? loaded.current : undefined;
     const early = current ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
     early?.catch(() => undefined);
-    const next = await api<State>("state");
+    const [next, topicList, taskList] = await Promise.all([
+      api<State>("state"),
+      finance ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`) : undefined,
+      conversation ? api<{tasks:FinanceTask[]}>(`agents/tasks?bot=${encodeURIComponent(current)}${scope}`) : undefined,
+    ]);
     if (request !== serial.current) return;
     if (memoryVersions.current.size > 0) {
       const updated = next.memories.find((m) => (m.scope === "workspace" || m.bot_id === current) && memoryVersions.current.get(str(m.id)) !== `${m.version}:${m.updated_at}`);
@@ -319,19 +337,28 @@ export function AgentDesktop() {
         feed = await api<Feed>(`${base}&after=${history.at(-1)!.seq}`);
       }
       if (request !== serial.current || selected.current !== current) return;
+      if (conversation) {
+        const prior = loaded.current;
+        if (prior?.botId === current && prior.sync.privacyEpoch === feed.sync.privacyEpoch && prior.sync.bootId === feed.sync.bootId && history.length) {
+          history = [...prior.messages.filter(row => Number(row.seq) < Number(history[0].seq)), ...history];
+        }
+        if (feed.messages.length < 200) setOlderEnd(true);
+      }
       loaded.current = { botId: current, messages: history, sync: feed.sync };
       feedRetry.current = false;
       setMessages((shown) => withPendingOptimistic(history, shown));
+      setTopics(topicList?.topics ?? []);
+      setTopicTasks(taskList?.tasks ?? []);
       setStreaming(feed.streaming.filter((s) => s.text));
       setHistoryLoading(false);
       const through = Number(history.at(-1)?.seq ?? 0);
-      if (!target && pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(current) ?? 0)) {
-        readPositions.current.set(current, through);
-        void api("agents/read", { botId: current, seq: through }).catch(() => { if (readPositions.current.get(current) === through) readPositions.current.delete(current); });
+      if (!target && pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(draftKey) ?? 0)) {
+        readPositions.current.set(draftKey, through);
+        void api("agents/read", { botId: current, seq: through, conversationId: conversation }).catch(() => { if (readPositions.current.get(draftKey) === through) readPositions.current.delete(draftKey); });
       }
     }
     if (request === serial.current) { setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
-  }, [offline]);
+  }, [offline, finance, conversation, draftKey, botId]);
   useEffect(() => {
     // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
     if (!selected.current) void reload().catch((e: Error) => setError(e.message));
@@ -353,9 +380,10 @@ export function AgentDesktop() {
   }, [reload, offline]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
   useEffect(() => {
-    const switched = loadedBot.current !== botId;
-    loadedBot.current = botId;
+    const switched = loadedBot.current !== draftKey;
+    loadedBot.current = draftKey;
     if (switched) {
+      loaded.current = undefined; setTopicTasks([]); setEditInput(undefined); setOlderEnd(false);
       stickToBottom.current = !historyTarget.current;
       setShowScrollPill(false);
       setQuote(undefined);
@@ -366,9 +394,9 @@ export function AgentDesktop() {
       setPreview(undefined);
       setMessages([]);
       setStreaming([]);
-      setDraft(drafts.current.get(botId) ?? "");
-      setAttachments(attachmentDrafts.current.get(botId) ?? []);
-      setPending(pendingDrafts.current.get(botId) ?? []);
+      setDraft(drafts.current.get(draftKey) ?? "");
+      setAttachments(attachmentDrafts.current.get(draftKey) ?? []);
+      setPending(pendingDrafts.current.get(draftKey) ?? []);
       setDraftPreview(undefined);
     }
     if (botId) {
@@ -380,18 +408,30 @@ export function AgentDesktop() {
   const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); }, []);
   const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
-  const changeDraft = (value: string) => { setDraft(value); drafts.current.set(botId, value); setAtDismissed(false); setAtIndex(0); };
+  const changeDraft = (value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); };
   const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
   const deleteMessageImage = async (messageId: string, image: MessageImage) => {
     await api("agents/messages/image/delete", { botId, messageId, attachmentId: image.id });
     loaded.current = undefined;
     await reload();
   };
+  const openTopic = (id?: string) => {
+    if (id === conversation && !historyTarget.current) return;
+    ++serial.current;
+    historyTarget.current = undefined;
+    loaded.current = undefined;
+    setFocusedMessage("");
+    setMessages([]); setStreaming([]); setTopicTasks([]); setEditInput(undefined);
+    setTopicId(id);
+    stickToBottom.current = true;
+  };
   const send = (event: FormEvent) => {
     event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || !state?.bots.some((agent) => agent.id === target)) return;
+    if (editInput && attachments.length) { setError("编辑排队消息时请先移除附件"); return; }
     if (replyJob) { sendJobReply(raw, target, replyJob); return; }
+    const replyConversation = conversation ?? (focusedMessage ? topics.find(t => t.conversationId === rawMessages.find(m => m.id === focusedMessage)?.conversation_id)?.conversationId : undefined);
     const prefix = quote ? `> ${quote.author}：${quote.text.replace(/\s+/g, " ").slice(0, 140)}\n\n` : "";
-    const content = prefix + raw, attachmentIds = attachments.map((file) => file.id), requestKey = content + JSON.stringify(attachmentIds);
+    const content = prefix + raw, attachmentIds = attachments.map((file) => file.id), requestKey = JSON.stringify([draftKey, replyConversation, editInput, content, attachmentIds]);
     if (!retry.current || retry.current.botId !== target || retry.current.text !== requestKey) retry.current = { botId: target, text: requestKey, id: crypto.randomUUID() };
     const clientId = retry.current.id;
     if (historyTarget.current) { historyTarget.current = undefined; setFocusedMessage(""); loaded.current = undefined; }
@@ -400,21 +440,29 @@ export function AgentDesktop() {
     setShowScrollPill(false);
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "instant" });
     const savedDraft = draft, savedQuote = quote;
-    drafts.current.delete(target);
-    if (selected.current === target) { setDraft(""); setQuote(undefined); }
+    drafts.current.delete(draftKey);
+    if (destination.current === draftKey) { setDraft(""); setQuote(undefined); }
     setSendingBotId(target);
     setMessages((shown) => shown.some((row) => row.id === `optimistic:${clientId}`) ? shown : [...shown, optimisticOutgoing(clientId, content)]);
     void run(async () => {
       try {
-        await api("agents/input", { botId: target, text: content, clientId, attachments: attachmentIds });
+        const result = await api<{conversationId?:string}>(editInput ? "agents/edit" : "agents/input", {
+          botId:target, text:content, clientId, attachments:attachmentIds,
+          ...(editInput ? {messageId:editInput} : {}),
+          ...(finance ? replyConversation ? {conversationId:replyConversation} : {newConversation:true, sourceContext:{channel:"nexbot"}} : {}),
+        });
+        if (destination.current === draftKey) {
+          setEditInput(undefined);
+          if (finance && !conversation && result.conversationId) openTopic(result.conversationId);
+        }
         pendingSend.current = { botId: target, acceptedAfter: serial.current };
-        setFiles(target, []);
+        setFiles(draftKey, []);
         retry.current = undefined;
       } catch (error) {
         pendingSend.current = undefined;
         setSendingBotId((id) => id === target ? undefined : id);
-        if (!drafts.current.has(target)) drafts.current.set(target, savedDraft);
-        if (selected.current === target) {
+        if (!drafts.current.has(draftKey)) drafts.current.set(draftKey, savedDraft);
+        if (destination.current === draftKey) {
           setDraft((current) => current || savedDraft);
           setQuote((current) => current ?? savedQuote);
         }
@@ -443,7 +491,7 @@ export function AgentDesktop() {
     });
   };
   // The chat's working state and its stop key follow the main chat only: background jobs, routines and delegated children have their own.
-  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status))) ?? [];
+  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status)) && (!finance || (conversation ? topic?.activeTask?.id === t.id : !topics.some(item => item.activeTask?.id === t.id)))) ?? [];
   const botJobs = state?.jobs?.filter((job) => job.botId === botId) ?? [], openJobs = botJobs.filter(openJob);
   const jobById = new Map((state?.jobs ?? []).map((job) => [job.id, job]));
   useEffect(() => {
@@ -460,7 +508,7 @@ export function AgentDesktop() {
     }
   }, [botId, tasks[0]?.id]);
   const avatarState = !connected ? "offline" : tasks.length ? companionState(tasks[0], state?.approvals.some((a) => a.bot_id === botId), connected) : sendingBotId === botId ? "thinking" : settledState;
-  const liveStreaming = withoutCommittedStreaming(messages, streaming);
+  const liveStreaming = withoutCommittedStreaming(messages, finance && !conversation ? streaming.filter(s => !topics.some(item => item.activeTask?.id === s.taskId)) : streaming);
   const processing = connected && !liveStreaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
   const setFollowing = useCallback((next: boolean) => {
     stickToBottom.current = next;
@@ -510,13 +558,14 @@ export function AgentDesktop() {
   },[focusedMessage,messages,page]);
   const latestMessages=()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});};
   const openSearchResult=(match:ConversationMatch)=>{
+    setTopicId(undefined);
     ++serial.current;
     historyTarget.current={botId:match.botId,id:match.id};scrolledTarget.current='';setFocusedMessage(match.id);loaded.current=undefined;stickToBottom.current=false;
     setMessages([]);setStreaming([]);setHistoryLoading(true);setError('');setPage('agent');setSidebarOpen(false);
-    if(selected.current===match.botId)void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});
+    if(selected.current===match.botId && !conversation)void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});
     else setBotId(match.botId);
   };
-  const closeDialog = () => setDialog(null), select = (target: string) => { if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
+  const closeDialog = () => setDialog(null), select = (target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) { await reload(); select(result.id); } closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
@@ -538,9 +587,10 @@ export function AgentDesktop() {
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
-    const result = await api<{ messages: RecordRow[]; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${snapshot.messages[0].seq}`);
+    const result = await api<{ messages: RecordRow[]; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${snapshot.messages[0].seq}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
     const current = loaded.current;
-    if (!current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
+    if (destination.current !== draftKey || !current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
+    if (conversation && result.messages.length < 200) setOlderEnd(true);
     const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];
     loaded.current = { ...current, messages: merged };
     setMessages((shown) => withPendingOptimistic(merged, shown));
@@ -557,8 +607,8 @@ export function AgentDesktop() {
     let after = 0;
     const initial = state.sync;
     for (;;) {
-      const feed = await api<{ messages: RecordRow[]; hasMore: boolean; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(target)}&after=${after}`);
-      if (selected.current !== target || feed.sync.coreId !== initial.coreId || feed.sync.privacyEpoch !== initial.privacyEpoch) throw new Error("对话已变化，请重新导出");
+      const feed = await api<{ messages: RecordRow[]; hasMore: boolean; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(target)}&after=${after}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
+      if (destination.current !== draftKey || feed.sync.coreId !== initial.coreId || feed.sync.privacyEpoch !== initial.privacyEpoch) throw new Error("对话已变化，请重新导出");
       rows.push(...feed.messages);
       if (!feed.hasMore || !feed.messages.length) break;
       after = Number(feed.messages.at(-1)!.seq);
@@ -630,13 +680,13 @@ export function AgentDesktop() {
         <h1>创建你的第一个 Agent</h1>
         <p>给它一个名字，身份与职责可以之后补充。消息、记忆和工作会持续保留。</p>
         <button className="primary" onClick={() => editBot()}><Plus size={16}/>创建 Agent</button>
-      </div> : page === "agent" && botId===financeBotId ? <FinanceTopics key={botId} botId={botId} render={value=><RichText value={value}/>} settings={<><ModelMenu connections={connections} choice={modelChoice} onChange={chooseModel} displayValue={modelLabel} disabled={busy||!connected}/><button type="button" onClick={()=>{setDetail(true);setTab('profile');}}>助手设置</button></>}/>
-      : page === "agent" && jobView ? <JobChat key={jobView} id={jobView} botName={str(bot?.name) || "Agent"} avatar={<Avatar bot={bot} allBots={state.bots} size={26}/>} back={() => setJobView(undefined)} renderContent={(value, pending) => <RichText value={value} pending={pending} onPreviewFile={openFilePreview}/>}/>
+      </div> : page === "agent" && jobView ? <JobChat key={jobView} id={jobView} botName={str(bot?.name) || "Agent"} avatar={<Avatar bot={bot} allBots={state.bots} size={26}/>} back={() => setJobView(undefined)} renderContent={(value, pending) => <RichText value={value} pending={pending} onPreviewFile={openFilePreview}/>}/>
       : page === "agent" ? <>
         <div className="transcript" ref={scroll} onPointerDown={(event) => { const el = scroll.current; if (el && event.target === el && event.nativeEvent.offsetX >= el.clientWidth) setFollowing(false); }} onWheel={(event) => { if (event.deltaY < 0) setFollowing(false); else if (atEnd()) setFollowing(true); }} onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={(event) => { const y = event.touches[0]?.clientY ?? 0; if (y > touchY.current + 4) setFollowing(false); else if (atEnd()) setFollowing(true); }} onScroll={() => { const el = scroll.current; if (!el) return; const scrollTop = el.scrollTop; const resume = shouldResumeBottomFollow({ following: stickToBottom.current, previousScrollTop: previousScrollTop.current, scrollTop, distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight }); previousScrollTop.current = scrollTop; if (resume) setFollowing(true); }}>
           <div className="transcript-inner" ref={transcriptInner}>
+          {conversation ? <div className="topic-context"><button type="button" onClick={() => openTopic()}>‹ 返回聊天</button><strong>{topic?.title}</strong><small>{topic?.audience === "public" ? "回复到飞书话题" + (topic.sourceContext.chatName ? " · " + topic.sourceContext.chatName : "") : "私人话题"}</small></div> : null}
           {focusedMessage ? <button type="button" className="older" onClick={latestMessages}>返回最新消息</button> : null}
-          {!focusedMessage && Number(messages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
+          {!focusedMessage && !(conversation && olderEnd) && Number(rawMessages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
           {!messages.length && !processing && historyLoading ? <div className="history-loading" role="status"><span className="spin"/>正在载入历史会话…</div> : !messages.length && !processing ? <div className="welcome ds-welcome">
             <Avatar bot={bot} allBots={state.bots} large size={84} animate/>
             <div className="ds-welcome-badge" style={{ color: botLook.ink.solid, background: botLook.ink.soft }}>长期陪伴，随时开始</div>
@@ -653,7 +703,8 @@ export function AgentDesktop() {
             const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
             return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
               {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              <AgentMessage message={m} bot={bot} bots={state.bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>
+              {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} bot={bot} bots={state.bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>}
+              {conversation && m.input_status === "pending" ? <button type="button" onClick={() => { setEditInput(str(m.id)); changeDraft(str(m.content)); }}>编辑排队消息</button> : null}
             </div>;
           })}
           {liveStreaming.map((s) => {
@@ -681,6 +732,7 @@ export function AgentDesktop() {
         <div className="composer-area">
           {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准{(() => { const job = botJobs.find((item) => item.taskId === a.task_id); return job ? ` · 后台任务「${job.title}」` : ""; })()}</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
+          {conversation && <TopicTasks key={conversation} tasks={topicTasks} conversationId={conversation} botId={botId} run={run}/>}
           {replyJob ? <div className="quote-bar reply-job-bar"><div><strong>回复后台任务：{replyJob.title}</strong></div><button type="button" aria-label="取消回复" onClick={() => setReplyJob(undefined)}><X size={14}/></button></div> : null}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
           {matchingPeers.length > 0 ? <div className="at-menu" role="listbox" aria-label="提及同伴 Agent">{matchingPeers.map((peer, index) => <button type="button" key={str(peer.id)} className={index === atIndex ? "selected" : ""} onMouseDown={(e) => { e.preventDefault(); applyMention(str(peer.name)); }}><Avatar bot={peer} allBots={state.bots} size={28}/><div><strong>@{peer.name}</strong><span>{str(peer.instructions) || "同伴 Agent"}</span></div></button>)}</div> : null}
@@ -716,11 +768,11 @@ export function AgentDesktop() {
                       <button type="button" className="attachment-file-remove" aria-label={`取消上传 ${item.file.name}`} onClick={() => removePending(item)}><X size={12}/></button>
                     </div>)}
             </div>}
-            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={replyJob ? `回复后台任务：${replyJob.title}` : `给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={chooseModel} onExport={() => void run(downloadTranscript)} onNewTopic={() => void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
+            <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={editInput ? "编辑排队消息…" : replyJob ? `回复后台任务：${replyJob.title}` : `给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
+            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={chooseModel} onExport={() => void run(downloadTranscript)} onNewTopic={() => finance ? (openTopic(), composerRef.current?.focus()) : void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
               {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
               {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
-                ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
+                ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { if (conversation) await api("agents/cancel",{botId,conversationId:conversation}); else for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
                 : <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
             </ComposerControls>
           </form>
