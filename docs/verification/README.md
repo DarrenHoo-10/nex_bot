@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [助手重置和后台删除发布验收（2026-11-15）](assistant-lifecycle-release-20261115.md)
+
 - [话题栏固定：全平台发布（2026-11-14）](topic-header-release-20261114.md)
 
 - [话题栏固定：本地验证（2026-11-14）](topic-header-20261114.md)
