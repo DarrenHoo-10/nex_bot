@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPersonalApp } from "../index.ts";
+import { WAKE_MAX_COUNT, answerText, createTriage, wakeText, type ModelCaller, type TriageInput, type TriageVerdict } from "./triage.ts";
 import {
   BOUNDARY_RE, CONTINUE_TEXT, CliAgentSupervisor, RETRY_CAP_MS, STALE_MS, classifyError, detectWait, parseResetTime, retryDelayMs, workspaceScope,
   type SupervisorClock,
@@ -414,11 +415,11 @@ describe("usage limit and wakeup", () => {
 describe("settings, persistence and the route", () => {
   it("lets a workspace override the global switches", async () => {
     const { supervisor } = await ready();
-    expect(supervisor.settings("C:/proj")).toEqual({ transientRetry: true, usageLimit: false, wakeup: false });
+    expect(supervisor.settings("C:/proj")).toEqual({ transientRetry: true, usageLimit: false, wakeup: false, triage: false, decide: false, wake: false });
     supervisor.put(undefined, { usageLimit: true });
     supervisor.put("C:/proj", { usageLimit: false, wakeup: true });
-    expect(supervisor.settings("C:/proj")).toEqual({ transientRetry: true, usageLimit: false, wakeup: true });
-    expect(supervisor.settings("C:/other")).toEqual({ transientRetry: true, usageLimit: true, wakeup: false });
+    expect(supervisor.settings("C:/proj")).toEqual({ transientRetry: true, usageLimit: false, wakeup: true, triage: false, decide: false, wake: false });
+    expect(supervisor.settings("C:/other")).toEqual({ transientRetry: true, usageLimit: true, wakeup: false, triage: false, decide: false, wake: false });
     supervisor.put("C:/proj", null);
     expect(supervisor.settings("C:/proj").wakeup).toBe(false);
   });
@@ -446,7 +447,7 @@ describe("settings, persistence and the route", () => {
     const { f } = await ready();
     const first = await f.call("cli-agents/supervision");
     expect(first.status).toBe(200);
-    expect(first.data.defaults).toEqual({ transientRetry: true, usageLimit: false, wakeup: false });
+    expect(first.data.defaults).toEqual({ transientRetry: true, usageLimit: false, wakeup: false, triage: false, decide: false, wake: false });
     const saved = await f.call("cli-agents/supervision", { cwd: "C:/proj", settings: { wakeup: true } }, "PUT");
     expect(saved.status).toBe(200);
     expect(saved.data.workspaces).toEqual([{ cwd: "C:/proj", settings: { wakeup: true } }]);
@@ -457,5 +458,405 @@ describe("settings, persistence and the route", () => {
     }
     const anon = await fetch(f.app.origin + "/api/cli-agents/supervision");
     expect(anon.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model triage. The classifier is a fake: nothing here reaches a model.
+
+type Ctx = Awaited<ReturnType<typeof ready>>;
+type Verdict = TriageVerdict | null;
+const ASK = [{ question: "用哪个库？", options: [{ label: "A" }, { label: "B" }] }];
+const CI: Verdict = { state: "blocked", on: "ci", what: "流水线 #12", checkMs: 10 * MINUTE };
+const USER: Verdict = { state: "blocked", on: "user", questions: ASK };
+let said = 0;
+
+/** A classifier that returns the next verdict of the list (the last one repeats) and remembers what it was asked. */
+function classifier(verdicts: Verdict[]) {
+  const inputs: TriageInput[] = [];
+  const hook = async (input: TriageInput): Promise<Verdict> => { inputs.push(input); return verdicts[Math.min(inputs.length, verdicts.length) - 1] ?? null; };
+  return { hook, inputs };
+}
+
+async function say(ctx: Ctx, text: string) {
+  const item = { kind: "assistant", id: "t" + ++said, ts: ctx.clock.time, text };
+  ctx.state.items.push(item);
+  ctx.device.send({ type: "cli.items", ref: "claude:s1", items: [item] });
+  await wait(50);
+}
+
+/** Ends a turn with a closing text and lets the settle delay pass. */
+async function finish(ctx: Ctx, turn: number, text = "我已经把改动推到分支，现在等 CI 跑完再继续下一步。") {
+  await say(ctx, text);
+  await ctx.endTurn(turn, "end");
+  ctx.clock.advance(3 * SECOND);
+  await wait(60);
+}
+
+async function triaged(on: Verdict[] | Verdict, settings: Record<string, boolean> = { triage: true, decide: true, wake: true }) {
+  const ctx = await ready();
+  const c = classifier(Array.isArray(on) ? on : [on]);
+  ctx.supervisor.triage = c.hook;
+  ctx.supervisor.put(undefined, settings);
+  return { ...ctx, ...c };
+}
+
+describe("triage: nothing runs unless it is switched on", () => {
+  it("makes no model call with the switches at their defaults, or with only part of them on", async () => {
+    for (const settings of [{}, { triage: true }, { decide: true, wake: true }, { triage: true, decide: false, wake: false }]) {
+      const ctx = await ready();
+      const requests: string[] = [];
+      const model: ModelCaller = { complete: async (request) => { requests.push(request.content); return '{"state":"blocked","on":"ci","what":"x"}'; } };
+      ctx.supervisor.triage = createTriage(model, { now: () => ctx.clock.now() });
+      ctx.supervisor.put(undefined, settings);
+      await finish(ctx, 1);
+      expect(requests, JSON.stringify(settings)).toHaveLength(0);
+      expect(ctx.actions(), JSON.stringify(settings)).toHaveLength(0);
+      expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+      expect(ctx.sent()).toHaveLength(0);
+    }
+  });
+
+  it("makes no call without a classifier, and none for an error or an interrupted turn", async () => {
+    const ctx = await triaged(CI);
+    ctx.supervisor.triage = null;
+    await finish(ctx, 1);
+    expect(ctx.actions()).toHaveLength(0);
+    ctx.supervisor.triage = ctx.hook;
+    await say(ctx, "我已经把改动推到分支，现在等 CI 跑完再继续下一步。");
+    await ctx.endTurn(2, "interrupted");
+    await ctx.endTurn(3, "error", "401 unauthorized");
+    ctx.clock.advance(3 * SECOND);
+    await wait(60);
+    expect(ctx.inputs).toHaveLength(0);
+  });
+
+  it("does not classify a turn that ends with a wait the session announced, when wakeup is on", async () => {
+    const ctx = await triaged(CI, { triage: true, decide: true, wake: true, wakeup: true });
+    await finish(ctx, 1, "构建已提交，等待 10 分钟后继续检查结果。");
+    expect(ctx.inputs).toHaveLength(0);
+    expect(ctx.actions()).toMatchObject([{ kind: "wakeup", status: "pending" }]);
+    expect(ctx.actions()[0]!.reason).toBeUndefined();
+  });
+
+  it("hands the classifier a bounded digest of the turn", async () => {
+    const ctx = await triaged({ state: "done" });
+    ctx.device.send({ type: "cli.items", ref: "claude:s1", items: [{ kind: "user", id: "u1", ts: ctx.clock.time - 10 * MINUTE, text: "please build the parser" }] });
+    await wait(50);
+    await finish(ctx, 1, "全部完成了，测试都通过了。");
+    expect(ctx.inputs).toHaveLength(1);
+    expect(ctx.inputs[0]).toMatchObject({ key: ctx.key, cwd: "C:/proj", lastAssistantText: "全部完成了，测试都通过了。", lastUserText: "please build the parser" });
+  });
+
+  it("does nothing for working, done, or an invalid verdict, and classifies a repeated turn once", async () => {
+    for (const verdict of [{ state: "working" }, { state: "done" }, null] as Verdict[]) {
+      const ctx = await triaged(verdict);
+      await finish(ctx, 1);
+      expect(ctx.sent()).toHaveLength(0);
+      expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+      expect(ctx.actions().filter((row) => row.status === "pending")).toHaveLength(0);
+      const endedAt = ctx.f.app.cliHub.lastTurn(ctx.key)!.endedAt;
+      ctx.device.send({ type: "cli.turn", ref: "claude:s1", turn: 1, endedAt, reason: "end" });
+      await wait(50);
+      ctx.clock.advance(3 * SECOND);
+      await wait(60);
+      expect(ctx.inputs).toHaveLength(1);
+    }
+  });
+
+  it("an invalid model reply decides nothing end to end", async () => {
+    const ctx = await ready();
+    const model: ModelCaller = { complete: async () => "not json at all" };
+    ctx.supervisor.triage = createTriage(model, { now: () => ctx.clock.now() });
+    ctx.supervisor.put(undefined, { triage: true, decide: true, wake: true });
+    await finish(ctx, 1);
+    expect(ctx.sent()).toHaveLength(0);
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+    expect(ctx.actions().filter((row) => row.status === "pending")).toHaveLength(0);
+  });
+});
+
+describe("triage: decisions for the user", () => {
+  it("raises a question card, and sends the user's own answer to the session", async () => {
+    const ctx = await triaged(USER);
+    await finish(ctx, 1, "有两个方案，你想用哪个库？A 还是 B？");
+    const [card] = ctx.f.app.cliHub.requests(ctx.key);
+    expect(card).toMatchObject({ kind: "question", tool: "nexbot:triage", questions: ASK });
+    expect(ctx.actions()).toMatchObject([{ turn: 1, status: "skipped", reason: "triage:card" }]);
+    expect(ctx.sent()).toHaveLength(0);
+
+    const answered = await ctx.f.call("cli-agents/answer", { id: card!.id, decision: "allow", answers: { "用哪个库？": "B" } });
+    expect(answered.status).toBe(200);
+    await until(() => ctx.sent().length === 1, "answer sent");
+    expect(ctx.sent()[0]!.args).toMatchObject({ ref: "claude:s1", text: "关于你上面的问题：用哪个库？ → B" });
+    expect(ctx.sent()[0]!.args.text).toBe(answerText(ASK, { "用哪个库？": "B" }));
+    // it goes to the session as a message, not to the device's own request hook
+    expect(ctx.device.ops("answer")).toHaveLength(0);
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+  });
+
+  it("sends nothing when the card is dismissed or the answer is not one of the questions", async () => {
+    const ctx = await triaged(USER);
+    await finish(ctx, 1);
+    const [card] = ctx.f.app.cliHub.requests(ctx.key);
+    expect((await ctx.f.call("cli-agents/answer", { id: card!.id, decision: "allow", answers: { other: "x" } })).status).toBe(400);
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(1);
+    expect((await ctx.f.call("cli-agents/answer", { id: card!.id, decision: "deny" })).status).toBe(200);
+    await wait(50);
+    expect(ctx.sent()).toHaveLength(0);
+    expect(ctx.device.ops("answer")).toHaveLength(0);
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+  });
+
+  it("raises no card when decide is off, and takes the card away when the session moves on", async () => {
+    const off = await triaged(USER, { triage: true, wake: true });
+    await finish(off, 1);
+    expect(off.f.app.cliHub.requests(off.key)).toHaveLength(0);
+
+    const ctx = await triaged([USER, { state: "done" }]);
+    await finish(ctx, 1);
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(1);
+    await ctx.endTurn(2, "end");
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+  });
+
+  it("may ask about anything, since a card only asks; it raises none while a request is pending or the session runs", async () => {
+    const risky = await triaged(USER);
+    await finish(risky, 1, "要不要 deploy 到 production？A 还是 B？");
+    expect(risky.f.app.cliHub.requests(risky.key)).toHaveLength(1);
+
+    const pending = await triaged(USER);
+    pending.device.send({ type: "cli.request", ref: "claude:s1", id: "r1", kind: "permission", tool: "Bash", summary: "run it", expiresAt: Date.now() + HOUR });
+    await wait(50);
+    await finish(pending, 1);
+    expect(pending.f.app.cliHub.requests(pending.key).map((r) => r.tool)).toEqual(["Bash"]);
+
+    const running = await triaged(USER);
+    running.device.sessions([wire("s1", { state: "running" })]);
+    await wait(50);
+    await finish(running, 1);
+    expect(running.inputs).toHaveLength(0);
+    expect(running.f.app.cliHub.requests(running.key)).toHaveLength(0);
+  });
+
+  it("re-checks after the model answers: no card when the session moved on meanwhile", async () => {
+    const ctx = await ready();
+    let release: (value: Verdict) => void = () => undefined;
+    ctx.supervisor.triage = () => new Promise<Verdict>((resolve) => { release = resolve; });
+    ctx.supervisor.put(undefined, { triage: true, decide: true, wake: true });
+    await say(ctx, "你想用哪个库？A 还是 B？");
+    await ctx.endTurn(1, "end");
+    ctx.clock.advance(3 * SECOND);
+    await wait(60);
+    ctx.device.sessions([wire("s1", { state: "running" })]);
+    await wait(50);
+    release(USER);
+    await until(() => ctx.actions()[0]?.reason !== "triage:classifying", "claim settled");
+    expect(ctx.actions()).toMatchObject([{ status: "skipped", reason: "triage:running" }]);
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+  });
+});
+
+describe("triage: wakeups", () => {
+  it("asks only whether the awaited thing is ready, after the interval the model suggested", async () => {
+    const ctx = await triaged({ ...CI, checkMs: 20 * MINUTE } as Verdict);
+    const endedAt = ctx.clock.time;
+    await finish(ctx, 1);
+    expect(ctx.actions()).toMatchObject([{ kind: "wakeup", attempt: 1, status: "pending", reason: "triage:ci", dueAt: endedAt + 20 * MINUTE }]);
+    ctx.clock.advance(19 * MINUTE);
+    await wait(50);
+    expect(ctx.sent()).toHaveLength(0);
+    ctx.clock.advance(MINUTE);
+    await until(() => ctx.sent().length === 1, "wakeup sent");
+    expect(ctx.sent()[0]!.args).toMatchObject({ ref: "claude:s1", text: wakeText("ci") });
+    expect(ctx.actions()[0]).toMatchObject({ status: "sent", reason: "triage:ci" });
+  });
+
+  it("clamps a suggestion into 2 minutes to 4 hours through the classifier", async () => {
+    const ctx = await triaged({ state: "blocked", on: "deploy", what: "staging", checkMs: 2 * MINUTE });
+    const endedAt = ctx.clock.time;
+    await finish(ctx, 1);
+    expect(ctx.actions()[0]!.dueAt).toBe(endedAt + 2 * MINUTE);
+  });
+
+  it("doubles the interval each time, at most six wakeups, then raises a card instead of a seventh", async () => {
+    const ctx = await triaged(CI);
+    const delays: number[] = [];
+    for (let turn = 1; turn <= WAKE_MAX_COUNT; turn += 1) {
+      await finish(ctx, turn);
+      const row = ctx.actions().at(-1)!;
+      expect(row).toMatchObject({ turn, kind: "wakeup", status: "pending", reason: "triage:ci", attempt: turn });
+      delays.push(row.dueAt - row.endedAt);
+      ctx.clock.advance(row.dueAt - ctx.clock.time);
+      await until(() => ctx.sent().length === turn, "wakeup " + turn);
+      await until(() => ctx.actions().at(-1)!.status === "sent", "marked sent");
+    }
+    expect(delays).toEqual([10, 20, 40, 80, 160, 240].map((m) => m * MINUTE));
+    expect(ctx.sent().every((op) => op.args.text === wakeText("ci"))).toBe(true);
+
+    await finish(ctx, WAKE_MAX_COUNT + 1);
+    expect(ctx.sent()).toHaveLength(WAKE_MAX_COUNT);
+    expect(ctx.actions().filter((row) => row.status === "pending")).toHaveLength(0);
+    const [card] = ctx.f.app.cliHub.requests(ctx.key);
+    expect(card).toMatchObject({ kind: "question", tool: "nexbot:triage" });
+    expect(card!.questions![0]!.question).toContain("已经检查了 6 次");
+    ctx.clock.advance(5 * HOUR);
+    await wait(60);
+    expect(ctx.sent()).toHaveLength(WAKE_MAX_COUNT);
+
+    // the user's answer goes back as their own words
+    await ctx.f.call("cli-agents/answer", { id: card!.id, decision: "allow", answers: { [card!.questions![0]!.question]: "继续等待" } });
+    await until(() => ctx.sent().length === WAKE_MAX_COUNT + 1, "answer sent");
+    expect(String(ctx.sent().at(-1)!.args.text)).toMatch(/^关于你上面的问题：.*→ 继续等待$/);
+  });
+
+  it("stops quietly after six when decide is off", async () => {
+    const ctx = await triaged(CI, { triage: true, wake: true });
+    for (let turn = 1; turn <= WAKE_MAX_COUNT; turn += 1) {
+      await finish(ctx, turn);
+      ctx.clock.advance(ctx.actions().at(-1)!.dueAt - ctx.clock.time);
+      await until(() => ctx.sent().length === turn, "wakeup " + turn);
+      await until(() => ctx.actions().at(-1)!.status === "sent", "marked sent");
+    }
+    await finish(ctx, 7);
+    expect(ctx.actions().at(-1)).toMatchObject({ status: "skipped", reason: "triage:max_wakeups" });
+    expect(ctx.f.app.cliHub.requests(ctx.key)).toHaveLength(0);
+    expect(ctx.sent()).toHaveLength(WAKE_MAX_COUNT);
+  });
+
+  it("a verdict that is not blocked ends the run, so the count starts over", async () => {
+    const ctx = await triaged([CI, CI, { state: "done" }, CI]);
+    for (const turn of [1, 2]) {
+      await finish(ctx, turn);
+      ctx.clock.advance(5 * HOUR);
+      await until(() => ctx.sent().length === turn, "wakeup " + turn);
+      await until(() => ctx.actions().at(-1)!.status === "sent", "marked sent");
+    }
+    await finish(ctx, 3);
+    await finish(ctx, 4);
+    expect(ctx.actions().at(-1)).toMatchObject({ turn: 4, attempt: 1, status: "pending" });
+    expect(ctx.actions().at(-1)!.dueAt - ctx.actions().at(-1)!.endedAt).toBe(10 * MINUTE);
+  });
+
+  it("does not count a wakeup as a retry attempt", async () => {
+    const ctx = await triaged(CI);
+    await finish(ctx, 1);
+    ctx.clock.advance(HOUR);
+    await until(() => ctx.sent().length === 1, "wakeup");
+    await until(() => ctx.actions()[0]!.status === "sent", "marked sent");
+    await ctx.endTurn(2, "error", "overloaded");
+    expect(ctx.actions().at(-1)).toMatchObject({ kind: "retry", attempt: 1, status: "pending" });
+  });
+
+  it("does nothing for a wait when wake is off, and cancels a wakeup when it is turned off", async () => {
+    const off = await triaged(CI, { triage: true, decide: true });
+    await finish(off, 1);
+    expect(off.actions().filter((row) => row.status === "pending")).toHaveLength(0);
+    off.clock.advance(5 * HOUR);
+    await wait(50);
+    expect(off.sent()).toHaveLength(0);
+
+    for (const change of [{ wake: false }, { triage: false }]) {
+      const ctx = await triaged(CI);
+      await finish(ctx, 1);
+      expect(ctx.actions()[0]!.status).toBe("pending");
+      ctx.supervisor.put(undefined, change);
+      expect(ctx.actions()[0]).toMatchObject({ status: "cancelled", reason: "disabled" });
+      ctx.clock.advance(5 * HOUR);
+      await wait(50);
+      expect(ctx.sent()).toHaveLength(0);
+    }
+  });
+
+  it("re-arms a pending wakeup after a restart", async () => {
+    const ctx = await triaged(CI);
+    await finish(ctx, 1);
+    ctx.supervisor.close();
+    const second = new CliAgentSupervisor(ctx.f.app.cliHub, ctx.f.app.store, ctx.clock);
+    cleanups.push(() => second.close());
+    ctx.clock.advance(10 * MINUTE);
+    await until(() => ctx.sent().length === 1, "sent after restart");
+    expect(ctx.sent()[0]!.args.text).toBe(wakeText("ci"));
+  });
+});
+
+describe("triage: checks before every automatic send", () => {
+  const scenarios: Array<{ name: string; reason: string; setup: (ctx: Ctx) => Promise<void> | void }> = [
+    { name: "the session is running again", reason: "running", setup: (ctx) => ctx.device.sessions([wire("s1", { state: "running" })]) },
+    { name: "the session was stopped", reason: "stopped", setup: (ctx) => ctx.device.sessions([wire("s1", { state: "stopped" })]) },
+    { name: "the session waits for the user", reason: "waiting", setup: (ctx) => ctx.device.sessions([wire("s1", { state: "waiting" })]) },
+    { name: "the session lives in a terminal the user holds", reason: "local_session", setup: (ctx) => ctx.device.sessions([wire("s1", { liveIn: "terminal" })]) },
+    {
+      name: "a permission request is pending", reason: "pending_request",
+      setup: (ctx) => ctx.device.send({ type: "cli.request", ref: "claude:s1", id: "r1", kind: "permission", tool: "Bash", summary: "run it", expiresAt: Date.now() + HOUR }),
+    },
+    { name: "the user typed a moment ago", reason: "recent_input", setup: (ctx) => { ctx.state.items.push({ kind: "user", id: "u2", ts: ctx.clock.time + 10 * MINUTE - 30 * SECOND, text: "wait, one more thing" }); } },
+    { name: "the transcript moved on after the turn", reason: "activity_after_turn", setup: (ctx) => { ctx.state.items.push({ kind: "assistant", id: "a2", ts: ctx.clock.time + 5 * SECOND, text: "still going" }); } },
+    { name: "the transcript cannot be read", reason: "read_failed", setup: (ctx) => { ctx.state.readFails = true; } },
+  ];
+  for (const scenario of scenarios) {
+    it(`skips the wakeup when ${scenario.name}`, async () => {
+      const ctx = await triaged(CI);
+      await finish(ctx, 1);
+      await scenario.setup(ctx);
+      await wait(100);
+      ctx.clock.advance(10 * MINUTE);
+      await until(() => ctx.actions()[0]!.status !== "pending", "action settled");
+      expect(ctx.actions()[0]).toMatchObject({ status: "skipped", reason: scenario.reason });
+      expect(ctx.sent()).toHaveLength(0);
+    });
+  }
+
+  it("cancels a waiting wakeup when a newer turn arrives", async () => {
+    const ctx = await triaged([CI, { state: "done" }]);
+    await finish(ctx, 1);
+    ctx.clock.advance(MINUTE);
+    await ctx.endTurn(2, "end");
+    expect(ctx.actions()[0]).toMatchObject({ status: "cancelled", reason: "newer_turn" });
+    ctx.clock.advance(5 * HOUR);
+    await wait(50);
+    expect(ctx.sent()).toHaveLength(0);
+  });
+
+  it("re-checks the session after the model answers, before arming a wakeup", async () => {
+    const ctx = await ready();
+    let release: (value: Verdict) => void = () => undefined;
+    ctx.supervisor.triage = () => new Promise<Verdict>((resolve) => { release = resolve; });
+    ctx.supervisor.put(undefined, { triage: true, decide: true, wake: true });
+    await finish(ctx, 1);
+    ctx.device.sessions([wire("s1", { liveIn: "terminal" })]);
+    await wait(50);
+    release(CI);
+    await until(() => ctx.actions()[0]?.reason !== "triage:classifying", "claim settled");
+    expect(ctx.actions()).toMatchObject([{ status: "skipped", reason: "triage:local_session" }]);
+    ctx.clock.advance(5 * HOUR);
+    await wait(50);
+    expect(ctx.sent()).toHaveLength(0);
+  });
+
+  const risky = [
+    "已经提交，等 CI 通过后 push 到 main。", "等部署完成后再往下。", "等待发布完成。", "wait for the production build", "等 merge 之后继续", "等对方回复你发的消息", "等待删除任务结束", "等待充值到账",
+  ];
+  for (const text of risky) {
+    it(`never wakes a session whose last words are: ${text}`, async () => {
+      const ctx = await triaged(CI);
+      await finish(ctx, 1, text);
+      ctx.clock.advance(10 * MINUTE);
+      await until(() => ctx.actions()[0]!.status !== "pending", "action settled");
+      expect(ctx.actions()[0]).toMatchObject({ status: "skipped", reason: "boundary" });
+      expect(ctx.sent()).toHaveLength(0);
+    });
+  }
+});
+
+describe("triage: settings", () => {
+  it("defaults the three switches off and saves them like the others", async () => {
+    const { f, supervisor } = await ready();
+    expect(supervisor.settings("C:/proj")).toMatchObject({ triage: false, decide: false, wake: false });
+    const saved = await f.call("cli-agents/supervision", { cwd: "C:/proj", settings: { triage: true, decide: true } }, "PUT");
+    expect(saved.status).toBe(200);
+    expect(saved.data.workspaces).toEqual([{ cwd: "C:/proj", settings: { triage: true, decide: true } }]);
+    expect(saved.data.defaults).toMatchObject({ triage: false, decide: false, wake: false });
+    expect((await f.call("cli-agents/supervision", { settings: { triage: "yes" } }, "PUT")).status).toBe(400);
   });
 });

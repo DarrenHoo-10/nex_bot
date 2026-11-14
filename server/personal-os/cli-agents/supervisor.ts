@@ -17,14 +17,25 @@
 // else records a skip. Each turn gets at most one action row, so a repeated
 // cli.turn or a restart cannot send twice.
 //
-// Not built: a model that triages a finished turn ("doing / waiting for a
-// precondition / done"). It would spend the user's tokens on every turn and
-// has no safe rule-based form, so `triage` below is the documented extension
-// point: a hook that may return a delay for a "wakeup" and is otherwise unused.
+// Model triage (triage.ts) is a second, separate layer, off by default because
+// every call spends the user's tokens. With `triage` and one of `decide` /
+// `wake` on, a turn that ended normally is classified once by a small model
+// call as working / blocked / done. Blocked on a decision of the user's becomes
+// a question card (`decide`; the answer goes back to the session as a message
+// the user chose, "关于你上面的问题：<问题> → <回答>"). Blocked on CI, a deploy,
+// another agent or something external becomes a wakeup (`wake`) that asks only
+// whether it is ready: first after 10 minutes (the model may suggest 2 minutes
+// to 4 hours), doubling each time, at most 6, then a card asks the user. The
+// model never writes text that is sent, and the same rules apply as above: the
+// boundary words block every automatic send, the session is read again before
+// the action, and a card is only raised while nothing else is pending.
 import { randomUUID } from "node:crypto";
-import type { CliItem } from "../../../shared/cli-agents.ts";
+import type { CliItem, CliRequestQuestion, CliRequestView } from "../../../shared/cli-agents.ts";
 import type { CoreStore, Row } from "../store.ts";
 import { CliOpError, type CliAgentHub, type CliTurnEvent } from "./hub.ts";
+import { WAKE_MAX_COUNT, answerText, isBlockerKind, wakeDelayMs, wakeText, type TriageHook } from "./triage.ts";
+
+export type { TriageHook } from "./triage.ts";
 
 export const CONTINUE_TEXT = "继续";
 export const SUPERVISOR_ACTOR = "supervisor";
@@ -33,10 +44,16 @@ export interface SupervisionSettings {
   transientRetry: boolean;
   usageLimit: boolean;
   wakeup: boolean;
+  /** model triage of finished turns; nothing below runs without it */
+  triage: boolean;
+  /** triage may raise a question card for a decision of the user's */
+  decide: boolean;
+  /** triage may schedule a wakeup that asks whether an awaited thing is ready */
+  wake: boolean;
 }
 
-export const DEFAULT_SUPERVISION: Readonly<SupervisionSettings> = { transientRetry: true, usageLimit: false, wakeup: false };
-export const SUPERVISION_KEYS = ["transientRetry", "usageLimit", "wakeup"] as const;
+export const DEFAULT_SUPERVISION: Readonly<SupervisionSettings> = { transientRetry: true, usageLimit: false, wakeup: false, triage: false, decide: false, wake: false };
+export const SUPERVISION_KEYS = ["transientRetry", "usageLimit", "wakeup", "triage", "decide", "wake"] as const;
 
 export const RETRY_BASE_MS = 15_000;
 export const RETRY_MAX = 5;
@@ -87,10 +104,15 @@ export interface SupervisionAction {
   finishedAt?: number;
 }
 
-/** Extension point for a model based judgement of a finished turn. It runs for
- * turns that ended normally with `wakeup` on and may return how long to wait
- * before continuing; it never sends anything itself. Unset by default. */
-export type TriageHook = (input: { key: string; cwd: string; lastAssistantText: string }) => Promise<{ waitMs: number } | null>;
+/** Reasons of rows triage owns start with this. */
+export const TRIAGE_REASON = "triage:";
+/** A card nobody answers goes away after this. */
+export const CARD_TTL_MS = 24 * 3_600_000;
+/** The tool name of the requests triage raises (the web shows them as questions). */
+export const TRIAGE_TOOL = "nexbot:triage";
+/** Wakeups of a chain older than this no longer count. */
+const CHAIN_WINDOW_MS = 24 * 3_600_000;
+const TRIAGE_ITEMS_SEEN = 20;
 
 // ---------------------------------------------------------------------------
 // Rules
@@ -227,7 +249,9 @@ export class CliAgentSupervisor {
   private readonly settling = new Map<string, unknown>();
   private readonly running = new Set<string>();
   private readonly off: () => void;
+  private readonly offAnswer: () => void;
   private closed = false;
+  /** The model classifier (triage.ts); without one triage does nothing. */
   triage: TriageHook | null = null;
 
   constructor(
@@ -236,12 +260,14 @@ export class CliAgentSupervisor {
     private readonly clock: SupervisorClock = systemClock,
   ) {
     this.off = hub.onTurnEnd((event) => this.onTurn(event));
+    this.offAnswer = hub.onCoreAnswer((request, decision, answers, actor) => this.onCardAnswer(request, decision, answers, actor));
     this.rearm();
   }
 
   close() {
     this.closed = true;
     this.off();
+    this.offAnswer();
     for (const handle of this.timers.values()) this.clock.clearTimeout(handle);
     for (const handle of this.settling.values()) this.clock.clearTimeout(handle);
     this.timers.clear();
@@ -279,11 +305,10 @@ export class CliAgentSupervisor {
     }
     this.store.audit("cli.supervision", "cli_supervision", scope, { settings });
     // a switch that was turned off stops what is waiting for it
-    for (const row of this.store.all("SELECT id,session_key,kind FROM cli_agent_supervision_actions WHERE status='pending'")) {
+    for (const row of this.store.all("SELECT id,session_key,kind,reason FROM cli_agent_supervision_actions WHERE status='pending'")) {
       const session = this.hub.session(String(row.session_key));
       if (!session) continue;
-      const kind = String(row.kind) as ActionKind;
-      if (!this.enabled(kind, this.settings(session.cwd))) this.finish(String(row.id), "cancelled", "disabled");
+      if (!this.rowEnabled(row, this.settings(session.cwd))) this.finish(String(row.id), "cancelled", "disabled");
     }
   }
 
@@ -316,11 +341,27 @@ export class CliAgentSupervisor {
     return kind === "retry" ? settings.transientRetry : kind === "usage_limit" ? settings.usageLimit : settings.wakeup;
   }
 
+  private isTriageRow(row: Row): boolean {
+    return typeof row.reason === "string" && row.reason.startsWith(TRIAGE_REASON);
+  }
+
+  /** Whether the switches still allow this pending action. A triage wakeup needs triage and wake, not the rule based wakeup. */
+  private rowEnabled(row: Row, settings: SupervisionSettings): boolean {
+    return this.isTriageRow(row) ? settings.triage && settings.wake : this.enabled(String(row.kind) as ActionKind, settings);
+  }
+
+  /** Triage has a classifier and something it may do with a verdict. */
+  private triageOn(settings: SupervisionSettings): boolean {
+    return this.triage !== null && settings.triage && (settings.decide || settings.wake);
+  }
+
   // -------------------------------------------------------------------------
   // Turn ends
 
   private onTurn(event: CliTurnEvent) {
     if (this.closed) return;
+    // A question card raised for an earlier turn is stale: the session moved on.
+    this.hub.closeCoreRequests(event.key, "terminal");
     // A different turn than the one an action waits for means someone or something moved on.
     for (const row of this.store.all("SELECT id,turn,ended_at FROM cli_agent_supervision_actions WHERE session_key=? AND status='pending'", event.key)) {
       if (Number(row.turn) !== event.turn || Number(row.ended_at) !== event.endedAt) this.finish(String(row.id), "cancelled", "newer_turn");
@@ -335,7 +376,7 @@ export class CliAgentSupervisor {
     if (!session) return;
     const settings = this.settings(session.cwd);
     if (event.reason === "error") this.onError(event, settings);
-    else if (event.reason === "end" && settings.wakeup) {
+    else if (event.reason === "end" && (settings.wakeup || this.triageOn(settings))) {
       // the cache needs a moment to receive the closing text
       this.settling.set(event.key, this.clock.setTimeout(() => {
         this.settling.delete(event.key);
@@ -362,16 +403,129 @@ export class CliAgentSupervisor {
   private async onEnd(event: CliTurnEvent) {
     if (this.closed) return;
     const session = this.hub.session(event.key);
-    if (!session || !this.settings(session.cwd).wakeup) return;
-    const text = this.lastAssistantText(this.hub.recentItems(event.key, 20));
+    if (!session) return;
+    const settings = this.settings(session.cwd);
+    const items = this.hub.recentItems(event.key, TRIAGE_ITEMS_SEEN);
+    const text = this.lastAssistantText(items);
     if (!text) return;
-    let waitMs = detectWait(text);
-    if (waitMs === null && this.triage) {
-      const verdict = await this.triage({ key: event.key, cwd: session.cwd, lastAssistantText: text });
-      if (verdict && verdict.waitMs >= WAKEUP_MIN_MS && verdict.waitMs <= WAKEUP_MAX_MS) waitMs = Math.round(verdict.waitMs);
+    if (settings.wakeup) {
+      // an explicit wait the session announced costs no model call
+      const waitMs = detectWait(text);
+      if (waitMs !== null) { this.schedule(event, "wakeup", Math.max(this.clock.now(), event.endedAt + waitMs)); return; }
     }
-    if (waitMs === null) return;
-    this.schedule(event, "wakeup", Math.max(this.clock.now(), event.endedAt + waitMs));
+    if (this.triageOn(settings)) await this.runTriage(event, session.cwd, text, items);
+  }
+
+  // -------------------------------------------------------------------------
+  // Triage
+
+  /** Why a turn is not worth acting on, from what Core already has (no device read); null when it is. */
+  private quickGate(key: string, turn: number, endedAt: number): string | null {
+    const session = this.hub.session(key);
+    if (!session) return "gone";
+    if (!session.online) return "offline";
+    const last = this.hub.lastTurn(key);
+    if (last && (last.turn !== turn || last.endedAt !== endedAt)) return "newer_turn";
+    if (session.state === "stopped") return "stopped";
+    if (session.state === "running") return "running";
+    if (session.state === "waiting") return "waiting";
+    if (session.liveIn === "terminal" || session.liveIn === "desktop") return "local_session";
+    if (this.hub.requests(key).length) return "pending_request";
+    return null;
+  }
+
+  /** The unbroken run of wakeups triage already sent for this session, not counting row `except`. */
+  private triageChain(key: string, except: string): number {
+    const rows = this.store.all(
+      "SELECT kind,reason,status,created_at FROM cli_agent_supervision_actions WHERE session_key=? AND id!=? ORDER BY created_at DESC,rowid DESC LIMIT ?",
+      key, except, WAKE_MAX_COUNT + 1,
+    );
+    let count = 0;
+    for (const row of rows) {
+      const kind = typeof row.reason === "string" && row.reason.startsWith(TRIAGE_REASON) ? row.reason.slice(TRIAGE_REASON.length) : "";
+      const sent = row.status === "sent" || row.status === "recovered";
+      if (row.kind !== "wakeup" || !isBlockerKind(kind) || !sent || this.clock.now() - Number(row.created_at) > CHAIN_WINDOW_MS) break;
+      count += 1;
+    }
+    return count;
+  }
+
+  /** Ends the claim row of a turn. The row stays: it is what keeps a turn the device reports twice from being classified twice. */
+  private conclude(id: string, reason: string) {
+    this.finishClaim(id, reason);
+  }
+
+  private finishClaim(id: string, reason: string) {
+    this.store.run("UPDATE cli_agent_supervision_actions SET status='skipped',reason=?,finished_at=? WHERE id=? AND status='skipped'", TRIAGE_REASON + reason, this.clock.now(), id);
+  }
+
+  private async runTriage(event: CliTurnEvent, cwd: string, text: string, items: CliItem[]) {
+    const triage = this.triage;
+    if (!triage || this.quickGate(event.key, event.turn, event.endedAt)) return;
+    // the row of this turn is claimed first: a repeated turn or a restart cannot classify or act twice
+    const claim = this.record(event, "wakeup", 1, this.clock.now(), "skipped", TRIAGE_REASON + "classifying");
+    if (!claim) return;
+    const chain = this.triageChain(event.key, claim);
+    const user = items.find((item) => item.kind === "user");
+    const tools: string[] = [];
+    for (const item of items) if (item.kind === "tool") tools.push(item.name);
+    let verdict: Awaited<ReturnType<TriageHook>> = null;
+    try {
+      verdict = await triage({ key: event.key, cwd, lastAssistantText: text, ...(user && user.kind === "user" ? { lastUserText: user.text } : {}), tools });
+    } catch { /* a failed call decides nothing */ }
+    if (this.closed) return;
+    this.store.audit("cli.triage", "cli_session", event.key, { turn: event.turn, state: verdict ? verdict.state : "none", ...(verdict?.state === "blocked" ? { on: verdict.on } : {}) });
+    const settings = this.settings(this.hub.session(event.key)?.cwd ?? cwd);
+    if (!verdict) { this.conclude(claim, "none"); return; }
+    if (!this.triageOn(settings)) { this.conclude(claim, "disabled"); return; }
+    if (verdict.state !== "blocked") { this.conclude(claim, verdict.state); return; }
+    if (verdict.on === "user") {
+      if (!settings.decide) { this.conclude(claim, "decide_off"); return; }
+      await this.card(event, claim, "Agent 在等你做决定", verdict.questions);
+      return;
+    }
+    if (!settings.wake) { this.conclude(claim, "wake_off"); return; }
+    if (chain >= WAKE_MAX_COUNT) {
+      if (!settings.decide) { this.finishClaim(claim, "max_wakeups"); return; }
+      await this.card(event, claim, "已多次检查，仍未就绪", [{
+        question: `已经检查了 ${chain} 次，仍在等：${verdict.what}。接下来怎么办？`,
+        options: [{ label: "继续等待" }, { label: "先停下来，由我处理" }],
+      }]);
+      return;
+    }
+    // the session may have moved on while the model was thinking
+    const why = this.quickGate(event.key, event.turn, event.endedAt);
+    if (why) { this.finishClaim(claim, why); return; }
+    const due = Math.max(this.clock.now(), event.endedAt + wakeDelayMs(chain, verdict.checkMs));
+    const changed = this.store.run(
+      "UPDATE cli_agent_supervision_actions SET status='pending',attempt=?,due_at=?,reason=?,finished_at=NULL WHERE id=? AND status='skipped'",
+      chain + 1, due, TRIAGE_REASON + verdict.on, claim,
+    );
+    if (Number(changed.changes)) this.arm(claim, due);
+  }
+
+  /** Raises a question card for the session after reading it again; the claim row keeps the outcome. */
+  private async card(event: CliTurnEvent, claim: string, summary: string, questions: CliRequestQuestion[]) {
+    const why = await this.reread({ session_key: event.key, turn: event.turn, ended_at: event.endedAt }, false);
+    if (this.closed) return;
+    if (why) { this.finishClaim(claim, why); return; }
+    const settings = this.settings(this.hub.session(event.key)?.cwd ?? "");
+    if (!(this.triageOn(settings) && settings.decide)) { this.finishClaim(claim, "disabled"); return; }
+    const requestId = this.hub.addCoreRequest(event.key, { tool: TRIAGE_TOOL, summary, questions, expiresAt: this.clock.now() + CARD_TTL_MS });
+    if (!requestId) { this.finishClaim(claim, "no_card"); return; }
+    this.store.audit("cli.triage_card", "cli_session", event.key, { turn: event.turn, requestId, questions: questions.length });
+    this.finishClaim(claim, "card");
+  }
+
+  /** The user's answer to a card: sent to the session as one line, in the user's words. Dismissing sends nothing. */
+  private async onCardAnswer(request: CliRequestView, decision: "allow" | "deny", answers: Record<string, string> | undefined, actor: string): Promise<{ outcome: string }> {
+    if (decision === "deny") return { outcome: "dismissed" };
+    const text = answerText(request.questions ?? [], answers ?? {});
+    if (!text) throw new CliOpError("invalid");
+    // length only, like every other send
+    this.store.audit("cli.send", "cli_session", request.key, { actor, length: text.length, card: request.id });
+    await this.hub.send(actor, request.key, text);
+    return { outcome: "sent" };
   }
 
   /** Inserts the action row for this turn (once) and arms its timer. */
@@ -385,12 +539,10 @@ export class CliAgentSupervisor {
 
   /** 1, or one more than the unbroken run of continues already sent for this session. */
   private nextAttempt(key: string): number {
-    const last = this.store.get("SELECT attempt FROM cli_agent_supervision_actions WHERE session_key=? ORDER BY created_at DESC,rowid DESC LIMIT 1", key);
-    const sent = this.store.get("SELECT attempt FROM cli_agent_supervision_actions WHERE session_key=? AND status='sent' ORDER BY created_at DESC,rowid DESC LIMIT 1", key);
-    // only an unbroken run counts: the latest row must itself be a sent continue
-    const latest = this.store.get("SELECT status FROM cli_agent_supervision_actions WHERE session_key=? ORDER BY created_at DESC,rowid DESC LIMIT 1", key);
-    if (!last || !sent || latest?.status !== "sent") return 1;
-    return Number(sent.attempt) + 1;
+    // only an unbroken run counts: the latest row must itself be a sent continue, and not one of triage's wakeups
+    const latest = this.store.get("SELECT attempt,status,reason FROM cli_agent_supervision_actions WHERE session_key=? ORDER BY created_at DESC,rowid DESC LIMIT 1", key);
+    if (!latest || latest.status !== "sent" || this.isTriageRow(latest)) return 1;
+    return Number(latest.attempt) + 1;
   }
 
   private record(event: CliTurnEvent, kind: ActionKind, attempt: number, dueAt: number, status: ActionStatus, reason?: string): string | null {
@@ -434,17 +586,11 @@ export class CliAgentSupervisor {
   }
 
   /** Why this action must not run, or null. Reads the session fresh from the device. */
-  private async reread(row: Row): Promise<string | null> {
+  private async reread(row: Row, boundary = true): Promise<string | null> {
     const key = String(row.session_key);
     const session = this.hub.session(key);
-    if (!session) return "gone";
-    if (!session.online) return "offline";
-    const last = this.hub.lastTurn(key);
-    if (last && (last.turn !== Number(row.turn) || last.endedAt !== Number(row.ended_at))) return "newer_turn";
-    if (session.state === "running") return "running";
-    if (session.state === "waiting") return "waiting";
-    if (session.liveIn === "terminal" || session.liveIn === "desktop") return "local_session";
-    if (this.hub.requests(key).length) return "pending_request";
+    const gate = this.quickGate(key, Number(row.turn), Number(row.ended_at));
+    if (gate || !session) return gate ?? "gone";
     let page: { items: CliItem[] };
     try { page = await this.hub.items(SUPERVISOR_ACTOR, key); } catch { return "read_failed"; }
     const newestFirst = [...page.items].reverse();
@@ -457,7 +603,8 @@ export class CliAgentSupervisor {
     }
     const text = this.lastAssistantText(newestFirst) || this.lastAssistantText(this.hub.recentItems(key, 20));
     const turnError = this.hub.lastTurn(key)?.error ?? "";
-    if (BOUNDARY_RE.test(`${text}\n${session.waitingFor ?? ""}\n${turnError}`)) return "boundary";
+    // a card only asks the user, so it may mention anything; a message to the session may not
+    if (boundary && BOUNDARY_RE.test(`${text}\n${session.waitingFor ?? ""}\n${turnError}`)) return "boundary";
     return null;
   }
 
@@ -470,7 +617,7 @@ export class CliAgentSupervisor {
       const key = String(row.session_key);
       const session = this.hub.session(key);
       if (!session) { this.finish(id, "skipped", "gone"); return; }
-      if (!this.enabled(String(row.kind) as ActionKind, this.settings(session.cwd))) { this.finish(id, "cancelled", "disabled"); return; }
+      if (!this.rowEnabled(row, this.settings(session.cwd))) { this.finish(id, "cancelled", "disabled"); return; }
       const reason = await this.reread(row);
       if (this.closed) return;
       // the row may have been cancelled while the device was being read
@@ -480,13 +627,15 @@ export class CliAgentSupervisor {
       this.store.run("UPDATE cli_agent_supervision_actions SET status='sent',finished_at=? WHERE id=? AND status='pending'", this.clock.now(), id);
       this.store.audit("cli.supervise", "cli_session", key, { kind: row.kind, turn: Number(row.turn), attempt: Number(row.attempt) });
       try {
-        await this.hub.send(SUPERVISOR_ACTOR, key, CONTINUE_TEXT);
+        // a triage wakeup asks whether the awaited thing is ready; everything else is the fixed continue
+        const blocker = this.isTriageRow(row) ? String(row.reason).slice(TRIAGE_REASON.length) : "";
+        await this.hub.send(SUPERVISOR_ACTOR, key, isBlockerKind(blocker) ? wakeText(blocker) : CONTINUE_TEXT);
       } catch (error) {
         if (error instanceof CliOpError && error.code !== "unknown") {
           this.store.run("UPDATE cli_agent_supervision_actions SET status='failed',reason=?,finished_at=? WHERE id=?", error.code, this.clock.now(), id);
         } else {
           // the device may have acted: stays `sent`, and is never repeated
-          this.store.run("UPDATE cli_agent_supervision_actions SET reason='unknown' WHERE id=?", id);
+          this.store.run("UPDATE cli_agent_supervision_actions SET reason=CASE WHEN reason LIKE 'triage:%' THEN reason ELSE 'unknown' END WHERE id=?", id);
         }
       }
     } finally {

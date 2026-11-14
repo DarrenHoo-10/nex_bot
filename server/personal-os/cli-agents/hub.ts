@@ -134,6 +134,11 @@ const SESSION_COLUMNS = [
 
 const asKey = (value: string) => value as CliSessionKey;
 
+/** Requests Core itself raises for a session (the supervisor's decision cards) carry a tool name with this prefix.
+ * They never reach the device: an answer goes to the handler set with onCoreAnswer, not to the hook. */
+export const CORE_REQUEST_PREFIX = "nexbot:";
+export type CoreAnswerHandler = (request: CliRequestView, decision: "allow" | "deny", answers: Record<string, string> | undefined, actor: string) => Promise<{ outcome: string }>;
+
 export class CliAgentHub {
   readonly tuning: CliHubTuning;
   private readonly caps = new Map<string, CliAgentsCapability>();
@@ -150,6 +155,7 @@ export class CliAgentHub {
   private lastSummary = { waiting: 0, running: 0 };
   private readonly requestListeners = new Set<(message: ServerMessage) => void>();
   private readonly turnListeners = new Set<(event: CliTurnEvent) => void>();
+  private coreAnswer: CoreAnswerHandler | null = null;
   private readonly lastTurns = new Map<string, CliTurnEvent>();
   private readonly sweepTimer: NodeJS.Timeout;
   private readonly byBrowser = new Map<number, StreamEntry>();
@@ -198,6 +204,7 @@ export class CliAgentHub {
     this.summaryListeners.clear();
     this.requestListeners.clear();
     this.turnListeners.clear();
+    this.coreAnswer = null;
   }
 
   // -------------------------------------------------------------------------
@@ -545,6 +552,8 @@ export class CliAgentHub {
     if (row.status !== "pending") throw new CliOpError("not_found", "request is closed");
     if (Number(row.expires_at) <= now()) { this.expireRequests(); throw new CliOpError("not_found", "request expired"); }
     const view = this.requestView(row);
+    const core = view.tool.startsWith(CORE_REQUEST_PREFIX);
+    if (core && !this.coreAnswer) throw new CliOpError("not_found", "nothing handles this request");
     let chosen: Record<string, string> | undefined;
     if (view.kind === "question" && decision === "allow") {
       chosen = answers;
@@ -557,9 +566,11 @@ export class CliAgentHub {
     ).changes);
     if (!claimed) throw new CliOpError("not_found", "request is closed");
     try {
-      const result = await this.op(actor, parsed.deviceId, key, "answer", {
-        id: requestId, decision, ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}),
-      });
+      const result = core
+        ? await this.coreAnswer!(view, decision, chosen, actor)
+        : await this.op(actor, parsed.deviceId, key, "answer", {
+          id: requestId, decision, ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}),
+        });
       this.emitRequestResolved(asKey(key), requestId, "nexbot");
       this.refreshSummary();
       return result;
@@ -572,6 +583,37 @@ export class CliAgentHub {
       }
       throw error;
     }
+  }
+
+  /** Raises a request of Core's own for a known session; null when the session is unknown or has too many pending. */
+  addCoreRequest(key: string, input: { tool: string; summary: string; questions: CliRequestQuestion[]; expiresAt: number }): string | null {
+    if (!parseCliKey(key) || !this.sessionRow(key) || !input.tool.startsWith(CORE_REQUEST_PREFIX)) return null;
+    const pending = Number(this.store.get("SELECT COUNT(*) n FROM cli_agent_requests WHERE session_key=? AND status='pending'", key)?.n ?? 0);
+    if (pending >= CLI_LIMITS.requestsPerSession) return null;
+    const requestId = id();
+    this.store.insert("cli_agent_requests", {
+      id: requestId, session_key: key, kind: "question", tool: input.tool,
+      summary_json: this.store.encrypt(JSON.stringify({ summary: input.summary })), options_json: this.store.encrypt(JSON.stringify({ questions: input.questions })),
+      status: "pending", decided_by: null, decision_json: null, created_at: now(), expires_at: input.expiresAt,
+    });
+    this.emitRequests(key);
+    this.refreshSummary();
+    return requestId;
+  }
+
+  /** Closes the pending requests of Core's own for a session (the question went stale). */
+  closeCoreRequests(key: string, by: CliRequestResolvedBy): number {
+    let count = 0;
+    for (const row of this.store.all("SELECT id FROM cli_agent_requests WHERE session_key=? AND status='pending' AND tool LIKE ?", key, CORE_REQUEST_PREFIX + "%")) {
+      if (this.closeRequest(String(row.id), key, "resolved", by)) count++;
+    }
+    return count;
+  }
+
+  /** The one handler answers to Core's own requests go to; returns how to remove it. */
+  onCoreAnswer(handler: CoreAnswerHandler): () => void {
+    this.coreAnswer = handler;
+    return () => { if (this.coreAnswer === handler) this.coreAnswer = null; };
   }
 
   onRequests(listener: (message: ServerMessage) => void): () => void {

@@ -12,6 +12,7 @@ import { DeviceGateway } from "./devices.ts";
 import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
 import { CliAgentRoutes } from "./cli-agents/routes.ts";
 import { CliAgentSupervisor } from "./cli-agents/supervisor.ts";
+import { assistantModelCaller, createTriage } from "./cli-agents/triage.ts";
 import { cliToolExecutor } from "./cli-agents/tools.ts";
 import { CliAgentStream, type StreamAuth } from "./cli-agents/stream.ts";
 import { installUpgrade } from "./upgrade.ts";
@@ -157,6 +158,7 @@ export async function createPersonalApp(options: AppOptions) {
   const cliHub = new CliAgentHub(store, gateway, () => changed(), hubTuning);
   gateway.cli = cliHub;
   const cliSupervisor = new CliAgentSupervisor(cliHub, store);
+  cliSupervisor.triage = createTriage(assistantModelCaller(store, (botId) => runtime.tidyModel(botId)));
   runtime.cliExecutor = cliToolExecutor(cliHub, store);
   const cliRoutes = new CliAgentRoutes(cliHub, store, { agents, supervisor: cliSupervisor });
   // The Host a browser may address, and the Origin its pages then carry. Shared by the HTTP routes and the stream socket.
