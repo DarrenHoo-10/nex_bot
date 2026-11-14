@@ -326,10 +326,9 @@ try {
     browserPath = findBrowser();
     browserVersion = productVersion(browserPath);
     if (!argv.has("--skip-build")) {
-      if (!existsSync(path.join(repo, "dist-personal/server/core/index.js"))) {
-        log("building Core: node scripts/build-personal.mjs --core");
-        runInherit("node", ["scripts/build-personal.mjs", "--core"]);
-      }
+      // Always rebuild: an existing dist-personal can be an older build without Agent mode.
+      log("building Core: node scripts/build-personal.mjs --core");
+      runInherit("node", ["scripts/build-personal.mjs", "--core"]);
       if (!existsSync(herdrBinary)) {
         log("staging herdr-core: corepack pnpm build:herdr-core");
         runInherit("corepack", ["pnpm", "build:herdr-core"]);

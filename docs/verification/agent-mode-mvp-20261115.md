@@ -12,8 +12,12 @@ were on `2554e270` with the same smoke result; the final run and the suite table
 below are `df64d83c`. Uncommitted work in the main checkout (hooks, triage,
 plugin) is not covered.
 
-Result: 18 of 19 smoke steps pass. One step fails on a real bug (see Bugs). The
-smoke keeps the correct assertion, so it stays red until the bug is fixed.
+Result on `df64d83c`: 18 of 19 smoke steps pass. One step fails on a real bug (see
+Bugs). The smoke keeps the correct assertion, so it stays red until the bug is fixed.
+
+**Final run (2026-11-15, after `41303eee` plus the smoke build fix):** 19 of 19
+steps pass, including the draft refusal: both bugs below are fixed. Details are in
+"Final run" at the end of this record.
 
 ## Environment
 
@@ -91,7 +95,7 @@ sampled colours and a dominant colour below 98.5 percent):
 Observation: after 继续 the pane opened on the 对话 tab, because the page keeps
 the tab chosen for the previous session. The smoke selects 终端 explicitly.
 
-## Bugs found (not fixed here)
+## Bugs found (both fixed later; see Final run)
 
 1. A refused send while someone is typing shows the wrong text.
    - Files: `server/personal-os/cli-agents/routes.ts` lines 42-43 and 88
@@ -204,3 +208,50 @@ removed, the temp directory removed, classic `herdr.exe` pids unchanged.
   device or browser at once.
 - Approval requests, supervision and fork flows in the browser (unit tests only).
 - Keyboard layouts and IME input in the terminal; typing used raw key events.
+
+## Final run
+
+Tree: `41303eee` ("Reach CLI agent sessions running outside nex_bot terminals"),
+which contains every phase, plus one change to `scripts/smoke-cli-agents.mjs`:
+the smoke now always rebuilds Core unless `--skip-build` is given. Before that
+change it reused any existing `dist-personal/server/core/index.js`; this worktree
+held an October 24 build without Agent mode, so `GET /api/cli-agents` answered
+404 and the device step timed out. This was a smoke problem, not a Core problem.
+
+- **Smoke:** `node scripts/smoke-cli-agents.mjs --keep-going` gives 19 of 19 steps
+  passed, including "composer refuses while a person has an unsent draft". Its
+  cleanup line reports no herdr-core core or holder left, the pipe gone and the
+  state directory removed, with the classic `herdr.exe` pid unchanged.
+- **Typecheck:** `corepack pnpm typecheck` gives 0 errors.
+- **Lint:** `corepack pnpm lint` (oxlint `--deny-warnings`) is clean.
+- **Electron tests:** `node --test "electron/*.node-test.mjs"` gives 664 tests,
+  651 passed, 0 failed.
+- **Full vitest:** `corepack pnpm exec vitest run` (all 1115 files, 90 minutes under
+  load) gives 14061 passed, 356 skipped and 19 failed in 14 files. The 19 failures
+  were checked as follows:
+  - Passed when re-run alone, so they were load timeouts:
+    `server/personal-os/app.test.ts`, `server/personal-os/cli-agents/fork.test.ts`,
+    `server/local-computer-proxy.test.ts`, `server/personal-os/retrieval.test.ts`,
+    `server/personal-os/topic-tree.test.ts`, `server/routes/hosted-slack.test.ts`.
+  - Fail the same way on the baseline `dd76aa68`, which has no Agent mode code, so
+    they predate this work: `server/personal-os/sender-device.test.ts`,
+    `scripts/testing/todo-design/calendar-model.test.mjs`,
+    `server/drivers/acp/tool-scope.test.ts`, `server/lending-memory.test.ts`,
+    `server/personal-os/compaction-timing.test.ts`,
+    `server/personal-os/image-models.test.ts`, `src/components/ApprovalCard.test.ts`,
+    `src/lib/memory.test.ts`. On both trees these 7 files (all except
+    sender-device) give the same 10 failures.
+- **Other platforms**, as reported by the agents that built them:
+  - Android: `:core` 65 tests and `:app` 29 tests pass, and the debug APK builds.
+  - Apple (on mac-air): `swift test` for NexClientKit passes 245 tests, and the
+    NexBotMac and NexBotiOS builds succeed. The Mac executor build, the real
+    darwin herdr-core test and the executor host tests pass.
+  - None of these platforms were run on a device or simulator.
+
+Still open:
+
+- Real `claude` and `codex` have not been tested. This needs an isolated Windows
+  user or VM with test accounts, and should cover hooks, the AskUserQuestion answer
+  shape, `--plugin-dir` with spaces, resume, the Claude inbox and Codex daemon join.
+- No packaged EXE, APK or app was installed and run.
+- Nothing is merged to main or deployed.
