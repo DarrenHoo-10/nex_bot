@@ -307,13 +307,14 @@ describe("hand over to an assistant", () => {
 
 describe("supervision in the header", () => {
   it("opens the switches from the gear and saves a flip", async () => {
-    fixture.fetchSupervision.mockResolvedValue({ settings: { transientRetry: true, usageLimit: false, wakeup: false }, overrides: 0, pending: 0 });
-    fixture.saveSupervision.mockResolvedValue({ settings: { transientRetry: true, usageLimit: true, wakeup: false }, overrides: 0, pending: 0 });
+    const rest = { wakeup: false, triage: false, decide: false, wake: false };
+    fixture.fetchSupervision.mockResolvedValue({ settings: { transientRetry: true, usageLimit: false, ...rest }, overrides: 0, pending: 0 });
+    fixture.saveSupervision.mockResolvedValue({ settings: { transientRetry: true, usageLimit: true, ...rest }, overrides: 0, pending: 0 });
     await open();
     await click(button("自动处理设置"));
     await flush();
     const switches = [...container.querySelectorAll<HTMLElement>("[role=switch]")];
-    expect(switches.map((entry) => entry.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    expect(switches.map((entry) => entry.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "false", "false", "false"]);
     await click(switches[1]);
     await flush();
     expect(fixture.saveSupervision).toHaveBeenCalledWith({ usageLimit: true });

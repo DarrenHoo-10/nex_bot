@@ -36,10 +36,13 @@ import {
   type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
+import { CodexDaemons, DaemonError, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { HookError, HookServer, TurnTracker, locateHookPlugin } from "./hooks.ts";
+import { InboxError, sendToInbox } from "./inbox.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import {
   HerdrCore,
+  hcSocketPath,
   locateHerdrCore,
   type HcAttachParams,
   type HcEvent,
@@ -123,6 +126,11 @@ export interface CliAgentBridgeOptions {
   /** Directory of the hook socket on Unix and the open request lifetime; tests override them. */
   hookSocketDir?: string;
   hookTtlMs?: number;
+  /** Joining a Codex app-server daemon that a TUI shares. Tests pass a connector and `detect`; by default the
+   * connection is `codex app-server proxy`, tried only where a control socket exists. Never starts a daemon. */
+  codexDaemon?: Partial<Pick<CodexDaemonOptions, "connect" | "detect" | "ttlMs" | "rpcTimeoutMs" | "retryMs" | "listEveryMs">>;
+  /** How long a message to a Claude inbox may take to show up in the transcript. Default 6 s. */
+  inboxConfirmMs?: number;
 }
 
 class OpFailure extends Error {
@@ -154,6 +162,8 @@ interface Watch {
   ref: CliSessionRef;
   engine: CliEngine;
   reader: TranscriptReader | null;
+  /** a Codex App chat that lives only in the App's database: polled instead of tailed */
+  app?: { timer: NodeJS.Timeout | null; marker: string; busy: boolean };
 }
 
 const HC_LABELS = { nexbot: "1" } as const;
@@ -204,14 +214,23 @@ export class CliAgentBridge {
   private readonly states = new Map<string, CliSessionWire["state"]>();
   private readonly fallbackTimers = new Map<string, NodeJS.Timeout>();
   private readonly codexTails = new Map<string, TranscriptReader>();
+  private readonly codexDaemons: CodexDaemons;
 
   constructor(private readonly options: CliAgentBridgeOptions) {
     this.platform = options.platform ?? process.platform;
     this.store = new CliLocalStore(path.join(options.dir, "cli-agents.db"));
     this.turns = new TurnTracker((message) => this.sendJson(message));
+    this.codexDaemons = new CodexDaemons({
+      connect: proxyConnector({ codexPath: () => this.findCli("codex"), ...(options.env ? { env: options.env } : {}), platform: this.platform }),
+      emit: (message) => this.sendJson(message),
+      onLost: () => this.discovery.reapply({ flush: true }),
+      log: (level, message) => this.log(level, `codex daemon: ${message}`),
+      ...options.codexDaemon,
+    });
     this.discovery = new SessionDiscovery({
       ...(options.claudeDirs ? { claudeDirs: options.claudeDirs } : {}),
       ...(options.codexHomes ? { codexHomes: options.codexHomes } : {}),
+      codexDaemon: { threads: (home) => this.codexDaemons.threads(home), refresh: (home) => this.codexDaemons.refresh(home) },
       ...options.discovery,
       nexbotTerminals: () => this.nexbotTerminals(),
       onChange: (diff) => this.onDiscovery(diff),
@@ -293,6 +312,8 @@ export class CliAgentBridge {
     this.seq = 0;
     this.resync();
     void this.warm();
+    // Core dropped its copies of open approvals with the old link
+    this.codexDaemons.relink();
     // The hook listener comes up with the link, so terminals that survived a client restart keep forwarding.
     void this.ensureHooks();
   }
@@ -336,6 +357,7 @@ export class CliAgentBridge {
     this.hooks = null;
     if (hooks) this.track(hooks.close());
     for (const claim of this.pending.splice(0)) claim.waiter?.(null);
+    this.codexDaemons.close();
     this.dropHc();
     await Promise.race([Promise.allSettled(this.tasks), new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
     this.store.close();
@@ -573,10 +595,9 @@ export class CliAgentBridge {
 
   private scopeFor(): HcScope {
     const hash = createHash("sha256").update(`${this.scope.origin}\n${this.scope.workspaceId}`).digest("hex").slice(0, 8);
-    const win = this.platform === "win32";
     return {
       session: `nexbot-${hash}`,
-      socket: win ? `\\\\.\\pipe\\nexbot-hc-${hash}` : path.join(os.tmpdir(), `nexbot-hc-${hash}.sock`),
+      socket: hcSocketPath({ hash, dataDir: this.options.dir, platform: this.platform, tmpdir: os.tmpdir() }),
       // a backslash path on Windows: herdr-core derives paths from its own, and forward slashes break them
       binary: (() => {
         const binary = this.binaryPath();
@@ -598,6 +619,8 @@ export class CliAgentBridge {
         binary: scope.binary as string,
         session: scope.session,
         socket: scope.socket,
+        // the host's own environment (on macOS the login shell's), not this process's minimal one
+        ...(this.options.env ? { env: this.options.env } : {}),
         log: (level, message) => this.log(level, `herdr-core: ${message}`),
       }) as unknown as HcLike;
     }
@@ -840,8 +863,14 @@ export class CliAgentBridge {
 
   // -- internals: watching transcripts -----------------------------------------------------------
 
+  private closeWatch(watch: Watch): void {
+    watch.reader?.close();
+    if (watch.app?.timer) clearInterval(watch.app.timer);
+    watch.app = undefined;
+  }
+
   private closeWatches(): void {
-    for (const watch of this.watches.values()) watch.reader?.close();
+    for (const watch of this.watches.values()) this.closeWatch(watch);
     this.watches.clear();
   }
 
@@ -872,10 +901,45 @@ export class CliAgentBridge {
     });
   }
 
+  /** A chat that exists only in the Codex App's database has no file to tail: its newest page is sent again whenever the database says it changed. */
+  private async startAppWatch(watch: Watch, source: { chat: { threadId: string }; db: { marker(id: string): Promise<string>; page(id: string, o?: { before?: string; limit?: number }): Promise<{ items: CliItem[]; more: boolean }> } }): Promise<void> {
+    const state: NonNullable<Watch["app"]> = { timer: null, marker: "", busy: false };
+    watch.app = state;
+    const { chat, db } = source;
+    state.marker = await db.marker(chat.threadId);
+    const page = await db.page(chat.threadId, { limit: PAGE_SIZE });
+    if (watch.app !== state || this.watches.get(watch.ref) !== watch) return;
+    this.sendItems(watch.ref, page.items, { reset: true, more: page.more });
+    state.timer = setInterval(() => {
+      if (state.busy) return;
+      state.busy = true;
+      this.track(
+        (async () => {
+          try {
+            const marker = await db.marker(chat.threadId);
+            if (watch.app !== state || marker === state.marker) return;
+            state.marker = marker;
+            const latest = await db.page(chat.threadId, { limit: PAGE_SIZE });
+            if (watch.app === state) this.sendItems(watch.ref, latest.items, { reset: true, more: latest.more });
+          } catch (error) {
+            this.log("debug", `reading the App chat failed: ${String(error)}`);
+          } finally {
+            state.busy = false;
+          }
+        })(),
+      );
+    }, this.options.readerPollMs ?? 1000);
+    state.timer.unref?.();
+  }
+
   private async startWatch(watch: Watch): Promise<void> {
-    if (watch.reader) return;
+    if (watch.reader || watch.app) return;
     const file = this.discovery.transcriptFor(watch.ref);
-    if (!file) return;
+    if (!file) {
+      const app = this.discovery.appChatFor(watch.ref);
+      if (app) await this.startAppWatch(watch, app);
+      return;
+    }
     const reader = new TranscriptReader({
       path: file,
       engine: watch.engine,
@@ -894,7 +958,7 @@ export class CliAgentBridge {
 
   private async startWaitingWatches(): Promise<void> {
     for (const watch of Array.from(this.watches.values())) {
-      if (!watch.reader) await this.startWatch(watch).catch((error) => this.log("warn", `watch failed: ${String(error)}`));
+      if (!watch.reader && !watch.app) await this.startWatch(watch).catch((error) => this.log("warn", `watch failed: ${String(error)}`));
     }
   }
 
@@ -948,6 +1012,7 @@ export class CliAgentBridge {
       return { code, message: CLI_ERROR_TEXT[code] };
     }
     if (error instanceof OpenLocalError) return { code: error.code, message: error.message.slice(0, 200) };
+    if (error instanceof InboxError || error instanceof DaemonError) return { code: error.code, message: error.message.slice(0, 200) };
     const code = hcErrorCode(error);
     return { code, message: CLI_ERROR_TEXT[code] };
   }
@@ -997,8 +1062,12 @@ export class CliAgentBridge {
   private async opRead(args: CliOpArgs["read"]): Promise<{ items: CliItem[]; more: boolean }> {
     const row = this.session(args.ref);
     const file = this.discovery.transcriptFor(args.ref);
-    if (!file) return { items: [], more: false };
     const limit = args.limit ?? PAGE_SIZE;
+    if (!file) {
+      const app = this.discovery.appChatFor(args.ref);
+      if (!app) return { items: [], more: false };
+      return app.db.page(app.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
+    }
     const live = this.watches.get(args.ref)?.reader;
     if (live) return live.page({ before: args.before, limit });
     const reader = new TranscriptReader({ path: file, engine: row.engine, watch: false });
@@ -1012,9 +1081,10 @@ export class CliAgentBridge {
   private async opWatch(args: CliOpArgs["watch"]): Promise<Record<string, never>> {
     const row = this.session(args.ref);
     const existing = this.watches.get(args.ref);
-    if (existing?.reader) {
+    if (existing?.reader || existing?.app) {
       // Core asks again after a reconnect: send the newest page once more
-      const page = await existing.reader.page({ limit: PAGE_SIZE });
+      const app = existing.app ? this.discovery.appChatFor(args.ref) : null;
+      const page = existing.reader ? await existing.reader.page({ limit: PAGE_SIZE }) : app ? await app.db.page(app.chat.threadId, { limit: PAGE_SIZE }) : { items: [], more: false };
       this.sendItems(args.ref, page.items, { reset: true, more: page.more });
       return {};
     }
@@ -1026,9 +1096,19 @@ export class CliAgentBridge {
 
   private opUnwatch(args: CliOpArgs["unwatch"]): Record<string, never> {
     const watch = this.watches.get(args.ref);
-    watch?.reader?.close();
+    if (watch) this.closeWatch(watch);
     this.watches.delete(args.ref);
     return {};
+  }
+
+  /** The installed CLI, or null. No retry and no cache reset: callers that can live without it use this. */
+  private async findCli(engine: CliEngine): Promise<string | null> {
+    const find = this.options.resolveCli ?? ((name: CliEngine) => resolveCli(name, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}) }));
+    try {
+      return await find(engine);
+    } catch {
+      return null;
+    }
   }
 
   private async cliPath(engine: CliEngine): Promise<string> {
@@ -1205,9 +1285,31 @@ export class CliAgentBridge {
     throw new OpFailure(row.state === "stopped" ? "stopped" : "not_in_terminal");
   }
 
-  private async opSend(args: CliOpArgs["send"]): Promise<{ turn: number; started: boolean }> {
+  /** A session outside nex_bot's terminals that this device can still write to: a Claude inbox or a shared Codex daemon. */
+  private async sendOutside(args: CliOpArgs["send"], row: CliSessionWire): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
+    const route = this.discovery.routeFor(args.ref);
+    if (!route || route.via !== row.sendVia) throw new OpFailure("not_in_terminal");
+    if (route.via === "inbox") {
+      if (row.state === "stopped") throw new OpFailure("stopped");
+      const result = await sendToInbox({ configDir: route.configDir, pid: route.pid, socketPath: route.socketPath, sessionId: route.sessionId }, args.text, {
+        platform: this.platform,
+        transcript: this.discovery.transcriptFor(args.ref),
+        state: row.state,
+        ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }),
+      });
+      return { turn: 0, started: false, delivery: result.delivery, ...(result.waiting ? { waiting: true } : {}) };
+    }
+    const sent = await this.codexDaemons.send(route.home, route.threadId, args.text);
+    return { turn: 0, started: !sent.steered };
+  }
+
+  private async opSend(args: CliOpArgs["send"]): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
+    if (!this.addressFor(args.ref)) {
+      const row = this.discovery.get(args.ref);
+      if (row && (row.sendVia === "inbox" || row.sendVia === "daemon")) return this.sendOutside(args, row);
+    }
     const address = this.terminalOf(args.ref);
     const hc = await this.requireHc();
     try {
@@ -1248,6 +1350,14 @@ export class CliAgentBridge {
 
   /** Core relays the answer to a pending request; it goes to the hook that waits for it. */
   private async opAnswer(args: CliOpArgs["answer"]): Promise<{ outcome: string }> {
+    if (this.codexDaemons.owns(args.id)) {
+      try {
+        return { outcome: this.codexDaemons.answer(args) };
+      } catch (error) {
+        if (error instanceof DaemonError) throw new OpFailure(error.code, error.code === "not_found" ? "request is closed" : undefined);
+        throw error;
+      }
+    }
     const server = this.hooks ?? (await this.ensureHooks());
     if (!server) throw new OpFailure("not_found");
     try {

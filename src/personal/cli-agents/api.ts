@@ -8,6 +8,7 @@ import {
   parseCliItems,
   parseCliRequestView,
   parseCliSessionView,
+  type CliDelivery,
   type CliDeviceView,
   type CliEngine,
   type CliErrorCode,
@@ -19,16 +20,17 @@ import {
 } from "../../../shared/cli-agents";
 
 export class CliApiError extends Error {
-  constructor(message: string, readonly code?: CliErrorCode, readonly status = 0) {
+  /** `detail` is the wording Core sent in the response, which may be the device's own message. */
+  constructor(message: string, readonly code?: CliErrorCode, readonly status = 0, readonly detail?: string) {
     super(message);
     this.name = "CliApiError";
   }
 }
 
-/** The one line the page shows for a failed call. */
+/** The one line the page shows for a failed call: Core's wording when it sent some, else the code's standard text. */
 export function cliErrorText(error: unknown, fallback = "操作失败"): string {
   if (error instanceof CliApiError) {
-    if (error.code) return CLI_ERROR_TEXT[error.code];
+    if (error.code) return error.detail?.trim() || CLI_ERROR_TEXT[error.code];
     return error.message || fallback;
   }
   return error instanceof Error && error.message ? error.message : fallback;
@@ -47,7 +49,8 @@ async function call<T>(path: string, body?: unknown, method = "POST"): Promise<T
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event("nex-session-expired"));
     const code = isCliErrorCode(record.code) ? record.code : undefined;
-    throw new CliApiError(typeof record.error === "string" ? record.error : "连接失败", code, response.status);
+    const detail = typeof record.error === "string" && record.error ? record.error : undefined;
+    throw new CliApiError(detail ?? "连接失败", code, response.status, detail);
   }
   return data as T;
 }
@@ -74,7 +77,17 @@ export async function fetchItems(key: CliSessionKey, before?: string): Promise<{
 export const startSession = (deviceId: string, engine: CliEngine, cwd: string) =>
   call<{ key: CliSessionKey }>("/start", { deviceId, engine, cwd });
 export const continueSession = (key: CliSessionKey) => call<{ key: CliSessionKey }>("/continue", { key });
-export const sendMessage = (key: CliSessionKey, text: string) => call<{ turn: number }>("/send", { key, text });
+/** `delivery` and `waiting` come only from a session outside nex_bot's terminals. */
+export interface SendResult { turn: number; started?: boolean; delivery?: CliDelivery; waiting?: boolean }
+export async function sendMessage(key: CliSessionKey, text: string): Promise<SendResult> {
+  const data = await call<Record<string, unknown>>("/send", { key, text });
+  return {
+    turn: typeof data.turn === "number" ? data.turn : 0,
+    ...(typeof data.started === "boolean" ? { started: data.started } : {}),
+    ...(data.delivery === "confirmed" || data.delivery === "unconfirmed" ? { delivery: data.delivery } : {}),
+    ...(data.waiting === true ? { waiting: true } : {}),
+  };
+}
 export const interruptSession = (key: CliSessionKey) => call<{ outcome: string }>("/interrupt", { key });
 export const openLocal = (key: CliSessionKey) => call<{ ok: boolean }>("/open-local", { key });
 export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: boolean }>("/hide", { key, hidden });
@@ -85,9 +98,10 @@ export const answerRequest = (id: string, decision: CliAnswerDecision, answers?:
 
 export const forkSession = (key: CliSessionKey, botId: string) => call<{ botId: string; conversationId: string }>("/fork", { key, botId });
 
-export interface SupervisionSettings { transientRetry: boolean; usageLimit: boolean; wakeup: boolean }
-export const SUPERVISION_KEYS = ["transientRetry", "usageLimit", "wakeup"] as const;
-const SUPERVISION_DEFAULTS: SupervisionSettings = { transientRetry: true, usageLimit: false, wakeup: false };
+/** `triage` classifies finished turns with a model; `decide` and `wake` only act on its verdict. */
+export interface SupervisionSettings { transientRetry: boolean; usageLimit: boolean; wakeup: boolean; triage: boolean; decide: boolean; wake: boolean }
+export const SUPERVISION_KEYS = ["transientRetry", "usageLimit", "wakeup", "triage", "decide", "wake"] as const;
+const SUPERVISION_DEFAULTS: SupervisionSettings = { transientRetry: true, usageLimit: false, wakeup: false, triage: false, decide: false, wake: false };
 
 export interface SupervisionView {
   /** the switches in force for every folder without its own setting */

@@ -32,6 +32,7 @@ import {
   type CliRequestQuestion,
   type CliRequestResolvedBy,
   type CliRequestView,
+  type CliSendVia,
   type CliSessionKey,
   type CliSessionView,
   type CliSessionWire,
@@ -147,6 +148,8 @@ export class CliAgentHub {
   private readonly seqs = new Map<string, number>();
   /** Codex `writerUnknown` has no column: it lives and dies with the connection. */
   private readonly writerUnknown = new Set<string>();
+  /** `sendVia` has no column either: the device reports it again on every connection. */
+  private readonly sendVia = new Map<string, CliSendVia>();
   private readonly pending = new Map<string, Pending>();
   private readonly busyKeys = new Set<string>();
   private readonly watchers = new Map<string, Set<(message: ServerMessage) => void>>();
@@ -230,6 +233,7 @@ export class CliAgentHub {
     const wasOnline = this.caps.delete(deviceId);
     this.seqs.delete(deviceId);
     for (const key of [...this.writerUnknown]) if (key.startsWith(deviceId + ":")) this.writerUnknown.delete(key);
+    for (const key of [...this.sendVia.keys()]) if (key.startsWith(deviceId + ":")) this.sendVia.delete(key);
     for (const pending of [...this.pending.values()]) {
       if (pending.deviceId !== deviceId) continue;
       // A write may have reached the device: its outcome is unknown, never "failed".
@@ -356,12 +360,15 @@ export class CliAgentHub {
         const unknown = wire.writerUnknown === true;
         const unknownChanged = unknown !== this.writerUnknown.has(key);
         if (unknown) this.writerUnknown.add(key); else this.writerUnknown.delete(key);
+        const via = this.sendVia.get(key);
+        const viaChanged = via !== wire.sendVia;
+        if (wire.sendVia) this.sendVia.set(key, wire.sendVia); else this.sendVia.delete(key);
         const values = this.columnsOf(deviceId, wire);
         const previous = existing.get(key);
         if (!previous) {
           this.store.insert("cli_agent_sessions", { key, ...values, hidden: 0, first_seen_at: now(), updated_at: now() });
           upserts.push(key);
-        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged) {
+        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged || viaChanged) {
           this.store.run(
             `UPDATE cli_agent_sessions SET ${SESSION_COLUMNS.map((column) => `${column}=?`).join(",")},updated_at=? WHERE key=?`,
             ...SESSION_COLUMNS.map((column) => values[column]), now(), key,
@@ -376,7 +383,7 @@ export class CliAgentHub {
         const key = cliKey(deviceId, ref);
         if (existing.has(key) && !removes.includes(asKey(key))) removes.push(asKey(key));
       }
-      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); }
+      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); this.sendVia.delete(key); }
     });
     for (const key of removes) { this.lastTurns.delete(key); this.resolveRequests(key, "gone"); }
     const views = upserts.map((key) => this.viewOf(key)).filter((view): view is CliSessionView => view !== null);
@@ -847,6 +854,8 @@ export class CliAgentHub {
     if (row.terminal !== null) view.terminal = String(row.terminal);
     if (row.model !== null) view.model = String(row.model);
     if (row.cli_version !== null) view.cliVersion = String(row.cli_version);
+    const via = this.sendVia.get(key);
+    if (via) view.sendVia = via;
     if (this.writerUnknown.has(key)) view.writerUnknown = true;
     return view;
   }

@@ -4,11 +4,21 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Play, Square } from "lucide-react";
 import { MAX_SEND_TEXT, utf8ByteLength, type CliSessionView } from "../../../shared/cli-agents";
-import { cliErrorText } from "./api";
+import { cliErrorText, type SendResult } from "./api";
 import { composerMode } from "./session-model";
 
 // Drafts live as long as the page, one per session.
 const drafts = new Map<string, string>();
+
+export const OUTSIDE_NOTE = "发送到电脑上的会话";
+export const UNCONFIRMED_NOTE = "已发送，未确认";
+export const WAITING_NOTE = "将在电脑上回答问题后读取";
+
+/** What a send to a session outside nex_bot's terminals adds to the status line; a confirmed one says nothing more. */
+export function deliveryNote(result: unknown): string {
+  const sent = (result && typeof result === "object" ? result : {}) as Partial<SendResult>;
+  return [sent.delivery === "unconfirmed" ? UNCONFIRMED_NOTE : "", sent.waiting ? WAITING_NOTE : ""].filter(Boolean).join("，");
+}
 
 export interface ComposerProps {
   session: CliSessionView;
@@ -22,6 +32,7 @@ export function Composer({ session, onSend, onInterrupt, onContinue }: ComposerP
   const [text, setText] = useState(() => drafts.get(session.key) ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
   const imeEndedAt = useRef(0);
   const mounted = useRef(true);
   const key = session.key;
@@ -35,6 +46,7 @@ export function Composer({ session, onSend, onInterrupt, onContinue }: ComposerP
   useEffect(() => {
     setText(drafts.get(key) ?? "");
     setError("");
+    setNote("");
   }, [key]);
 
   const change = (value: string) => {
@@ -42,17 +54,18 @@ export function Composer({ session, onSend, onInterrupt, onContinue }: ComposerP
     if (value) drafts.set(key, value);
     else drafts.delete(key);
     if (error) setError("");
+    if (note) setNote("");
   };
 
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
+    setNote("");
     try {
-      await action();
-      return true;
+      return { result: await action() };
     } catch (cause) {
       if (mounted.current) setError(cliErrorText(cause));
-      return false;
+      return null;
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -62,7 +75,10 @@ export function Composer({ session, onSend, onInterrupt, onContinue }: ComposerP
   const submit = async () => {
     const value = text.trim();
     if (!value || busy || tooLarge) return;
-    if (await run(() => onSend(value)) && mounted.current) change("");
+    const sent = await run(() => onSend(value));
+    if (!sent || !mounted.current) return;
+    change("");
+    setNote(deliveryNote(sent.result));
   };
 
   if (mode.kind === "blocked") {
@@ -99,6 +115,7 @@ export function Composer({ session, onSend, onInterrupt, onContinue }: ComposerP
         <button type="submit" className="primary" aria-label="发送" disabled={busy || !text.trim() || tooLarge}><ArrowUp size={16} /></button>
       </div>
       {tooLarge ? <small role="alert" className="cli-composer-error">内容太长</small> : error ? <small role="alert" className="cli-composer-error">{error}</small> : null}
+      {mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}
     </form>
   );
 }

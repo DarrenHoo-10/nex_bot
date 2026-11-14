@@ -95,8 +95,13 @@ export function canAttach(session: CliSessionView): boolean {
   return session.online && session.state !== "stopped" && session.liveIn === "nexbot" && !!session.terminal;
 }
 
+/** The session runs on the computer outside nex_bot's terminals and takes messages through its own inbox or daemon. */
+export function sendsOutside(session: Pick<CliSessionView, "sendVia">): boolean {
+  return session.sendVia === "inbox" || session.sendVia === "daemon";
+}
+
 export type ComposerMode =
-  | { kind: "send"; running: boolean }
+  | { kind: "send"; running: boolean; outside?: true }
   | { kind: "stopped"; hint?: string }
   | { kind: "blocked"; hint: string };
 
@@ -105,6 +110,8 @@ export function composerMode(session: CliSessionView): ComposerMode {
   if (!session.online) return { kind: "blocked", hint: "电脑离线" };
   if (session.state === "stopped") return { kind: "stopped", hint: session.writerUnknown ? "可能在电脑上打开" : undefined };
   if (session.liveIn === "nexbot" && session.terminal) return { kind: "send", running: session.state === "running" };
+  // Interrupt is a terminal operation, so there is no stop button for these.
+  if (sendsOutside(session)) return { kind: "send", running: false, outside: true };
   if (session.liveIn === "desktop" && session.engine === "claude") return { kind: "blocked", hint: "在 Claude 桌面应用中打开" };
   return { kind: "blocked", hint: session.writerUnknown ? "可能在电脑上打开" : "在电脑上运行" };
 }

@@ -6,6 +6,7 @@ import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliLiveIn } from "../../../shared/cli-agents.ts";
+import { CodexAppDb } from "./codex-app-db.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { codexWriter, type CodexWriter } from "./liveness.ts";
 
@@ -248,6 +249,8 @@ export interface CodexScannerOptions {
   maxSessions?: number;
   /** defaults to liveness.codexWriter */
   writer?: (home: string, threadId: string, now: number) => CodexWriter;
+  /** tests: decides whether a rollout path from the App database exists */
+  appDbFileExists?: (file: string) => boolean;
 }
 
 interface RolloutFile {
@@ -270,6 +273,12 @@ export class CodexScanner {
   constructor(home: string, options: CodexScannerOptions = {}) {
     this.home = home;
     this.options = options;
+    this.appDb = new CodexAppDb(home, {
+      exclude: isExcludedCodexSession,
+      historyDays: options.historyDays,
+      maxSessions: options.maxSessions,
+      ...(options.appDbFileExists ? { fileExists: options.appDbFileExists } : {}),
+    });
   }
 
   /** All sessions of the last HISTORY_DAYS days, newest first. */
@@ -299,8 +308,17 @@ export class CodexScanner {
       const tail = await this.tail(file);
       rows.push(this.row(file, head, meta, tail, now, writer));
     }
+    // chats that exist only in the App's database
+    const limit = this.options.maxSessions ?? MAX_SESSIONS;
+    for (const chat of await this.appDb.scan(now)) {
+      if (rows.length >= limit) break;
+      if (!byId.has(chat.nativeId)) rows.push(chat);
+    }
     return rows;
   }
+
+  /** The App-database reader of this home, for the bridge to read a chat's items. */
+  readonly appDb: CodexAppDb;
 
   private row(
     file: RolloutFile,

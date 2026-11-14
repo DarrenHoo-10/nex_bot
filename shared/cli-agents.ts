@@ -96,6 +96,17 @@ export const CLI_ENGINES: readonly CliEngine[] = ["claude", "codex"];
 export const CLI_SESSION_STATES: readonly CliSessionState[] = ["running", "waiting", "idle", "stopped"];
 export const CLI_LIVE_IN: readonly CliLiveIn[] = ["nexbot", "terminal", "desktop", "background"];
 
+/** How the device can put a message into a session: its nex_bot terminal, the
+ * inbox of a Claude session running on the computer, or a Codex app-server
+ * daemon the device joined. Absent: the session cannot be written to. */
+export type CliSendVia = "terminal" | "inbox" | "daemon";
+export const CLI_SEND_VIA: readonly CliSendVia[] = ["terminal", "inbox", "daemon"];
+
+/** What a device knows about a sent message: `confirmed` means it was seen in
+ * the session, `unconfirmed` that it was handed over but never seen. */
+export type CliDelivery = "confirmed" | "unconfirmed";
+export const CLI_DELIVERY: readonly CliDelivery[] = ["confirmed", "unconfirmed"];
+
 export function isCliEngine(value: unknown): value is CliEngine {
   return value === "claude" || value === "codex";
 }
@@ -177,6 +188,8 @@ export interface CliSessionWire {
   liveIn?: CliLiveIn;
   /** herdr-core terminal address, present when the session runs in a nex_bot terminal */
   terminal?: string;
+  /** how a message can reach the session; set by the device */
+  sendVia?: CliSendVia;
   model?: string;
   cliVersion?: string;
   /** epoch ms */
@@ -390,7 +403,7 @@ export interface CliOpResult {
   unwatch: Record<string, never>;
   start: { ref: CliSessionRef; terminal: string };
   continue: { ref: CliSessionRef; terminal: string };
-  send: { turn: number; started: boolean };
+  send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean };
   interrupt: { outcome: string };
   open_local: Record<string, never>;
   answer: { outcome: string };
@@ -659,6 +672,7 @@ function sessionWire(value: unknown): CliSessionWire {
     waitingFor: optStr(o, "waitingFor", CLI_LIMITS.waitingFor),
     liveIn: present(o, "liveIn") ? oneOf(o.liveIn, CLI_LIVE_IN) : undefined,
     terminal: optStr(o, "terminal", CLI_LIMITS.terminal, 1),
+    sendVia: present(o, "sendVia") ? oneOf(o.sendVia, CLI_SEND_VIA) : undefined,
     model: optStr(o, "model", CLI_LIMITS.model),
     cliVersion: optStr(o, "cliVersion", CLI_LIMITS.cliVersion),
     lastActivityAt,
@@ -904,7 +918,13 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
   unwatch: () => ({}),
   start: (o) => ({ ref: ref(o.ref), terminal: str(o.terminal, CLI_LIMITS.terminal, 1) }),
   continue: (o) => ({ ref: ref(o.ref), terminal: str(o.terminal, CLI_LIMITS.terminal, 1) }),
-  send: (o) => ({ turn: int(o.turn, 0, COUNTER_MAX), started: bool(o.started) }),
+  send: (o) =>
+    pick({
+      turn: int(o.turn, 0, COUNTER_MAX),
+      started: bool(o.started),
+      delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined,
+      waiting: optBool(o, "waiting"),
+    }),
   interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),
   open_local: () => ({}),
   // a device that answers with an empty result still counts as delivered

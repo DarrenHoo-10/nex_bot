@@ -13,10 +13,22 @@ import {
 
 export type ToolItem = Extract<CliItem, { kind: "tool" }>;
 
+/** How a message reaches a session that runs outside nex_bot's terminals. Device only: the socket
+ * path and the key file location never go to Core, which only learns `sendVia`. */
+export type SendRoute =
+  | { via: "inbox"; configDir: string; pid: number; socketPath: string; sessionId: string }
+  | { via: "daemon"; home: string; threadId: string };
+
+/** A Codex chat that exists only in the App's database (no rollout file). */
+export interface AppChat {
+  home: string;
+  threadId: string;
+}
+
 /** A session row as the scanners and the discovery keep it on the computer.
  * `transcript` is the session file path (empty when none exists yet) and is
- * never sent to Core. */
-export type LocalSession = CliSessionWire & { transcript: string };
+ * never sent to Core; neither are `route` and `appChat`. */
+export type LocalSession = CliSessionWire & { transcript: string; route?: SendRoute; appChat?: AppChat };
 
 /** Cuts to `max` UTF-16 units without splitting a surrogate pair (the wire
  * parsers cap strings in units). */
@@ -543,6 +555,11 @@ function codexThreadItem(item: Rec, ctx: ItemContext, ts: number): MappedRecord 
     default:
       return none;
   }
+}
+
+/** One Codex v2 thread item (the App's database rows and the shared daemon's notifications) as items. */
+export function codexThreadItemToItems(item: unknown, ctx: ItemContext, ts: number): CliItem[] {
+  return isRec(item) ? codexThreadItem(item, { ...ctx, codexV2: true }, ts).items : [];
 }
 
 function codexTool(id: string, ts: number, name: string, input: string, status: "running" | "ok" | "error", text: string | undefined): ToolItem {

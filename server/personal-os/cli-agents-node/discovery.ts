@@ -21,7 +21,8 @@ import {
   type ScanLiveOptions,
 } from "./claude.ts";
 import { CodexScanner, codexHomes, type CodexScannerOptions } from "./codex.ts";
-import type { LocalSession } from "./items.ts";
+import type { CodexAppDb } from "./codex-app-db.ts";
+import type { AppChat, LocalSession, SendRoute } from "./items.ts";
 
 export interface SessionsDiff {
   /** true for the first report and after resync(): `upserts` is every session and `removes` is empty */
@@ -37,6 +38,12 @@ export interface SessionDiscoveryOptions {
   codexHomes?: string[];
   /** sessions that run in a nex_bot terminal: ref to herdr-core terminal address */
   nexbotTerminals?: () => ReadonlyMap<string, string>;
+  /** Codex threads loaded in a shared app-server daemon, per CODEX_HOME: `threads` is the last known
+   * set (undefined: no daemon), `refresh` asks the daemon again. Never starts one. */
+  codexDaemon?: {
+    threads(home: string): ReadonlySet<string> | undefined;
+    refresh(home: string): Promise<void>;
+  };
   onChange?: (diff: SessionsDiff) => void;
   onError?: (error: unknown) => void;
   liveMs?: number;
@@ -126,6 +133,19 @@ export class SessionDiscovery {
     return row && row.transcript ? row.transcript : null;
   }
 
+  /** How a message reaches a session outside nex_bot's terminals (device only), or null. */
+  routeFor(ref: string): SendRoute | null {
+    return this.rows.get(ref)?.route ?? null;
+  }
+
+  /** The App-database chat behind a row that has no session file, or null. */
+  appChatFor(ref: string): { chat: AppChat; db: CodexAppDb } | null {
+    const chat = this.rows.get(ref)?.appChat;
+    if (!chat) return null;
+    const scanner = this.scanners.find((candidate) => candidate.home === chat.home);
+    return scanner ? { chat, db: scanner.appDb } : null;
+  }
+
   /** The next report is a full one (after the link to Core was re-established). */
   resync(): void {
     this.forceFull = true;
@@ -170,6 +190,8 @@ export class SessionDiscovery {
         }),
         ...this.scanners.map(async (scanner) => {
           try {
+            // which threads the shared daemon has loaded; a failing daemon only means "none"
+            await this.options.codexDaemon?.refresh(scanner.home).catch((error) => this.fail(error));
             this.codex.set(scanner.home, await scanner.scan({ now: this.now() }));
           } catch (error) {
             this.fail(error);
@@ -255,11 +277,30 @@ export class SessionDiscovery {
     } catch (error) {
       this.fail(error);
     }
+    // Codex threads loaded in the shared app-server daemon can be written to through it
+    const daemon = this.options.codexDaemon;
+    if (daemon) {
+      for (const [ref, row] of merged) {
+        if (row.engine !== "codex") continue;
+        let loaded: ReadonlySet<string> | undefined;
+        try {
+          loaded = daemon.threads(row.configDir);
+        } catch (error) {
+          this.fail(error);
+        }
+        if (!loaded?.has(row.nativeId)) continue;
+        const next: Row = { ...row, sendVia: "daemon", route: { via: "daemon", home: row.configDir, threadId: row.nativeId } };
+        if (next.state === "stopped") next.state = "idle";
+        delete next.writerUnknown;
+        merged.set(ref, next);
+      }
+    }
     if (terminals) {
       for (const [ref, row] of merged) {
         const address = terminals.get(ref);
         if (!address) continue;
-        const next: Row = { ...row, liveIn: "nexbot", terminal: address };
+        const next: Row = { ...row, liveIn: "nexbot", terminal: address, sendVia: "terminal" };
+        delete next.route;
         // a session in a live nex_bot terminal is not stopped, whatever its files say
         if (next.state === "stopped") next.state = "idle";
         delete next.writerUnknown;
@@ -336,6 +377,7 @@ function toWire(row: Row): CliSessionWire {
   if (row.waitingFor !== undefined) wire.waitingFor = row.waitingFor;
   if (row.liveIn !== undefined) wire.liveIn = row.liveIn;
   if (row.terminal !== undefined) wire.terminal = row.terminal;
+  if (row.sendVia !== undefined) wire.sendVia = row.sendVia;
   if (row.model !== undefined) wire.model = row.model;
   if (row.cliVersion !== undefined) wire.cliVersion = row.cliVersion;
   if (row.writerUnknown !== undefined) wire.writerUnknown = row.writerUnknown;

@@ -11,7 +11,7 @@ import { createPersonalApp, type AppOptions } from "../index.ts";
 import { CoreStore } from "../store.ts";
 import { CliAgentHub, type CliLink, type StreamSink } from "./hub.ts";
 import { TERM_INPUT, TERM_OUTPUT, decodeTermFrame, encodeTermFrame } from "../../../shared/cli-agent-frames.ts";
-import { CORE_ITEM_CACHE, type CoreCliMessage } from "../../../shared/cli-agents.ts";
+import { CLI_ERROR_TEXT, CORE_ITEM_CACHE, type CoreCliMessage } from "../../../shared/cli-agents.ts";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -232,6 +232,36 @@ describe("session list", () => {
     expect(f.app.cliHub.list().devices[0]).toMatchObject({ id: device.id, online: false });
   });
 
+  it("shows how a session takes messages, follows the device's rows, and forgets it on removal and disconnect", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "via");
+    const deltas: Array<{ upserts: any[]; removes: string[] }> = [];
+    f.app.cliHub.onList((delta) => deltas.push(delta));
+    device.sessions([wire("a", { sendVia: "inbox" }), wire("b", { sendVia: "daemon" }), wire("c", { sendVia: "terminal" }), wire("d")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 4, "listed");
+    const via = () => Object.fromEntries(f.app.cliHub.list().sessions.map((s) => [s.nativeId, s.sendVia]));
+    expect(via()).toEqual({ a: "inbox", b: "daemon", c: "terminal", d: undefined });
+    expect((await f.call("cli-agents")).data.sessions.find((s: any) => s.nativeId === "a")).toMatchObject({ sendVia: "inbox" });
+
+    // a change of route alone is a change worth sending to the clients
+    const before = deltas.length;
+    device.sessions([wire("a", { sendVia: "terminal" })]);
+    await until(() => deltas.length === before + 1, "route change");
+    expect(deltas.at(-1)!.upserts[0]).toMatchObject({ nativeId: "a", sendVia: "terminal" });
+    device.sessions([wire("a")]);
+    await until(() => f.app.cliHub.session(keyOf(device, "a"))?.sendVia === undefined, "route dropped");
+
+    device.sessions([], { removes: ["claude:b"] });
+    await until(() => !f.app.cliHub.session(keyOf(device, "b")), "removed");
+    device.sessions([wire("b")]);
+    await until(() => f.app.cliHub.session(keyOf(device, "b")), "listed again");
+    expect(f.app.cliHub.session(keyOf(device, "b"))?.sendVia).toBeUndefined();
+
+    device.kill();
+    await until(() => f.app.cliHub.session(keyOf(device, "c"))?.online === false, "offline");
+    expect(f.app.cliHub.session(keyOf(device, "c"))?.sendVia).toBeUndefined();
+  });
+
   it("re-asks a reconnecting device for its state with cli.resync", async () => {
     const f = await fixture();
     const first = await connectDevice(f, "resync");
@@ -356,6 +386,28 @@ describe("operations", () => {
     expect(read).toMatchObject({ status: 200, data: { items: [], more: false } });
   });
 
+  it("passes delivery and waiting from the device to the caller", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "delivery");
+    device.sessions([wire("a", { sendVia: "inbox" })], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 1, "listed");
+    const key = keyOf(device, "a");
+
+    device.onOp = (message) => message.op === "send" ? { ok: true, result: { turn: 0, started: false, delivery: "unconfirmed", waiting: true } } : defaultOp(message);
+    const unconfirmed = await f.call("cli-agents/send", { key, text: "hello" });
+    expect(unconfirmed).toMatchObject({ status: 200, data: { turn: 0, started: false, delivery: "unconfirmed", waiting: true } });
+
+    device.onOp = (message) => message.op === "send" ? { ok: true, result: { turn: 0, started: false, delivery: "confirmed" } } : defaultOp(message);
+    const confirmed = await f.call("cli-agents/send", { key, text: "hello" });
+    expect(confirmed.data.delivery).toBe("confirmed");
+    expect(confirmed.data.waiting).toBeUndefined();
+
+    // an answer with a value outside the contract is a malformed result, not a guess
+    device.onOp = (message) => message.op === "send" ? { ok: true, result: { turn: 0, started: false, delivery: "whatever" } } : defaultOp(message);
+    const odd = await f.call("cli-agents/send", { key, text: "hello" });
+    expect(odd).toMatchObject({ status: 409, data: { code: "unknown" } });
+  });
+
   it("rejects a second mutating op on a busy session", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "busy");
@@ -370,6 +422,28 @@ describe("operations", () => {
     const op = device.ops("send")[0];
     device.send({ type: "cli.reply", opId: op.opId, ok: true, result: { turn: 2, started: false } });
     expect((await first).status).toBe(200);
+  });
+
+  it("passes the device's own refusal wording through, and falls back to the standard text without one", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "words");
+    device.sessions([wire("a")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 1, "listed");
+    const key = keyOf(device, "a");
+
+    device.onOp = (message) => message.op === "send" ? { ok: false, error: { code: "busy", message: "电脑上有人正在输入" } } : defaultOp(message);
+    const typing = await f.call("cli-agents/send", { key, text: "hello" });
+    expect(typing).toMatchObject({ status: 409, data: { code: "busy", error: "电脑上有人正在输入" } });
+
+    device.onOp = (message) => message.op === "send" ? { ok: false, error: { code: "busy" } } : defaultOp(message);
+    const bare = await f.call("cli-agents/send", { key, text: "hello" });
+    expect(bare).toMatchObject({ status: 409, data: { code: "busy", error: CLI_ERROR_TEXT.busy } });
+
+    // a long device message stays short
+    device.onOp = (message) => message.op === "send" ? { ok: false, error: { code: "busy", message: "忙".repeat(900) } } : defaultOp(message);
+    const long = await f.call("cli-agents/send", { key, text: "hello" });
+    expect(long.status).toBe(409);
+    expect(String(long.data.error).length).toBeLessThanOrEqual(200);
   });
 
   it("never resends a mutating op after the device reconnects, and settles it from a late answer", async () => {

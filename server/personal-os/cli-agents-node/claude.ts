@@ -2,8 +2,9 @@
 // `<configDir>/sessions/<pid>.json` and history from
 // `<configDir>/projects/*/<sessionId>.jsonl`, merged by session id.
 //
-// Never reads `*.key` files (inbox tokens). The module keeps no timers; the
-// SessionDiscovery owns the schedule.
+// Never reads `*.key` files (inbox tokens): scanning only notes where a live
+// session's inbox is. `inbox.ts` opens the one key of the session it sends to, at
+// send time. The module keeps no timers; the SessionDiscovery owns the schedule.
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,9 @@ import { isPidAlive, processStartTimes, sameProcessStart, type ProcessStartOptio
 const EDGE_BYTES = 64 * 1024;
 const TITLE_CHARS = 60;
 const DAY_MS = 86_400_000;
+const SOCKET_PATH_MAX = 512;
+/** The only inbox protocol version this module speaks. */
+export const INBOX_PEER_PROTOCOL = 1;
 
 /** `~/.claude` plus `CLAUDE_CONFIG_DIR`, without duplicates. */
 export function claudeConfigDirs(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string[] {
@@ -49,6 +53,10 @@ export interface LiveClaudeSession {
   liveIn?: CliLiveIn;
   /** the process start time could not be compared (query failed or unknown format) */
   unverified: boolean;
+  /** where the session's inbox listens (named pipe or unix socket); device only */
+  messagingSocketPath?: string;
+  /** the inbox protocol version the session speaks */
+  peerProtocol?: number;
 }
 
 export interface ScanLiveOptions {
@@ -163,6 +171,9 @@ export async function scanLive(configDir: string, options: ScanLiveOptions = {})
     if (version) session.version = clipUnits(version, CLI_LIMITS.cliVersion);
     const liveIn = claudeLiveIn(entrypoint, kind);
     if (liveIn) session.liveIn = liveIn;
+    const socket = text(file.messagingSocketPath);
+    if (socket && socket.length <= SOCKET_PATH_MAX) session.messagingSocketPath = socket;
+    if (typeof file.peerProtocol === "number" && Number.isInteger(file.peerProtocol)) session.peerProtocol = file.peerProtocol;
     const previous = bySession.get(sessionId);
     if (!previous || session.updatedAt >= previous.updatedAt) bySession.set(sessionId, session);
   }
@@ -432,21 +443,21 @@ export function mergeClaude(configDir: string, live: readonly LiveClaudeSession[
   const liveById = new Map(live.map((l) => [l.sessionId, l]));
   const rows: LocalSession[] = [];
   const seen = new Set<string>();
-  const dirText = clipUnits(configDir, CLI_LIMITS.configDir);
   for (const entry of history) {
     if (seen.has(entry.sessionId)) continue;
     seen.add(entry.sessionId);
-    rows.push(row(dirText, entry.sessionId, entry, liveById.get(entry.sessionId)));
+    rows.push(row(configDir, entry.sessionId, entry, liveById.get(entry.sessionId)));
   }
   for (const l of live) {
     if (seen.has(l.sessionId)) continue;
     seen.add(l.sessionId);
-    rows.push(row(dirText, l.sessionId, undefined, l));
+    rows.push(row(configDir, l.sessionId, undefined, l));
   }
   return rows;
 }
 
-function row(configDir: string, sessionId: string, entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined): LocalSession {
+function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined): LocalSession {
+  const configDir = clipUnits(rawConfigDir, CLI_LIMITS.configDir);
   const base = entry?.lastTimestamp ?? entry?.mtimeMs ?? 0;
   const result: LocalSession = {
     engine: "claude",
@@ -461,6 +472,11 @@ function row(configDir: string, sessionId: string, entry: ClaudeHistoryEntry | u
   if (entry?.gitBranch) result.gitBranch = clipUnits(entry.gitBranch, CLI_LIMITS.gitBranch);
   if (live?.waitingFor) result.waitingFor = live.waitingFor;
   if (live?.liveIn) result.liveIn = live.liveIn;
+  // a live session of the user's own terminal or the desktop app takes messages through its inbox
+  if (live?.messagingSocketPath && live.peerProtocol === INBOX_PEER_PROTOCOL) {
+    result.sendVia = "inbox";
+    result.route = { via: "inbox", configDir: rawConfigDir, pid: live.pid, socketPath: live.messagingSocketPath, sessionId };
+  }
   if (entry?.model) result.model = clipUnits(entry.model, CLI_LIMITS.model);
   const version = live?.version ?? entry?.version;
   if (version) result.cliVersion = clipUnits(version, CLI_LIMITS.cliVersion);

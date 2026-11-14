@@ -123,7 +123,8 @@
 .cli-app .cli-composer-actions button { gap: 5px; padding: 7px 10px; font-size: 12px; border-radius: 9px; }
 .cli-app .cli-composer-actions .primary { padding: 7px 9px; }
 .cli-app .cli-composer-error { flex-basis: 100%; color: var(--destructive, #b3402a); font-size: 11px; }
-.cli-app .cli-composer.is-blocked, .cli-app .cli-composer.is-stopped { align-items: center; justify-content: space-between; color: var(--muted-foreground); font-size: 12px; padding: 10px 14px; }
+.cli-app .cli-composer-note { flex-basis: 100%; color: var(--muted-foreground); font-size: 11px; }
+.cli-app .cli-composer.is-blocked,.cli-app .cli-composer.is-stopped { align-items: center; justify-content: space-between; color: var(--muted-foreground); font-size: 12px; padding: 10px 14px; }
 
 /* new session dialog */
 .cli-app .cli-dialog { display: grid; gap: 12px; width: min(460px, calc(100vw - 24px)); }

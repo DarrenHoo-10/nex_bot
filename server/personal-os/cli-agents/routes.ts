@@ -39,8 +39,14 @@ export interface CliRouteResult {
 
 const STATUS: Partial<Record<CliErrorCode, number>> = { invalid: 400, cwd_missing: 400, too_large: 413, not_found: 404 };
 
-export function cliErrorResult(code: CliErrorCode): CliRouteResult {
-  return { status: STATUS[code] ?? 409, body: { error: CLI_ERROR_TEXT[code], code } };
+const MAX_ERROR_TEXT = 200;
+
+/** `message` is the device's own wording (already cleaned by the hub); without it the code's standard text is used. */
+export function cliErrorResult(code: CliErrorCode, message?: string): CliRouteResult {
+  const own = typeof message === "string" ? message.trim().slice(0, MAX_ERROR_TEXT) : "";
+  // CliOpError's default message is the code itself, which says nothing more than the code
+  const error = own && own !== code ? own : CLI_ERROR_TEXT[code];
+  return { status: STATUS[code] ?? 409, body: { error, code } };
 }
 
 export interface CliRouteExtras {
@@ -85,7 +91,7 @@ export class CliAgentRoutes {
         default: return this.hide(data);
       }
     } catch (error) {
-      if (error instanceof CliOpError) return cliErrorResult(error.code);
+      if (error instanceof CliOpError) return cliErrorResult(error.code, error.message);
       throw error;
     }
   }
@@ -194,7 +200,15 @@ export class CliAgentRoutes {
     // The audit row records how much was sent, never the text itself.
     this.store.audit("cli.send", "cli_session", key, { sessionId: request.sessionId, length: text.length });
     const result = await this.hub.send(request.sessionId, key, text);
-    return { status: 200, body: { turn: result.turn, started: result.started } };
+    return {
+      status: 200,
+      body: {
+        turn: result.turn,
+        started: result.started,
+        ...(result.delivery ? { delivery: result.delivery } : {}),
+        ...(result.waiting ? { waiting: true } : {}),
+      },
+    };
   }
 
   private async interrupt(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {

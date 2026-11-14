@@ -147,7 +147,7 @@ describe("policy, risk and approval scope", () => {
   });
 });
 
-async function ready(items: CliItem[] = []) {
+async function ready(items: CliItem[] = [], sessionExtra: Record<string, unknown> = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-cli-tools-"));
   cleanups.push(() => {
     if (path.dirname(root) !== os.tmpdir() || !path.basename(root).startsWith("nex-cli-tools-")) throw Error("Unsafe cleanup");
@@ -180,7 +180,7 @@ async function ready(items: CliItem[] = []) {
   await until(() => msgs.find((m) => m.type === "bound"), "bound");
   ws.send(JSON.stringify({
     type: "cli.sessions", full: true, removes: [], seq: 1,
-    upserts: [{ engine: "claude", nativeId: "s1", configDir: "C:/cfg", cwd: "C:/work/proj", title: "fix the parser", state: "idle", lastActivityAt: 1000 }],
+    upserts: [{ engine: "claude", nativeId: "s1", configDir: "C:/cfg", cwd: "C:/work/proj", title: "fix the parser", state: "idle", lastActivityAt: 1000, ...sessionExtra }],
   }));
   const key = `${pair.deviceId}:claude:s1`;
   await until(() => app.cliHub.session(key), "session");
@@ -261,6 +261,29 @@ describe("a background job driving a session", () => {
     await until(() => f.call("read-missing")?.status === "failed", "failed call");
     expect(f.result("read-missing")).toMatchObject({ code: "not_found" });
     await until(() => f.app.store.get("SELECT id FROM agent_job_reports WHERE job_id=?", job.jobId), "job report");
+  }, 60_000);
+
+  it.each(["inbox", "daemon"])("refuses to send into a session reached only through the %s, even when approved", async (via) => {
+    const f = await ready([], { sendVia: via });
+    expect(f.app.cliHub.session(f.key)?.sendVia).toBe(via);
+    f.fake.scripts.push(f.tool("outside", { action: "cli.send", key: f.key, text: "go on" }), f.say("不能发送"));
+    f.app.jobs.start({ botId: f.bot, title: "催进度", prompt: "让它继续", sourceKey: "cli-job-outside-" + via });
+    const approval = await until(() => f.app.store.get("SELECT * FROM approvals WHERE status='pending'"), "approval");
+    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
+    await until(() => f.call("outside")?.status === "failed", "failed call");
+    expect(f.result("outside")).toMatchObject({ code: "not_in_terminal" });
+    expect(f.ops().filter((op) => op.op === "send")).toHaveLength(0);
+    expect(f.app.store.get("SELECT id FROM audit_records WHERE action='cli.send'")).toBeUndefined();
+  }, 60_000);
+
+  it.each([["terminal"], [undefined]])("still sends into a session whose sendVia is %s", async (via) => {
+    const f = await ready([], via ? { sendVia: via } : {});
+    f.fake.scripts.push(f.tool("inside", { action: "cli.send", key: f.key, text: "go on" }), f.say("已发送"));
+    f.app.jobs.start({ botId: f.bot, title: "催进度", prompt: "让它继续", sourceKey: "cli-job-inside-" + String(via) });
+    const approval = await until(() => f.app.store.get("SELECT * FROM approvals WHERE status='pending'"), "approval");
+    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
+    await until(() => f.call("inside")?.status === "succeeded", "send done");
+    expect(f.ops().filter((op) => op.op === "send")).toHaveLength(1);
   }, 60_000);
 
   it("refuses a call with a bad key before anything runs", async () => {

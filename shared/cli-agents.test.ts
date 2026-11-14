@@ -273,6 +273,7 @@ describe("parseCliSessionWire", () => {
       waitingFor: "approval",
       liveIn: "nexbot",
       terminal: "term-1",
+      sendVia: "inbox",
       model: "gpt-5",
       cliVersion: "1.2.3",
       writerUnknown: true,
@@ -301,6 +302,8 @@ describe("parseCliSessionWire", () => {
       wire({ state: "paused" }),
       wire({ liveIn: "cloud" }),
       wire({ terminal: "" }),
+      wire({ sendVia: "pipe" }),
+      wire({ sendVia: 1 }),
       wire({ lastActivityAt: "1" }),
       wire({ lastActivityAt: -1 }),
       wire({ lastActivityAt: 1.5 }),
@@ -497,6 +500,7 @@ describe("parseCliOpResult", () => {
     expect(parseCliOpResult("start", { ref, terminal: "t-1" })).toEqual({ ref, terminal: "t-1" });
     expect(parseCliOpResult("continue", { ref, terminal: "t-1" })).toEqual({ ref, terminal: "t-1" });
     expect(parseCliOpResult("send", { turn: 3, started: false })).toEqual({ turn: 3, started: false });
+    expect(parseCliOpResult("send", { turn: 0, started: false, delivery: "unconfirmed", waiting: true, extra: 1 })).toEqual({ turn: 0, started: false, delivery: "unconfirmed", waiting: true });
     expect(parseCliOpResult("interrupt", { outcome: "interrupted" })).toEqual({ outcome: "interrupted" });
     expect(parseCliOpResult("open_local", {})).toEqual({});
   });
@@ -507,6 +511,8 @@ describe("parseCliOpResult", () => {
     expect(parseCliOpResult("start", { ref, terminal: "" })).toBeNull();
     expect(parseCliOpResult("send", { turn: -1, started: true })).toBeNull();
     expect(parseCliOpResult("send", { turn: 1 })).toBeNull();
+    expect(parseCliOpResult("send", { turn: 1, started: true, delivery: "maybe" })).toBeNull();
+    expect(parseCliOpResult("send", { turn: 1, started: true, waiting: "yes" })).toBeNull();
     expect(parseCliOpResult("interrupt", { outcome: 1 })).toBeNull();
     expect(parseCliOpResult("watch", null)).toBeNull();
     expect(parseCliOpResult("nope" as "read", {})).toBeNull();

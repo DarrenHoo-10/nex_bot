@@ -8,7 +8,12 @@ export const SUPERVISION_LABEL: Record<keyof SupervisionSettings, string> = {
   transientRetry: "临时错误后自动继续",
   usageLimit: "额度恢复后继续",
   wakeup: "唤醒",
+  triage: "用模型判断结束的回合",
+  decide: "需要决定时提问",
+  wake: "等待外部时唤醒",
 };
+/** The last two act on what triage finds, so they wait for it. */
+const NEEDS_TRIAGE: ReadonlySet<keyof SupervisionSettings> = new Set(["decide", "wake"]);
 
 export function SupervisionPanel() {
   const [open, setOpen] = useState(false);
@@ -69,7 +74,7 @@ export function SupervisionPanel() {
           {view ? SUPERVISION_KEYS.map((key) => (
             <div key={key} className="cli-switch-row">
               <span id={`cli-sup-${key}`}>{SUPERVISION_LABEL[key]}</span>
-              <button type="button" role="switch" className="cli-switch" aria-labelledby={`cli-sup-${key}`} aria-checked={view.settings[key]} disabled={!!saving} data-busy={saving === key ? "1" : undefined} onClick={() => void flip(key)} />
+              <button type="button" role="switch" className="cli-switch" aria-labelledby={`cli-sup-${key}`} aria-checked={view.settings[key]} disabled={!!saving || (NEEDS_TRIAGE.has(key) && !view.settings.triage)} data-busy={saving === key ? "1" : undefined} onClick={() => void flip(key)} />
             </div>
           )) : null}
           {view && (view.pending > 0 || view.overrides > 0) ? (

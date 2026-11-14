@@ -12,8 +12,8 @@ import { SupervisionPanel } from "./SupervisionPanel";
 let root: Root;
 let container: HTMLDivElement;
 
-const view = (settings: Partial<Record<"transientRetry" | "usageLimit" | "wakeup", boolean>> = {}, extra: { overrides?: number; pending?: number } = {}) =>
-  ({ settings: { transientRetry: true, usageLimit: false, wakeup: false, ...settings }, overrides: 0, pending: 0, ...extra });
+const view = (settings: Partial<Record<"transientRetry" | "usageLimit" | "wakeup" | "triage" | "decide" | "wake", boolean>> = {}, extra: { overrides?: number; pending?: number } = {}) =>
+  ({ settings: { transientRetry: true, usageLimit: false, wakeup: false, triage: false, decide: false, wake: false, ...settings }, overrides: 0, pending: 0, ...extra });
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 const click = (element: Element | null) => act(async () => { (element as HTMLElement).click(); });
 const gear = () => container.querySelector<HTMLButtonElement>("button[aria-label=自动处理设置]")!;
@@ -50,8 +50,8 @@ describe("supervision panel", () => {
     await click(gear());
     await flush();
     expect(fixture.fetchSupervision).toHaveBeenCalledTimes(1);
-    expect([...container.querySelectorAll(".cli-switch-row span")].map((entry) => entry.textContent)).toEqual(["临时错误后自动继续", "额度恢复后继续", "唤醒"]);
-    expect(states()).toEqual(["true", "true", "false"]);
+    expect([...container.querySelectorAll(".cli-switch-row span")].map((entry) => entry.textContent)).toEqual(["临时错误后自动继续", "额度恢复后继续", "唤醒", "用模型判断结束的回合", "需要决定时提问", "等待外部时唤醒"]);
+    expect(states()).toEqual(["true", "true", "false", "false", "false", "false"]);
     expect(container.querySelector("p")).toBeNull();
   });
 
@@ -62,7 +62,7 @@ describe("supervision panel", () => {
     await click(switches()[2]);
     await flush();
     expect(fixture.saveSupervision).toHaveBeenCalledWith({ wakeup: true });
-    expect(states()).toEqual(["true", "false", "true"]);
+    expect(states()).toEqual(["true", "false", "true", "false", "false", "false"]);
   });
 
   it("turns a switch off with the opposite value", async () => {
@@ -75,13 +75,35 @@ describe("supervision panel", () => {
     expect(states()[0]).toBe("false");
   });
 
+  it("saves each triage switch under its own key", async () => {
+    fixture.fetchSupervision.mockResolvedValue(view({ triage: true }));
+    fixture.saveSupervision.mockResolvedValueOnce(view({ triage: true, decide: true })).mockResolvedValueOnce(view({ triage: true, decide: true, wake: true })).mockResolvedValueOnce(view({ decide: true, wake: true }));
+    await openPanel();
+    await click(switches()[4]);
+    await flush();
+    await click(switches()[5]);
+    await flush();
+    await click(switches()[3]);
+    await flush();
+    expect(fixture.saveSupervision.mock.calls).toEqual([[{ decide: true }], [{ wake: true }], [{ triage: false }]]);
+    expect(states()).toEqual(["true", "false", "false", "false", "true", "true"]);
+  });
+
+  it("leaves the decision and wake switches off-limits until triage is on", async () => {
+    fixture.fetchSupervision.mockResolvedValue(view());
+    await openPanel();
+    expect(switches().map((entry) => (entry as HTMLButtonElement).disabled)).toEqual([false, false, false, false, true, true]);
+    await click(switches()[4]);
+    expect(fixture.saveSupervision).not.toHaveBeenCalled();
+  });
+
   it("keeps the old state and says why when saving fails", async () => {
     fixture.fetchSupervision.mockResolvedValue(view());
     fixture.saveSupervision.mockRejectedValue(new CliApiError("x", "disabled", 403));
     await openPanel();
     await click(switches()[1]);
     await flush();
-    expect(states()).toEqual(["true", "false", "false"]);
+    expect(states()).toEqual(["true", "false", "false", "false", "false", "false"]);
     expect(container.querySelector("[role=alert]")?.textContent).toContain("重试");
     expect(container.querySelector("[role=alert]")?.textContent?.length).toBeGreaterThan(2);
   });
@@ -94,7 +116,7 @@ describe("supervision panel", () => {
     fixture.fetchSupervision.mockResolvedValue(view());
     await click([...container.querySelectorAll("button")].find((entry) => entry.textContent === "重试") ?? null);
     await flush();
-    expect(switches()).toHaveLength(3);
+    expect(switches()).toHaveLength(6);
   });
 
   it("reports pending actions and folders with their own settings", async () => {

@@ -185,7 +185,27 @@ describe("capability and first report", () => {
     });
     await t.start();
     await until(() => seen.length > 0);
-    expect(seen[0]).toMatch(/^nexbot-[0-9a-f]{8}\|\\\\\.\\pipe\\nexbot-hc-[0-9a-f]{8}$|^nexbot-[0-9a-f]{8}\|.*nexbot-hc-[0-9a-f]{8}\.sock$/);
+    expect(seen[0]).toMatch(/^nexbot-[0-9a-f]{8}\|\\\\\.\\pipe\\nexbot-hc-[0-9a-f]{8}$|^nexbot-[0-9a-f]{8}\|.*[/\\]hc[/\\][0-9a-f]{8}\.sock$/);
+  });
+
+  it("puts the herdr-core socket under the data directory, or in the temp directory when that is too long", async () => {
+    const scopes: Array<{ session: string; socket: string }> = [];
+    const short = setup({ platform: "linux", hc: (scope) => (scopes.push(scope), hc) });
+    await short.start();
+    await until(() => scopes.length > 0);
+    const hash = scopes[0].session.slice("nexbot-".length);
+    const inData = `${dataDir.replace(/\\/g, "/")}/hc/${hash}.sock`;
+    // a temp directory path decides which side of the 100 byte limit this lands on
+    if (Buffer.byteLength(inData) <= 100) expect(scopes[0].socket).toBe(inData);
+    else expect(scopes[0].socket).toBe(`${os.tmpdir().replace(/\\/g, "/")}/nexbot-hc-${hash}.sock`);
+
+    const longDir = path.join(root, "a-rather-long-directory-name-".repeat(4));
+    mkdirSync(longDir, { recursive: true });
+    const far: Array<{ session: string; socket: string }> = [];
+    const second = setup({ platform: "linux", dir: longDir, hc: (scope) => (far.push(scope), hc) });
+    await second.start();
+    await until(() => far.length > 0);
+    expect(far[0].socket).toBe(`${os.tmpdir().replace(/\\/g, "/")}/nexbot-hc-${hash}.sock`);
   });
 });
 

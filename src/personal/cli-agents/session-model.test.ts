@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { device, session } from "./fixtures";
 import { newlyWaiting, notifyWaiting, sessionStates } from "./notifications";
-import { canAttach, composerMode, deviceBlocker, folderLabel, groupSessions, hiddenCount, recentCwds, sessionStatusLabel, sessionTitle, waitingCount } from "./session-model";
+import { canAttach, composerMode, deviceBlocker, folderLabel, groupSessions, hiddenCount, recentCwds, sendsOutside, sessionStatusLabel, sessionTitle, waitingCount } from "./session-model";
 
 describe("grouping", () => {
   it("groups by computer, then folder, newest first, online computers first", () => {
@@ -68,6 +68,24 @@ describe("what the composer offers", () => {
 
   it("offers continue for a stopped session", () => {
     expect(composerMode(session({ state: "stopped" }))).toEqual({ kind: "stopped", hint: undefined });
+  });
+
+  it("sends to a session on the computer through its inbox or daemon, without an interrupt", () => {
+    for (const sendVia of ["inbox", "daemon"] as const) {
+      expect(composerMode(session({ liveIn: "terminal", terminal: undefined, sendVia }))).toEqual({ kind: "send", running: false, outside: true });
+      expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "running", sendVia }))).toEqual({ kind: "send", running: false, outside: true });
+    }
+    expect(sendsOutside(session({ sendVia: "terminal" }))).toBe(false);
+    expect(sendsOutside(session())).toBe(false);
+  });
+
+  it("still blocks an offline or stopped session that has a route", () => {
+    expect(composerMode(session({ sendVia: "inbox", online: false }))).toEqual({ kind: "blocked", hint: "电脑离线" });
+    expect(composerMode(session({ sendVia: "inbox", state: "stopped" }))).toEqual({ kind: "stopped", hint: undefined });
+  });
+
+  it("keeps the terminal composer for a session in a nex_bot terminal", () => {
+    expect(composerMode(session({ sendVia: "terminal", state: "running" }))).toEqual({ kind: "send", running: true });
   });
 
   it("explains why it cannot send", () => {
