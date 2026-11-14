@@ -9,6 +9,10 @@ import { CoreStore, text, id } from "./store.ts";
 import { catalogSettings, fetchModelCatalog } from "../../shared/model-catalog.mjs";
 import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
+import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
+import { CliAgentRoutes } from "./cli-agents/routes.ts";
+import { CliAgentStream, type StreamAuth } from "./cli-agents/stream.ts";
+import { installUpgrade } from "./upgrade.ts";
 import { DeviceNode } from "./node.ts";
 import { AgentModule } from "./agents.ts";
 import { TodoModule, TodoConflict } from "./todos.ts";
@@ -38,7 +42,7 @@ import type { RetrievalDefaults } from "./retrieval-config.ts";
 import {StockHistory} from "./stock-history.ts";
 import { StockFinance, stockConnectionFromEnv, type StockConnection } from "./stock-finance.ts";
 
-export interface AppOptions { stock?: StockConnection; /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; sharedFeishuAppId?: string; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: FeishuModuleOptions }
+export interface AppOptions { /** Disposable test fixtures only: shorter Agent mode timers and buffers. */ cliAgents?: Partial<CliHubTuning> & { pingMs?: number; pongTimeoutMs?: number; reauthMs?: number }; stock?: StockConnection; /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; sharedFeishuAppId?: string; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: FeishuModuleOptions }
 
 
 export async function createPersonalApp(options: AppOptions) {
@@ -91,6 +95,7 @@ export async function createPersonalApp(options: AppOptions) {
     runtime.authorizeTask = (task) => finance.hasSession(String(task.authorized_session_id)) ? finance.authorizeTask(String(task.authorized_session_id)) : identity.authorizeTask(task, finance.hasBinding());
     identity.onSessionLost = (sessionId) => {
       connectors.oauth.cancelSession(sessionId);
+      cliStream.closeSession(sessionId);
       for (const task of store.all("SELECT id FROM tasks WHERE authorized_session_id=? AND ended_at IS NULL", sessionId)) runtime.cancel(String(task.id), "登录失效或无法验证，任务已停止");
       if (!store.get("SELECT id FROM user_sessions WHERE protocol='native-v1' AND revoked_at IS NULL AND expires_at>?", Date.now())) {
         for (const worker of runtime.workers.values()) if (store.get("SELECT authorized_session_id FROM tasks WHERE id=?", worker.taskId)?.authorized_session_id === store.session) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
@@ -143,8 +148,34 @@ export async function createPersonalApp(options: AppOptions) {
     if (response.headersSent) { response.end(); return; }
     json(response, error instanceof IdentityError || error instanceof TodoConflict ? error.status : 400, { error: error instanceof Error ? error.message : "请求失败", ...(error instanceof IdentityError && error.status === 503 ? { code: "identity_unavailable" } : {}) });
   }); });
-  const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
+  const gateway = new DeviceGateway(store, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   gateway.leases = leases;
+  // Agent mode: terminal coding-agent sessions on the user's devices (cli-agents/).
+  const { pingMs, pongTimeoutMs, reauthMs, ...hubTuning } = options.cliAgents ?? {};
+  const cliHub = new CliAgentHub(store, gateway, () => changed(), hubTuning);
+  gateway.cli = cliHub;
+  const cliRoutes = new CliAgentRoutes(cliHub, store);
+  // The Host a browser may address, and the Origin its pages then carry. Shared by the HTTP routes and the stream socket.
+  const hostAllowed = (host: string | undefined) => {
+    if (!host) return false;
+    const hosts = new Set([new URL(origin).host, `localhost:${new URL(origin).port}`]);
+    if (options.host === "0.0.0.0") for (const entries of Object.values(networkInterfaces())) for (const entry of entries ?? []) hosts.add(`${entry.family === "IPv6" ? `[${entry.address}]` : entry.address}:${new URL(origin).port}`);
+    if (options.publicOrigin) hosts.add(new URL(options.publicOrigin).host);
+    return hosts.has(host);
+  };
+  const originFor = (host: string) => options.publicOrigin && host === new URL(options.publicOrigin).host ? new URL(options.publicOrigin).origin : `http://${host}`;
+  const cliStream = new CliAgentStream(cliHub, {
+    hostAllowed, originFor, pingMs, pongTimeoutMs, reauthMs,
+    // Only the owner's own login may reach a device terminal; a finance delegation never does.
+    authorize: async (token): Promise<StreamAuth> => {
+      let session;
+      try { session = await authenticate(token); } catch { return { ok: false, status: 401 }; }
+      if (!session) return { ok: false, status: 401 };
+      if (session.user_id !== store.owner || finance.hasSession(String(session.id))) return { ok: false, status: 403 };
+      return { ok: true, sessionId: String(session.id) };
+    },
+  });
+  const handleUpgrade = installUpgrade(server, { device: gateway.handleUpgrade, stream: cliStream.handleUpgrade });
   gateway.onCallSettled = (callId) => jobs.callSettled(callId);
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
   // Device calls are marked unsettled first, so a lease whose call the device has not confirmed stays held.
@@ -179,6 +210,7 @@ export async function createPersonalApp(options: AppOptions) {
       jobs: jobs.list(),
       ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100") }),
       onlineDevices: [...gateway.sockets.keys()],
+      cliAgents: cliHub.summary(),
       node: { ...node.publicState(), hosted: options.hostDevice === false },
       dataDir: store.dir,
       runtime: "Pi 1.0.4",
@@ -225,11 +257,8 @@ export async function createPersonalApp(options: AppOptions) {
     const url = new URL(request.url ?? "/", origin);
     // Browser requests must address this exact local server, preventing DNS
     // rebinding; Device Nodes authenticate at the dedicated upgrade endpoint.
-    const hosts = new Set([new URL(origin).host, `localhost:${new URL(origin).port}`]);
-    if (options.host === "0.0.0.0") for (const entries of Object.values(networkInterfaces())) for (const entry of entries ?? []) hosts.add(`${entry.family === "IPv6" ? `[${entry.address}]` : entry.address}:${new URL(origin).port}`);
-    if (options.publicOrigin) hosts.add(new URL(options.publicOrigin).host);
-    if (!request.headers.host || !hosts.has(request.headers.host)) { json(response, 403, { error: "Invalid host" }); return; }
-    const requestOrigin = options.publicOrigin && request.headers.host === new URL(options.publicOrigin).host ? new URL(options.publicOrigin).origin : `http://${request.headers.host}`;
+    if (!request.headers.host || !hostAllowed(request.headers.host)) { json(response, 403, { error: "Invalid host" }); return; }
+    const requestOrigin = originFor(request.headers.host);
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
     if (url.pathname.startsWith(feishuScanPrefix)) {
@@ -290,7 +319,7 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname === "/api/client/identity" && request.method === "GET") { json(response, 200, identity ? { ...identity.publicConfiguration(), version: 1, coreId: clients.coreId(), loginMethods: ["password"] } : { version: 1, coreId: clients.coreId(), mode: "local-owner", loginMethods: ["one-time-code"] }); return; }
     if (identity && url.pathname === "/api/auth/status" && request.method === "GET") { json(response, 200, await identity.status(token, bootstrap)); return; }
     if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {
-      const session = identity.locallyAllowed(token); if (session) connectors.oauth.cancelSession(String(session.id));
+      const session = identity.locallyAllowed(token); if (session) { connectors.oauth.cancelSession(String(session.id)); cliStream.closeSession(String(session.id)); }
       await identity.logout(token); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return;
     }
     if (identity && url.pathname === "/api/auth/refresh" && request.method === "POST") {
@@ -387,6 +416,10 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/memory/core" && request.method === "GET") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取核心记忆的权限" }); return; }
         json(response, 200, runtime.memory.core.view(text(url.searchParams.get("botId"), 100))); return;
+      }
+      if (url.pathname.startsWith("/api/cli-agents") && !mutating) {
+        const result = await cliRoutes.handle({ method: request.method ?? "GET", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner });
+        if (result) { json(response, result.status, result.body); return; }
       }
       if (url.pathname.startsWith("/api/todos")) {
         if (session.user_id !== store.owner) { json(response,403,{error:"此账号没有管理待办的权限"});return; }
@@ -490,7 +523,7 @@ export async function createPersonalApp(options: AppOptions) {
       const data = await body(request);
       if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
       if (url.pathname === "/api/clients/invite") { if (identity) throw new IdentityError(410, "请在其他设备使用同一账号登录"); json(response, 200, clients.invite(data.name)); changed(); return; }
-      if (url.pathname === "/api/clients/revoke") { if (identity) await identity.revoke(text(data.sessionId, 100)); else clients.revoke(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/clients/revoke") { if (identity) await identity.revoke(text(data.sessionId, 100)); else clients.revoke(text(data.sessionId, 100)); cliStream.closeSession(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/plugins/memory" || url.pathname === "/api/plugins/memory/test") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有配置记忆插件的权限" }); return; }
         json(response, 200, url.pathname.endsWith("/test") ? await memoryPlugin.test(data) : await memoryPlugin.save(data, async () => {
@@ -499,7 +532,7 @@ export async function createPersonalApp(options: AppOptions) {
         })); return;
       }
 
-      if (url.pathname === "/api/client/logout") { connectors.oauth.cancelSession(String(session.id)); if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/client/logout") { connectors.oauth.cancelSession(String(session.id)); cliStream.closeSession(String(session.id)); if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/connectors/oauth/start") {
         if (data.provider !== "gmail") throw new Error("不支持此连接器");
         json(response, 200, connectors.oauth.begin(data, requestOrigin, String(session.id), async () => { const current = await authenticate(token); if (!current || current.id !== session.id || current.user_id !== store.owner) throw new IdentityError(401, "登录已失效"); })); return;
@@ -570,6 +603,10 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/agents/messages/image/delete") {
         const result = await files.deleteMessageImage(text(data.botId, 100), text(data.messageId, 100), text(data.attachmentId, 100));
         changed(); json(response, 200, result); return;
+      }
+      if (url.pathname.startsWith("/api/cli-agents")) {
+        const result = await cliRoutes.handle({ method: request.method ?? "POST", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner, data });
+        if (result) { json(response, result.status, result.body); return; }
       }
       if (url.pathname === "/api/todos/save") { json(response,200,todos.save(data));return; }
       if (url.pathname === "/api/todos/action") { json(response,200,todos.action(data,String(session.id)));return; }
@@ -684,7 +721,7 @@ export async function createPersonalApp(options: AppOptions) {
   try { if (options.listen !== false) await listen(options.port ?? 0); }
   catch (error) {
     if (!options.strictPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE" && options.host !== "0.0.0.0") await listen(0);
-    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); gateway.close(); store.close(); throw error; }
+    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); cliStream.close(); cliHub.close(); gateway.close(); store.close(); throw error; }
   }
   const address = server.address();
   if (options.listen === false && options.serviceOrigin) origin = options.serviceOrigin;
@@ -720,7 +757,7 @@ export async function createPersonalApp(options: AppOptions) {
   const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
   archiveTimer?.unref(); archive();
   if(!options.accountWorkspaces) feishu.start();
-  return { server, store, runtime, agents, routines, jobs, todos, gateway, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
     closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob;
     await identity?.close();
@@ -729,6 +766,8 @@ export async function createPersonalApp(options: AppOptions) {
     await finance.close(); await stockHistory.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close();
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
+    // Upgraded sockets are not tracked by closeAllConnections, so the Agent mode stream ends its own.
+    cliStream.close(); cliHub.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();
     await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); await Promise.allSettled(store.attachmentJobs.values()); store.close();
   } };

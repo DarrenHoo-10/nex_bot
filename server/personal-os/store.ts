@@ -21,6 +21,7 @@ import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 import { todoSchema } from "./todo-schema.ts";
+import { cliAgentSchema } from "./cli-agents/schema.ts";
 import { jobSchema } from "./job-schema.ts";
 import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
 import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
@@ -471,6 +472,11 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
     this.db.exec('CREATE INDEX IF NOT EXISTS agent_messages_conversation ON agent_messages(conversation_id,seq); CREATE INDEX IF NOT EXISTS agent_topic_pending ON agent_topic_inputs(status,conversation_id,position);');
     for(const table of ['agent_topics','agent_topic_inputs']) for(const operation of ['INSERT','UPDATE','DELETE']) this.db.exec(`CREATE TRIGGER IF NOT EXISTS sync_${table}_${operation} AFTER ${operation} ON ${table} BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
       this.insert('schema_migrations',{version:47,checksum:hash('finance-topics-v1'),applied_at:now()});
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=48")) this.transaction(() => {
+      // Agent mode: terminal coding-agent sessions, their cached transcript and device operations; see cli-agents/schema.ts. New tables only.
+      this.db.exec(cliAgentSchema);
+      this.insert("schema_migrations", { version: 48, checksum: hash(cliAgentSchema), applied_at: now() });
     });
     if(!this.all('PRAGMA table_info(agent_topic_inputs)').some(column=>column.name==='model_selection_json'))this.db.exec('ALTER TABLE agent_topic_inputs ADD COLUMN model_selection_json TEXT');
     this.db.exec('CREATE TABLE IF NOT EXISTS task_model_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id),selection_json TEXT NOT NULL) STRICT;');

@@ -8,6 +8,7 @@ import { requestBody } from "./http-body.ts";
 import { FeishuWorkspaceRouter } from "./feishu/workspace-router.ts";
 import { feishuScanToken } from "./feishu/module.ts";
 import { GOOGLE_CALLBACK } from "./gmail-provider.ts";
+import { CLI_STREAM_PATH } from "./upgrade.ts";
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
 
@@ -98,9 +99,19 @@ export async function createWorkspaceService(options: AppOptions) {
       // The chosen Core still checks expiry, revocation, membership and upstream status.
       await target.handleRequest(request, response); return true;
     });
-    primary.server.removeListener("upgrade", primary.gateway.handleUpgrade);
+    primary.server.removeListener("upgrade", primary.handleUpgrade);
     primary.server.on("upgrade", (request, socket, head) => {
-      const token = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
+      const bearer = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
+      if (request.url === CLI_STREAM_PATH) {
+        // Browser terminals log in with the `nex` cookie; the workspace that owns that session serves the socket. An unknown token falls to the primary, which refuses it with 401.
+        if (closing) { socket.destroy(); return; }
+        const token = bearer || request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("nex="))?.slice(4) || "";
+        const digest = token && token.length <= 200 ? hash(token) : "";
+        const target = digest ? apps().find((app) => app.store.get("SELECT id FROM user_sessions WHERE token_hash=?", digest)) : undefined;
+        (target ?? primary).cliStream.handleUpgrade(request, socket, head);
+        return;
+      }
+      const token = bearer;
       if (closing || !token || token.length > 200) { socket.destroy(); return; }
       const digest = hash(token);
       const target = apps().find((app) => app.store.get("SELECT id FROM device_credentials WHERE access_hash=? AND status='active' AND access_expires_at>?", digest, Date.now()));

@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
-import type { Server, IncomingMessage } from "node:http";
+import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { CoreStore, hash, id, now, text, type Row } from "./store.ts";
 import { leaseResources, resourceNames, waitingKey, type DeviceLeases } from "./device-leases.ts";
+import { parseCliAgentsCapability, type CliAgentsCapability, type CoreCliMessage } from "../../shared/cli-agents.ts";
+import type { CliAgentHub } from "./cli-agents/hub.ts";
 
 /** How long a device has to take a delivered call. Sent as a duration (`leaseMs`) so the device never has to compare its clock with Core's. */
 export const DEVICE_LEASE_MS = 30_000;
@@ -14,6 +16,10 @@ export class DeviceGateway {
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   hostDeviceId?: string;
   leases?: DeviceLeases;
+  /** Agent mode: gets the `cli.*` traffic of devices that declared `cliAgents` in their hello. */
+  cli?: CliAgentHub;
+  /** devices whose current connection declared a valid `cliAgents` capability */
+  private readonly cliCaps = new Map<string, CliAgentsCapability>();
   /** A device reported the outcome of a call (including a reconciled unknown one). */
   onCallSettled?: (callId: string) => void;
   private readonly alive = new Set<WebSocket>();
@@ -32,8 +38,8 @@ export class DeviceGateway {
       return { id: device.id, name: device.name, platform: device.platform, role: device.id === this.hostDeviceId ? "core" : "node", online: this.sockets.get(String(device.id))?.readyState === WebSocket.OPEN, identity: scope.identity ?? null, supported: scope.identity?.supported ?? [], granted: { info: scope.info === true, read: scope.read === true, exec: scope.exec === true, computer: scope.computer === true } };
     });
   }
-  constructor(readonly store: CoreStore, server: Server, readonly changed: () => void) {
-    server.on("upgrade", this.handleUpgrade);
+  /** The owner registers `handleUpgrade` on the HTTP server (upgrade.ts), because /dcp/v1/connect and the Agent mode stream share the event. */
+  constructor(readonly store: CoreStore, readonly changed: () => void) {
     store.run("UPDATE device_calls SET status='unknown' WHERE status IN ('delivered','running')");
     this.heartbeatTimer = setInterval(() => this.heartbeat(), 15_000);
     this.heartbeatTimer.unref();
@@ -58,27 +64,44 @@ export class DeviceGateway {
   connect(deviceId: string, ws: WebSocket) {
     const old = this.sockets.get(deviceId);
     if (old) old.close();
+    // The old connection's close handler skips cleanup once it is replaced, so the Agent mode state is reset here.
+    this.cliCaps.delete(deviceId);
+    this.cli?.deviceOffline(deviceId);
     this.sockets.set(deviceId, ws);
     this.alive.add(ws);
     ws.on("pong", () => this.alive.add(ws));
     ws.on("error", () => ws.terminate());
-    ws.on("message", (raw) => {
+    ws.on("message", (raw, isBinary) => {
       if (this.sockets.get(deviceId) !== ws) return;
       try {
+        if (isBinary) {
+          // Terminal bytes are only legal from a device that declared Agent mode.
+          if (!this.cliCaps.has(deviceId) || !this.cli) throw new Error("Unexpected binary frame");
+          this.cli.fromDeviceBinary(deviceId, new Uint8Array(raw as Buffer));
+          return;
+        }
         const event = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (typeof event.type === "string" && event.type.startsWith("cli.")) {
+          if (!this.cliCaps.has(deviceId) || !this.cli) throw new Error("Agent mode was not declared");
+          this.cli.fromDevice(deviceId, event);
+          return;
+        }
         if (event.type === "hello") {
           const version = Number(event.policyVersion);
           if (!Number.isSafeInteger(version) || version < 1) throw new Error("Invalid local policy");
           const supplied = event.identity && typeof event.identity === "object" ? event.identity as Record<string, unknown> : {};
-          const identity = { hostname: typeof supplied.hostname === "string" ? supplied.hostname.slice(0, 255) : "", os: typeof supplied.os === "string" ? supplied.os.slice(0, 80) : "", release: typeof supplied.release === "string" ? supplied.release.slice(0, 100) : "", architecture: typeof supplied.architecture === "string" ? supplied.architecture.slice(0, 30) : "", supported: Array.isArray(supplied.supported) ? supplied.supported.filter((action) => ["device.info", "device.read", "device.list", "device.exec", "device.computer"].includes(String(action))) : ["device.read", "device.list", "device.exec"] };
-          const scope = { root: "shared", info: identity.supported.includes("device.info"), read: event.read !== false, exec: event.exec === true, computer: event.computer === true && identity.supported.includes("device.computer"), identity };
-          this.store.run("UPDATE devices SET capabilities_json=?,last_seen_at=?,platform=? WHERE id=?", JSON.stringify([...(scope.info ? ["device.info"] : []), ...(scope.read ? ["device.read", "device.list"] : []), ...(scope.exec ? ["device.exec"] : []), ...(scope.computer ? ["device.computer"] : [])]), now(), ["windows", "macos", "linux"].includes(String(event.platform)) ? String(event.platform) : "windows", deviceId);
+          const identity = { hostname: typeof supplied.hostname === "string" ? supplied.hostname.slice(0, 255) : "", os: typeof supplied.os === "string" ? supplied.os.slice(0, 80) : "", release: typeof supplied.release === "string" ? supplied.release.slice(0, 100) : "", architecture: typeof supplied.architecture === "string" ? supplied.architecture.slice(0, 30) : "", supported: Array.isArray(supplied.supported) ? supplied.supported.filter((action) => ["device.info", "device.read", "device.list", "device.exec", "device.computer", "cli.agents"].includes(String(action))) : ["device.read", "device.list", "device.exec"] };
+          const cliAgents = event.cliAgents === undefined ? null : parseCliAgentsCapability(event.cliAgents);
+          const scope = { root: "shared", info: identity.supported.includes("device.info"), read: event.read !== false, exec: event.exec === true, computer: event.computer === true && identity.supported.includes("device.computer"), cliAgents: cliAgents !== null, identity };
+          this.store.run("UPDATE devices SET capabilities_json=?,last_seen_at=?,platform=? WHERE id=?", JSON.stringify([...(scope.info ? ["device.info"] : []), ...(scope.read ? ["device.read", "device.list"] : []), ...(scope.exec ? ["device.exec"] : []), ...(scope.computer ? ["device.computer"] : []), ...(cliAgents ? ["cli.agents"] : [])]), now(), ["windows", "macos", "linux"].includes(String(event.platform)) ? String(event.platform) : "windows", deviceId);
           this.store.run("INSERT INTO device_local_grants(device_id,local_grant_id,workspace_id,owner_user_id,policy_version,scope_json,status,reported_at) VALUES(?,'shared',?,?,?,?, 'active',?) ON CONFLICT(device_id,local_grant_id) DO UPDATE SET policy_version=excluded.policy_version,scope_json=excluded.scope_json,status='active',reported_at=excluded.reported_at", deviceId, this.store.workspace, this.store.owner, version, JSON.stringify(scope), now());
           this.store.run("UPDATE device_grants SET status='stale' WHERE device_id=? AND local_policy_version!=?", deviceId, version);
           ws.send(JSON.stringify({ type: "bound", coreId: this.store.get("SELECT core_id FROM workspaces")!.core_id, deviceId, ownerId: this.store.owner }));
           const unresolved = this.store.all("SELECT d.id,t.argument_hash,k.status task_status FROM device_calls d JOIN tool_calls t ON t.id=d.id JOIN tasks k ON k.id=t.task_id WHERE d.device_id=? AND d.status='unknown'", deviceId);
           for (const call of unresolved) if (["cancelling", "cancelled"].includes(String(call.task_status))) ws.send(JSON.stringify({ type: "cancel", callId: call.id, argumentHash: call.argument_hash }));
           if (unresolved.length) ws.send(JSON.stringify({ type: "reconcile", calls: unresolved }));
+          if (cliAgents) this.cliCaps.set(deviceId, cliAgents); else this.cliCaps.delete(deviceId);
+          this.cli?.deviceOnline(deviceId, cliAgents);
           this.changed();
         }
         if (event.type === "result") {
@@ -114,6 +137,8 @@ export class DeviceGateway {
       this.alive.delete(ws);
       if (this.sockets.get(deviceId) === ws) {
         this.sockets.delete(deviceId);
+        this.cliCaps.delete(deviceId);
+        this.cli?.deviceOffline(deviceId);
         for (const [callId, pending] of this.pending) if (pending.deviceId === deviceId) {
           clearTimeout(pending.timer); this.pending.delete(callId);
           this.store.run("UPDATE device_calls SET status='unknown' WHERE id=? AND result_json IS NULL", callId);
@@ -185,7 +210,23 @@ export class DeviceGateway {
       this.store.run("UPDATE device_grants SET status='revoked' WHERE device_id=?", deviceId);
       this.store.run("UPDATE device_local_grants SET status='revoked' WHERE device_id=?", deviceId);
     });
-    this.sockets.get(deviceId)?.close(); this.changed();
+    this.sockets.get(deviceId)?.close();
+    this.cli?.deviceRevoked(deviceId);
+    this.changed();
+  }
+  /** Sends one Agent mode message to a device. Throws an error with `code = "device_offline"` when there is no open link or the device never declared `cliAgents`. */
+  sendCli(deviceId: string, message: CoreCliMessage) {
+    const ws = this.cliSocket(deviceId);
+    ws.send(JSON.stringify(message));
+  }
+  sendCliBinary(deviceId: string, frame: Uint8Array) {
+    const ws = this.cliSocket(deviceId);
+    ws.send(frame, { binary: true });
+  }
+  private cliSocket(deviceId: string) {
+    const ws = this.sockets.get(deviceId);
+    if (!ws || ws.readyState !== WebSocket.OPEN || !this.cliCaps.has(deviceId)) throw Object.assign(new Error("设备离线"), { code: "device_offline" });
+    return ws;
   }
   close() { clearInterval(this.heartbeatTimer); for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error("Core shutting down")); } this.pending.clear(); for (const ws of this.sockets.values()) ws.terminate(); this.wss.close(); }
 }
