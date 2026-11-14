@@ -2,7 +2,7 @@ import { build } from "esbuild";
 import { build as viteBuild } from "vite";
 import react from "@vitejs/plugin-react";
 import { createRequire } from "node:module";
-import { cpSync, mkdirSync, copyFileSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, copyFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { htmlPreviewShell } from "../shared/html-preview-shell.mjs";
@@ -16,6 +16,12 @@ writeFileSync(path.join(output, "package.json"), JSON.stringify({ type: "module"
 if (process.platform === "win32") {
   await import("./build-personal-computer.mjs");
   cpSync(path.join(root, "dist-personal/server/computer-runtime"), path.join(output, "computer-runtime"), { recursive: true });
+  // Agent mode terminals live in herdr-core so they outlive the client process.
+  const herdrCore = path.join(root, "dist-native/herdr-core/win32-x64");
+  if (!existsSync(path.join(herdrCore, "herdr-core.exe"))) {
+    throw new Error(`herdr-core is not staged at ${herdrCore}; run "pnpm build:herdr-core" first`);
+  }
+  cpSync(herdrCore, path.join(output, "herdr-core"), { recursive: true });
 }
 const pdfRoot = realpathSync(path.join(root, "node_modules/pdfjs-dist"));
 const pdfRequire = createRequire(path.join(pdfRoot, "package.json"));
