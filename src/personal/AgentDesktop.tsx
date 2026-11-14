@@ -40,6 +40,8 @@ import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
 
 // Agent mode pulls in the terminal stack, so it loads only when opened.
+/** Agent mode runs in plain browsers and the Android app (native socket relay); the Windows client does not show it. */
+const agentSection = !desktop || desktop.platform === "android";
 const CliAgentsWorkspace = lazy(() => import("./cli-agents/CliAgentsWorkspace").then((module) => ({ default: module.CliAgentsWorkspace })));
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
@@ -236,6 +238,11 @@ export function AgentDesktop() {
       const closeModal = document.querySelector<HTMLButtonElement>('.modal-backdrop button[aria-label^="关闭"]:not(:disabled)');
       if (closeModal) { closeModal.click(); return; }
       if (dialog) { setDialog(null); return; }
+      // Agent mode: the supervision popover, then the open session back to the list
+      const supervision = document.querySelector(".cli-supervision-panel");
+      if (supervision) { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return; }
+      const sessionBack = document.querySelector<HTMLButtonElement>('.cli-app[data-mobile="pane"] .cli-back');
+      if (sessionBack && sessionBack.offsetParent !== null) { sessionBack.click(); return; }
       if (detail) { setDetail(false); return; }
       if (page !== "agent") { setPage("agent"); return; }
       if (!sidebarOpen) { setSidebarOpen(true); return; }
@@ -651,12 +658,12 @@ export function AgentDesktop() {
   void lookRevision;
 
   const navigate = (target: string) => {
-    if (target === "todo" || (target === "cli" && !desktop)) { setPage(target); setSidebarOpen(false); }
+    if (target === "todo" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
     else openSettings();
   };
   const sidebarNode = <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
 
-  if (page === "cli" && !desktop) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 
   if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 

@@ -32,6 +32,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.nexorai.nexbot.core.CliStreamRelay
 import com.nexorai.nexbot.core.LiveFrame
 import com.nexorai.nexbot.core.WorkspaceTransport
 import com.nexorai.nexbot.sync.Repository
@@ -94,6 +95,14 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private val transport = repository.workspaceTransport()
     private val subscriptions = mutableSetOf<String>()
     private val streams = mutableMapOf<String, Job>()
+    // Agent mode socket. The page owns reconnecting (see CliStreamRelay); this only
+    // relays frames and ends every socket when the screen stops, so none outlives it.
+    private val cliStream = repository.workspaceCliStream(object : CliStreamRelay.Sink {
+        override fun opened(id: String) = streamEvent(id, "open")
+        override fun text(id: String, text: String) = streamEvent(id, "text", text)
+        override fun binary(id: String, base64: String) = streamEvent(id, "binary", base64)
+        override fun closed(id: String, code: Int) = streamEvent(id, "close", code.toString())
+    })
     private var active = true
     private var closed = false
     private var pendingBot: String? = null
@@ -165,6 +174,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
             override fun onPageFinished(view: WebView?, url: String?) {
                 if (url != "$origin/index.html" || view == null) return
                 bridgePort?.close()
+                cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = false) // the new page knows none of the old ids
                 val channel = view.createWebMessageChannel()
                 bridgePort = channel[0]
                 channel[0].setWebMessageCallback(object : WebMessagePort.WebMessageCallback() {
@@ -178,6 +188,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                                 "action" -> action(args.getString(0), args.getString(1), args.getString(2))
                                 "subscribe" -> subscribe(args.getString(0))
                                 "unsubscribe" -> unsubscribe(args.getString(0))
+                                else -> cliStream.dispatch(data.getString("method"), List(args.length()) { args.getString(it) })
                             }
                         } catch (_: Exception) { /* Ignore malformed bridge messages. */ }
                     }
@@ -201,6 +212,12 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     }
     private fun event(id: String, type: String, data: String = "") {
         if (!closed) web.evaluateJavascript("window.__nexEvent?.(${JSONObject.quote(id)},${JSONObject.quote(type)},${JSONObject.quote(data)})", null)
+    }
+    /** Frames arrive on OkHttp threads; the WebView is only touched from the main one. */
+    private fun streamEvent(id: String, type: String, data: String = "") {
+        scope.launch {
+            if (!closed) web.evaluateJavascript("window.__nexStream?.(${JSONObject.quote(id)},${JSONObject.quote(type)},${JSONObject.quote(data)})", null)
+        }
     }
     private fun request(id: String, path: String, method: String, body: String) {
         scope.launch {
@@ -295,9 +312,10 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         pendingBot = id
         if (loaded) web.evaluateJavascript("window.dispatchEvent(new CustomEvent('nex-android-agent',{detail:${JSONObject.quote(id)}}))", null)
     }
-    fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); web.onPause(); web.pauseTimers() }
-    fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'))", null) }
-    fun close() { closed = true; bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
+    // The page hears about each ended socket before it is paused, then reconnects on resume ('online' skips its backoff).
+    fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = true); web.onPause(); web.pauseTimers() }
+    fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('online'))", null) }
+    fun close() { closed = true; cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = false); bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
 }
 
 internal fun openWorkspaceExternal(context: Context, url: String) {

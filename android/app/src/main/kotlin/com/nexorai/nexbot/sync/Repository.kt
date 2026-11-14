@@ -230,13 +230,22 @@ class Repository(
 
     // ---- screen actions --------------------------------------------------
 
+    /** The bearer, only while the connection this workspace was opened for is still the signed-in one. */
+    private fun workspaceToken(saved: StoredConnection): String? {
+        val current = _state.value
+        return if (current.phase == Phase.Ready && current.connection?.origin == saved.origin &&
+            current.connection.account == saved.account) client?.token else null
+    }
+
     fun workspaceTransport(): com.nexorai.nexbot.core.WorkspaceTransport {
         val saved = requireNotNull(_state.value.connection)
-        return com.nexorai.nexbot.core.WorkspaceTransport(saved.origin, {
-            val current = _state.value
-            if (current.phase == Phase.Ready && current.connection?.origin == saved.origin &&
-                current.connection.account == saved.account) client?.token else null
-        })
+        return com.nexorai.nexbot.core.WorkspaceTransport(saved.origin, { workspaceToken(saved) })
+    }
+
+    /** Agent mode stream relay with the same bearer rule as [workspaceTransport]. */
+    fun workspaceCliStream(sink: com.nexorai.nexbot.core.CliStreamRelay.Sink): com.nexorai.nexbot.core.CliStreamRelay {
+        val saved = requireNotNull(_state.value.connection)
+        return com.nexorai.nexbot.core.CliStreamRelay(saved.origin, { workspaceToken(saved) }, sink)
     }
 
     fun workspaceEvents(cursor: String?) = requireNotNull(client).events(cursor)

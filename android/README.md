@@ -1,5 +1,21 @@
 # Android
 
+## Agent mode (unreleased)
+
+The workspace shows the "Agent 会话" section. Its live stream
+(`/api/cli-agents/stream`) cannot be a page WebSocket here: the WebView CSP stays
+`connect-src 'none'` and a page cannot send `Authorization`. `CliStreamRelay`
+(`:core`) holds one OkHttp WebSocket per socket id the page opens, with the same
+bearer rule as `WorkspaceTransport` and the fixed Core path. The page talks to it
+over the existing message port (`streamOpen/streamText/streamBinary/streamClose`)
+and receives `window.__nexStream(id, open|text|binary|close, data)`; binary frames
+(`[u8 type][u32 LE sid][payload]`) cross as base64. **Reconnect belongs to the
+page** (`CliStream`: backoff, subscription replay, keep-alive ping); the relay never
+retries and reports one close code per socket (401 or no login → 4401, which stops
+reconnecting). The screen ends every socket on stop (code 1001, reported) and on
+destroy or page reload (silent); resume dispatches `online` so the page reconnects
+without waiting. Payloads are never logged.
+
 ## 0.2.4 — conversation history search
 
 Search message content across assistants, paginate results and jump to older

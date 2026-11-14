@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FRAME_PAYLOAD_MAX, WS_PING_MS, WS_PONG_TIMEOUT_MS } from "../../../shared/cli-agents";
 import { decodeTermFrame, encodeTermFrame, TERM_INPUT, TERM_OUTPUT } from "../../../shared/cli-agent-frames";
-import { CLOSE_UNAUTHORIZED, CliStream, reconnectDelay, RECONNECT_MAX_MS, RECONNECT_MIN_MS, type SocketLike, type StreamEvent } from "./stream";
+import { CLOSE_UNAUTHORIZED, CliStream, createDefaultSocket, reconnectDelay, RECONNECT_MAX_MS, RECONNECT_MIN_MS, type SocketLike, type StreamEvent } from "./stream";
 
 class FakeSocket implements SocketLike {
   binaryType = "blob";
@@ -262,5 +262,48 @@ describe("terminal streams", () => {
     // a request that was not given up on is delivered
     last().receive(JSON.stringify({ type: "term.opened", req: "kept", sid: 13, cols: 80, rows: 24, observe: true }));
     expect(events.filter((event) => event.type === "message")).toHaveLength(1);
+  });
+});
+
+describe("socket choice", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the browser WebSocket unless the Android app injected a native one", () => {
+    const created: string[] = [];
+    class BrowserSocket { constructor(url: string) { created.push(url); } }
+    vi.stubGlobal("WebSocket", BrowserSocket);
+    vi.stubGlobal("window", { nex: { platform: "android" } });
+    expect(createDefaultSocket("wss://core.test/api/cli-agents/stream")).toBeInstanceOf(BrowserSocket);
+    vi.stubGlobal("window", { nex: { openCliSocket: () => new FakeSocket() } });
+    expect(createDefaultSocket("wss://core.test/api/cli-agents/stream")).toBeInstanceOf(BrowserSocket);
+    vi.stubGlobal("window", {});
+    expect(createDefaultSocket("wss://core.test/x")).toBeInstanceOf(BrowserSocket);
+    expect(created).toEqual(["wss://core.test/api/cli-agents/stream", "wss://core.test/api/cli-agents/stream", "wss://core.test/x"]);
+  });
+
+  it("takes the native socket on Android and CliStream drives it like any other", () => {
+    const native: FakeSocket[] = [];
+    vi.stubGlobal("WebSocket", class { constructor() { throw new Error("no browser socket on Android"); } });
+    vi.stubGlobal("location", { protocol: "https:", host: "fixture.nexbot.invalid" });
+    vi.stubGlobal("window", { nex: { platform: "android", openCliSocket: () => { const socket = new FakeSocket(); native.push(socket); return socket; } } });
+    stream.stop();
+    stream = new CliStream({ random: () => 0, now: () => clock });
+    events = [];
+    stream.on((event) => events.push(event));
+    stream.start();
+    expect(native).toHaveLength(1);
+    expect(native[0].binaryType).toBe("arraybuffer");
+    native[0].open();
+    stream.subscribeList();
+    expect(native[0].json()).toEqual([{ type: "sub.list" }]);
+    native[0].drop(1001); // the app ended the socket (screen stopped): reconnect and subscribe again
+    vi.advanceTimersByTime(RECONNECT_MIN_MS);
+    expect(native).toHaveLength(2);
+    native[1].open();
+    expect(native[1].json()).toEqual([{ type: "sub.list" }]);
+    native[1].drop(CLOSE_UNAUTHORIZED);
+    vi.advanceTimersByTime(RECONNECT_MAX_MS);
+    expect(native).toHaveLength(2);
+    expect(stream.status).toBe("closed");
   });
 });

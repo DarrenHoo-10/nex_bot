@@ -1,15 +1,34 @@
+import type { SocketLike } from "./cli-agents/stream";
+
 interface NativeWorkspace {
   request(id: string, path: string, method: string, body: string): void;
   action(id: string, action: string, value: string): void;
   subscribe(id: string): void;
   unsubscribe(id: string): void;
+  /** Agent mode socket relay: the native side owns the WebSocket and the bearer. */
+  streamOpen(id: string): void;
+  streamText(id: string, text: string): void;
+  streamBinary(id: string, base64: string): void;
+  streamClose(id: string, code: string): void;
 }
 type Reply = { status?: number; body?: string; error?: string; value?: unknown };
 type NativeWindow = Window & {
   nex?: unknown;
   __nexReply?: (id: string, reply: Reply) => void;
   __nexEvent?: (id: string, event: string, data: string) => void;
+  __nexStream?: (id: string, type: string, data: string) => void;
 };
+
+function toBase64(bytes: Uint8Array): string {
+  let text = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) text += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(text);
+}
+function fromBase64(text: string): ArrayBuffer {
+  const raw = atob(text), bytes = new Uint8Array(raw.length);
+  for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index);
+  return bytes.buffer;
+}
 
 /** Only the APK entry installs this adapter. Credentials stay in the native store. */
 export function installAndroidBridge() {
@@ -30,6 +49,8 @@ export function installAndroidBridge() {
   const native: NativeWorkspace = {
     request: (...args) => send('request', args), action: (...args) => send('action', args),
     subscribe: (...args) => send('subscribe', args), unsubscribe: (...args) => send('unsubscribe', args),
+    streamOpen: (...args) => send('streamOpen', args), streamText: (...args) => send('streamText', args),
+    streamBinary: (...args) => send('streamBinary', args), streamClose: (...args) => send('streamClose', args),
   };
   let sequence = 0;
   const pending = new Map<string, { resolve(value: Reply): void; reject(error: Error): void }>();
@@ -79,6 +100,38 @@ export function installAndroidBridge() {
   }
   host.__nexEvent = (id, event, data) => streams.get(id)?.dispatchEvent(new MessageEvent(event, { data }));
   Object.defineProperty(window, "EventSource", { value: NativeEvents });
+  // The Agent mode WebSocket. The page cannot open one (no connect-src, no Authorization
+  // header), so the app holds it: text frames cross as strings, binary frames as base64.
+  // The app never reconnects; it reports the close code and CliStream reconnects. Like
+  // WebSocket it takes `string | Uint8Array` and delivers binary as ArrayBuffer, but a
+  // close() made by the page is silent (no close event) because CliStream detaches first.
+  const sockets = new Map<string, NativeStreamSocket>();
+  class NativeStreamSocket implements SocketLike {
+    readonly id = String(++sequence);
+    binaryType = "arraybuffer";
+    readyState = 0;
+    onopen: SocketLike["onopen"] = null;
+    onmessage: SocketLike["onmessage"] = null;
+    onclose: SocketLike["onclose"] = null;
+    onerror: SocketLike["onerror"] = null;
+    constructor() { sockets.set(this.id, this); native.streamOpen(this.id); }
+    send(data: string | Uint8Array) {
+      if (this.readyState !== 1) throw new Error("连接未就绪");
+      if (typeof data === "string") native.streamText(this.id, data); else native.streamBinary(this.id, toBase64(data));
+    }
+    close(code = 1000) {
+      if (this.readyState >= 2) return;
+      this.readyState = 3; sockets.delete(this.id); native.streamClose(this.id, String(code));
+    }
+    receive(type: string, data: string) {
+      if (this.readyState >= 2) return;
+      if (type === "open") { this.readyState = 1; this.onopen?.({}); }
+      else if (type === "text") this.onmessage?.({ data });
+      else if (type === "binary") this.onmessage?.({ data: fromBase64(data) });
+      else if (type === "close") { this.readyState = 3; sockets.delete(this.id); this.onclose?.({ code: Number(data) || 1006 }); }
+    }
+  }
+  host.__nexStream = (id, type, data) => sockets.get(id)?.receive(type, data);
   Object.defineProperty(navigator, "clipboard", { value: { writeText: (text: string) => action("copy", text) } });
   host.nex = {
     mode: "client", platform: "android",
@@ -89,6 +142,7 @@ export function installAndroidBridge() {
     downloadAttachment: (url: string, name: string) => action("download", JSON.stringify({ url, name })),
     minimize: () => action("background"),
     workspaceReady: () => action("ready"),
+    openCliSocket: (): SocketLike => new NativeStreamSocket(),
     updateState: () => action("updateState"),
     checkUpdate: () => action("checkUpdate"),
     installUpdate: () => action("installUpdate"),

@@ -29,6 +29,15 @@ export interface SocketLike {
   close(code?: number, reason?: string): void;
 }
 
+/** A page cannot open this WebSocket inside the Android WebView, so the app injects
+ * `openCliSocket` (see android-bridge.ts); it returns a SocketLike backed by a native
+ * socket that carries the bearer. Everything else, reconnects included, stays here. */
+export function createDefaultSocket(url: string): SocketLike {
+  const host = typeof window === "undefined" ? undefined : (window as unknown as { nex?: { platform?: string; openCliSocket?: () => SocketLike } }).nex;
+  if (host?.platform === "android" && host.openCliSocket) return host.openCliSocket();
+  return new WebSocket(url) as unknown as SocketLike;
+}
+
 export interface CliStreamOptions {
   url?: string;
   createSocket?: (url: string) => SocketLike;
@@ -68,7 +77,7 @@ export class CliStream {
   constructor(options: CliStreamOptions = {}) {
     this.options = {
       url: options.url ?? "",
-      createSocket: options.createSocket ?? ((url) => new WebSocket(url) as unknown as SocketLike),
+      createSocket: options.createSocket ?? createDefaultSocket,
       random: options.random ?? Math.random,
       now: options.now ?? Date.now,
     };
