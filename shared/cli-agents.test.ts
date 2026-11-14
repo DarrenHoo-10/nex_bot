@@ -27,6 +27,7 @@ import {
   parseCliOpArgs,
   parseCliOpResult,
   parseCliRef,
+  parseCliRequestView,
   parseCliSessionView,
   parseCliSessionWire,
   parseCoreCliMessage,
@@ -253,8 +254,9 @@ describe("constants and tables", () => {
       send: 70_000,
       interrupt: 10_000,
       open_local: 10_000,
+      answer: 10_000,
     });
-    expect([...CLI_OP_MUTATING].sort()).toEqual(["continue", "interrupt", "open_local", "send", "start"]);
+    expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "continue", "interrupt", "open_local", "send", "start"]);
   });
 });
 
@@ -623,6 +625,7 @@ describe("parseCoreCliMessage", () => {
       send: { ref, text: "go" },
       interrupt: { ref },
       open_local: { ref },
+      answer: { id: "req-1", decision: "allow", answers: { "Which one?": "A" }, message: "ok" },
     };
     expect(Object.keys(ops).sort()).toEqual([...CLI_OPS].sort());
     for (const [op, args] of Object.entries(ops)) {
@@ -716,6 +719,54 @@ describe("parseClientMessage", () => {
   });
 });
 
+const QUESTIONS = [
+  {
+    question: "Which database?",
+    header: "DB",
+    options: [{ label: "sqlite", description: "local file" }, { label: "postgres" }],
+    multiSelect: false,
+  },
+];
+
+function requestView(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "r1",
+    key: `dev-1:claude:${UUID}`,
+    kind: "permission",
+    tool: "Bash",
+    summary: "git push origin main",
+    options: ["allow", "deny"],
+    createdAt: 1_763_000_000_000,
+    expiresAt: 1_763_000_060_000,
+    ...extra,
+  };
+}
+
+describe("parseCliRequestView", () => {
+  it("rebuilds a view and drops unknown keys", () => {
+    const parsed = parseCliRequestView({ ...requestView(), extra: 1 });
+    expect(parsed).toEqual(requestView());
+    expect(parseCliRequestView(requestView({ options: undefined, questions: QUESTIONS, kind: "question" }))).toEqual(
+      requestView({ options: undefined, questions: QUESTIONS, kind: "question" }),
+    );
+  });
+  it("rejects bad views", () => {
+    for (const bad of [
+      null,
+      {},
+      requestView({ id: "" }),
+      requestView({ kind: "nope" }),
+      requestView({ key: "x" }),
+      requestView({ expiresAt: -1 }),
+      requestView({ summary: "s".repeat(SUMMARY_MAX + 1) }),
+      requestView({ options: Array.from({ length: CLI_LIMITS.requestOptions + 1 }, () => "a") }),
+      requestView({ questions: [{ question: "q" }] }),
+    ]) {
+      expect(parseCliRequestView(bad), JSON.stringify(bad)?.slice(0, 60)).toBeNull();
+    }
+  });
+});
+
 describe("parseServerMessage", () => {
   const key = `dev-1:claude:${UUID}`;
   const device = { id: "dev-1", name: "Office PC", online: true, cliAgents: capability };
@@ -734,6 +785,9 @@ describe("parseServerMessage", () => {
       { type: "error", code: "open_elsewhere" },
       { type: "error", code: "busy", req: "r1", message: "later" },
       { type: "summary", waiting: 2, running: 0 },
+      { type: "requests", key, requests: [] },
+      { type: "requests", key, requests: [requestView(), requestView({ id: "r2", kind: "question", questions: QUESTIONS })] },
+      { type: "request.resolved", key, id: "r1", by: "terminal" },
       { type: "pong" },
     ];
     for (const message of messages) expect(parseServerMessage(message), message.type).toEqual(message);
@@ -766,6 +820,14 @@ describe("parseServerMessage", () => {
       { type: "summary", waiting: -1, running: 0 },
       { type: "summary", waiting: 1.5, running: 0 },
       { type: "summary", waiting: "1", running: 0 },
+      { type: "requests", key: "x", requests: [] },
+      { type: "requests", key },
+      { type: "requests", key, requests: [{ ...requestView(), key: "dev-2:claude:other" }] },
+      { type: "requests", key, requests: [{ ...requestView(), kind: "other" }] },
+      { type: "requests", key, requests: Array.from({ length: CLI_LIMITS.requestsPerSession + 1 }, () => requestView()) },
+      { type: "request.resolved", key, id: "r1", by: "nobody" },
+      { type: "request.resolved", key, id: "", by: "gone" },
+      { type: "request.resolved", id: "r1", by: "gone" },
     ]) {
       expect(parseServerMessage(bad), JSON.stringify(bad)?.slice(0, 80)).toBeNull();
     }
@@ -776,5 +838,98 @@ describe("parseServerMessage", () => {
       view({ nativeId: `s${i}`, key: `dev-1:claude:s${i}` }),
     );
     expect(parseServerMessage({ type: "list", devices: [], sessions })).toBeNull();
+  });
+});
+
+describe("answer op", () => {
+  it("parses args strictly", () => {
+    expect(parseCliOpArgs("answer", { id: "r1", decision: "deny" })).toEqual({ id: "r1", decision: "deny" });
+    expect(parseCliOpArgs("answer", { id: "r1", decision: "allow", answers: { Q: "A" }, extra: 1 })).toEqual({
+      id: "r1",
+      decision: "allow",
+      answers: { Q: "A" },
+    });
+    for (const bad of [
+      {},
+      { id: "r1" },
+      { id: "", decision: "allow" },
+      { id: "r1", decision: "maybe" },
+      { id: "r1", decision: "allow", answers: { Q: 1 } },
+      { id: "r1", decision: "allow", answers: "x" },
+      { id: "r1", decision: "allow", answers: JSON.parse('{"__proto__":"x"}') },
+      { id: "r1", decision: "allow", message: "m".repeat(CLI_LIMITS.answerMessage + 1) },
+      { id: "r".repeat(CLI_LIMITS.requestId + 1), decision: "allow" },
+    ]) {
+      expect(parseCliOpArgs("answer", bad), JSON.stringify(bad)?.slice(0, 60)).toBeNull();
+    }
+  });
+  it("parses the result", () => {
+    expect(parseCliOpResult("answer", { outcome: "answered" })).toEqual({ outcome: "answered" });
+    expect(parseCliOpResult("answer", {})).toEqual({ outcome: "ok" });
+    expect(parseCliOpResult("answer", { outcome: 3 })).toBeNull();
+  });
+});
+
+describe("cli.turn and cli.request", () => {
+  const ref = `claude:${UUID}`;
+  const request = {
+    type: "cli.request",
+    ref,
+    id: "r1",
+    kind: "permission",
+    tool: "Bash",
+    summary: "rm -rf build",
+    options: ["allow", "deny"],
+    expiresAt: 1_763_000_060_000,
+  };
+
+  it("accepts the new device messages", () => {
+    const messages = [
+      { type: "cli.turn", ref, turn: 3, endedAt: 1_763_000_000_000, reason: "end" },
+      { type: "cli.turn", ref, turn: 4, endedAt: 1_763_000_000_000, reason: "error", error: "rate limit, resets 5pm" },
+      { type: "cli.turn", ref, turn: 5, endedAt: 1_763_000_000_000, reason: "interrupted" },
+      request,
+      { ...request, id: "r2", kind: "question", options: undefined, questions: QUESTIONS },
+      { type: "cli.request.resolved", id: "r1", by: "terminal" },
+      { type: "cli.request.resolved", id: "r1", by: "gone" },
+    ];
+    for (const message of messages) {
+      const expected = JSON.parse(JSON.stringify(message));
+      expect(parseDeviceCliMessage(message), JSON.stringify(message).slice(0, 60)).toEqual(expected);
+    }
+  });
+
+  it("drops unknown keys", () => {
+    expect(parseDeviceCliMessage({ ...request, extra: 1, options: undefined })).toEqual({
+      type: "cli.request",
+      ref,
+      id: "r1",
+      kind: "permission",
+      tool: "Bash",
+      summary: "rm -rf build",
+      expiresAt: 1_763_000_060_000,
+    });
+  });
+
+  it("rejects bad turns and requests", () => {
+    for (const bad of [
+      { type: "cli.turn", ref, turn: -1, endedAt: 1, reason: "end" },
+      { type: "cli.turn", ref, turn: 1, endedAt: 1, reason: "crash" },
+      { type: "cli.turn", ref, turn: 1, reason: "end" },
+      { type: "cli.turn", ref: "x", turn: 1, endedAt: 1, reason: "end" },
+      { type: "cli.turn", ref, turn: 1, endedAt: 1, reason: "error", error: "e".repeat(CLI_LIMITS.turnError + 1) },
+      { ...request, ref: "nope" },
+      { ...request, kind: "other" },
+      { ...request, id: "" },
+      { ...request, expiresAt: "soon" },
+      { ...request, options: "allow" },
+      { ...request, options: [1] },
+      { ...request, questions: [{ question: "q", options: [{ label: 1 }] }] },
+      { ...request, questions: Array.from({ length: CLI_LIMITS.requestQuestions + 1 }, () => QUESTIONS[0]) },
+      { type: "cli.request.resolved", id: "r1", by: "someone" },
+      { type: "cli.request.resolved", by: "gone" },
+    ]) {
+      expect(parseDeviceCliMessage(bad), JSON.stringify(bad)?.slice(0, 70)).toBeNull();
+    }
   });
 });

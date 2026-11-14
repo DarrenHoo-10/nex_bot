@@ -48,3 +48,48 @@ CREATE TABLE cli_agent_ops (
   finished_at INTEGER
 ) STRICT;
 `;
+
+// Migration 49: pending permission / question requests from the Claude hook
+// (design section 8) and the supervisor's settings and action log (section 9).
+// The request text is encrypted at rest like cached transcript items; `tool`
+// is only a tool name. No sync_events triggers, for the same reason as above.
+export const cliAgentRequestSchema = `
+CREATE TABLE cli_agent_requests (
+  id TEXT PRIMARY KEY,
+  session_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('permission','question')),
+  tool TEXT NOT NULL,
+  summary_json TEXT NOT NULL,
+  options_json TEXT,
+  status TEXT NOT NULL CHECK (status IN ('pending','answered','resolved','expired')),
+  decided_by TEXT,
+  decision_json TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX cli_agent_requests_session ON cli_agent_requests(session_key, status);
+CREATE INDEX cli_agent_requests_pending ON cli_agent_requests(status, expires_at);
+
+CREATE TABLE cli_agent_supervision (
+  scope TEXT PRIMARY KEY,
+  settings_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE cli_agent_supervision_actions (
+  id TEXT PRIMARY KEY,
+  session_key TEXT NOT NULL,
+  turn INTEGER NOT NULL,
+  ended_at INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('retry','usage_limit','wakeup')),
+  attempt INTEGER NOT NULL,
+  due_at INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','sent','recovered','skipped','failed','cancelled')),
+  reason TEXT,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  UNIQUE (session_key, turn, ended_at)
+) STRICT;
+CREATE INDEX cli_agent_supervision_actions_session ON cli_agent_supervision_actions(session_key, created_at);
+CREATE INDEX cli_agent_supervision_actions_due ON cli_agent_supervision_actions(status, due_at);
+`;

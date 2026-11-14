@@ -54,6 +54,7 @@ interface Connection {
   subscriptions: Map<string, Subscription>;
   offList: (() => void) | null;
   offSummary: (() => void) | null;
+  offRequests: (() => void) | null;
   sink: StreamSink;
 }
 
@@ -129,7 +130,7 @@ export class CliAgentStream {
 
   private attach(ws: WebSocket, sessionId: string, token: string) {
     const connection: Connection = {
-      ws, sessionId, token, lastSeen: Date.now(), subscriptions: new Map(), offList: null, offSummary: null,
+      ws, sessionId, token, lastSeen: Date.now(), subscriptions: new Map(), offList: null, offSummary: null, offRequests: null,
       sink: undefined as unknown as StreamSink,
     };
     connection.sink = this.sinkFor(connection);
@@ -146,6 +147,7 @@ export class CliAgentStream {
     connection.subscriptions.clear();
     connection.offList?.();
     connection.offSummary?.();
+    connection.offRequests?.();
     this.hub.closeSink(connection.sink);
   }
 
@@ -193,6 +195,8 @@ export class CliAgentStream {
       case "unsub.session": {
         connection.subscriptions.get(message.key)?.off();
         connection.subscriptions.delete(message.key);
+        // the list subscription takes over this session's request updates
+        if (connection.offRequests) this.send(connection, { type: "requests", key: message.key, requests: this.hub.requests(message.key) });
         break;
       }
       case "term.open": this.hub.openStream(connection.sink, message.key, message.req, message.cols, message.rows, message.observe); break;
@@ -205,6 +209,7 @@ export class CliAgentStream {
   private subscribeList(connection: Connection) {
     connection.offList?.();
     connection.offSummary?.();
+    connection.offRequests?.();
     connection.offList = this.hub.onList((delta) => this.send(connection, { type: "list.delta", ...delta }));
     connection.offSummary = this.hub.onSummary((summary) => this.send(connection, { type: "summary", ...summary }));
     const { devices, sessions } = this.hub.list();
@@ -213,6 +218,14 @@ export class CliAgentStream {
     // The rest of a very long list follows as upserts: the browser merges them the same way.
     for (const more of rest) this.send(connection, { type: "list.delta", upserts: more, removes: [] });
     this.send(connection, { type: "summary", ...this.hub.summary() });
+    // Pending permission and question cards, one message per session that has any.
+    connection.offRequests = this.hub.onRequests((message) => {
+      if (message.type !== "requests" && message.type !== "request.resolved") return;
+      // a session this socket has open already gets them from its own subscription
+      if (connection.subscriptions.has(message.key)) return;
+      this.send(connection, message);
+    });
+    for (const [key, requests] of this.hub.requestsByKey()) this.send(connection, { type: "requests", key, requests });
   }
 
   private sendItems(connection: Connection, key: string, items: CliItem[], more: boolean) {
@@ -249,6 +262,7 @@ export class CliAgentStream {
       this.sendError(connection, error instanceof CliOpError ? error.code : "unknown", undefined, key);
     }
     subscription.ready = true;
+    this.send(connection, { type: "requests", key: key as CliSessionKey, requests: this.hub.requests(key) });
     for (const message of subscription.queue.splice(0)) this.send(connection, message);
   }
 

@@ -21,7 +21,7 @@ import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 import { todoSchema } from "./todo-schema.ts";
-import { cliAgentSchema } from "./cli-agents/schema.ts";
+import { cliAgentRequestSchema, cliAgentSchema } from "./cli-agents/schema.ts";
 import { jobSchema } from "./job-schema.ts";
 import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
 import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
@@ -477,6 +477,11 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
       // Agent mode: terminal coding-agent sessions, their cached transcript and device operations; see cli-agents/schema.ts. New tables only.
       this.db.exec(cliAgentSchema);
       this.insert("schema_migrations", { version: 48, checksum: hash(cliAgentSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=49")) this.transaction(() => {
+      // Agent mode phase 2: pending requests, supervision settings and action log; see cli-agents/schema.ts. New tables only.
+      this.db.exec(cliAgentRequestSchema);
+      this.insert("schema_migrations", { version: 49, checksum: hash(cliAgentRequestSchema), applied_at: now() });
     });
     if(!this.all('PRAGMA table_info(agent_topic_inputs)').some(column=>column.name==='model_selection_json'))this.db.exec('ALTER TABLE agent_topic_inputs ADD COLUMN model_selection_json TEXT');
     this.db.exec('CREATE TABLE IF NOT EXISTS task_model_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id),selection_json TEXT NOT NULL) STRICT;');

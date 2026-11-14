@@ -6,10 +6,11 @@ import { universalActions } from '../../shared/personal-capabilities.ts';
 import { htmlRenderContent } from '../../shared/html-render.ts';
 import { approvalRuleScope } from "./approval-rules.ts";
 import { TopicAccess } from "./topic-access.ts";
+import { CLI_TOOL_ACTIONS, isCliToolAction, validateCliToolArgs } from "./cli-agents/tool-args.ts";
 
 // A single registry serves every Agent. A display name never selects tools,
 // permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "agent.feishuDelivery", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render", "tool.search"] as const;
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "agent.feishuDelivery", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render", "tool.search", "cli.list", "cli.read", "cli.start", "cli.send", "cli.interrupt"] as const;
 // Device binding, Agent policy and effect-specific approval remain independent.
 export const basicActions = [...actions];
 export function policyTools(policy: Row): string[] {
@@ -25,7 +26,7 @@ export const ownerJobActions = ["job.start", "job.list", "job.message", "job.sto
 export const workerJobActions = ["job.report", "job.progress"] as const;
 export const jobActions: readonly string[] = [...ownerJobActions, ...workerJobActions];
 /** Long work the main chat hands to a background job instead of doing itself (a topic question excepted). */
-export const ownerJobOnly = ["device.computer", "image.generate", "agent.delegate"];
+export const ownerJobOnly = ["device.computer", "image.generate", "agent.delegate", ...CLI_TOOL_ACTIONS];
 /**
  * The one delegation the main chat keeps: a short question to the steward of a topic it may not read (the steward is
  * checked by checkDelegation when the call runs). A question, not a task: at most this many characters. Anything
@@ -60,6 +61,8 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
       if (!JSON.parse(String(local.scope_json)).exec) throw new Error("设备未启用终端能力");
       text(args.command, 16_000);
     } else if (action !== "device.info") { if (scope.read === false) throw new Error("设备未授权文件目录"); text(args.path ?? ".", 2048); }
+  } else if (isCliToolAction(action)) {
+    validateCliToolArgs(action, args);
   } else if (action === "agent.delegate") {
     text(args.message, 16_000);
     if (args.topic !== undefined) text(args.topic, 200);

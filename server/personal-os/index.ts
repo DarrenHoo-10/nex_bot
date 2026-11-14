@@ -11,6 +11,8 @@ import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
 import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
 import { CliAgentRoutes } from "./cli-agents/routes.ts";
+import { CliAgentSupervisor } from "./cli-agents/supervisor.ts";
+import { cliToolExecutor } from "./cli-agents/tools.ts";
 import { CliAgentStream, type StreamAuth } from "./cli-agents/stream.ts";
 import { installUpgrade } from "./upgrade.ts";
 import { DeviceNode } from "./node.ts";
@@ -154,7 +156,9 @@ export async function createPersonalApp(options: AppOptions) {
   const { pingMs, pongTimeoutMs, reauthMs, ...hubTuning } = options.cliAgents ?? {};
   const cliHub = new CliAgentHub(store, gateway, () => changed(), hubTuning);
   gateway.cli = cliHub;
-  const cliRoutes = new CliAgentRoutes(cliHub, store);
+  const cliSupervisor = new CliAgentSupervisor(cliHub, store);
+  runtime.cliExecutor = cliToolExecutor(cliHub, store);
+  const cliRoutes = new CliAgentRoutes(cliHub, store, { agents, supervisor: cliSupervisor });
   // The Host a browser may address, and the Origin its pages then carry. Shared by the HTTP routes and the stream socket.
   const hostAllowed = (host: string | undefined) => {
     if (!host) return false;
@@ -721,7 +725,7 @@ export async function createPersonalApp(options: AppOptions) {
   try { if (options.listen !== false) await listen(options.port ?? 0); }
   catch (error) {
     if (!options.strictPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE" && options.host !== "0.0.0.0") await listen(0);
-    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); cliStream.close(); cliHub.close(); gateway.close(); store.close(); throw error; }
+    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); cliStream.close(); cliSupervisor.close(); cliHub.close(); gateway.close(); store.close(); throw error; }
   }
   const address = server.address();
   if (options.listen === false && options.serviceOrigin) origin = options.serviceOrigin;
@@ -757,7 +761,7 @@ export async function createPersonalApp(options: AppOptions) {
   const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
   archiveTimer?.unref(); archive();
   if(!options.accountWorkspaces) feishu.start();
-  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliSupervisor, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
     closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob;
     await identity?.close();
@@ -767,7 +771,7 @@ export async function createPersonalApp(options: AppOptions) {
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
     // Upgraded sockets are not tracked by closeAllConnections, so the Agent mode stream ends its own.
-    cliStream.close(); cliHub.close();
+    cliStream.close(); cliSupervisor.close(); cliHub.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();
     await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); await Promise.allSettled(store.attachmentJobs.values()); store.close();
   } };

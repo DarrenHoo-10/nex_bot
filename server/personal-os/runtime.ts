@@ -10,6 +10,7 @@ import { ProjectionStore } from "./projection.ts";
 import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent } from "./contracts.ts";
 import { TOPIC_QUESTION_LIMIT, directory, evaluateTool, jobActions, ownerMayCall } from "./policy.ts";
 import { rememberApproval } from "./approval-rules.ts";
+import { cliToolDevice } from "./cli-agents/tool-args.ts";
 import { ChatFiles } from "./chat-files.ts";
 import { ImageModels } from './image-models.ts';
 import type { ForgetPlan } from "./memory-privacy.ts";
@@ -74,6 +75,7 @@ export class TaskRuntime {
   onCancel?: (taskId: string) => void;
   deviceDirectory?: () => unknown[];
   todoExecutor?: (call: Row, args: Record<string, unknown>) => unknown;
+  cliExecutor?: (call: Row, args: Record<string, unknown>) => Promise<unknown>;
   routineExecutor?: (call: Row, args: Record<string, unknown>) => unknown;
   jobExecutor?: (call: Row, args: Record<string, unknown>) => unknown;
   agentExecutor?: (call: Row, args: Record<string, unknown>) => unknown;
@@ -728,12 +730,12 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
     const { policy, local: localGrant, approvalRequired: ask } = evaluateTool(this.store, String(task.bot_id), args);
     const old = this.store.get("SELECT * FROM tool_calls WHERE runtime_session_id=? AND assistant_entry_id=? AND provider_tool_call_id=?", worker.runtimeId, event.entryId, event.providerId);
     if (old) { if (canonical(args) !== canonical(JSON.parse(String(old.arguments_json)))) throw new Error("Immutable proposal argument conflict"); return old; }
-    const callId = id(), target = action.startsWith("memory.") ? "memory" : action.startsWith("device.") && action !== "device.inventory" ? "device" : "connector";
+    const callId = id(), target = action.startsWith("memory.") ? "memory" : (action.startsWith("device.") && action !== "device.inventory") || action.startsWith("cli.") ? "device" : "connector";
     const forget = action === "memory.forget" ? this.memory.privacy.preview(String(task.bot_id), args) : undefined;
     // The main chat hands long work to a background job: the call is recorded as failed with a pointer to job.start,
     // never approved and never executed, so audit and replay take the ordinary path.
     const ownerRefused = !this.isTopicTask(String(task.id)) && !ownerMayCall(action, args) && this.taskOrigin(String(task.id)) === "owner";
-    const targetId = action.startsWith("job.") ? String(args.jobId ?? task.bot_id) : action === "html.render" ? String(task.bot_id) : action.startsWith("image.") ? action : action === "attachment.read" ? text(args.attachmentId,100) : action === "connector.list" ? action : action.startsWith("connector.") ? text(args.connectorId, 100) : target === "memory" ? (typeof args.documentId === "string" ? args.documentId : action === "memory.write" ? id() : action === "memory.core.update" ? "core-memory" : action === "memory.topic" ? "memory-topic" : "memory-search") : target === "device" ? text(args.deviceId, 100) : action.startsWith("todo.") ? String(args.todoId ?? task.bot_id) : action.startsWith("routine.") ? String(args.routineId ?? task.bot_id) : ["tool.search", "agent.directory", "agent.create", "agent.feishuDelivery", "device.inventory", "skill.list", "skill.read"].includes(action) ? action : text(args.botId, 100);
+    const targetId = action.startsWith("job.") ? String(args.jobId ?? task.bot_id) : action === "html.render" ? String(task.bot_id) : action.startsWith("image.") ? action : action === "attachment.read" ? text(args.attachmentId,100) : action === "connector.list" ? action : action.startsWith("connector.") ? text(args.connectorId, 100) : target === "memory" ? (typeof args.documentId === "string" ? args.documentId : action === "memory.write" ? id() : action === "memory.core.update" ? "core-memory" : action === "memory.topic" ? "memory-topic" : "memory-search") : action.startsWith("cli.") ? cliToolDevice(args) || action : target === "device" ? text(args.deviceId, 100) : action.startsWith("todo.") ? String(args.todoId ?? task.bot_id) : action.startsWith("routine.") ? String(args.routineId ?? task.bot_id) : ["tool.search", "agent.directory", "agent.create", "agent.feishuDelivery", "device.inventory", "skill.list", "skill.read"].includes(action) ? action : text(args.botId, 100);
     const envelope = canonical({ version: 1, callId, botId: task.bot_id, taskId: task.id, capability: action, targetId, arguments: args });
     this.store.transaction(() => {
       this.store.insert("tool_calls", { id: callId, task_id: task.id, run_id: worker.runId, ...this.store.scope(), conversation_id: task.conversation_id, bot_id: task.bot_id, runtime_session_id: worker.runtimeId, assistant_entry_id: event.entryId!, provider_tool_call_id: event.providerId!, tool_name: action, tool_version: "1", target_kind: target, target_id: targetId, arguments_json: canonical(args), canonical_envelope: envelope, argument_hash: hash(envelope), status: ownerRefused ? "failed" : ask ? "awaiting_approval" : "ready", ...(ownerRefused ? { result_json: OWNER_REFUSAL, result_hash: hash(OWNER_REFUSAL) } : {}), authorization_snapshot_json: JSON.stringify({ ...(this.isTopicTask(String(task.id))?{topicAudience:this.isTopicTask(String(task.id))!.audience,topicConversationId:this.isTopicTask(String(task.id))!.conversation_id}:{}), policyVersion: policy.version, localPolicyVersion: localGrant?.policy_version ?? null, ...(forget ? { forgetRevision: forget.revision, forgetCounts: { documents: forget.documents.length, messages: forget.messages.length, tasks: forget.tasks.length } } : {}) }), created_at: now() });
@@ -760,7 +762,8 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
     const call = this.store.get("SELECT * FROM tool_calls WHERE id=?", approval.tool_call_id)!;
     const task = this.store.get("SELECT * FROM tasks WHERE id=?", call.task_id)!;
     const policy = this.store.get("SELECT version FROM bot_policies WHERE bot_id=?", call.bot_id)!;
-    if (call.target_kind === "device") {
+    // cli.* calls are recorded against a device but need no local grant: the hub checks the device when it runs.
+    if (call.target_kind === "device" && !String(call.tool_name).startsWith("cli.")) {
       const local = this.store.get("SELECT policy_version,status FROM device_local_grants WHERE device_id=? AND local_grant_id='shared'", call.target_id);
       if (local?.status !== "active" || local.policy_version !== JSON.parse(String(call.authorization_snapshot_json)).localPolicyVersion) throw new Error("设备授权已变化，请发送新的要求重新审批");
     }
@@ -911,6 +914,7 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
       else if (call.tool_name === "device.inventory") result = { devices: this.deviceDirectory?.() ?? [], currentClient: this.currentClient(String(call.task_id)) };
       else if (call.tool_name === "skill.list") result = { skills: skillList(this.store, String(call.bot_id)) };
       else if (call.tool_name === "skill.read") result = skillRead(this.store, String(call.bot_id), text(args.skillId, 80));
+      else if (String(call.tool_name).startsWith("cli.") && this.cliExecutor) result = await this.cliExecutor(call, args);
       else if (String(call.tool_name).startsWith("todo.") && this.todoExecutor) result = this.todoExecutor(call, args);
       else if (String(call.tool_name).startsWith("routine.") && this.routineExecutor) result = this.routineExecutor(call, args);
       else if (String(call.tool_name).startsWith("device.") && this.deviceExecutor) {

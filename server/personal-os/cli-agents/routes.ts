@@ -6,6 +6,7 @@
 // rewritten by proxies in front of it and lose the code.
 import {
   CLI_ERROR_TEXT,
+  CLI_LIMITS,
   MAX_SEND_TEXT,
   isAbsoluteCwd,
   isCliDeviceId,
@@ -15,7 +16,9 @@ import {
   type CliErrorCode,
 } from "../../../shared/cli-agents.ts";
 import type { CoreStore } from "../store.ts";
+import { forkToTopic, type ForkAgents } from "./fork.ts";
 import { CliOpError, type CliAgentHub } from "./hub.ts";
+import { parseSettings, type CliAgentSupervisor } from "./supervisor.ts";
 
 export interface CliRouteRequest {
   method: string;
@@ -40,33 +43,117 @@ export function cliErrorResult(code: CliErrorCode): CliRouteResult {
   return { status: STATUS[code] ?? 409, body: { error: CLI_ERROR_TEXT[code], code } };
 }
 
+export interface CliRouteExtras {
+  /** assistant topics, for fork-to-topic */
+  agents?: ForkAgents;
+  supervisor?: CliAgentSupervisor;
+}
+
 export class CliAgentRoutes {
   constructor(
     private readonly hub: CliAgentHub,
     private readonly store: CoreStore,
+    private readonly extras: CliRouteExtras = {},
   ) {}
 
   /** Null when the path is not an Agent mode route. */
   async handle(request: CliRouteRequest): Promise<CliRouteResult | null> {
     const { method, pathname } = request;
     if (!pathname.startsWith("/api/cli-agents")) return null;
-    const get = method === "GET", post = method === "POST";
-    if (!(get && (pathname === "/api/cli-agents" || pathname === "/api/cli-agents/items")) && !(post && POST_ROUTES.has(pathname))) return null;
+    const get = method === "GET", post = method === "POST", put = method === "PUT";
+    if (!(get && GET_ROUTES.has(pathname)) && !(post && POST_ROUTES.has(pathname)) && !(put && pathname === "/api/cli-agents/supervision")) return null;
     if (!request.owner) return { status: 403, body: { error: "此账号没有使用 Agent 会话的权限" } };
     try {
-      if (get) return pathname === "/api/cli-agents" ? { status: 200, body: this.hub.list() } : await this.items(request);
+      if (get) {
+        switch (pathname) {
+          case "/api/cli-agents/items": return await this.items(request);
+          case "/api/cli-agents/requests": return this.requests(request);
+          case "/api/cli-agents/supervision": return this.supervision();
+          default: return { status: 200, body: { ...this.hub.list(), requests: this.hub.requests() } };
+        }
+      }
       const data = request.data ?? {};
+      if (put) return this.putSupervision(data);
       switch (pathname) {
         case "/api/cli-agents/start": return await this.start(request, data);
         case "/api/cli-agents/continue": return await this.continueSession(request, data);
         case "/api/cli-agents/send": return await this.send(request, data);
         case "/api/cli-agents/interrupt": return await this.interrupt(request, data);
         case "/api/cli-agents/open-local": return await this.openLocal(request, data);
+        case "/api/cli-agents/answer": return await this.answer(request, data);
+        case "/api/cli-agents/fork": return await this.fork(request, data);
         default: return this.hide(data);
       }
     } catch (error) {
       if (error instanceof CliOpError) return cliErrorResult(error.code);
       throw error;
+    }
+  }
+
+  private requests(request: CliRouteRequest): CliRouteResult {
+    const key = request.search.get("key");
+    if (key !== null && !this.key(key)) return cliErrorResult("invalid");
+    return { status: 200, body: { requests: this.hub.requests(key ?? undefined) } };
+  }
+
+  private async answer(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
+    const { id, decision, answers, message } = data;
+    if (typeof id !== "string" || id.length < 1 || id.length > CLI_LIMITS.requestId) return cliErrorResult("invalid");
+    if (decision !== "allow" && decision !== "deny") return cliErrorResult("invalid");
+    if (message !== undefined && (typeof message !== "string" || message.length > CLI_LIMITS.answerMessage)) return cliErrorResult("invalid");
+    let chosen: Record<string, string> | undefined;
+    if (answers !== undefined) {
+      if (typeof answers !== "object" || answers === null || Array.isArray(answers)) return cliErrorResult("invalid");
+      const entries = Object.entries(answers);
+      if (entries.length > CLI_LIMITS.requestQuestions) return cliErrorResult("invalid");
+      chosen = {};
+      for (const [question, answer] of entries) {
+        if (typeof answer !== "string" || answer.length > CLI_LIMITS.requestAnswer) return cliErrorResult("invalid");
+        chosen[question] = answer;
+      }
+    }
+    // The audit row says who answered what kind of decision, never the answer text.
+    this.store.audit("cli.answer", "cli_request", id, { sessionId: request.sessionId, decision });
+    const result = await this.hub.answer(request.sessionId, id, decision, chosen, message);
+    return { status: 200, body: { outcome: result.outcome } };
+  }
+
+  private supervision(): CliRouteResult {
+    const supervisor = this.extras.supervisor;
+    return supervisor ? { status: 200, body: supervisor.overview() } : cliErrorResult("not_found");
+  }
+
+  /** `{cwd?, settings}`: switches for one workspace folder, or for all without `cwd`. `settings: null` removes a folder's override. */
+  private putSupervision(data: Record<string, unknown>): CliRouteResult {
+    const supervisor = this.extras.supervisor;
+    if (!supervisor) return cliErrorResult("not_found");
+    const { cwd } = data;
+    if (cwd !== undefined && !isAbsoluteCwd(cwd)) return cliErrorResult("invalid");
+    let settings: ReturnType<typeof parseSettings> | null;
+    if (data.settings === null) settings = null;
+    else {
+      settings = parseSettings(data.settings);
+      if (!settings) return cliErrorResult("invalid");
+    }
+    if (settings === null && cwd === undefined) return cliErrorResult("invalid");
+    supervisor.put(cwd as string | undefined, settings);
+    return { status: 200, body: supervisor.overview() };
+  }
+
+  private async fork(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
+    const key = this.key(data.key);
+    const { botId } = data;
+    if (!key || typeof botId !== "string" || botId.length < 1 || botId.length > 100) return cliErrorResult("invalid");
+    const agents = this.extras.agents;
+    if (!agents) return cliErrorResult("not_found");
+    this.store.audit("cli.fork", "cli_session", key, { sessionId: request.sessionId, botId });
+    try {
+      const forked = await forkToTopic(this.hub, agents, request.sessionId, key, botId);
+      return { status: 200, body: forked };
+    } catch (error) {
+      if (error instanceof CliOpError) throw error;
+      // the agent module words its own refusals (unknown assistant, bad topic)
+      return { status: 400, body: { error: error instanceof Error ? error.message : "无法创建话题", code: "invalid" } };
     }
   }
 
@@ -140,4 +227,13 @@ const POST_ROUTES = new Set([
   "/api/cli-agents/interrupt",
   "/api/cli-agents/open-local",
   "/api/cli-agents/hide",
+  "/api/cli-agents/answer",
+  "/api/cli-agents/fork",
+]);
+
+const GET_ROUTES = new Set([
+  "/api/cli-agents",
+  "/api/cli-agents/items",
+  "/api/cli-agents/requests",
+  "/api/cli-agents/supervision",
 ]);

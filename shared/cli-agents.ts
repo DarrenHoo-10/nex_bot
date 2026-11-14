@@ -70,6 +70,19 @@ export const CLI_LIMITS = {
   /** rows in a browser `list` across all of the user's devices */
   listSessions: 5000,
   deadlineMs: 120_000,
+  /** pending permission / question requests (cli.request) */
+  requestId: 128,
+  requestTool: 200,
+  requestOptions: 20,
+  requestOption: 200,
+  requestQuestions: 8,
+  requestQuestion: 1000,
+  requestDescription: 1000,
+  requestAnswer: 4096,
+  /** error text a cli.turn carries (it may name a usage-limit reset time) */
+  turnError: 1000,
+  answerMessage: 2000,
+  requestsPerSession: 50,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -204,6 +217,56 @@ export type CliItem =
   | { kind: "turn"; id: string; ts: number; phase: CliTurnPhase };
 
 // ---------------------------------------------------------------------------
+// Turn ends and pending requests (design sections 8 and 9)
+
+export type CliTurnReason = "end" | "error" | "interrupted";
+export const CLI_TURN_REASONS: readonly CliTurnReason[] = ["end", "error", "interrupted"];
+
+export type CliRequestKind = "permission" | "question";
+export const CLI_REQUEST_KINDS: readonly CliRequestKind[] = ["permission", "question"];
+
+/** Who closed a request: the CLI in the terminal, the CLI's own timeout,
+ * nex_bot's answer, or the session went away. */
+export type CliRequestResolvedBy = "terminal" | "timeout" | "nexbot" | "gone";
+export const CLI_REQUEST_RESOLVED_BY: readonly CliRequestResolvedBy[] = ["terminal", "timeout", "nexbot", "gone"];
+
+export interface CliRequestQuestion {
+  question: string;
+  header?: string;
+  options: { label: string; description?: string }[];
+  multiSelect?: boolean;
+}
+
+/** What a device sends for a pending request. */
+export interface CliRequestWire {
+  ref: CliSessionRef;
+  id: string;
+  kind: CliRequestKind;
+  tool: string;
+  summary: string;
+  options?: string[];
+  questions?: CliRequestQuestion[];
+  /** epoch ms */
+  expiresAt: number;
+}
+
+/** What Core sends to browsers. */
+export interface CliRequestView {
+  id: string;
+  key: CliSessionKey;
+  kind: CliRequestKind;
+  tool: string;
+  summary: string;
+  options?: string[];
+  questions?: CliRequestQuestion[];
+  /** epoch ms */
+  createdAt: number;
+  expiresAt: number;
+}
+
+export type CliAnswerDecision = "allow" | "deny";
+
+// ---------------------------------------------------------------------------
 // Errors (plan 4.6)
 
 export type CliErrorCode =
@@ -290,7 +353,17 @@ export interface CliDeviceView {
 // ---------------------------------------------------------------------------
 // Operations (plan 4.2 / 4.4)
 
-export const CLI_OPS = ["read", "watch", "unwatch", "start", "continue", "send", "interrupt", "open_local"] as const;
+export const CLI_OPS = [
+  "read",
+  "watch",
+  "unwatch",
+  "start",
+  "continue",
+  "send",
+  "interrupt",
+  "open_local",
+  "answer",
+] as const;
 export type CliOp = (typeof CLI_OPS)[number];
 
 export function isCliOp(value: unknown): value is CliOp {
@@ -307,6 +380,8 @@ export interface CliOpArgs {
   send: { ref: CliSessionRef; text: string };
   interrupt: { ref: CliSessionRef };
   open_local: { ref: CliSessionRef };
+  /** answers the pending request `id`; `answers` maps a question to its chosen label(s) */
+  answer: { id: string; decision: CliAnswerDecision; answers?: Record<string, string>; message?: string };
 }
 
 export interface CliOpResult {
@@ -318,6 +393,7 @@ export interface CliOpResult {
   send: { turn: number; started: boolean };
   interrupt: { outcome: string };
   open_local: Record<string, never>;
+  answer: { outcome: string };
 }
 
 export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
@@ -329,6 +405,7 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   send: 70_000,
   interrupt: 10_000,
   open_local: 10_000,
+  answer: 10_000,
 };
 
 /** Operations that change state: never re-sent after a timeout or a drop. */
@@ -338,6 +415,7 @@ export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
   "send",
   "interrupt",
   "open_local",
+  "answer",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -346,6 +424,9 @@ export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
 export type DeviceCliMessage =
   | { type: "cli.sessions"; full: boolean; upserts: CliSessionWire[]; removes: CliSessionRef[]; seq: number }
   | { type: "cli.items"; ref: CliSessionRef; items: CliItem[]; reset?: boolean; more?: boolean }
+  | { type: "cli.turn"; ref: CliSessionRef; turn: number; endedAt: number; reason: CliTurnReason; error?: string }
+  | ({ type: "cli.request" } & CliRequestWire)
+  | { type: "cli.request.resolved"; id: string; by: CliRequestResolvedBy }
   | { type: "cli.reply"; opId: string; ok: boolean; result?: Record<string, unknown>; error?: CliError }
   | { type: "cli.term.opened"; sid: number; cols: number; rows: number; observe: boolean }
   | { type: "cli.term.size"; sid: number; cols: number; rows: number }
@@ -383,6 +464,9 @@ export type ServerMessage =
   | { type: "term.closed"; sid: number; reason: string }
   | { type: "error"; code: CliErrorCode; req?: string; message?: string }
   | { type: "summary"; waiting: number; running: number }
+  /** the full pending list of one session, sent on subscribe and on every change */
+  | { type: "requests"; key: CliSessionKey; requests: CliRequestView[] }
+  | { type: "request.resolved"; key: CliSessionKey; id: string; by: CliRequestResolvedBy }
   | { type: "pong" };
 
 // ---------------------------------------------------------------------------
@@ -705,6 +789,74 @@ export function parseCliDeviceView(value: unknown): CliDeviceView | null {
 // ---------------------------------------------------------------------------
 // Parsers: operations
 
+const CLI_ANSWER_DECISIONS: readonly CliAnswerDecision[] = ["allow", "deny"];
+
+function answersMap(value: unknown): Record<string, string> {
+  const o = rec(value);
+  const keys = Object.keys(o);
+  if (keys.length > CLI_LIMITS.requestQuestions) fail();
+  const out: Record<string, string> = {};
+  for (const k of keys) {
+    if (k === "__proto__" || k.length > CLI_LIMITS.requestQuestion) fail();
+    out[k] = str(o[k], CLI_LIMITS.requestAnswer);
+  }
+  return out;
+}
+
+function requestQuestions(value: unknown): CliRequestQuestion[] {
+  return arr(value, CLI_LIMITS.requestQuestions).map((entry) => {
+    const q = rec(entry);
+    return pick({
+      question: str(q.question, CLI_LIMITS.requestQuestion),
+      header: optStr(q, "header", CLI_LIMITS.requestOption),
+      options: arr(q.options, CLI_LIMITS.requestOptions).map((opt) => {
+        const p = rec(opt);
+        return pick({
+          label: str(p.label, CLI_LIMITS.requestOption),
+          description: optStr(p, "description", CLI_LIMITS.requestDescription),
+        });
+      }),
+      multiSelect: optBool(q, "multiSelect"),
+    });
+  });
+}
+
+function requestOptions(value: unknown): string[] {
+  return arr(value, CLI_LIMITS.requestOptions).map((entry) => str(entry, CLI_LIMITS.requestOption));
+}
+
+function requestFields(o: Rec) {
+  return {
+    id: str(o.id, CLI_LIMITS.requestId, 1),
+    kind: oneOf(o.kind, CLI_REQUEST_KINDS),
+    tool: str(o.tool, CLI_LIMITS.requestTool),
+    summary: str(o.summary, SUMMARY_MAX),
+    options: present(o, "options") ? requestOptions(o.options) : undefined,
+    questions: present(o, "questions") ? requestQuestions(o.questions) : undefined,
+    expiresAt: int(o.expiresAt, 0, COUNTER_MAX),
+  };
+}
+
+function requestView(value: unknown): CliRequestView {
+  const o = rec(value);
+  const fields = requestFields(o);
+  return pick({
+    id: fields.id,
+    key: key(o.key),
+    kind: fields.kind,
+    tool: fields.tool,
+    summary: fields.summary,
+    options: fields.options,
+    questions: fields.questions,
+    createdAt: int(o.createdAt, 0, COUNTER_MAX),
+    expiresAt: fields.expiresAt,
+  });
+}
+
+export function parseCliRequestView(value: unknown): CliRequestView | null {
+  return guard(() => requestView(value));
+}
+
 const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
   read: (o) =>
     pick({
@@ -737,6 +889,13 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
   },
   interrupt: (o) => ({ ref: ref(o.ref) }),
   open_local: (o) => ({ ref: ref(o.ref) }),
+  answer: (o) =>
+    pick({
+      id: str(o.id, CLI_LIMITS.requestId, 1),
+      decision: oneOf(o.decision, CLI_ANSWER_DECISIONS),
+      answers: present(o, "answers") ? answersMap(o.answers) : undefined,
+      message: optStr(o, "message", CLI_LIMITS.answerMessage),
+    }),
 };
 
 const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
@@ -748,6 +907,8 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
   send: (o) => ({ turn: int(o.turn, 0, COUNTER_MAX), started: bool(o.started) }),
   interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),
   open_local: () => ({}),
+  // a device that answers with an empty result still counts as delivered
+  answer: (o) => ({ outcome: present(o, "outcome") ? str(o.outcome, CLI_LIMITS.reason) : "ok" }),
 };
 
 export function parseCliOpArgs<K extends CliOp>(op: K, value: unknown): CliOpArgs[K] | null {
@@ -810,6 +971,25 @@ export function parseDeviceCliMessage(value: unknown): DeviceCliMessage | null {
           reset: optBool(o, "reset"),
           more: optBool(o, "more"),
         });
+      case "cli.turn":
+        return pick({
+          type: "cli.turn" as const,
+          ref: ref(o.ref),
+          turn: int(o.turn, 0, COUNTER_MAX),
+          endedAt: int(o.endedAt, 0, COUNTER_MAX),
+          reason: oneOf(o.reason, CLI_TURN_REASONS),
+          error: optStr(o, "error", CLI_LIMITS.turnError),
+        });
+      case "cli.request": {
+        const fields = requestFields(o);
+        return pick({ type: "cli.request" as const, ref: ref(o.ref), ...fields });
+      }
+      case "cli.request.resolved":
+        return {
+          type: "cli.request.resolved",
+          id: str(o.id, CLI_LIMITS.requestId, 1),
+          by: oneOf(o.by, CLI_REQUEST_RESOLVED_BY),
+        };
       case "cli.reply": {
         const ok = bool(o.ok);
         const result = present(o, "result") ? (plainJson(rec(o.result), 0) as Record<string, unknown>) : undefined;
@@ -966,6 +1146,20 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
         });
       case "summary":
         return { type: "summary", waiting: int(o.waiting, 0, 1_000_000), running: int(o.running, 0, 1_000_000) };
+      case "requests": {
+        const sessionKey = key(o.key);
+        const requests = arr(o.requests, CLI_LIMITS.requestsPerSession).map(requestView);
+        // a requests message is one session's list
+        if (requests.some((request) => request.key !== sessionKey)) fail();
+        return { type: "requests", key: sessionKey, requests };
+      }
+      case "request.resolved":
+        return {
+          type: "request.resolved",
+          key: key(o.key),
+          id: str(o.id, CLI_LIMITS.requestId, 1),
+          by: oneOf(o.by, CLI_REQUEST_RESOLVED_BY),
+        };
       case "pong":
         return { type: "pong" };
       default:

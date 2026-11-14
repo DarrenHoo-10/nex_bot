@@ -9,6 +9,7 @@
 // Plan: docs/plans/2026-11-15-agent-mode-implementation.md sections 2, 4, 5.
 import {
   CLI_ERROR_CODES,
+  CLI_LIMITS,
   CLI_OP_MUTATING,
   CLI_OP_TIMEOUT_MS,
   CORE_ITEM_CACHE,
@@ -28,9 +29,13 @@ import {
   type CliOp,
   type CliOpArgs,
   type CliOpResult,
+  type CliRequestQuestion,
+  type CliRequestResolvedBy,
+  type CliRequestView,
   type CliSessionKey,
   type CliSessionView,
   type CliSessionWire,
+  type CliTurnReason,
   type DeviceCliMessage,
   type CoreCliMessage,
   type ServerMessage,
@@ -54,6 +59,18 @@ export interface CliHubTuning {
   streamBufferMax: number;
   /** How long a terminal open may wait for the device. */
   streamOpenMs: number;
+  /** How often pending requests past their expiry are closed. */
+  requestSweepMs: number;
+}
+
+/** A turn that ended on a device, as the supervisor and other listeners see it. */
+export interface CliTurnEvent {
+  key: CliSessionKey;
+  deviceId: string;
+  turn: number;
+  endedAt: number;
+  reason: CliTurnReason;
+  error?: string;
 }
 
 export class CliOpError extends Error {
@@ -108,6 +125,8 @@ interface StreamEntry {
 
 export const MAX_STREAMS_PER_SINK = 8;
 const OPS_RETENTION_MS = 7 * 86_400_000;
+/** A request never stays pending longer than this, whatever the device claims. */
+const MAX_REQUEST_MS = 2 * 3_600_000;
 const SESSION_COLUMNS = [
   "device_id", "engine", "native_id", "config_dir", "cwd", "title", "git_branch", "state", "waiting_for",
   "live_in", "terminal", "model", "cli_version", "last_activity_at",
@@ -129,6 +148,10 @@ export class CliAgentHub {
   private readonly listListeners = new Set<(delta: ListDelta) => void>();
   private readonly summaryListeners = new Set<(summary: { waiting: number; running: number }) => void>();
   private lastSummary = { waiting: 0, running: 0 };
+  private readonly requestListeners = new Set<(message: ServerMessage) => void>();
+  private readonly turnListeners = new Set<(event: CliTurnEvent) => void>();
+  private readonly lastTurns = new Map<string, CliTurnEvent>();
+  private readonly sweepTimer: NodeJS.Timeout;
   private readonly byBrowser = new Map<number, StreamEntry>();
   private readonly byDevice = new Map<string, Map<number, StreamEntry>>();
   private nextBrowserSid = 1;
@@ -146,21 +169,25 @@ export class CliAgentHub {
     readonly changed: () => void,
     tuning: Partial<CliHubTuning> = {},
   ) {
-    this.tuning = { graceMs: 1000, streamBufferMax: CORE_STREAM_BUFFER_MAX, streamOpenMs: 15_000, ...tuning };
+    this.tuning = { graceMs: 1000, streamBufferMax: CORE_STREAM_BUFFER_MAX, streamOpenMs: 15_000, requestSweepMs: 30_000, ...tuning };
     // A restart loses every in-flight answer; the device may or may not have acted.
     store.run("UPDATE cli_agent_ops SET status='unknown',finished_at=? WHERE status='sent'", now());
     this.prune();
     this.pruneTimer = setInterval(() => this.prune(), 3_600_000);
     this.pruneTimer.unref();
+    this.sweepTimer = setInterval(() => this.expireRequests(), this.tuning.requestSweepMs);
+    this.sweepTimer.unref();
   }
 
   private prune() {
     this.store.run("DELETE FROM cli_agent_ops WHERE created_at<?", now() - OPS_RETENTION_MS);
+    this.store.run("DELETE FROM cli_agent_requests WHERE status!='pending' AND created_at<?", now() - OPS_RETENTION_MS);
   }
 
   close() {
     this.closed = true;
     clearInterval(this.pruneTimer);
+    clearInterval(this.sweepTimer);
     for (const pending of [...this.pending.values()]) this.settleUnknown(pending, "unknown", "Core shutting down");
     for (const entry of [...this.byBrowser.values()]) {
       this.removeEntry(entry);
@@ -169,6 +196,8 @@ export class CliAgentHub {
     this.watchers.clear();
     this.listListeners.clear();
     this.summaryListeners.clear();
+    this.requestListeners.clear();
+    this.turnListeners.clear();
   }
 
   // -------------------------------------------------------------------------
@@ -215,9 +244,14 @@ export class CliAgentHub {
     this.deviceOffline(deviceId);
     this.lastCaps.delete(deviceId);
     const removes = this.store.all("SELECT key FROM cli_agent_sessions WHERE device_id=?", deviceId).map((row) => asKey(String(row.key)));
+    for (const key of [...this.lastTurns.keys()]) if (key.startsWith(deviceId + ":")) this.lastTurns.delete(key);
+    for (const row of this.store.all("SELECT DISTINCT session_key FROM cli_agent_requests WHERE substr(session_key,1,?)=? AND status='pending'", deviceId.length + 1, deviceId + ":")) {
+      this.resolveRequests(asKey(String(row.session_key)), "gone");
+    }
     this.store.transaction(() => {
       this.store.run("DELETE FROM cli_agent_sessions WHERE device_id=?", deviceId);
       this.store.run("DELETE FROM cli_agent_ops WHERE device_id=?", deviceId);
+      this.store.run("DELETE FROM cli_agent_requests WHERE substr(session_key,1,?)=?", deviceId.length + 1, deviceId + ":");
     });
     if (removes.length) this.emitList({ upserts: [], removes });
     this.refreshSummary();
@@ -238,6 +272,9 @@ export class CliAgentHub {
       case "cli.sessions": this.onSessions(deviceId, message); break;
       case "cli.items": this.onItems(deviceId, message); break;
       case "cli.reply": this.onReply(deviceId, message); break;
+      case "cli.turn": this.onTurn(deviceId, message); break;
+      case "cli.request": this.onRequest(deviceId, message); break;
+      case "cli.request.resolved": this.onRequestResolved(deviceId, message); break;
       case "cli.term.opened": {
         const entry = this.byDevice.get(deviceId)?.get(message.sid);
         if (!entry || entry.opened) break;
@@ -334,6 +371,7 @@ export class CliAgentHub {
       }
       for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); }
     });
+    for (const key of removes) { this.lastTurns.delete(key); this.resolveRequests(key, "gone"); }
     const views = upserts.map((key) => this.viewOf(key)).filter((view): view is CliSessionView => view !== null);
     if (views.length || removes.length) this.emitList({ upserts: views, removes });
     this.refreshSummary();
@@ -397,6 +435,181 @@ export class CliAgentHub {
     return { items, more };
   }
 
+  // -------------------------------------------------------------------------
+  // Turn ends and pending requests
+
+  private onTurn(deviceId: string, message: Extract<DeviceCliMessage, { type: "cli.turn" }>) {
+    const key = asKey(cliKey(deviceId, message.ref));
+    const event: CliTurnEvent = {
+      key, deviceId, turn: message.turn, endedAt: message.endedAt, reason: message.reason,
+      ...(message.error !== undefined ? { error: message.error } : {}),
+    };
+    const last = this.lastTurns.get(key);
+    // The device may repeat a turn after a resync; listeners see it once.
+    if (last && last.turn === event.turn && last.endedAt === event.endedAt) return;
+    this.lastTurns.set(key, event);
+    for (const listener of [...this.turnListeners]) {
+      try { listener(event); } catch { /* a broken listener must not stop the others */ }
+    }
+  }
+
+  private onRequest(deviceId: string, message: Extract<DeviceCliMessage, { type: "cli.request" }>) {
+    const key = cliKey(deviceId, message.ref);
+    const at = now();
+    const expiresAt = Math.min(message.expiresAt, at + MAX_REQUEST_MS);
+    if (expiresAt <= at) return;
+    const existing = this.store.get("SELECT session_key FROM cli_agent_requests WHERE id=?", message.id);
+    // A repeat is harmless; an id that belongs to another session is not ours to take over.
+    if (existing) { if (existing.session_key !== key) this.invalidMessages++; return; }
+    const pending = Number(this.store.get("SELECT COUNT(*) n FROM cli_agent_requests WHERE session_key=? AND status='pending'", key)?.n ?? 0);
+    if (pending >= CLI_LIMITS.requestsPerSession) return;
+    const extra = message.options !== undefined || message.questions !== undefined
+      ? this.store.encrypt(JSON.stringify({ ...(message.options !== undefined ? { options: message.options } : {}), ...(message.questions !== undefined ? { questions: message.questions } : {}) }))
+      : null;
+    this.store.insert("cli_agent_requests", {
+      id: message.id, session_key: key, kind: message.kind, tool: message.tool,
+      summary_json: this.store.encrypt(JSON.stringify({ summary: message.summary })), options_json: extra,
+      status: "pending", decided_by: null, decision_json: null, created_at: at, expires_at: expiresAt,
+    });
+    this.emitRequests(key);
+    this.refreshSummary();
+  }
+
+  private onRequestResolved(deviceId: string, message: Extract<DeviceCliMessage, { type: "cli.request.resolved" }>) {
+    const row = this.store.get("SELECT session_key,status FROM cli_agent_requests WHERE id=?", message.id);
+    if (!row || row.status !== "pending" || parseCliKey(String(row.session_key))?.deviceId !== deviceId) return;
+    this.closeRequest(message.id, String(row.session_key), "resolved", message.by);
+  }
+
+  /** Closes one pending request and tells the browsers; the first closer wins. */
+  private closeRequest(requestId: string, key: string, status: "resolved" | "expired", by: CliRequestResolvedBy): boolean {
+    const changes = Number(this.store.run("UPDATE cli_agent_requests SET status=?,decided_by=? WHERE id=? AND status='pending'", status, by, requestId).changes);
+    if (!changes) return false;
+    this.emitRequestResolved(asKey(key), requestId, by);
+    this.refreshSummary();
+    return true;
+  }
+
+  private resolveRequests(key: string, by: CliRequestResolvedBy) {
+    for (const row of this.store.all("SELECT id FROM cli_agent_requests WHERE session_key=? AND status='pending'", key)) {
+      this.closeRequest(String(row.id), key, "resolved", by);
+    }
+  }
+
+  /** Closes every pending request past its expiry as `timeout`; the CLI gets the prompt back in its terminal. */
+  expireRequests(at = now()): number {
+    let count = 0;
+    for (const row of this.store.all("SELECT id,session_key FROM cli_agent_requests WHERE status='pending' AND expires_at<=?", at)) {
+      if (this.closeRequest(String(row.id), String(row.session_key), "expired", "timeout")) count++;
+    }
+    return count;
+  }
+
+  private requestView(row: Row): CliRequestView {
+    const summary = (JSON.parse(this.store.decrypt(String(row.summary_json))) as { summary: string }).summary;
+    const extra = row.options_json === null ? {} : (JSON.parse(this.store.decrypt(String(row.options_json))) as { options?: string[]; questions?: CliRequestQuestion[] });
+    return {
+      id: String(row.id), key: asKey(String(row.session_key)), kind: row.kind as CliRequestView["kind"], tool: String(row.tool), summary,
+      ...(extra.options ? { options: extra.options } : {}), ...(extra.questions ? { questions: extra.questions } : {}),
+      createdAt: Number(row.created_at), expiresAt: Number(row.expires_at),
+    };
+  }
+
+  /** Pending requests, oldest first; one session's when `key` is given. */
+  requests(key?: string): CliRequestView[] {
+    const rows = key
+      ? this.store.all("SELECT * FROM cli_agent_requests WHERE status='pending' AND session_key=? ORDER BY created_at,id", key)
+      : this.store.all("SELECT * FROM cli_agent_requests WHERE status='pending' ORDER BY created_at,id");
+    return rows.map((row) => this.requestView(row));
+  }
+
+  /** Pending requests grouped by session, for a browser that just subscribed to the list. */
+  requestsByKey(): Map<CliSessionKey, CliRequestView[]> {
+    const groups = new Map<CliSessionKey, CliRequestView[]>();
+    for (const view of this.requests()) {
+      const list = groups.get(view.key) ?? [];
+      list.push(view);
+      groups.set(view.key, list);
+    }
+    return groups;
+  }
+
+  /** Answers a pending request on the device. The request is claimed first, so
+   * two answers cannot both reach the device; a definite failure gives it back,
+   * an unknown outcome keeps it closed (the device may have acted). */
+  async answer(actor: string, requestId: string, decision: "allow" | "deny", answers?: Record<string, string>, message?: string): Promise<{ outcome: string }> {
+    const row = this.store.get("SELECT * FROM cli_agent_requests WHERE id=?", requestId);
+    if (!row) throw new CliOpError("not_found");
+    const key = String(row.session_key);
+    const parsed = this.requireKey(key);
+    if (row.status !== "pending") throw new CliOpError("not_found", "request is closed");
+    if (Number(row.expires_at) <= now()) { this.expireRequests(); throw new CliOpError("not_found", "request expired"); }
+    const view = this.requestView(row);
+    let chosen: Record<string, string> | undefined;
+    if (view.kind === "question" && decision === "allow") {
+      chosen = answers;
+      if (!chosen || !Object.keys(chosen).length) throw new CliOpError("invalid");
+      for (const question of view.questions ?? []) if (typeof chosen[question.question] !== "string") throw new CliOpError("invalid");
+    }
+    const claimed = Number(this.store.run(
+      "UPDATE cli_agent_requests SET status='answered',decided_by='nexbot',decision_json=? WHERE id=? AND status='pending'",
+      this.store.encrypt(JSON.stringify({ decision, ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}) })), requestId,
+    ).changes);
+    if (!claimed) throw new CliOpError("not_found", "request is closed");
+    try {
+      const result = await this.op(actor, parsed.deviceId, key, "answer", {
+        id: requestId, decision, ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}),
+      });
+      this.emitRequestResolved(asKey(key), requestId, "nexbot");
+      this.refreshSummary();
+      return result;
+    } catch (error) {
+      if (error instanceof CliOpError && error.code !== "unknown") {
+        this.store.run("UPDATE cli_agent_requests SET status='pending',decided_by=NULL,decision_json=NULL WHERE id=? AND status='answered'", requestId);
+      } else {
+        this.emitRequestResolved(asKey(key), requestId, "nexbot");
+        this.refreshSummary();
+      }
+      throw error;
+    }
+  }
+
+  onRequests(listener: (message: ServerMessage) => void): () => void {
+    this.requestListeners.add(listener);
+    return () => { this.requestListeners.delete(listener); };
+  }
+
+  onTurnEnd(listener: (event: CliTurnEvent) => void): () => void {
+    this.turnListeners.add(listener);
+    return () => { this.turnListeners.delete(listener); };
+  }
+
+  /** The latest turn end Core saw for a session since it started. */
+  lastTurn(key: string): CliTurnEvent | undefined {
+    return this.lastTurns.get(key);
+  }
+
+  /** Newest first. Reads the encrypted cache only; the device is not asked. */
+  recentItems(key: string, limit = PAGE_SIZE): CliItem[] {
+    const rows = this.store.all("SELECT body FROM cli_agent_items WHERE session_key=? ORDER BY ts DESC,rowid DESC LIMIT ?", key, limit);
+    return rows.map((row) => JSON.parse(this.store.decrypt(String(row.body))) as CliItem);
+  }
+
+  private emitRequests(key: string) {
+    this.emitRequestMessage(key, { type: "requests", key: asKey(key), requests: this.requests(key) });
+  }
+
+  private emitRequestResolved(key: CliSessionKey, requestId: string, by: CliRequestResolvedBy) {
+    this.emitRequestMessage(key, { type: "request.resolved", key, id: requestId, by });
+  }
+
+  private emitRequestMessage(key: string, message: ServerMessage) {
+    this.notify(key, message);
+    for (const listener of [...this.requestListeners]) {
+      try { listener(message); } catch { /* ignore a broken listener */ }
+    }
+  }
+
   private onReply(deviceId: string, message: Extract<DeviceCliMessage, { type: "cli.reply" }>) {
     const pending = this.pending.get(message.opId);
     if (pending && pending.deviceId === deviceId) {
@@ -458,7 +671,11 @@ export class CliAgentHub {
     const timeout = this.tuning.opTimeoutMs ?? CLI_OP_TIMEOUT_MS[op];
     if (mutating) {
       // Message text stays out of the record: the transcript is the place for it.
-      const recorded = op === "send" ? { ref: (parsed as CliOpArgs["send"]).ref, length: (parsed as CliOpArgs["send"]).text.length } : parsed;
+      const recorded = op === "send"
+        ? { ref: (parsed as CliOpArgs["send"]).ref, length: (parsed as CliOpArgs["send"]).text.length }
+        : op === "answer"
+          ? { id: (parsed as CliOpArgs["answer"]).id, decision: (parsed as CliOpArgs["answer"]).decision }
+          : parsed;
       this.store.insert("cli_agent_ops", {
         id: opId, device_id: deviceId, session_key: sessionKey, op, args_json: JSON.stringify(recorded),
         status: "sent", error_code: null, created_by: actor, created_at: now(), finished_at: null,
@@ -630,9 +847,11 @@ export class CliAgentHub {
    * not hidden. Counts only: the sidebar badge needs nothing else. */
   summary(): { waiting: number; running: number } {
     let waiting = 0, running = 0;
-    for (const row of this.store.all("SELECT device_id,state FROM cli_agent_sessions WHERE hidden=0 AND state IN ('waiting','running')")) {
+    // A session with a pending permission or question is waiting for the user whatever state the file says.
+    const asked = new Set(this.store.all("SELECT DISTINCT session_key FROM cli_agent_requests WHERE status='pending'").map((row) => String(row.session_key)));
+    for (const row of this.store.all("SELECT key,device_id,state FROM cli_agent_sessions WHERE hidden=0 AND (state IN ('waiting','running') OR key IN (SELECT session_key FROM cli_agent_requests WHERE status='pending'))")) {
       if (!this.caps.has(String(row.device_id))) continue;
-      if (row.state === "waiting") waiting++; else running++;
+      if (row.state === "waiting" || asked.has(String(row.key))) waiting++; else running++;
     }
     return { waiting, running };
   }
