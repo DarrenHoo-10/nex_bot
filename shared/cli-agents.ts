@@ -1,0 +1,975 @@
+// Shared contract for Agent mode ("cli-agent"): the session rows, items,
+// device protocol (DCP `cli.*`), browser WebSocket messages, limits and the
+// strict parsers every side runs on whatever arrives off the wire. Pure
+// TypeScript with no Node-only APIs, so Core, the device and the web client
+// import the same file. Every parse* function returns null on any invalid
+// input and never throws; objects are rebuilt field by field, so unknown
+// extra keys are dropped and nothing from the wire is aliased.
+//
+// Design: docs/design/agent-mode.md. Plan: docs/plans/2026-11-15-agent-mode-implementation.md.
+
+// ---------------------------------------------------------------------------
+// Constants
+
+export const CLI_AGENTS_PROTOCOL_VERSION = 1;
+export const HERDR_CORE_VERSION = "0.1.21";
+
+/** One item's text-ish limits. Byte limits are applied by the device with
+ * truncateUtf8; the parsers cap the same numbers as UTF-16 units, which is
+ * never stricter than a byte cap the device already honoured. */
+export const MAX_SEND_TEXT = 32 * 1024;
+export const TOOL_OUTPUT_MAX = 64 * 1024;
+export const SUMMARY_MAX = 2 * 1024;
+/** user and assistant text; larger replies are cut by the device */
+export const ITEM_TEXT_MAX = 256 * 1024;
+export const PAGE_SIZE = 40;
+export const CORE_ITEM_CACHE = 300;
+export const MAX_ITEMS_PER_MESSAGE = 200;
+
+export const TERM_DEFAULT = { cols: 120, rows: 36 } as const;
+export const TERM_LIMITS = { minCols: 20, maxCols: 500, minRows: 5, maxRows: 200 } as const;
+export const TERM_HISTORY = 2000;
+
+export const STREAM_INITIAL_CREDIT = 256 * 1024;
+export const CORE_STREAM_BUFFER_MAX = 1024 * 1024;
+export const FRAME_PAYLOAD_MAX = 64 * 1024;
+export const CREDIT_CHUNK = 32 * 1024;
+
+export const WS_PING_MS = 20_000;
+export const WS_PONG_TIMEOUT_MS = 45_000;
+
+export const SCAN_LIVE_MS = 2000;
+export const SCAN_HISTORY_MS = 15_000;
+export const HISTORY_DAYS = 14;
+export const MAX_SESSIONS = 300;
+export const SESSIONS_COALESCE_MS = 500;
+
+/** Size caps the parsers enforce on session rows and messages. */
+export const CLI_LIMITS = {
+  title: 300,
+  cwd: 4096,
+  configDir: 4096,
+  gitBranch: 300,
+  waitingFor: 300,
+  terminal: 512,
+  model: 200,
+  cliVersion: 100,
+  nativeId: 200,
+  deviceId: 128,
+  itemId: 200,
+  toolName: 200,
+  noticeText: 4096,
+  imagePath: 4096,
+  images: 20,
+  opId: 64,
+  req: 64,
+  reason: 200,
+  message: 1000,
+  deviceName: 200,
+  devices: 200,
+  /** rows in a browser `list` across all of the user's devices */
+  listSessions: 5000,
+  deadlineMs: 120_000,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Basic vocabulary
+
+export type CliEngine = "claude" | "codex";
+export type CliSessionState = "running" | "waiting" | "idle" | "stopped";
+export type CliLiveIn = "nexbot" | "terminal" | "desktop" | "background";
+
+export const CLI_ENGINES: readonly CliEngine[] = ["claude", "codex"];
+export const CLI_SESSION_STATES: readonly CliSessionState[] = ["running", "waiting", "idle", "stopped"];
+export const CLI_LIVE_IN: readonly CliLiveIn[] = ["nexbot", "terminal", "desktop", "background"];
+
+export function isCliEngine(value: unknown): value is CliEngine {
+  return value === "claude" || value === "codex";
+}
+
+/** Session id on the device link: `<engine>:<nativeId>`. The device never
+ * composes a deviceId; Core's key is `<deviceId>:<ref>`. */
+export type CliSessionRef = `${CliEngine}:${string}`;
+export type CliSessionKey = `${string}:${CliEngine}:${string}`;
+
+// A native id ends up in `--resume <id>` and in file names, so it is a plain
+// token that starts alphanumeric. Device ids are Core-generated tokens.
+const NATIVE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._=-]*$/;
+const DEVICE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function isCliNativeId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= CLI_LIMITS.nativeId && NATIVE_ID_RE.test(value);
+}
+
+export function isCliDeviceId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= CLI_LIMITS.deviceId && DEVICE_ID_RE.test(value);
+}
+
+/** Builds a ref. Throws a TypeError on an invalid engine or native id: both
+ * come from our own scanners, so a bad one is a bug, not input. */
+export function cliRef(engine: CliEngine, nativeId: string): CliSessionRef {
+  if (!isCliEngine(engine)) throw new TypeError("invalid cli engine");
+  if (!isCliNativeId(nativeId)) throw new TypeError("invalid cli native id");
+  return `${engine}:${nativeId}`;
+}
+
+export function parseCliRef(value: unknown): { engine: CliEngine; nativeId: string } | null {
+  if (typeof value !== "string" || value.length > CLI_LIMITS.nativeId + 8) return null;
+  const parts = value.split(":");
+  if (parts.length !== 2) return null;
+  const [engine, nativeId] = parts;
+  if (!isCliEngine(engine) || !isCliNativeId(nativeId)) return null;
+  return { engine, nativeId };
+}
+
+export function isCliRef(value: unknown): value is CliSessionRef {
+  return parseCliRef(value) !== null;
+}
+
+/** Throws a TypeError when the device id or ref is invalid. */
+export function cliKey(deviceId: string, ref: CliSessionRef | string): CliSessionKey {
+  if (!isCliDeviceId(deviceId)) throw new TypeError("invalid cli device id");
+  if (!isCliRef(ref)) throw new TypeError("invalid cli ref");
+  return `${deviceId}:${ref}`;
+}
+
+export function parseCliKey(
+  value: unknown,
+): { deviceId: string; engine: CliEngine; nativeId: string; ref: CliSessionRef } | null {
+  if (typeof value !== "string" || value.length > CLI_LIMITS.deviceId + CLI_LIMITS.nativeId + 16) return null;
+  const parts = value.split(":");
+  if (parts.length !== 3) return null;
+  const [deviceId, engine, nativeId] = parts;
+  if (!isCliDeviceId(deviceId) || !isCliEngine(engine) || !isCliNativeId(nativeId)) return null;
+  return { deviceId, engine, nativeId, ref: `${engine}:${nativeId}` };
+}
+
+export function isCliKey(value: unknown): value is CliSessionKey {
+  return parseCliKey(value) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+
+/** What a device sends for one session. Never a local file path. */
+export interface CliSessionWire {
+  engine: CliEngine;
+  nativeId: string;
+  configDir: string;
+  cwd: string;
+  title: string;
+  gitBranch?: string;
+  state: CliSessionState;
+  waitingFor?: string;
+  liveIn?: CliLiveIn;
+  /** herdr-core terminal address, present when the session runs in a nex_bot terminal */
+  terminal?: string;
+  model?: string;
+  cliVersion?: string;
+  /** epoch ms */
+  lastActivityAt: number;
+  /** Codex only: who writes the session file could not be determined */
+  writerUnknown?: boolean;
+}
+
+/** What Core sends to browsers. */
+export interface CliSessionView extends CliSessionWire {
+  key: CliSessionKey;
+  deviceId: string;
+  hidden: boolean;
+  online: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Items (plan 3.4)
+
+export type CliToolStatus = "running" | "ok" | "error";
+export type CliNoticeLevel = "info" | "error";
+export type CliTurnPhase = "started" | "ended" | "aborted";
+
+export type CliItem =
+  | { kind: "user"; id: string; ts: number; text: string; images?: string[]; queued?: boolean }
+  | { kind: "assistant"; id: string; ts: number; text: string }
+  | { kind: "thinking"; id: string; ts: number; text: string }
+  | {
+      kind: "tool";
+      id: string;
+      ts: number;
+      name: string;
+      input: string;
+      status: CliToolStatus;
+      output?: string;
+    }
+  | { kind: "notice"; id: string; ts: number; level: CliNoticeLevel; text: string }
+  | { kind: "turn"; id: string; ts: number; phase: CliTurnPhase };
+
+// ---------------------------------------------------------------------------
+// Errors (plan 4.6)
+
+export type CliErrorCode =
+  | "disabled"
+  | "paused"
+  | "hc_unavailable"
+  | "hc_version"
+  | "cli_missing"
+  | "cwd_missing"
+  | "not_found"
+  | "not_in_terminal"
+  | "stopped"
+  | "open_elsewhere"
+  | "read_only"
+  | "too_large"
+  | "invalid"
+  | "busy"
+  | "device_offline"
+  | "unknown";
+
+export const CLI_ERROR_CODES: readonly CliErrorCode[] = [
+  "disabled",
+  "paused",
+  "hc_unavailable",
+  "hc_version",
+  "cli_missing",
+  "cwd_missing",
+  "not_found",
+  "not_in_terminal",
+  "stopped",
+  "open_elsewhere",
+  "read_only",
+  "too_large",
+  "invalid",
+  "busy",
+  "device_offline",
+  "unknown",
+];
+
+export const CLI_ERROR_TEXT: Record<CliErrorCode, string> = {
+  disabled: "Agent 会话已关闭",
+  paused: "本机控制已暂停",
+  hc_unavailable: "终端组件不可用",
+  hc_version: "终端组件版本不符",
+  cli_missing: "找不到 Claude 或 Codex",
+  cwd_missing: "工作目录不存在",
+  not_found: "会话不存在",
+  not_in_terminal: "会话不在 nex_bot 终端里",
+  stopped: "会话已停止",
+  open_elsewhere: "这个会话正在电脑上运行",
+  read_only: "只看，不能输入",
+  too_large: "内容太长",
+  invalid: "参数不合法",
+  busy: "上一个操作还没完成",
+  device_offline: "电脑离线",
+  unknown: "结果未知",
+};
+
+export function isCliErrorCode(value: unknown): value is CliErrorCode {
+  return typeof value === "string" && (CLI_ERROR_CODES as readonly string[]).includes(value);
+}
+
+export interface CliError {
+  code: CliErrorCode;
+  message?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Capability (hello.cliAgents)
+
+export interface CliAgentsCapability {
+  version: 1;
+  engines: CliEngine[];
+  terminal: { name: "herdr-core"; version: string; ready: boolean; error?: string };
+}
+
+export interface CliDeviceView {
+  id: string;
+  name: string;
+  online: boolean;
+  cliAgents: CliAgentsCapability | null;
+}
+
+// ---------------------------------------------------------------------------
+// Operations (plan 4.2 / 4.4)
+
+export const CLI_OPS = ["read", "watch", "unwatch", "start", "continue", "send", "interrupt", "open_local"] as const;
+export type CliOp = (typeof CLI_OPS)[number];
+
+export function isCliOp(value: unknown): value is CliOp {
+  return typeof value === "string" && (CLI_OPS as readonly string[]).includes(value);
+}
+
+export interface CliOpArgs {
+  /** `before` is an item id; the page ends right before that item */
+  read: { ref: CliSessionRef; before?: string; limit?: number };
+  watch: { ref: CliSessionRef };
+  unwatch: { ref: CliSessionRef };
+  start: { engine: CliEngine; cwd: string; cols?: number; rows?: number };
+  continue: { ref: CliSessionRef; cols?: number; rows?: number };
+  send: { ref: CliSessionRef; text: string };
+  interrupt: { ref: CliSessionRef };
+  open_local: { ref: CliSessionRef };
+}
+
+export interface CliOpResult {
+  read: { items: CliItem[]; more: boolean };
+  watch: Record<string, never>;
+  unwatch: Record<string, never>;
+  start: { ref: CliSessionRef; terminal: string };
+  continue: { ref: CliSessionRef; terminal: string };
+  send: { turn: number; started: boolean };
+  interrupt: { outcome: string };
+  open_local: Record<string, never>;
+}
+
+export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
+  read: 15_000,
+  watch: 5000,
+  unwatch: 5000,
+  start: 30_000,
+  continue: 30_000,
+  send: 70_000,
+  interrupt: 10_000,
+  open_local: 10_000,
+};
+
+/** Operations that change state: never re-sent after a timeout or a drop. */
+export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
+  "start",
+  "continue",
+  "send",
+  "interrupt",
+  "open_local",
+]);
+
+// ---------------------------------------------------------------------------
+// Device -> Core (DCP)
+
+export type DeviceCliMessage =
+  | { type: "cli.sessions"; full: boolean; upserts: CliSessionWire[]; removes: CliSessionRef[]; seq: number }
+  | { type: "cli.items"; ref: CliSessionRef; items: CliItem[]; reset?: boolean; more?: boolean }
+  | { type: "cli.reply"; opId: string; ok: boolean; result?: Record<string, unknown>; error?: CliError }
+  | { type: "cli.term.opened"; sid: number; cols: number; rows: number; observe: boolean }
+  | { type: "cli.term.size"; sid: number; cols: number; rows: number }
+  | { type: "cli.term.closed"; sid: number; reason: string; exitCode?: number }
+  | { type: "cli.term.error"; sid: number; code: CliErrorCode };
+
+/** Core -> device. `deadlineMs` is how long the device has, counted from receipt. */
+export type CoreCliMessage =
+  | { [K in CliOp]: { type: "cli.op"; opId: string; op: K; args: CliOpArgs[K]; deadlineMs: number } }[CliOp]
+  | { type: "cli.term.open"; sid: number; ref: CliSessionRef; cols: number; rows: number; observe: boolean }
+  | { type: "cli.term.resize"; sid: number; cols: number; rows: number }
+  | { type: "cli.term.credit"; sid: number; bytes: number }
+  | { type: "cli.term.close"; sid: number }
+  | { type: "cli.resync" };
+
+// ---------------------------------------------------------------------------
+// Browser <-> Core WebSocket (plan 5.5)
+
+export type ClientMessage =
+  | { type: "sub.list" }
+  | { type: "sub.session"; key: CliSessionKey }
+  | { type: "unsub.session"; key: CliSessionKey }
+  | { type: "term.open"; req: string; key: CliSessionKey; cols: number; rows: number; observe: boolean }
+  | { type: "term.resize"; sid: number; cols: number; rows: number }
+  | { type: "term.credit"; sid: number; bytes: number }
+  | { type: "term.close"; sid: number }
+  | { type: "ping" };
+
+export type ServerMessage =
+  | { type: "list"; devices: CliDeviceView[]; sessions: CliSessionView[] }
+  | { type: "list.delta"; upserts: CliSessionView[]; removes: CliSessionKey[]; devices?: CliDeviceView[] }
+  | { type: "items"; key: CliSessionKey; items: CliItem[]; reset?: boolean; more?: boolean }
+  | { type: "term.opened"; req: string; sid: number; cols: number; rows: number; observe: boolean }
+  | { type: "term.size"; sid: number; cols: number; rows: number }
+  | { type: "term.closed"; sid: number; reason: string }
+  | { type: "error"; code: CliErrorCode; req?: string; message?: string }
+  | { type: "summary"; waiting: number; running: number }
+  | { type: "pong" };
+
+// ---------------------------------------------------------------------------
+// Helpers
+
+const textEncoder = new TextEncoder();
+
+export function utf8ByteLength(text: string): number {
+  return textEncoder.encode(text).length;
+}
+
+/** Cuts `text` to at most `maxBytes` of UTF-8 without splitting a code point
+ * (a surrogate pair stays whole; a lone surrogate counts as the 3 bytes of
+ * U+FFFD, what TextEncoder writes for it). Returns the input when it fits. */
+export function truncateUtf8(text: string, maxBytes: number): string {
+  if (!(maxBytes > 0)) return "";
+  const limit = Math.floor(maxBytes);
+  // a UTF-16 unit is at most 3 bytes, so a short string always fits
+  if (text.length * 3 <= limit) return text;
+  let bytes = 0;
+  let index = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    const size = code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    if (bytes + size > limit) return text.slice(0, index);
+    bytes += size;
+    index += char.length;
+  }
+  return text;
+}
+
+/** Clamps a requested terminal size into TERM_LIMITS; a missing or
+ * non-numeric value takes the default. */
+export function clampTermSize(cols: unknown, rows: unknown): { cols: number; rows: number } {
+  const pick = (value: unknown, fallback: number, min: number, max: number): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(value)));
+  };
+  return {
+    cols: pick(cols, TERM_DEFAULT.cols, TERM_LIMITS.minCols, TERM_LIMITS.maxCols),
+    rows: pick(rows, TERM_DEFAULT.rows, TERM_LIMITS.minRows, TERM_LIMITS.maxRows),
+  };
+}
+
+const SAFE_CLI_ARG_RE = /^[A-Za-z0-9._:/=-]+$/;
+
+/** An argument nex_bot may put on a CLI command line itself. */
+export function isSafeCliArg(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 && SAFE_CLI_ARG_RE.test(value);
+}
+
+const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/;
+const UNC_RE = /^[\\/]{2}([^\\/?.][^\\/]*)[\\/][^\\/]+/;
+
+/** Syntax only: a Windows drive path, a UNC path or a POSIX absolute path.
+ * It touches no file system; the device checks the directory exists. */
+export function isAbsoluteCwd(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > CLI_LIMITS.cwd) return false;
+  if (value.includes("\0")) return false;
+  if (WINDOWS_DRIVE_RE.test(value)) return true;
+  if (UNC_RE.test(value)) return true;
+  // a leading single slash; `//` and `\\` that are not a share are not paths
+  return value.startsWith("/") && !value.startsWith("//");
+}
+
+// ---------------------------------------------------------------------------
+// Parsing internals. They throw this private error; the public parse*
+// functions catch everything and return null.
+
+class Invalid extends Error {}
+
+type Rec = Record<string, unknown>;
+
+function fail(): never {
+  throw new Invalid();
+}
+
+function guard<T>(parse: () => T): T | null {
+  try {
+    return parse();
+  } catch {
+    return null;
+  }
+}
+
+function rec(value: unknown): Rec {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) fail();
+  return value as Rec;
+}
+
+function str(value: unknown, max: number, min = 0): string {
+  if (typeof value !== "string" || value.length > max || value.length < min) fail();
+  return value;
+}
+
+function int(value: unknown, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) fail();
+  return value;
+}
+
+function bool(value: unknown): boolean {
+  if (typeof value !== "boolean") fail();
+  return value;
+}
+
+function oneOf<T extends string>(value: unknown, list: readonly T[]): T {
+  if (typeof value !== "string" || !(list as readonly string[]).includes(value)) fail();
+  return value as T;
+}
+
+function arr(value: unknown, max: number): unknown[] {
+  if (!Array.isArray(value) || value.length > max) fail();
+  return value;
+}
+
+function present(o: Rec, key: string): boolean {
+  return Object.hasOwn(o, key) && o[key] !== undefined;
+}
+
+function optStr(o: Rec, key: string, max: number, min = 0): string | undefined {
+  return present(o, key) ? str(o[key], max, min) : undefined;
+}
+
+function optInt(o: Rec, key: string, min: number, max: number): number | undefined {
+  return present(o, key) ? int(o[key], min, max) : undefined;
+}
+
+function optBool(o: Rec, key: string): boolean | undefined {
+  return present(o, key) ? bool(o[key]) : undefined;
+}
+
+/** Copies only the keys whose value is not undefined. */
+function pick<T extends Rec>(o: T): T {
+  const out: Rec = {};
+  for (const key of Object.keys(o)) if (o[key] !== undefined) out[key] = o[key];
+  return out as T;
+}
+
+const U32_MAX = 0xffff_ffff;
+const COUNTER_MAX = Number.MAX_SAFE_INTEGER;
+
+function sid(value: unknown): number {
+  return int(value, 0, U32_MAX);
+}
+
+function cols(value: unknown): number {
+  return int(value, TERM_LIMITS.minCols, TERM_LIMITS.maxCols);
+}
+
+function rows(value: unknown): number {
+  return int(value, TERM_LIMITS.minRows, TERM_LIMITS.maxRows);
+}
+
+function ref(value: unknown): CliSessionRef {
+  const parsed = parseCliRef(value);
+  if (!parsed) fail();
+  return `${parsed.engine}:${parsed.nativeId}`;
+}
+
+function key(value: unknown): CliSessionKey {
+  const parsed = parseCliKey(value);
+  if (!parsed) fail();
+  return `${parsed.deviceId}:${parsed.ref}`;
+}
+
+function nativeIdOf(value: unknown): string {
+  if (!isCliNativeId(value)) fail();
+  return value;
+}
+
+function deviceIdOf(value: unknown): string {
+  if (!isCliDeviceId(value)) fail();
+  return value;
+}
+
+// ---------------------------------------------------------------------------
+// Parsers: sessions, items, capability
+
+function sessionWire(value: unknown): CliSessionWire {
+  const o = rec(value);
+  const lastActivityAt = int(o.lastActivityAt, 0, COUNTER_MAX);
+  return pick({
+    engine: oneOf(o.engine, CLI_ENGINES),
+    nativeId: nativeIdOf(o.nativeId),
+    configDir: str(o.configDir, CLI_LIMITS.configDir),
+    cwd: str(o.cwd, CLI_LIMITS.cwd),
+    title: str(o.title, CLI_LIMITS.title),
+    gitBranch: optStr(o, "gitBranch", CLI_LIMITS.gitBranch),
+    state: oneOf(o.state, CLI_SESSION_STATES),
+    waitingFor: optStr(o, "waitingFor", CLI_LIMITS.waitingFor),
+    liveIn: present(o, "liveIn") ? oneOf(o.liveIn, CLI_LIVE_IN) : undefined,
+    terminal: optStr(o, "terminal", CLI_LIMITS.terminal, 1),
+    model: optStr(o, "model", CLI_LIMITS.model),
+    cliVersion: optStr(o, "cliVersion", CLI_LIMITS.cliVersion),
+    lastActivityAt,
+    writerUnknown: optBool(o, "writerUnknown"),
+  });
+}
+
+function sessionView(value: unknown): CliSessionView {
+  const o = rec(value);
+  const wire = sessionWire(o);
+  const deviceId = deviceIdOf(o.deviceId);
+  const expected = `${deviceId}:${wire.engine}:${wire.nativeId}` as CliSessionKey;
+  if (o.key !== expected) fail();
+  return { ...wire, key: expected, deviceId, hidden: bool(o.hidden), online: bool(o.online) };
+}
+
+function item(value: unknown): CliItem {
+  const o = rec(value);
+  const id = str(o.id, CLI_LIMITS.itemId, 1);
+  const ts = int(o.ts, 0, COUNTER_MAX);
+  switch (o.kind) {
+    case "user": {
+      let images: string[] | undefined;
+      if (present(o, "images")) {
+        images = arr(o.images, CLI_LIMITS.images).map((path) => str(path, CLI_LIMITS.imagePath, 1));
+      }
+      return pick({
+        kind: "user" as const,
+        id,
+        ts,
+        text: str(o.text, ITEM_TEXT_MAX),
+        images,
+        queued: optBool(o, "queued"),
+      });
+    }
+    case "assistant":
+      return { kind: "assistant", id, ts, text: str(o.text, ITEM_TEXT_MAX) };
+    case "thinking":
+      return { kind: "thinking", id, ts, text: str(o.text, SUMMARY_MAX) };
+    case "tool":
+      return pick({
+        kind: "tool" as const,
+        id,
+        ts,
+        name: str(o.name, CLI_LIMITS.toolName),
+        input: str(o.input, SUMMARY_MAX),
+        status: oneOf(o.status, ["running", "ok", "error"] as const),
+        output: optStr(o, "output", TOOL_OUTPUT_MAX),
+      });
+    case "notice":
+      return {
+        kind: "notice",
+        id,
+        ts,
+        level: oneOf(o.level, ["info", "error"] as const),
+        text: str(o.text, CLI_LIMITS.noticeText),
+      };
+    case "turn":
+      return { kind: "turn", id, ts, phase: oneOf(o.phase, ["started", "ended", "aborted"] as const) };
+    default:
+      return fail();
+  }
+}
+
+function items(value: unknown): CliItem[] {
+  return arr(value, MAX_ITEMS_PER_MESSAGE).map(item);
+}
+
+function capability(value: unknown): CliAgentsCapability {
+  const o = rec(value);
+  if (o.version !== CLI_AGENTS_PROTOCOL_VERSION) fail();
+  const engines: CliEngine[] = [];
+  for (const engine of arr(o.engines, CLI_ENGINES.length * 2)) {
+    const parsed = oneOf(engine, CLI_ENGINES);
+    if (!engines.includes(parsed)) engines.push(parsed);
+  }
+  const t = rec(o.terminal);
+  if (t.name !== "herdr-core") fail();
+  const terminal = pick({
+    name: "herdr-core" as const,
+    version: str(t.version, 64, 1),
+    ready: bool(t.ready),
+    error: optStr(t, "error", CLI_LIMITS.message),
+  });
+  return { version: 1, engines, terminal };
+}
+
+function deviceView(value: unknown): CliDeviceView {
+  const o = rec(value);
+  return {
+    id: deviceIdOf(o.id),
+    name: str(o.name, CLI_LIMITS.deviceName),
+    online: bool(o.online),
+    cliAgents: o.cliAgents === null ? null : capability(o.cliAgents),
+  };
+}
+
+function cliError(value: unknown): CliError {
+  const o = rec(value);
+  return pick({ code: oneOf(o.code, CLI_ERROR_CODES), message: optStr(o, "message", CLI_LIMITS.message) });
+}
+
+export function parseCliSessionWire(value: unknown): CliSessionWire | null {
+  return guard(() => sessionWire(value));
+}
+
+export function parseCliSessionView(value: unknown): CliSessionView | null {
+  return guard(() => sessionView(value));
+}
+
+export function parseCliItem(value: unknown): CliItem | null {
+  return guard(() => item(value));
+}
+
+/** At most MAX_ITEMS_PER_MESSAGE items; one invalid item rejects the list. */
+export function parseCliItems(value: unknown): CliItem[] | null {
+  return guard(() => items(value));
+}
+
+export function parseCliAgentsCapability(value: unknown): CliAgentsCapability | null {
+  return guard(() => capability(value));
+}
+
+export function parseCliDeviceView(value: unknown): CliDeviceView | null {
+  return guard(() => deviceView(value));
+}
+
+// ---------------------------------------------------------------------------
+// Parsers: operations
+
+const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
+  read: (o) =>
+    pick({
+      ref: ref(o.ref),
+      before: optStr(o, "before", CLI_LIMITS.itemId, 1),
+      limit: optInt(o, "limit", 1, MAX_ITEMS_PER_MESSAGE),
+    }),
+  watch: (o) => ({ ref: ref(o.ref) }),
+  unwatch: (o) => ({ ref: ref(o.ref) }),
+  start: (o) => {
+    const cwd = o.cwd;
+    if (!isAbsoluteCwd(cwd)) fail();
+    return pick({
+      engine: oneOf(o.engine, CLI_ENGINES),
+      cwd,
+      cols: present(o, "cols") ? cols(o.cols) : undefined,
+      rows: present(o, "rows") ? rows(o.rows) : undefined,
+    });
+  },
+  continue: (o) =>
+    pick({
+      ref: ref(o.ref),
+      cols: present(o, "cols") ? cols(o.cols) : undefined,
+      rows: present(o, "rows") ? rows(o.rows) : undefined,
+    }),
+  send: (o) => {
+    const text = str(o.text, MAX_SEND_TEXT, 1);
+    if (utf8ByteLength(text) > MAX_SEND_TEXT) fail();
+    return { ref: ref(o.ref), text };
+  },
+  interrupt: (o) => ({ ref: ref(o.ref) }),
+  open_local: (o) => ({ ref: ref(o.ref) }),
+};
+
+const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
+  read: (o) => ({ items: items(o.items), more: bool(o.more) }),
+  watch: () => ({}),
+  unwatch: () => ({}),
+  start: (o) => ({ ref: ref(o.ref), terminal: str(o.terminal, CLI_LIMITS.terminal, 1) }),
+  continue: (o) => ({ ref: ref(o.ref), terminal: str(o.terminal, CLI_LIMITS.terminal, 1) }),
+  send: (o) => ({ turn: int(o.turn, 0, COUNTER_MAX), started: bool(o.started) }),
+  interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),
+  open_local: () => ({}),
+};
+
+export function parseCliOpArgs<K extends CliOp>(op: K, value: unknown): CliOpArgs[K] | null {
+  if (!isCliOp(op)) return null;
+  return guard(() => (ARGS_PARSERS[op] as (o: Rec) => CliOpArgs[K])(rec(value)));
+}
+
+/** Validates the `result` of a successful cli.reply for the op it answers. */
+export function parseCliOpResult<K extends CliOp>(op: K, value: unknown): CliOpResult[K] | null {
+  if (!isCliOp(op)) return null;
+  return guard(() => (RESULT_PARSERS[op] as (o: Rec) => CliOpResult[K])(rec(value)));
+}
+
+// A cli.reply result is typed per op by parseCliOpResult once Core knows which
+// op the opId belongs to; here it only has to be bounded plain JSON.
+const RESULT_MAX_DEPTH = 6;
+
+function plainJson(value: unknown, depth: number): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail();
+    return value;
+  }
+  if (depth >= RESULT_MAX_DEPTH) fail();
+  if (Array.isArray(value)) {
+    if (value.length > 1000) fail();
+    return value.map((entry) => plainJson(entry, depth + 1));
+  }
+  const o = rec(value);
+  const keys = Object.keys(o);
+  if (keys.length > 100) fail();
+  const out: Rec = {};
+  for (const k of keys) {
+    if (k === "__proto__") fail();
+    out[k] = plainJson(o[k], depth + 1);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Parsers: messages
+
+export function parseDeviceCliMessage(value: unknown): DeviceCliMessage | null {
+  return guard((): DeviceCliMessage => {
+    const o = rec(value);
+    switch (o.type) {
+      case "cli.sessions":
+        return {
+          type: "cli.sessions",
+          full: bool(o.full),
+          upserts: arr(o.upserts, MAX_SESSIONS).map(sessionWire),
+          removes: arr(o.removes, MAX_SESSIONS).map(ref),
+          seq: int(o.seq, 0, COUNTER_MAX),
+        };
+      case "cli.items":
+        return pick({
+          type: "cli.items" as const,
+          ref: ref(o.ref),
+          items: items(o.items),
+          reset: optBool(o, "reset"),
+          more: optBool(o, "more"),
+        });
+      case "cli.reply": {
+        const ok = bool(o.ok);
+        const result = present(o, "result") ? (plainJson(rec(o.result), 0) as Record<string, unknown>) : undefined;
+        const error = present(o, "error") ? cliError(o.error) : undefined;
+        if (!ok && !error) fail();
+        return pick({
+          type: "cli.reply" as const,
+          opId: str(o.opId, CLI_LIMITS.opId, 1),
+          ok,
+          result,
+          error,
+        });
+      }
+      case "cli.term.opened":
+        return {
+          type: "cli.term.opened",
+          sid: sid(o.sid),
+          cols: cols(o.cols),
+          rows: rows(o.rows),
+          observe: bool(o.observe),
+        };
+      case "cli.term.size":
+        return { type: "cli.term.size", sid: sid(o.sid), cols: cols(o.cols), rows: rows(o.rows) };
+      case "cli.term.closed":
+        return pick({
+          type: "cli.term.closed" as const,
+          sid: sid(o.sid),
+          reason: str(o.reason, CLI_LIMITS.reason),
+          exitCode: optInt(o, "exitCode", -0x8000_0000, 0xffff_ffff),
+        });
+      case "cli.term.error":
+        return { type: "cli.term.error", sid: sid(o.sid), code: oneOf(o.code, CLI_ERROR_CODES) };
+      default:
+        return fail();
+    }
+  });
+}
+
+export function parseCoreCliMessage(value: unknown): CoreCliMessage | null {
+  return guard((): CoreCliMessage => {
+    const o = rec(value);
+    switch (o.type) {
+      case "cli.op": {
+        const op = oneOf(o.op, CLI_OPS);
+        const args = (ARGS_PARSERS[op] as (a: Rec) => unknown)(rec(o.args));
+        return {
+          type: "cli.op",
+          opId: str(o.opId, CLI_LIMITS.opId, 1),
+          op,
+          args,
+          deadlineMs: int(o.deadlineMs, 1, CLI_LIMITS.deadlineMs),
+        } as CoreCliMessage;
+      }
+      case "cli.term.open":
+        return {
+          type: "cli.term.open",
+          sid: sid(o.sid),
+          ref: ref(o.ref),
+          cols: cols(o.cols),
+          rows: rows(o.rows),
+          observe: bool(o.observe),
+        };
+      case "cli.term.resize":
+        return { type: "cli.term.resize", sid: sid(o.sid), cols: cols(o.cols), rows: rows(o.rows) };
+      case "cli.term.credit":
+        return { type: "cli.term.credit", sid: sid(o.sid), bytes: int(o.bytes, 1, CORE_STREAM_BUFFER_MAX) };
+      case "cli.term.close":
+        return { type: "cli.term.close", sid: sid(o.sid) };
+      case "cli.resync":
+        return { type: "cli.resync" };
+      default:
+        return fail();
+    }
+  });
+}
+
+export function parseClientMessage(value: unknown): ClientMessage | null {
+  return guard((): ClientMessage => {
+    const o = rec(value);
+    switch (o.type) {
+      case "sub.list":
+        return { type: "sub.list" };
+      case "sub.session":
+        return { type: "sub.session", key: key(o.key) };
+      case "unsub.session":
+        return { type: "unsub.session", key: key(o.key) };
+      case "term.open":
+        return {
+          type: "term.open",
+          req: str(o.req, CLI_LIMITS.req, 1),
+          key: key(o.key),
+          cols: cols(o.cols),
+          rows: rows(o.rows),
+          observe: bool(o.observe),
+        };
+      case "term.resize":
+        return { type: "term.resize", sid: sid(o.sid), cols: cols(o.cols), rows: rows(o.rows) };
+      case "term.credit":
+        return { type: "term.credit", sid: sid(o.sid), bytes: int(o.bytes, 1, CORE_STREAM_BUFFER_MAX) };
+      case "term.close":
+        return { type: "term.close", sid: sid(o.sid) };
+      case "ping":
+        return { type: "ping" };
+      default:
+        return fail();
+    }
+  });
+}
+
+export function parseServerMessage(value: unknown): ServerMessage | null {
+  return guard((): ServerMessage => {
+    const o = rec(value);
+    switch (o.type) {
+      case "list":
+        return {
+          type: "list",
+          devices: arr(o.devices, CLI_LIMITS.devices).map(deviceView),
+          sessions: arr(o.sessions, CLI_LIMITS.listSessions).map(sessionView),
+        };
+      case "list.delta":
+        return pick({
+          type: "list.delta" as const,
+          upserts: arr(o.upserts, CLI_LIMITS.listSessions).map(sessionView),
+          removes: arr(o.removes, CLI_LIMITS.listSessions).map(key),
+          devices: present(o, "devices") ? arr(o.devices, CLI_LIMITS.devices).map(deviceView) : undefined,
+        });
+      case "items":
+        return pick({
+          type: "items" as const,
+          key: key(o.key),
+          items: items(o.items),
+          reset: optBool(o, "reset"),
+          more: optBool(o, "more"),
+        });
+      case "term.opened":
+        return {
+          type: "term.opened",
+          req: str(o.req, CLI_LIMITS.req, 1),
+          sid: sid(o.sid),
+          cols: cols(o.cols),
+          rows: rows(o.rows),
+          observe: bool(o.observe),
+        };
+      case "term.size":
+        return { type: "term.size", sid: sid(o.sid), cols: cols(o.cols), rows: rows(o.rows) };
+      case "term.closed":
+        return { type: "term.closed", sid: sid(o.sid), reason: str(o.reason, CLI_LIMITS.reason) };
+      case "error":
+        return pick({
+          type: "error" as const,
+          code: oneOf(o.code, CLI_ERROR_CODES),
+          req: optStr(o, "req", CLI_LIMITS.req, 1),
+          message: optStr(o, "message", CLI_LIMITS.message),
+        });
+      case "summary":
+        return { type: "summary", waiting: int(o.waiting, 0, 1_000_000), running: int(o.running, 0, 1_000_000) };
+      case "pong":
+        return { type: "pong" };
+      default:
+        return fail();
+    }
+  });
+}
