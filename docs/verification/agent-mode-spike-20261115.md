@@ -69,8 +69,8 @@ Other observations:
 `corepack pnpm exec vitest run server/personal-os/cli-agents-node/hc.test.ts
 server/personal-os/cli-agents-node/hc-frames.test.ts
 server/personal-os/cli-agents-node/launch.test.ts scripts/prepare-herdr-core.test.mjs`:
-81 passed, 1 skipped (a POSIX-only executable-bit test), 0 failed. `hc.test.ts`
-uses a fake JSON-RPC herdr-core on a temporary named pipe (hello, run, attach
+81 passed, 1 skipped (a POSIX-only executable-bit test), 0 failed.
+`server/personal-os/cli-agents-node/hc.test.ts` uses a fake JSON-RPC herdr-core on a temporary named pipe (hello, run, attach
 with first paint, send, keys, interrupt, errors, timeouts, disconnect and
 reconnect with backoff, re-subscribe, spawn of the start command).
 `oxlint --deny-warnings` on every file in this change is clean, and
