@@ -6,11 +6,14 @@ import {
   isCliErrorCode,
   parseCliDeviceView,
   parseCliItems,
+  parseCliRequestView,
   parseCliSessionView,
   type CliDeviceView,
   type CliEngine,
   type CliErrorCode,
   type CliItem,
+  type CliAnswerDecision,
+  type CliRequestView,
   type CliSessionKey,
   type CliSessionView,
 } from "../../../shared/cli-agents";
@@ -31,10 +34,10 @@ export function cliErrorText(error: unknown, fallback = "操作失败"): string 
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-async function call<T>(path: string, body?: unknown): Promise<T> {
+async function call<T>(path: string, body?: unknown, method = "POST"): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`/api/cli-agents${path}`, body === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    response = await fetch(`/api/cli-agents${path}`, body === undefined ? undefined : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   } catch {
     throw new CliApiError("连接失败");
   }
@@ -49,14 +52,15 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
-export interface CliSnapshot { devices: CliDeviceView[]; sessions: CliSessionView[] }
+export interface CliSnapshot { devices: CliDeviceView[]; sessions: CliSessionView[]; requests: CliRequestView[] }
 
 export async function fetchSnapshot(): Promise<CliSnapshot> {
-  const data = await call<{ devices?: unknown[]; sessions?: unknown[] }>("");
+  const data = await call<{ devices?: unknown[]; sessions?: unknown[]; requests?: unknown[] }>("");
   // one malformed row should not blank the page
   const devices = (data.devices ?? []).map(parseCliDeviceView).filter((row): row is CliDeviceView => row !== null);
   const sessions = (data.sessions ?? []).map(parseCliSessionView).filter((row): row is CliSessionView => row !== null);
-  return { devices, sessions };
+  const requests = (data.requests ?? []).map(parseCliRequestView).filter((row): row is CliRequestView => row !== null);
+  return { devices, sessions, requests };
 }
 
 export async function fetchItems(key: CliSessionKey, before?: string): Promise<{ items: CliItem[]; more: boolean }> {
@@ -74,3 +78,48 @@ export const sendMessage = (key: CliSessionKey, text: string) => call<{ turn: nu
 export const interruptSession = (key: CliSessionKey) => call<{ outcome: string }>("/interrupt", { key });
 export const openLocal = (key: CliSessionKey) => call<{ ok: boolean }>("/open-local", { key });
 export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: boolean }>("/hide", { key, hidden });
+
+/** An answer: allow or deny, with the chosen labels for a question. */
+export const answerRequest = (id: string, decision: CliAnswerDecision, answers?: Record<string, string>) =>
+  call<{ outcome: string }>("/answer", { id, decision, ...(answers ? { answers } : {}) });
+
+export const forkSession = (key: CliSessionKey, botId: string) => call<{ botId: string; conversationId: string }>("/fork", { key, botId });
+
+export interface SupervisionSettings { transientRetry: boolean; usageLimit: boolean; wakeup: boolean }
+export const SUPERVISION_KEYS = ["transientRetry", "usageLimit", "wakeup"] as const;
+const SUPERVISION_DEFAULTS: SupervisionSettings = { transientRetry: true, usageLimit: false, wakeup: false };
+
+export interface SupervisionView {
+  /** the switches in force for every folder without its own setting */
+  settings: SupervisionSettings;
+  /** folders with settings of their own */
+  overrides: number;
+  /** actions waiting for their time */
+  pending: number;
+}
+
+function parseSupervision(data: unknown): SupervisionView {
+  const record = (value: unknown) => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+  const root = record(data);
+  const defaults = record(root.defaults), global = record(root.global);
+  const settings = { ...SUPERVISION_DEFAULTS };
+  for (const key of SUPERVISION_KEYS) {
+    const value = typeof global[key] === "boolean" ? global[key] : defaults[key];
+    if (typeof value === "boolean") settings[key] = value;
+  }
+  const actions = Array.isArray(root.actions) ? root.actions : [];
+  return {
+    settings,
+    overrides: Array.isArray(root.workspaces) ? root.workspaces.length : 0,
+    pending: actions.filter((action) => record(action).status === "pending").length,
+  };
+}
+
+export async function fetchSupervision(): Promise<SupervisionView> {
+  return parseSupervision(await call<unknown>("/supervision"));
+}
+
+/** Changes some switches for every folder; the answer is the new state. */
+export async function saveSupervision(settings: Partial<SupervisionSettings>): Promise<SupervisionView> {
+  return parseSupervision(await call<unknown>("/supervision", { settings }, "PUT"));
+}

@@ -1,10 +1,12 @@
 // One open session: header, terminal or conversation, and the composer.
 import { useState } from "react";
-import { ArrowLeft, ExternalLink } from "lucide-react";
-import type { CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
+import { ArrowLeft, ExternalLink, Share2 } from "lucide-react";
+import type { CliAnswerDecision, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, continueSession, interruptSession, openLocal, sendMessage } from "./api";
 import { Composer } from "./Composer";
-import { canAttach, ENGINE_LABEL, folderLabel, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
+import { cardState, type RequestRecord } from "./requests";
+import { RequestCard } from "./RequestCard";
+import { askedSession, canAttach, ENGINE_LABEL, folderLabel, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
 import type { CliStream } from "./stream";
 import { TerminalView } from "./TerminalView";
 import { TranscriptView } from "./TranscriptView";
@@ -19,12 +21,23 @@ export interface SessionPaneProps {
   /** a continued session gets a new key */
   onKeyChange(key: CliSessionKey): void;
   onBack(): void;
+  /** this session's request cards */
+  requests?: readonly RequestRecord[];
+  now?: number;
+  onAnswer?(id: string, decision: CliAnswerDecision, answers?: Record<string, string>): Promise<unknown>;
+  /** hand the session to an assistant; absent when there is no assistant to take it */
+  onFork?(): void;
 }
 
-export function SessionPane({ session, stream, connected, onKeyChange, onBack }: SessionPaneProps) {
+const NO_REQUESTS: readonly RequestRecord[] = [];
+
+export function SessionPane({ session, stream, connected, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork }: SessionPaneProps) {
   const attachable = canAttach(session);
   const [wanted, setWanted] = useState<Tab>(attachable ? "terminal" : "chat");
   const [error, setError] = useState("");
+  const cards = [...requests].sort((a, b) => Number(a.closed) - Number(b.closed));
+  const pending = requests.filter((record) => cardState(record, now) === "pending").length;
+  const shown = askedSession(session, pending);
   const tab: Tab = wanted === "terminal" && attachable ? "terminal" : "chat";
 
   const openOnComputer = async () => {
@@ -40,7 +53,8 @@ export function SessionPane({ session, stream, connected, onKeyChange, onBack }:
           <strong title={sessionTitle(session)}>{sessionTitle(session)}</strong>
           <small title={session.cwd}>{ENGINE_LABEL[session.engine]} · {folderLabel(session.cwd)}{session.gitBranch ? ` · ${session.gitBranch}` : ""}</small>
         </div>
-        <span className="cli-chip" data-tone={sessionTone(session)}>{sessionStatusLabel(session)}</span>
+        <span className="cli-chip" data-tone={sessionTone(shown)}>{sessionStatusLabel(shown)}</span>
+        {onFork ? <button type="button" className="cli-open-local" onClick={onFork}><Share2 size={14} />交给助手</button> : null}
         {session.online ? <button type="button" className="cli-open-local" onClick={() => void openOnComputer()}><ExternalLink size={14} />在电脑上打开</button> : null}
       </header>
       {attachable ? (
@@ -50,6 +64,11 @@ export function SessionPane({ session, stream, connected, onKeyChange, onBack }:
         </div>
       ) : null}
       {error ? <div className="cli-notice" data-level="error" role="alert">{error}</div> : null}
+      {cards.length && onAnswer ? (
+        <div className="cli-requests" role="region" aria-label="等你处理的请求">
+          {cards.map((record) => <RequestCard key={record.view.id} record={record} now={now} onAnswer={onAnswer} />)}
+        </div>
+      ) : null}
       <div className="cli-pane-body">
         {tab === "terminal"
           ? <TerminalView stream={stream} sessionKey={session.key} connected={connected} />

@@ -1,6 +1,6 @@
 // "等你处理" notifications. Permission is asked for only when the user turns
 // the bell on; a notification is shown only while the page is hidden.
-import type { CliSessionKey, CliSessionState, CliSessionView } from "../../../shared/cli-agents";
+import type { CliRequestView, CliSessionKey, CliSessionState, CliSessionView } from "../../../shared/cli-agents";
 import { sessionTitle } from "./session-model";
 
 const STORE_KEY = "nexbot.cliNotify";
@@ -47,6 +47,35 @@ export function notifyWaiting(session: CliSessionView, open: (key: CliSessionKey
   note.onclick = () => {
     window.focus();
     open(session.key);
+    note.close();
+  };
+  return true;
+}
+
+/** Requests pending now that were not before; nothing on the first look. */
+export function newRequests(previous: ReadonlySet<string> | null, pending: readonly CliRequestView[]): CliRequestView[] {
+  if (!previous) return [];
+  return pending.filter((request) => !previous.has(request.id));
+}
+
+const BODY_MAX = 80;
+
+/** What the notification says: the tool and what it wants, or the first question. */
+export function requestBody(request: CliRequestView): string {
+  const text = request.kind === "question" ? request.questions?.[0]?.question || request.summary : `${request.tool} ${request.summary}`.trim();
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > BODY_MAX ? `${line.slice(0, BODY_MAX - 1)}…` : line || "等你处理";
+}
+
+/** One notification per new request while the page is hidden. The tag is the
+ * session's, so it replaces that session's "等你处理" notification. */
+export function notifyRequest(request: CliRequestView, session: CliSessionView | undefined, open: (key: CliSessionKey) => void): boolean {
+  if (!notificationsEnabled() || !document.hidden) return false;
+  const title = session ? sessionTitle(session) : "Agent 会话";
+  const note = new Notification(title, { body: requestBody(request), tag: request.key });
+  note.onclick = () => {
+    window.focus();
+    open(request.key);
     note.close();
   };
   return true;

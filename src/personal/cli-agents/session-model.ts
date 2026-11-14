@@ -80,8 +80,14 @@ export function deviceBlocker(device: CliDeviceView | undefined): string | null 
   return null;
 }
 
-export function waitingCount(sessions: readonly CliSessionView[]): number {
-  return sessions.filter((session) => session.online && session.state === "waiting" && !session.hidden).length;
+/** Sessions waiting for the user: waiting by their own state, or holding a pending request (`asked` holds their keys). */
+export function waitingCount(sessions: readonly CliSessionView[], asked?: ReadonlySet<string>): number {
+  return sessions.filter((session) => session.online && !session.hidden && (session.state === "waiting" || !!asked?.has(session.key))).length;
+}
+
+/** A session that holds a pending request reads as waiting whatever its file says. */
+export function askedSession<T extends Pick<CliSessionView, "state" | "online">>(session: T, pending: number): T {
+  return pending > 0 && session.online && session.state !== "waiting" ? { ...session, state: "waiting" } : session;
 }
 
 /** The session runs in a nex_bot terminal this page can attach to. */

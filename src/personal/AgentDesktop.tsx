@@ -115,7 +115,9 @@ export function AgentDesktop() {
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [financeBotId,setFinanceBotId]=useState<string>();
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
-  const finance = Boolean(financeBotId && financeBotId === botId);
+  // topics are the finance assistant's; a session handed to another assistant opens one there too
+  const [forkBotId, setForkBotId] = useState<string>();
+  const finance = Boolean((financeBotId && financeBotId === botId) || (forkBotId && forkBotId === botId));
   const [topicId, setTopicId] = useState<string>();
   const [topics,setTopics] = useState<FinanceTopic[]>([]);
   const [olderEnd,setOlderEnd] = useState(false);
@@ -637,6 +639,7 @@ export function AgentDesktop() {
   const botConnection = connections.find((item) => item.id === str(bot?.selected_connection) && item.enabled) ?? connections.find((item) => item.isDefault);
   const modelChoice: ModelChoice = { connectionId: botConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null };
   const chosenModel = modelChoice.model || botConnection?.defaultModel || str(state.config?.default_model);
+  const openForkedTopic = (target: string, conversationId: string) => { setForkBotId(target); select(target); openTopic(conversationId); };
   const effort = resolveReasoning(modelChoice.reasoning, botConnection?.options[chosenModel]?.reasoning ?? []);
   const modelLabel = chosenModel ? `${modelName(botConnection, chosenModel)}${effort !== "off" ? ` · ${reasoningLabels[effort]}` : ""}` : "未连接模型";
   const chooseModel = (choice: ModelChoice) => void run(() => api("bots/model", { id: botId, connectionId: choice.connectionId, model: choice.model, ...(choice.reasoning ? { reasoning: choice.reasoning } : {}), version: Number(bot?.model_selection_version ?? 0) }));
@@ -653,7 +656,7 @@ export function AgentDesktop() {
   };
   const sidebarNode = <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
 
-  if (page === "cli" && !desktop) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+  if (page === "cli" && !desktop) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 
   if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 
