@@ -68,6 +68,7 @@ export class SessionDiscovery {
   private emittedOnce = false;
   private forceFull = false;
   private stopped = true;
+  private scanned = false;
   private liveBusy: Promise<void> | null = null;
   private historyBusy: Promise<void> | null = null;
   /** live session ids whose transcript was already looked for out of schedule */
@@ -104,6 +105,21 @@ export class SessionDiscovery {
     return [...this.rows.values()].map(toWire);
   }
 
+  /** One session as the wire row, or null when it is not in the list. */
+  get(ref: string): CliSessionWire | null {
+    const row = this.rows.get(ref);
+    return row ? toWire(row) : null;
+  }
+
+  /** Recomputes the list from the scans already done (the nex_bot terminal map
+   * changed) and reports the difference, at once with `flush`. */
+  reapply(options: { flush?: boolean } = {}): void {
+    // before the first scan finished there is nothing to report: an empty full list would wipe Core's copy
+    if (this.stopped || !this.scanned) return;
+    this.recompute();
+    this.schedule(options.flush === true);
+  }
+
   /** The session file on this computer, or null when there is none. */
   transcriptFor(ref: string): string | null {
     const row = this.rows.get(ref);
@@ -122,6 +138,7 @@ export class SessionDiscovery {
     // live first: the history scan must also find the transcripts of the live sessions
     await this.scanLiveRound(false);
     await this.scanHistoryRound(false);
+    this.scanned = true;
     this.recompute();
     this.schedule(options.flush === true);
   }

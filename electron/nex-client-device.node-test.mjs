@@ -173,3 +173,67 @@ test("a network failure keeps the executor running; a rejected login stops it", 
     await device.stop();
   } finally { f.cleanup(); }
 });
+
+function agentFixture() {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "nex-device-agent-"));
+  const session = { origin: "https://fixture.invalid", token: "agent-token", coreId: "core", sessionId: "session", expiresAt: Date.now() + 86_400_000, name: "Fixture" };
+  const configured = [], created = [];
+  const device = new ClientDevice({
+    directory, interval: 60_000,
+    safeStorage: { encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+    createNode: (_folder, _key, _changed, _origin, options) => {
+      created.push(options);
+      return { node: { configure(config) { configured.push(config); }, publicState: () => ({ status: "已连接", connected: true, cliAgents: { enabled: true, hc: "ready", hcError: "", engines: [{ engine: "claude", version: "2.1.0" }] } }), computer: { available: () => false } }, async close() {} };
+    },
+    async request(_origin, route) {
+      if (route === "/api/session") return { authenticated: true, ...session };
+      if (route === "/api/state") return { sync: { coreId: "core" }, devices: [{ id: "device", status: "bound" }] };
+      if (route === "/api/devices") return { deviceId: "device", token: "device-token" };
+      return {};
+    },
+  });
+  return { device, session, configured, created, cleanup: async () => { await device.stop(); rmSync(directory, { recursive: true, force: true }); } };
+}
+
+test("Agent sessions are on by default, reported with the engines found, and switched off from the UI", async () => {
+  const fixture = agentFixture();
+  try {
+    await fixture.device.start(fixture.session);
+    assert.equal(fixture.created[0].cliAgents, true);
+    assert.equal(fixture.configured[0].cliAgents, true);
+    assert.deepEqual(fixture.device.state().cliAgents, { available: true, enabled: true, hc: "ready", engines: [{ engine: "claude", version: "2.1.0" }] });
+    const state = await fixture.device.setCliAgentsEnabled(false);
+    assert.equal(state.cliAgents.enabled, false);
+    assert.equal(fixture.configured.at(-1).cliAgents, false);
+    await fixture.device.setCliAgentsEnabled(true);
+    assert.equal(fixture.configured.at(-1).cliAgents, true);
+  } finally { await fixture.cleanup(); }
+});
+
+test("the Agent session switch survives a pause and a new login of the same computer", async () => {
+  const fixture = agentFixture();
+  try {
+    await fixture.device.start(fixture.session);
+    await fixture.device.setCliAgentsEnabled(false);
+    await fixture.device.setPaused(true);
+    assert.equal(fixture.device.state().paused, true);
+    assert.equal(fixture.device.state().cliAgents.enabled, false);
+    // changing the switch while paused is saved, not applied to a runtime that does not exist
+    await fixture.device.setCliAgentsEnabled(true);
+    assert.equal(fixture.device.state().cliAgents.enabled, true);
+    await fixture.device.setCliAgentsEnabled(false);
+    await fixture.device.setPaused(false);
+    assert.equal(fixture.configured.at(-1).cliAgents, false);
+    await fixture.device.start(fixture.session);
+    assert.equal(fixture.configured.at(-1).cliAgents, false);
+    assert.equal(fixture.device.state().cliAgents.enabled, false);
+  } finally { await fixture.cleanup(); }
+});
+
+test("a node without Agent mode reports it as unavailable", async () => {
+  const fixture = refreshFixture({ expiresIn: 60 * 60_000, refresh: async () => ({}) });
+  try {
+    await fixture.device.start(fixture.session);
+    assert.equal(fixture.device.state().cliAgents.available, false);
+  } finally { await fixture.cleanup(); }
+});

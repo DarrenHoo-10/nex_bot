@@ -158,6 +158,11 @@ else {
       if (typeof paused !== "boolean") throw new Error("无效的设备状态");
       return target.setPaused(paused);
     });
+    ipcMain.handle("client:cli-agents-enabled", async (event, enabled) => {
+      const target = requireDevice(event);
+      if (typeof enabled !== "boolean") throw new Error("无效的设备状态");
+      return target.setCliAgentsEnabled(enabled);
+    });
     ipcMain.handle("client:device-reconcile", async (event, id, version) => {
       const target = requireDevice(event), epoch = loginEpoch;
       const result = await dialog.showMessageBox(window, { type: "question", title: "核实执行结果", message: "已确认这项操作停止？", detail: "确认后只清除未决状态，不会重新执行。", buttons: ["取消", "已确认停止"], defaultId: 0, cancelId: 0 });

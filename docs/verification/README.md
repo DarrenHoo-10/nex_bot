@@ -459,3 +459,8 @@ model picker, model settings order, 生图模型, the stop key and pasted images
 
 The [client update record](client-updates.md) covers the OSS installer mirror,
 the update API and the Windows portable updater.
+
+The [Agent mode spike](agent-mode-spike-20261115.md) covers herdr-core on Windows
+(start, attach, survive restarts), and the
+[draft record](agent-mode-draft-20261115.md) covers sending while a person is
+typing at the computer.

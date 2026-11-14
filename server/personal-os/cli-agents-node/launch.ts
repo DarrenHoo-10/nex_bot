@@ -9,11 +9,10 @@ import { access, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-// TODO(contract): CliEngine / launch modes move to shared/cli-agents.ts.
-export type CliEngine = "claude" | "codex";
-export type LaunchMode = "new" | "resume";
+import { CLI_ENGINES, type CliEngine } from "../../../shared/cli-agents.ts";
 
-export const CLI_ENGINES: readonly CliEngine[] = ["claude", "codex"];
+export { CLI_ENGINES, type CliEngine };
+export type LaunchMode = "new" | "resume";
 
 export interface LaunchIds {
   /** The CLI's own session id: chosen by us for a new Claude session, discovered for the rest. */

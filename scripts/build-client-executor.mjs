@@ -6,6 +6,7 @@ import { cpSync, existsSync, mkdirSync, copyFileSync, realpathSync, writeFileSyn
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { htmlPreviewShell } from "../shared/html-preview-shell.mjs";
+import { prepareHerdrCore } from "./prepare-herdr-core.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(root, "dist-personal/client-executor");
@@ -17,10 +18,10 @@ if (process.platform === "win32") {
   await import("./build-personal-computer.mjs");
   cpSync(path.join(root, "dist-personal/server/computer-runtime"), path.join(output, "computer-runtime"), { recursive: true });
   // Agent mode terminals live in herdr-core so they outlive the client process.
+  // Staging verifies the pinned digests and downloads only when it is missing.
+  await prepareHerdrCore({ root });
   const herdrCore = path.join(root, "dist-native/herdr-core/win32-x64");
-  if (!existsSync(path.join(herdrCore, "herdr-core.exe"))) {
-    throw new Error(`herdr-core is not staged at ${herdrCore}; run "pnpm build:herdr-core" first`);
-  }
+  if (!existsSync(path.join(herdrCore, "herdr-core.exe"))) throw new Error(`herdr-core is not staged at ${herdrCore}`);
   cpSync(herdrCore, path.join(output, "herdr-core"), { recursive: true });
 }
 const pdfRoot = realpathSync(path.join(root, "node_modules/pdfjs-dist"));

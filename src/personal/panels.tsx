@@ -141,6 +141,7 @@ export function Devices({ state, run, setDialog, closeDialog }: { state: State; 
           <Laptop size={22} aria-hidden="true"/>
           <div className="signed-in-device-name"><strong>{session.name}</strong>{isCurrent && <span className="ds-current-pill">本设备</span>}</div>
           <span className="device-presence"><i data-online={online}/>{online ? "在线" : "离线"}{isCurrent && local?.paused ? " · 已暂停" : ""}</span>
+          {isCurrent && desktop?.mode === "client" && local?.cliAgents?.available && <label className="device-switch"><input type="checkbox" role="switch" checked={local.cliAgents.enabled} disabled={pending || !local.authorized} onChange={event => void update(() => desktop!.setCliAgentsEnabled!(event.target.checked))}/>Agent 会话{local.cliAgents.enabled && local.cliAgents.hc === "error" ? " · 终端不可用" : ""}</label>}
           {isCurrent && local?.available && <button disabled={pending || !local.authorized} onClick={() => void update(() => desktop!.setDevicePaused!(!local.paused))}>{pending ? "处理中…" : local.paused ? "恢复控制" : "暂停控制"}</button>}
         </section>;
       })}

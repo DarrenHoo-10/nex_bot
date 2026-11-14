@@ -2,12 +2,12 @@ import { mkdirSync, existsSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import path from "node:path";
-import { DeviceNode } from "./node.ts";
+import { DeviceNode, type AgentModeOptions } from "./node.ts";
 import type { Row } from "./store.ts";
 
 // Thin clients store only a device execution journal and encrypted connection
 // grants. They do not create a Core database or run an Agent/memory service.
-export function createClientNode(dir: string, key: Buffer, changed: () => void, expectedOrigin?: string, options: { autoConnect?: boolean } = {}) {
+export function createClientNode(dir: string, key: Buffer, changed: () => void, expectedOrigin?: string, options: { autoConnect?: boolean; /** Agent mode: true, or overrides for tests. Off by default. */ cliAgents?: boolean | AgentModeOptions } = {}) {
   if (key.length !== 32) throw new Error("Invalid client vault key");
   mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, "device-secrets.db"));
@@ -21,7 +21,7 @@ export function createClientNode(dir: string, key: Buffer, changed: () => void, 
   };
   const previous = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
   if (previous && expectedOrigin && JSON.parse(store.decrypt(String(previous.ciphertext))).origin !== expectedOrigin) store.run("DELETE FROM secrets WHERE id='node-config'");
-  const node = new DeviceNode(store, changed, options.autoConnect !== false);
+  const node = new DeviceNode(store, changed, options.autoConnect !== false, options.cliAgents ? (options.cliAgents === true ? {} : options.cliAgents) : null);
   if (options.autoConnect === false) {
     const stored = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
     if (stored) node.config = JSON.parse(store.decrypt(String(stored.ciphertext)));

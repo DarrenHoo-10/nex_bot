@@ -17,6 +17,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { HERDR_CORE_VERSION } from "../../../shared/cli-agents.ts";
 import {
   type Frame,
   FrameDecoder,
@@ -31,8 +32,7 @@ import {
   encodeResize,
 } from "./hc-frames.ts";
 
-// TODO(contract): swap for HERDR_CORE_VERSION from shared/cli-agents.ts.
-export const HC_VERSION = "0.1.21";
+export const HC_VERSION = HERDR_CORE_VERSION;
 export const HC_GENERATION = 1;
 /** Methods this client calls; `hello` must list all of them. */
 export const HC_REQUIRED_METHODS = [
@@ -67,6 +67,8 @@ export type HcErrorKind =
   | "hc_closed"
   | "hc_forbidden"
   | "hc_observe_only"
+  /** a person on this computer has an unsent draft in the terminal */
+  | "hc_draft"
   | (string & {});
 
 export class HcError extends Error {
@@ -138,7 +140,6 @@ export function hcEnvironment(
 // ---------------------------------------------------------------------------
 // Wire types (subset of hc.openrpc.json)
 
-// TODO(contract): the engine/label names move to shared/cli-agents.ts.
 export interface HcTerminal {
   address: string;
   name: string | null;
@@ -433,6 +434,9 @@ export interface CallOptions {
   timeoutMs?: number;
 }
 
+/** How long a send may take before it counts as blocked by a local draft. */
+export const DRAFT_GIVE_UP_MS = 6000;
+
 const DEFAULTS = {
   startArgs: ["server", "start"],
   startTimeoutMs: 10_000,
@@ -446,6 +450,7 @@ const DEFAULTS = {
 
 export class HerdrCore extends EventEmitter<HcEvents> {
   private readonly options: Required<Omit<HerdrCoreOptions, "log" | "env">> & { log: HcLogger; env: NodeJS.ProcessEnv };
+  private readonly initial: HerdrCoreOptions;
   private connection: Connection | null = null;
   private connectionCounter = 0;
   private nextId = 2;
@@ -464,6 +469,7 @@ export class HerdrCore extends EventEmitter<HcEvents> {
 
   constructor(options: HerdrCoreOptions) {
     super();
+    this.initial = options;
     this.options = {
       ...DEFAULTS,
       ...options,
@@ -956,6 +962,29 @@ export class HerdrCore extends EventEmitter<HcEvents> {
   send(params: HcSendParams, options: CallOptions = {}): Promise<HcSendResult> {
     const waitMs = params.wait ? ((params.timeout ?? 180) + 15) * 1000 : 0;
     return this.call<HcSendResult>("terminal.send", { ...params }, { timeoutMs: options.timeoutMs ?? 75_000 + waitMs });
+  }
+
+  /** `send()` that never merges into what a person is typing. herdr-core holds
+   * a send while a local viewer has an unsent draft (up to 60 s) and then submits
+   * draft and message as one line, so the send runs on a throwaway connection and
+   * is given up after `giveUpMs`: closing that connection cancels the pending
+   * send and leaves the draft untouched (docs/verification/agent-mode-draft-
+   * 20261115.md). Fails with kind `hc_draft`. A genuinely slow core looks the
+   * same, and a send that lands just as we give up is possible but harmless. */
+  async sendGuarded(params: HcSendParams, options: { giveUpMs?: number } = {}): Promise<HcSendResult> {
+    await this.ensureStarted();
+    const giveUpMs = options.giveUpMs ?? DRAFT_GIVE_UP_MS;
+    const side = new HerdrCore({ ...this.initial, reconnect: false });
+    try {
+      return await side.send(params, { timeoutMs: giveUpMs });
+    } catch (error) {
+      if (error instanceof HcError && error.kind === "hc_timeout") {
+        throw new HcError("hc_draft", "the terminal has an unsent draft", "someone is typing in the terminal on this computer");
+      }
+      throw error;
+    } finally {
+      side.close();
+    }
   }
 
   keys(terminal: string, keys: string[], options?: CallOptions): Promise<{ turn: number; status?: string | null }> {

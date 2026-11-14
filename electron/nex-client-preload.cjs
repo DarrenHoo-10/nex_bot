@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("nex", {
   mode: "client",
   deviceState: () => ipcRenderer.invoke("client:device-state"),
   setDevicePaused: (paused) => ipcRenderer.invoke("client:device-paused", paused),
+  setCliAgentsEnabled: (enabled) => ipcRenderer.invoke("client:cli-agents-enabled", enabled),
   reconcileDevice: (id, version) => ipcRenderer.invoke("client:device-reconcile", id, version),
   stopDevice: () => ipcRenderer.invoke("client:device-stop"),
   listModels: (settings) => ipcRenderer.invoke("client:list-models", settings),

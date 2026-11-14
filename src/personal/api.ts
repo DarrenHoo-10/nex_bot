@@ -74,7 +74,9 @@ export interface State {
   node: { hosted?: boolean; status: string; origin: string; root: string; exec: boolean; computer?: boolean; computerSupported?: boolean; deviceId?: string; connected: boolean; unknownCalls: RecordRow[] };
   dataDir: string; address: string; lanEnabled: boolean;
 }
-export interface LocalDeviceState { available: boolean; name?: string; status?: string; connected?: boolean; authorized?: boolean; paused?: boolean; deviceId?: string; root?: string; exec?: boolean; computer?: boolean; computerSupported?: boolean; unknownCalls?: RecordRow[] }
+export interface LocalDeviceState { available: boolean; name?: string; status?: string; connected?: boolean; authorized?: boolean; paused?: boolean; deviceId?: string; root?: string; exec?: boolean; computer?: boolean; computerSupported?: boolean; unknownCalls?: RecordRow[];
+  /** Agent sessions of this computer (desktop client only). */
+  cliAgents?: { available: boolean; enabled: boolean; hc: "starting" | "ready" | "error"; engines: Array<{ engine: "claude" | "codex"; version: string | null }> } }
 export interface ClientUpdateState { status: "idle" | "checking" | "current" | "downloading" | "ready" | "error" | "unsupported"; current?: string; version?: string; progress?: number; error?: string }
 type Bridge = {
   platform?: "android";
@@ -84,6 +86,7 @@ type Bridge = {
   workspaceReady?(): Promise<unknown>;
   deviceState?(): Promise<LocalDeviceState>;
   setDevicePaused?(paused: boolean): Promise<LocalDeviceState>;
+  setCliAgentsEnabled?(enabled: boolean): Promise<LocalDeviceState>;
   reconcileDevice?(id: string, version: number): Promise<LocalDeviceState>;
   stopDevice?(): Promise<void>;
   mode?: "client";

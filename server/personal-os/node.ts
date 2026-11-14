@@ -7,6 +7,7 @@ import { WebSocket } from "ws";
 import { hash, now, text, type CoreStore } from "./store.ts";
 import os from "node:os";
 import { ComputerExecutor } from "./computer.ts";
+import { CliAgentBridge, type CliAgentBridgeOptions } from "./cli-agents-node/bridge.ts";
 import { DEVICE_LEASE_MS } from "./devices.ts";
 
 /** A call whose absolute lease is staler than this means the device clock is badly wrong, not merely drifting. */
@@ -53,7 +54,10 @@ export function confined(root: string, relative: string) {
   if (difference === ".." || difference.startsWith(".." + path.sep) || path.isAbsolute(difference)) throw new Error("路径超出授权目录（含符号链接）");
   return candidate;
 }
-interface NodeConfig { origin: string; token: string; root: string; exec: boolean; computer?: boolean; policyVersion: number }
+interface NodeConfig { origin: string; token: string; root: string; exec: boolean; computer?: boolean; cliAgents?: boolean; policyVersion: number }
+/** Opt-in Agent mode: the executor app passes it, the Core-hosted node never does. */
+export type AgentModeOptions = Partial<Omit<CliAgentBridgeOptions, "dir">>;
+const rawBuffer = (raw: unknown): Buffer => Buffer.isBuffer(raw) ? raw : Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : Buffer.from(raw as ArrayBuffer);
 function stopOwnedCommand(child: ChildProcess) {
   if (!child.pid) return;
   if (process.platform === "win32") spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
@@ -77,8 +81,24 @@ export class DeviceNode {
   readonly operations = new Set<Promise<void>>();
   readonly commands = new Set<ChildProcess>();
   readonly computer = new ComputerExecutor();
-  identity() { return { hostname: os.hostname(), platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", os: os.type(), release: os.release(), architecture: os.arch(), supported: ["device.info", "device.list", "device.read", "device.exec", ...(this.computer.available() ? ["device.computer"] : [])] }; }
-  constructor(readonly store: Pick<CoreStore, "dir" | "get" | "run" | "encrypt" | "decrypt">, readonly changed: () => void, enabled = true) {
+  bridge?: CliAgentBridge;
+  identity() { return { hostname: os.hostname(), platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", os: os.type(), release: os.release(), architecture: os.arch(), supported: ["device.info", "device.list", "device.read", "device.exec", ...(this.computer.available() ? ["device.computer"] : []), ...(this.bridge ? ["cli.agents"] : [])] }; }
+  /** Agent mode runs while this build supports it and the device setting is on (default on). */
+  agentEnabled(config = this.config) { return !!this.agent && config?.cliAgents !== false; }
+  /** Creates or drops the bridge to match the setting; a reconnect starts from an unlinked bridge. */
+  syncBridge() {
+    if (this.agentEnabled() && !this.bridge) this.bridge = new CliAgentBridge({ ...this.agent, dir: path.join(this.store.dir, "node") });
+    else if (!this.agentEnabled() && this.bridge) { const old = this.bridge; this.bridge = undefined; void old.detach(); }
+    else this.bridge?.unlink();
+  }
+  private bridgeLink(ws: WebSocket) {
+    const open = () => ws.readyState === WebSocket.OPEN && ws === this.socket;
+    return {
+      json: (message: unknown) => { if (!open()) return false; ws.send(JSON.stringify(message)); return true; },
+      binary: (frame: Uint8Array) => { if (!open()) return false; ws.send(frame, { binary: true }); return true; },
+    };
+  }
+  constructor(readonly store: Pick<CoreStore, "dir" | "get" | "run" | "encrypt" | "decrypt">, readonly changed: () => void, enabled = true, readonly agent: AgentModeOptions | null = null) {
     const dir = path.join(store.dir, "node"); mkdirSync(dir, { recursive: true });
     this.journal = new DatabaseSync(path.join(dir, "node.db"));
     if (!this.journal.prepare("SELECT name FROM sqlite_master WHERE name='node_bindings'").get()) this.journal.exec(readFileSync(new URL("./node-schema.sql", import.meta.url), "utf8"));
@@ -87,7 +107,7 @@ export class DeviceNode {
     const saved = store.get("SELECT ciphertext FROM secrets WHERE id='node-config'");
     if (saved && enabled) { this.config = JSON.parse(store.decrypt(String(saved.ciphertext))); this.connect(); }
   }
-  publicState() { return { status: this.status, origin: this.config?.origin ?? "", root: this.config?.root ?? "", exec: this.config?.exec ?? false, computer: this.config?.computer ?? false, computerSupported: this.computer.available(), deviceId: this.binding?.deviceId ?? "", connected: this.socket?.readyState === WebSocket.OPEN, unknownCalls: this.journal.prepare("SELECT call_id,capability,arguments_json,version FROM node_calls WHERE status='unknown'").all() }; }
+  publicState() { return { status: this.status, origin: this.config?.origin ?? "", root: this.config?.root ?? "", exec: this.config?.exec ?? false, computer: this.config?.computer ?? false, computerSupported: this.computer.available(), cliAgents: this.agent ? { enabled: this.agentEnabled(), ...(this.bridge?.state() ?? { hc: "starting" as const, hcError: "", engines: [] }) } : null, deviceId: this.binding?.deviceId ?? "", connected: this.socket?.readyState === WebSocket.OPEN, unknownCalls: this.journal.prepare("SELECT call_id,capability,arguments_json,version FROM node_calls WHERE status='unknown'").all() }; }
   configure(data: Record<string, unknown>) {
     if (this.executing) throw new Error("设备执行中，请等调用结束再更改授权");
     const origin = new URL(text(data.origin, 2048));
@@ -99,9 +119,10 @@ export class DeviceNode {
     if (data.computer === true && !this.computer.available()) throw new Error("本机 computer use 运行时不可用");
     const token = typeof data.token === "string" && data.token.trim() ? text(data.token, 200) : this.config?.token;
     if (!token) throw new Error("请输入 Core 生成的设备配对令牌");
+    const cliAgents = this.agent ? (data.cliAgents === undefined ? this.config?.cliAgents !== false : data.cliAgents === true) : false;
     this.socket?.close(); clearTimeout(this.timer);
-    const changedPolicy = !this.config || this.config.root !== root || this.config.token !== token || this.config.exec !== exec || (this.config.computer ?? false) !== computer;
-    this.config = { origin: origin.origin, root, token, exec, computer, policyVersion: (this.config?.policyVersion ?? 0) + (changedPolicy ? 1 : 0) };
+    const changedPolicy = !this.config || this.config.root !== root || this.config.token !== token || this.config.exec !== exec || (this.config.computer ?? false) !== computer || (this.agent ? this.config.cliAgents !== false : false) !== cliAgents;
+    this.config = { origin: origin.origin, root, token, exec, computer, cliAgents, policyVersion: (this.config?.policyVersion ?? 0) + (changedPolicy ? 1 : 0) };
     this.store.run("INSERT INTO secrets VALUES('node-config',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", this.store.encrypt(JSON.stringify(this.config)));
     this.connect(); return this.publicState();
   }
@@ -109,12 +130,21 @@ export class DeviceNode {
     if (this.stopping || !this.config) return;
     const endpoint = new URL(this.config.origin); endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:"; endpoint.pathname = "/dcp/v1/connect";
     const ws = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${this.config.token}` }, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 10_000 });
-    this.socket = ws; this.status = "连接中"; this.changed();
-    ws.on("open", () => { if (this.socket !== ws || this.stopping) return; ws.send(JSON.stringify({ type: "hello", policyVersion: this.config!.policyVersion, read: !!this.config!.root, exec: this.config!.exec, computer: this.config!.computer === true && this.computer.available(), identity: this.identity(), platform: this.identity().platform })); });
-    ws.on("message", (raw) => { try { const operation = this.message(ws, JSON.parse(raw.toString())).catch(() => ws.close(1008, "Invalid command")); this.operations.add(operation); void operation.finally(() => this.operations.delete(operation)); } catch { ws.close(1008, "Invalid message"); } });
+    this.socket = ws; this.status = "连接中"; this.syncBridge(); this.changed();
+    const hello = () => { if (this.socket !== ws || this.stopping) return; const cli = this.bridge; ws.send(JSON.stringify({ type: "hello", policyVersion: this.config!.policyVersion, read: !!this.config!.root, exec: this.config!.exec, computer: this.config!.computer === true && this.computer.available(), identity: this.identity(), platform: this.identity().platform, ...(cli ? { cliAgents: cli.capability() } : {}) })); };
+    ws.on("open", () => { if (this.socket !== ws || this.stopping) return; const cli = this.bridge; if (cli) void cli.prepare().then(hello, hello); else hello(); });
+    ws.on("message", (raw, isBinary) => {
+      try {
+        if (isBinary) { if (ws === this.socket && this.binding) this.bridge?.binary(new Uint8Array(rawBuffer(raw))); return; }
+        const event = JSON.parse(raw.toString());
+        if (typeof event?.type === "string" && event.type.startsWith("cli.")) { if (ws === this.socket && this.binding) this.bridge?.handle(event); return; }
+        const operation = this.message(ws, event).catch(() => ws.close(1008, "Invalid command")); this.operations.add(operation); void operation.finally(() => this.operations.delete(operation));
+      } catch { ws.close(1008, "Invalid message"); }
+    });
     ws.on("error", () => { if (this.socket !== ws || this.stopping) return; this.status = "连接失败，检查 Core 地址和配对令牌"; this.changed(); });
     ws.on("close", () => {
       if (this.socket !== ws || this.stopping) return;
+      this.bridge?.unlink();
       this.status = "离线，正在重连"; this.changed(); this.timer = setTimeout(() => this.connect(), 5000);
     });
   }
@@ -130,6 +160,7 @@ export class DeviceNode {
         this.journal.exec("COMMIT");
       } catch (e) { this.journal.exec("ROLLBACK"); throw e; }
       this.binding = { coreId, deviceId, ownerId }; this.status = "已连接"; this.changed();
+      if (this.bridge && this.config) { this.bridge.setScope(this.config.origin, ownerId); this.bridge.link(this.bridgeLink(ws)); }
       for (const row of this.journal.prepare("SELECT * FROM node_calls WHERE binding_id=? AND result_acknowledged_at IS NULL").all(bindingId)) this.deliver(ws, row);
     }
     if (event.type === "ack" && this.binding) this.journal.prepare("UPDATE node_calls SET result_acknowledged_at=? WHERE binding_id=? AND call_id=? AND result_hash=?").run(now(), this.binding.coreId + ":" + this.binding.deviceId, String(event.callId), String(event.resultHash));
@@ -292,6 +323,7 @@ export class DeviceNode {
     this.stopping = true; clearTimeout(this.timer); this.socket?.terminate();
     this.activeCall?.controller.abort();
     for (const child of this.commands) stopOwnedCommand(child);
-    await Promise.allSettled(this.operations); await this.computer.close(); this.journal.close();
+    const bridge = this.bridge; this.bridge = undefined;
+    await Promise.allSettled([...this.operations, bridge?.detach()]); await this.computer.close(); this.journal.close();
   }
 }
