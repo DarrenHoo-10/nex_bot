@@ -33,6 +33,18 @@ struct FinanceTopicsView: View {
             }
             if workspace.connection != .connected { ProgressView("正在重新同步…") }
             else {
+                if let current {
+                    HStack(alignment: .top) {
+                        Button("返回聊天") {
+                            selected = nil; messages = []; streaming = ""; editingMessageID = nil; taskRows = []; generation += 1
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(current.title).font(.headline)
+                            Text(current.destinationLabel).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:12) {
                         ForEach(topics) { topic in topicCard(topic) }

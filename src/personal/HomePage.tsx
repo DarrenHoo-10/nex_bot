@@ -6,7 +6,7 @@ import type { Appearance } from "./avatars/appearance";
 
 const repo = "https://github.com/DarrenHoo-10/nex_bot";
 export const registerUrl = "https://user.nexorai.com.cn/register/nexbot";
-const links = { releases: `${repo}/releases` };
+const links = { releases: `${repo}/releases/tag/nexbot-v0.9.33-preview.1` };
 
 interface ClientDownload { url: string; version: string; publishedAt: string; tag?: string }
 interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload; mac?: ClientDownload; ios?: ClientDownload }
@@ -27,7 +27,7 @@ const writing: Appearance = { kind: "companion", shape: "pebble", color: "clay" 
 
 const features = [
   { icon: Bot, title: "专属助手", text: "为写作、研究、工作整理分别创建助手，选择专属角色头像，随任务状态显示表情与动作。" },
-  { icon: MonitorSmartphone, title: "跨设备接着聊", text: "每个助手保留自己的对话，电脑、手机和网页用同一账号继续。" },
+  { icon: MonitorSmartphone, title: "跨设备接着聊", text: "每个助手保留自己的对话，电脑、手机和网页用同一账号继续；浏览话题记录时，顶部标题和返回入口保持固定。" },
   { icon: FileText, title: "处理文件", text: "上传文档、PDF 和图片，让助手阅读、总结和整理。" },
   { icon: SquareTerminal, title: "操作电脑", text: "Windows 和 Mac 客户端登录后连接本机，助手可读取文件、运行命令。" },
   { icon: Plug, title: "连接工具", text: "添加 MCP 连接器，按助手分别授权可用的工具。" },

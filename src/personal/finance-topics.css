@@ -1,5 +1,7 @@
 .rk-workspace .topic-bubble{display:grid;gap:6px;text-align:left;max-width:100%;min-width:0;overflow-wrap:anywhere}
 .topic-bubble strong{white-space:normal}
 .topic-bubble small,.topic-context small{font-size:12px;opacity:.78}
-.topic-context{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.topic-context{display:flex;flex:none;align-items:center;gap:10px;flex-wrap:wrap;width:100%;max-width:720px;align-self:center;padding:12px 10px 0;box-sizing:border-box}
+.topic-context strong,.topic-context small{min-width:0;overflow-wrap:anywhere}
+@media(max-width:720px){.topic-context{padding:8px 12px 0}}
 .topic-preview{display:block;max-width:min(48ch,100%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;opacity:.88}
