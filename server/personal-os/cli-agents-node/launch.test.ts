@@ -296,3 +296,54 @@ describe("planLaunch", () => {
     ).rejects.toMatchObject({ kind: "invalid_cwd" });
   });
 });
+
+describe("hooks in planLaunch", () => {
+  const pipe = process.platform === "win32" ? "\\\\.\\pipe\\nexbot-hook-0123456789abcdef" : "/tmp/nexbot-hook-0123456789abcdef.sock";
+  const token = `${"a".repeat(64)}.${UUID}`;
+
+  function plugin(complete = true): string {
+    const dir = path.join(root, "plugin dir");
+    touch(path.join(dir, ".claude-plugin", "plugin.json"), "{}", false);
+    touch(path.join(dir, "hooks", "hooks.json"), "{}", false);
+    if (complete) touch(path.join(dir, "hooks", "hook.mjs"), "", false);
+    return dir;
+  }
+
+  it("adds --plugin-dir and the NEXBOT_HOOK variables for Claude, keeping the whitelist for everything else", async () => {
+    const dir = plugin();
+    const plan = await planLaunch(
+      { engine: "claude", mode: "resume", nativeId: UUID, cwd: root, executable: "/opt/claude", hooks: { pluginDir: dir, node: "/opt/node", pipe, token } },
+      { env: {} },
+    );
+    expect(plan.hooked).toBe(true);
+    expect(plan.argv).toEqual(["/opt/claude", "--resume", UUID, "--plugin-dir", dir]);
+    expect(plan.env).toMatchObject({ NEXBOT_HOOK_NODE: "/opt/node", NEXBOT_HOOK_PIPE: pipe, NEXBOT_HOOK_TOKEN: token });
+    // the plugin path is the only argument outside the alphabet
+    expect(plan.argv.filter((arg) => !SAFE_ARG.test(arg))).toEqual(onWindows || /[^A-Za-z0-9_./:=@+-]/.test(dir) ? [dir] : []);
+  });
+
+  it("leaves Codex alone and goes without hooks when the plugin is missing or incomplete", async () => {
+    const dir = plugin();
+    const codex = await planLaunch({ engine: "codex", mode: "new", cwd: root, executable: "/opt/codex", hooks: { pluginDir: dir, node: "/opt/node", pipe, token } }, { env: {} });
+    expect(codex.hooked).toBe(false);
+    expect(codex.argv).toEqual(["/opt/codex"]);
+    expect(codex.env.NEXBOT_HOOK_PIPE).toBeUndefined();
+
+    const missing = await planLaunch({ engine: "claude", mode: "new", nativeId: UUID, cwd: root, executable: "/opt/claude", hooks: { pluginDir: path.join(root, "nothing"), node: "/opt/node", pipe, token } }, { env: {} });
+    expect(missing).toMatchObject({ hooked: false, argv: ["/opt/claude", "--session-id", UUID] });
+    rmSync(dir, { recursive: true, force: true });
+    const partial = await planLaunch({ engine: "claude", mode: "new", nativeId: UUID, cwd: root, executable: "/opt/claude", hooks: { pluginDir: plugin(false), node: "/opt/node", pipe, token } }, { env: {} });
+    expect(partial.hooked).toBe(false);
+  });
+
+  it("refuses a plugin path or hook variable that could be read as something else", async () => {
+    const hooks = (extra: Record<string, string>) => ({ pluginDir: plugin(), node: "/opt/node", pipe, token, ...extra });
+    const plan = (h: ReturnType<typeof hooks>) => planLaunch({ engine: "claude", mode: "new", nativeId: UUID, cwd: root, executable: "/opt/claude", hooks: h }, { env: {}, platform: process.platform });
+    await expect(plan(hooks({ token: "a\nb" }))).rejects.toMatchObject({ kind: "invalid_argument" });
+    await expect(plan(hooks({ node: "" }))).rejects.toMatchObject({ kind: "invalid_argument" });
+    expect(() => cliArgs("claude", "new", { nativeId: UUID, pluginDir: "relative/dir" })).toThrowError(expect.objectContaining({ kind: "unsafe_path" }));
+    expect(() => cliArgs("claude", "new", { nativeId: UUID, pluginDir: "/a\nb" }, { platform: "linux" })).toThrowError(expect.objectContaining({ kind: "unsafe_path" }));
+    expect(() => cliArgs("claude", "new", { nativeId: UUID, pluginDir: "C:\\a&b" }, { platform: "win32" })).toThrowError(expect.objectContaining({ kind: "unsafe_path" }));
+    expect(() => cliArgs("codex", "new", { pluginDir: "/a" }, { platform: "linux" })).toThrowError(expect.objectContaining({ kind: "invalid_argument" }));
+  });
+});

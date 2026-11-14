@@ -17,6 +17,18 @@ export type LaunchMode = "new" | "resume";
 export interface LaunchIds {
   /** The CLI's own session id: chosen by us for a new Claude session, discovered for the rest. */
   nativeId: string;
+  /** Claude only: nex_bot's own plugin directory (`--plugin-dir`), see validatePluginDir. */
+  pluginDir: string;
+}
+
+/** What a Claude terminal needs to forward its prompts to the Agent bridge (plan 7.1). */
+export interface HookLaunch {
+  /** nex_bot's plugin directory, passed as `--plugin-dir` */
+  pluginDir: string;
+  /** a Node runtime that runs hook.mjs: the executor itself (with ELECTRON_RUN_AS_NODE=1 in the hook command) or node */
+  node: string;
+  pipe: string;
+  token: string;
 }
 
 export type LaunchErrorKind = "invalid_argument" | "invalid_cwd" | "cli_not_found" | "unsafe_path";
@@ -156,9 +168,22 @@ function assertSafeId(id: string, what: string): void {
   }
 }
 
+/** The one argument that is not a plain token: the plugin directory is a path we
+ * generate (often with spaces and backslashes), passed as a single argv element and
+ * never through a shell. It must be absolute and free of control characters, and on
+ * Windows of the characters `cmd.exe` would still interpret when the CLI is a `.cmd` shim. */
+export function validatePluginDir(dir: string, platform: NodeJS.Platform = process.platform): string {
+  const absolute = typeof dir === "string" && (isWindows(platform) ? path.win32.isAbsolute(dir) : path.posix.isAbsolute(dir));
+  // eslint-disable-next-line no-control-regex
+  if (!absolute || dir.length > 1024 || /[\u0000-\u001f\u007f]/.test(dir) || (isWindows(platform) && CMD_UNSAFE_PATH.test(dir))) {
+    throw new LaunchError("unsafe_path", "the plugin directory is not a safe absolute path");
+  }
+  return dir;
+}
+
 /** The CLI arguments (without the executable). New Claude sessions get an id we
  * choose so the transcript can be found at once; Codex assigns its own. */
-export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<LaunchIds> = {}): string[] {
+export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<LaunchIds> = {}, options: PlatformOptions = {}): string[] {
   let args: string[];
   if (engine === "claude") {
     if (!ids.nativeId) throw new LaunchError("invalid_argument", "a Claude session needs a session id");
@@ -177,6 +202,10 @@ export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<Launch
   }
   for (const arg of args) {
     if (!SAFE_ARG.test(arg)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(arg)} is not allowed`);
+  }
+  if (ids.pluginDir !== undefined) {
+    if (engine !== "claude") throw new LaunchError("invalid_argument", "only Claude takes a plugin directory");
+    args.push("--plugin-dir", validatePluginDir(ids.pluginDir, options.platform ?? process.platform));
   }
   return args;
 }
@@ -198,7 +227,7 @@ export function buildArgv(
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   if (!executable) throw new LaunchError("cli_not_found", `${engine} was not found`);
-  const args = cliArgs(engine, mode, ids);
+  const args = cliArgs(engine, mode, ids, { platform });
   if (isWindows(platform) && isCmdScript(executable)) {
     if (CMD_UNSAFE_PATH.test(executable)) {
       throw new LaunchError("unsafe_path", `${executable} contains characters cmd.exe would interpret`);
@@ -206,6 +235,17 @@ export function buildArgv(
     if (options.wrapCmd) return [envValue(env, "ComSpec", platform) ?? "cmd.exe", "/d", "/s", "/c", executable, ...args];
   }
   return [executable, ...args];
+}
+
+async function pluginComplete(dir: string): Promise<boolean> {
+  for (const file of [path.join(".claude-plugin", "plugin.json"), path.join("hooks", "hooks.json"), path.join("hooks", "hook.mjs")]) {
+    try {
+      if (!(await stat(path.join(dir, file))).isFile()) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** The working directory must be an absolute path to an existing directory. */
@@ -264,6 +304,8 @@ export function launchEnv(engine: CliEngine, options: PlatformOptions & { homedi
 }
 
 export interface PlannedLaunch {
+  /** the terminal forwards prompts and turn ends to nex_bot (the plugin was found) */
+  hooked: boolean;
   argv: string[];
   cwd: string;
   env: Record<string, string>;
@@ -273,20 +315,32 @@ export interface PlannedLaunch {
 
 /** Everything `terminal.run` needs for one Agent mode terminal. */
 export async function planLaunch(
-  input: { engine: CliEngine; mode: LaunchMode; nativeId?: string; key?: string; cwd: string; executable?: string },
+  input: { engine: CliEngine; mode: LaunchMode; nativeId?: string; key?: string; cwd: string; executable?: string; hooks?: HookLaunch },
   options: PlatformOptions & { homedir?: string; wrapCmd?: boolean } = {},
 ): Promise<PlannedLaunch> {
   const cwd = await validateCwd(input.cwd, options);
   const executable = input.executable ?? (await resolveCli(input.engine, options));
   if (!executable) throw new LaunchError("cli_not_found", `${input.engine} was not found on PATH`);
-  const argv = buildArgv(input.engine, input.mode, { nativeId: input.nativeId }, executable, options);
+  // Hooks are an extra: a plugin directory that is missing or incomplete just means no cards.
+  const hooks = input.engine === "claude" && input.hooks && (await pluginComplete(input.hooks.pluginDir)) ? input.hooks : undefined;
+  if (hooks) {
+    for (const [name, value] of Object.entries({ node: hooks.node, pipe: hooks.pipe, token: hooks.token })) {
+      // eslint-disable-next-line no-control-regex
+      if (!value || /[\u0000-\u001f\u007f]/.test(value)) throw new LaunchError("invalid_argument", `the hook ${name} is not valid`);
+    }
+  }
+  const argv = buildArgv(input.engine, input.mode, { nativeId: input.nativeId, ...(hooks ? { pluginDir: hooks.pluginDir } : {}) }, executable, options);
   // A brand-new Codex session has no id until the CLI writes its transcript;
   // `key` (the Agent mode session id) keeps its terminal name unique meanwhile.
   const nativeId = input.nativeId ?? PENDING_NATIVE_ID;
   return {
+    hooked: hooks !== undefined,
     argv,
     cwd,
-    env: launchEnv(input.engine, options),
+    env: {
+      ...launchEnv(input.engine, options),
+      ...(hooks ? { NEXBOT_HOOK_NODE: hooks.node, NEXBOT_HOOK_PIPE: hooks.pipe, NEXBOT_HOOK_TOKEN: hooks.token } : {}),
+    },
     name: terminalName(input.engine, input.key ?? input.nativeId ?? ""),
     labels: terminalLabels(input.engine, nativeId),
   };

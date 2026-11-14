@@ -36,6 +36,7 @@ import {
   type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
+import { HookError, HookServer, TurnTracker, locateHookPlugin } from "./hooks.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import {
   HerdrCore,
@@ -113,6 +114,15 @@ export interface CliAgentBridgeOptions {
   rowWaitMs?: number;
   readerPollMs?: number;
   coalesceMs?: number;
+  /** nex_bot's Claude plugin (permission prompts, questions, turn ends). Default: locateHookPlugin(); null turns hooks off. */
+  pluginDir?: string | null;
+  /** The Node runtime the hooks run with. Default: this process (the Electron executor runs it as Node). */
+  hookNode?: string;
+  /** How long a Claude session must stay idle before the status fallback reports a turn end. Default 3 s. */
+  turnFallbackMs?: number;
+  /** Directory of the hook socket on Unix and the open request lifetime; tests override them. */
+  hookSocketDir?: string;
+  hookTtlMs?: number;
 }
 
 class OpFailure extends Error {
@@ -187,10 +197,18 @@ export class CliAgentBridge {
   private seq = 0;
   private discoveryStarted = false;
   private detached = false;
+  private hooks: HookServer | null = null;
+  private hooksStarting: Promise<HookServer | null> | null = null;
+  private pluginDir: string | null | undefined;
+  private readonly turns: TurnTracker;
+  private readonly states = new Map<string, CliSessionWire["state"]>();
+  private readonly fallbackTimers = new Map<string, NodeJS.Timeout>();
+  private readonly codexTails = new Map<string, TranscriptReader>();
 
   constructor(private readonly options: CliAgentBridgeOptions) {
     this.platform = options.platform ?? process.platform;
     this.store = new CliLocalStore(path.join(options.dir, "cli-agents.db"));
+    this.turns = new TurnTracker((message) => this.sendJson(message));
     this.discovery = new SessionDiscovery({
       ...(options.claudeDirs ? { claudeDirs: options.claudeDirs } : {}),
       ...(options.codexHomes ? { codexHomes: options.codexHomes } : {}),
@@ -275,6 +293,8 @@ export class CliAgentBridge {
     this.seq = 0;
     this.resync();
     void this.warm();
+    // The hook listener comes up with the link, so terminals that survived a client restart keep forwarding.
+    void this.ensureHooks();
   }
 
   /** The socket dropped. Streams and watches die with it (Core re-opens what it needs); scanning and herdr-core carry on. */
@@ -282,6 +302,7 @@ export class CliAgentBridge {
     this.link_ = null;
     this.streams.closeAll("link_lost");
     this.closeWatches();
+    this.hooks?.linkLost();
   }
 
   /** Core asked for the whole list again, or the link was just re-established. */
@@ -307,6 +328,13 @@ export class CliAgentBridge {
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     if (this.graceTimer) clearTimeout(this.graceTimer);
     this.refreshTimer = this.expiryTimer = this.graceTimer = null;
+    for (const timer of this.fallbackTimers.values()) clearTimeout(timer);
+    this.fallbackTimers.clear();
+    for (const reader of this.codexTails.values()) reader.close();
+    this.codexTails.clear();
+    const hooks = this.hooks;
+    this.hooks = null;
+    if (hooks) this.track(hooks.close());
     for (const claim of this.pending.splice(0)) claim.waiter?.(null);
     this.dropHc();
     await Promise.race([Promise.allSettled(this.tasks), new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
@@ -408,6 +436,132 @@ export class CliAgentBridge {
     }
     this.tryClaims();
     this.track(this.startWaitingWatches());
+    this.observeTurns(diff);
+  }
+
+  // -- internals: turn ends ---------------------------------------------------------------------
+
+  /** Claude: a nex_bot session that was running and stays idle reports a turn end, in case no Stop hook did.
+   * Codex: the session file tells (see `syncCodexTails`). */
+  private observeTurns(diff: SessionsDiff): void {
+    for (const ref of diff.removes) this.dropObserved(ref);
+    const mine = this.nexbotTerminals();
+    for (const row of diff.upserts) {
+      if (row.engine !== "claude") continue;
+      const ref = cliRef("claude", row.nativeId);
+      const before = this.states.get(ref);
+      this.states.set(ref, row.state);
+      if (row.state === "running") this.cancelFallback(ref);
+      else if (before === "running" && row.state === "idle" && mine.has(ref)) this.armFallback(ref);
+      else if (row.state === "stopped") this.cancelFallback(ref);
+    }
+    this.syncCodexTails(mine);
+  }
+
+  private dropObserved(ref: string): void {
+    this.states.delete(ref);
+    this.cancelFallback(ref);
+    this.codexTails.get(ref)?.close();
+    this.codexTails.delete(ref);
+  }
+
+  private cancelFallback(ref: string): void {
+    const timer = this.fallbackTimers.get(ref);
+    if (timer) clearTimeout(timer);
+    this.fallbackTimers.delete(ref);
+  }
+
+  private armFallback(ref: CliSessionRef): void {
+    if (this.detached || this.fallbackTimers.has(ref)) return;
+    const timer = setTimeout(() => {
+      this.fallbackTimers.delete(ref);
+      if (this.detached || this.discovery.get(ref)?.state !== "idle") return;
+      this.turns.report(ref, "end", "status");
+    }, this.options.turnFallbackMs ?? 3000);
+    timer.unref?.();
+    this.fallbackTimers.set(ref, timer);
+  }
+
+  /** Follows the rollout of every Codex session in a nex_bot terminal for its turn ends and aborts. */
+  private syncCodexTails(mine: ReadonlyMap<string, string>): void {
+    for (const [ref, reader] of Array.from(this.codexTails)) {
+      if (mine.has(ref)) continue;
+      reader.close();
+      this.codexTails.delete(ref);
+    }
+    for (const ref of mine.keys()) {
+      if (!ref.startsWith("codex:") || this.codexTails.has(ref)) continue;
+      const file = this.discovery.transcriptFor(ref);
+      if (!file) continue;
+      const reader = new TranscriptReader({
+        path: file,
+        engine: "codex",
+        onItems: (items) => {
+          for (const item of items) {
+            if (item.kind !== "turn" || item.phase === "started") continue;
+            this.turns.report(ref as CliSessionRef, item.phase === "aborted" ? "interrupted" : "end", "codex", { endedAt: item.ts });
+          }
+        },
+        ...(this.options.readerPollMs === undefined ? {} : { pollMs: this.options.readerPollMs }),
+      });
+      this.codexTails.set(ref, reader);
+      this.track(
+        reader.start().then(
+          () => undefined,
+          (error) => {
+            this.log("warn", `following ${ref} for turn ends failed: ${String(error)}`);
+            if (this.codexTails.get(ref) === reader) this.codexTails.delete(ref);
+            reader.close();
+          },
+        ),
+      );
+    }
+  }
+
+  // -- internals: Claude hooks ------------------------------------------------------------------
+
+  /** The hook listener, started on first use. Null when hooks are off, there is no plugin, or the listener cannot start. */
+  private ensureHooks(): Promise<HookServer | null> {
+    if (this.detached) return Promise.resolve(null);
+    if (this.hooks) return Promise.resolve(this.hooks);
+    this.hooksStarting ??= (async () => {
+      try {
+        if (this.pluginDir === undefined) this.pluginDir = this.options.pluginDir === undefined ? locateHookPlugin(this.options.env ? { env: this.options.env } : {}) : this.options.pluginDir;
+        if (!this.pluginDir) return null;
+        const server = new HookServer({
+          dir: this.options.dir,
+          emit: (message) => this.sendJson(message),
+          turns: this.turns,
+          active: () => this.link_ !== null && !this.detached,
+          isLive: (ref) => this.nexbotTerminals().has(ref),
+          platform: this.platform,
+          ...(this.options.hookSocketDir ? { socketDir: this.options.hookSocketDir } : {}),
+          ...(this.options.hookTtlMs ? { ttlMs: this.options.hookTtlMs } : {}),
+          log: (level, message) => this.log(level, message),
+        });
+        await server.start();
+        if (this.detached) {
+          await server.close();
+          return null;
+        }
+        this.hooks = server;
+        return server;
+      } catch (error) {
+        this.log("warn", `the Claude hooks are off: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      } finally {
+        this.hooksStarting = null;
+      }
+    })();
+    return this.hooksStarting;
+  }
+
+  /** What `planLaunch` needs to hook a Claude terminal of this session; undefined when hooks are unavailable. */
+  private async hookLaunch(nativeId: string): Promise<{ pluginDir: string; node: string; pipe: string; token: string } | undefined> {
+    const server = await this.ensureHooks();
+    if (!server || !this.pluginDir) return undefined;
+    const ref = cliRef("claude", nativeId);
+    return { pluginDir: this.pluginDir, node: this.options.hookNode ?? process.execPath, pipe: server.pipe, token: server.tokenFor(ref) };
   }
 
   // -- internals: herdr-core ---------------------------------------------------------------
@@ -817,6 +971,8 @@ export class CliAgentBridge {
         return this.exclusive((args as CliOpArgs["interrupt"]).ref, () => this.opInterrupt(args as CliOpArgs["interrupt"]));
       case "open_local":
         return this.exclusive((args as CliOpArgs["open_local"]).ref, () => this.opOpenLocal(args as CliOpArgs["open_local"]));
+      case "answer":
+        return this.opAnswer(args as CliOpArgs["answer"]);
       default:
         throw new OpFailure("invalid", "this operation is not available on this computer yet");
     }
@@ -942,8 +1098,9 @@ export class CliAgentBridge {
       await this.discovery.refresh();
       for (const row of this.discovery.snapshot()) if (row.engine === "codex") known.add(cliRef("codex", row.nativeId));
     }
+    const hooks = nativeId ? await this.hookLaunch(nativeId) : undefined;
     const plan = await planLaunch(
-      { engine: args.engine, mode: "new", nativeId, key: randomBytes(4).toString("hex"), cwd: args.cwd, executable },
+      { engine: args.engine, mode: "new", nativeId, key: randomBytes(4).toString("hex"), cwd: args.cwd, executable, ...(hooks ? { hooks } : {}) },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
     const launchedAt = Date.now();
@@ -991,8 +1148,9 @@ export class CliAgentBridge {
 
     const executable = await this.cliPath(parsed.engine);
     const size = clampTermSize(undefined, undefined);
+    const hooks = parsed.engine === "claude" ? await this.hookLaunch(parsed.nativeId) : undefined;
     const plan = await planLaunch(
-      { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable },
+      { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable, ...(hooks ? { hooks } : {}) },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
     plan.env = { ...plan.env, ...this.launchEnvironment(parsed.engine, row.configDir) };
@@ -1086,6 +1244,18 @@ export class CliAgentBridge {
       this.options.launcher,
     );
     return {};
+  }
+
+  /** Core relays the answer to a pending request; it goes to the hook that waits for it. */
+  private async opAnswer(args: CliOpArgs["answer"]): Promise<{ outcome: string }> {
+    const server = this.hooks ?? (await this.ensureHooks());
+    if (!server) throw new OpFailure("not_found");
+    try {
+      return { outcome: server.answer(args) };
+    } catch (error) {
+      if (error instanceof HookError) throw new OpFailure(error.code, error.code === "not_found" ? "request is closed" : undefined);
+      throw error;
+    }
   }
 
   // -- internals: streams ---------------------------------------------------------------------

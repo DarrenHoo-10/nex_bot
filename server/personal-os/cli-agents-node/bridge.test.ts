@@ -1,6 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CliOp, CliOpArgs, DeviceCliMessage } from "../../../shared/cli-agents.ts";
 import { TERM_INPUT, TERM_OUTPUT, decodeTermFrame, encodeTermFrame } from "../../../shared/cli-agent-frames.ts";
@@ -100,6 +102,8 @@ function setup(extra: Partial<CliAgentBridgeOptions> = {}, options: { writer?: "
     settleMs: 1000,
     readerPollMs: 40,
     coalesceMs: 5,
+    // the exact-argv tests below run without the Claude plugin; the hook tests turn it on
+    pluginDir: null,
     ...extra,
   });
   bridges.push(bridge);
@@ -222,10 +226,10 @@ describe("read and watch", () => {
     expect(t.messages.find((m) => m.type === "cli.reply" && m.opId === "bad-1")).toMatchObject({ ok: false, error: { code: "invalid" } });
   });
 
-  it("does not offer the phase 2 answer operation yet", async () => {
+  it("answers not_found to an answer when no hook waits (hooks off)", async () => {
     const t = setup();
     await t.start();
-    expect(await t.call("answer", { id: "x", decision: "allow" })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(await t.call("answer", { id: "x", decision: "allow" })).toMatchObject({ ok: false, error: { code: "not_found" } });
   });
 });
 
@@ -660,4 +664,219 @@ describe("open_local", () => {
     expect(t.launched).toHaveLength(0);
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Claude hooks (plan 7.1) and turn ends (plan 7.3)
+
+describe("Claude hooks and turn ends", () => {
+  const PLUGIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "plugin");
+  const BASH = { hook_event_name: "PermissionRequest", session_id: "s", tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } };
+
+  const hooked = (extra: Partial<CliAgentBridgeOptions> = {}) => setup({ pluginDir: PLUGIN, hookNode: process.execPath, hookSocketDir: root, turnFallbackMs: 60, ...extra });
+  type Setup = ReturnType<typeof setup>;
+  const requests = (t: Setup) => t.messages.filter((m): m is Extract<DeviceCliMessage, { type: "cli.request" }> => m.type === "cli.request");
+  const turns = (t: Setup) => t.messages.filter((m): m is Extract<DeviceCliMessage, { type: "cli.turn" }> => m.type === "cli.turn");
+
+  /** What the hook inside the terminal does: connects with the variables the terminal got. */
+  function ask(env: Record<string, string>, event: string, input: unknown): { reply: Promise<Record<string, any> | null>; socket: net.Socket } {
+    const socket = net.connect(env.NEXBOT_HOOK_PIPE);
+    socket.setEncoding("utf8");
+    socket.on("error", () => undefined);
+    const reply = new Promise<Record<string, any> | null>((resolve) => {
+      let buffer = "";
+      socket.on("data", (chunk: string) => {
+        buffer += chunk;
+        const end = buffer.indexOf("\n");
+        if (end >= 0) resolve(JSON.parse(buffer.slice(0, end)));
+      });
+      socket.on("close", () => resolve(null));
+    });
+    socket.on("connect", () => socket.write(JSON.stringify({ v: 1, token: env.NEXBOT_HOOK_TOKEN, event, input }) + "\n"));
+    return { reply, socket };
+  }
+
+  async function startClaude(t: Setup) {
+    claudeWritesTranscript();
+    await t.start();
+    const reply = await t.call("start", { engine: "claude", cwd: workDir });
+    expect(reply.ok).toBe(true);
+    const result = reply.result as { ref: string; terminal: string };
+    return { ...result, terminal: hc.terminals.get(result.terminal)!, address: result.terminal };
+  }
+
+  it("starts Claude with the plugin and the hook variables", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const id = started.ref.slice("claude:".length);
+    expect(started.terminal.argv).toEqual(["/fake/bin/claude", "--session-id", id, "--plugin-dir", PLUGIN]);
+    expect(started.terminal.env).toMatchObject({ NEXBOT_HOOK_NODE: process.execPath });
+    expect(started.terminal.env.NEXBOT_HOOK_TOKEN.endsWith(`.${id}`)).toBe(true);
+    expect(started.terminal.env.NEXBOT_HOOK_PIPE).toBeTruthy();
+  });
+
+  it("turns a permission prompt into a card and relays the answer to the waiting hook", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const conn = ask(started.terminal.env, "permission", BASH);
+    const request = await until(() => requests(t).length === 1).then(() => requests(t)[0]);
+    expect(request).toMatchObject({ ref: started.ref, kind: "permission", tool: "Bash", summary: "npm test" });
+
+    const answered = await t.call("answer", { id: request.id, decision: "allow" });
+    expect(answered).toMatchObject({ ok: true, result: { outcome: "ok" } });
+    expect(await conn.reply).toEqual({ v: 1, decision: "allow" });
+
+    // the request is closed now: a second answer finds nothing
+    expect(await t.call("answer", { id: request.id, decision: "allow" })).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it("relays a deny with its message and the answers of a question", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const deny = ask(started.terminal.env, "permission", BASH);
+    await until(() => requests(t).length === 1);
+    await t.call("answer", { id: requests(t)[0].id, decision: "deny", message: "no" });
+    expect(await deny.reply).toEqual({ v: 1, decision: "deny", message: "no" });
+
+    const question = ask(started.terminal.env, "permission", { tool_name: "AskUserQuestion", tool_use_id: "q", tool_input: { questions: [{ question: "Pick?", options: [{ label: "A" }, { label: "B" }] }] } });
+    await until(() => requests(t).length === 2);
+    const card = requests(t)[1];
+    expect(card).toMatchObject({ kind: "question", summary: "Pick?" });
+    expect(await t.call("answer", { id: card.id, decision: "allow" })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(await t.call("answer", { id: card.id, decision: "allow", answers: { "Pick?": "B" } })).toMatchObject({ ok: true });
+    expect(await question.reply).toEqual({ v: 1, decision: "allow", answers: { "Pick?": "B" } });
+  });
+
+  it("closes the card as terminal when the prompt was answered at the computer", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const conn = ask(started.terminal.env, "permission", BASH);
+    await until(() => requests(t).length === 1);
+    const post = ask(started.terminal.env, "post", { tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } });
+    await post.reply;
+    await until(() => t.messages.some((m) => m.type === "cli.request.resolved"));
+    expect(t.messages.find((m) => m.type === "cli.request.resolved")).toEqual({ type: "cli.request.resolved", id: requests(t)[0].id, by: "terminal" });
+    expect(await conn.reply).toMatchObject({ decision: "pass" });
+  });
+
+  it("sends the hooks back to the terminal when the link to Core drops", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const conn = ask(started.terminal.env, "permission", BASH);
+    await until(() => requests(t).length === 1);
+    t.bridge.unlink();
+    expect(await conn.reply).toMatchObject({ decision: "pass" });
+    // and while unlinked nothing is asked
+    const later = ask(started.terminal.env, "permission", BASH);
+    expect(await later.reply).toMatchObject({ decision: "pass" });
+    expect(requests(t)).toHaveLength(1);
+  });
+
+  it("ignores a hook of a session whose terminal ended", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    hc.exit(started.address, 0);
+    await until(() => t.sessions().find((row) => row.nativeId === started.ref.slice(7))?.liveIn !== "nexbot", 8000);
+    expect(await ask(started.terminal.env, "permission", BASH).reply).toMatchObject({ decision: "pass" });
+    expect(requests(t)).toHaveLength(0);
+  });
+
+  it("resumes with the plugin and the token of that session, and keeps Codex free of both", async () => {
+    claudeTranscript(CID(1), "resume me");
+    codexRollout(XID(1), "resume codex");
+    const t = hooked();
+    await t.start();
+    await t.call("continue", { ref: `claude:${CID(1)}` });
+    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--plugin-dir", PLUGIN]);
+    expect(hc.last().env.NEXBOT_HOOK_TOKEN.endsWith(`.${CID(1)}`)).toBe(true);
+    await t.call("continue", { ref: `codex:${XID(1)}` });
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1)]);
+    expect(hc.last().env.NEXBOT_HOOK_PIPE).toBeUndefined();
+  });
+
+  it("starts without the plugin when it is missing, and the answer operation finds nothing", async () => {
+    const t = setup({ pluginDir: path.join(root, "no-plugin") });
+    const started = await startClaude(t);
+    expect(started.terminal.argv).not.toContain("--plugin-dir");
+    expect(started.terminal.env.NEXBOT_HOOK_PIPE).toBeUndefined();
+    expect(await t.call("answer", { id: "x", decision: "allow" })).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it("stops listening when the bridge detaches", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const conn = ask(started.terminal.env, "permission", BASH);
+    await until(() => requests(t).length === 1);
+    await t.bridge.detach();
+    expect(await conn.reply).toMatchObject({ decision: "pass" });
+    const after = ask(started.terminal.env, "permission", BASH);
+    expect(await after.reply).toBeNull();
+  });
+
+  it("reports the Stop hook as a turn end", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    expect(await ask(started.terminal.env, "stop", { hook_event_name: "Stop" }).reply).toMatchObject({ decision: "pass" });
+    expect(turns(t)).toMatchObject([{ ref: started.ref, turn: 1, reason: "end" }]);
+  });
+
+  it("falls back to the status change when no Stop hook came, once", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const id = started.ref.slice(7);
+    claudeLive(4242, id, "busy");
+    await t.bridge.refreshSessions();
+    expect(t.sessions().find((row) => row.nativeId === id)?.state).toBe("running");
+    claudeLive(4242, id, "idle");
+    await t.bridge.refreshSessions();
+    await until(() => turns(t).length === 1);
+    expect(turns(t)[0]).toMatchObject({ ref: started.ref, turn: 1, reason: "end" });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(turns(t)).toHaveLength(1);
+  });
+
+  it("does not report the same turn again when the Stop hook came first", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const id = started.ref.slice(7);
+    claudeLive(4242, id, "busy");
+    await t.bridge.refreshSessions();
+    await ask(started.terminal.env, "stop", { hook_event_name: "Stop" }).reply;
+    claudeLive(4242, id, "idle");
+    await t.bridge.refreshSessions();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(turns(t)).toHaveLength(1);
+  });
+
+  it("does not report a turn for a session that is busy again before the fallback fires", async () => {
+    const t = hooked({ turnFallbackMs: 200 });
+    const started = await startClaude(t);
+    const id = started.ref.slice(7);
+    claudeLive(4242, id, "busy");
+    await t.bridge.refreshSessions();
+    claudeLive(4242, id, "idle");
+    await t.bridge.refreshSessions();
+    claudeLive(4242, id, "busy");
+    await t.bridge.refreshSessions();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(turns(t)).toHaveLength(0);
+  });
+
+  it("reports Codex turn ends and aborts from the rollout of a session in a nex_bot terminal", async () => {
+    const file = codexRollout(XID(1), "codex turns");
+    const t = hooked();
+    await t.start();
+    await t.call("continue", { ref: `codex:${XID(1)}` });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const line = (type: string, at: number) => JSON.stringify({ timestamp: new Date(at).toISOString(), type: "event_msg", payload: { type, turn_id: `t-${at}` } }) + "\n";
+    const now = Date.now();
+    appendFileSync(file, line("task_started", now) + line("task_complete", now + 1000));
+    await until(() => turns(t).length === 1);
+    appendFileSync(file, line("task_started", now + 2000) + line("turn_aborted", now + 3000));
+    await until(() => turns(t).length === 2);
+    expect(turns(t)).toMatchObject([
+      { ref: `codex:${XID(1)}`, turn: 1, reason: "end", endedAt: now + 1000 },
+      { ref: `codex:${XID(1)}`, turn: 2, reason: "interrupted", endedAt: now + 3000 },
+    ]);
+  });
 });

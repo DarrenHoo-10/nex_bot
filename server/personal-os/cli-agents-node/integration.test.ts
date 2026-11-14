@@ -4,12 +4,12 @@
 // NEX_HC_REAL=1 is set, which runs the packaged binary in an isolated session
 // with scripts/testing/fake-tui.mjs as the program. No real claude or codex CLI
 // runs and no home directory is read.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPersonalApp } from "../index.ts";
@@ -139,6 +139,8 @@ async function stack(bridge: Record<string, unknown>, setup: (dirs: { claudeDir:
       hasWindowsTerminal: false,
       rowWaitMs: 4000,
       coalesceMs: 5,
+      // the Claude plugin is off unless a test turns it on
+      pluginDir: null,
       ...bridge,
     },
   });
@@ -224,6 +226,55 @@ describe("Agent mode through Core, a real node and a fake herdr-core", () => {
     expect(hc.closed).toBe(true);
     expect(hc.terminals.get(address)!.state).toBe("live");
     await browser.find("term.closed", (m) => m.sid === opened.sid);
+  }, 60_000);
+
+  it("turns a Claude permission prompt into a Core card and returns the owner's answer to the real hook script", async () => {
+    const hc = new FakeHc();
+    let s: Stack;
+    hc.onRun = (terminal) => {
+      const index = terminal.argv.indexOf("--session-id");
+      if (index >= 0) claudeTranscript(s.claudeDir, terminal.argv[index + 1], "new session", terminal.cwd);
+    };
+    s = await stack({
+      hc,
+      binary: path.resolve("C:\\fake\\herdr-core.exe"),
+      resolveCli: async (engine: string) => `/fake/bin/${engine}`,
+      pluginDir: path.join(path.dirname(fileURLToPath(import.meta.url)), "plugin"),
+      hookNode: process.execPath,
+      hookSocketDir: tempDir("nex-hook-"),
+    });
+    const started = await s.call("cli-agents/start", { deviceId: s.deviceId, engine: "claude", cwd: s.workDir });
+    expect(started.status).toBe(200);
+    const terminal = hc.last();
+    expect(terminal.argv).toContain("--plugin-dir");
+
+    // What Claude Code does: run the hook with the permission request on stdin.
+    const hook = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), "plugin", "hooks", "hook.mjs"), "permission"], {
+      env: { PATH: process.env.PATH, NEXBOT_HOOK_PIPE: terminal.env.NEXBOT_HOOK_PIPE, NEXBOT_HOOK_TOKEN: terminal.env.NEXBOT_HOOK_TOKEN },
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    cleanups.push(() => void hook.kill());
+    let stdout = "";
+    hook.stdout.on("data", (chunk) => (stdout += chunk));
+    const exited = new Promise<number | null>((resolve) => hook.on("close", resolve));
+    hook.stdin.end(JSON.stringify({ hook_event_name: "PermissionRequest", session_id: "s", tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } }));
+
+    // The card reaches Core and shows in the list of open requests.
+    let request: Record<string, any> | undefined;
+    for (const end = Date.now() + 15_000; !request && Date.now() < end; await wait(50)) {
+      const listed = await s.call(`cli-agents/requests?key=${encodeURIComponent(started.data.key)}`);
+      request = listed.data.requests?.[0];
+    }
+    expect(request).toMatchObject({ tool: "Bash", summary: "npm test", kind: "permission" });
+
+    const answered = await s.call("cli-agents/answer", { id: request!.id, decision: "allow" });
+    expect(answered.status).toBe(200);
+    expect(await exited).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+
+    // A second answer for the same request is refused: the hook has gone.
+    const late = await s.call("cli-agents/answer", { id: request!.id, decision: "allow" });
+    expect(late.status).toBeGreaterThanOrEqual(400);
   }, 60_000);
 });
 
