@@ -150,7 +150,7 @@ export class FeishuModule {
     return {
       ...(this.job ? { job: { stage: this.job.stage, ...(this.job.url ? { url: this.job.url } : {}), ...(this.job.stage === "qr" && this.job.scanToken ? { scanPath: feishuScanPrefix + this.job.scanToken } : {}), ...(this.job.expiresAt ? { expiresAt: this.job.expiresAt } : {}), ...(this.job.error ? { error: this.job.error } : {}) } } : {}),
       ...(this.userAuth ? { userAuth: { stage: this.userAuth.stage, ...(this.userAuth.url ? { url: this.userAuth.url } : {}), ...(this.userAuth.expiresAt ? { expiresAt: this.userAuth.expiresAt } : {}), ...(this.userAuth.error ? { error: this.userAuth.error } : {}) } } : {}),
-      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id ORDER BY a.created_at")
+      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY a.created_at")
         .map((row) => ({
           id: String(row.id), appId: String(row.app_id), brand: String(row.brand), status: String(row.status), error: row.error === null ? null : String(row.error),
           ownerBound: !!row.owner_open_id, botId: String(row.bot_id), botName: String(this.store.get("SELECT name FROM bots WHERE id=?", String(row.bot_id))?.name ?? ""),
@@ -619,7 +619,7 @@ export class FeishuModule {
         onMessage: (event) => this.options.routeInbound ? Promise.resolve(this.options.routeInbound(credentials.appId, event, "message")).then(() => {}) : this.receiveMessage(credentials.appId, event),
         onCardAction: (event) => this.options.routeInbound ? Promise.resolve(this.options.routeInbound(credentials.appId, event, "card")) : this.handleCardAction(credentials.appId, event),
       });
-      if (this.closed) { await transport.close().catch(() => {}); return; }
+      if (this.closed || !this.store.get("SELECT 1 FROM personal_feishu_apps WHERE connector_id=?",connectorId)) { this.connecting.delete(connectorId); await transport.close().catch(() => {}); return; }
       this.transports.set(connectorId, transport);
       this.store.run("UPDATE personal_feishu_apps SET connection='connected',error=NULL WHERE connector_id=?", connectorId);
       this.store.audit("feishu.connect", "connector", connectorId, {});
@@ -631,6 +631,10 @@ export class FeishuModule {
     this.changed();
   }
 
+  detachDeleted(ids:string[]) {
+    for(const [app,consumer] of appConsumers)if(consumer===this && !this.store.get("SELECT 1 FROM personal_feishu_apps WHERE app_id=?",app)) appConsumers.delete(app);
+    for(const connector of ids)void this.disconnect(connector,"disabled");
+  }
   private async disconnect(connectorId: string, status: "idle" | "disabled") {
     const app = this.store.get("SELECT app_id FROM personal_feishu_apps WHERE connector_id=?",connectorId);
     if (app && appConsumers.get(String(app.app_id)) === this) appConsumers.delete(String(app.app_id));

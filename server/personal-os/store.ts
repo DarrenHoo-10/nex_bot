@@ -474,6 +474,47 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
     });
     if(!this.all('PRAGMA table_info(agent_topic_inputs)').some(column=>column.name==='model_selection_json'))this.db.exec('ALTER TABLE agent_topic_inputs ADD COLUMN model_selection_json TEXT');
     this.db.exec('CREATE TABLE IF NOT EXISTS task_model_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id),selection_json TEXT NOT NULL) STRICT;');
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=48")) this.transaction(() => {
+      const schema = `ALTER TABLE bots ADD COLUMN memory_epoch INTEGER NOT NULL DEFAULT 0;
+        CREATE TABLE bot_lifecycle_operations(id TEXT PRIMARY KEY,preview_id TEXT NOT NULL UNIQUE,bot_id TEXT NOT NULL REFERENCES bots(id),created_at INTEGER NOT NULL) STRICT;
+        CREATE TABLE bot_lifecycle_objects(operation_id TEXT NOT NULL REFERENCES bot_lifecycle_operations(id),object_key TEXT NOT NULL,PRIMARY KEY(operation_id,object_key)) STRICT;
+        CREATE TABLE bot_lifecycle_banks(operation_id TEXT NOT NULL REFERENCES bot_lifecycle_operations(id),provider_bank_id TEXT NOT NULL,PRIMARY KEY(operation_id,provider_bank_id)) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 48, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=49")) this.transaction(() => {
+      // Version 48 operations had already committed their local cleanup when they were recorded.
+      const schema = `ALTER TABLE bot_lifecycle_operations ADD COLUMN phase TEXT NOT NULL DEFAULT 'done';
+        ALTER TABLE bot_lifecycle_operations ADD COLUMN replacement_id TEXT REFERENCES bots(id);
+        ALTER TABLE bot_lifecycle_operations ADD COLUMN page_cursor TEXT NOT NULL DEFAULT '';
+        ALTER TABLE bot_lifecycle_operations ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX bot_lifecycle_pending ON bot_lifecycle_operations(retry_at,created_at) WHERE phase!='done';
+        CREATE UNIQUE INDEX bot_lifecycle_replacement ON bot_lifecycle_operations(replacement_id);
+        CREATE INDEX lifecycle_task_page ON tasks(bot_id,id);
+        CREATE INDEX lifecycle_attachment_page ON chat_attachments(bot_id);
+        CREATE INDEX lifecycle_routine_occurrences ON routine_occurrences(routine_id);
+        CREATE INDEX lifecycle_conversations ON conversations(bot_id);
+        CREATE INDEX lifecycle_memory_uses ON assistant_memory_uses(message_id);
+        CREATE INDEX lifecycle_runtime_sessions ON runtime_sessions(bot_id,id);
+        CREATE INDEX lifecycle_attachment_message ON chat_attachments(message_id);
+        CREATE INDEX lifecycle_job_message ON agent_job_reports(message_id);
+        CREATE INDEX lifecycle_doc_page ON memory_documents(bot_id,scope,id);
+        CREATE INDEX lifecycle_busy_tasks ON tasks(bot_id) WHERE ended_at IS NULL;
+        CREATE INDEX lifecycle_unknown_calls ON tool_calls(bot_id) WHERE status='unknown';`;
+      // A preview is short lived. Track changes to its scope so confirmation never walks the history.
+      // A separate revision table keeps ordinary message inserts from firing bot/profile sync triggers.
+      const revisions = `CREATE TABLE bot_lifecycle_revisions(bot_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0) STRICT;`;
+      const triggers = ["agent_messages","conversations","memory_documents","assistant_memories","agent_routines","todos","tasks","chat_attachments","memory_bank_bindings","assistant_topics"].flatMap(table =>
+        (["INSERT","DELETE","UPDATE"] as const).map(event=>{
+          const before = event==="INSERT" ? [] : ["OLD"], after = event==="DELETE" ? [] : ["NEW"];
+          const ids = [...before,...after].map(row=>row+".bot_id");
+          const sql = `INSERT INTO bot_lifecycle_revisions(bot_id,revision) SELECT id,1 FROM bots WHERE status='active' AND id IN (${ids.join(",")})
+            ON CONFLICT(bot_id) DO UPDATE SET revision=revision+1;`;
+          return `CREATE TRIGGER lifecycle_scope_${table}_${event} AFTER ${event} ON ${table} BEGIN ${sql} END;`;
+        })).join("\n");
+      this.db.exec(schema+revisions+triggers);
+      this.insert("schema_migrations", { version: 49, checksum: hash(schema+revisions+triggers), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -622,7 +663,7 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
       const order = Number(this.get("SELECT COALESCE(MAX(sort_order),0)+1 next FROM model_connections")?.next ?? 1);
       this.run("INSERT INTO model_connections(id,workspace_id,owner_user_id,display_name,provider_id,endpoint,credential_ref,default_model,status,created_at,enabled,is_default,sort_order) VALUES(?,?,?,?,?,?,?,?,'active',?,?,?,?) ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,provider_id=excluded.provider_id,endpoint=excluded.endpoint,credential_ref=excluded.credential_ref,default_model=excluded.default_model,status='active',enabled=excluded.enabled,is_default=excluded.is_default,version=version+1", connectionId, this.workspace, this.owner, value.name, value.provider, value.endpoint, credential, defaultModel, now(), value.enabled ? 1 : 0, fresh ? 1 : 0, order);
     }
-    if (fresh) this.run("UPDATE bots SET model_connection_id=? WHERE model_connection_id IS NULL", connectionId);
+    if (fresh) this.run("UPDATE bots SET model_connection_id=? WHERE model_connection_id IS NULL AND status='active'", connectionId);
     return connectionId;
   }
   /** Makes a provider the default: new assistants and the legacy single-connection API use it. */
@@ -806,10 +847,10 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
   accept(conversationId: string, content: string, clientId: string, sessionId = this.session, modelUse?:{connectionId?:string;model?:string}) {
     content = text(content); clientId = text(clientId, 200);
     const requestHash = hash(content);
+    const conv = this.get("SELECT * FROM conversations WHERE id=? AND status='open' AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", conversationId);
+    if (!conv) throw new Error("对话不存在");
     const old = this.get("SELECT * FROM conversation_inputs WHERE conversation_id=? AND client_message_id=?", conversationId, clientId);
     if (old) { if (old.request_hash !== requestHash) throw new Error("消息标识已用于不同内容"); return String(old.task_id); }
-    const conv = this.get("SELECT * FROM conversations WHERE id=? AND status='open'", conversationId);
-    if (!conv) throw new Error("对话不存在");
     this.modelConfig(String(conv.bot_id),modelUse);
     return this.transaction(() => {
       let task = this.get("SELECT * FROM tasks WHERE conversation_id=? AND ended_at IS NULL", conversationId);
@@ -851,12 +892,12 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
       modelVisibility: this.modelVisibility(),
       imageModelSelection: this.imageModelSelection(),
       bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"),
-      conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"),
-      approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"),
-      delegations: this.all("SELECT * FROM a2a_messages ORDER BY created_at DESC LIMIT 100"),
-      memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,d.updated_at,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' ORDER BY d.updated_at DESC"),
+      conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' AND c.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY c.created_at DESC"),
+      approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' AND t.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY a.created_at"),
+      delegations: this.all("SELECT * FROM a2a_messages WHERE sender_bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND receiver_bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 100"),
+      memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,d.updated_at,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' AND (d.scope='workspace' OR d.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')) ORDER BY d.updated_at DESC"),
       devices: this.all("SELECT id,name,status,capabilities_json FROM devices"),
-      tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at,(SELECT origin FROM agent_task_links WHERE task_id=tasks.id) origin,(SELECT tool_name FROM tool_calls WHERE task_id=tasks.id AND status IN ('proposed','awaiting_approval','ready','executing','unknown') ORDER BY created_at DESC LIMIT 1) active_tool FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200"),
+      tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at,(SELECT origin FROM agent_task_links WHERE task_id=tasks.id) origin,(SELECT tool_name FROM tool_calls WHERE task_id=tasks.id AND status IN ('proposed','awaiting_approval','ready','executing','unknown') ORDER BY created_at DESC LIMIT 1) active_tool FROM tasks WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200"),
       usage: this.all("SELECT r.bot_id,COUNT(m.id) calls,COALESCE(SUM(m.input_tokens),0) input_tokens,COALESCE(SUM(m.output_tokens),0) output_tokens FROM model_invocations m JOIN task_runs r ON r.id=m.run_id WHERE m.status='succeeded' GROUP BY r.bot_id"),
     };
   }

@@ -64,14 +64,15 @@ export class MemoryLedger {
     const match = /^a2a-(?:received|returned|replied):(.+)$/.exec(String(message.source_key));
     this.capture(ensureMemoryBank(this.store, String(message.bot_id)), "message", String(message.id), 1, String(message.content), message.role === "user" ? "user_stated" : message.role === "peer" ? "peer_reported" : "agent_inferred", match ? `a2a:${match[1]}` : String(message.source_key), Number(message.created_at), message.task_id);
   }
-  invalidate(bankId: string) {
+  invalidate(bankId: string, onlyBot?: string) {
     // Fence reads first. A late reply or deferred job on the retired bank can
     // never become visible again. Rebuild uses only currently valid sources.
     const bank = this.store.get("SELECT * FROM memory_bank_bindings WHERE id=?", bankId)!;
     this.store.run("INSERT OR IGNORE INTO memory_bank_retirements VALUES(?,?, 'queued',?)", bank.provider_bank_id, bankId, now());
     const physical = id();
     this.store.run("UPDATE memory_bank_bindings SET provider_bank_id=?,visibility_generation=visibility_generation+1,state='quarantined' WHERE id=?", physical, bankId);
-    this.store.run("DELETE FROM memory_syntheses");
+    if(onlyBot)this.store.run("DELETE FROM memory_syntheses WHERE bot_id=?",onlyBot);
+    else this.store.run("DELETE FROM memory_syntheses");
     this.store.run("DELETE FROM memory_transfer_receipts WHERE transfer_id IN (SELECT id FROM memory_transfers WHERE bank_id=?)", bankId);
     for (const transfer of this.store.all("SELECT * FROM memory_transfers WHERE bank_id=?", bankId)) {
       const source = this.store.get("SELECT * FROM memory_source_registry WHERE id=?", transfer.source_id);
@@ -118,6 +119,7 @@ export class MemoryLedger {
         if (!state && transfer.status !== "queued") { this.store.run("UPDATE memory_transfers SET status='unknown',error_code='operation_missing',next_attempt_at=? WHERE id=?", now() + 60_000, transfer.id); continue; }
         // Intent/UUID is committed before sending. An ambiguous submission only
         // retries that same native id; never starts another billable extraction.
+        if (bank.bot_id && this.store.get("SELECT status FROM bots WHERE id=?",bank.bot_id)?.status !== "active") continue;
         if (!state) {
           this.store.run("UPDATE memory_transfers SET status='running',attempts=attempts+1 WHERE id=?", transfer.id);
           try { await client.retain(String(bank.provider_bank_id), String(transfer.provider_operation_id), payload); state = "pending"; }

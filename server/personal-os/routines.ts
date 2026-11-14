@@ -21,12 +21,12 @@ export class RoutineModule {
   constructor(readonly store: CoreStore, readonly agents: AgentModule) {}
   start() { this.timer = setInterval(() => this.tick(), 5000); this.timer.unref(); this.tick(); }
   close() { clearInterval(this.timer); }
-  list() { return this.store.all("SELECT * FROM agent_routines WHERE deleted_at IS NULL ORDER BY created_at DESC"); }
+  list() { return this.store.all("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND deleted_at IS NULL ORDER BY created_at DESC"); }
   occurrences() {
-    return this.store.all("SELECT o.*,r.bot_id,t.status task_status FROM routine_occurrences o JOIN agent_routines r ON r.id=o.routine_id LEFT JOIN tasks t ON t.id=o.task_id ORDER BY o.created_at DESC,o.rowid DESC LIMIT 100");
+    return this.store.all("SELECT o.*,r.bot_id,t.status task_status FROM routine_occurrences o JOIN agent_routines r ON r.id=o.routine_id LEFT JOIN tasks t ON t.id=o.task_id WHERE r.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY o.created_at DESC,o.rowid DESC LIMIT 100");
   }
   occurrence(occurrenceId: string) {
-    const occurrence = this.store.get("SELECT o.*,r.bot_id,t.status task_status FROM routine_occurrences o JOIN agent_routines r ON r.id=o.routine_id LEFT JOIN tasks t ON t.id=o.task_id WHERE o.id=?", occurrenceId);
+    const occurrence = this.store.get("SELECT o.*,r.bot_id,t.status task_status FROM routine_occurrences o JOIN agent_routines r ON r.id=o.routine_id LEFT JOIN tasks t ON t.id=o.task_id WHERE o.id=? AND r.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", occurrenceId);
     if (!occurrence || (occurrence.task_id && this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", occurrence.task_id))) throw new Error("执行记录不存在或已遗忘");
     const task = occurrence.task_id ? this.store.get("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at FROM tasks WHERE id=?", occurrence.task_id) ?? null : null;
     const messages = task ? this.store.all("SELECT id,role,content,created_at FROM transcript WHERE task_id=? ORDER BY created_at,rowid", task.id) : [];
@@ -42,7 +42,7 @@ export class RoutineModule {
         if (receipt.argument_hash !== call.argument_hash) throw new Error("例行任务调用身份冲突");
         if (call.tool_name === "routine.list") return { routines: this.list().filter((r) => r.bot_id === botId) };
         const saved = JSON.parse(String(receipt.result_json));
-        if (saved.routine && this.store.get("SELECT id FROM agent_routines WHERE id=? AND deleted_at IS NOT NULL", saved.routine.id)) throw new Error("例行任务已删除");
+        if (saved.routine && this.store.get("SELECT id FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=? AND deleted_at IS NOT NULL", saved.routine.id)) throw new Error("例行任务已删除");
         return saved;
       }
       let value: unknown;
@@ -54,16 +54,16 @@ export class RoutineModule {
           runAt = now() + Number(args.delaySeconds) * 1000;
         }
         const configured = this.save({ ...args, botId, id: args.routineId ?? `tool:${call.id}`, version: args.expectedVersion, runAt });
-        value = { routine: this.store.get("SELECT * FROM agent_routines WHERE id=?", configured.id), scheduled: true };
+        value = { routine: this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", configured.id), scheduled: true };
       } else {
         const routineId = text(args.routineId, 100);
-        if (!this.store.get("SELECT id FROM agent_routines WHERE id=? AND bot_id=?", routineId, botId)) throw new Error("例行任务不属于当前 Agent");
+        if (!this.store.get("SELECT id FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=? AND bot_id=?", routineId, botId)) throw new Error("例行任务不属于当前 Agent");
         if (call.tool_name === "routine.toggle") {
           if (typeof args.enabled !== "boolean") throw new Error("启用状态无效");
           this.toggle(routineId, Number(args.expectedVersion), args.enabled);
         } else if (call.tool_name === "routine.run") this.runNow(routineId, String(call.id));
         else throw new Error("未知的例行任务能力");
-        value = { routine: this.store.get("SELECT * FROM agent_routines WHERE id=?", routineId) };
+        value = { routine: this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", routineId) };
       }
       const receiptValue = value as { routine?: Row };
       this.store.insert("routine_tool_receipts", { call_id: call.id, argument_hash: call.argument_hash, result_json: JSON.stringify(value), created_at: now() });
@@ -76,7 +76,7 @@ export class RoutineModule {
     const botId = text(data.botId, 100), name = text(data.name, 100), prompt = text(data.prompt, 16_000);
     this.agents.ensure(botId);
     const routineId = typeof data.id === "string" ? text(data.id, 100) : id();
-    const old = this.store.get("SELECT * FROM agent_routines WHERE id=?", routineId);
+    const old = this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", routineId);
     if (old && (old.bot_id !== botId || old.version !== Number(data.version))) throw new Error("例行任务已修改，请刷新");
     if (old && old.deleted_at !== null) throw new Error("例行任务已删除");
     const kind = text(data.scheduleKind, 20), zone = text(data.timeZone ?? old?.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone, 100);
@@ -104,7 +104,7 @@ export class RoutineModule {
   }
   toggle(routineId: string, version: number, enabled: boolean) {
     this.store.transaction(() => {
-      const row = this.store.get("SELECT * FROM agent_routines WHERE id=? AND version=?", routineId, version);
+      const row = this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=? AND version=?", routineId, version);
       if (!row) throw new Error("例行任务已修改，请刷新");
       if (row.deleted_at !== null) throw new Error("例行任务已删除");
       let due = row.next_due_at;
@@ -119,7 +119,7 @@ export class RoutineModule {
   }
   remove(routineId: string, version: number) {
     this.store.transaction(() => {
-      const row = this.store.get("SELECT * FROM agent_routines WHERE id=? AND version=?", routineId, version);
+      const row = this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=? AND version=?", routineId, version);
       if (!row) throw new Error("例行任务已修改，请刷新");
       if (row.deleted_at !== null) throw new Error("例行任务已删除");
       const at = now();
@@ -130,7 +130,7 @@ export class RoutineModule {
     this.agents.runtime.changed();
   }
   runNow(routineId: string, clientId: string) {
-    const row = this.store.get("SELECT * FROM agent_routines WHERE id=?", routineId);
+    const row = this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", routineId);
     if (!row) throw new Error("例行任务不存在");
     if (row.deleted_at !== null) throw new Error("例行任务已删除");
     if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active'", row.bot_id)) throw new Error("助手已归档");
@@ -151,7 +151,7 @@ export class RoutineModule {
   tick(at = now()) {
     if (this.agents.runtime.closing) return;
     this.store.transaction(() => {
-      for (const routine of this.store.all("SELECT * FROM agent_routines WHERE deleted_at IS NULL AND enabled=1 AND next_due_at<=?", at)) {
+      for (const routine of this.store.all("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND deleted_at IS NULL AND enabled=1 AND next_due_at<=?", at)) {
         let due = Number(routine.next_due_at);
         // Collapse downtime to the latest occurrence, never replay every missed period.
         if (routine.schedule_kind === "interval") due += Math.floor((at - due) / Number(routine.interval_ms)) * Number(routine.interval_ms);

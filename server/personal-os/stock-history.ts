@@ -40,6 +40,7 @@ export class StockHistory {
         store.db.exec(`CREATE TABLE IF NOT EXISTS stock_history_cursors(scope_id TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,has_more INTEGER NOT NULL DEFAULT 0,tombstones INTEGER NOT NULL DEFAULT 0,last_error TEXT,updated_at INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS stock_history_aliases(scope_id TEXT NOT NULL,session_id TEXT NOT NULL,bot_id TEXT NOT NULL REFERENCES bots(id),conversation_id TEXT REFERENCES conversations(id),deleted_at INTEGER,PRIMARY KEY(scope_id,session_id)) STRICT;
 CREATE TABLE IF NOT EXISTS stock_history_messages(scope_id TEXT NOT NULL,external_id TEXT NOT NULL,session_id TEXT NOT NULL,message_id TEXT REFERENCES agent_messages(id),source_hash TEXT NOT NULL,source_cursor INTEGER NOT NULL,deleted_at INTEGER,PRIMARY KEY(scope_id,external_id)) STRICT;
+CREATE INDEX IF NOT EXISTS stock_history_message_id ON stock_history_messages(message_id);
 CREATE TABLE IF NOT EXISTS stock_history_compactions(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),entry_id TEXT NOT NULL,summary TEXT NOT NULL,covered_count INTEGER NOT NULL,source_hash TEXT NOT NULL,created_at INTEGER NOT NULL) STRICT;`);
         if (!store.all('PRAGMA table_info(stock_history_cursors)').some(column => column.name === 'cursor_version')) {
             store.db.exec('ALTER TABLE stock_history_cursors ADD COLUMN cursor_version INTEGER NOT NULL DEFAULT 1');

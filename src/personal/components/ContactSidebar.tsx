@@ -1,3 +1,4 @@
+import { AssistantActions } from "./AssistantActions";
 import { useEffect, useId, useRef, useState } from "react";
 import { ListTodo, ChevronUp, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, X } from "lucide-react";
 import { BrandMark } from "./BrandMark";
@@ -9,6 +10,7 @@ import { messagePreview } from "../message-media";
 import { ConversationSearch, type ConversationMatch } from "./ConversationSearch";
 
 interface Props {
+  onAction:(id:string,action:"delete"|"reset_memory")=>void;
   state: State; selectedId: string; page: string; search: string; pinned: string[];
   dark: boolean; connected: boolean; userName: string; open: boolean; collapsed: boolean;
   onSearch(value: string): void; onSelect(id: string): void; onPage(page: string): void;
@@ -54,9 +56,9 @@ export function ContactSidebar(props: Props) {
           const job = chat ? undefined : state.jobs?.find((item) => item.botId === bot.id && busyJob(item));
           const task = chat ?? (job ? { id: job.taskId ?? job.id, bot_id: bot.id, status: job.stage === "approval" ? "awaiting_approval" : job.stage } : undefined);
           const phrase = job ? `后台任务：${job.title}` : taskPhrase(task);
-          return <button className={`contact-item ${selectedId === bot.id && page === "agent" ? "is-selected" : ""}`} key={str(bot.id)} data-agent={bot.id} data-unread={Number(bot.unread_count) > 0 || undefined} data-working={!!task || undefined} title={collapsed ? str(bot.name) : undefined} aria-label={collapsed ? str(bot.name) : undefined} aria-current={selectedId === bot.id && page === "agent" ? "page" : undefined} onClick={() => props.onSelect(str(bot.id))}>
-            <Avatar bot={bot} allBots={state.bots} size={40} animate={!!task} state={companionState(task, state.approvals.some((a) => a.bot_id === bot.id), props.connected)}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong><time>{time(bot.last_message_at)}</time></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? phrase : messagePreview(str(bot.last_message)) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}</span></span>
-          </button>;
+          return <div className="assistant-contact-row" key={str(bot.id)}><button className={`contact-item ${selectedId === bot.id && page === "agent" ? "is-selected" : ""}`} key={str(bot.id)} data-agent={bot.id} data-unread={Number(bot.unread_count) > 0 || undefined} data-working={!!task || undefined} title={collapsed ? str(bot.name) : undefined} aria-label={collapsed ? str(bot.name) : undefined} aria-current={selectedId === bot.id && page === "agent" ? "page" : undefined} onClick={() => props.onSelect(str(bot.id))}>
+            <Avatar bot={bot} allBots={state.bots} size={40} animate={!!task} state={companionState(task, state.approvals.some((a) => a.bot_id === bot.id), props.connected)}/><span className="contact-item-copy"><span className="contact-item-heading"><strong>{bot.name}</strong></span><span className="contact-item-preview"><span className={task ? "is-working" : ""}>{task ? phrase : messagePreview(str(bot.last_message)) || str(bot.instructions) || "开始一段对话"}</span>{Number(bot.unread_count) > 0 && <b className="contact-unread">{Number(bot.unread_count) > 99 ? "99+" : bot.unread_count}</b>}<time>{time(bot.last_message_at)}</time></span></span>
+          </button>{!collapsed && bot.memory_epoch!=null && <AssistantActions botId={str(bot.id)} name={str(bot.name)} start={props.onAction}/>}</div>;
         })}</section> : null)}
         {!contacts.length && <div className="sidebar-empty">你的 Agent 会出现在这里{<button className="text-button" onClick={props.onCreate}>创建第一个 Agent</button>}</div>}</> }
       </div>

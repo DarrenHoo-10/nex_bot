@@ -6,7 +6,7 @@ import type { Appearance } from "./avatars/appearance";
 
 const repo = "https://github.com/DarrenHoo-10/nex_bot";
 export const registerUrl = "https://user.nexorai.com.cn/register/nexbot";
-const links = { releases: `${repo}/releases/tag/nexbot-v0.9.33-preview.1` };
+const links = { releases: `${repo}/releases/tag/nexbot-v0.9.34-preview.1` };
 
 interface ClientDownload { url: string; version: string; publishedAt: string; tag?: string }
 interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload; mac?: ClientDownload; ios?: ClientDownload }

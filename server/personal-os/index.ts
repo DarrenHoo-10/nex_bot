@@ -1,3 +1,4 @@
+import { AssistantLifecycle } from "./assistant-lifecycle.ts";
 import { Readable } from "node:stream";
 import { HTML_PREVIEW_CSP, htmlPreviewShell } from '../../shared/html-preview-shell.mjs';
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -105,6 +106,7 @@ export async function createPersonalApp(options: AppOptions) {
   const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
 
   const agents = new AgentModule(store, runtime);
+  const lifecycle = new AssistantLifecycle(store,runtime,ids=>feishu?.detachDeleted(ids));
   const stockHistory=new StockHistory(store,agents,runtime,finance);
   finance.onHistorySession=(sessionId)=>stockHistory.schedule(sessionId);
   runtime.prepareConversation=(conversationId)=>stockHistory.prepare(conversationId);
@@ -177,7 +179,7 @@ export async function createPersonalApp(options: AppOptions) {
       routines: routines.list(),
       occurrences: routines.occurrences(),
       jobs: jobs.list(),
-      ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100") }),
+      ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 100") }),
       onlineDevices: [...gateway.sockets.keys()],
       node: { ...node.publicState(), hosted: options.hostDevice === false },
       dataDir: store.dir,
@@ -199,7 +201,9 @@ export async function createPersonalApp(options: AppOptions) {
   }
   let checkingSessions = false;
   let heartbeatJob: Promise<void> | undefined;
+  void lifecycle.sweep();
   const heartbeat = setInterval(() => {
+    void lifecycle.sweep();
     changed(); if (!identity || checkingSessions || closing) return;
     checkingSessions = true;
     heartbeatJob = (async () => {
@@ -347,6 +351,22 @@ export async function createPersonalApp(options: AppOptions) {
           route === "POST /api/bots/model" ? (await body(request)).id === botId : scopedFinance.includes(route);
         if (!allowed) throw new IdentityError(403, "此委托只可访问本人的金融助手");
       }
+      const targetBot = url.searchParams.get("botId") ?? url.searchParams.get("bot");
+      if(targetBot && store.get("SELECT 1 FROM bots WHERE id=? AND status='deleted'",targetBot)) throw new IdentityError(404,"助手不存在");
+      if (url.pathname.startsWith("/api/bots/lifecycle/")) {
+        if (session.user_id !== store.owner) throw new IdentityError(403,"无权管理助手");
+        const operations = "/api/bots/lifecycle/operations/";
+        if (request.method === "GET" && url.pathname.startsWith(operations)) {
+          json(response,200,lifecycle.status(text(url.pathname.slice(operations.length),100))); return;
+        }
+        if (request.method === "POST") {
+          const input=await body(request);
+          if (!(await authenticate(token))) throw new IdentityError(401,"登录已失效");
+          if(url.pathname==="/api/bots/lifecycle/preview") { json(response,200,lifecycle.preview(input));return; }
+          if(url.pathname==="/api/bots/lifecycle/execute") { json(response,202,lifecycle.execute(input));return; }
+        }
+        json(response,404,{error:"Not found"});return;
+      }
       if (url.pathname === "/api/finance/models" && request.method === "GET") {
         const {botId} = agents.finance();
         const profile = store.get("SELECT version FROM bots WHERE id=?", botId);
@@ -371,6 +391,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
         const { row, bytes } = await files.file(text(url.pathname.slice("/api/attachments/".length), 100));
         if (!await authenticate(token)) { json(response, 401, { error: 'Unauthorized' }); return; }
+        files.authorize(String(row.id));
         const preview = url.searchParams.get('preview') === '1' && ['image/png', 'image/jpeg', 'image/webp'].includes(String(row.mime));
         response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
       }
@@ -446,12 +467,13 @@ export async function createPersonalApp(options: AppOptions) {
       }
       if (url.pathname === "/api/messages" && request.method === "GET") {
         const conv = text(url.searchParams.get("conversation"), 100);
+        if (!store.get("SELECT 1 FROM conversations WHERE id=? AND status!='deleted' AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')",conv)) throw new IdentityError(404,"会话不存在");
         json(response, 200, { messages: store.all("SELECT * FROM transcript WHERE conversation_id=? ORDER BY created_at,rowid", conv), streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT conversation_id FROM tasks WHERE id=?", w.taskId)?.conversation_id === conv).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
       }
       if (url.pathname === "/api/preview" && request.method === "GET") {
         if (url.searchParams.has("callId")) {
           const callId = text(url.searchParams.get("callId"), 100);
-          const call = store.get("SELECT id,task_id,bot_id,tool_name,target_kind,target_id,arguments_json,result_json,status,created_at FROM tool_calls WHERE id=?", callId);
+          const call = store.get("SELECT id,task_id,bot_id,tool_name,target_kind,target_id,arguments_json,result_json,status,created_at FROM tool_calls WHERE id=? AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", callId);
           if (!call || store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", call.task_id)) throw new Error("操作记录不存在或已遗忘");
           let resultPreview = "";
           if (call.result_json) {
@@ -473,7 +495,7 @@ export async function createPersonalApp(options: AppOptions) {
             json(response, 200, { kind: "file", path: targetPath, title: path.basename(targetPath), exists: true, size: stat.size, updatedAt: stat.mtimeMs, content }); return;
           }
         }
-        for (const call of store.all("SELECT task_id,arguments_json,result_json,created_at FROM tool_calls WHERE tool_name='device.read' AND status='succeeded' ORDER BY created_at DESC LIMIT 30")) {
+        for (const call of store.all("SELECT task_id,arguments_json,result_json,created_at FROM tool_calls WHERE tool_name='device.read' AND status='succeeded' AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 30")) {
           if (store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", call.task_id)) continue;
           try {
             const args = JSON.parse(String(call.arguments_json)) as { path?: string };
@@ -489,6 +511,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (!mutating) { json(response, 404, { error: "Not found" }); return; }
       const data = await body(request);
       if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+      if(typeof data.botId==="string" && store.get("SELECT 1 FROM bots WHERE id=? AND status='deleted'",data.botId)) throw new IdentityError(404,"助手不存在");
       if (url.pathname === "/api/clients/invite") { if (identity) throw new IdentityError(410, "请在其他设备使用同一账号登录"); json(response, 200, clients.invite(data.name)); changed(); return; }
       if (url.pathname === "/api/clients/revoke") { if (identity) await identity.revoke(text(data.sessionId, 100)); else clients.revoke(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/plugins/memory" || url.pathname === "/api/plugins/memory/test") {
@@ -722,7 +745,7 @@ export async function createPersonalApp(options: AppOptions) {
   if(!options.accountWorkspaces) feishu.start();
   return { server, store, runtime, agents, routines, jobs, todos, gateway, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
-    closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob;
+    closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob; await lifecycle.close();
     await identity?.close();
     await heartbeatJob;
     routines.close();

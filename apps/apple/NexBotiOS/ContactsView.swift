@@ -113,6 +113,9 @@ struct ContactsView: View {
                 ContactRow(bot: bot, workspace: workspace)
             }
             .buttonStyle(.plain)
+            .overlay(alignment: .topTrailing) {
+                if bot.row.int("memory_epoch") != nil { AssistantActionsMenu(workspace: workspace, bot: bot).padding(.trailing, 6) }
+            }
             .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12)).plainRow()
             .swipeActions(edge: .leading) {
                 pinButton(bot).tint(Theme.brand)
@@ -225,13 +228,14 @@ struct ContactRow: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(bot.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Spacer()
-                    if let date = bot.lastMessageAt {
-                        Text(TimeFormat.formatShortTime(date)).font(.caption2).foregroundStyle(Theme.muted)
-                    }
+                    if bot.row.int("memory_epoch") != nil { Spacer().frame(width: 28) }
                 }
                 HStack(alignment: .center) {
                     Text(preview).font(.footnote).foregroundStyle(phrase.isEmpty ? Theme.muted : Theme.identityAccent).lineLimit(1)
                     Spacer(minLength: 4)
+                    if let date = bot.lastMessageAt {
+                        Text(TimeFormat.formatShortTime(date)).font(.caption2).foregroundStyle(Theme.muted).fixedSize()
+                    }
                     if bot.unreadCount > 0 {
                         Text(bot.unreadCount > 99 ? "99+" : "\(bot.unreadCount)")
                             .font(.caption2.weight(.bold)).foregroundStyle(Theme.primaryForeground)

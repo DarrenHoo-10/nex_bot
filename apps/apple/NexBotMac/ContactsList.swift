@@ -156,6 +156,9 @@ struct ContactsList: View {
                     }
                 }
                 .buttonStyle(.plain)
+            .overlay(alignment: .topTrailing) {
+                if !collapsed && bot.row.int("memory_epoch") != nil { AssistantActionsMenu(workspace: workspace, bot: bot).padding(.trailing, 6) }
+            }
                 .help(collapsed ? bot.name : "")
                 .accessibilityLabel(bot.name)
                 .accessibilityAddTraits(workspace.selectedBotID == bot.id ? .isSelected : [])
@@ -248,9 +251,7 @@ struct ContactRow: View {
                 HStack {
                     Text(bot.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                     Spacer(minLength: 4)
-                    if let at = bot.lastMessageAt {
-                        Text(TimeFormat.formatShortTime(at)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.muted)
-                    }
+                    if bot.row.int("memory_epoch") != nil { Spacer().frame(width: 28) }
                 }
                 HStack(spacing: 6) {
                     if !phrase.isEmpty {
@@ -259,6 +260,9 @@ struct ContactRow: View {
                         Text(Self.preview(bot)).font(.system(size: 11.5)).foregroundStyle(Theme.muted).lineLimit(1)
                     }
                     Spacer(minLength: 4)
+                    if let at = bot.lastMessageAt {
+                        Text(TimeFormat.formatShortTime(at)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.muted).fixedSize()
+                    }
                     if bot.unreadCount > 0 {
                         Text(bot.unreadCount > 99 ? "99+" : "\(bot.unreadCount)")
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.primaryForeground)

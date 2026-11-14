@@ -55,6 +55,7 @@ export class MemoryModule {
     return !!sourceRow(this.store, 'memory', botId, ident) || !!sourceRow(this.store, 'document', botId, ident);
   }
   write(botId: string, data: Record<string, unknown>, callId?: string) {
+    if (!this.store.get("SELECT id FROM bots WHERE id=? AND status!='deleted'",botId)) throw new Error("助手不存在");
     const scope = data.scope === "workspace" ? "workspace" : "bot";
     const documentId = typeof data.documentId === "string" ? text(data.documentId, 100) : id();
     const title = text(data.title, 200), content = text(data.content, 20_000);
