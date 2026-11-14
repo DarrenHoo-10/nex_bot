@@ -69,6 +69,8 @@ export interface State {
   memoryEngine?: { provider: string; release: string; status: string; service: string; pending: number; failed: number; quarantined: number; forgetting: number; revision: string; error: string | null };
   memoryPlugin?: MemoryPluginState;
   hostDeviceId?: string;
+  /** Agent mode summary; absent from a Core that predates it. */
+  cliAgents?: { waiting: number; running: number };
   node: { hosted?: boolean; status: string; origin: string; root: string; exec: boolean; computer?: boolean; computerSupported?: boolean; deviceId?: string; connected: boolean; unknownCalls: RecordRow[] };
   dataDir: string; address: string; lanEnabled: boolean;
 }

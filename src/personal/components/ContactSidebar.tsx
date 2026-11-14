@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ListTodo, ChevronUp, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, X } from "lucide-react";
+import { ListTodo, ChevronUp, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, SquareTerminal, Sun, X } from "lucide-react";
 import { BrandMark } from "./BrandMark";
 import { companionState } from "../avatars/appearance";
 import { AgentAvatar as Avatar } from "./AgentAvatar";
@@ -39,6 +39,7 @@ export function ContactSidebar(props: Props) {
     return () => document.removeEventListener("pointerdown", outside);
   }, [accountOpen]);
   const contacts = state.bots;
+  const waiting = state.cliAgents?.waiting ?? 0;
   const groups = [{ title: "置顶", items: contacts.filter((bot) => pinned.includes(str(bot.id))) }, { title: "我的 Agent", items: contacts.filter((bot) => !pinned.includes(str(bot.id))) }];
   return <>
     {props.open && <button className="sidebar-scrim" aria-label="关闭联系人列表" onClick={props.onClose}/>}
@@ -47,6 +48,7 @@ export function ContactSidebar(props: Props) {
       {collapsed ? <button type="button" className="sidebar-search dock-search" aria-label="搜索会话记录" title="搜索会话记录" onClick={() => { focusSearch.current = true; props.onToggle(); }}><Search size={16}/></button>
         : <label className="sidebar-search"><Search size={15}/><input ref={searchInput} aria-label="搜索会话记录" placeholder="搜索会话记录" maxLength={200} value={search} onChange={(event) => props.onSearch(event.target.value)}/>{search && <button className="icon-button" aria-label="清空搜索" onClick={() => props.onSearch("")}><X size={13}/></button>}</label>}
       <button type="button" className={`contact-item todo-entry ${page === "todo" ? "is-selected" : ""}`} aria-label="待办" aria-current={page === "todo" ? "page" : undefined} onClick={() => props.onPage("todo")}><ListTodo size={19}/>{!collapsed && <strong>待办</strong>}</button>
+      {!desktop && <button type="button" className={`contact-item todo-entry cli-entry ${page === "cli" ? "is-selected" : ""}`} data-unread={waiting > 0 || undefined} aria-label={waiting > 0 ? `Agent 会话，${waiting} 个等你处理` : "Agent 会话"} aria-current={page === "cli" ? "page" : undefined} onClick={() => props.onPage("cli")}><SquareTerminal size={19}/>{!collapsed && <strong>Agent 会话</strong>}{waiting > 0 && <span className="contact-unread" data-testid="cli-waiting">{waiting}</span>}</button>}
       {collapsed ? null : <div className="contact-list-label"><span>对话</span><span>{state.bots.length}</span></div>}<div className="contact-groups">
         {!collapsed && search.trim() ? <ConversationSearch key={JSON.stringify([search.trim(),state.sync.coreId,state.sync.bootId,state.sync.privacyEpoch])} query={search.trim()} sync={state.sync} onSelect={props.onSearchResult}/> : <>{groups.map((group) => group.items.length ? <section key={group.title}>{collapsed ? null : <div className={`sidebar-section-title ${group.title === "我的 Agent" ? "is-default-group" : ""}`}><span>{group.title}</span></div>}{group.items.map((bot) => {
           // Working: the main chat has an unfinished task, or a background job is running or queued.
