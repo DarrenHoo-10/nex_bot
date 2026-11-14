@@ -189,6 +189,19 @@ describe("resolveCli", () => {
     await expect(resolveCli("codex", { platform: "linux", env })).resolves.toBe(path.join(dir, "codex"));
   });
 
+  it.skipIf(onWindows)("finds a CLI in the home folders a Mac app's minimal PATH lacks, after the PATH entries", async () => {
+    const home = path.join(root, "home");
+    const listed = path.join(root, "listed");
+    const local = touch(path.join(home, ".local", "bin", "claude"), "#!/bin/sh\n");
+    const env = { PATH: `${listed}:/usr/bin`, HOME: home };
+    await expect(resolveCli("claude", { platform: "darwin", env })).resolves.toBe(local);
+    // A PATH hit still wins over the fallback folders.
+    const first = touch(path.join(listed, "claude"), "#!/bin/sh\n");
+    await expect(resolveCli("claude", { platform: "darwin", env, cache: false })).resolves.toBe(first);
+    // Other platforms never look there.
+    await expect(resolveCli("claude", { platform: "linux", env: { PATH: "/usr/bin", HOME: home }, cache: false })).resolves.toBeNull();
+  });
+
   it("caches per PATH until cleared", async () => {
     const dir = path.join(root, "bin");
     mkdirSync(dir);
@@ -263,7 +276,8 @@ describe("launchEnv", () => {
 describe("planLaunch", () => {
   it("combines validation, resolution, argv, labels and env", async () => {
     const dir = path.join(root, "bin");
-    const exe = touch(path.join(dir, onWindows ? "claude.exe" : "claude"));
+    // The plan is made for win32 (PATHEXT), so the stand-in is a .exe on every host.
+    const exe = touch(path.join(dir, "claude.exe"));
     const work = path.join(root, "work");
     mkdirSync(work);
     const plan = await planLaunch(

@@ -12,8 +12,9 @@
 // lifecycle, and `call()` refuses them by name.
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,9 +128,26 @@ export function locateHerdrCore(options: LocateOptions = {}): string | null {
   return null;
 }
 
-/** The environment herdr-core and its terminals run in. XDG_STATE_HOME and
- * XDG_CONFIG_HOME are left alone on purpose: programs in the terminal inherit
- * them (git and gh read XDG_CONFIG_HOME) and must see the user's own. */
+/** A Unix socket path (`sun_path`) holds 104 bytes on macOS; keep clear of it. */
+export const HC_SOCKET_MAX_BYTES = 100;
+
+/** Where herdr-core's client endpoint lives (plan section 2). Windows: a named
+ * pipe. Elsewhere: `<data dir>/hc/<hash8>.sock`, or `<tmpdir>/nexbot-hc-<hash8>.sock`
+ * when that path is too long for a Unix socket (the macOS data directory under
+ * "Application Support" usually is). `tmpdir` is the per-user `$TMPDIR`. */
+export function hcSocketPath(input: { hash: string; dataDir: string; platform?: NodeJS.Platform; tmpdir?: string }): string {
+  const platform = input.platform ?? process.platform;
+  if (platform === "win32") return `\\\\.\\pipe\\nexbot-hc-${input.hash}`;
+  const inData = path.posix.join(input.dataDir.replace(/\\/g, "/"), "hc", `${input.hash}.sock`);
+  if (Buffer.byteLength(inData) <= HC_SOCKET_MAX_BYTES) return inData;
+  return path.posix.join((input.tmpdir ?? os.tmpdir()).replace(/\\/g, "/"), `nexbot-hc-${input.hash}.sock`);
+}
+
+/** The environment herdr-core and its terminals run in. `base` is the user's
+ * own environment: on macOS the app starts the executor with a minimal one, so
+ * the host passes the login shell's (PATH, proxy and gateway variables) here.
+ * XDG_STATE_HOME and XDG_CONFIG_HOME are left alone on purpose: programs in the
+ * terminal inherit them (git and gh read XDG_CONFIG_HOME) and must see the user's own. */
 export function hcEnvironment(
   options: { session: string; socket: string },
   base: NodeJS.ProcessEnv = process.env,
@@ -551,6 +569,8 @@ export class HerdrCore extends EventEmitter<HcEvents> {
    * but must not end the terminals. Returns an error when it cannot launch. */
   private spawnCore(): HcError | null {
     try {
+      // A Unix socket needs its folder first; only this user may enter it.
+      if (process.platform !== "win32" && path.isAbsolute(this.options.socket)) mkdirSync(path.dirname(this.options.socket), { recursive: true, mode: 0o700 });
       const child = spawn(this.options.binary, this.options.startArgs, {
         env: this.options.env,
         detached: true,

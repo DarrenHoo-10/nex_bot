@@ -2,13 +2,15 @@
 //   node                    official Node binary (SHA256 verified), nothing else from the distribution
 //   executor-host.mjs       apps/apple/Executor host (stdin/stdout protocol)
 //   nex-client-device.mjs   copy of electron/nex-client-device.mjs (the shared lifecycle, not forked)
-//   client-executor/        output of scripts/build-client-executor.mjs
+//   client-executor/        output of scripts/build-client-executor.mjs, plus herdr-core/ (this CPU's pinned
+//                           build) and cli-agents-plugin/ (the Claude Code hook plugin) for Agent mode
 // Xcode's "Bundle device executor" phase copies and signs it. Usage: node scripts/build-mac-executor.mjs [--reuse-executor]
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareHerdrCore } from "./prepare-herdr-core.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apple = path.join(root, "apps/apple");
@@ -60,6 +62,20 @@ copyFileSync(path.join(cached, "node"), path.join(next, "node")); chmodSync(path
 copyFileSync(path.join(apple, "Executor/executor-host.mjs"), path.join(next, "executor-host.mjs"));
 copyFileSync(path.join(root, "electron/nex-client-device.mjs"), path.join(next, "nex-client-device.mjs"));
 cpSync(executorOut, path.join(next, "client-executor"), { recursive: true });
+// Agent mode: the hook plugin is found at client-executor/cli-agents-plugin and herdr-core at
+// client-executor/herdr-core, the same places the Windows client uses (locateHookPlugin, locateHerdrCore).
+// Only this build's CPU is staged; its pinned digests are verified. NEX_HERDR_CORE_ARCHIVE_DIR is an offline cache.
+const plugin = path.join(next, "client-executor/cli-agents-plugin");
+if (!existsSync(path.join(plugin, ".claude-plugin/plugin.json"))) {
+  rmSync(plugin, { recursive: true, force: true });
+  cpSync(path.join(root, "server/personal-os/cli-agents-node/plugin"), plugin, { recursive: true });
+}
+await prepareHerdrCore({ root, platform: "darwin", arch, current: true });
+const herdrCore = path.join(root, "dist-native/herdr-core", `darwin-${arch}`);
+if (!existsSync(path.join(herdrCore, "herdr-core"))) throw new Error(`herdr-core is not staged at ${herdrCore}`);
+rmSync(path.join(next, "client-executor/herdr-core"), { recursive: true, force: true });
+cpSync(herdrCore, path.join(next, "client-executor/herdr-core"), { recursive: true });
+chmodSync(path.join(next, "client-executor/herdr-core/herdr-core"), 0o755);
 // pdf.js is only imported from legacy/build/pdf.mjs (with its worker); drop the browser bundles, viewer, types and source maps.
 const pdf = path.join(next, "client-executor/node_modules/pdfjs-dist");
 for (const sub of ["build", "web", "types", "image_decoders", "legacy/web", "legacy/image_decoders"]) rmSync(path.join(pdf, sub), { recursive: true, force: true });

@@ -75,6 +75,15 @@ export function isCmdScript(file: string): boolean {
 
 const resolveCache = new Map<string, string | null>();
 
+/** Where macOS users commonly install `claude` and `codex` (Homebrew, npm, bun, volta, the native installer). */
+export function macFallbackDirectories(home: string): string[] {
+  return [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    ...(home && path.posix.isAbsolute(home) ? [".local/bin", ".bun/bin", ".npm-global/bin", ".volta/bin"].map((rest) => path.posix.join(home, rest)) : []),
+  ];
+}
+
 export function clearCliCache(): void {
   resolveCache.clear();
 }
@@ -99,7 +108,8 @@ export async function resolveCli(engine: CliEngine, options: PlatformOptions & {
   const env = options.env ?? process.env;
   const pathValue = envValue(env, "PATH", platform) ?? "";
   const pathExt = isWindows(platform) ? (envValue(env, "PATHEXT", platform) ?? ".COM;.EXE;.BAT;.CMD") : "";
-  const key = `${platform}\n${engine}\n${pathValue}\n${pathExt}`;
+  const home = platform === "darwin" ? (envValue(env, "HOME", platform) || os.homedir()) : "";
+  const key = `${platform}\n${engine}\n${pathValue}\n${pathExt}\n${home}`;
   const useCache = options.cache !== false;
   if (useCache && resolveCache.has(key)) return resolveCache.get(key) ?? null;
 
@@ -111,6 +121,11 @@ export async function resolveCli(engine: CliEngine, options: PlatformOptions & {
     .split(isWindows(platform) ? ";" : ":")
     .map((directory) => directory.trim().replace(/^"(.*)"$/, "$1"))
     .filter((directory) => directory && path.isAbsolute(directory));
+  // A Mac app does not start from a login shell, so PATH can lack the folders
+  // the CLIs install into. They are tried after the PATH entries, never before.
+  if (platform === "darwin") {
+    for (const directory of macFallbackDirectories(home)) if (!directories.includes(directory)) directories.push(directory);
+  }
 
   let found: string | null = null;
   search: for (const directory of directories) {

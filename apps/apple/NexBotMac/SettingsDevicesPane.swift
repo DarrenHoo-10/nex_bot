@@ -10,6 +10,7 @@ struct SettingsDevicesPane: View {
     @State private var localReconcile: UnknownCall?
     @State private var busy = false
     @State private var localPending = false
+    @State private var agentPending = false
     @State private var nodeError: String?
     @State private var listError = false
     @State private var actionError: String?
@@ -78,7 +79,39 @@ struct SettingsDevicesPane: View {
                 }
             }
             .padding(.vertical, 20)
+            if isCurrent && local.available && local.authorized && local.agentSessions.available { agentRow }
             Hairline()
+        }
+    }
+
+    /// This Mac's "Agent 会话" switch with the herdr-core / CLI status in one line.
+    private var agentRow: some View {
+        let agent = local.agentSessions
+        let status = agentStatus
+        return HStack(spacing: 10) {
+            Text("Agent 会话").font(.system(size: 12, weight: .medium))
+            Text(status.text).font(.system(size: 12)).foregroundStyle(status.failed ? Theme.danger : Theme.muted).lineLimit(1)
+            Spacer()
+            Toggle("", isOn: Binding(get: { agent.enabled }, set: { setAgentSessions($0) }))
+                .toggleStyle(.switch).labelsHidden().controlSize(.mini).disabled(agentPending)
+        }
+        .padding(.leading, 42).padding(.bottom, 18)
+    }
+
+    private var agentStatus: (text: String, failed: Bool) {
+        let agent = local.agentSessions
+        if !agent.enabled { return ("已关闭", false) }
+        if local.paused { return ("已暂停", false) }
+        switch agent.hc {
+        case "error": return ("不可用", true)
+        case "ready":
+            let found = agent.engines.map { engine in
+                let name = engine.engine == "claude" ? "Claude" : engine.engine == "codex" ? "Codex" : engine.engine
+                let number = engine.version.range(of: #"\d+(\.\d+)+"#, options: .regularExpression).map { String(engine.version[$0]) }
+                return [name, number].compactMap { $0 }.joined(separator: " ")
+            }
+            return (found.isEmpty ? "未找到 Claude 或 Codex" : found.joined(separator: " · "), false)
+        default: return ("正在启动", false)
         }
     }
 
@@ -149,6 +182,14 @@ struct SettingsDevicesPane: View {
         Task {
             defer { localPending = false }
             do { try await device.setPaused(!local.paused) } catch { actionError = mbFallbackMessage(error) }
+        }
+    }
+
+    private func setAgentSessions(_ enabled: Bool) {
+        agentPending = true; actionError = nil
+        Task {
+            defer { agentPending = false }
+            do { try await device.setAgentSessions(enabled: enabled) } catch { actionError = mbFallbackMessage(error) }
         }
     }
 

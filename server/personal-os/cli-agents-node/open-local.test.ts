@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -50,23 +50,80 @@ describe("planOpenLocal", () => {
     expect(() => planOpenLocal({ ...base, session: "x\r\ncalc" })).toThrow(OpenLocalError);
   });
 
-  it("is Windows only", () => {
+  it("is for Windows and macOS only", () => {
     expect(() => planOpenLocal({ ...base, platform: "linux" })).toThrowError(expect.objectContaining({ code: "invalid" }));
   });
 
   it("sanitises the file name", () => {
     expect(attachFileName("a:b")).toBe("attach-a_b.cmd");
+    expect(attachFileName("a:b", "darwin")).toBe("attach-a_b.command");
+  });
+});
+
+describe("planOpenLocal on macOS", () => {
+  const mac = {
+    address: "t-12",
+    binary: "/Applications/NexBot.app/Contents/Resources/Executor/client-executor/herdr-core/herdr-core",
+    session: "nexbot-1a2b3c4d",
+    socket: "/var/folders/ab/cd/T/nexbot-hc-1a2b3c4d.sock",
+    dir: "/Users/me/Library/Application Support/NexBot/attach",
+    platform: "darwin" as const,
+  };
+
+  it("writes an executable .command script that attaches to the same session and opens it in Terminal", () => {
+    const plan = planOpenLocal(mac);
+    expect(plan.file).toBe("/Users/me/Library/Application Support/NexBot/attach/attach-t-12.command");
+    expect(plan.content.split("\n")).toEqual([
+      "#!/bin/sh",
+      "export HC_SESSION='nexbot-1a2b3c4d'",
+      "export HC_SOCKET='/var/folders/ab/cd/T/nexbot-hc-1a2b3c4d.sock'",
+      "exec '/Applications/NexBot.app/Contents/Resources/Executor/client-executor/herdr-core/herdr-core' attach t-12",
+      "",
+    ]);
+    expect(plan.mode).toBe(0o700);
+    expect(plan.command).toBe("/usr/bin/open");
+    expect(plan.args).toEqual(["-a", "Terminal", plan.file]);
+  });
+
+  it("quotes single quotes and spaces so the shell reads them literally", () => {
+    const plan = planOpenLocal({ ...mac, binary: "/Users/o'brien/App Support/herdr-core" });
+    expect(plan.content).toContain(`exec '/Users/o'\\''brien/App Support/herdr-core' attach t-12`);
+  });
+
+  it("refuses addresses and values that could inject commands", () => {
+    for (const address of ["t-1; rm -rf ~", "../x", "", "$(id)", "t 1"]) {
+      expect(() => planOpenLocal({ ...mac, address })).toThrow(OpenLocalError);
+    }
+    expect(() => planOpenLocal({ ...mac, session: "x\ntouch /tmp/pwn" })).toThrow(/cannot be used/);
+    expect(() => planOpenLocal({ ...mac, socket: "/tmp/a\u0000b" })).toThrow(/cannot be used/);
+    expect(() => planOpenLocal({ ...mac, binary: "" })).toThrow(/cannot be used/);
   });
 });
 
 describe("openLocal", () => {
-  it("writes the file and hands the plan to the launcher", async () => {
+  it.skipIf(process.platform !== "win32")("writes the file and hands the plan to the launcher", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "open-local-"));
     try {
       const launched: OpenLocalPlan[] = [];
       const plan = await openLocal({ ...base, dir: dir.replace(/\//g, "\\"), hasWindowsTerminal: false }, async (p) => void launched.push(p));
       expect(launched).toEqual([plan]);
       expect(readFileSync(plan.file, "utf8")).toBe(plan.content);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("writes the macOS script owner-only and executable", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "open-local-mac-"));
+    try {
+      const launched: OpenLocalPlan[] = [];
+      const plan = await openLocal(
+        { address: "t-3", binary: "/bin/echo", session: "nexbot-1a2b3c4d", socket: path.join(dir, "s.sock"), dir, platform: "darwin" },
+        async (p) => void launched.push(p),
+      );
+      expect(launched).toEqual([plan]);
+      expect(readFileSync(plan.file, "utf8")).toBe(plan.content);
+      expect(statSync(plan.file).mode & 0o777).toBe(0o700);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

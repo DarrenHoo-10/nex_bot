@@ -18,9 +18,11 @@ import {
 } from "./hc-frames.ts";
 import {
   HC_REQUIRED_METHODS,
+  HC_SOCKET_MAX_BYTES,
   HcError,
   HerdrCore,
   hcEnvironment,
+  hcSocketPath,
   herdrCoreExecutableName,
   locateHerdrCore,
   type HcAttachStream,
@@ -350,6 +352,42 @@ describe("environment", () => {
       { XDG_STATE_HOME: "/x/state", XDG_CONFIG_HOME: "/x/config", HC_SESSION: "old", PATH: "p" },
     );
     expect(env).toMatchObject({ HC_SESSION: "s1", HC_SOCKET: "sock", XDG_STATE_HOME: "/x/state", XDG_CONFIG_HOME: "/x/config", PATH: "p" });
+  });
+
+  it("hands the injected base environment (the user's login shell variables) to the core and its terminals", () => {
+    const login = { PATH: "/opt/homebrew/bin:/usr/bin", HTTPS_PROXY: "http://127.0.0.1:7890", ANTHROPIC_BASE_URL: "https://gw.example" };
+    const env = hcEnvironment({ session: "s1", socket: "/tmp/a.sock" }, { ...login, HC_SESSION: "old" });
+    expect(env).toMatchObject({ ...login, HC_SESSION: "s1", HC_SOCKET: "/tmp/a.sock" });
+  });
+
+  it("starts the core with the injected environment", async () => {
+    await fake.stop();
+    const marker = path.join(root, "env.txt");
+    const script = path.join(root, "env.mjs");
+    writeFileSync(script, 'import { writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], process.env.NEX_LOGIN_MARK ?? "missing");\n');
+    const core = client({ startArgs: [script, marker], startTimeoutMs: 1500, env: { ...process.env, NEX_LOGIN_MARK: "from-login-shell" } });
+    await core.ensureStarted().catch(() => undefined);
+    await waitFor(() => existsSync(marker), 4000, "start command");
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync(marker, "utf8")).toBe("from-login-shell");
+  });
+});
+
+describe("socket path", () => {
+  const hash = "1a2b3c4d";
+  it("is a named pipe on Windows", () => {
+    expect(hcSocketPath({ hash, dataDir: "C:\\Users\\me\\AppData\\Roaming\\nexbot", platform: "win32" })).toBe("\\\\.\\pipe\\nexbot-hc-1a2b3c4d");
+  });
+
+  it("lives in the data directory on macOS when that fits a Unix socket", () => {
+    expect(hcSocketPath({ hash, dataDir: "/Users/me/nex", platform: "darwin", tmpdir: "/var/folders/x/T" })).toBe("/Users/me/nex/hc/1a2b3c4d.sock");
+  });
+
+  it("falls back to the per-user temp directory when the path is too long", () => {
+    const dataDir = "/Users/someone/Library/Application Support/com.nexorai.nexbot/executor/device/0123456789abcdef";
+    const socket = hcSocketPath({ hash, dataDir, platform: "darwin", tmpdir: "/var/folders/ab/cdefg_hijk/T" });
+    expect(socket).toBe("/var/folders/ab/cdefg_hijk/T/nexbot-hc-1a2b3c4d.sock");
+    expect(Buffer.byteLength(socket)).toBeLessThan(HC_SOCKET_MAX_BYTES);
   });
 });
 

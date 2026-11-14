@@ -20,6 +20,14 @@ STAMP="--timestamp=none"
 [ "$CONFIGURATION" = "Release" ] && [ "$IDENTITY" != "-" ] && STAMP="--timestamp"
 ENTITLEMENTS="$SRCROOT/Executor/node.entitlements"
 find "$DEST" -type f ! -name '*.mjs' ! -name '*.js' ! -name '*.json' ! -name '*.txt' ! -name '*.sql' | while IFS= read -r file; do
+  case "$file" in
+    # herdr-core is not node: it gets a plain hardened-runtime signature, without node's JIT/library entitlements.
+    "$DEST/client-executor/herdr-core/"*)
+      case "$(file -b "$file")" in
+        *Mach-O*) codesign --force --sign "$IDENTITY" --options runtime $STAMP "$file" ;;
+      esac
+      continue ;;
+  esac
   case "$(file -b "$file")" in
     *Mach-O*executable*) codesign --force --sign "$IDENTITY" --options runtime $STAMP --entitlements "$ENTITLEMENTS" "$file" ;;
     *Mach-O*) codesign --force --sign "$IDENTITY" --options runtime $STAMP "$file" ;;
