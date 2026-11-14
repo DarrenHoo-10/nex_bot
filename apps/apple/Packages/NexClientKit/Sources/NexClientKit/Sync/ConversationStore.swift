@@ -147,7 +147,7 @@ public final class ConversationStore {
         sendRevision += 1
         isSending = true; sendError = nil
         do {
-            try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID, attachments: ids, memoryEpoch: workspace.bots.first(where: { $0.id == botID })?.row.int("memory_epoch") ?? 0)
+            try await workspace.client.sendInput(bot: botID, text: text, clientID: clientID, attachments: ids)
             pending = nil
             attachments.removeAll { $0.attachment.map { ids.contains($0.id) } ?? false }
             if override == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
