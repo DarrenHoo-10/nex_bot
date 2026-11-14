@@ -5,6 +5,7 @@ import NexClientKit
 /// (`UIState.railOpen`, persisted under `nexbot.rail`).
 struct ContactsList: View {
     let workspace: WorkspaceStore
+    let agents: CliAgentsModel
     @Environment(UIState.self) private var ui
     @Environment(AppModel.self) private var model
     @Environment(ContactPreferences.self) private var preferences
@@ -30,6 +31,21 @@ struct ContactsList: View {
                 .padding(12).frame(maxWidth: .infinity)
                 .background(ui.todosVisible ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: 12))
             }.buttonStyle(.plain).accessibilityLabel("待办").disabled(workspace.state == nil)
+            Button { ui.agentsVisible = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "terminal").font(.system(size: 17))
+                    if !collapsed {
+                        Text("Agent 会话").font(.system(size: 13, weight: .medium)); Spacer()
+                        if agents.waitingCount > 0 {
+                            Text("\(agents.waitingCount)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                                .padding(.horizontal, 6).padding(.vertical, 1).background(Theme.approval, in: Capsule())
+                        }
+                    }
+                }
+                .foregroundStyle(ui.agentsVisible ? Theme.identityAccent : Theme.foreground)
+                .padding(12).frame(maxWidth: .infinity)
+                .background(ui.agentsVisible ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).accessibilityLabel("Agent 会话").disabled(workspace.state == nil)
             if !collapsed {
                 HStack {
                     Text("对话")
@@ -146,13 +162,13 @@ struct ContactsList: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2)
             }
             ForEach(bots) { bot in
-                Button { ui.todosVisible = false; workspace.showLatest(botID: bot.id); workspace.select(bot.id) } label: {
+                Button { ui.todosVisible = false; ui.agentsVisible = false; workspace.showLatest(botID: bot.id); workspace.select(bot.id) } label: {
                     if collapsed {
-                        DockRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id), selected: !ui.todosVisible && workspace.selectedBotID == bot.id)
+                        DockRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id), selected: !ui.todosVisible && !ui.agentsVisible && workspace.selectedBotID == bot.id)
                     } else {
                         ContactRow(bot: bot, appearance: workspace.appearance(bot), state: workspace.companionState(bot.id),
                                    phrase: workspace.state?.workingPhrase(botID: bot.id) ?? "",
-                                   selected: !ui.todosVisible && workspace.selectedBotID == bot.id)
+                                   selected: !ui.todosVisible && !ui.agentsVisible && workspace.selectedBotID == bot.id)
                     }
                 }
                 .buttonStyle(.plain)

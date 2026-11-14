@@ -9,15 +9,21 @@ struct MainView: View {
     @Environment(LocalDeviceController.self) private var device
     @Environment(\.colorScheme) private var scheme
     @AppStorage(AppearanceOverride.key) private var appearance = "system"
+    @State private var agents: CliAgentsModel
+
+    init(workspace: WorkspaceStore) {
+        self.workspace = workspace
+        _agents = State(initialValue: CliAgentsModel(client: { workspace.client }))
+    }
 
     private static let panel = RoundedRectangle(cornerRadius: 22, style: .continuous)
     private var panelOpen: Bool {
-        !ui.todosVisible && ui.inspectorVisible && workspace.selectedBotID.map { workspace.bot($0) != nil } == true
+        !ui.todosVisible && !ui.agentsVisible && ui.inspectorVisible && workspace.selectedBotID.map { workspace.bot($0) != nil } == true
     }
 
     var body: some View {
         HStack(spacing: 14) {
-            ContactsList(workspace: workspace)
+            ContactsList(workspace: workspace, agents: agents)
                 .frame(width: ui.railOpen ? 252 : 74)
                 .clipShape(Self.panel)
                 .glass(Self.panel)
@@ -27,6 +33,8 @@ struct MainView: View {
                 Group {
                     if ui.todosVisible {
                         TodosView(workspace: workspace) { id in ui.todosVisible = false; workspace.select(id) }
+                    } else if ui.agentsVisible {
+                        AgentSessionsView(model: agents, workspace: workspace) { id in ui.agentsVisible = false; workspace.select(id) }
                     } else if let id = workspace.selectedBotID, workspace.bot(id) != nil {
                         if id == workspace.financeBotID { FinanceTopicsView(workspace: workspace, botID: id).id(id) }
                         else { ConversationView(workspace: workspace, botID: id).id(id) }
@@ -56,7 +64,8 @@ struct MainView: View {
         #if DEBUG
         .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif
-        .onAppear { AppUpdater.shared.start { workspace.client } }
+        .onAppear { agents.installNotifier(); AppUpdater.shared.start { workspace.client } }
+        .task(id: workspace.connection) { if workspace.connection == .connected, agents.notificationsOn { agents.start() } }
         .onDisappear { AppUpdater.shared.stop() }
         .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
     }

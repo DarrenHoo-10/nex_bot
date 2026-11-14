@@ -32,7 +32,9 @@ final class UIState {
     var accountMenuOpen = false
     /// The sidebar search text; non-empty replaces the contact list with message hits.
     var contactSearch = ""
-    var todosVisible = false
+    /// 待办 and Agent 会话 take the place of the conversation; only one of them at a time.
+    var todosVisible = false { didSet { if todosVisible { agentsVisible = false } } }
+    var agentsVisible = false { didSet { if agentsVisible { todosVisible = false } } }
     /// The open composer popover (＋ menu, permission or model); DEBUG commands set it for screenshots.
     var composerMenu: ComposerMenuKind?
     /// The in-app 退出当前账号？ dialog of the main window.

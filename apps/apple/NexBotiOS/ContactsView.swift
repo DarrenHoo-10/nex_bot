@@ -4,6 +4,7 @@ import NexClientKit
 struct ContactsView: View {
     let model: AppModel
     let workspace: WorkspaceStore
+    let agents: CliAgentsModel
     @Bindable var nav: Navigation
     @Environment(ContactPreferences.self) private var preferences
     @State private var query = ""
@@ -23,6 +24,18 @@ struct ContactsView: View {
                         .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
                         .padding(14).glass(RoundedRectangle(cornerRadius: 16))
                 }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
+                Button { nav.push(.agentSessions) } label: {
+                    HStack {
+                        Label("Agent 会话", systemImage: "terminal"); Spacer()
+                        if agents.waitingCount > 0 {
+                            Text("\(agents.waitingCount)").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                                .padding(.horizontal, 7).padding(.vertical, 2).background(Theme.approval, in: Capsule())
+                        }
+                        Image(systemName: "chevron.right").font(.caption)
+                    }
+                    .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.foreground)
+                    .padding(14).glass(RoundedRectangle(cornerRadius: 16))
+                }.buttonStyle(.plain).padding(.horizontal, 16).padding(.bottom, 8).disabled(workspace.state == nil)
                 if let finance = workspace.financeBotID {
                     Button { nav.openChat(finance) } label: { HStack { Label(workspace.bot(finance)?.name ?? "金融助手",systemImage:"bubble.left.and.bubble.right");Spacer();Image(systemName:"chevron.right") }.padding(14) }.buttonStyle(.plain).padding(.horizontal,16)
                 }
@@ -31,7 +44,7 @@ struct ContactsView: View {
             .background { WorkspaceSurface(kind: .stage) }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Navigation.Route.self) { route in
-                nav.destination(for: route, model: model, workspace: workspace)
+                nav.destination(for: route, model: model, workspace: workspace, agents: agents)
             }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if workspace.state != nil, let notice = workspace.notice { NoticeBanner(text: notice) }

@@ -9,11 +9,20 @@ struct ConnectedView: View {
     @State private var preferences = ContactPreferences()
     @State private var update: ClientUpdateOffer?
     @AppStorage("nexbot.skippedUpdate") private var skipped = ""
+    @State private var agents: CliAgentsModel
     @Environment(\.openURL) private var openURL
 
+    init(model: AppModel, workspace: WorkspaceStore) {
+        self.model = model
+        self.workspace = workspace
+        _agents = State(initialValue: CliAgentsModel(client: { workspace.client }))
+    }
+
     var body: some View {
-        ContactsView(model: model, workspace: workspace, nav: nav)
+        ContactsView(model: model, workspace: workspace, agents: agents, nav: nav)
             .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
+            .task(id: workspace.connection) { if workspace.connection == .connected, agents.notificationsOn { agents.start() } }
+            .onAppear { agents.installNotifier() }
             .environment(nav)
             .environment(preferences)
             .sheet(isPresented: $nav.showMenu) {
