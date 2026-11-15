@@ -103,10 +103,13 @@ try {
   await screenshot("routine-detail-desktop");
   await click('.routine-process > summary');
   await click(".routine-detail .step-row");
-  await until(() => evaluate("document.querySelector('[aria-label=工具详情]')?.textContent.includes('技术信息')"), "tool preview");
-  assert.match(await evaluate("document.querySelector('[aria-label=工具详情]').textContent"), /routine.list/);
-  await click('[aria-label="关闭工具详情"]'); await click('.routine-process > summary');
-  cases.push("result-first-with-expandable-process-and-tool-preview");
+  await until(() => evaluate("!!document.querySelector('.routine-detail .step-detail')"), "tool step detail expands in place");
+  assert.match(await evaluate("document.querySelector('.routine-detail .step-detail').textContent"), /routine\.list/);
+  if (await evaluate("!!document.querySelector('[aria-label=工具详情]')")) throw new Error("tool detail still renders as a JSON card");
+  await click(".routine-detail .step-row");
+  await until(() => evaluate("!document.querySelector('.routine-detail .step-detail')"), "tool step detail collapses");
+  await click('.routine-process > summary');
+  cases.push("result-first-with-inline-step-detail");
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
   await screenshot("routine-detail-mobile"); cases.push("mobile-detail-no-horizontal-overflow");

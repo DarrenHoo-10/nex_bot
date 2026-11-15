@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { api, statuses, str, toolLabels, type PreviewItem, type RecordRow, type RoutineOccurrenceDetail as Detail, type ToolStep } from "../api";
+import { ToolStepDetail } from "./ToolStepDetail";
 
 export const routineStatusLabel = (status: string) => ({ pending: "等待开始", queued: "等待开始", running: "正在处理", succeeded: "已完成", failed: "未完成", rejected: "未获同意", skipped: "已跳过", cancelled: "已取消", paused: "已暂停", awaiting_approval: "等待你的确认", needs_reconciliation: "需要确认结果", cancelling: "正在停止" }[status] ?? statuses[status] ?? status);
 
@@ -26,10 +27,12 @@ export function RunTranscript({ messages, steps, renderContent }: { messages: Re
   return <>
     <details className="routine-disclosure routine-process"><summary>查看过程{steps.length ? <span>{steps.length} 个步骤</span> : null}</summary>
       {messages.map((message) => <div key={str(message.id)} className="routine-detail-message">{renderContent(str(message.content))}</div>)}
-      {steps.length ? <div className="step-list">{steps.map((item) => <button type="button" className="step-row" key={item.id} onClick={() => setStep(item)}><span className={`step-dot ${item.status}`}/><strong>{toolLabels[item.tool_name] ?? item.tool_name}</strong><small>{routineStatusLabel(item.status)}</small></button>)}</div> : null}
+      {steps.length ? <div className="step-list">{steps.map((item) => <div className="step-item" key={item.id}>
+        <button type="button" className="step-row" aria-expanded={step?.id === item.id ? "true" : undefined} onClick={() => setStep(step?.id === item.id ? undefined : item)} title={step?.id === item.id ? "点击收起" : "点击展开详情"}><span className={`step-dot ${item.status}`}/><strong>{toolLabels[item.tool_name] ?? item.tool_name}</strong><small>{routineStatusLabel(item.status)}</small></button>
+        {step?.id === item.id ? <div className="step-detail"><ToolStepDetail tool={item.tool_name} item={preview} loading={!preview && !previewError} error={previewError || undefined} fallback={step.preview}/></div> : null}
+      </div>)}</div> : null}
       {!messages.length && !steps.length ? <p className="muted">还没有处理记录</p> : null}
     </details>
-    {step ? <section className="preview-card" aria-label="工具详情"><div className="preview-header"><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong><button type="button" aria-label="关闭工具详情" onClick={() => setStep(undefined)}><X size={14}/></button></div>{previewError ? <p role="alert">{previewError}</p> : null}{preview?.arguments ? <details><summary>技术信息</summary><pre>{preview.arguments}</pre></details> : null}<pre>{preview ? preview.content || "暂无输出" : previewError ? step.preview || "暂无输出" : "加载中…"}</pre></section> : null}
   </>;
 }
 
