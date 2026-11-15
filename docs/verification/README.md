@@ -475,3 +475,9 @@ The [Agent mode spike](agent-mode-spike-20261115.md) covers herdr-core on Window
 [draft record](agent-mode-draft-20261115.md) covers sending while a person is
 typing at the computer. The [Agent mode MVP record](agent-mode-mvp-20261115.md)
 covers the browser smoke and the Agent mode test suites.
+
+The [GitHub connector records](github-connector-phase1.md) cover the connector's
+auth (OAuth app, device flow, PAT), tool catalog, the phase-two watchers
+(notifications + PR list diff + checks fingerprint dedupe, webhook HMAC) and the
+production deploy ([phase 2 record](github-connector-phase2.md),
+[deploy record](github-connector-deploy-20261115.md)).
