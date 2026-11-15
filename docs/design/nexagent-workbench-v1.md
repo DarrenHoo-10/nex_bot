@@ -32,6 +32,18 @@ node scripts/smoke-cli-agents.mjs --workbench --serve=18809
 
 ## 2. 当前实现与正式接入范围
 
+**首要目标是接续用户已经打开的 App / CLI 原生会话。** 用户在电脑上的 Codex、Claude Code 或 ZCode 已经聊到一半，应能从 NexAgent 找到同一个会话、查看上下文、继续发送，并在原客户端与 NexAgent 看到同一条后续回复。连接前后以原生 thread/session ID 核对身份。另开一个带历史摘要的新进程只能作为用户主动选择的分支。
+
+| 已有会话来源 | 当前可行路径 | 正式版的验收边界 |
+| --- | --- | --- |
+| Codex App / CLI | 项目已有历史发现和 App 数据库读取；目标 thread 被可连接的共享 app-server 加载时，设备可向同一 thread 发起回合或引导当前回合。 | 分别从 App 和独立启动的 CLI 建会话，按实际安装版本验证共享通道、原窗口回显和断线恢复。只查到历史时只声明可读。 [OpenAI App Server](https://developers.openai.com/codex/app-server/) |
+| Claude Code CLI / Claude 桌面端的 Code 会话 | 项目已有会话发现和本地 inbox 适配。目标活会话须公布兼容的消息入口；设备返回已确认或未确认投递。普通 Claude 聊天和 Code 会话分别识别。 | 用同一原生 session ID 核验消息及回复。收件确认不足时显示待确认，避免自动重发。官方 Remote Control 可用于对照产品行为，NexAgent 的本地 inbox 路径需要逐版本验证。 [Claude Code Remote Control](https://code.claude.com/docs/en/remote-control) |
+| ZCode App / CLI | 当前只有图标。官方实现以现有 Host / CLI 为会话运行端，V4 协议提供 conversation 快照、增量和命令通道。 | 增加设备端 ZCode 适配器，先证明在用户授权后能附着到已运行的 Host、定位原 session 并收发。再分别验证独立 CLI、引导、中断、审批和分支；按实际能力启用。 [ZCode 协议](https://github.com/zai-org/ZCode/blob/main/docs/zcode-protocol.md) · [官方远控说明](https://zcode.z.ai/cn/docs/remote-control) |
+
+设备应按**具体会话**上报发现、读历史、发送、引导、审批、中断、分支和终端输入能力。原生消息通道和 PTY 键盘通道分别判断。设备代理拥有某个 PTY 时才开放远程终端；外部 App 收到消息不会自动获得 PTY。历史会话只有在设备确认可安全续接、且原进程没有并发占用时才启动续接。
+
+接入门槛按产品和入口分别记录：用户先在原 App 或 CLI 发 A，NexAgent 打开同一会话后发 B，原客户端显示 B 并产生回复 C，两端都能读到 C；重连后 ID、消息顺序和上下文一致，且 B 只投递一次。本轮复查的外部路由、inbox、daemon 和 App 数据库相关隔离测试共 74 项通过，真实产品版本的双端验收另行记录。
+
 | 能力 | 冻结版本实际使用 | 正式接入工作 |
 | --- | --- | --- |
 | 设备、会话、消息、审批、终端 | Core 的 `/api/cli-agents`、列表和消息推送、设备执行器、herdr-core、xterm。Core 已限制为所有者访问。 | 延续鉴权、观察/控制权限校验、消息分页、流控及重连。浏览器打开终端时请求控制。 |
