@@ -337,9 +337,11 @@ try {
   await evaluate("document.querySelectorAll('.transcript details').forEach(el=>el.open=true)");
   await until(() => evaluate("!!document.querySelector('.step-row')"));
   await click(".step-row");
-  await until(() => evaluate("!!document.querySelector('.preview-card')&&document.querySelector('.inspector-tabs .selected').textContent==='工作'"));
-  await click("[aria-label='关闭预览']");
-  cases.push("tool-preview-remains-in-work-tab");
+  await until(() => evaluate("!!document.querySelector('.step-detail')&&document.querySelector('.step-detail').textContent.includes('工作资料已找到')"), "tool step detail expands in place");
+  if (await evaluate("!!document.querySelector('.preview-card')")) throw new Error("tool step still opens the side JSON panel");
+  await click(".step-row");
+  await until(() => evaluate("!document.querySelector('.step-detail')"));
+  cases.push("tool-step-expands-in-place-without-side-panel");
   cases.push("MCP-approval-and-tool-call");
   mcp.hold(true); model.scripts.push({ kind: "openai-tool", calls: [{ id: "workspace-stop", name: "broker", args: JSON.stringify(args) }] });
   await send("测试停止等待中的调用。"); await until(() => evaluate("!!document.querySelector('.approval')")); await textButton("允许一次", "document.querySelector('.approval')");

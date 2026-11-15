@@ -572,3 +572,30 @@ it("opens an inline finance topic in the shared chat and replies to its original
   await type("继续会话"); await enter();
   expect(fixture.api).toHaveBeenCalledWith("agents/input",expect.objectContaining({conversationId:topic.conversationId,text:"继续会话"}));
 });
+
+describe("Tool steps in the chat (Web, Electron and Android WebView)", () => {
+  it("expands a memory-write step in place instead of opening the side panel", async () => {
+    const history = [{ id: "m1", role: "assistant", kind: "message", content: "已写入长期记忆。", created_at: 1, seq: 1, tool_steps: [{ id: "call1", tool_name: "memory.write", status: "succeeded", summary: "写作偏好", preview: "", created_at: 1 }] }];
+    const base = fixture.api.getMockImplementation()!;
+    fixture.api.mockImplementation(async (route: string, ...rest: unknown[]) => {
+      if (route === "state") return { ...state };
+      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
+      if (route.startsWith("preview?callId=call1")) return { kind: "tool", id: "call1", title: "memory.write", status: "succeeded", arguments: JSON.stringify({ title: "写作偏好", content: "报告用中文写，先给结论再给依据。" }), content: JSON.stringify({ saved: true, version: 2 }, null, 2) };
+      return base(route, ...rest);
+    });
+    await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 200)); });
+    const row = container.querySelector<HTMLButtonElement>(".step-row");
+    expect(row?.textContent).toContain("写入长期记忆");
+    expect(container.querySelector('[data-right="closed"]')).not.toBeNull();
+    await act(async () => { row!.click(); });
+    const detail = container.querySelector(".step-detail");
+    expect(detail?.textContent).toContain("写入内容");
+    expect(detail?.textContent).toContain("报告用中文写，先给结论再给依据。");
+    expect(detail?.textContent).not.toContain("saved");
+    expect(fixture.api.mock.calls.some(([route]) => String(route).startsWith("preview?callId=call1"))).toBe(true);
+    expect(container.querySelector(".preview-card")).toBeNull();
+    expect(container.querySelector('[data-right="closed"]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>(".step-row")!.click(); });
+    expect(container.querySelector(".step-detail")).toBeNull();
+  });
+});

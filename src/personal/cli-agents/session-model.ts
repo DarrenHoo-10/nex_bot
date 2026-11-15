@@ -1,8 +1,10 @@
 // Pure helpers over the session rows Core sends: grouping, labels and what the
 // composer may do. No React, no network.
-import type { CliDeviceView, CliEngine, CliSessionView } from "../../../shared/cli-agents";
+import { CLI_ENGINES, type CliDeviceView, type CliEngine, type CliSessionView } from "../../../shared/cli-agents";
 
 export const ENGINE_LABEL: Record<CliEngine, string> = { claude: "Claude", codex: "Codex" };
+/** The agent names the session list groups by. */
+export const AGENT_LABEL: Record<CliEngine, string> = { claude: "Claude Code", codex: "Codex" };
 
 export function sessionStatusLabel(session: Pick<CliSessionView, "state" | "online">): string {
   if (!session.online) return "电脑离线";
@@ -28,12 +30,12 @@ export function sessionTitle(session: Pick<CliSessionView, "title" | "engine" | 
   return session.title.trim() || `${ENGINE_LABEL[session.engine]} 会话`;
 }
 
-export interface FolderGroup { cwd: string; label: string; sessions: CliSessionView[] }
-export interface DeviceGroup { device: CliDeviceView; folders: FolderGroup[]; count: number }
+export interface AgentGroup { engine: CliEngine; label: string; sessions: CliSessionView[] }
+export interface DeviceGroup { device: CliDeviceView; agents: AgentGroup[]; count: number }
 
 const byRecent = (a: CliSessionView, b: CliSessionView) => b.lastActivityAt - a.lastActivityAt;
 
-/** Computer -> folder -> session. A device with no sessions stays in the list
+/** Computer -> agent (Claude Code, Codex) -> session. A device with no sessions stays in the list
  * so a new session can be started on it. Hidden rows only appear on request. */
 export function groupSessions(devices: readonly CliDeviceView[], sessions: readonly CliSessionView[], showHidden = false): DeviceGroup[] {
   const known = new Map<string, CliDeviceView>(devices.map((device) => [device.id, device]));
@@ -44,14 +46,9 @@ export function groupSessions(devices: readonly CliDeviceView[], sessions: reado
   const groups: DeviceGroup[] = [];
   for (const device of known.values()) {
     const mine = visible.filter((session) => session.deviceId === device.id).sort(byRecent);
-    const folders = new Map<string, FolderGroup>();
-    for (const session of mine) {
-      const folder = folders.get(session.cwd) ?? { cwd: session.cwd, label: folderLabel(session.cwd), sessions: [] };
-      folder.sessions.push(session);
-      folders.set(session.cwd, folder);
-    }
-    // each folder's sessions are already newest first, so its first row is its latest
-    groups.push({ device, folders: [...folders.values()].sort((a, b) => byRecent(a.sessions[0], b.sessions[0])), count: mine.length });
+    // agents in a fixed order, sessions newest first; an agent without sessions is left out
+    const agents = CLI_ENGINES.map((engine) => ({ engine, label: AGENT_LABEL[engine], sessions: mine.filter((session) => session.engine === engine) })).filter((agent) => agent.sessions.length);
+    groups.push({ device, agents, count: mine.length });
   }
   return groups.sort((a, b) => Number(b.device.online) - Number(a.device.online) || a.device.name.localeCompare(b.device.name, "zh-CN"));
 }

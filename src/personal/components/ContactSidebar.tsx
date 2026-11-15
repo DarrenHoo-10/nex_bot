@@ -1,10 +1,11 @@
 import { AssistantActions } from "./AssistantActions";
-import { useEffect, useId, useRef, useState } from "react";
-import { ListTodo, ChevronUp, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, SquareTerminal, Sun, X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { ListTodo, ChevronUp, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, X } from "lucide-react";
 import { BrandMark } from "./BrandMark";
+import { ModeSwitcher } from "./ModeSwitcher";
 import { companionState } from "../avatars/appearance";
 import { AgentAvatar as Avatar } from "./AgentAvatar";
-import { busyJob, desktop, str, taskPhrase, type State } from "../api";
+import { agentModeAvailable, busyJob, desktop, str, taskPhrase, type State } from "../api";
 import { messagePreview } from "../message-media";
 
 import { ConversationSearch, type ConversationMatch } from "./ConversationSearch";
@@ -16,7 +17,11 @@ interface Props {
   onSearch(value: string): void; onSelect(id: string): void; onPage(page: string): void;
   onSearchResult(match: ConversationMatch): void;
   onCreate(): void; onTheme(): void; onLogout(): void; onClose(): void; onToggle(): void;
+  /** NexAgent mode: the session list and "new session" take the place of the contacts */
+  agent?: AgentSidebarSlot;
 }
+export interface AgentSidebarSlot { list: ReactNode; onCreate(): void; }
+const modes = agentModeAvailable;
 const ended = new Set(["succeeded", "failed", "cancelled", "rejected"]);
 function time(value: string | number | null | undefined) {
   if (!value) return "";
@@ -42,15 +47,20 @@ export function ContactSidebar(props: Props) {
   }, [accountOpen]);
   const contacts = state.bots;
   const waiting = state.cliAgents?.waiting ?? 0;
+  const agentMode = modes && page === "cli";
+  const create = agentMode && props.agent ? { label: "新建会话", run: props.agent.onCreate } : { label: "添加 Agent", run: props.onCreate };
   const groups = [{ title: "置顶", items: contacts.filter((bot) => pinned.includes(str(bot.id))) }, { title: "我的 Agent", items: contacts.filter((bot) => !pinned.includes(str(bot.id))) }];
   return <>
     {props.open && <button className="sidebar-scrim" aria-label="关闭联系人列表" onClick={props.onClose}/>}
     <aside className={`contact-sidebar glass ${props.open ? "is-open" : ""}`} data-collapsed={collapsed || undefined} aria-label="联系人与导航">
-      <div className="workspace-brand">{collapsed ? null : <>{desktop ? <><BrandMark size={30}/><strong>NexBot</strong></> : <a className="workspace-home-link" href="#home" aria-label="NexBot 首页" title="返回首页"><BrandMark size={30}/><strong>NexBot</strong></a>}<button className="icon-button sidebar-dismiss" aria-label="收起联系人列表" onClick={props.onClose}><PanelLeftClose size={17}/></button><button className="icon-button" aria-label="添加 Agent" title="添加 Agent" onClick={props.onCreate}><Plus size={19}/></button></>}<button type="button" className="icon-button rail-toggle" aria-label={collapsed ? "展开左栏" : "收起左栏"} title={collapsed ? "展开左栏" : "收起左栏"} aria-expanded={!collapsed} onClick={props.onToggle}>{collapsed ? <PanelLeftOpen size={17}/> : <PanelLeftClose size={17}/>}</button></div>
+      <div className="workspace-brand">{collapsed ? null : <>{modes ? <ModeSwitcher mode={agentMode ? "agent" : "bot"} waiting={waiting} home={!desktop} onMode={(mode) => props.onPage(mode === "agent" ? "cli" : "agent")}/> : desktop ? <><BrandMark size={30}/><strong>NexBot</strong></> : <a className="workspace-home-link" href="#home" aria-label="NexBot 首页" title="返回首页"><BrandMark size={30}/><strong>NexBot</strong></a>}<button className="icon-button sidebar-dismiss" aria-label="收起联系人列表" onClick={props.onClose}><PanelLeftClose size={17}/></button><button className="icon-button" aria-label={create.label} title={create.label} onClick={create.run}><Plus size={19}/></button></>}<button type="button" className="icon-button rail-toggle" aria-label={collapsed ? "展开左栏" : "收起左栏"} title={collapsed ? "展开左栏" : "收起左栏"} aria-expanded={!collapsed} onClick={props.onToggle}>{collapsed ? <PanelLeftOpen size={17}/> : <PanelLeftClose size={17}/>}</button></div>
+      {collapsed && modes ? <button type="button" className={`contact-item todo-entry cli-entry`} data-unread={(!agentMode && waiting > 0) || undefined} aria-label={agentMode ? "切换到 NexBot" : waiting > 0 ? `切换到 NexAgent，${waiting} 个等你处理` : "切换到 NexAgent"} title={agentMode ? "切换到 NexBot" : "切换到 NexAgent"} onClick={() => props.onPage(agentMode ? "agent" : "cli")}><BrandMark size={22} agent={!agentMode}/>{!agentMode && waiting > 0 && <span className="contact-unread" data-testid="cli-waiting">{waiting}</span>}</button> : null}
+      {agentMode ? <>
+      {collapsed ? null : <div className="contact-groups agent-session-groups">{props.agent?.list}</div>}
+      </> : <>
       {collapsed ? <button type="button" className="sidebar-search dock-search" aria-label="搜索会话记录" title="搜索会话记录" onClick={() => { focusSearch.current = true; props.onToggle(); }}><Search size={16}/></button>
         : <label className="sidebar-search"><Search size={15}/><input ref={searchInput} aria-label="搜索会话记录" placeholder="搜索会话记录" maxLength={200} value={search} onChange={(event) => props.onSearch(event.target.value)}/>{search && <button className="icon-button" aria-label="清空搜索" onClick={() => props.onSearch("")}><X size={13}/></button>}</label>}
       <button type="button" className={`contact-item todo-entry ${page === "todo" ? "is-selected" : ""}`} aria-label="待办" aria-current={page === "todo" ? "page" : undefined} onClick={() => props.onPage("todo")}><ListTodo size={19}/>{!collapsed && <strong>待办</strong>}</button>
-      {(!desktop || desktop.platform === "android") && <button type="button" className={`contact-item todo-entry cli-entry ${page === "cli" ? "is-selected" : ""}`} data-unread={waiting > 0 || undefined} aria-label={waiting > 0 ? `Agent 会话，${waiting} 个等你处理` : "Agent 会话"} aria-current={page === "cli" ? "page" : undefined} onClick={() => props.onPage("cli")}><SquareTerminal size={19}/>{!collapsed && <strong>Agent 会话</strong>}{waiting > 0 && <span className="contact-unread" data-testid="cli-waiting">{waiting}</span>}</button>}
       {collapsed ? null : <div className="contact-list-label"><span>对话</span><span>{state.bots.length}</span></div>}<div className="contact-groups">
         {!collapsed && search.trim() ? <ConversationSearch key={JSON.stringify([search.trim(),state.sync.coreId,state.sync.bootId,state.sync.privacyEpoch])} query={search.trim()} sync={state.sync} onSelect={props.onSearchResult}/> : <>{groups.map((group) => group.items.length ? <section key={group.title}>{collapsed ? null : <div className={`sidebar-section-title ${group.title === "我的 Agent" ? "is-default-group" : ""}`}><span>{group.title}</span></div>}{group.items.map((bot) => {
           // Working: the main chat has an unfinished task, or a background job is running or queued.
@@ -64,7 +74,8 @@ export function ContactSidebar(props: Props) {
         })}</section> : null)}
         {!contacts.length && <div className="sidebar-empty">你的 Agent 会出现在这里{<button className="text-button" onClick={props.onCreate}>创建第一个 Agent</button>}</div>}</> }
       </div>
-      {collapsed ? <button type="button" className="icon-button dock-add" aria-label="添加 Agent" title="添加 Agent" onClick={props.onCreate}><Plus size={19}/></button> : null}
+      </>}
+      {collapsed ? <button type="button" className="icon-button dock-add" aria-label={create.label} title={create.label} onClick={create.run}><Plus size={19}/></button> : null}
       <footer className="workspace-account" ref={accountRoot} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAccountOpen(false); }} onKeyDown={(event) => {
         if (event.key === "Escape" && accountOpen) { event.preventDefault(); event.stopPropagation(); dismissAccount(); }
       }}>

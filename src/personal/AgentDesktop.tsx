@@ -12,7 +12,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
 import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
+import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
@@ -20,9 +20,10 @@ import { ProviderSettings } from "./ProviderSettings";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { AgentAvatar as Avatar } from "./components/AgentAvatar";
 import { TodoWorkspace } from "./todo/TodoWorkspace";
-import { ContactSidebar } from "./components/ContactSidebar";
+import { ContactSidebar, type AgentSidebarSlot } from "./components/ContactSidebar";
 import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
+import { ToolStepDetail } from "./components/ToolStepDetail";
 import { appearanceOf, colors, companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
@@ -41,8 +42,7 @@ import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
 
 // Agent mode pulls in the terminal stack, so it loads only when opened.
-/** Agent mode runs in plain browsers and the Android app (native socket relay); the Windows client does not show it. */
-const agentSection = !desktop || desktop.platform === "android";
+const agentSection = agentModeAvailable;
 const CliAgentsWorkspace = lazy(() => import("./cli-agents/CliAgentsWorkspace").then((module) => ({ default: module.CliAgentsWorkspace })));
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
@@ -429,7 +429,6 @@ export function AgentDesktop() {
     }
   }, [botId, reload]);
   const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); }, []);
-  const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
   const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); };
   const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
@@ -668,12 +667,13 @@ export function AgentDesktop() {
   void lookRevision;
 
   const navigate = (target: string) => {
-    if (target === "todo" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
+    if (target === "todo" || target === "agent" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
     else openSettings();
   };
-  const sidebarNode = <ContactSidebar onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const renderSidebar = (agent?: AgentSidebarSlot) => <ContactSidebar agent={agent} onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const sidebarNode = renderSidebar();
 
-  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 
   if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 
@@ -736,7 +736,7 @@ export function AgentDesktop() {
             const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
             return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
               {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} bot={bot} bots={state.bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>}
+              {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} bot={bot} bots={state.bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>}
               {conversation && m.input_status === "pending" ? <button type="button" onClick={() => { setEditInput(str(m.id)); changeDraft(str(m.content)); }}>编辑排队消息</button> : null}
             </div>;
           })}
@@ -908,7 +908,15 @@ function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]
 function JobMarker({ message, job, open }: { message: RecordRow; job?: Job; open: (id: string) => void }) {
   return <div className="a2a-marker job-marker"><span>已交给后台</span><button type="button" className="a2a-contact" aria-label={`查看后台任务：${job?.title ?? str(message.job_title)}`} onClick={() => open(str(message.job_id))}><span>{job?.title ?? str(message.job_title)}</span></button><time title={message.created_at ? new Date(Number(message.created_at)).toLocaleString("zh-CN") : undefined}>{formatTime(message.created_at)}</time></div>;
 }
-function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; jobs: Map<string, Job>; jobActions: JobCardActions; busy: boolean; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
+function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; jobs: Map<string, Job>; jobActions: JobCardActions; busy: boolean; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
+  const [stepDetail, setStepDetail] = useState<{ id: string; loading?: boolean; item?: PreviewItem }>();
+  const toggleStep = (step: ToolStep) => {
+    if (step.tool_name === "device.read" && step.summary) { onPreviewFile(step.summary); return; }
+    if (stepDetail?.id === step.id) { setStepDetail(undefined); return; }
+    setStepDetail({ id: step.id, loading: true });
+    void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => setStepDetail((current) => current?.id === step.id ? { id: step.id, item } : current))
+      .catch(() => setStepDetail((current) => current?.id === step.id ? { id: step.id, item: { kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at } } : current));
+  };
   const direction = str(m.a2a_direction), peer = bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id));
   const jobId = str(m.job_id), job = jobId ? jobs.get(jobId) : undefined;
   if (jobId && str(m.source_key).startsWith("job-start:")) return <JobMarker message={m} job={job} open={jobActions.open}/>;
@@ -925,7 +933,7 @@ function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, c
     <div className="message-body">
       {m.role === "user" && jobId ? <div className="job-reply-label">回复后台任务：{job?.title ?? str(m.job_title)}</div> : null}
       {m.role === "peer" ? <div className="message-author"><Avatar bot={peer} allBots={bots} size={22}/>{peer?.name ?? "Agent"} · {m.kind === "request" ? "发来任务" : "返回结果"}</div> : null}
-      {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length} steps={steps}><div className="step-list">{steps.map((step) => <button type="button" key={step.id} className="step-row" onClick={() => onPreviewStep(step)} title="点击在右侧面板查看详情"><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>)}</div></ToolActivityDisclosure> : null}
+      {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length} steps={steps}><div className="step-list">{steps.map((step) => <div className="step-item" key={step.id}><button type="button" className="step-row" aria-expanded={stepDetail?.id === step.id ? "true" : undefined} onClick={() => toggleStep(step)} title={stepDetail?.id === step.id ? "点击收起" : "点击展开详情"}><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>{stepDetail?.id === step.id ? <div className="step-detail"><ToolStepDetail tool={step.tool_name} item={stepDetail.item} loading={stepDetail.loading}/></div> : null}</div>)}</div></ToolActivityDisclosure> : null}
       <MessageImages images={images} onDelete={(image) => onDeleteImage(str(m.id), image)}/>
       {text ? document ? <DocumentCard onExpand={onDetach}><RichText value={text} onPreviewFile={onPreviewFile}/></DocumentCard> : <div className="bubble"><RichText value={text} onPreviewFile={onPreviewFile}/></div> : null}
       <div className="message-meta">{groupEnd || !assistant ? <time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time> : null}{canAct ? <span className="message-tools"><button type="button" className="tool-link" onClick={() => onQuote(m)} title="引用回复"><CornerUpLeft size={11}/>引用</button><button type="button" className="tool-link" onClick={() => onCopy(str(m.id), str(m.content))} title="复制内容">{copiedId === str(m.id) ? <><Check size={11}/>已复制</> : <><Copy size={11}/>复制</>}</button></span> : null}</div>

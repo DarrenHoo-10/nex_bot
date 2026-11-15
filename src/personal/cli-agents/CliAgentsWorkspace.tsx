@@ -2,7 +2,8 @@
 // terminal and a conversation view. Full page like the todo workspace; the
 // sidebar and overlay come from AgentDesktop.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Bell, BellOff, PanelLeftOpen, Plus, SquareTerminal } from "lucide-react";
+import { Bell, BellOff, PanelLeftOpen, Plus } from "lucide-react";
+import { BrandMark } from "../components/BrandMark";
 import type { CliAnswerDecision, CliDeviceView, CliRequestView, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { desktop } from "../api";
 import { GlowButton } from "../todo/controls";
@@ -101,8 +102,14 @@ function useCliList(stream: CliStream, onRequests: (views: readonly CliRequestVi
   return { devices, sessions, setSessions, loaded, error, setError, status, reload };
 }
 
+/** What the NexAgent sidebar shows in place of the contacts. */
+export interface CliSidebarSlot { list: ReactNode; onCreate(): void; }
+
 export interface CliAgentsWorkspaceProps {
-  sidebar: ReactNode;
+  /** a renderer puts the session list into the app sidebar; a plain node keeps the list in its own column */
+  sidebar: ReactNode | ((slot: CliSidebarSlot) => ReactNode);
+  /** false on narrow screens: the list keeps its own full-width view and the sidebar drawer leaves it out */
+  sidebarList?: boolean;
   overlay?: ReactNode;
   dark: boolean;
   collapsed: boolean;
@@ -115,7 +122,7 @@ export interface CliAgentsWorkspaceProps {
   stream?: CliStream;
 }
 
-export function CliAgentsWorkspace({ sidebar, overlay, dark, collapsed, onNavigation, bots, onOpenTopic, stream: provided }: CliAgentsWorkspaceProps) {
+export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNavigation, bots, onOpenTopic, stream: provided }: CliAgentsWorkspaceProps) {
   const stream = useMemo(() => provided ?? new CliStream(), [provided]);
   useEffect(() => {
     stream.start();
@@ -188,20 +195,40 @@ export function CliAgentsWorkspace({ sidebar, overlay, dark, collapsed, onNaviga
     }
   };
 
+  const list = (
+    <>
+      {!loaded ? <div className="cli-empty" role="status">正在读取…</div> : null}
+      {loaded && !groups.length ? <div className="cli-empty">还没有电脑接入</div> : null}
+      <SessionList
+        groups={groups}
+        selectedKey={selectedKey}
+        pending={pending}
+        hiddenTotal={hiddenCount(sessions)}
+        showHidden={showHidden}
+        onSelect={select}
+        onNew={(deviceId) => setCreating({ deviceId })}
+        onHide={(session, hidden) => void hide(session, hidden)}
+        onToggleHidden={() => setShowHidden((value) => !value)}
+      />
+    </>
+  );
+  // the list is rendered in exactly one place: the app sidebar on wide screens, its own column otherwise
+  const slotted = typeof sidebar === "function" && sidebarList;
+  const sidebarNode = typeof sidebar === "function" ? sidebar({ list: slotted ? list : null, onCreate: () => setCreating({ deviceId: selected?.deviceId }) }) : sidebar;
   const connected = status === "open";
   const linkText = status === "connecting" ? "正在连接" : status === "reconnecting" ? "正在重新连接" : status === "closed" ? "连接已断开" : "";
   return (
     <div className="workspace-stage" data-shell={desktop?.mode === "client" ? "1" : "0"} data-dark={dark ? "1" : "0"}>
-      <div className="app rk-workspace cli-app" data-dark={dark ? "1" : "0"} data-theme="studio" data-left={collapsed ? "closed" : "open"} data-right="closed" data-page="cli" data-mobile={mobileView}>
-        {sidebar}
+      <div className="app rk-workspace cli-app" data-dark={dark ? "1" : "0"} data-theme="studio" data-left={collapsed ? "closed" : "open"} data-right="closed" data-page="cli" data-mobile={mobileView} data-list={slotted ? "sidebar" : undefined}>
+        {sidebarNode}
         <main className="cli-main">
           <header>
             <div className="header-side">
               <button type="button" className="bt-round mobile-menu" aria-label="打开导航" onClick={onNavigation}><PanelLeftOpen size={19} /></button>
             </div>
             <div className="contact-heading who glass">
-              <SquareTerminal size={16} />
-              <strong>Agent 会话</strong>
+              <BrandMark size={18} agent />
+              <strong>NexAgent</strong>
               {linkText ? <span className="cli-link-state" role="status">{linkText}</span> : null}
               {waiting > 0 ? <span className="cli-chip" data-tone="waiting" data-testid="cli-waiting">等你处理 {waiting}</span> : null}
             </div>
@@ -222,21 +249,7 @@ export function CliAgentsWorkspace({ sidebar, overlay, dark, collapsed, onNaviga
             </div>
           ) : null}
           <div className="cli-body">
-            <aside className="cli-side glass" aria-busy={!loaded}>
-              {!loaded ? <div className="cli-empty" role="status">正在读取…</div> : null}
-              {loaded && !groups.length ? <div className="cli-empty">还没有电脑接入</div> : null}
-              <SessionList
-                groups={groups}
-                selectedKey={selectedKey}
-                pending={pending}
-                hiddenTotal={hiddenCount(sessions)}
-                showHidden={showHidden}
-                onSelect={select}
-                onNew={(deviceId) => setCreating({ deviceId })}
-                onHide={(session, hidden) => void hide(session, hidden)}
-                onToggleHidden={() => setShowHidden((value) => !value)}
-              />
-            </aside>
+            {slotted ? null : <aside className="cli-side glass" aria-busy={!loaded}>{list}</aside>}
             <div className="cli-content glass">
               {selected ? (
                 <SessionPane

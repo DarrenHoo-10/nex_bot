@@ -8,6 +8,8 @@
 // a restricted PATH. Windows only (herdr-core + ConPTY).
 //
 //   node scripts/smoke-cli-agents.mjs [--skip-build] [--keep-going]
+//   node scripts/smoke-cli-agents.mjs --serve[=PORT]   same isolated fixture, left running for a person to try
+//     in a browser (default port 8765) until Ctrl-C; no browser steps run.
 //   CHROME_BIN=<path to chrome or msedge> overrides the browser.
 //
 // Screenshots go to release/agent-mode-smoke/ (git-ignored). Exit code 1 when any
@@ -27,6 +29,9 @@ import { startFakeIdentity } from "../server/personal-os/testing/fake-identity.t
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(repo);
 const argv = new Set(process.argv.slice(2));
+const serveArg = process.argv.slice(2).find((arg) => arg === "--serve" || arg.startsWith("--serve="));
+const servePort = serveArg ? Number(serveArg.split("=")[1] || 8765) : 0;
+class Served extends Error {}
 const shotDir = path.join(repo, "release", "agent-mode-smoke");
 const OWNER_EMAIL = "owner@example.test";
 const OWNER_PASSWORD = " synthetic password ";
@@ -398,7 +403,7 @@ try {
   const bootstrap = "synthetic-agent-smoke-bootstrap";
   const { createPersonalApp } = await import(pathToFileURL(path.resolve("dist-personal/server/core/index.js")).href);
   core = await createPersonalApp({
-    dir: path.join(root, "core"), key: randomBytes(32), token: bootstrap,
+    dir: path.join(root, "core"), key: randomBytes(32), token: bootstrap, ...(servePort ? { port: servePort, strictPort: true } : {}),
     uiDir: path.resolve("dist-personal/server/ui"), memoryRuntime: false, hostDevice: false,
     modelCatalog: { fetchDisabled: true, readSnapshot: () => undefined, log: () => {} },
     identity: { fixtureOrigin: identity.origin },
@@ -498,6 +503,12 @@ setInterval(() => {}, 60_000);
     return `engines ${JSON.stringify(snapshot.row.cliAgents.engines)}, ${sessions.length} synthetic sessions visible to Core`;
   }, { fatal: true });
 
+  if (servePort) {
+    log(`PREVIEW READY ${core.origin}  sign in as ${OWNER_EMAIL} with password ${JSON.stringify(OWNER_PASSWORD)}; Ctrl-C to stop`);
+    await new Promise((resolve) => { process.once("SIGINT", resolve); process.once("SIGTERM", resolve); process.once("SIGBREAK", resolve); });
+    throw new Served();
+  }
+
   // ----- browser -----
   await step("browser: start and open Core", async () => {
     browser = spawn(browserPath, [
@@ -580,9 +591,9 @@ setInterval(() => {}, 60_000);
     }
   };
   const focusTerminal = () => evaluate("(()=>{const t=document.querySelector('.cli-term .xterm-helper-textarea');if(!t)throw new Error('terminal input missing');t.focus();return document.activeElement===t;})()");
-  const rows = () => evaluate(`[...document.querySelectorAll('.cli-device')].map(d=>({device:d.querySelector('header strong')?.textContent,folders:[...d.querySelectorAll('.cli-folder')].map(f=>({name:f.querySelector('.cli-folder-name')?.textContent,sessions:[...f.querySelectorAll('.cli-row')].map(r=>({title:r.querySelector('.cli-row-title')?.textContent,chip:r.querySelector('.cli-chip')?.textContent,engine:r.querySelector('.cli-row-meta small')?.textContent,selected:r.classList.contains('is-selected')}))}))}))`);
+  const rows = () => evaluate(`[...document.querySelectorAll('.cli-device')].map(d=>({device:d.querySelector('header strong')?.textContent,agents:[...d.querySelectorAll('.cli-agent')].map(a=>({name:a.querySelector('.cli-agent-name span')?.textContent,sessions:[...a.querySelectorAll('.cli-row')].map(r=>({title:r.querySelector('.cli-row-title')?.textContent,chip:r.querySelector('.cli-chip')?.textContent,folder:r.querySelector('.cli-row-folder')?.textContent,selected:r.classList.contains('is-selected')}))}))}))`);
   const rowByTitle = async (title) => {
-    for (const device of await rows()) for (const folder of device.folders) for (const row of folder.sessions) if (row.title === title) return { ...row, folder: folder.name };
+    for (const device of await rows()) for (const agent of device.agents) for (const row of agent.sessions) if (row.title === title) return { ...row, agent: agent.name };
     return null;
   };
   const clickRow = (title) => evaluate(`(()=>{const el=[...document.querySelectorAll('.cli-row')].find(r=>r.querySelector('.cli-row-title')?.textContent===${JSON.stringify(title)});if(!el)throw new Error('No row '+${JSON.stringify(title)});el.querySelector('.cli-row-main').click();return true;})()`);
@@ -608,20 +619,22 @@ setInterval(() => {}, 60_000);
     return "signed in as the fixture owner";
   }, { fatal: true });
 
-  await step("Agent 会话 entry and grouped session list", async () => {
-    await click("button.cli-entry");
+  await step("NexAgent switch and grouped session list", async () => {
+    await click(".mode-switcher-button");
+    await until(() => evaluate("!!document.querySelector('.mode-menu')"), "mode menu");
+    await evaluate("document.querySelectorAll('.mode-menu [role=menuitemradio]')[1].click(),true");
     await until(() => evaluate("!!document.querySelector('.cli-app') && !!document.querySelector('.cli-row')"), "Agent session list", 30_000);
     await until(async () => (await evaluate("document.querySelectorAll('.cli-row').length")) >= 3, "three synthetic rows", 30_000);
     const groups = await rows();
     assert(groups.length === 1 && groups[0].device === DEVICE_NAME, `device groups: ${JSON.stringify(groups.map((g) => g.device))}`);
-    const names = groups[0].folders.map((folder) => folder.name).sort();
-    assert(JSON.stringify(names) === JSON.stringify(["alpha", "beta"]), `folders: ${JSON.stringify(names)}`);
-    const alpha = groups[0].folders.find((folder) => folder.name === "alpha").sessions.map((row) => row.title).sort();
-    assert(JSON.stringify(alpha) === JSON.stringify(["Fix the flaky test", "重构解析器"].sort()), `alpha rows: ${JSON.stringify(alpha)}`);
-    const beta = groups[0].folders.find((folder) => folder.name === "beta").sessions;
-    assert(beta.length === 1 && beta[0].title === "整理发布说明" && beta[0].engine === "Codex", `beta rows: ${JSON.stringify(beta)}`);
-    assert(groups[0].folders.flatMap((folder) => folder.sessions).every((row) => row.chip === "已停止"), "synthetic history rows are not all shown as stopped");
-    return "device 演示电脑 > alpha (2 Claude rows) + beta (1 Codex row), all 已停止";
+    const names = groups[0].agents.map((agent) => agent.name);
+    assert(JSON.stringify(names) === JSON.stringify(["Claude Code", "Codex"]), `agents: ${JSON.stringify(names)}`);
+    const claude = groups[0].agents[0].sessions.map((row) => `${row.title}@${row.folder}`).sort();
+    assert(JSON.stringify(claude) === JSON.stringify(["Fix the flaky test@alpha", "重构解析器@alpha"].sort()), `Claude Code rows: ${JSON.stringify(claude)}`);
+    const codex = groups[0].agents[1].sessions;
+    assert(codex.length === 1 && codex[0].title === "整理发布说明" && codex[0].folder === "beta", `Codex rows: ${JSON.stringify(codex)}`);
+    assert(groups[0].agents.flatMap((agent) => agent.sessions).every((row) => row.chip === "已停止"), "synthetic history rows are not all shown as stopped");
+    return "device 演示电脑 > Claude Code (2 rows in alpha) + Codex (1 row in beta), all 已停止";
   });
 
   // ----- 2. a new session in a nex_bot terminal -----
@@ -639,7 +652,7 @@ setInterval(() => {}, 60_000);
     await until(() => evaluate("!document.querySelector('[role=dialog]')"), "dialog closes after start", 30_000);
     await until(async () => (await rowByTitle(startedTitle))?.folder === "gamma", "the new session under folder gamma", 30_000);
     const row = await rowByTitle(startedTitle);
-    assert(row.chip === "空闲" && row.engine === "Claude", `new row: ${JSON.stringify(row)}`);
+    assert(row.chip === "空闲" && row.agent === "Claude Code", `new row: ${JSON.stringify(row)}`);
     await until(() => evaluate("!!document.querySelector('.cli-pane')"), "pane for the new session");
     started = true;
     return `row "${startedTitle}" in gamma, chip ${row.chip}`;
@@ -799,7 +812,7 @@ setInterval(() => {}, 60_000);
     return "no uncaught exceptions or console.error output";
   });
 } catch (error) {
-  log(`ABORTED: ${error.message}`);
+  if (!(error instanceof Served)) log(`ABORTED: ${error.message}`);
 } finally {
   // ----- cleanup, in reverse order; each part independent -----
   log("cleaning up");

@@ -75,7 +75,9 @@ describe("Routine occurrence detail", () => {
     await mountDetail(); expect(container.textContent).toContain("设备连接失败"); expect(container.textContent).toContain("部分输出");
     await act(async () => container.querySelector<HTMLButtonElement>(".step-row")!.click());
     expect(fixture.api).toHaveBeenCalledWith("preview?callId=call", undefined, expect.any(AbortSignal));
-    expect(container.textContent).toContain("详细错误"); expect(container.textContent).toContain('"command":"test"');
+    expect(container.textContent).toContain("详细错误");
+    expect(container.textContent).toContain("执行命令"); expect(container.textContent).toContain("执行输出");
+    expect(container.textContent).not.toContain('"command":"test"');
   });
 });
 
