@@ -230,7 +230,7 @@ export function AgentDesktop() {
   useEffect(() => {
     if (desktop?.platform !== "android") return;
     const back = () => {
-      const preview = document.querySelector<HTMLButtonElement>('.html-preview-fullscreen [aria-label="退出全屏"]');
+      const preview = document.querySelector<HTMLButtonElement>('.html-preview-dialog [aria-label="关闭全屏预览"]');
       if (preview) { preview.click(); return; }
       const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
       if (modal) { modal.dispatchEvent(new Event("cancel", { cancelable: true })); return; }
