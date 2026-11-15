@@ -260,7 +260,7 @@ try {
   if (!await evaluate("getComputedStyle(document.querySelector('header .companion-eyes')).animationName==='none'")) throw new Error("Reduced motion ignored");
   await command("Emulation.setEmulatedMedia", {features:[]});
   await textButton("工作", "document.querySelector('.inspector-tabs')");
-  if (await evaluate("!!document.querySelector('.workspace-activity')||!!document.querySelector('.routine-list')||/可用设备|管理设备网络|连接工具与管理授权|安排一项例行任务/.test(document.querySelector('.inspector').textContent)")) throw new Error("Inspector empty state was not simplified");
+  if (await evaluate("!!document.querySelector('.workspace-activity')||!!document.querySelector('.routine-list')||/可用设备|管理设备网络|连接工具|安排一项例行任务/.test(document.querySelector('.inspector').textContent)")) throw new Error("Inspector empty state was not simplified");
   for (const [name, prompt] of [["整理工作日报", "汇总当天进展，列出待办与下一步安排"], ["检查项目进度与待处理事项", "关注项目变更并整理需要我确认的事项"]]) {
     await click("[aria-label='添加例行任务']");
     await input("input[name='name']", name); await input("textarea[name='prompt']", prompt);
@@ -320,11 +320,8 @@ try {
   await screenshot("connector-add-light");
   await input("input[name='name']", "本地知识库"); await input("input[name='url']", mcp.origin + "/mcp"); await input("input[name='token']", "synthetic-ui-secret");
   await textButton("保存连接器"); await until(() => evaluate("!!document.querySelector('.connector-detail')&&!document.querySelector('.connector-modal')"));
-  await textButton("测试连接"); await until(() => evaluate("document.querySelector('.connector-detail').textContent.includes('连接测试通过')"));
-  await evaluate("[...document.querySelectorAll('.connector-agent')].find(el=>el.textContent.includes('工作助手')).querySelector('button').click()");
-  await click(".grant-editor input"); await screenshot("connector-grant-light"); await textButton("保存授权");
-  await until(() => evaluate("!document.querySelector('.grant-editor')&&document.querySelector('.connector-detail').textContent.includes('1 项工具已授权')"));
-  await screenshot("connectors-light"); cases.push("MCP-add-test-discovery-grant-UI");
+  await textButton("测试连接"); await until(() => evaluate("document.querySelector('.connector-detail').textContent.includes('连接测试通过')&&!document.querySelector('.grant-editor')"));
+  await screenshot("connectors-light"); cases.push("MCP-add-test-discovery-no-grant-ui");
   const connector = (await api("state")).connectors[0];
   await click(`[data-agent='${bot.id}']`);
   const args = { action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "echo", parameters: { text: "工作资料已找到" } };

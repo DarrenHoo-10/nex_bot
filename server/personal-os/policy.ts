@@ -112,7 +112,7 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
   else if (action === 'html.render') htmlRenderContent(args.content);
   else if (action === "skill.read") text(args.skillId, 80);
   else if (action === "connector.tools" || action === "connector.call") {
-    const connector = connectorAccess(store, botId, args);
+    const connector = connectorAccess(store, args);
     resourceVersion = Number(connector.version);
     connectorTool = (JSON.parse(String(connector.tools_json)) as ConnectorTool[]).find((tool) => tool.name === args.tool);
   }

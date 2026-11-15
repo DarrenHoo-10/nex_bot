@@ -54,13 +54,10 @@ it("invalidates remembered effects when device grants or Agent policy change", (
   expect(() => evaluateTool(f.store, f.bot, args)).toThrow("本地授权");
 });
 
-it("scopes connector authorization to the connector, tool and current grants", () => {
+it("scopes connector approval to the connector, tool and connector version", () => {
   const f = fixture();
   const catalog = ["send_mail", "delete_mail"].map((name) => ({ name, description: "synthetic", inputSchema: {} }));
-  for (const connector of ["connector-a", "connector-b"]) {
-    f.store.insert("personal_connectors", { id: connector, ...f.store.scope(), name: connector, url: "http://127.0.0.1/mcp", transport: "http", tools_json: JSON.stringify(catalog), created_at: Date.now() });
-    f.store.run("INSERT INTO personal_connector_grants VALUES(?,?,?)", connector, f.bot, JSON.stringify(catalog.map((tool) => tool.name)));
-  }
+  for (const connector of ["connector-a", "connector-b"]) f.store.insert("personal_connectors", { id: connector, ...f.store.scope(), name: connector, url: "http://127.0.0.1/mcp", transport: "http", tools_json: JSON.stringify(catalog), created_at: Date.now() });
   const args = { action: "connector.call", connectorId: "connector-a", connectorVersion: 1, tool: "send_mail", parameters: { to: "synthetic@example.test" } };
   f.remember(args);
   expect(evaluateTool(f.store, f.bot, { ...args, parameters: { to: "other@example.test" } }).approvalRequired).toBe(false);
@@ -68,6 +65,6 @@ it("scopes connector authorization to the connector, tool and current grants", (
   expect(evaluateTool(f.store, f.bot, { ...args, connectorId: "connector-b" }).approvalRequired).toBe(true);
   f.store.run("UPDATE personal_connectors SET version=2 WHERE id='connector-a'");
   expect(evaluateTool(f.store, f.bot, { ...args, connectorVersion: 2 }).approvalRequired).toBe(true);
-  f.store.run("DELETE FROM personal_connector_grants WHERE connector_id='connector-a'");
-  expect(() => evaluateTool(f.store, f.bot, { ...args, connectorVersion: 2 })).toThrow("未授权");
+  f.store.run("UPDATE personal_connectors SET enabled=0 WHERE id='connector-a'");
+  expect(() => evaluateTool(f.store, f.bot, { ...args, connectorVersion: 2 })).toThrow("连接器不存在或已停用");
 });

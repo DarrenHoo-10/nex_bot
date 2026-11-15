@@ -191,9 +191,9 @@ public struct WorkspaceState: Codable, Sendable {
     public var boundDevices: [Device] { devices.filter(\.isBound) }
     public var onlineDeviceCount: Int { onlineDevices.count }
     public var enabledConnectorCount: Int { connectors.filter(\.enabled).count }
-    /// Enabled connectors with at least one tool granted to the bot (web 工作 tab 连接器 list).
+    /// Enabled connectors, every one of which serves every bot (web 工作 tab 连接器 list).
     public func connectors(grantedTo botID: String) -> [ConnectorView] {
-        connectors.filter { $0.enabled && ($0.grant(for: botID)?.tools.isEmpty == false) }
+        connectors.filter(\.enabled)
     }
     public func isHost(_ device: Device) -> Bool { device.id == hostDeviceID }
 }

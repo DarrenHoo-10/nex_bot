@@ -137,7 +137,6 @@ export async function createPersonalApp(options: AppOptions) {
   feishu = new FeishuModule(store, changed, agents, runtime, {
     ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
     ownershipAllowed: options.feishu?.ownershipAllowed ?? ((appId: string) => finance.mayUseChannel(appId)),
-    grantTools: (connectorId, version, botId, tools) => { connectors.grant({ id: connectorId, version, botId, tools }); },
   });
   finance.startReports(report => feishu.ingestReport(report));
   if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
@@ -575,7 +574,8 @@ export async function createPersonalApp(options: AppOptions) {
           : await connectors.test(data, authorize);
         changed(); json(response, 200, result); return;
       }
-      if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
+      // Per-bot connector grants were retired; older clients still POST here, so acknowledge without side effects.
+      if (url.pathname === "/api/connectors/grant") { json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, await connectors.remove(data)); return; }
       if(url.pathname === "/api/feishu/subscriptions") {json(response,200,feishu.updateSubscription(data));return;}

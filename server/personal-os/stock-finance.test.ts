@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createWorkspaceService } from "./workspaces.ts";
+import { connectorAccess } from "./connectors.ts";
 import { startFakeIdentity } from "./testing/fake-identity.ts";
 
 const closes: (() => Promise<void>)[] = [];
@@ -129,21 +130,16 @@ it("starts at the archive head, retains each undelivered cursor, and processes p
   await app.finance.pollReports(deliver); expect(received).toHaveLength(3);
 });
 
-it("discovers newly added financial tools for the default assistant while preserving each explicit grant", async () => {
-  const f = await fixture(); const {data:grant} = await f.exchange();
+it("discovers newly added financial tools and serves them to every assistant", async () => {
+  const f = await fixture(); await f.exchange();
   const app = [...f.service.workspaces.values()][0];
-  const connector = () => app.store.get("SELECT id,version FROM personal_connectors WHERE kind='stock-finance'")!;
-  const granted = (botId: string) => JSON.parse(String(app.store.get("SELECT tools_json FROM personal_connector_grants WHERE connector_id=? AND bot_id=?", connector().id, botId)?.tools_json));
-  const secondary = app.store.createBot("Other");
-  app.connectors.grant({...connector(), botId:secondary, tools:["call_api"]});
+  const connector = () => app.store.get("SELECT id,version,tools_json FROM personal_connectors WHERE kind='stock-finance'")!;
+  app.store.createBot("Other");
   f.state.tools.push("strategy_inputs");
   await app.finance.testConnector(String(connector().id), connector().version, async () => {});
-  expect(granted(String(grant.botId))).toEqual(["call_api","strategy_inputs"]);
-  expect(granted(secondary)).toEqual(["call_api"]);
-  app.connectors.grant({...connector(), botId:grant.botId, tools:[]});
-  f.state.tools.push("read_api_doc");
-  await app.finance.testConnector(String(connector().id), connector().version, async () => {});
-  expect(granted(String(grant.botId))).toEqual([]);
+  expect(JSON.parse(String(connector().tools_json)).map((tool: { name: string }) => tool.name)).toContain("strategy_inputs");
+  const args = { action: "connector.call", connectorId: String(connector().id), connectorVersion: Number(connector().version), tool: "strategy_inputs", parameters: {} };
+  expect(() => connectorAccess(app.store, args)).not.toThrow();
 });
 
 it("renews native history access after the Stock browser lease expires and fails closed when the owner logs out upstream", async () => {

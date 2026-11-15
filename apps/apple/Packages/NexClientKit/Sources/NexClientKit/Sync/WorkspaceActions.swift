@@ -135,11 +135,6 @@ extension WorkspaceStore {
         do { return try await act { try await client.testConnector(id: c.id, version: c.version) } }
         catch { await refresh(); throw error }
     }
-    /// Replaces the tools `botID` may call (empty revokes).
-    public func grantConnector(_ connectorID: String, botID: String, tools: [String]) async throws {
-        let c = try currentConnector(connectorID)
-        try await act { try await client.grantConnector(id: c.id, version: c.version, botID: botID, tools: tools) }
-    }
     public func setConnectorEnabled(_ connectorID: String, enabled: Bool) async throws {
         let c = try currentConnector(connectorID)
         try await act { try await client.toggleConnector(id: c.id, version: c.version, enabled: enabled) }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, MoreHorizontal, Plug, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from "lucide-react";
-import { api, str, type ConnectorView, type State } from "./api";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, MoreHorizontal, Plug, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { api, type ConnectorView, type State } from "./api";
 import { FeishuCard } from "./FeishuCard";
 import { GmailConnect } from "./GmailConnect";
 import gmailIcon from "./assets/gmail.png";
@@ -25,8 +25,6 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [grantBot, setGrantBot] = useState("");
-  const [grantTools, setGrantTools] = useState<string[]>([]);
   const [confirmRemove, setConfirmRemove] = useState("");
   const modal = useRef<HTMLElement>(null);
   const page = useRef<HTMLDivElement>(null);
@@ -34,18 +32,17 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   const previousView = useRef(view);
   useEffect(() => {
     const back = (event: Event) => {
-      if (!editing && !confirmRemove && !grantBot && !managedAccount && view === "catalog") return;
+      if (!editing && !confirmRemove && !managedAccount && view === "catalog") return;
       event.stopImmediatePropagation();
       if (busy) return;
       if (editing) setEditing(null);
       else if (confirmRemove) setConfirmRemove("");
-      else if (grantBot) setGrantBot("");
       else if (managedAccount) setManagedAccount("");
       else { setView("catalog"); setError(""); setNotice(""); }
     };
     window.addEventListener("nex-android-back", back, true);
     return () => window.removeEventListener("nex-android-back", back, true);
-  }, [editing, confirmRemove, grantBot, managedAccount, view, busy]);
+  }, [editing, confirmRemove, managedAccount, view, busy]);
   useEffect(() => {
     if (previousView.current === view) return;
     previousView.current = view;
@@ -81,9 +78,9 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   const usableTools = new Set(gmailAvailable ? accounts.filter(ready).flatMap((item) => item.tools.map((tool) => tool.name)) : []);
   const openDetail = (provider: "gmail" | "mcp", id = "") => {
     returnTo.current = provider === "gmail" ? "gmail" : id;
-    setView(provider); setSelectedId(id); setGrantBot(""); setManagedAccount(""); setConfirmRemove(""); setError(""); setNotice("");
+    setView(provider); setSelectedId(id); setManagedAccount(""); setConfirmRemove(""); setError(""); setNotice("");
   };
-  const connected = async (id: string) => { setSelectedId(id); setGrantBot(""); setConfirmRemove(""); await refresh(); setNotice("Gmail 已连接"); };
+  const connected = async (id: string) => { setSelectedId(id); setConfirmRemove(""); await refresh(); setNotice("Gmail 已连接"); };
   const action = async (key: string, operation: () => Promise<unknown>, success?: string) => {
     setBusy(key); setError(""); setNotice("");
     try { const result = await operation() as { warning?: string } | undefined; await refresh(); if (result?.warning || success) setNotice(result?.warning ?? success ?? ""); }
@@ -98,24 +95,15 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
       form.reset(); setEditing(null); openDetail("mcp", result.id);
     }, "已保存");
   };
-  const beginGrant = (item: ConnectorView, botId: string) => { setSelectedId(item.id); setGrantBot(botId); setGrantTools(item.grants.find((grant) => grant.botId === botId)?.tools ?? []); };
-  const grantEditor = (item: ConnectorView) => selectedId === item.id && grantBot && <form className="grant-editor" onSubmit={(event) => {
-    event.preventDefault(); void action("grant", async () => { await api("connectors/grant", { id: item.id, version: item.version, botId: grantBot, tools: grantTools }); setGrantBot(""); }, "工具授权已更新");
-  }}><strong>为 {state.bots.find((bot) => bot.id === grantBot)?.name} 选择工具</strong>{item.tools.map((tool) => <label key={tool.name}><input type="checkbox" checked={grantTools.includes(tool.name)} onChange={(event) => setGrantTools((current) => event.target.checked ? [...current, tool.name] : current.filter((name) => name !== tool.name))}/>{toolLabel(tool.name)}</label>)}<div className="actions"><button className="primary" disabled={!!busy}>保存授权</button><button type="button" onClick={() => setGrantBot("")}>取消</button></div></form>;
-  const grants = (item: ConnectorView) => <>
-    {state.bots.map((bot) => <div className="connector-agent" key={str(bot.id)}><span><strong>{bot.name}</strong><small>{item.grants.find((grant) => grant.botId === bot.id)?.tools.length ?? 0} 项工具已授权</small></span><button disabled={!!busy || !item.checkedAt || (item.provider === "gmail" && !item.hasToken)} onClick={() => beginGrant(item, str(bot.id))}>管理授权</button></div>)}
-    {!state.bots.length && <p className="empty-small">创建助手后可管理授权。</p>}
-    {grantEditor(item)}
-  </>;
-  const remove = (item: ConnectorView) => <div className="connector-remove">{confirmRemove === item.id ? <><span>{item.provider === "gmail" ? "断开此邮箱并移除助手授权？" : "移除连接器及全部工具授权？"}</span><div className="actions"><button className="danger-link" disabled={!!busy} onClick={() => void action("delete", async () => {
-    const result = await api<{ warning?: string }>("connectors/delete", { id: item.id, version: item.version }); setConfirmRemove(""); setGrantBot(""); setManagedAccount(""); if (item.provider !== "gmail") setView("catalog"); return result;
+  const remove = (item: ConnectorView) => <div className="connector-remove">{confirmRemove === item.id ? <><span>{item.provider === "gmail" ? "断开此邮箱？" : "移除连接器？"}</span><div className="actions"><button className="danger-link" disabled={!!busy} onClick={() => void action("delete", async () => {
+    const result = await api<{ warning?: string }>("connectors/delete", { id: item.id, version: item.version }); setConfirmRemove(""); setManagedAccount(""); if (item.provider !== "gmail") setView("catalog"); return result;
   })}>{item.provider === "gmail" ? "确认断开" : "确认移除"}</button><button disabled={!!busy} onClick={() => setConfirmRemove("")}>取消</button></div></> : <button className="text-button danger-link" disabled={!!busy} onClick={() => setConfirmRemove(item.id)}><Trash2 size={14}/>{item.provider === "gmail" ? "断开连接" : "移除连接器"}</button>}</div>;
   const controls = (item: ConnectorView) => <>
     <div className="actions connector-account-actions"><button disabled={!!busy || (item.provider === "gmail" && !item.hasToken)} onClick={() => void action("test", () => api("connectors/test", { id: item.id, version: item.version }), "连接成功")}>{busy === "test" ? <LoaderCircle className="spin" size={15}/> : <RefreshCw size={15}/>}测试连接</button><button disabled={!!busy} onClick={() => void action("toggle", () => api("connectors/toggle", { id: item.id, version: item.version, enabled: !item.enabled }))}>{item.enabled ? "停用" : "启用"}</button>{item.provider === "gmail" && <GmailConnect connector={{ id: item.id, version: item.version }} available={gmailAvailable && !busy} label="重新授权" variant="subtle" connected={connected}/>}</div>
     {remove(item)}
   </>;
   return <div className="connectors-page" ref={page}>
-    {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation"><button className="connector-back" onClick={() => { setView("catalog"); setGrantBot(""); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button></div>}
+    {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation"><button className="connector-back" onClick={() => { setView("catalog"); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button></div>}
     {error && <div className="connector-feedback is-error" role="alert">{error}</div>}{notice && <div className="connector-feedback" role="status"><Check size={16}/>{notice}</div>}
     {view === "catalog" && feishu}
     {view === "catalog" && <section className="connector-catalog" aria-label="连接器列表">
@@ -133,7 +121,6 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
         {accounts.map((item) => <div className="connector-account" data-account={item.id} key={item.id}>
           <div className="connector-account-heading"><strong>{item.account}</strong><span className={`connection-status ${gmailAvailable && ready(item) ? "is-ready" : ""}`}>{gmailAvailable ? connectionStatus(item) : "暂不可用"}</span><button className="connector-account-menu" aria-label={`管理 ${item.account} 账户`} aria-expanded={managedAccount === item.id} aria-controls={`account-controls-${item.id}`} onClick={() => { setManagedAccount(managedAccount === item.id ? "" : item.id); setConfirmRemove(""); }}><MoreHorizontal size={20}/></button></div>
           {item.error && <p className="connector-account-error" role="alert">{item.error}</p>}
-          <div className="connector-account-grants">{grants(item)}</div>
           <div className="connector-account-management" id={`account-controls-${item.id}`} hidden={managedAccount !== item.id}>{managedAccount === item.id && controls(item)}</div>
           {!item.hasToken && managedAccount !== item.id && <GmailConnect connector={{ id: item.id, version: item.version }} available={gmailAvailable && !busy} label="重新授权" variant="subtle" connected={connected}/>}
         </div>)}
@@ -148,7 +135,6 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
       <div className="connector-mcp-controls">{controls(selected)}</div>
       {selected.error && <p className="connector-feedback is-error">{selected.error}</p>}
       <div className="detail-section-title"><h3>工具目录</h3><span>{selected.tools.length}</span></div><div className="connector-tools">{selected.tools.map((tool) => <details key={tool.name}><summary><span><strong>{tool.name}</strong><small>{tool.description || "服务未提供工具说明"}</small></span><ChevronRight size={15}/></summary><pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre></details>)}{!selected.tools.length && <p className="empty-small">测试连接后，工具会显示在这里。</p>}</div>
-      <div className="detail-section-title"><h3>助手授权</h3><ShieldCheck size={16}/></div>{grants(selected)}
     </section>}
     {editing && <div className="modal-backdrop" onKeyDown={(event) => { if (event.key === "Escape" && !busy) setEditing(null); }}><section ref={modal} className="modal connector-modal" role="dialog" aria-modal="true" aria-labelledby="connector-title"><div className="modal-heading"><h2 id="connector-title">{editing === "new" ? "添加连接器" : "编辑连接器"}</h2><button className="icon-button" disabled={!!busy} aria-label="关闭连接器编辑" onClick={() => setEditing(null)}><X size={18}/></button></div>{error && <p role="alert" className="connector-feedback is-error">{error}</p>}<form onSubmit={save}><label className="field">名称<input name="name" autoFocus required maxLength={80} defaultValue={editing === "new" ? "" : editing.name} placeholder="例如：团队知识库"/></label><label className="field">MCP 服务地址<input name="url" type="url" required defaultValue={editing === "new" ? "" : editing.url} placeholder="https://example.com/mcp"/></label><label className="field">传输方式<select name="transport" defaultValue={editing === "new" ? "http" : editing.transport}><option value="http">Streamable HTTP</option><option value="sse">SSE</option></select></label><label className="field">Bearer Token（选填）<input name="token" type="password" autoComplete="new-password" placeholder={editing !== "new" && editing.hasToken ? "留空保留原令牌；更换地址时需重新填写" : "服务无需认证时留空"}/></label>{editing !== "new" && editing.hasToken && <label className="check-field"><input name="clearToken" type="checkbox"/>清除已保存的令牌</label>}<p className="muted">地址由后端 Core 访问。本机地址指后端所在的电脑。</p><div className="actions"><button className="primary" disabled={!!busy}>{busy === "save" ? "保存中…" : "保存连接器"}</button><button type="button" disabled={!!busy} onClick={() => setEditing(null)}>取消</button></div></form></section></div>}
   </div>;
