@@ -50,3 +50,7 @@ apps/apple/Config/Signing.local.xcconfig
 
 # Staged macOS device executor (scripts/build-mac-executor.mjs)
 apps/apple/build/
+
+# Local verification evidence dumps (screenshots, captured bundles)
+output/
+.pnpm-store/
