@@ -1,5 +1,7 @@
 # Agent 模式：在任何设备上查看、继续和接手电脑上的编程 Agent
 
+2026-11-15 的工作台交互定稿、技术接入和验收矩阵见 [NexAgent 中文会话工作台 · 交互定稿与技术方案](nexagent-workbench-v1.md)。
+
 状态：设计已确认，2026-11-15 定下四项决定（见第 12 节），尚待实现。技术方案见 [2026-11-15-agent-mode-implementation.md](../plans/2026-11-15-agent-mode-implementation.md)。
 
 参考：
