@@ -167,6 +167,8 @@ export async function installWorkbench({ core, api, dirs, deviceId, ids, bootstr
         const key=uri.searchParams.get("key"),id=uri.searchParams.get("id");
         await locate(key);
         if(!/^[a-f0-9-]{36}$/.test(id||""))throw Error("无效附件");
+        // the class deliberately strips control characters out of attachment names
+        // oxlint-disable-next-line no-control-regex
         const name=path.basename(uri.searchParams.get("name")||"file").replace(/[<>:"/\\|?*\x00-\x1f]/g,"_").slice(0,100).replace(/[. ]+$/,"");
         const folder=path.join(dirs.home,"attachments",id);
         const target=path.join(folder,"file-"+(name||"attachment"));

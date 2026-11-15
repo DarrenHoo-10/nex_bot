@@ -27,6 +27,8 @@ export async function fileReference(entry:PickedFile,key:string,upload:boolean):
   if(!upload){
     if(file.size<=MAX_SEND_TEXT){
       try{const text=new TextDecoder("utf-8",{fatal:true}).decode(await file.arrayBuffer());
+        // the class deliberately rejects control characters: that is the binary check
+        // oxlint-disable-next-line no-control-regex
         if(!/[\x00-\x08\x0e-\x1f]/.test(text))return "文件："+file.name+"\n"+text;
       }catch{/* binary file */}
     }

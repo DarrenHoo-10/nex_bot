@@ -218,7 +218,7 @@ export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,w
       {(filter||!closed.has(device.id))&&folders.map(([cwd,entries])=>{
         const id=JSON.stringify([device.id,cwd]); const query=filter.trim().toLocaleLowerCase();
         const matched=new Set(entries.filter(s=>([label(s),cwd,AGENT_LABEL[s.engine],checkout(s).worktree,checkout(s).branch].join(" ")).toLocaleLowerCase().includes(query)).map(s=>s.key));
-        for(const key of [...matched]){let p=meta(key)?.parent;while(p&&!matched.has(p)){matched.add(p);p=meta(p)?.parent}}
+        for(const key of matched){let p=meta(key)?.parent;while(p&&!matched.has(p)){matched.add(p);p=meta(p)?.parent}}
         const visible=entries.filter(s=>matched.has(s.key));if(!visible.length)return null;
         return <div className="na-project" key={id}><div className="na-folder">{twist(id,folderLabel(cwd))}<Folder size={15}/><strong title={cwd}>{folderLabel(cwd)}</strong><small>{visible.length}</small></div>{filter||!closed.has(id)?<div className="na-branch">{sessions(visible,null,0,new Set())}</div>:null}</div>
       })}</section>
