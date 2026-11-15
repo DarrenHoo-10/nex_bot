@@ -24,8 +24,8 @@
 `src/personal/glass.css`、`AgentDesktop.tsx`(Android 返回级联的选择器指向新弹窗)、
 `smoke-personal-tool-steps.mjs`、`html-preview-electron.cjs`、
 `smoke-android-html-preview.mjs`、`smoke-html-preview.mjs`。
-分支 `feat/html-preview-width`,基线 origin/main 357f930b。
-**当前为未提交的工作树改动**(用户要求先不要提交)。
+分支 `feat/html-preview-width`,基线 origin/main 357f930b,最终随部署提交
+`169e5021` 推入 main(合并树上的冒烟与钩子检查均已复跑)。
 
 - `pnpm exec vitest run src/personal/AgentDesktop.input.test.ts src/personal/Routines.test.ts`:
   36 项通过;`pnpm exec tsc -b` 与改动文件 oxlint 通过。
@@ -45,8 +45,38 @@
   本机没有可用设备;脚本已按新交互更新(弹窗断言、返回键经
   `nex-android-back` 级联点击「关闭全屏预览」),待有设备时验证。
 
+## 部署证据
+
+- 部署提交 `169e50218f291e0a84ebc6d9d525ff9e7b4d4af2`(分支
+  `feat/html-preview-width`,合并 origin/main 后推送;推送前 origin/main 移动
+  数次均已合并:连接器默认开放、GitHub 设备码流修复、连接流程重部署)。生产
+  release `main-169e5021-20261115` 部署到 Mac Air(launchd
+  `gui/501/cn.nexorai.nexbot-core`)。
+- 暂存:复制运行中 release 后替换 `core/`、`ui/`,覆写 `package.json` 与
+  `SOURCE_COMMIT`;`core/`(47 文件)与 `ui/`(29 文件)的 SHA-256 清单与本地
+  构建逐字节一致(Windows sha256sum 与 macOS shasum 的 `*` 标记差异已归一化)。
+  `node_modules` 复用(依赖无变化)。一次性 Core(独立数据目录、8801 端口)
+  `/health` 200、未授权 POST 401。
+- 数据:切换前活跃任务 0;sqlite3 backup API 备份 core.db/runtime.db,
+  account-workspaces、runtime-env.json、run-core.py 存于
+  `~/nexbot/backups/main-169e5021-20261115-pre/`;切换前后
+  bots=8 / conversations=54 / transcript=202 / todos=3 完全一致;launcher
+  `run-core.py` 指向本 release。
+- 公网验证(https://bot.nexorai.com.cn):`/health` 200,未授权 POST 401,
+  首页 HTML 与引用的全部资产(nexbot-mark svg、personal CSS、personal JS)
+  与本地构建逐字节一致。
+- Apple 等价验证(Mac,GitHub 全新 clone `169e5021`,LF 检出):
+  `corepack pnpm install --frozen-lockfile` + `build-nexbot-icons.mjs` 通过;
+  NexClientKit **254 项测试 0 失败**;`NexBotMac` Debug **BUILD SUCCEEDED**;
+  `NexBotiOS` Debug 在专用模拟器(创建后已删除)**BUILD SUCCEEDED**。
+- Android 冒烟 `smoke-android-html-preview.mjs` 需要模拟器,本机无设备,
+  脚本已按新交互更新但未运行;Android/Windows 安装包本次未重打包
+  (沿用最近已验证版本,Web 端即时生效,客户端随下次发版携带)。
+
 ## 范围与限制
 
-- 工作树改动**未提交、未推送**(用户要求);部署、安装包、发版均未进行。
-- macOS/iOS 原生会话页不是该 CSS/组件的作用面;原生端等价交互未在本次处理。
+- 本次部署仅覆盖 Core 与 Web UI;未重打 Windows/Android/Mac/iOS 安装包,
+  未发布 GitHub release/OSS 更新(平台保留最近已验证版本)。
+- `:has()` 选择器需要 Chromium 105+/Safari 15.4+,现有客户端均满足。
 - 1200px 列宽上限、900px iframe 下限、1200×780 弹窗尺寸为当前取值,可按需调整。
+
