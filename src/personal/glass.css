@@ -159,6 +159,13 @@
 .rk-workspace .message.system.error .bubble { padding: 10px 16px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 16px; background: color-mix(in srgb, var(--warning) 14%, var(--card)); color: var(--foreground); font-size: 13px; }
 .rk-workspace .bubble.processing-dots { min-height: 0; padding: 12px 16px; }
 .rk-workspace .bubble.processing-dots > span { background: var(--muted-foreground); }
+
+/* Interactive previews read better wide: a message that is only a preview drops
+   its bubble chrome and the card centres itself beyond the 700px text column. */
+.rk-workspace .message.assistant:has(.markdown > .html-preview:only-child) .message-body { width: 100%; }
+.rk-workspace .message.assistant:has(.markdown > .html-preview:only-child) .bubble { width: 100%; padding: 0; background: transparent; box-shadow: none; border-radius: 0; }
+.rk-workspace .message.assistant .markdown > .html-preview:only-child { --preview-width: max(100%, min(1040px, calc(100vw - 480px))); width: var(--preview-width); margin-inline: calc(50% - var(--preview-width) / 2); }
+.rk-workspace[data-right="open"] .message.assistant .markdown > .html-preview:only-child { --preview-width: max(100%, min(1040px, calc(100vw - 880px))); }
 .rk-workspace .processing-caption, .rk-workspace .message-body > .muted { margin: 2px 0 0 6px; font-size: 11px; }
 .rk-workspace .markdown > :first-child { margin-top: 0; }
 .rk-workspace .markdown > :last-child { margin-bottom: 0; }

@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [html.render 预览卡拓宽:本地验证(2026-11-15)](html-preview-width-20261115.md)
+
 - [工具步骤就地展开:本地验证(2026-11-15)](tool-step-inline-20261115.md)
 
 - [Gmail connector catalog fix: production deploy (2026-11-15)](gmail-connector-catalog-fix-20261115.md)
