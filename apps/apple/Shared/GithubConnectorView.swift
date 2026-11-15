@@ -4,9 +4,8 @@ import NexClientKit
 struct GithubMark: View {
     var size: CGFloat = 60
     var body: some View {
-        Image(systemName: "chevron.left.forwardslash.chevron.left").font(.system(size: size * 0.42, weight: .semibold))
-            .foregroundStyle(.white).frame(width: size, height: size)
-            .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: size * 0.25))
+        Image("GitHub").resizable().scaledToFit().padding(size * 0.12)
+            .frame(width: size, height: size).background(.white, in: RoundedRectangle(cornerRadius: size * 0.25))
             .overlay(RoundedRectangle(cornerRadius: size * 0.25).strokeBorder(Theme.border)).accessibilityHidden(true)
     }
 }

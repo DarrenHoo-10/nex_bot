@@ -6,6 +6,7 @@ import { FeishuCard } from "./FeishuCard";
 import { GmailConnect } from "./GmailConnect";
 import { GithubConnect } from "./GithubConnect";
 import gmailIcon from "./assets/gmail.png";
+import githubMark from "./assets/github-mark.svg";
 import "./connectors.css";
 
 const gmailTools = [
@@ -32,7 +33,7 @@ const githubTools = [
 const toolLabel = (name: string) => [...gmailTools, ...githubTools].find((tool) => tool.name === name)?.label ?? name;
 const ready = (item: ConnectorView) => item.enabled && !!item.checkedAt && !item.error && (item.provider === "mcp" || item.hasToken);
 const connectionStatus = (item: ConnectorView) => !item.enabled ? "已停用" : item.provider === "gmail" && !item.hasToken ? "需要重新授权" : item.provider === "github" && !item.hasToken ? "需要重新授权" : item.error ? "连接异常" : item.checkedAt ? item.provider === "mcp" ? "连接测试通过" : "已连接" : "等待测试";
-const ConnectorIcon = ({ gmail = false }: { gmail?: boolean }) => <span className={`connector-icon ${gmail ? "is-gmail" : ""}`} aria-hidden="true">{gmail ? <img src={gmailIcon} alt="" width="48" height="48"/> : <Plug size={24}/>}</span>;
+const ConnectorIcon = ({ gmail = false, github = false }: { gmail?: boolean; github?: boolean }) => <span className={`connector-icon ${gmail ? "is-gmail" : github ? "is-github" : ""}`} aria-hidden="true">{gmail ? <img src={gmailIcon} alt="" width="48" height="48"/> : github ? <img src={githubMark} alt="" width="48" height="48"/> : <Plug size={24}/>}</span>;
 
 export function ConnectorsPage({ state, financeBotId, refresh }: { state: State; financeBotId?: string; refresh(): Promise<void> }) {
   const [view, setView] = useState<"catalog" | "gmail" | "github" | "mcp">("catalog");
@@ -165,7 +166,7 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
       <label className="connector-search"><Search size={16}/><input aria-label="搜索连接器" placeholder="搜索连接器" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
       <div className="connector-catalog-rows">
         {showGmail && <div className="connector-catalog-item"><button className="connector-catalog-row" data-connector="gmail" onClick={() => openDetail("gmail")}><ConnectorIcon gmail/><span className="connector-catalog-copy"><strong>Gmail</strong><span>搜索、读取邮件与会话。</span></span>{(accounts.length > 0 || !gmailAvailable) && <span className={`connector-catalog-state ${accounts.length ? "is-added" : ""}`}>{accounts.length ? <><Check size={17}/>已添加</> : "暂不可用"}</span>}</button>{!accounts.length && gmailAvailable && <GmailConnect available={!busy} label="连接" variant="subtle" connected={connected}/>}</div>}
-        {showGithub && <div className="connector-catalog-item"><button className="connector-catalog-row" data-connector="github" onClick={() => openDetail("github")}><ConnectorIcon/><span className="connector-catalog-copy"><strong>GitHub</strong><span>仓库、PR、CI 与 issue。</span></span>{githubAccounts.length > 0 && <span className="connector-catalog-state is-added"><Check size={17}/>已添加</span>}</button>{!githubAccounts.length && <GithubConnect available={githubAvailable && !busy} label="连接" variant="subtle" connected={githubConnected}/>}</div>}
+        {showGithub && <div className="connector-catalog-item"><button className="connector-catalog-row" data-connector="github" onClick={() => openDetail("github")}><ConnectorIcon github/><span className="connector-catalog-copy"><strong>GitHub</strong><span>仓库、PR、CI 与 issue。</span></span>{githubAccounts.length > 0 && <span className="connector-catalog-state is-added"><Check size={17}/>已添加</span>}</button>{!githubAccounts.length && <GithubConnect available={githubAvailable && !busy} label="连接" variant="subtle" connected={githubConnected}/>}</div>}
         {otherConnections.map((item) => <button className="connector-catalog-row" data-connector={item.id} key={item.id} onClick={() => openDetail("mcp", item.id)}><ConnectorIcon/><span className="connector-catalog-copy"><strong>{item.name}</strong><span>MCP 连接器</span></span><span className={`connector-catalog-state ${ready(item) ? "is-added" : ""}`}>{ready(item) && <Check size={17}/>}<span>{connectionStatus(item)}</span></span></button>)}
         {!showGmail && !showGithub && !otherConnections.length && <p className="connector-no-results">没有匹配的连接器</p>}
       </div>
@@ -187,7 +188,7 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
       <section className="connector-profile-section" aria-labelledby="gmail-info-title"><h3 id="gmail-info-title">信息</h3><dl className="connector-surface connector-information"><div><dt>服务提供方</dt><dd>Google</dd></div><div><dt>访问权限</dt><dd>只读</dd></div><div><dt>类别</dt><dd>邮件</dd></div></dl></section>
     </section>}
     {view === "github" && <section className="connector-detail connector-profile" aria-label="GitHub 连接器详情">
-      <div className="connector-profile-heading"><ConnectorIcon/><div><h2 className="connector-profile-title" tabIndex={-1}>GitHub</h2><span>github.com</span></div></div>
+      <div className="connector-profile-heading"><ConnectorIcon github/><div><h2 className="connector-profile-title" tabIndex={-1}>GitHub</h2><span>github.com</span></div></div>
       <p className="connector-profile-description">仓库、PR、CI 与 issue。</p>
       <section className="connector-profile-section" aria-labelledby="github-accounts-title"><h3 id="github-accounts-title">账户</h3><div className="connector-surface connector-accounts">
         {githubAccounts.map((item) => <div className="connector-account" data-account={item.id} key={item.id}>

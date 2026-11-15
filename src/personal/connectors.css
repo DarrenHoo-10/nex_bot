@@ -25,6 +25,7 @@
 .connector-catalog-state.is-added > svg { color: var(--success); }
 .connectors-page .connector-icon { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 15px; border: 1px solid var(--input); background: var(--card); }
 .connectors-page .connector-icon.is-gmail { background: #fff; }
+.connectors-page .connector-icon.is-github { background: #fff; }
 .connector-icon img { width: 44px; height: 44px; object-fit: contain; }
 .connector-no-results { padding: 40px 12px; text-align: center; color: var(--muted-foreground); font-size: 13px; }
 .connector-navigation { margin-bottom: 30px; }
