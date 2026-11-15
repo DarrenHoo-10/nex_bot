@@ -1,0 +1,34 @@
+.harness-mark {
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  flex: none;
+  overflow: hidden;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.harness-mark svg { width: 14px; height: 14px; display: block; }
+.harness-mark b { font: inherit; }
+.harness-mark[data-size='sm'] { width: 18px; height: 18px; border-radius: 5px; }
+.harness-mark[data-size='sm'] svg { width: 11px; height: 11px; }
+.harness-mark[data-harness='cursor'] svg,
+.harness-mark[data-harness='deepseek-harness'] svg,
+.harness-mark[data-harness='codex'] svg,
+.harness-mark[data-harness='grok-build'] svg,
+.harness-mark[data-harness='pi'] svg,
+.harness-mark[data-harness='claude-code'] svg,
+.harness-mark[data-harness='doubao-work'] svg { width: 15px; height: 15px; }
+.harness-mark[data-harness='workbuddy'] svg { width: 22px; height: 22px; }
+.harness-mark[data-size='sm'][data-harness='cursor'] svg,
+.harness-mark[data-size='sm'][data-harness='deepseek-harness'] svg,
+.harness-mark[data-size='sm'][data-harness='codex'] svg,
+.harness-mark[data-size='sm'][data-harness='grok-build'] svg,
+.harness-mark[data-size='sm'][data-harness='pi'] svg,
+.harness-mark[data-size='sm'][data-harness='claude-code'] svg,
+.harness-mark[data-size='sm'][data-harness='doubao-work'] svg { width: 12px; height: 12px; }
+.harness-mark[data-size='sm'][data-harness='workbuddy'] svg { width: 14px; height: 14px; }

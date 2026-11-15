@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 async function show(row = session({ nativeId: "outside", liveIn: "terminal", terminal: undefined, sendVia: "inbox" }), onSend: (text: string) => Promise<unknown> = async () => ({ turn: 0 })) {
-  await act(async () => { root.render(createElement(Composer, { session: row, onSend, onInterrupt: async () => ({}), onContinue: async () => ({}) })); });
+  await act(async () => { root.render(createElement(Composer, { session: row, onSend, onInterrupt: async () => ({}) })); });
 }
 
 async function type(value: string) {
@@ -72,6 +72,18 @@ describe("composer for a session outside nex_bot's terminals", () => {
     expect(note()).toBe(UNCONFIRMED_NOTE);
     await type("下一条");
     expect(note()).toBe(OUTSIDE_NOTE);
+  });
+
+  it("keeps the next draft when a pending send finishes", async () => {
+    let finish!:()=>void;
+    await show(session({nativeId:"pending-draft"}),()=>new Promise<void>(resolve=>{finish=resolve}));
+    await type("第一条");
+    await submit();
+    expect(sendButton().disabled).toBe(true);
+    await type("下一条草稿");
+    await act(async()=>finish());
+    expect(area().value).toBe("下一条草稿");
+    expect(sendButton().disabled).toBe(false);
   });
 
   it("tells a waiting session when its answer will be read", async () => {

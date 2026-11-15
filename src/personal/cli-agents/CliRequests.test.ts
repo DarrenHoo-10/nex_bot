@@ -61,7 +61,6 @@ let socket: FakeSocket;
 let stream: CliStream;
 
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-const text = () => container.textContent ?? "";
 const click = (element: Element | null) => act(async () => { (element as HTMLElement).click(); });
 const button = (label: string) => [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label || entry.getAttribute("aria-label") === label) ?? null;
 const push = (message: unknown) => act(async () => { socket.push(message); });
@@ -305,20 +304,10 @@ describe("hand over to an assistant", () => {
   });
 });
 
-describe("supervision in the header", () => {
-  it("opens the switches from the gear and saves a flip", async () => {
-    const rest = { wakeup: false, triage: false, decide: false, wake: false };
-    fixture.fetchSupervision.mockResolvedValue({ settings: { transientRetry: true, usageLimit: false, ...rest }, overrides: 0, pending: 0 });
-    fixture.saveSupervision.mockResolvedValue({ settings: { transientRetry: true, usageLimit: true, ...rest }, overrides: 0, pending: 0 });
+describe("workspace header", () => {
+  it("omits device breadcrumbs and the supervision gear", async () => {
     await open();
-    await click(button("自动处理设置"));
-    await flush();
-    const switches = [...container.querySelectorAll<HTMLElement>("[role=switch]")];
-    expect(switches.map((entry) => entry.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "false", "false", "false"]);
-    await click(switches[1]);
-    await flush();
-    expect(fixture.saveSupervision).toHaveBeenCalledWith({ usageLimit: true });
-    expect(container.querySelectorAll("[role=switch]")[1].getAttribute("aria-checked")).toBe("true");
-    expect(text()).toContain("额度恢复后继续");
+    expect(button("自动处理设置")).toBeNull();
+    expect(container.querySelector(".na-breadcrumb")).toBeNull();
   });
 });

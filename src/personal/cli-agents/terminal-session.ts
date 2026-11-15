@@ -36,7 +36,7 @@ export type TermEvent =
   | { type: "mode"; want: TermMode }
   | { type: "stop" };
 
-export function initialTermState(want: TermMode = "observe"): TermState {
+export function initialTermState(want: TermMode = "control"): TermState {
   return { phase: "idle", want, needsOpen: false, req: null, sid: null, mode: null, cols: 0, rows: 0, reason: null, error: null };
 }
 

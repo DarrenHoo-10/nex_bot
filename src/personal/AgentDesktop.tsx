@@ -113,7 +113,7 @@ export const RichText = memo(function RichText({ value, onPreviewFile, pending =
 export function AgentDesktop() {
   const { status: accountStatus, logout } = useAccount();
   const [state, setState] = useState<State>();
-  const [page, setPage] = useState(() => new URLSearchParams(window.location.search).get("settings") === "feishu" ? "settings" : "agent");
+  const [page, setPage] = useState(() => new URLSearchParams(window.location.search).get("settings") === "feishu" ? "settings" : new URLSearchParams(location.search).get("workspace") === "nexagent-review" && agentSection ? "cli" : "agent");
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>(page === "settings" ? "connectors" : "account");
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [financeBotId,setFinanceBotId]=useState<string>();

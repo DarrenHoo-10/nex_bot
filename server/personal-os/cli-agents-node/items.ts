@@ -150,6 +150,15 @@ function completeTool(ctx: ItemContext, callId: string | undefined, status: "ok"
 export function summarizeInput(input: unknown): string {
   if (typeof input === "string") return summary(input);
   if (!isRec(input)) return input === undefined || input === null ? "" : summary(String(input));
+  if (input.run_in_background === true) {
+    const command = typeof input.command === "string" ? truncateUtf8(input.command, 200) : undefined;
+    const title = input.description ?? input.prompt;
+    const description = typeof title === "string" ? truncateUtf8(title, 200) : undefined;
+    if (command || description) return summary(JSON.stringify({ run_in_background: true, command, description }));
+  }
+  if (typeof input.subject === "string" && typeof input.description === "string") {
+    return summary(JSON.stringify({ subject: truncateUtf8(input.subject, 200), taskId: input.taskId, status: input.status }));
+  }
   for (const key of ["command", "file_path", "path", "pattern", "url", "query", "prompt", "description"]) {
     const value = input[key];
     if (typeof value === "string" && value) return summary(value);
@@ -242,7 +251,10 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
 
   if (type === "user") {
     if (record.isCompactSummary === true) return { items: [notice(baseId, ts, "info", COMPACT_TEXT)] };
-    if (record.isMeta === true) return none;
+    if (record.isMeta === true) {
+      const text = blocksText(message?.content);
+      return text.trimStart().startsWith("<task-notification>") ? { items: [notice(baseId, ts, "info", text)] } : none;
+    }
     return { items: claudeUser(record, message, ctx, baseId, ts) };
   }
 
@@ -250,6 +262,9 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
 
   if (type === "attachment") {
     const attachment = isRec(record.attachment) ? record.attachment : undefined;
+    if (attachment?.type === "task_notification" && typeof attachment.taskId === "string" && typeof attachment.status === "string") {
+      return { items: [notice(baseId, ts, "info", `<task-notification><task-id>${attachment.taskId}</task-id><status>${attachment.status}</status></task-notification>`)] };
+    }
     if (!attachment || attachment.type !== "queued_command") return none;
     const raw = attachment.prompt ?? attachment.content ?? attachment.text;
     const text = blocksText(raw);
@@ -550,6 +565,7 @@ function codexThreadItem(item: Rec, ctx: ItemContext, ts: number): MappedRecord 
       return { items: [notice(id, ts, "info", COMPACT_TEXT)] };
     case "subagentactivity": {
       const label = asStr(item.description) ?? asStr(item.name) ?? asStr(item.agent_name) ?? asStr(item.status) ?? "";
+      if (item.status) return { items: [codexTool(id, ts, "Agent", summary(label), codexToolStatus(item), undefined)] };
       return { items: [notice(id, ts, "info", label ? `子 Agent：${label}` : "子 Agent 活动")] };
     }
     default:

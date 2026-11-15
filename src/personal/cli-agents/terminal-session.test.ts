@@ -7,8 +7,8 @@ const opened = (req = "r1", sid = 7, observe = true): TermEvent => ({ type: "ope
 const live = () => run([{ type: "start" }, { type: "requested", req: "r1" }, opened()]);
 
 describe("terminal state machine", () => {
-  it("starts in observe mode and asks for an open", () => {
-    expect(run([{ type: "start" }])).toMatchObject({ phase: "idle", want: "observe", needsOpen: true });
+  it("requests control when a terminal tab opens", () => {
+    expect(run([{ type: "start" }])).toMatchObject({ phase: "idle", want: "control", needsOpen: true });
   });
 
   it("goes from request to observing", () => {

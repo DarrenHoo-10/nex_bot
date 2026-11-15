@@ -1,13 +1,10 @@
-// Live terminal of a session: xterm.js fed by the Agent mode WebSocket. Opens
-// in observe mode (the PTY keeps its size, the page scales to fit); "操作"
-// reopens the stream as the controller, sizes the PTY to this tab and sends
-// keystrokes. xterm is loaded on demand so it stays out of the main chunk.
+// The right-hand terminal tab attaches a controller and fits the PTY to its pane.
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { CLI_ERROR_TEXT, TERM_DEFAULT, TERM_HISTORY, clampTermSize, type CliSessionKey } from "../../../shared/cli-agents";
 import type { CliStream } from "./stream";
-import { closeReasonText, createCreditMeter, fitScale, initialTermState, TERM_STATUS_TEXT, termReducer, termStatus, type TermMode } from "./terminal-session";
+import { closeReasonText, createCreditMeter, initialTermState, TERM_STATUS_TEXT, termReducer, termStatus, type TermMode } from "./terminal-session";
 
 const RESIZE_DEBOUNCE_MS = 100;
 
@@ -34,7 +31,7 @@ export interface TerminalViewProps {
 }
 
 export function TerminalView({ stream, sessionKey, connected }: TerminalViewProps) {
-  const [state, dispatch] = useReducer(termReducer, "observe" as TermMode, initialTermState);
+  const [state, dispatch] = useReducer(termReducer, "control" as TermMode, initialTermState);
   const [ready, setReady] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -72,7 +69,8 @@ export function TerminalView({ stream, sessionKey, connected }: TerminalViewProp
         cursorBlink: true,
         disableStdin: true,
         fontFamily: "ui-monospace, SFMono-Regular, Consolas, 'Cascadia Mono', 'Microsoft YaHei', monospace",
-        fontSize: 13,
+        fontSize: 15,
+        lineHeight: 1.15,
         scrollback: TERM_HISTORY,
         theme: TERM_THEME,
       });
@@ -107,7 +105,7 @@ export function TerminalView({ stream, sessionKey, connected }: TerminalViewProp
 
   // one terminal stream per session: reset on a new session, close on leaving
   useEffect(() => {
-    dispatch({ type: "start", want: "observe" });
+    dispatch({ type: "start", want: "control" });
     return release;
   }, [sessionKey, stream, release]);
 
@@ -176,31 +174,14 @@ export function TerminalView({ stream, sessionKey, connected }: TerminalViewProp
     try { proposed = fitRef.current?.proposeDimensions(); } catch { proposed = undefined; }
     const size = clampTermSize(proposed?.cols || TERM_DEFAULT.cols, proposed?.rows || TERM_DEFAULT.rows);
     const req = newRequestId();
-    if (!stream.openTerm(req, sessionKey, size.cols, size.rows, state.want === "observe")) return;
+    if (!stream.openTerm(req, sessionKey, size.cols, size.rows, false)) return;
     reqRef.current = req;
     dispatch({ type: "requested", req });
-  }, [state.needsOpen, state.want, connected, ready, stream, sessionKey]);
-
-  /** Observe: scale the PTY-sized screen into the pane. Control: scale 1. */
-  const applyScale = useCallback(() => {
-    const host = hostRef.current;
-    const holder = scaleRef.current;
-    if (!host || !holder) return;
-    if (modeRef.current !== "observe") {
-      holder.style.transform = "";
-      return;
-    }
-    const screen = holder.querySelector<HTMLElement>(".xterm-screen");
-    const scale = Math.min(fitScale(host.clientWidth, screen?.offsetWidth ?? 0), fitScale(host.clientHeight, screen?.offsetHeight ?? 0));
-    holder.style.transform = scale < 1 ? `scale(${scale})` : "";
-  }, []);
+  }, [state.needsOpen, connected, ready, stream, sessionKey]);
 
   useEffect(() => {
-    applyScale();
-    if (state.mode === "control") {
-      termRef.current?.focus();
-    }
-  }, [state.mode, state.cols, state.rows, ready, applyScale]);
+    if (state.mode === "control") termRef.current?.focus();
+  }, [state.mode]);
 
   // keep the pane and the PTY the same size while controlling
   useEffect(() => {
@@ -208,10 +189,6 @@ export function TerminalView({ stream, sessionKey, connected }: TerminalViewProp
     if (!host || !ready || typeof ResizeObserver === "undefined") return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const observer = new ResizeObserver(() => {
-      if (modeRef.current === "observe") {
-        applyScale();
-        return;
-      }
       if (modeRef.current !== "control") return;
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -230,33 +207,20 @@ export function TerminalView({ stream, sessionKey, connected }: TerminalViewProp
       clearTimeout(timer);
       observer.disconnect();
     };
-  }, [ready, applyScale]);
-
-  const choose = (want: TermMode) => {
-    if (want === state.want && state.sid !== null) return;
-    release();
-    dispatch({ type: "mode", want });
-  };
+  }, [ready, state.mode]);
 
   const status = termStatus(state, connected);
   const closedText = state.error ? CLI_ERROR_TEXT[state.error] : closeReasonText(state.reason);
   return (
     <div className="cli-term" data-status={status}>
-      <div className="cli-term-bar">
-        <span className="cli-term-status" role="status">{TERM_STATUS_TEXT[status]}</span>
-        <div className="cli-term-modes" role="group" aria-label="终端模式">
-          <button type="button" aria-pressed={state.want === "observe"} onClick={() => choose("observe")}>只看</button>
-          <button type="button" aria-pressed={state.want === "control"} onClick={() => choose("control")}>操作</button>
-        </div>
-      </div>
       <div className="cli-term-host" ref={hostRef} data-mode={state.mode ?? "none"}>
         <div className="cli-term-scale" ref={scaleRef} />
         {loadFailed ? <div className="cli-term-overlay" role="alert">终端组件加载失败</div> : null}
         {!loadFailed && status === "reconnecting" ? <div className="cli-term-overlay" role="status">正在重新连接</div> : null}
-        {status === "closed" ? (
+        {status === "closed" || status === "observing" ? (
           <div className="cli-term-overlay" role="status">
-            <span>{closedText || TERM_STATUS_TEXT.closed}</span>
-            <button type="button" onClick={() => { release(); dispatch({ type: "start", want: state.want }); }}>重新连接</button>
+            <span>{status === "observing" ? "暂未取得终端控制权" : closedText || TERM_STATUS_TEXT.closed}</span>
+            <button type="button" onClick={() => { release(); dispatch({ type: "start", want: "control" }); }}>重新连接</button>
           </div>
         ) : null}
       </div>

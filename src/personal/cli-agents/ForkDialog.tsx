@@ -1,6 +1,6 @@
 // "交给助手": pick one of the user's assistants; Core opens a new topic with a
 // digest of the session and the page goes there.
-import { useState, type FormEvent } from "react";
+import { useRef, useEffect, useState, type FormEvent } from "react";
 import { X } from "lucide-react";
 import type { CliSessionView } from "../../../shared/cli-agents";
 import { CliApiError, cliErrorText, forkSession } from "./api";
@@ -22,6 +22,12 @@ export function ForkDialog({ session, bots, initialBotId, onClose, onForked }: F
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  const form=useRef<HTMLFormElement>(null);
+  useEffect(()=>{
+    const trigger=document.activeElement as HTMLElement|null;
+    form.current?.querySelector<HTMLElement>('[aria-pressed="true"]')?.focus();
+    return ()=>{if(trigger?.isConnected)trigger.focus()};
+  },[]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!botId || busy) return;
@@ -38,7 +44,12 @@ export function ForkDialog({ session, bots, initialBotId, onClose, onForked }: F
 
   return (
     <div className="modal-backdrop" onKeyDown={(event) => { if (event.key === "Escape" && !busy) onClose(); }}>
-      <form className="modal cli-dialog" role="dialog" aria-modal="true" aria-label="交给助手" onSubmit={(event) => void submit(event)}>
+      <form ref={form} onKeyDown={e=>{
+        if(e.key!=="Tab")return;
+        const buttons=Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+        const first=buttons[0], last=buttons.at(-1);if(!first||!last)return;
+        if(e.shiftKey && document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus()}
+      }} className="modal cli-dialog" role="dialog" aria-modal="true" aria-label="交给助手" onSubmit={(event) => void submit(event)}>
         <div className="modal-heading">
           <h2>交给助手</h2>
           <button type="button" className="icon-button" aria-label="关闭" disabled={busy} onClick={onClose}><X size={16} /></button>

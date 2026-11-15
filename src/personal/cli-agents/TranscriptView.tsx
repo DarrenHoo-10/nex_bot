@@ -3,6 +3,11 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CliItem, CliSessionKey } from "../../../shared/cli-agents";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
+import {HarnessMark} from "./tokendance/HarnessMark";
+import { Languages } from "lucide-react";
+import { useChineseReply } from "./use-chinese-reply";
+import { AnnotatedMessage } from "./AnnotatedMessage";
+import { useReview, type Note } from "./WorkbenchReview";
 import { ToolActivityDisclosure } from "../vendor/rakazo/ToolActivityDisclosure";
 import { cliErrorText, fetchItems } from "./api";
 import type { CliStream } from "./stream";
@@ -40,11 +45,27 @@ function Activity({ items }: { items: ActivityItem[] }) {
   );
 }
 
-function BlockView({ block }: { block: Block }) {
+function ReplyText({source, supplied}: { source: string; supplied?: string }) {
+  const [original, setOriginal] = useState(false);
+  const { translation, status, request } = useChineseReply(source, supplied);
+  const shown = original ? source : translation || source;
+  return <>
+    <Suspense fallback={<p className="cli-plain">{shown}</p>}><RichText value={shown}/></Suspense>
+    {translation ? <button type="button" className="text-button na-original" onClick={() => setOriginal(!original)}>
+      <Languages size={12}/>{original ? "查看中文" : "查看原文"}
+    </button> : status !== "idle" && <button type="button" className="text-button na-original" disabled={status === "working"} onClick={request}>
+      <Languages size={12}/>{status === "working" ? "正在翻译…" : status === "failed" ? "重试翻译" : "翻译成中文"}
+    </button>}
+  </>;
+}
+
+function BlockView({ block, engine, translations }: { block: Block; engine?: "claude"|"codex"; translations?:Record<string,string> }) {
   switch (block.kind) {
     case "user":
+      if(block.item.text.trim()==="[Request interrupted by user]")return <div className="cli-notice">你已中断本次请求</div>;
       return (
         <div className="cli-msg is-user" data-testid="cli-user">
+          <div className="na-byline is-user"><span>你</span><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
           <div className="cli-bubble">{block.item.text}</div>
           {block.item.queued ? <small>排队中</small> : null}
         </div>
@@ -52,7 +73,8 @@ function BlockView({ block }: { block: Block }) {
     case "assistant":
       return (
         <div className="cli-msg is-assistant markdown" data-testid="cli-assistant">
-          <Suspense fallback={<p className="cli-plain">{block.item.text}</p>}><RichText value={block.item.text} /></Suspense>
+          <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine==="codex"?"Codex":"Claude Code"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
+          <ReplyText key={block.item.text} source={block.item.text} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
         </div>
       );
     case "activity":
@@ -62,8 +84,10 @@ function BlockView({ block }: { block: Block }) {
   }
 }
 
-export function TranscriptView({ stream, sessionKey }: { stream: CliStream; sessionKey: CliSessionKey }) {
+export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems }: { onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; engine?:"claude"|"codex"; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+  const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
+  useEffect(()=>{onItems?.(items)},[items,onItems]);
   const [more, setMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -153,12 +177,16 @@ export function TranscriptView({ stream, sessionKey }: { stream: CliStream; sess
     }
   };
 
-  const blocks = useMemo(() => groupItems(items), [items]);
+  const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
+  const blocks = useMemo(() => groupItems(details?.history?.length?mergeItems(details.history,items):items), [items,details?.history]);
   return (
     <div className="cli-transcript" ref={scrollRef} onScroll={onScroll} data-testid="cli-transcript">
       <div className="cli-transcript-list" ref={listRef}>
         {more ? <button type="button" className="cli-older" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "正在读取…" : "加载更早的记录"}</button> : null}
-        {blocks.map((block) => <BlockView key={block.id} block={block} />)}
+        {blocks.map(block => {
+          const message = <BlockView key={block.id} engine={engine} block={block} translations={translations}/>;
+          return review && onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
+        })}
         {loading && !items.length ? <div className="cli-empty" role="status">正在读取…</div> : null}
         {!loading && !error && !items.length ? <div className="cli-empty">暂无记录</div> : null}
         {error ? <div className="cli-notice" data-level="error" role="alert">{error}<button type="button" className="text-button" onClick={() => void loadFirst()}>重试</button></div> : null}

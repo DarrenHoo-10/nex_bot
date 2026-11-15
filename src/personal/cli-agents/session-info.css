@@ -1,0 +1,43 @@
+.na-info{position:relative;flex:none;font-size:13px;color:var(--na-ink);text-align:start}
+.na-info button,.na-info summary{cursor:pointer}
+.na-info button:focus-visible,.na-info summary:focus-visible{outline:2px solid var(--na-accent);outline-offset:2px}
+.na-stage .cli-app .na-conversation-body{position:relative;min-width:0}
+.na-stage .cli-app .na-workspace-toggle{display:grid;place-items:center;flex:none;width:32px;height:32px;padding:0;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--na-muted)}
+.na-stage .cli-app .na-workspace-toggle:hover{background:var(--na-hover);color:var(--na-ink)}
+.na-stage .cli-app .na-workspace-toggle[aria-expanded="true"]{background:var(--na-soft);border-color:var(--na-line);color:var(--na-accent)}
+.na-workspace-toggle:focus-visible{outline:2px solid var(--na-accent);outline-offset:2px}
+.na-workspace-layer{position:absolute;z-index:5;top:12px;right:14px;width:min(354px,calc(100% - 28px));max-height:calc(100% - 24px);display:flex;flex-direction:column;visibility:hidden;pointer-events:none;opacity:0;transform:translateY(-5px)}
+.na-workspace-layer[data-open="true"]{visibility:visible;pointer-events:auto;opacity:1;transform:none}
+.na-workspace-layer>.na-info{flex:0 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;border:1px solid var(--na-line);border-radius:14px;background:var(--na-paper);box-shadow:0 12px 34px #173e2814,0 2px 6px #173e280b}
+.na-info-card{box-sizing:border-box;padding:15px}
+@media(prefers-reduced-motion:no-preference){
+  .na-workspace-layer{transition:opacity 150ms ease,transform 170ms cubic-bezier(.2,.75,.25,1),visibility 0s linear 170ms}
+  .na-workspace-layer[data-open="true"]{transition-delay:0s}
+}
+.na-info-card header,.na-info-row,.na-info-card summary{display:flex;gap:8px;align-items:center}
+.na-info-card header{margin-bottom:10px}.na-info-card header strong{font-size:14px;margin-right:auto}
+.na-info-card small,.na-info-card svg,.na-info-card code{color:var(--na-muted)}
+.na-info-card header button{display:grid;place-items:center;background:transparent;border:0;color:inherit;padding:4px}
+.na-info-row,.na-info-card summary{min-height:31px}
+.na-info-row>span,.na-diff summary>span{margin-right:auto}.na-info-row b,.na-diff b{font-weight:550;overflow-wrap:anywhere}.na-info-row code{font-size:11px}
+.na-info-card summary{list-style:none}.na-info-card summary::-webkit-details-marker{display:none}
+.na-diff em{font-style:normal;font-variant-numeric:tabular-nums;color:#32834b}.na-diff em:last-child{color:#b25750}
+.na-info-activity,.na-info-card footer{border-top:1px solid var(--na-line);margin-top:8px;padding-top:7px}
+.na-info-card details p{font-size:12px;color:var(--na-muted);margin:4px 0 7px 23px}
+.na-info-card ul{list-style:none;margin:2px 0 6px;padding:0 0 0 22px}.na-info-card li{font-size:12px;padding:4px 0;overflow-wrap:anywhere}
+.na-activity-group summary b{font-weight:500;flex:1}.na-activity-group[open] summary>svg:last-child{transform:rotate(180deg)}
+.na-activity-group li{display:flex;align-items:baseline;gap:6px}.na-activity-group li>svg{flex:none;align-self:flex-start;margin-top:2px}.na-activity-group li span{flex:1}
+.na-activity-group li[data-state="已完成"] span{color:var(--na-muted);text-decoration:line-through}.na-activity-group li[data-state="进行中"] svg{fill:var(--na-accent);color:var(--na-accent)}
+.na-info-card footer button{display:flex;align-items:center;gap:7px;background:var(--na-inset);color:var(--na-ink);padding:7px 9px;border:0;border-radius:7px}.na-info-card footer button:disabled{opacity:.55;cursor:default}
+.na-stage .cli-app .na-side .cli-term {
+  margin:0; border-radius:0; min-width:0;
+}
+.na-stage .cli-app .na-side .cli-term-host {padding:12px 8px 8px 12px}
+.na-stage .cli-app .na-side .cli-term-scale {width:100%;height:100%}
+.na-stage .cli-app .na-side .cli-term-host[data-mode="observe"] {overflow:auto}
+.na-stage .cli-app .na-side .cli-term-host[data-mode="observe"] .cli-term-scale {width:max-content;min-width:100%}
+@media(prefers-reduced-motion:no-preference){
+  .na-stage .na-side {animation:na-side-in 160ms ease-out}
+  @keyframes na-side-in {from{transform:translateX(16px);opacity:.65}to{transform:none;opacity:1}}
+}
+@media(max-width:720px){.na-workspace-layer{top:8px;right:9px;width:min(354px,calc(100% - 18px));max-height:calc(100% - 16px)}}

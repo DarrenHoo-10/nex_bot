@@ -30,6 +30,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(repo);
 const argv = new Set(process.argv.slice(2));
 const serveArg = process.argv.slice(2).find((arg) => arg === "--serve" || arg.startsWith("--serve="));
+const workbench = argv.has("--workbench") && !!serveArg;
 const servePort = serveArg ? Number(serveArg.split("=")[1] || 8765) : 0;
 class Served extends Error {}
 const shotDir = path.join(repo, "release", "agent-mode-smoke");
@@ -173,8 +174,9 @@ const live = path.join(configDir, "sessions", process.pid + ".json");
 mkdirSync(path.dirname(live), { recursive: true });
 const status = (value) => writeFileSync(live, JSON.stringify({ pid: process.pid, sessionId: id, cwd: process.cwd(), kind: "interactive", entrypoint: "cli", status: value, updatedAt: Date.now(), version: "2.1.0" }));
 process.on("exit", () => { try { rmSync(live, { force: true }); } catch {} });
-if (fresh) say("user", "Start of the smoke session");
+if (fresh) say("user", ${JSON.stringify(workbench ? "新会话已建立" : "Start of the smoke session")});
 status("idle");
+let pendingReply;
 let line = "";
 process.stdin.on("data", (chunk) => {
   for (const char of chunk.toString("utf8")) {
@@ -184,7 +186,11 @@ process.stdin.on("data", (chunk) => {
       line = "";
       if (!text) continue;
       say("user", text);
-      if (/^work/i.test(text)) status("busy");
+      if (${JSON.stringify(workbench)}) {
+        status("busy");
+        clearTimeout(pendingReply);
+        pendingReply=setTimeout(()=>{say("assistant","已收到「"+text+"」。这条回复来自隔离测试设备上的 CLI 替身。");status("idle")},12000);
+      } else if (/^work/i.test(text)) status("busy");
       else { say("assistant", "you said: " + text); status("idle"); }
     }
     else if (char === "\\x7f" || char === "\\b") line = line.slice(0, -1);
@@ -220,8 +226,12 @@ function seedSessions({ claudeDir, codexHome, work }) {
       { type: "assistant", uuid: `${id.slice(0, 2)}-a1`, sessionId: id, timestamp: t(1000), isSidechain: false, message: { role: "assistant", model: "stand-in", content: [{ type: "text", text: assistant }] } },
     ];
   };
-  writeJsonl(path.join(claudeDir, "projects", "alpha", `${IDS.alphaOne}.jsonl`), claudeRecord(IDS.alphaOne, path.join(work, "alpha"), 2 * HOUR, "重构解析器", "已经拆成三个函数。"), 2 * HOUR);
+  writeJsonl(path.join(claudeDir, "projects", "alpha", `${IDS.alphaOne}.jsonl`), claudeRecord(IDS.alphaOne, path.join(work, "alpha"), 2 * HOUR, workbench?"检查远程接手方案，优先处理会话目录和消息发送。":"重构解析器", workbench?"The session tree now groups work by device and project. Forks keep their parent when you change the sort order.":"已经拆成三个函数。"), 2 * HOUR);
   writeJsonl(path.join(claudeDir, "projects", "alpha", `${IDS.alphaTwo}.jsonl`), claudeRecord(IDS.alphaTwo, path.join(work, "alpha"), 3 * HOUR, "Fix the flaky test", "The race is in the setup step."), 3 * HOUR);
+  if(workbench){
+    const leaf="d1111111-1111-4111-8111-111111111111";
+    writeJsonl(path.join(claudeDir,"projects","alpha",leaf+".jsonl"),claudeRecord(leaf,path.join(work,"alpha"),5*HOUR,"验证孙会话边界","孙会话仍可独立对话。"),5*HOUR);
+  }
   const when = new Date(Date.now() - 4 * HOUR);
   const day = (n) => String(n).padStart(2, "0");
   const rollout = path.join(codexHome, "sessions", String(when.getFullYear()), day(when.getMonth() + 1), day(when.getDate()), `rollout-${when.getFullYear()}-${day(when.getMonth() + 1)}-${day(when.getDate())}T${day(when.getHours())}-00-00-${IDS.betaCodex}.jsonl`);
@@ -503,6 +513,12 @@ setInterval(() => {}, 60_000);
     return `engines ${JSON.stringify(snapshot.row.cliAgents.engines)}, ${sessions.length} synthetic sessions visible to Core`;
   }, { fatal: true });
 
+  if(workbench){
+    const {installWorkbench}=await import("./testing/nexagent-workbench-fixture.mjs");
+    const close=await installWorkbench({core,api,dirs,deviceId,ids:IDS,bootstrap,email:OWNER_EMAIL,password:OWNER_PASSWORD});
+    cleanups.push(async()=>{close();return "review fixture stopped"});
+    log("WORKBENCH "+core.origin+"/review");
+  }
   if (servePort) {
     log(`PREVIEW READY ${core.origin}  sign in as ${OWNER_EMAIL} with password ${JSON.stringify(OWNER_PASSWORD)}; Ctrl-C to stop`);
     await new Promise((resolve) => { process.once("SIGINT", resolve); process.once("SIGTERM", resolve); process.once("SIGBREAK", resolve); });
@@ -644,8 +660,8 @@ setInterval(() => {}, 60_000);
     await until(() => evaluate("!!document.querySelector('[role=dialog][aria-label=\"新建 Agent 会话\"]')"), "new session dialog");
     const hint = await text("[role=dialog] .cli-field-hint[role=status]");
     assert(!hint, `new session dialog is blocked: ${hint}`);
-    const engines = await evaluate("[...document.querySelectorAll('[role=dialog] .cli-segment button')].map(b=>b.textContent.trim())");
-    assert(engines.includes("Claude"), `engines: ${JSON.stringify(engines)}`);
+    const engines = await evaluate("[...document.querySelectorAll('[role=dialog] .cli-segment button,[role=dialog] .na-launch-tool')].map(b=>b.textContent.trim())");
+    assert(engines.includes("Claude Code"), `engines: ${JSON.stringify(engines)}`);
     await setValue("[role=dialog] .cli-field input", path.join(dirs.work, "gamma"));
     await until(() => evaluate("!document.querySelector('[role=dialog] button[type=submit]').disabled"), "start enabled");
     await click("[role=dialog] button[type=submit]");

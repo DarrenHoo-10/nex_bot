@@ -2,23 +2,26 @@
 // terminal and a conversation view. Full page like the todo workspace; the
 // sidebar and overlay come from AgentDesktop.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Bell, BellOff, PanelLeftOpen, Plus } from "lucide-react";
-import { BrandMark } from "../components/BrandMark";
+import { PanelLeftOpen, MessageSquare, SquareTerminal, Plus, X } from "lucide-react";
+import { WorkbenchProvider, useReview } from "./WorkbenchReview";
+import "./workbench.css";
 import type { CliAnswerDecision, CliDeviceView, CliRequestView, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { desktop } from "../api";
-import { GlowButton } from "../todo/controls";
 import { answerRequest, cliErrorText, fetchSnapshot, hideSession } from "./api";
 import { ForkDialog, type CliBotChoice } from "./ForkDialog";
 import { NewSessionDialog } from "./NewSessionDialog";
-import { disableNotifications, enableNotifications, newRequests, newlyWaiting, notificationsEnabled, notificationsSupported, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
+import { newRequests, newlyWaiting, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
 import { pendingCounts, pendingViews } from "./requests";
 import { groupSessions, hiddenCount, waitingCount } from "./session-model";
-import { SupervisionPanel } from "./SupervisionPanel";
 import { useCliRequests } from "./use-requests";
 import { SessionList } from "./SessionList";
+import { Composer } from "./Composer";
+import { useSideChats } from "./use-side-chats";
+import { TerminalView } from "./TerminalView";
 import { SessionPane } from "./SessionPane";
 import { CLOSE_UNAUTHORIZED, CliStream, type StreamStatus } from "./stream";
 import "./cli-agents.css";
+import "./button-feedback.css";
 
 const SELECTED_KEY = "nexbot.cliSelected";
 
@@ -122,7 +125,13 @@ export interface CliAgentsWorkspaceProps {
   stream?: CliStream;
 }
 
-export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNavigation, bots, onOpenTopic, stream: provided }: CliAgentsWorkspaceProps) {
+export function CliAgentsWorkspace(props:CliAgentsWorkspaceProps) {
+  return <WorkbenchProvider><Workspace {...props}/></WorkbenchProvider>;
+}
+function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNavigation, bots, onOpenTopic, stream: provided }: CliAgentsWorkspaceProps) {
+  const review=useReview();
+  const [railWidth,setRailWidth]=useState(()=>{try{return Number(localStorage.getItem("nexagent.railWidth"))||272}catch{return 272}});
+  const didSelect=useRef(false);
   const stream = useMemo(() => provided ?? new CliStream(), [provided]);
   useEffect(() => {
     stream.start();
@@ -140,17 +149,29 @@ export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark,
   const [mobileView, setMobileView] = useState<"list" | "pane">("list");
   const [showHidden, setShowHidden] = useState(false);
   const [creating, setCreating] = useState<{ deviceId?: string } | null>(null);
-  const [notify, setNotify] = useState(notificationsEnabled);
   const [forking, setForking] = useState<CliSessionView | null>(null);
 
   const select = useCallback((key: CliSessionKey | null) => {
+    didSelect.current=true;
     setSelectedKey(key);
     writeSelected(key);
     if (key) setMobileView("pane");
   }, []);
 
   const groups = useMemo(() => groupSessions(devices, sessions, showHidden), [devices, sessions, showHidden]);
-  const selected = sessions.find((session) => session.key === selectedKey) ?? null;
+  const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side") ?? null;
+  const sideChats=useSideChats(selectedKey,sessions);
+  const {draft:sideDraft,session:side}=sideChats;
+  const terminalActive=sideChats.selected?.id===sideChats.terminalId;
+  useEffect(()=>{
+    if (!review||!loaded||didSelect.current)return;
+    const target=selected || sessions.find(s=>s.key===review.initial);
+    if(target){didSelect.current=true;select(target.key)}
+  },[review,loaded,selected,sessions,select]);
+  function resize(value:number){
+    const width=Math.round(Math.max(220,Math.min(value,Math.min(520,innerWidth*.47))));
+    setRailWidth(width);try{localStorage.setItem("nexagent.railWidth",String(width))}catch{}
+  }
 
   const pending = useMemo(() => pendingCounts(requests.store, requests.now), [requests.store, requests.now]);
   const asked = useMemo(() => new Set(pending.keys()), [pending]);
@@ -176,15 +197,6 @@ export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark,
     requests.answered(key, id, decision);
   }, [requests.answered]);
 
-  const toggleNotify = async () => {
-    if (notify) {
-      disableNotifications();
-      setNotify(false);
-    } else {
-      setNotify(await enableNotifications());
-    }
-  };
-
   const hide = async (session: CliSessionView, hidden: boolean) => {
     setSessions((current) => current.map((entry) => (entry.key === session.key ? { ...entry, hidden } : entry)));
     try {
@@ -206,6 +218,7 @@ export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark,
         hiddenTotal={hiddenCount(sessions)}
         showHidden={showHidden}
         onSelect={select}
+        reloadSessions={reload}
         onNew={(deviceId) => setCreating({ deviceId })}
         onHide={(session, hidden) => void hide(session, hidden)}
         onToggleHidden={() => setShowHidden((value) => !value)}
@@ -215,48 +228,34 @@ export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark,
   // the list is rendered in exactly one place: the app sidebar on wide screens, its own column otherwise
   const slotted = typeof sidebar === "function" && sidebarList;
   const sidebarNode = typeof sidebar === "function" ? sidebar({ list: slotted ? list : null, onCreate: () => setCreating({ deviceId: selected?.deviceId }) }) : sidebar;
-  const connected = status === "open";
   const linkText = status === "connecting" ? "正在连接" : status === "reconnecting" ? "正在重新连接" : status === "closed" ? "连接已断开" : "";
   return (
-    <div className="workspace-stage" data-shell={desktop?.mode === "client" ? "1" : "0"} data-dark={dark ? "1" : "0"}>
-      <div className="app rk-workspace cli-app" data-dark={dark ? "1" : "0"} data-theme="studio" data-left={collapsed ? "closed" : "open"} data-right="closed" data-page="cli" data-mobile={mobileView} data-list={slotted ? "sidebar" : undefined}>
+    <div className="workspace-stage na-stage" data-shell={desktop?.mode === "client" ? "1" : "0"} data-dark={dark ? "1" : "0"}>
+      <div className="app rk-workspace cli-app" data-dark={dark ? "1" : "0"} data-theme="studio" data-left={collapsed ? "closed" : "open"} data-right="closed" data-page="cli" data-mobile={mobileView} style={{"--na-width":railWidth+"px"} as import("react").CSSProperties} data-list={slotted ? "sidebar" : undefined}>
         {sidebarNode}
+        {!collapsed&&slotted?<div className="na-resize" role="separator" aria-label="调整会话栏宽度" aria-orientation="vertical" aria-valuenow={railWidth} tabIndex={0} onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);e.preventDefault()}} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))resize(e.clientX)}} onKeyDown={e=>{if(e.key==="ArrowRight"||e.key==="ArrowLeft"){e.preventDefault();resize(railWidth+(e.key==="ArrowRight"?12:-12))}}}/>:null}
         <main className="cli-main">
-          <header>
-            <div className="header-side">
-              <button type="button" className="bt-round mobile-menu" aria-label="打开导航" onClick={onNavigation}><PanelLeftOpen size={19} /></button>
-            </div>
-            <div className="contact-heading who glass">
-              <BrandMark size={18} agent />
-              <strong>NexAgent</strong>
-              {linkText ? <span className="cli-link-state" role="status">{linkText}</span> : null}
-              {waiting > 0 ? <span className="cli-chip" data-tone="waiting" data-testid="cli-waiting">等你处理 {waiting}</span> : null}
-            </div>
-            <div className="header-actions">
-              {notificationsSupported() ? (
-                <button type="button" className="icon-button" aria-label={notify ? "关闭通知" : "开启通知"} aria-pressed={notify} title={notify ? "关闭通知" : "开启通知"} onClick={() => void toggleNotify()}>
-                  {notify ? <Bell size={16} /> : <BellOff size={16} />}
-                </button>
-              ) : null}
-              <SupervisionPanel />
-              <GlowButton aria-label="新建会话" onClick={() => setCreating({ deviceId: selected?.deviceId })}><Plus size={16} /><span>新建会话</span></GlowButton>
-            </div>
-          </header>
+          {(!sidebarList || linkText || waiting > 0) && <header className="na-workspace-status">
+            {!sidebarList && <button type="button" className="bt-round mobile-menu" aria-label="打开导航" onClick={onNavigation}><PanelLeftOpen size={19}/></button>}
+            {linkText && <span className="cli-link-state" role="status">{linkText}</span>}
+            {waiting > 0 && <span className="cli-chip" data-tone="waiting" data-testid="cli-waiting">等你处理 {waiting}</span>}
+          </header>}
           {error ? (
             <div role="alert" className="cli-banner">
               {error}
               <button type="button" className="text-button" onClick={() => { setError(""); void reload(); }}>重新加载</button>
             </div>
           ) : null}
-          <div className="cli-body">
+          <div className="cli-body" data-side={sideChats.selected?"open":undefined}>
             {slotted ? null : <aside className="cli-side glass" aria-busy={!loaded}>{list}</aside>}
             <div className="cli-content glass">
               {selected ? (
                 <SessionPane
                   key={selected.key}
                   session={selected}
+                  onTerminalOpen={sideChats.openTerminal}
+                  onSideOpen={review&&selected.engine==="claude"?(q,m)=>sideChats.open(selected,q,m):undefined}
                   stream={stream}
-                  connected={connected}
                   onKeyChange={select}
                   onBack={() => setMobileView("list")}
                   requests={requests.store.get(selected.key)}
@@ -268,6 +267,26 @@ export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark,
                 <div className="cli-placeholder">选择一个会话</div>
               )}
             </div>
+            {sideChats.selected && selected && <aside className="na-side" aria-label="右侧工作区">
+              <header className="na-side-tabs"><div className="na-tab-strip" role="tablist" aria-label="右侧工作区" onKeyDown={e=>{
+                if(!(e.target instanceof HTMLButtonElement) || e.target.getAttribute("role")!=="tab")return;
+                if(!["ArrowLeft","ArrowRight","Home","End"].includes(e.key))return;
+                const tabs=Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+                const index=tabs.indexOf(e.target);
+                const next=e.key==="Home"?0:e.key==="End"?tabs.length-1:(index+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;
+                e.preventDefault();tabs[next].click();tabs[next].focus();
+              }}>
+                {sideChats.tabs.map(t=><div key={t.id} className="na-chat-tab" data-active={t.id===sideChats.selected?.id}>
+                  <button role="tab" tabIndex={t.id===sideChats.selected?.id?0:-1} aria-selected={t.id===sideChats.selected?.id} onClick={()=>sideChats.select(t.id)} title={t.title}>{t.id===sideChats.terminalId?<SquareTerminal size={14}/>:<MessageSquare size={13}/>}<span>{t.title}</span></button>
+                  <button aria-label={t.id===sideChats.terminalId?"关闭远程终端":"关闭标签："+t.title} disabled={t.id===sideDraft?.id && sideDraft.busy} onClick={()=>sideChats.close(t.id)}><X size={12}/></button>
+                </div>)}
+              </div>{review && selected.engine==="claude" && <button aria-label="新建侧边聊天" title="新建侧边聊天" onClick={()=>void sideChats.open(selected,"","",true)}><Plus size={15}/></button>}
+              <button className="na-side-hide" aria-label={terminalActive?"收起侧边栏":"关闭侧边会话"} title="收起侧边栏" onClick={()=>sideChats.select(null)}><PanelLeftOpen size={15}/></button></header>
+              {terminalActive ? <TerminalView key={selected.key} sessionKey={selected.key} stream={stream} connected={status==="open"}/> : side ? <SessionPane key={side.key} session={side} stream={stream} compact onSideOpen={side.engine==="claude"?(q,m)=>sideChats.open(side,q,m):undefined} onBack={()=>sideChats.select(null)} onKeyChange={sideChats.changeSession} requests={requests.store.get(side.key)} now={requests.now} onAnswer={(id,d,a)=>answer(side.key,id,d,a)}/>
+                : sideDraft && <section className="na-side-blank"><Composer key={sideDraft.id} session={sideDraft.source}
+                  draft={{...sideDraft,busy:sideDraft.busy||sideDraft.sent,configure:(model,effort)=>sideChats.patch(sideDraft.id,{model,effort})}}
+                  onSend={text=>sideChats.send(sideDraft,text)} onInterrupt={async()=>{}}/></section>}
+            </aside>}
           </div>
         </main>
       </div>
@@ -276,6 +295,7 @@ export function CliAgentsWorkspace({ sidebar, sidebarList = true, overlay, dark,
           devices={devices}
           sessions={sessions}
           initialDeviceId={creating.deviceId}
+          initialCwd={selected?.deviceId === creating.deviceId ? selected?.cwd : undefined}
           onClose={() => setCreating(null)}
           onStarted={(key) => { setCreating(null); select(key); }}
         />
