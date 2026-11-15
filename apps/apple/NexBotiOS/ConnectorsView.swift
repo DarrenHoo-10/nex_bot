@@ -108,14 +108,13 @@ struct ConnectorsView: View {
 
 // MARK: - Detail
 
-/// One connector: status, metadata, test, enable, tool catalog, per-agent grants and removal.
+/// One connector: status, metadata, test, enable, tool catalog and removal.
 struct ConnectorDetailView: View {
     let workspace: WorkspaceStore
     let connectorID: String
     @State var notice: String?
     @Environment(\.dismiss) private var dismiss
     @State private var editor: ConnectorEditorRequest?
-    @State private var granting: Bot?
     @State private var testing = false
     @State private var toggling = false
     @State private var confirmRemove = false
@@ -137,7 +136,6 @@ struct ConnectorDetailView: View {
                     if let notice { InlineBanner(text: notice, tone: .good) }
                     if let message = actionError ?? connector.error { InlineBanner(text: message) }
                     catalog(connector)
-                    grants(connector)
                     remove
                 }
                 .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
@@ -156,10 +154,7 @@ struct ConnectorDetailView: View {
                 notice = "已保存。点击“测试连接”获取工具目录。"; actionError = nil
             }
         }
-        .sheet(item: $granting) { bot in
-            if let connector { GrantEditor(workspace: workspace, connector: connector, bot: bot) { notice = "工具授权已更新。"; actionError = nil } }
-        }
-        .confirmationDialog("移除连接器及全部工具授权？", isPresented: $confirmRemove, titleVisibility: .visible) {
+        .confirmationDialog("移除连接器？", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("确认移除", role: .destructive) { Task { await removeConnector() } }
             Button("取消", role: .cancel) {}
         }
@@ -168,7 +163,6 @@ struct ConnectorDetailView: View {
             case "c-test": Task { await test() }
             case "c-toggle": Task { await toggle() }
             case "c-edit": if let connector { editor = ConnectorEditorRequest(existing: connector, name: connector.name, url: connector.url, transport: connector.transport) }
-            case "c-grant": granting = workspace.bots.first { $0.name == arg }
             case "c-remove": confirmRemove = true
             case "c-removeconfirm": Task { await removeConnector() }
             default: break
@@ -246,32 +240,6 @@ struct ConnectorDetailView: View {
         }
     }
 
-    private func grants(_ c: ConnectorView) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Agent 授权").font(.subheadline.weight(.semibold))
-            Text("只开放选中的工具。实际调用会在该 Agent 的对话中请求批准。").font(.caption).foregroundStyle(Theme.muted)
-            if workspace.bots.isEmpty {
-                Text("创建 Agent 后，可以在这里授权。").font(.footnote).foregroundStyle(Theme.muted)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(workspace.bots, id: \.id) { bot in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(bot.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text("\(c.grant(for: bot.id)?.tools.count ?? 0) 项工具已授权").font(.caption).foregroundStyle(Theme.muted)
-                            }
-                            Spacer()
-                            Button("管理授权") { granting = bot }.buttonStyle(PillButtonStyle()).disabled(c.checkedAt == nil)
-                        }
-                        .padding(.vertical, 10)
-                        if bot.id != workspace.bots.last?.id { Divider().overlay(Theme.border) }
-                    }
-                }
-                .padding(.horizontal, 14).cardStyle()
-            }
-        }
-    }
-
     private var remove: some View {
         Button("移除连接器") { confirmRemove = true }.buttonStyle(PillButtonStyle(danger: true))
     }
@@ -296,70 +264,6 @@ struct ConnectorDetailView: View {
     private func removeConnector() async {
         do { try await workspace.removeConnector(connectorID); dismiss() }
         catch { actionError = coreMessage(error); await workspace.refresh() }
-    }
-}
-
-// MARK: - Grant editor
-
-/// Sheet: choose the connector tools one agent may call.
-private struct GrantEditor: View {
-    let workspace: WorkspaceStore
-    let connector: ConnectorView
-    let bot: Bot
-    let onSaved: () -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var chosen: Set<String>
-    @State private var busy = false
-    @State private var errorText: String?
-
-    init(workspace: WorkspaceStore, connector: ConnectorView, bot: Bot, onSaved: @escaping () -> Void) {
-        self.workspace = workspace; self.connector = connector; self.bot = bot; self.onSaved = onSaved
-        let names = Set(connector.tools.map(\.name))
-        _chosen = State(initialValue: Set(connector.grant(for: bot.id)?.tools ?? []).intersection(names))
-    }
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("为 \(bot.name) 选择工具").font(.title3.weight(.bold))
-                    VStack(spacing: 0) {
-                        ForEach(connector.tools, id: \.name) { tool in
-                            Toggle(isOn: Binding(get: { chosen.contains(tool.name) }, set: { on in if on { chosen.insert(tool.name) } else { chosen.remove(tool.name) } })) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(tool.name).font(.subheadline.weight(.semibold))
-                                    Text(tool.displayDescription).font(.caption).foregroundStyle(Theme.muted)
-                                }
-                            }
-                            .padding(.vertical, 10)
-                            if tool.name != connector.tools.last?.name { Divider().overlay(Theme.border) }
-                        }
-                    }
-                    .padding(.horizontal, 14).cardStyle()
-                    if let errorText { InlineBanner(text: errorText) }
-                    PrimaryButton(title: "保存授权", busy: busy) { Task { await save() } }.disabled(busy)
-                }
-                .padding(16)
-            }
-            .background(Theme.background)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
-            .onDebugUI { cmd, _ in
-                if cmd == "c-grantall" { chosen = Set(connector.tools.map(\.name)) }
-                if cmd == "c-grantsave" { Task { await save() } }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func save() async {
-        busy = true; errorText = nil
-        defer { busy = false }
-        do {
-            let ordered = connector.tools.map(\.name).filter(chosen.contains)
-            try await workspace.grantConnector(connector.id, botID: bot.id, tools: ordered)
-            onSaved(); dismiss()
-        } catch { errorText = coreMessage(error) }
     }
 }
 

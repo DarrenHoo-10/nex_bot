@@ -76,7 +76,7 @@ export class AssistantLifecycle {
     const fresh=s.createBot(String(old.name),old.instructions);
     s.run("UPDATE bots SET model_connection_id=?,model_id=?,created_at=? WHERE id=?",old.model_connection_id,old.model_id,old.created_at,fresh);
     // These tables contain settings only. Transfer ownership so existing grant and rule IDs remain stable.
-    for(const table of ["bot_policies","bot_public_profiles","bot_appearance","agent_approval_settings","agent_approval_rules","agent_model_settings","personal_connector_grants","personal_feishu_apps"]){
+    for(const table of ["bot_policies","bot_public_profiles","bot_appearance","agent_approval_settings","agent_approval_rules","agent_model_settings","personal_feishu_apps"]){
       s.run(`DELETE FROM ${table} WHERE bot_id=?`,fresh);
       s.run(`UPDATE ${table} SET bot_id=? WHERE bot_id=?`,fresh,bot);
     }
@@ -234,7 +234,7 @@ export class AssistantLifecycle {
       s.run("DELETE FROM personal_feishu_outbound WHERE app_id=?",connector.app_id);
       s.run("DELETE FROM personal_connectors WHERE id=?",connector.connector_id);
     }
-    for(const table of ["bot_policies","personal_connector_grants","agent_model_settings","agent_approval_rules","agent_approval_settings","bot_appearance","bot_public_profiles","user_topic_indexed","resident_shortened"])
+    for(const table of ["bot_policies","agent_model_settings","agent_approval_rules","agent_approval_settings","bot_appearance","bot_public_profiles","user_topic_indexed","resident_shortened"])
       s.run(`DELETE FROM ${table} WHERE bot_id=?`,bot);
     s.run("DELETE FROM user_topic_access WHERE principal=?",bot);
     s.run("DELETE FROM topic_delegations WHERE target_bot_id=? OR task_id IN (SELECT id FROM tasks WHERE bot_id=?)",bot,bot);

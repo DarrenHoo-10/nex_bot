@@ -102,14 +102,9 @@ try {
   google.state.deny = false; await button("连接 Gmail", ".connector-account-add");
   if (await finishAuthorization() !== 200) throw new Error("OAuth failed");
   await until(() => evaluate("document.querySelector('.connector-detail')?.textContent.includes('reader@example.test')&&!document.querySelector('.gmail-authorization')"), "connected mailbox");
-  if (core.connectors.list()[0].grants.length) throw new Error("Connection automatically granted tools");
   cases.push("denial-retry-callback-polling-account-display");
-  await button("管理授权", ".connector-agent");
-  await evaluate("[...document.querySelectorAll('.grant-editor input')].forEach(el=>el.click())");
-  await screenshot("gmail-grants-light"); await button("保存授权", ".grant-editor");
-  await until(() => evaluate("!document.querySelector('.grant-editor')&&document.querySelector('.connector-detail')?.textContent.includes('3 项工具已授权')"), "saved grants");
   await click(".connector-back");
-  if (!await evaluate("document.querySelector('[data-connector=gmail]').textContent.includes('已添加')")) throw new Error("Connected catalog status missing");
+  if (!await evaluate("document.querySelector('[data-connector=gmail]').textContent.includes('已添加')&&!document.querySelector('.grant-editor')")) throw new Error("Connected catalog status missing");
   await screenshot("gmail-catalog-added-light"); await click("[data-connector=gmail]");
   await screenshot("gmail-connected-light");
   await click(".connector-tool-disclosure summary");
@@ -123,7 +118,7 @@ try {
   await until(() => evaluate("!document.querySelector('.send').disabled"), "send ready"); await click(".send");
   await until(() => evaluate("document.querySelector('.transcript')?.textContent.includes('你有一封未读的项目进展邮件')"), "worker reply");
   if (core.store.all("SELECT id FROM approvals").length) throw new Error("Read-only mail required approval");
-  await screenshot("gmail-chat-light"); cases.push("granted-mail-search-through-real-worker-and-transcript");
+  await screenshot("gmail-chat-light"); cases.push("mail-search-through-real-worker-and-transcript");
   await click(".workspace-account-name"); await button("设置", ".account-menu"); await button("连接器", ".preferences-nav");
   await click("[data-connector=gmail]");
   await click(".connector-account-menu");
@@ -137,7 +132,7 @@ try {
   if (await finishAuthorization() !== 200) throw new Error("Second mailbox failed");
   await until(() => evaluate("document.querySelectorAll('.connector-account').length===2&&!document.querySelector('.gmail-authorization')"), "two grouped mailboxes");
   const second = core.connectors.list().find((item) => item.id !== connector.id);
-  if (second.grants.length || core.connectors.list().find((item) => item.id === connector.id).grants[0].tools.length !== 3) throw new Error("Mailbox grants leaked across accounts");
+  if (core.connectors.list().some((item) => item.grants.length)) throw new Error("Legacy grant records resurrected");
   await click(".connector-back");
   if (!await evaluate("document.querySelectorAll('[data-connector=gmail]').length===1")) throw new Error("Mailboxes duplicated catalog entries");
   await click("[data-connector=gmail]"); await screenshot("gmail-multiple-accounts-light");
@@ -154,8 +149,8 @@ try {
   await click(`[data-account='${second.id}'] .connector-account-menu`);
   await button("断开连接", `[data-account='${second.id}']`); await button("确认断开", `[data-account='${second.id}']`);
   await until(() => evaluate("document.querySelectorAll('.connector-account').length===1"), "one mailbox removed");
-  if (core.connectors.list().length !== 1 || core.connectors.list()[0].id !== connector.id || core.connectors.list()[0].grants[0].tools.length !== 3) throw new Error("Removing one mailbox affected another");
-  cases.push("multiple-accounts-grouping-grant-isolation-and-targeted-disconnect");
+  if (core.connectors.list().length !== 1 || core.connectors.list()[0].id !== connector.id) throw new Error("Removing one mailbox affected another");
+  cases.push("multiple-accounts-grouping-and-targeted-disconnect");
   google.state.email = "reader@example.test";
   await evaluate("window.open=window.fixtureOriginalOpen");
   if (nativeShell) writeFileSync(browserMode, "complete");
@@ -163,8 +158,7 @@ try {
   await button("重新授权", ".connector-detail");
   await until(() => google.exchanges >= 3, "popup callback");
   await until(() => evaluate("!document.querySelector('.connector-detail .gmail-authorization')"), "reauthorization completed");
-  if (core.connectors.list()[0].grants[0].tools.length !== 3) throw new Error("Reconnect lost grants");
-  cases.push(nativeShell ? "native-browser-reauthorization-preserves-grants" : "normal-popup-reauthorization-preserves-grants");
+  cases.push(nativeShell ? "native-browser-reauthorization" : "normal-popup-reauthorization");
   await button("断开连接", ".connector-detail"); await button("确认断开", ".connector-detail");
   await until(() => evaluate("!document.querySelector('.connector-account')&&document.querySelector('.connector-account-add')?.textContent.includes('连接 Gmail')"), "disconnected");
   if (core.connectors.list().length || google.revocations !== 2) throw new Error("Disconnect failed");
@@ -212,9 +206,9 @@ try {
   await until(() => google.exchanges > exchanges, "catalog popup callback");
   await until(() => evaluate("document.querySelector('[data-connector=gmail]').textContent.includes('已添加')&&!document.querySelector('.connector-catalog-item > .gmail-connect')"), "catalog connected state");
   if (!await evaluate(onCatalog)) throw new Error("Catalog connection navigated away");
-  if (core.connectors.list().length !== 1 || core.connectors.list()[0].grants.length) throw new Error("Catalog connection created extra records or grants");
+  if (core.connectors.list().length !== 1) throw new Error("Catalog connection created extra records");
   await screenshot("gmail-catalog-connected-direct-light");
-  cases.push("catalog-direct-connect-completes-without-grants");
+  cases.push("catalog-direct-connect-completes");
   if (exceptions.length) throw new Error("Renderer exceptions: " + exceptions.join(", "));
   const report = { passed: true, cases, googleExchanges: google.exchanges, mailRequests: google.requests.filter((request) => request.path.includes("/gmail/")).length, ...(nativeShell ? {} : { screenshots: output }) };
   writeFileSync(path.join(output, "result.json"), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report));

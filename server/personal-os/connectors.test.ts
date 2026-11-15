@@ -19,17 +19,16 @@ async function fixture() {
   let activeApp = app; cleanup.push(() => activeApp.close());
   async function restart() { await activeApp.close(); activeApp = await createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false }); return activeApp; }
   app.store.saveConfig({ provider: "openai", endpoint: model.origin + "/v1", model: "fixture", apiKey: "synthetic-only" });
-  app.store.createBot("助手"); app.store.createBot("未授权助手");
+  app.store.createBot("助手"); app.store.createBot("另一助手");
   const bots = app.store.all("SELECT * FROM bots ORDER BY created_at");
   async function api(route: string, data?: unknown, auth = token) {
     const response = await fetch(app.origin + "/api/" + route, { headers: { Authorization: `Bearer ${auth}`, "Content-Type": "application/json" }, ...(data ? { method: "POST", body: JSON.stringify(data) } : {}) });
     const body = await response.json() as { connectors: Array<ConnectorView & Record<string, unknown>> }; return { status: response.status, body };
   }
   async function current() { return (await api("state")).body.connectors[0]; }
-  async function setup(transport = "http", secret = "synthetic-mcp-secret", tools = ["echo"]) {
+  async function setup(transport = "http", secret = "synthetic-mcp-secret") {
     expect((await api("connectors/save", { name: "测试工具", url: mcp.origin + (transport === "sse" ? "/sse" : "/mcp"), transport, token: secret })).status).toBe(200);
     expect((await api("connectors/test", await current())).status).toBe(200);
-    expect((await api("connectors/grant", { ...await current(), botId: bots[0].id, tools })).status).toBe(200);
     return current();
   }
   return { app, root, key, token, mcp, model, bots, api, current, setup, restart };
@@ -41,7 +40,7 @@ describe("generic MCP connectors in disposable Core", () => {
     expect(f.app.store.get("SELECT credential FROM personal_connectors")?.credential).not.toContain("synthetic-mcp-secret");
     expect((await f.api("connectors/toggle", { ...connector, enabled: false }, "invalid")).status).toBe(401);
     f.model.scripts.push({ kind: "openai-tool", calls: [{ id: "directory", name: "broker", args: JSON.stringify({ action: "connector.tools", connectorId: connector.id }) }] }, { kind: "openai-tool", calls: [{ id: "echo", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "echo", parameters: { text: "合成测试" } }) }] }, { kind: "openai-text", text: "连接器调用完成" });
-    const taskId = f.app.agents.send(String(f.bots[0].id), "使用已授权的回显工具", "connector-call").taskId;
+    const taskId = f.app.agents.send(String(f.bots[0].id), "使用回显工具", "connector-call").taskId;
     await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
     expect(f.mcp.calls).toHaveLength(0);
     const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
@@ -50,11 +49,11 @@ describe("generic MCP connectors in disposable Core", () => {
     expect(f.mcp.calls).toEqual([{ name: "echo", arguments: { text: "合成测试" } }]);
     expect(f.mcp.credentials.every((value) => value === "Bearer synthetic-mcp-secret")).toBe(true);
     const tools = String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.tools'")?.result_json);
-    expect(tools).toContain("echo"); expect(tools).not.toContain("private_tool");
+    expect(tools).toContain("回显测试文字"); expect(tools).toContain("private_tool");
     expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.call'")?.result_json)).toContain("MCP 回显：合成测试");
   }, 60_000);
   it.each(["http", "sse"])("runs %s read-only queries automatically but holds external sending", async (transport) => {
-    const f = await fixture(), connector = await f.setup(transport, "synthetic-mcp-secret", ["read_query", "echo", "send_message"]);
+    const f = await fixture(), connector = await f.setup(transport, "synthetic-mcp-secret");
     expect(connector.tools.find((tool) => tool.name === "read_query")?.annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
     for (const [tool, risk] of [["read_query", undefined], ["echo", "standard"]]) {
       f.model.scripts.push({ kind: "openai-tool", calls: [{ id: tool!, name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool, risk, parameters: { text: "只读合成数据" } }) }] }, { kind: "openai-text", text: "查询完成" });
@@ -73,15 +72,16 @@ describe("generic MCP connectors in disposable Core", () => {
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
     expect(f.mcp.calls).toHaveLength(3);
   }, 60_000);
-  it("rejects ungranted agents/tools and stale versions before dispatch, and clears grants on target change", async () => {
+  it("serves every agent without grants, rejects unknown tools and stale versions before dispatch", async () => {
     const f = await fixture(), connector = await f.setup();
     const module = new ConnectorModule(f.app.store, () => {}); cleanup.push(() => module.close());
     const args = { action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "echo", parameters: {} };
-    await expect(module.execute({ bot_id: f.bots[1].id }, args, async () => {})).rejects.toThrow("未授权");
-    await expect(module.execute({ bot_id: f.bots[0].id }, { ...args, tool: "private_tool" }, async () => {})).rejects.toThrow("未获准");
+    for (const bot of f.bots) await expect(module.execute({ bot_id: bot.id }, args, async () => {})).resolves.toHaveProperty("isError", false);
+    expect(f.mcp.calls).toHaveLength(2);
+    await expect(module.execute({ bot_id: f.bots[0].id }, { ...args, tool: "nonexistent_tool" }, async () => {})).rejects.toThrow("连接器没有这个工具");
     await expect(module.execute({ bot_id: f.bots[0].id }, { ...args, connectorVersion: 1 }, async () => {})).rejects.toThrow("已变化");
     expect((await f.api("connectors/save", { ...connector, url: f.mcp.origin + "/other" })).status).toBe(200);
-    expect(await f.current()).toMatchObject({ hasToken: false, grants: [], tools: [] }); expect(f.mcp.calls).toHaveLength(0);
+    expect(await f.current()).toMatchObject({ hasToken: false, grants: [], tools: [] }); expect(f.mcp.calls).toHaveLength(2);
   });
   it("marks a cancelled dispatched call unknown and never replays it", async () => {
     const f = await fixture(), connector = await f.setup(); f.mcp.hold(true);
@@ -96,7 +96,7 @@ describe("generic MCP connectors in disposable Core", () => {
     const reopened = await f.restart();
     expect(reopened.store.get("SELECT status FROM tool_calls WHERE task_id=?", taskId)?.status).toBe("unknown");
     const restored = new ConnectorModule(reopened.store, () => {});
-    expect(restored.list()[0]).toMatchObject({ id: connector.id, hasToken: true, grants: [{ botId: f.bots[0].id, tools: ["echo"] }] });
+    expect(restored.list()[0]).toMatchObject({ id: connector.id, hasToken: true, grants: [] });
     f.mcp.hold(false); await restored.test(restored.list()[0] as unknown as Record<string, unknown>); await restored.close();
     expect(f.mcp.calls).toHaveLength(1);
   }, 60_000);
@@ -109,10 +109,11 @@ describe("generic MCP connectors in disposable Core", () => {
     await expect(module.test(await f.current(), async () => { throw new Error("revoked"); })).rejects.toThrow("revoked");
     expect(await f.current()).toMatchObject({ tools: [], checkedAt: null });
   });
-  it("rechecks authorization after handshake and prevents a revoked tool from being sent", async () => {
+  it("rechecks the connector after handshake and prevents a disabled connector from being sent", async () => {
     const f = await fixture(), connector = await f.setup();
     const module = new ConnectorModule(f.app.store, () => {}); cleanup.push(() => module.close());
-    await expect(module.execute({ bot_id: f.bots[0].id, task_id: "synthetic" }, { action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "echo", parameters: {} }, async () => { module.grant({ ...connector, botId: f.bots[0].id, tools: [] }); })).rejects.toThrow("未发送工具调用");
+    let disabled = false;
+    await expect(module.execute({ bot_id: f.bots[0].id, task_id: "synthetic" }, { action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "echo", parameters: {} }, async () => { if (!disabled) { disabled = true; module.toggle({ ...connector, enabled: false }); } })).rejects.toThrow("未发送工具调用");
     expect(f.mcp.calls).toHaveLength(0);
   });
   it("redacts echoed credentials even when structured JSON escapes them", async () => {

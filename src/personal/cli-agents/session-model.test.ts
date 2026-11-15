@@ -5,20 +5,21 @@ import { newlyWaiting, notifyWaiting, sessionStates } from "./notifications";
 import { canAttach, composerMode, deviceBlocker, folderLabel, groupSessions, hiddenCount, recentCwds, sendsOutside, sessionStatusLabel, sessionTitle, waitingCount } from "./session-model";
 
 describe("grouping", () => {
-  it("groups by computer, then folder, newest first, online computers first", () => {
+  it("groups by computer, then agent, newest first, online computers first", () => {
     const groups = groupSessions(
       [device({ id: "b", name: "笔记本", online: false }), device({ id: "a", name: "办公室电脑" })],
       [
         session({ deviceId: "a", nativeId: "1", cwd: "D:\\work\\alpha", lastActivityAt: 10 }),
-        session({ deviceId: "a", nativeId: "2", cwd: "D:\\work\\beta", lastActivityAt: 30 }),
-        session({ deviceId: "a", nativeId: "3", cwd: "D:\\work\\alpha", lastActivityAt: 20 }),
-        session({ deviceId: "b", nativeId: "4", cwd: "/home/me/app", online: false }),
+        session({ deviceId: "a", nativeId: "2", engine: "codex", cwd: "D:\\work\\beta", lastActivityAt: 30 }),
+        session({ deviceId: "a", nativeId: "3", cwd: "D:\\work\\beta", lastActivityAt: 20 }),
+        session({ deviceId: "b", nativeId: "4", engine: "codex", cwd: "/home/me/app", online: false }),
       ],
     );
     expect(groups.map((group) => group.device.id)).toEqual(["a", "b"]);
-    expect(groups[0].folders.map((folder) => folder.label)).toEqual(["beta", "alpha"]);
-    expect(groups[0].folders[1].sessions.map((row) => row.nativeId)).toEqual(["3", "1"]);
-    expect(groups[1].folders[0].label).toBe("app");
+    expect(groups[0].agents.map((agent) => agent.label)).toEqual(["Claude Code", "Codex"]);
+    expect(groups[0].agents[0].sessions.map((row) => row.nativeId)).toEqual(["3", "1"]);
+    expect(groups[0].agents[1].sessions.map((row) => row.nativeId)).toEqual(["2"]);
+    expect(groups[1].agents.map((agent) => agent.engine)).toEqual(["codex"]);
   });
 
   it("keeps a computer without sessions and invents one for orphan sessions", () => {

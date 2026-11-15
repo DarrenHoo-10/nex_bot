@@ -30,7 +30,7 @@ const features = [
   { icon: MonitorSmartphone, title: "跨设备接着聊", text: "每个助手保留自己的对话，电脑、手机和网页用同一账号继续；浏览话题记录时，顶部标题和返回入口保持固定。" },
   { icon: FileText, title: "处理文件", text: "上传文档、PDF 和图片，让助手阅读、总结和整理。" },
   { icon: SquareTerminal, title: "操作电脑", text: "Windows 和 Mac 客户端登录后连接本机，助手可读取文件、运行命令。" },
-  { icon: Plug, title: "连接工具", text: "添加 MCP 连接器，按助手分别授权可用的工具。" },
+  { icon: Plug, title: "连接工具", text: "添加 MCP 连接器或连接 Gmail，所有助手即可使用。" },
   { icon: CalendarClock, title: "后台与定时任务", text: "长任务交给后台执行，主对话随时能继续聊，也能点开任务直接和子代理对话；定时任务按时独立运行，完成后回到对话汇报。" },
   { icon: Check, title: "统一待办", text: "在对话里记录、修改、完成或删除待办；未指定日期默认当天，按日、周、月查看。" },
   { icon: Cpu, title: "自选模型", text: "接入多个模型供应商，按助手切换模型和思考强度，调整上下文与输出。" },

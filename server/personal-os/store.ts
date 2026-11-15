@@ -526,6 +526,12 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
       this.db.exec(cliAgentRequestSchema);
       this.insert("schema_migrations", { version: 51, checksum: hash(cliAgentRequestSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=52")) this.transaction(() => {
+      // Per-bot connector grants retired: every enabled connector serves every bot in the workspace.
+      const dropGrants = "DROP TABLE IF EXISTS personal_connector_grants";
+      this.db.exec(dropGrants);
+      this.insert("schema_migrations", { version: 52, checksum: hash(dropGrants), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

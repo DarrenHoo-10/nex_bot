@@ -18,6 +18,7 @@ export interface ConnectorView {
   tools: ConnectorTool[];
   checkedAt: number | null;
   error: string | null;
+  /** Deprecated compatibility field: per-bot grants were retired and this is always empty. Older clients still parse it. */
   grants: Array<{ botId: string; tools: string[] }>;
 }
 

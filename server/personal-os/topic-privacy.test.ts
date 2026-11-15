@@ -4,7 +4,7 @@ it('keeps private connector and unrelated job names out of public prompts, tool 
  const dir=mkdtempSync(path.join(tmpdir(),'nex-public-scope-')),fake=await startFakeModel(),app=await createPersonalApp({dir,key:randomBytes(32),token:'fixture',identity:false,hostDevice:false,memoryRuntime:false,modelCatalog:{fetchDisabled:true}});
  try{
   app.store.saveConfig({provider:'openai',endpoint:fake.origin+'/v1',model:'fake',apiKey:'synthetic'});const {botId}=app.agents.finance();
-  const add=(kind:string,name:string)=>{const connectorId=id();app.store.insert('personal_connectors',{id:connectorId,...app.store.scope(),name,url:'https://fixture.example.test/mcp',transport:'http',kind,enabled:1,created_at:now(),tools_json:JSON.stringify([{name:'private_api_name',inputSchema:{type:'object'}}])});app.store.insert('personal_connector_grants',{connector_id:connectorId,bot_id:botId,tools_json:JSON.stringify(['private_api_name'])});return connectorId;};
+  const add=(kind:string,name:string)=>{const connectorId=id();app.store.insert('personal_connectors',{id:connectorId,...app.store.scope(),name,url:'https://fixture.example.test/mcp',transport:'http',kind,enabled:1,created_at:now(),tools_json:JSON.stringify([{name:'private_api_name',inputSchema:{type:'object'}}])});return connectorId;};
   add('mcp','SECRET-MAILBOX');const finance=add('stock-finance','SECRET-FINANCE-ACCOUNT');
   const kick=app.runtime.kick;app.runtime.kick=()=>{};
   const privateJob=app.jobs.start({botId,title:'SECRET-PRIVATE-JOB',prompt:'private task',sourceKey:'private-job'});

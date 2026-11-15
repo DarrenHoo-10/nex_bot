@@ -292,7 +292,6 @@ struct JobIDBody: Encodable { let jobId: String }
 /// `todos/action` sent from a job's report card with the todo id and version the card shows.
 struct JobTodoAction: Encodable { let id: String; let version: Int; let action: String; let clientId: String; let feedback: String? }
 struct ConnectorToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
-struct ConnectorGrantBody: Encodable { let id: String; let version: Int; let botId: String; let tools: [String] }
 struct FeishuBotBody: Encodable { let botId: String }
 struct TopicBody: Encodable { let botId: String }
 struct FeishuIDBody: Encodable { let id: String }
@@ -395,9 +394,6 @@ extension CoreClient {
     /// `POST /api/connectors/test` (Core waits up to 15 s). Returns the tool count.
     public func testConnector(id: String, version: Int) async throws -> Int {
         try await post("/api/connectors/test", IDVersion(id: id, version: version), timeout: 40, as: CountResult.self).count
-    }
-    public func grantConnector(id: String, version: Int, botID: String, tools: [String]) async throws {
-        try await post("/api/connectors/grant", body: ConnectorGrantBody(id: id, version: version, botId: botID, tools: tools))
     }
     public func toggleConnector(id: String, version: Int, enabled: Bool) async throws {
         try await post("/api/connectors/toggle", body: ConnectorToggleBody(id: id, version: version, enabled: enabled))

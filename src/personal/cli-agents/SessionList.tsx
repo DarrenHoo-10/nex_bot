@@ -1,7 +1,7 @@
-// Sessions grouped by computer, then by folder.
+// Sessions grouped by computer, then by agent (Claude Code, Codex).
 import { Eye, EyeOff, Plus } from "lucide-react";
 import type { CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
-import { askedSession, ENGINE_LABEL, sessionStatusLabel, sessionTitle, sessionTone, type DeviceGroup } from "./session-model";
+import { askedSession, folderLabel, sessionStatusLabel, sessionTitle, sessionTone, type DeviceGroup } from "./session-model";
 
 export interface SessionListProps {
   groups: readonly DeviceGroup[];
@@ -19,7 +19,7 @@ export interface SessionListProps {
 export function SessionList({ groups, selectedKey, pending, hiddenTotal, showHidden, onSelect, onNew, onHide, onToggleHidden }: SessionListProps) {
   return (
     <nav className="cli-list" aria-label="Agent 会话">
-      {groups.map(({ device, folders, count }) => (
+      {groups.map(({ device, agents, count }) => (
         <section key={device.id} className="cli-device" data-online={device.online ? "1" : "0"}>
           <header>
             <span className="cli-dot" aria-hidden="true" />
@@ -27,10 +27,10 @@ export function SessionList({ groups, selectedKey, pending, hiddenTotal, showHid
             <small>{device.online ? count : "离线"}</small>
             <button type="button" className="icon-button" aria-label={`在 ${device.name} 上新建会话`} title="新建会话" onClick={() => onNew(device.id)}><Plus size={15} /></button>
           </header>
-          {folders.map((folder) => (
-            <div key={folder.cwd} className="cli-folder">
-              <div className="cli-folder-name" title={folder.cwd}>{folder.label}</div>
-              {folder.sessions.map((entry) => {
+          {agents.map((agent) => (
+            <div key={agent.engine} className="cli-agent" data-engine={agent.engine}>
+              <div className="cli-agent-name"><span>{agent.label}</span><small>{agent.sessions.length}</small></div>
+              {agent.sessions.map((entry) => {
                 const asked = pending?.get(entry.key) ?? 0;
                 // a pending request means the session waits for the user, whatever its own state says
                 const session = askedSession(entry, asked);
@@ -41,7 +41,7 @@ export function SessionList({ groups, selectedKey, pending, hiddenTotal, showHid
                       <span className="cli-row-meta">
                         <span className="cli-chip" data-tone={sessionTone(session)}>{sessionStatusLabel(session)}</span>
                         {asked > 0 ? <span className="cli-count" role="img" aria-label={`${asked} 个请求`} title={`${asked} 个请求`}>{asked}</span> : null}
-                        <small>{ENGINE_LABEL[entry.engine]}</small>
+                        <small className="cli-row-folder" title={entry.cwd}>{folderLabel(entry.cwd)}</small>
                       </span>
                     </button>
                     <button type="button" className="icon-button cli-row-hide" aria-label={entry.hidden ? "取消隐藏" : "隐藏"} title={entry.hidden ? "取消隐藏" : "隐藏"} onClick={() => onHide(entry, !entry.hidden)}>

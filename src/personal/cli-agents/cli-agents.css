@@ -41,8 +41,12 @@
 .cli-app .cli-device > header small { color: var(--muted-foreground); font-size: 11px; }
 .cli-app .cli-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); opacity: .5; }
 .cli-app .cli-device[data-online="1"] .cli-dot { background: #3f9d6b; opacity: 1; }
-.cli-app .cli-device[data-online="0"] .cli-folder { opacity: .6; }
-.cli-app .cli-folder-name { padding: 6px 8px 2px; font-size: 11px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cli-app .cli-device[data-online="0"] .cli-agent { opacity: .6; }
+.cli-app .cli-agent-name { display: flex; align-items: baseline; gap: 6px; padding: 6px 8px 2px 14px; font-size: 11.5px; font-weight: 600; color: var(--muted-foreground); }
+.cli-app .cli-agent-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cli-app .cli-agent-name small { font-weight: 400; font-size: 10.5px; }
+.cli-app .cli-agent .cli-row { margin-left: 14px; }
+.cli-app .cli-row-folder { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cli-app .cli-device-empty { padding: 4px 8px 6px; font-size: 11px; color: var(--muted-foreground); }
 .cli-app .cli-row { display: flex; align-items: center; border-radius: 10px; }
 .cli-app .cli-row:hover, .cli-app .cli-row.is-selected { background: var(--secondary); }
@@ -52,7 +56,7 @@
   padding: 8px 8px; background: transparent; border: 0;
 }
 .cli-app .cli-row-title { max-width: 100%; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cli-app .cli-row-meta { display: flex; align-items: center; gap: 6px; }
+.cli-app .cli-row-meta { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
 .cli-app .cli-row-meta small { font-size: 11px; color: var(--muted-foreground); }
 .cli-app .cli-row-hide { opacity: 0; }
 .cli-app .cli-row:hover .cli-row-hide, .cli-app .cli-row-hide:focus-visible { opacity: 1; }
@@ -190,3 +194,7 @@
   .cli-app .cli-open-local { padding: 6px 8px; }
   .cli-app .cli-row-hide { opacity: 1; }
 }
+
+/* NexAgent mode: the session list lives in the app sidebar on wide screens */
+.cli-app .agent-session-groups { padding: 2px 0 12px; }
+.cli-app[data-list="sidebar"] .cli-body { grid-template-columns: minmax(0, 1fr); }

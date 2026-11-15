@@ -12,7 +12,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
 import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
+import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
@@ -20,7 +20,7 @@ import { ProviderSettings } from "./ProviderSettings";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { AgentAvatar as Avatar } from "./components/AgentAvatar";
 import { TodoWorkspace } from "./todo/TodoWorkspace";
-import { ContactSidebar } from "./components/ContactSidebar";
+import { ContactSidebar, type AgentSidebarSlot } from "./components/ContactSidebar";
 import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { ToolStepDetail } from "./components/ToolStepDetail";
@@ -42,8 +42,7 @@ import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
 
 // Agent mode pulls in the terminal stack, so it loads only when opened.
-/** Agent mode runs in plain browsers and the Android app (native socket relay); the Windows client does not show it. */
-const agentSection = !desktop || desktop.platform === "android";
+const agentSection = agentModeAvailable;
 const CliAgentsWorkspace = lazy(() => import("./cli-agents/CliAgentsWorkspace").then((module) => ({ default: module.CliAgentsWorkspace })));
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
@@ -64,7 +63,7 @@ const formatDay = (value: RecordRow[string]) => {
 
 function AgentPolicyEditor({ bot, close, save }: { bot: RecordRow; close: () => void; save: (tools: string[]) => Promise<unknown> }) {
   const [tools, setTools] = useState<string[]>(JSON.parse(str(bot.policy_json) || "{}").tools ?? []);
-  const labels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "按需生成图片", "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看已授权连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
+  const labels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "按需生成图片", "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看可用连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
   return <><div className="modal-heading"><h2>{bot.name} 的工具权限</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(event) => { event.preventDefault(); void save(tools); }}><div className="policy-grid">{Object.entries(labels).map(([action, label]) => <label className="check-field" key={action}><input type="checkbox" checked={universalActions.some(tool => tool === action) || tools.includes(action)} disabled={universalActions.some(tool => tool === action)} onChange={(event) => setTools((current) => event.target.checked ? [...current, action] : current.filter((tool) => tool !== action))}/>{label}</label>)}</div><div className="actions"><button className="primary">保存</button><button type="button" onClick={close}>取消</button></div></form></>;
 }
 
@@ -668,12 +667,13 @@ export function AgentDesktop() {
   void lookRevision;
 
   const navigate = (target: string) => {
-    if (target === "todo" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
+    if (target === "todo" || target === "agent" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
     else openSettings();
   };
-  const sidebarNode = <ContactSidebar onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const renderSidebar = (agent?: AgentSidebarSlot) => <ContactSidebar agent={agent} onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const sidebarNode = renderSidebar();
 
-  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 
   if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 

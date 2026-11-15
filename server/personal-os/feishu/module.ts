@@ -5,7 +5,7 @@ import type { TaskRuntime } from "../runtime.ts";
 import { connectorAccess } from "../connectors.ts";
 import { feishuOrigins, FeishuApi, FeishuApiError, missingScope, type Brand, type UserTokenGrant } from "./api.ts";
 import { wsTransportFactory, type FeishuTransport, type TransportFactory, type RegisterAppFn, normalizeFeishuEvent } from "./transport.ts";
-import { feishuTools, feishuToolNames, parseToolCall, queryString } from "./tools.ts";
+import { feishuTools, parseToolCall, queryString } from "./tools.ts";
 import { ensureFeishuDeliverySchema, postWindowExpired, retryAt, FEISHU_UUID_WINDOW_MS } from "./delivery.ts";
 import manifest from "./lark-scopes.json" with { type: "json" };
 
@@ -104,7 +104,7 @@ function officialRegistrationUrl(value: string) {
     && /(?:^|\.)(?:feishu\.cn|larksuite\.com)$/.test(url.hostname);
 }
 
-export interface FeishuModuleOptions { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch; grantTools?: (connectorId: string, version: number, botId: string, tools: string[]) => void; devicePollMs?: number;
+export interface FeishuModuleOptions { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch; devicePollMs?: number;
   routeInbound?: (appId: string, event: unknown, kind: "message" | "card") => void | Promise<unknown>;
   sharedApp?: (appId: string) => Row | undefined;
   ownershipAllowed?: (appId:string,operation:"receive"|"send"|"bind"|"connect")=>Promise<boolean>;
@@ -271,8 +271,6 @@ export class FeishuModule {
       this.store.insert("personal_feishu_apps", { connector_id: connectorId, app_id: input.appId, brand: input.brand, app_secret: this.store.encrypt(input.appSecret), owner_open_id: input.ownerOpenId, bot_id: input.botId, connection: "idle", created_at: now() });
       this.store.audit("feishu.app.save", "connector", connectorId, { appId: input.appId, brand: input.brand });
     });
-    // 工具目录自动授权给接收助手；写入仍逐次审批。
-    this.options.grantTools?.(connectorId, 1, input.botId, [...feishuToolNames]);
     this.changed();
     return connectorId;
   }
@@ -412,7 +410,7 @@ export class FeishuModule {
   /** connector.call/tools 的飞书实现。授权、版本失效检查复用连接器机制。 */
   async execute(call: Row, args: Record<string, unknown>, authorize: () => Promise<void>) {
     if (this.closed) throw new Error("连接器正在关闭");
-    const row = connectorAccess(this.store, String(call.bot_id), args);
+    const row = connectorAccess(this.store, args);
     if (args.action === "connector.tools") return { connectorId: row.id, connectorVersion: row.version, tools: feishuTools };
     if (args.tool === "feishu_delivery") {
       await authorize();
@@ -430,7 +428,7 @@ export class FeishuModule {
     let dispatched = false;
     try {
       await authorize();
-      connectorAccess(this.store, String(call.bot_id), args);
+      connectorAccess(this.store, args);
       if (controller.signal.aborted) throw new Error("已取消");
       // Generic message/file/webhook writes have no verified public content view. Managed delivery uses the ledger.
       if (request.method !== "GET" && /^\/open-apis\/(im|bot|application)\//.test(request.path)) throw new Error("消息投递必须使用已核实内容和目的地的投递通道");
@@ -450,7 +448,7 @@ export class FeishuModule {
         throw error;
       }
       await authorize();
-      connectorAccess(this.store, String(call.bot_id), args);
+      connectorAccess(this.store, args);
       const body = JSON.stringify(result);
       return { text: body.length > 24_000 ? body.slice(0, 24_000) + "…（已截断）" : body, images: [] };
     } catch (error) {

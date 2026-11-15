@@ -26,18 +26,25 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    and re-verify on the merged tree. Build everything from that pushed commit. If
    GitHub is unreachable, use the machine's proxy on git/`gh` commands only
    (`git -c http.proxy=…`, `HTTPS_PROXY=… gh`); never change global config.
-2. **Core and web UI → Tokyo** (`vps_get tokyo`; service `nexbot-core`; if public
-   SSH times out use its ZeroTier address). Build with
-   `node scripts/build-personal.mjs --core`, package `core`, `ui`, `package.json`
-   and `SOURCE_COMMIT` as an overlay, stage a new
-   `/data/nexbot/releases/main-<sha8>-<date>` copied from the current release, and
-   verify it in a throwaway Core first. Deploy only with no active tasks: back up
-   data and config to `/data/nexbot/backups/<release>-pre`, switch with a new
-   systemd drop-in that sorts after all existing ones (one more `z`), roll back
-   automatically on any failed check, and confirm data hashes are unchanged.
-   Reuse the newest `release/deployment-*/prepare.sh` and `deploy.sh` as the
-   template. Verify over the public URL: the HTML and every referenced asset match
-   the local build byte for byte, `/health` is 200 and unauthenticated API calls are 401.
+2. **Core and web UI → Mac Air** (`ssh mac-air`; root `~/nexbot`). Since
+   2026-11-14 production Core runs there; Tokyo's Core is retired, so never
+   deploy to it. The launchd job `gui/<uid>/cn.nexorai.nexbot-core` runs
+   `~/nexbot/run-core.py`, which names the active release. Core listens only on
+   `127.0.0.1:8799`, and public traffic reaches it through Cloudflare and the
+   Seoul relay. Build with `node scripts/build-personal.mjs --core`, package
+   `core`, `ui`, `package.json` and `SOURCE_COMMIT` as an overlay, and stage a new
+   `~/nexbot/releases/main-<sha8>-<date>` copied from the current release. Before
+   deploying, rehearse any new migrations on SQLite `.backup` copies of every
+   workspace database (`data/core.db` and `data/account-workspaces/*`), then
+   verify the candidate in a throwaway Core. Deploy only with no active tasks,
+   from a detached (`nohup`) process on the Mac so a dropped SSH session cannot
+   interrupt it: back up data and config to `~/nexbot/backups/<release>-pre`,
+   switch by pointing `run-core.py` at the new release and restarting the launchd
+   job, roll back automatically on any failed check, and confirm data hashes are
+   unchanged. Reuse the newest `release/deployment-mac-air-*/` scripts in the main
+   checkout as the template. Verify over the public URL: the HTML and every
+   referenced asset match the local build byte for byte, `/health` is 200 and
+   unauthenticated API calls are 401.
 3. **Every client the change touches.** Web UI code is shared by Web, Windows
    (loaded from Core, and bundled in the installer) and Android (bundled in the
    APK). macOS and iOS are native SwiftUI in `apps/apple`: when a UI behaviour

@@ -267,7 +267,7 @@ describe("feishu connector in disposable Core", () => {
     await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_free'")?.task_id);
   }, 60_000);
 
-  it("auto-grants the built-in tools and answers read calls without approval", async () => {
+  it("serves the built-in tools by default and answers read calls without approval", async () => {
     const f = await fixture();
     await f.connectFake();
     const policy = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", String(f.bot.id))?.policy_json)) as { tools: string[] };
