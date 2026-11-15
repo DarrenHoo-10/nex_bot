@@ -68,10 +68,11 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
     document.addEventListener("keydown", trap);
     return () => { document.removeEventListener("keydown", trap); if (previous?.isConnected) previous.focus(); };
   }, [editing]);
+  // Gmail rows must stay out of the MCP list, but the account list still needs them.
+  const accounts = (state.connectors ?? []).filter((item) => item.provider === "gmail");
   const connections = (state.connectors ?? []).filter((item) => item.provider !== "gmail");
   const feishu = <FeishuCard state={state} financeBotId={financeBotId} refresh={refresh}/>;
   const selected = connections.find((item) => item.id === selectedId);
-  const accounts = connections.filter((item) => item.provider === "gmail");
   const gmailAvailable = state.connectorCatalog?.find((item) => item.id === "gmail")?.available === true;
   const query = search.trim().toLowerCase();
   const showGmail = `gmail google 邮箱 邮件 ${accounts.map((item) => item.account).join(" ")}`.toLowerCase().includes(query);
