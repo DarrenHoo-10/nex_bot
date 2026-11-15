@@ -12,7 +12,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
 import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
+import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
@@ -20,7 +20,7 @@ import { ProviderSettings } from "./ProviderSettings";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { AgentAvatar as Avatar } from "./components/AgentAvatar";
 import { TodoWorkspace } from "./todo/TodoWorkspace";
-import { ContactSidebar } from "./components/ContactSidebar";
+import { ContactSidebar, type AgentSidebarSlot } from "./components/ContactSidebar";
 import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { appearanceOf, colors, companionState, companionLabels, type CompanionState } from "./avatars/appearance";
@@ -41,8 +41,7 @@ import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
 
 // Agent mode pulls in the terminal stack, so it loads only when opened.
-/** Agent mode runs in plain browsers and the Android app (native socket relay); the Windows client does not show it. */
-const agentSection = !desktop || desktop.platform === "android";
+const agentSection = agentModeAvailable;
 const CliAgentsWorkspace = lazy(() => import("./cli-agents/CliAgentsWorkspace").then((module) => ({ default: module.CliAgentsWorkspace })));
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
@@ -668,12 +667,13 @@ export function AgentDesktop() {
   void lookRevision;
 
   const navigate = (target: string) => {
-    if (target === "todo" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
+    if (target === "todo" || target === "agent" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
     else openSettings();
   };
-  const sidebarNode = <ContactSidebar onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const renderSidebar = (agent?: AgentSidebarSlot) => <ContactSidebar agent={agent} onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const sidebarNode = renderSidebar();
 
-  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 
   if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 

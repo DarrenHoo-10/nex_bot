@@ -234,3 +234,19 @@
 .assistant-actions-menu button { display:block;width:100%;padding:8px 12px;text-align:left;background:transparent;border:0;border-radius:8px;color:inherit; }
 .assistant-actions-menu button:focus,.assistant-actions-menu button:hover { background:var(--secondary); }
 .assistant-actions-menu .danger-link { color:var(--destructive,#bc3447); }
+
+/* NexBot / NexAgent switch in the brand corner */
+.workspace-brand { position: relative; }
+.rk-workspace .workspace-brand:has(.mode-switcher) { gap: 4px; }
+.mode-switcher { flex: 1; min-width: 0; display: flex; }
+.mode-switcher-button { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; height: 38px; margin-left: -6px; padding: 0 5px 0 6px; border: 0; border-radius: 12px; background: transparent; color: inherit; cursor: pointer; }
+.mode-switcher-button:hover, .mode-switcher-button[aria-expanded="true"] { background: var(--wash, var(--secondary)); }
+.workspace-brand .mode-switcher-button strong { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mode-switcher-chevron { flex-shrink: 0; margin-left: -2px; color: var(--muted-foreground); transition: transform .15s; }
+.mode-switcher-button[aria-expanded="true"] .mode-switcher-chevron { transform: rotate(180deg); }
+.mode-switcher-badge { flex-shrink: 0; line-height: 17px; }
+.mode-menu { top: calc(100% + 4px); bottom: auto; right: auto; width: 224px; }
+.rk-workspace .mode-menu button { min-height: 40px; padding: 8px 10px; }
+.mode-menu .contact-unread { flex: 0 0 auto; line-height: 17px; }
+.mode-menu button[aria-checked="true"] > svg:last-child { color: var(--foreground); }
+.rk-workspace .mode-menu button .nex-brand-mark { flex: 0 0 auto; }

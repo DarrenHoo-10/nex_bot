@@ -107,20 +107,21 @@ afterEach(async () => {
 });
 
 describe("session list", () => {
-  it("groups sessions by computer and folder and names each state", async () => {
+  it("groups sessions by computer and agent and names each state", async () => {
     await mount({
       devices: [device({ id: "dev1", name: "办公室电脑" }), device({ id: "dev2", name: "笔记本", online: false })],
       sessions: [
         session({ nativeId: "1", cwd: "D:\\work\\alpha", title: "修复登录", state: "waiting" }),
-        session({ nativeId: "2", cwd: "D:\\work\\beta", title: "写测试", state: "running", lastActivityAt: 5_000 }),
+        session({ nativeId: "2", engine: "codex", cwd: "D:\\work\\beta", title: "写测试", state: "running", lastActivityAt: 5_000 }),
         session({ deviceId: "dev2", nativeId: "3", cwd: "/home/me/app", title: "整理笔记", online: false }),
       ],
     });
     const devices = [...container.querySelectorAll(".cli-device")];
     expect(devices.map((entry) => entry.querySelector("strong")?.textContent)).toEqual(["办公室电脑", "笔记本"]);
-    expect([...devices[0].querySelectorAll(".cli-folder-name")].map((entry) => entry.textContent)).toEqual(["beta", "alpha"]);
+    expect([...devices[0].querySelectorAll(".cli-agent-name span")].map((entry) => entry.textContent)).toEqual(["Claude Code", "Codex"]);
+    expect([...devices[0].querySelectorAll(".cli-row-folder")].map((entry) => entry.textContent)).toEqual(["alpha", "beta"]);
     const chips = [...container.querySelectorAll(".cli-row .cli-chip")].map((entry) => entry.textContent);
-    expect(chips).toEqual(["运行中", "等你处理", "电脑离线"]);
+    expect(chips).toEqual(["等你处理", "运行中", "电脑离线"]);
     expect(text()).toContain("选择一个会话");
   });
 

@@ -105,6 +105,8 @@ type Bridge = {
   onUpdateState?(callback: (state: ClientUpdateState) => void): (() => void) | void;
 };
 export const desktop = (window as unknown as { nex?: Bridge }).nex;
+/** NexAgent runs in plain browsers, the Windows client (its UI keeps the Core origin and session, so the stream connects directly) and the Android app (native socket relay). */
+export const agentModeAvailable = !desktop || desktop.mode === "client" || desktop.platform === "android";
 export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {
   const response = await fetch("/api/models/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
   if (response.status === 404 && desktop?.listModels && settings.apiKey.trim()) return desktop.listModels(settings);
