@@ -23,6 +23,7 @@ import {
 import { CodexScanner, codexHomes, type CodexScannerOptions } from "./codex.ts";
 import type { CodexAppDb } from "./codex-app-db.ts";
 import type { AppChat, LocalSession, SendRoute } from "./items.ts";
+import { ZcodeScanner, type ZcodeScannerOptions } from "./zcode.ts";
 
 export interface SessionsDiff {
   /** true for the first report and after resync(): `upserts` is every session and `removes` is empty */
@@ -36,6 +37,9 @@ export interface SessionDiscoveryOptions {
   claudeDirs?: string[];
   /** defaults to ~/.codex plus CODEX_HOME */
   codexHomes?: string[];
+  /** defaults to ~/.zcode/cli; tests pass temp directories */
+  zcodeHomes?: string[];
+  zcode?: ZcodeScannerOptions;
   /** sessions that run in a nex_bot terminal: ref to herdr-core terminal address */
   nexbotTerminals?: () => ReadonlyMap<string, string>;
   /** Codex threads loaded in a shared app-server daemon, per CODEX_HOME: `threads` is the last known
@@ -59,11 +63,13 @@ type Row = LocalSession;
 export class SessionDiscovery {
   private readonly claudeDirs: string[];
   private readonly scanners: CodexScanner[];
+  private readonly zcodes: ZcodeScanner[];
   private readonly options: SessionDiscoveryOptions;
 
   private readonly live = new Map<string, LiveClaudeSession[]>();
   private readonly history = new Map<string, ClaudeHistoryEntry[]>();
   private readonly codex = new Map<string, Row[]>();
+  private readonly zcodeRows = new Map<string, Row[]>();
   private rows = new Map<string, Row>();
   /** wire JSON of the last reported rows, by ref */
   private reported = new Map<string, string>();
@@ -85,6 +91,9 @@ export class SessionDiscovery {
     this.options = options;
     this.claudeDirs = options.claudeDirs ?? claudeConfigDirs();
     this.scanners = (options.codexHomes ?? codexHomes()).map((home) => new CodexScanner(home, options.codex));
+    // opt-in, resolved by the bridge: tests that spell out their other sources
+    // stay hermetic instead of picking up the developer's own ZCode database
+    this.zcodes = (options.zcodeHomes ?? []).map((home) => new ZcodeScanner(home, options.zcode));
   }
 
   /** Runs one full round, reports it, then keeps scanning on the timers. */
@@ -146,6 +155,19 @@ export class SessionDiscovery {
     return scanner ? { chat, db: scanner.appDb } : null;
   }
 
+  /** The ZCode database behind a row with no session file, polled like an App chat. */
+  zcodeChatFor(ref: string): { chat: { threadId: string }; db: ZcodeScanner["db"] } | null {
+    const row = this.rows.get(ref);
+    if (!row || row.engine !== "zcode") return null;
+    const scanner = this.zcodes.find((candidate) => candidate.home === row.configDir);
+    return scanner ? { chat: { threadId: row.nativeId }, db: scanner.db } : null;
+  }
+
+  /** Stops the ZCode database handles. */
+  closeZcode(): void {
+    for (const scanner of this.zcodes) scanner.close();
+  }
+
   /** The next report is a full one (after the link to Core was re-established). */
   resync(): void {
     this.forceFull = true;
@@ -193,6 +215,13 @@ export class SessionDiscovery {
             // which threads the shared daemon has loaded; a failing daemon only means "none"
             await this.options.codexDaemon?.refresh(scanner.home).catch((error) => this.fail(error));
             this.codex.set(scanner.home, await scanner.scan({ now: this.now() }));
+          } catch (error) {
+            this.fail(error);
+          }
+        }),
+        ...this.zcodes.map(async (scanner) => {
+          try {
+            this.zcodeRows.set(scanner.home, await scanner.scan());
           } catch (error) {
             this.fail(error);
           }
@@ -270,6 +299,7 @@ export class SessionDiscovery {
       for (const row of mergeClaude(dir, this.live.get(dir) ?? [], this.history.get(dir) ?? [])) add(row);
     }
     for (const rows of this.codex.values()) for (const row of rows) add(row);
+    for (const rows of this.zcodeRows.values()) for (const row of rows) add(row);
 
     let terminals: ReadonlyMap<string, string> | undefined;
     try {

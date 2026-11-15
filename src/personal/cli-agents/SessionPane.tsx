@@ -1,8 +1,11 @@
-// One open session: header, transcript, and composer.
+// One open session: header, transcript, and composer. The composer talks to
+// the workbench contracts: sends carry idempotency ids, a running session
+// queues or steers, stopping pauses the outbox in Core, and edit-and-resend
+// records the revised message.
 import { useId, useRef, useState } from "react";
 import { ArrowLeft, List, Share2 } from "lucide-react";
 import type { CliItem, CliAnswerDecision, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
-import { continueSession, interruptSession, sendMessage } from "./api";
+import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { readNotes, storeNotes, useReview, type Note } from "./WorkbenchReview";
 import {transferGoal} from "./composer-additions";
 import { Composer } from "./Composer";
@@ -12,6 +15,7 @@ import { askedSession, sessionStatusLabel, sessionTitle, sessionTone } from "./s
 import type { CliStream } from "./stream";
 import { SessionInfoCard } from "./SessionInfoCard";
 import { TranscriptView } from "./TranscriptView";
+import { useCliQueue } from "./use-queue";
 
 export interface SessionPaneProps {
   session: CliSessionView;
@@ -45,14 +49,34 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const pending = requests.filter((record) => cardState(record, now) === "pending").length;
   const shown = askedSession(session, pending);
   const resumedKey = useRef<CliSessionKey|null>(null);
-  async function send(text:string) {
+  const queue = useCliQueue(stream, session.key);
+  const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
+
+  async function send(text:string, delivery?:"send"|"queue"|"steer") {
     if(session.state==="stopped" && !resumedKey.current)resumedKey.current=(await continueSession(session.key)).key;
     const key=resumedKey.current??session.key;
-    const result=review&&details?.quote&&!details.quoteSent
-      ? await review.run("quoted-send",key,{text}) : await sendMessage(key,text);
+    let result: unknown;
+    if(review&&details?.quote&&!details.quoteSent){
+      result=await review.run("quoted-send",key,{text});
+    } else {
+      // the workbench contract: ids make a double click one message, a revision
+      // keeps the link to the original, and the delivery follows the selector
+      result=await sendMessage(key, text, {
+        delivery: delivery ?? "send",
+        clientMessageId: crypto.randomUUID(),
+        requestId: crypto.randomUUID(),
+        ...(revision ? { revisesMessageId: revision.messageId } : {}),
+      });
+    }
+    if(revision)setRevision(null);
     if(key!==session.key){transferGoal(session.key,key);onKeyChange(key)}
     return result;
   }
+
+  /** Stopping pauses this session's queue in Core before the interrupt leaves. */
+  const stop = () => stopSession(session.key, crypto.randomUUID());
+  const resume = () => resumeQueue(session.key);
+
   return (
     <section className="cli-pane" aria-label={details?.title||sessionTitle(session)}>
       <header className="cli-pane-head">
@@ -76,7 +100,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       ) : null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView onItems={compact?undefined:setItems} onSide={onSideOpen} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
@@ -85,8 +109,14 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       <Composer
         session={session} notes={notes} onNotes={updateNotes}
         onSend={send}
-        onInterrupt={() => interruptSession(session.key)}
-
+        onInterrupt={() => review ? interruptSession(session.key) : stop()}
+        queue={queue}
+        revision={revision}
+        onCancelRevision={() => setRevision(null)}
+        onQueueWithdraw={async (entryId, version) => { await withdrawQueued(entryId, version); }}
+        onQueueEdit={async (entryId, version, text) => { await editQueued(entryId, version, text); }}
+        onQueueSteer={async (entryId) => { await steerQueued(entryId); }}
+        onQueueResume={async () => { await resume(); }}
       />
     </section>
   );

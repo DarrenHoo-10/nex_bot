@@ -88,19 +88,26 @@ export const CLI_LIMITS = {
 // ---------------------------------------------------------------------------
 // Basic vocabulary
 
-export type CliEngine = "claude" | "codex";
+export type CliEngine = "claude" | "codex" | "zcode";
 export type CliSessionState = "running" | "waiting" | "idle" | "stopped";
 export type CliLiveIn = "nexbot" | "terminal" | "desktop" | "background";
 
-export const CLI_ENGINES: readonly CliEngine[] = ["claude", "codex"];
+export const CLI_ENGINES: readonly CliEngine[] = ["claude", "codex", "zcode"];
 export const CLI_SESSION_STATES: readonly CliSessionState[] = ["running", "waiting", "idle", "stopped"];
 export const CLI_LIVE_IN: readonly CliLiveIn[] = ["nexbot", "terminal", "desktop", "background"];
 
 /** How the device can put a message into a session: its nex_bot terminal, the
- * inbox of a Claude session running on the computer, or a Codex app-server
- * daemon the device joined. Absent: the session cannot be written to. */
-export type CliSendVia = "terminal" | "inbox" | "daemon";
-export const CLI_SEND_VIA: readonly CliSendVia[] = ["terminal", "inbox", "daemon"];
+ * inbox of a Claude session running on the computer, a Codex app-server daemon
+ * the device joined, or the ZCode host the device attached to. Absent: the
+ * session cannot be written to. */
+export type CliSendVia = "terminal" | "inbox" | "daemon" | "host";
+export const CLI_SEND_VIA: readonly CliSendVia[] = ["terminal", "inbox", "daemon", "host"];
+
+/** How the user wants a composed message delivered (workbench plan section 3):
+ * straight into the session, held in the outbox until the turn ends, or fed to
+ * the running turn as guidance. */
+export type CliDeliveryAction = "send" | "queue" | "steer";
+export const CLI_DELIVERY_ACTIONS: readonly CliDeliveryAction[] = ["send", "queue", "steer"];
 
 /** What a device knows about a sent message: `confirmed` means it was seen in
  * the session, `unconfirmed` that it was handed over but never seen. */
@@ -108,7 +115,7 @@ export type CliDelivery = "confirmed" | "unconfirmed";
 export const CLI_DELIVERY: readonly CliDelivery[] = ["confirmed", "unconfirmed"];
 
 export function isCliEngine(value: unknown): value is CliEngine {
-  return value === "claude" || value === "codex";
+  return value === "claude" || value === "codex" || value === "zcode";
 }
 
 /** Session id on the device link: `<engine>:<nativeId>`. The device never
@@ -297,6 +304,8 @@ export type CliErrorCode =
   | "too_large"
   | "invalid"
   | "busy"
+  | "turn_changed"
+  | "conflict"
   | "device_offline"
   | "unknown";
 
@@ -315,6 +324,8 @@ export const CLI_ERROR_CODES: readonly CliErrorCode[] = [
   "too_large",
   "invalid",
   "busy",
+  "turn_changed",
+  "conflict",
   "device_offline",
   "unknown",
 ];
@@ -334,6 +345,8 @@ export const CLI_ERROR_TEXT: Record<CliErrorCode, string> = {
   too_large: "内容太长",
   invalid: "参数不合法",
   busy: "上一个操作还没完成",
+  turn_changed: "目标轮次已经结束",
+  conflict: "内容已被另一端修改，请刷新后重试",
   device_offline: "电脑离线",
   unknown: "结果未知",
 };
@@ -373,9 +386,11 @@ export const CLI_OPS = [
   "start",
   "continue",
   "send",
+  "steer",
   "interrupt",
   "open_local",
   "answer",
+  "git",
 ] as const;
 export type CliOp = (typeof CLI_OPS)[number];
 
@@ -388,25 +403,58 @@ export interface CliOpArgs {
   read: { ref: CliSessionRef; before?: string; limit?: number };
   watch: { ref: CliSessionRef };
   unwatch: { ref: CliSessionRef };
-  start: { engine: CliEngine; cwd: string; cols?: number; rows?: number };
+  start: {
+    engine: CliEngine;
+    cwd: string;
+    cols?: number;
+    rows?: number;
+    /** create an independent worktree of the repository at `cwd` first, then
+     * run the CLI inside it; the device dedups by requestId */
+    worktree?: { branch: string; requestId: string };
+  };
   continue: { ref: CliSessionRef; cols?: number; rows?: number };
   send: { ref: CliSessionRef; text: string };
+  /** guidance into a turn that is already running; the device only accepts it
+   * while the session has an active turn (workbench plan section 3) */
+  steer: { ref: CliSessionRef; text: string };
   interrupt: { ref: CliSessionRef };
   open_local: { ref: CliSessionRef };
   /** answers the pending request `id`; `answers` maps a question to its chosen label(s) */
   answer: { id: string; decision: CliAnswerDecision; answers?: Record<string, string>; message?: string };
+  /** a Git query or worktree creation for the session's repository on the device */
+  git: { ref: CliSessionRef; action: "info" } | { ref: CliSessionRef; action: "worktree"; branch: string; requestId: string };
+}
+
+/** What a device answers for `git` (workbench plan section 3: Git lives on the
+ * device that owns the repository). `source` says how much the answer knows. */
+export interface CliGitInfo {
+  source: "worktree" | "folder" | "none" | "failed";
+  /** the repository root the device resolved */
+  project?: string;
+  /** the working tree the session runs in */
+  worktree?: string;
+  branch?: string;
+  head?: string;
+  /** changed files, porcelain names relative to the worktree */
+  files?: string[];
+  added?: number;
+  removed?: number;
+  /** set when source is "failed": the short reason, no absolute paths */
+  error?: string;
 }
 
 export interface CliOpResult {
   read: { items: CliItem[]; more: boolean };
   watch: Record<string, never>;
   unwatch: Record<string, never>;
-  start: { ref: CliSessionRef; terminal: string };
+  start: { ref: CliSessionRef; terminal: string; cwd?: string };
   continue: { ref: CliSessionRef; terminal: string };
   send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean };
+  steer: { accepted: boolean };
   interrupt: { outcome: string };
   open_local: Record<string, never>;
   answer: { outcome: string };
+  git: CliGitInfo;
 }
 
 export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
@@ -416,9 +464,11 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   start: 30_000,
   continue: 30_000,
   send: 70_000,
+  steer: 70_000,
   interrupt: 10_000,
   open_local: 10_000,
   answer: 10_000,
+  git: 20_000,
 };
 
 /** Operations that change state: never re-sent after a timeout or a drop. */
@@ -426,10 +476,70 @@ export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
   "start",
   "continue",
   "send",
+  "steer",
   "interrupt",
   "open_local",
   "answer",
 ]);
+
+// ---------------------------------------------------------------------------
+// Workbench sessions and the outbox queue (workbench plan sections 3 and 4)
+
+/** A logical workbench session sits above the native session keys it has been
+ * bound to over its life: it survives a resume that changed the key, carries
+ * the user's display name and the tree relation. Old data has no row until the
+ * workbench touches the session; such a session reads as a root `main`. */
+export type CliWorkbenchKind = "main" | "fork" | "side";
+
+export interface CliWorkbenchSessionView {
+  id: string;
+  /** the native session key this row currently points at; null while detached */
+  sessionKey: CliSessionKey | null;
+  deviceId: string | null;
+  engine: CliEngine | null;
+  cwd: string;
+  parentId: string | null;
+  kind: CliWorkbenchKind;
+  /** what the user named it; empty when the harness title is shown */
+  title: string;
+  archived: boolean;
+  deleted: boolean;
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** One outbox entry as the browsers see it. Text is included: the queue list
+ * shows what will be sent. Status follows the plan's pending → claimed →
+ * sent/failed/withdrawn/uncertain flow; `confirmed` is the device's own receipt. */
+export type CliQueueStatus = "pending" | "claimed" | "sent" | "confirmed" | "failed" | "withdrawn" | "uncertain";
+export const CLI_QUEUE_STATUSES: readonly CliQueueStatus[] = [
+  "pending", "claimed", "sent", "confirmed", "failed", "withdrawn", "uncertain",
+];
+
+export interface CliQueueEntryView {
+  id: string;
+  seq: number;
+  text: string;
+  status: CliQueueStatus;
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+  /** the transcript message this entry revises (edit-and-resend) */
+  revisesMessageId?: string;
+  errorCode?: CliErrorCode;
+}
+
+export interface CliQueueView {
+  workbenchId: string;
+  /** the native key dispatches go to right now */
+  sessionKey: CliSessionKey;
+  paused: boolean;
+  /** `stopped` after the user stopped the session, `uncertain` while an
+   * unconfirmed dispatch blocks the head, `device_offline` while offline */
+  pauseReason?: string;
+  entries: CliQueueEntryView[];
+}
 
 // ---------------------------------------------------------------------------
 // Device -> Core (DCP)
@@ -480,6 +590,10 @@ export type ServerMessage =
   /** the full pending list of one session, sent on subscribe and on every change */
   | { type: "requests"; key: CliSessionKey; requests: CliRequestView[] }
   | { type: "request.resolved"; key: CliSessionKey; id: string; by: CliRequestResolvedBy }
+  /** one logical session's outbox, sent on subscribe of its key and on every change */
+  | { type: "queue"; queue: CliQueueView }
+  /** the workbench tree; a full snapshot, rare enough not to need a delta */
+  | { type: "workbench"; sessions: CliWorkbenchSessionView[] }
   | { type: "pong" };
 
 // ---------------------------------------------------------------------------
@@ -801,6 +915,62 @@ export function parseCliDeviceView(value: unknown): CliDeviceView | null {
 }
 
 // ---------------------------------------------------------------------------
+// Parsers: workbench sessions and the outbox queue
+
+function workbenchSession(value: unknown): CliWorkbenchSessionView {
+  const o = rec(value);
+  return pick({
+    id: str(o.id, 128, 1),
+    sessionKey: present(o, "sessionKey") ? key(o.sessionKey) : null,
+    deviceId: present(o, "deviceId") ? deviceIdOf(o.deviceId) : null,
+    engine: present(o, "engine") ? oneOf(o.engine, CLI_ENGINES) : null,
+    cwd: str(o.cwd, CLI_LIMITS.cwd),
+    parentId: present(o, "parentId") ? str(o.parentId, 128, 1) : null,
+    kind: oneOf(o.kind, ["main", "fork", "side"] as const),
+    title: str(o.title, CLI_LIMITS.title),
+    archived: bool(o.archived),
+    deleted: bool(o.deleted),
+    version: int(o.version, 0, COUNTER_MAX),
+    createdAt: int(o.createdAt, 0, COUNTER_MAX),
+    updatedAt: int(o.updatedAt, 0, COUNTER_MAX),
+  });
+}
+
+function queueEntry(value: unknown): CliQueueEntryView {
+  const o = rec(value);
+  return pick({
+    id: str(o.id, 128, 1),
+    seq: int(o.seq, 0, COUNTER_MAX),
+    text: str(o.text, MAX_SEND_TEXT),
+    status: oneOf(o.status, CLI_QUEUE_STATUSES),
+    version: int(o.version, 0, COUNTER_MAX),
+    createdAt: int(o.createdAt, 0, COUNTER_MAX),
+    updatedAt: int(o.updatedAt, 0, COUNTER_MAX),
+    revisesMessageId: optStr(o, "revisesMessageId", CLI_LIMITS.itemId, 1),
+    errorCode: present(o, "errorCode") ? oneOf(o.errorCode, CLI_ERROR_CODES) : undefined,
+  });
+}
+
+function queueView(value: unknown): CliQueueView {
+  const o = rec(value);
+  return pick({
+    workbenchId: str(o.workbenchId, 128, 1),
+    sessionKey: key(o.sessionKey),
+    paused: bool(o.paused),
+    pauseReason: optStr(o, "pauseReason", 40, 1),
+    entries: arr(o.entries, 200).map(queueEntry),
+  });
+}
+
+export function parseCliWorkbenchSession(value: unknown): CliWorkbenchSessionView | null {
+  return guard(() => workbenchSession(value));
+}
+
+export function parseCliQueueView(value: unknown): CliQueueView | null {
+  return guard(() => queueView(value));
+}
+
+// ---------------------------------------------------------------------------
 // Parsers: operations
 
 const CLI_ANSWER_DECISIONS: readonly CliAnswerDecision[] = ["allow", "deny"];
@@ -883,11 +1053,19 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
   start: (o) => {
     const cwd = o.cwd;
     if (!isAbsoluteCwd(cwd)) fail();
+    let worktree: { branch: string; requestId: string } | undefined;
+    if (present(o, "worktree")) {
+      const tree = rec(o.worktree);
+      const branch = str(tree.branch, 120, 1);
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(branch)) fail();
+      worktree = { branch, requestId: str(tree.requestId, 128, 1) };
+    }
     return pick({
       engine: oneOf(o.engine, CLI_ENGINES),
       cwd,
       cols: present(o, "cols") ? cols(o.cols) : undefined,
       rows: present(o, "rows") ? rows(o.rows) : undefined,
+      worktree,
     });
   },
   continue: (o) =>
@@ -901,8 +1079,20 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     if (utf8ByteLength(text) > MAX_SEND_TEXT) fail();
     return { ref: ref(o.ref), text };
   },
+  steer: (o) => {
+    const text = str(o.text, MAX_SEND_TEXT, 1);
+    if (utf8ByteLength(text) > MAX_SEND_TEXT) fail();
+    return { ref: ref(o.ref), text };
+  },
   interrupt: (o) => ({ ref: ref(o.ref) }),
   open_local: (o) => ({ ref: ref(o.ref) }),
+  git: (o) => {
+    const action = oneOf(o.action, ["info", "worktree"] as const);
+    if (action === "info") return { ref: ref(o.ref), action };
+    const branch = str(o.branch, 120, 1);
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(branch)) fail();
+    return { ref: ref(o.ref), action, branch, requestId: str(o.requestId, 128, 1) };
+  },
   answer: (o) =>
     pick({
       id: str(o.id, CLI_LIMITS.requestId, 1),
@@ -916,7 +1106,12 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
   read: (o) => ({ items: items(o.items), more: bool(o.more) }),
   watch: () => ({}),
   unwatch: () => ({}),
-  start: (o) => ({ ref: ref(o.ref), terminal: str(o.terminal, CLI_LIMITS.terminal, 1) }),
+  start: (o) =>
+    pick({
+      ref: ref(o.ref),
+      terminal: str(o.terminal, CLI_LIMITS.terminal, 1),
+      cwd: optStr(o, "cwd", CLI_LIMITS.cwd, 1),
+    }),
   continue: (o) => ({ ref: ref(o.ref), terminal: str(o.terminal, CLI_LIMITS.terminal, 1) }),
   send: (o) =>
     pick({
@@ -925,10 +1120,26 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
       delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined,
       waiting: optBool(o, "waiting"),
     }),
+  steer: (o) => ({ accepted: bool(o.accepted) }),
   interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),
   open_local: () => ({}),
   // a device that answers with an empty result still counts as delivered
   answer: (o) => ({ outcome: present(o, "outcome") ? str(o.outcome, CLI_LIMITS.reason) : "ok" }),
+  git: (o) => {
+    const source = oneOf(o.source, ["worktree", "folder", "none", "failed"] as const);
+    const files = present(o, "files") ? arr(o.files, 500).map((entry) => str(entry, 1024, 1)) : undefined;
+    return pick({
+      source,
+      project: optStr(o, "project", CLI_LIMITS.cwd, 1),
+      worktree: optStr(o, "worktree", CLI_LIMITS.cwd, 1),
+      branch: optStr(o, "branch", CLI_LIMITS.gitBranch, 1),
+      head: optStr(o, "head", 64, 1),
+      files,
+      added: optInt(o, "added", 0, 1_000_000),
+      removed: optInt(o, "removed", 0, 1_000_000),
+      error: optStr(o, "error", CLI_LIMITS.message, 1),
+    });
+  },
 };
 
 export function parseCliOpArgs<K extends CliOp>(op: K, value: unknown): CliOpArgs[K] | null {
@@ -1180,6 +1391,10 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
           id: str(o.id, CLI_LIMITS.requestId, 1),
           by: oneOf(o.by, CLI_REQUEST_RESOLVED_BY),
         };
+      case "queue":
+        return { type: "queue", queue: queueView(o.queue) };
+      case "workbench":
+        return { type: "workbench", sessions: arr(o.sessions, CLI_LIMITS.listSessions).map(workbenchSession) };
       case "pong":
         return { type: "pong" };
       default:

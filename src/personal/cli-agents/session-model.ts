@@ -2,9 +2,9 @@
 // composer may do. No React, no network.
 import { CLI_ENGINES, type CliDeviceView, type CliEngine, type CliSessionView } from "../../../shared/cli-agents";
 
-export const ENGINE_LABEL: Record<CliEngine, string> = { claude: "Claude", codex: "Codex" };
+export const ENGINE_LABEL: Record<CliEngine, string> = { claude: "Claude", codex: "Codex", zcode: "ZCode" };
 /** The agent names the session list groups by. */
-export const AGENT_LABEL: Record<CliEngine, string> = { claude: "Claude Code", codex: "Codex" };
+export const AGENT_LABEL: Record<CliEngine, string> = { claude: "Claude Code", codex: "Codex", zcode: "ZCode" };
 
 export function sessionStatusLabel(session: Pick<CliSessionView, "state" | "online">): string {
   if (!session.online) return "电脑离线";

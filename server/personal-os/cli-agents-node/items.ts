@@ -17,7 +17,8 @@ export type ToolItem = Extract<CliItem, { kind: "tool" }>;
  * path and the key file location never go to Core, which only learns `sendVia`. */
 export type SendRoute =
   | { via: "inbox"; configDir: string; pid: number; socketPath: string; sessionId: string }
-  | { via: "daemon"; home: string; threadId: string };
+  | { via: "daemon"; home: string; threadId: string }
+  | { via: "host"; home: string; sessionId: string };
 
 /** A Codex chat that exists only in the App's database (no rollout file). */
 export interface AppChat {

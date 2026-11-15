@@ -11,6 +11,7 @@ import { catalogSettings, fetchModelCatalog } from "../../shared/model-catalog.m
 import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
 import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
+import { CliAgentWorkbench } from "./cli-agents/workbench.ts";
 import { CliAgentRoutes } from "./cli-agents/routes.ts";
 import { CliAgentSupervisor } from "./cli-agents/supervisor.ts";
 import { assistantModelCaller, createTriage } from "./cli-agents/triage.ts";
@@ -162,7 +163,8 @@ export async function createPersonalApp(options: AppOptions) {
   const cliSupervisor = new CliAgentSupervisor(cliHub, store);
   cliSupervisor.triage = createTriage(assistantModelCaller(store, (botId) => runtime.tidyModel(botId)));
   runtime.cliExecutor = cliToolExecutor(cliHub, store);
-  const cliRoutes = new CliAgentRoutes(cliHub, store, { agents, supervisor: cliSupervisor });
+  const cliWorkbench = new CliAgentWorkbench(cliHub, store);
+  const cliRoutes = new CliAgentRoutes(cliHub, store, { agents, supervisor: cliSupervisor, workbench: cliWorkbench });
   // The Host a browser may address, and the Origin its pages then carry. Shared by the HTTP routes and the stream socket.
   const hostAllowed = (host: string | undefined) => {
     if (!host) return false;
@@ -786,7 +788,7 @@ export async function createPersonalApp(options: AppOptions) {
   const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
   archiveTimer?.unref(); archive();
   if(!options.accountWorkspaces) feishu.start();
-  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliSupervisor, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliWorkbench, cliSupervisor, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
     closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob; await lifecycle.close();
     await identity?.close();

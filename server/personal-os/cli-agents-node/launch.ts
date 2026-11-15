@@ -212,6 +212,16 @@ export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<Launch
       assertSafeId(ids.nativeId, "the Codex session");
       args = ["resume", ids.nativeId];
     }
+  } else if (engine === "zcode") {
+    // the installed ZCode CLI's resume flag still needs the live check P0 asks
+    // for; the shape mirrors the other CLIs until then
+    if (mode === "new") {
+      args = [];
+    } else {
+      if (!ids.nativeId) throw new LaunchError("invalid_argument", "resuming ZCode needs a session id");
+      assertSafeId(ids.nativeId, "the ZCode session");
+      args = ["--resume", ids.nativeId];
+    }
   } else {
     throw new LaunchError("invalid_argument", `unknown engine ${String(engine)}`);
   }
@@ -296,6 +306,7 @@ export function terminalName(engine: CliEngine, nativeId: string): string {
 const CONFIG_HOME_VARIABLES: Record<CliEngine, { variable: string; fallback: string }> = {
   claude: { variable: "CLAUDE_CONFIG_DIR", fallback: ".claude" },
   codex: { variable: "CODEX_HOME", fallback: ".codex" },
+  zcode: { variable: "ZCODE_CONFIG_DIR", fallback: ".zcode" },
 };
 
 /** The CLI keeps its sessions in a config home; when the user relocated it

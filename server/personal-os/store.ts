@@ -21,7 +21,7 @@ import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 import { todoSchema } from "./todo-schema.ts";
-import { cliAgentRequestSchema, cliAgentSchema } from "./cli-agents/schema.ts";
+import { cliAgentRequestSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./cli-agents/schema.ts";
 import { jobSchema } from "./job-schema.ts";
 import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
 import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
@@ -526,6 +526,26 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
       this.db.exec(cliAgentRequestSchema);
       this.insert("schema_migrations", { version: 51, checksum: hash(cliAgentRequestSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=55")) {
+      // Agent mode workbench (P1, number 55: 53 and 54 are the connector rebuilds on main): the sessions table loses its fixed engine CHECK so any
+      // registered Harness id can be stored, and the workbench gains logical sessions, the
+      // outbox queue and per-queue state; see cli-agents/schema.ts. The rebuild copies every
+      // row, so the guarded drop must not cascade into the cached items: foreign keys step
+      // out for this one migration and the copy is verified before the commit.
+      this.db.exec("PRAGMA foreign_keys=OFF");
+      try {
+        this.transaction(() => {
+          const before = Number(this.get("SELECT COUNT(*) n FROM cli_agent_sessions")?.n ?? 0);
+          this.db.exec(cliAgentSessionsRebuild);
+          const after = Number(this.get("SELECT COUNT(*) n FROM cli_agent_sessions")?.n ?? 0);
+          if (before !== after) throw new Error(`cli_agent_sessions rebuild lost rows (${before} -> ${after})`);
+          this.db.exec(cliAgentWorkbenchSchema);
+          this.insert("schema_migrations", { version: 55, checksum: hash(cliAgentSessionsRebuild + cliAgentWorkbenchSchema), applied_at: now() });
+        });
+      } finally {
+        this.db.exec("PRAGMA foreign_keys=ON");
+      }
+    }
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

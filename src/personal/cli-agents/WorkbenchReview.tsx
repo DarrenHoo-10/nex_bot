@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import type { CliItem, CliSessionKey } from "../../../shared/cli-agents";
+import type { CliEngine, CliItem, CliSessionKey } from "../../../shared/cli-agents";
 
 export interface ReviewRecord {
   title?: string; parent?: CliSessionKey; kind?: "fork"|"side"; archived?: boolean; deleted?: boolean;
@@ -13,7 +13,7 @@ interface Snapshot {
   fileUpload?:boolean;
   checkouts?:Record<string,{project:string;worktree:string;branch:string}>;
   initial: CliSessionKey; records: Record<CliSessionKey, ReviewRecord>;
-  skills: string[]; models: Record<"claude"|"codex", string[]>;
+  skills: string[]; models: Record<CliEngine, string[]>;
 }
 // Translated source lines shipped with the local interactive preview, including fork history.
 const previewTranslations: Record<string, string> = {

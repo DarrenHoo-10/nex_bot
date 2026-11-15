@@ -13,12 +13,14 @@ import {
   isCliEngine,
   parseCliKey,
   utf8ByteLength,
+  type CliDeliveryAction,
   type CliErrorCode,
 } from "../../../shared/cli-agents.ts";
 import type { CoreStore } from "../store.ts";
 import { forkToTopic, type ForkAgents } from "./fork.ts";
 import { CliOpError, type CliAgentHub } from "./hub.ts";
 import { parseSettings, type CliAgentSupervisor } from "./supervisor.ts";
+import type { CliAgentWorkbench } from "./workbench.ts";
 
 export interface CliRouteRequest {
   method: string;
@@ -53,6 +55,8 @@ export interface CliRouteExtras {
   /** assistant topics, for fork-to-topic */
   agents?: ForkAgents;
   supervisor?: CliAgentSupervisor;
+  /** the workbench queue: present when Core runs the workbench contracts */
+  workbench?: CliAgentWorkbench;
 }
 
 export class CliAgentRoutes {
@@ -74,8 +78,17 @@ export class CliAgentRoutes {
         switch (pathname) {
           case "/api/cli-agents/items": return await this.items(request);
           case "/api/cli-agents/requests": return this.requests(request);
+          case "/api/cli-agents/queue": return this.queue(request);
           case "/api/cli-agents/supervision": return this.supervision();
-          default: return { status: 200, body: { ...this.hub.list(), requests: this.hub.requests() } };
+          case "/api/cli-agents/sessions/git": return await this.gitInfo(request);
+          default: return {
+            status: 200,
+            body: {
+              ...this.hub.list(),
+              requests: this.hub.requests(),
+              ...(this.extras.workbench ? { workbench: this.extras.workbench.list(), queues: this.extras.workbench.queues() } : {}),
+            },
+          };
         }
       }
       const data = request.data ?? {};
@@ -88,12 +101,130 @@ export class CliAgentRoutes {
         case "/api/cli-agents/open-local": return await this.openLocal(request, data);
         case "/api/cli-agents/answer": return await this.answer(request, data);
         case "/api/cli-agents/fork": return await this.fork(request, data);
+        case "/api/cli-agents/queue/edit": return await this.queueEdit(data);
+        case "/api/cli-agents/queue/withdraw": return await this.queueWithdraw(data);
+        case "/api/cli-agents/queue/steer": return await this.queueSteer(data);
+        case "/api/cli-agents/queue/resume": return await this.queueResume(request, data);
+        case "/api/cli-agents/sessions/branch": return await this.branchSession(request, data);
+        case "/api/cli-agents/sessions/rename": return await this.sessionUpdate(data, "rename");
+        case "/api/cli-agents/sessions/archive": return await this.sessionUpdate(data, "archive");
+        case "/api/cli-agents/sessions/restore": return await this.sessionUpdate(data, "restore");
+        case "/api/cli-agents/sessions/delete": return await this.sessionUpdate(data, "delete");
         default: return this.hide(data);
       }
     } catch (error) {
       if (error instanceof CliOpError) return cliErrorResult(error.code, error.message);
       throw error;
     }
+  }
+
+  /** The outbox of one logical session, by native key or logical id. */
+  private queue(request: CliRouteRequest): CliRouteResult {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const key = request.search.get("key");
+    if (!key) return cliErrorResult("invalid");
+    try {
+      return { status: 200, body: { queue: workbench.queueForWorkbench(String(workbench.resolve(key).id)) } };
+    } catch (error) {
+      if (error instanceof CliOpError) return cliErrorResult(error.code, error.message);
+      throw error;
+    }
+  }
+
+  private queueEdit(data: Record<string, unknown>): CliRouteResult | Promise<CliRouteResult> {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const input = this.entryInput(data);
+    const text = data.text;
+    if (!input || typeof text !== "string" || text.length < 1) return cliErrorResult("invalid");
+    if (text.length > MAX_SEND_TEXT || utf8ByteLength(text) > MAX_SEND_TEXT) return cliErrorResult("too_large");
+    return { status: 200, body: { entry: workbench.editEntry(input, text) } };
+  }
+
+  private queueWithdraw(data: Record<string, unknown>): CliRouteResult | Promise<CliRouteResult> {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const input = this.entryInput(data);
+    if (!input) return cliErrorResult("invalid");
+    return { status: 200, body: { entry: workbench.withdrawEntry(input) } };
+  }
+
+  private async queueSteer(data: Record<string, unknown>): Promise<CliRouteResult> {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const input = this.entryInput(data);
+    if (!input) return cliErrorResult("invalid");
+    const expectedTurnId = typeof data.expectedTurnId === "string" ? data.expectedTurnId : undefined;
+    const entry = await workbench.steerEntry(input, expectedTurnId);
+    return { status: 200, body: { entry } };
+  }
+
+  private async queueResume(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const key = this.key(data.key) ?? this.workbenchRef(data);
+    if (!key) return cliErrorResult("invalid");
+    this.store.audit("cli.queue_resume", "cli_session", key, { sessionId: request.sessionId });
+    workbench.resume(request.sessionId, key);
+    return { status: 200, body: { ok: true } };
+  }
+
+  private entryInput(data: Record<string, unknown>): { entryId: string; expectedVersion: number } | null {
+    const { entryId, expectedVersion } = data;
+    if (typeof entryId !== "string" || entryId.length < 1 || entryId.length > 128) return null;
+    if (typeof expectedVersion !== "number" || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return null;
+    return { entryId, expectedVersion };
+  }
+
+  /** The workbench accepts a logical session id where a native key goes. */
+  private workbenchRef(data: Record<string, unknown>): string | null {
+    const id = data.id ?? data.workbenchId ?? data.parentId;
+    return typeof id === "string" && id.length >= 1 && id.length <= 128 ? id : null;
+  }
+
+  private async branchSession(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const requestId = data.requestId;
+    if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128) return cliErrorResult("invalid");
+    const parent = this.key(data.parentKey) ?? this.workbenchRef(data);
+    if (!parent) return cliErrorResult("invalid");
+    const title = typeof data.title === "string" ? data.title.trim().slice(0, 200) : "";
+    const kind = data.kind === "side" ? "side" as const : "fork" as const;
+    this.store.audit("cli.branch", "cli_session", parent, { sessionId: request.sessionId, requestId });
+    // the parent may come as a native key or a logical id; both resolve
+    const row = workbench.branch(String(workbench.resolve(parent).id), requestId, { kind, ...(title ? { title } : {}) });
+    return { status: 200, body: { id: row.id, parentId: row.parent_id, version: row.version } };
+  }
+
+  private async sessionUpdate(data: Record<string, unknown>, action: "rename" | "archive" | "restore" | "delete"): Promise<CliRouteResult> {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const id = this.workbenchRef(data);
+    const version = data.expectedVersion;
+    if (!id || typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) return cliErrorResult("invalid");
+    let row;
+    switch (action) {
+      case "rename": {
+        const title = data.title;
+        if (typeof title !== "string" || !title.trim() || title.trim().length > 200) return cliErrorResult("invalid");
+        row = workbench.rename(id, title.trim(), version);
+        break;
+      }
+      case "archive": row = workbench.setArchived(id, true, version); break;
+      case "restore": row = workbench.setArchived(id, false, version); break;
+      case "delete": row = workbench.remove(id, version); break;
+    }
+    return { status: 200, body: { session: workbench.viewOf(row) } };
+  }
+
+  private async gitInfo(request: CliRouteRequest): Promise<CliRouteResult> {
+    const key = this.key(request.search.get("key"));
+    if (!key) return cliErrorResult("invalid");
+    this.store.audit("cli.git", "cli_session", key, { sessionId: request.sessionId });
+    const result = await this.hub.git(request.sessionId, key);
+    return { status: 200, body: result };
   }
 
   private requests(request: CliRouteRequest): CliRouteResult {
@@ -179,9 +310,28 @@ export class CliAgentRoutes {
   private async start(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
     const { deviceId, engine, cwd } = data;
     if (!isCliDeviceId(deviceId) || !isCliEngine(engine) || !isAbsoluteCwd(cwd)) return cliErrorResult("invalid");
-    this.store.audit("cli.start", "device", deviceId, { engine, cwd, sessionId: request.sessionId });
-    const started = await this.hub.start(request.sessionId, deviceId, engine, cwd);
-    return { status: 200, body: { key: started.key } };
+    const worktreeBranch = data.worktreeBranch;
+    const requestId = data.requestId;
+    const withWorktree = worktreeBranch !== undefined || requestId !== undefined;
+    if (withWorktree) {
+      if (typeof worktreeBranch !== "string" || worktreeBranch.length < 1 || worktreeBranch.length > 120 || !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(worktreeBranch)) return cliErrorResult("invalid");
+      if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128) return cliErrorResult("invalid");
+    }
+    this.store.audit("cli.start", "device", deviceId, { engine, cwd, ...(withWorktree ? { worktree: worktreeBranch } : {}), sessionId: request.sessionId });
+    const started = withWorktree && this.extras.workbench
+      ? await this.hub.startWorktree(request.sessionId, deviceId, engine, cwd, worktreeBranch as string, requestId as string)
+      : await this.hub.start(request.sessionId, deviceId, engine, cwd);
+    // A start that belongs to a pending branch row binds it, so the tree shows
+    // the child as soon as the device has the session.
+    const parentId = this.workbenchRef(data);
+    if (parentId && this.extras.workbench) {
+      try {
+        this.extras.workbench.bind(parentId, started.key);
+      } catch (error) {
+        if (!(error instanceof CliOpError)) throw error;
+      }
+    }
+    return { status: 200, body: { key: started.key, ...(started.cwd ? { cwd: started.cwd } : {}) } };
   }
 
   private async continueSession(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
@@ -199,6 +349,29 @@ export class CliAgentRoutes {
     if (text.length > MAX_SEND_TEXT || utf8ByteLength(text) > MAX_SEND_TEXT) return cliErrorResult("too_large");
     // The audit row records how much was sent, never the text itself.
     this.store.audit("cli.send", "cli_session", key, { sessionId: request.sessionId, length: text.length });
+    const workbench = this.extras.workbench;
+    const delivery = data.delivery;
+    const contract = typeof data.clientMessageId === "string" || typeof data.requestId === "string" || delivery !== undefined;
+    if (contract && workbench) {
+      if (!isCliDelivery(delivery)) return cliErrorResult("invalid");
+      const clientMessageId = data.clientMessageId;
+      const requestId = data.requestId;
+      if (typeof clientMessageId !== "string" || clientMessageId.length < 1 || clientMessageId.length > 128) return cliErrorResult("invalid");
+      if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128) return cliErrorResult("invalid");
+      const revisesMessageId = data.revisesMessageId;
+      if (revisesMessageId !== undefined && (typeof revisesMessageId !== "string" || revisesMessageId.length < 1 || revisesMessageId.length > 200)) return cliErrorResult("invalid");
+      const attachments = data.attachments;
+      if (attachments !== undefined && (!Array.isArray(attachments) || attachments.length > 20 || attachments.some((entry) => typeof entry !== "string" || entry.length > 4096))) return cliErrorResult("invalid");
+      const result = await workbench.submit(request.sessionId, key, {
+        text,
+        delivery,
+        clientMessageId,
+        requestId,
+        ...(typeof revisesMessageId === "string" ? { revisesMessageId } : {}),
+        ...(Array.isArray(attachments) ? { attachments: attachments as string[] } : {}),
+      });
+      return { status: 200, body: { ...result, messageId: result.messageId } };
+    }
     const result = await this.hub.send(request.sessionId, key, text);
     return {
       status: 200,
@@ -212,9 +385,16 @@ export class CliAgentRoutes {
   }
 
   private async interrupt(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
-    const key = this.key(data.key);
+    const key = this.key(data.key) ?? this.workbenchRef(data);
     if (!key) return cliErrorResult("invalid");
     this.store.audit("cli.interrupt", "cli_session", key, { sessionId: request.sessionId });
+    const workbench = this.extras.workbench;
+    if (workbench && typeof data.requestId === "string") {
+      // The queue pauses before the interrupt leaves, so nothing queued can
+      // fire into the turn that follows (workbench plan section 3).
+      const result = await workbench.stop(request.sessionId, key);
+      return { status: 200, body: { outcome: result.outcome } };
+    }
     const result = await this.hub.interrupt(request.sessionId, key);
     return { status: 200, body: { outcome: result.outcome } };
   }
@@ -243,11 +423,27 @@ const POST_ROUTES = new Set([
   "/api/cli-agents/hide",
   "/api/cli-agents/answer",
   "/api/cli-agents/fork",
+  "/api/cli-agents/queue/edit",
+  "/api/cli-agents/queue/withdraw",
+  "/api/cli-agents/queue/steer",
+  "/api/cli-agents/queue/resume",
+  "/api/cli-agents/sessions/branch",
+  "/api/cli-agents/sessions/rename",
+  "/api/cli-agents/sessions/archive",
+  "/api/cli-agents/sessions/restore",
+  "/api/cli-agents/sessions/delete",
 ]);
 
 const GET_ROUTES = new Set([
   "/api/cli-agents",
   "/api/cli-agents/items",
   "/api/cli-agents/requests",
+  "/api/cli-agents/queue",
   "/api/cli-agents/supervision",
+  "/api/cli-agents/sessions/git",
 ]);
+
+/** The delivery a workbench submit carries; absent means the legacy contract. */
+function isCliDelivery(value: unknown): value is CliDeliveryAction {
+  return value === "send" || value === "queue" || value === "steer";
+}

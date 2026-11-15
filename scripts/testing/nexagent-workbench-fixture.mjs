@@ -41,7 +41,7 @@ export async function installWorkbench({ core, api, dirs, deviceId, ids, bootstr
   const timers = new Map();
   const pending = new Map();
   let serial = Promise.resolve();
-  const state = () => ({ initial, records, checkouts, renameSessions:true, gitInspector:true, fileUpload:true, skills:["/review","/plan","/test"], models:{claude:["Sonnet","Opus"],codex:["GPT","GPT mini"]} });
+  const state = () => ({ initial, records, checkouts, renameSessions:true, gitInspector:true, fileUpload:true, skills:["/review","/plan","/test"], models:{claude:["Sonnet","Opus"],codex:["GPT","GPT mini"],zcode:["GLM"]} });
   const list = async () => (await api("cli-agents")).sessions;
   const locate = async (key) => {
     const s = (await list()).find(r=>r.key===key && r.deviceId===deviceId);

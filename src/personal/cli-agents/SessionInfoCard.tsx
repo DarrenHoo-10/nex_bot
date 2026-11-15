@@ -4,9 +4,10 @@ import type {CliItem,CliSessionView} from "../../../shared/cli-agents";
 import {AGENT_LABEL,canAttach,folderLabel} from "./session-model";
 import {sessionActivity,type ActivityEntry} from "./session-activity";
 import {useReview} from "./WorkbenchReview";
+import { fetchGit, type CliGitInfo } from "./api";
 import "./session-info.css";
 
-interface GitInfo {branch:string;head:string;files:string[];added:number;removed:number}
+interface GitInfo {branch:string;head:string;files:string[];added:number;removed:number;worktree?:string;source?:string;error?:string;project?:string}
 function ActivityGroup({title,entries,icon:Icon}:{title:string;entries:ActivityEntry[];icon:typeof Activity}) {
   if (!entries.length) return null;
   return <details className="na-activity-group" open={title==="待办" || undefined}>
@@ -21,14 +22,25 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
   const [reading,setReading]=useState(false);
   const activity=useMemo(()=>sessionActivity(items,session.state,session.online),[items,session.state,session.online]);
   useEffect(()=>{
-    if(!open || !review?.gitInspector || !checkout)return;
+    if(!open)return;
     const controller=new AbortController();
     setError("");setReading(true);
     (async()=>{
       try{
-        const response=await fetch("/__review/git?key="+encodeURIComponent(session.key),{signal:controller.signal});
-        if(!response.ok)throw Error("Git 状态读取失败");
-        const result:GitInfo=await response.json();if(!controller.signal.aborted)setGit(result);
+        // the isolated preview asks its fixture; production asks the device
+        // that owns the repository, through the Core `git` route
+        const result:CliGitInfo&GitInfo = review?.gitInspector&&checkout
+          ? await (async()=>{
+              const response=await fetch("/__review/git?key="+encodeURIComponent(session.key),{signal:controller.signal});
+              if(!response.ok)throw Error("Git 状态读取失败");
+              return await response.json();
+            })()
+          : await fetchGit(session.key);
+        if(controller.signal.aborted)return;
+        setGit(result.source==="none"||result.source==="failed" ? null : result);
+        if(result.source==="none")setError("当前目录没有 Git 信息");
+        else if(result.source==="failed")setError(result.error||"Git 状态读取失败");
+        else setError("");
       }catch{if(!controller.signal.aborted){setGit(null);setError("Git 状态读取失败")}}
       finally{if(!controller.signal.aborted)setReading(false)}
     })();
@@ -38,9 +50,9 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
   return <aside className="na-info" aria-label="工作区信息">
     <section className="na-info-card" aria-label="会话概览">
       <header><GitBranch size={15}/><strong>Git 工作区</strong><small>{AGENT_LABEL[session.engine]}</small>
-        {open && review?.gitInspector && checkout && <button disabled={reading} aria-busy={reading} aria-label="刷新 Git 状态" title={reading?"正在读取…":"刷新 Git 状态"} onClick={()=>setRefresh(v=>v+1)}><RefreshCw className={reading?"na-busy-icon":undefined} size={14}/></button>}</header>
+        {open && <button disabled={reading} aria-busy={reading} aria-label="刷新 Git 状态" title={reading?"正在读取…":"刷新 Git 状态"} onClick={()=>setRefresh(v=>v+1)}><RefreshCw className={reading?"na-busy-icon":undefined} size={14}/></button>}</header>
       <div className="na-info-row"><GitBranch size={15}/><span>分支</span><b>{branch || "未上报"}</b>{git && <code>{git.head}</code>}</div>
-      <div className="na-info-row"><Layers size={15}/><span>工作树</span><b>{checkout?(checkout.worktree===checkout.project?"主工作树":folderLabel(checkout.worktree)):"未上报"}</b></div>
+      <div className="na-info-row"><Layers size={15}/><span>工作树</span><b>{git?.worktree?(folderLabel(git.worktree)):checkout?(checkout.worktree===checkout.project?"主工作树":folderLabel(checkout.worktree)):"未上报"}</b></div>
       {git ? <details className="na-diff"><summary><FileDiff size={15}/><span>更改</span><b>{git.files.length} 个文件</b><em>+{git.added}</em><em>−{git.removed}</em></summary>
         {git.files.length?<ul>{git.files.map(file=><li key={file}>{file}</li>)}</ul>:<p>工作树干净</p>}</details> :
         <div className="na-info-row"><FileDiff size={15}/><span>更改</span><small>{error || (review?.gitInspector&&checkout?"正在读取…":"未上报")}</small></div>}

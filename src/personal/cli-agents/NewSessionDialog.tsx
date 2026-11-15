@@ -54,7 +54,8 @@ export function NewSessionDialog({ devices, sessions, initialDeviceId, initialCw
   const pathInvalid = path !== "" && !isAbsoluteCwd(path);
   const checkout=review?.checkouts?.[path];
   const worktrees=Object.values(review?.checkouts ?? {}).filter(tree=>checkout && tree.project===checkout.project);
-  const treeAvailable=!!checkout && engine==="claude";
+  // the fixture lists existing trees; production builds a new one on the device
+  const treeAvailable=review ? !!checkout && engine==="claude" : !!device && !blocker;
   const canStart = (!newTree || (treeAvailable && !!branch.trim())) && !blocker && !!device && engines.includes(engine) && !!path && !pathInvalid && !busy;
 
   const submit = async (event: FormEvent) => {
@@ -68,6 +69,13 @@ export function NewSessionDialog({ devices, sessions, initialDeviceId, initialCw
         if(attempt.current?.choice!==choice)attempt.current={choice,id:crypto.randomUUID()};
         const key=await review.run("worktree-start",review.initial,{deviceId,engine,cwd:path,branch:branch.trim(),requestId:attempt.current.id});
         if(!key)throw Error("未取得新会话");
+        onStarted(key);
+      } else if(newTree) {
+        // production: Core asks the device to build the worktree, then the CLI
+        // runs inside it; a retry with the same requestId reuses the tree
+        const choice=JSON.stringify([deviceId,engine,path,branch.trim()]);
+        if(attempt.current?.choice!==choice)attempt.current={choice,id:crypto.randomUUID()};
+        const {key}=await startSession(deviceId,engine,path,{worktreeBranch:branch.trim(),requestId:attempt.current.id});
         onStarted(key);
       } else {
         const {key}=await startSession(deviceId,engine,path);
@@ -137,7 +145,7 @@ export function NewSessionDialog({ devices, sessions, initialDeviceId, initialCw
                 <div className="cli-segment na-launch-engines">{engines.map(entry => <button key={entry} type="button" disabled={busy || !!blocker} aria-pressed={engine===entry} onClick={()=>setEngine(entry)}><HarnessMark agentId={entry} size="sm"/>{AGENT_LABEL[entry]}</button>)}</div>
                 : <div className="na-launch-control na-launch-tool">{engines[0] && <HarnessMark agentId={engines[0]} size="sm"/>}{engines[0]?AGENT_LABEL[engines[0]]:"暂无可用工具"}</div>}
             </div>
-          {review?.checkouts && <div className="na-worktree-options">
+          {(review?.checkouts || !blocker) && <div className="na-worktree-options">
             {worktrees.length>1 && !newTree && <label className="cli-field"><span>工作树</span>
               <span className="na-launch-control na-launch-device"><Folder size={16}/><select aria-label="工作树" value={path} disabled={busy} onChange={e=>chooseDirectory(e.target.value)}>
                 {worktrees.map(tree=><option key={tree.worktree} value={tree.worktree}>{tree.project===tree.worktree?"主工作树":folderLabel(tree.worktree)}</option>)}
@@ -146,6 +154,7 @@ export function NewSessionDialog({ devices, sessions, initialDeviceId, initialCw
             {newTree && <label className="cli-field"><span>新分支名称</span><span className="na-launch-control na-launch-path"><input aria-label="新分支名称" placeholder="例如 feature/chat" spellCheck={false} value={branch} disabled={busy} onChange={e=>{setBranch(e.target.value);setError("")}}/></span></label>}
             {!newTree && checkout && <small>当前分支 · {checkout.branch}</small>}
             {!treeAvailable && <small>选择支持工作树的 Git 目录后可用</small>}
+            {!review && !newTree && <small>勾选后将在设备上为这个 Git 目录新建独立工作树</small>}
           </div>}
           {error ? <p className="cli-field-hint" role="alert">{error}</p> : null}
         </div>

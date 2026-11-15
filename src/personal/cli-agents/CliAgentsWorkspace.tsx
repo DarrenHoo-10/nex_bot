@@ -13,6 +13,9 @@ import { NewSessionDialog } from "./NewSessionDialog";
 import { newRequests, newlyWaiting, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
 import { pendingCounts, pendingViews } from "./requests";
 import { groupSessions, hiddenCount, waitingCount } from "./session-model";
+import { useWorkbenchTree } from "./use-workbench";
+import type { WorkbenchMeta } from "./SessionList";
+import { archiveWorkbenchSession, branchSession, deleteWorkbenchSession, renameWorkbenchSession, startSession } from "./api";
 import { useCliRequests } from "./use-requests";
 import { SessionList } from "./SessionList";
 import { Composer } from "./Composer";
@@ -145,6 +148,48 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
 
   const requests = useCliRequests(stream);
   const { devices, sessions, setSessions, loaded, error, setError, status, reload } = useCliList(stream, requests.merge);
+  const [reloadToken, setReloadToken] = useState(0);
+  const tree = useWorkbenchTree(stream, loaded, reloadToken);
+  /** What SessionList reads: display title, tree parent and the mutation handles. */
+  const listMeta = useMemo(() => {
+    const byId = new Map(tree.map((row) => [row.id, row]));
+    const map = new Map<CliSessionKey, WorkbenchMeta>();
+    for (const row of tree) {
+      if (!row.sessionKey) continue;
+      const parent = row.parentId ? byId.get(row.parentId) : undefined;
+      map.set(row.sessionKey, {
+        title: row.title,
+        parent: parent?.sessionKey ?? null,
+        kind: row.kind === "side" ? "side" : row.kind === "fork" ? "fork" : undefined,
+        archived: row.archived,
+        id: row.id,
+        version: row.version,
+      });
+    }
+    return map;
+  }, [tree]);
+  const runWorkbenchAction = useCallback(async (action: "fork" | "rename" | "archive" | "restore" | "delete", session: Pick<CliSessionView, "key" | "deviceId" | "engine" | "cwd"> | null, value?: { title?: string; row?: { id?: string; version?: number } }): Promise<{ key?: CliSessionKey }> => {
+    if (action === "fork") {
+      if (!session) return {};
+      // the branch row exists first; the device session binds to it on start
+      const created = await branchSession(session.key, value?.title ?? "", crypto.randomUUID());
+      const started = await startSession(session.deviceId, session.engine, session.cwd, { parentId: created.id }).catch((cause) => {
+        setError(cliErrorText(cause, "分支会话启动失败"));
+        return null;
+      });
+      setReloadToken(token => token + 1);
+      void reload();
+      return { key: started?.key };
+    }
+    const id = value?.row?.id, version = value?.row?.version;
+    if (!id || version === undefined) return {};
+    if (action === "rename") await renameWorkbenchSession(id, version, value?.title ?? "");
+    else if (action === "archive") await archiveWorkbenchSession(id, version, true);
+    else if (action === "restore") await archiveWorkbenchSession(id, version, false);
+    else if (action === "delete") await deleteWorkbenchSession(id, version);
+    setReloadToken(token => token + 1);
+    return {};
+  }, [reload]);
   const [selectedKey, setSelectedKey] = useState<CliSessionKey | null>(readSelected);
   const [mobileView, setMobileView] = useState<"list" | "pane">("list");
   const [showHidden, setShowHidden] = useState(false);
@@ -217,6 +262,13 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
         pending={pending}
         hiddenTotal={hiddenCount(sessions)}
         showHidden={showHidden}
+        workbench={review ? undefined : listMeta}
+        onWorkbenchAction={review ? undefined : {
+          fork: (session, title) => runWorkbenchAction("fork", session, { title }),
+          rename: async (row, title) => { await runWorkbenchAction("rename", null, { title, row: { id: row.id, version: row.version } }); },
+          archive: async (row, archived) => { await runWorkbenchAction(archived ? "archive" : "restore", null, { row: { id: row.id, version: row.version } }); },
+          remove: async (row) => { await runWorkbenchAction("delete", null, { row: { id: row.id, version: row.version } }); },
+        }}
         onSelect={select}
         reloadSessions={reload}
         onNew={(deviceId) => setCreating({ deviceId })}

@@ -252,11 +252,13 @@ describe("constants and tables", () => {
       start: 30_000,
       continue: 30_000,
       send: 70_000,
+      steer: 70_000,
       interrupt: 10_000,
       open_local: 10_000,
       answer: 10_000,
+      git: 20_000,
     });
-    expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "continue", "interrupt", "open_local", "send", "start"]);
+    expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "continue", "interrupt", "open_local", "send", "start", "steer"]);
   });
 });
 
@@ -430,7 +432,7 @@ describe("parseCliAgentsCapability", () => {
       { ...capability, version: "1" },
       { ...capability, engines: ["gemini"] },
       { ...capability, engines: "claude" },
-      { ...capability, engines: ["claude", "codex", "claude", "codex", "claude"] },
+      { ...capability, engines: ["claude", "codex", "zcode", "claude", "codex", "zcode", "claude"] },
       { ...capability, terminal: { ...capability.terminal, name: "tmux" } },
       { ...capability, terminal: { ...capability.terminal, ready: 1 } },
       { ...capability, terminal: { ...capability.terminal, version: "" } },
@@ -629,9 +631,11 @@ describe("parseCoreCliMessage", () => {
       start: { engine: "claude", cwd: "D:\\work", cols: 120, rows: 36 },
       continue: { ref },
       send: { ref, text: "go" },
+      steer: { ref, text: "补充一句，别改方向" },
       interrupt: { ref },
       open_local: { ref },
       answer: { id: "req-1", decision: "allow", answers: { "Which one?": "A" }, message: "ok" },
+      git: { ref, action: "info" },
     };
     expect(Object.keys(ops).sort()).toEqual([...CLI_OPS].sort());
     for (const [op, args] of Object.entries(ops)) {

@@ -42,7 +42,7 @@ export function useSideChats(parent:CliSessionKey|null,sessions:CliSessionView[]
       if(existing){setClosed(c=>c.filter(k=>k!==existing));setActive(existing);return}
     }
     const id=crypto.randomUUID();
-    setDrafts(current=>[...current,{id,parent:owner,source,quote,message,model:record?.model||review.models[source.engine][0],effort:record?.effort||"标准"}]);
+    setDrafts(current=>[...current,{id,parent:owner,source,quote,message,model:record?.model||review.models[source.engine]?.[0]||"",effort:record?.effort||"标准"}]);
     setActive(id);
   }
   function openTerminal() {
@@ -74,7 +74,7 @@ export function useSideChats(parent:CliSessionKey|null,sessions:CliSessionView[]
         patch(d.id,{target:key});
       }
       const current=review.records[key];
-      const model=current?.model || review.records[d.source.key]?.model || review.models[d.source.engine][0];
+      const model=current?.model || review.records[d.source.key]?.model || review.models[d.source.engine]?.[0]||"";
       if(d.model!==model || d.effort!==(current?.effort||"标准"))await review.run("settings",key,{model:d.model,effort:d.effort});
       if(d.quote)await review.run("quoted-send",key,{text});
       else await sendMessage(key,text);

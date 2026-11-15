@@ -7,6 +7,27 @@ import { SessionSortMenu, type SessionSort } from "./SessionSortMenu";
 import {HarnessMark} from "./tokendance/HarnessMark";
 import { useReview } from "./WorkbenchReview";
 
+/** One logical-session row as the list sees it, from the review fixture or from Core. */
+export interface WorkbenchMeta {
+  title: string;
+  parent?: CliSessionKey | null;
+  kind?: "fork" | "side";
+  archived?: boolean;
+  /** Core never lists a deleted row; only the review fixture carries this */
+  deleted?: boolean;
+  /** logical id and version, for the Core mutation routes */
+  id?: string;
+  version?: number;
+}
+
+/** What the list runs when no review fixture serves it: the real Core contracts. */
+export interface WorkbenchActions {
+  fork(parent: CliSessionView, title: string): Promise<{ key?: CliSessionKey }>;
+  rename(row: WorkbenchMeta, title: string): Promise<void>;
+  archive(row: WorkbenchMeta, archived: boolean): Promise<void>;
+  remove(row: WorkbenchMeta): Promise<void>;
+}
+
 export interface SessionListProps {
   groups: readonly DeviceGroup[];
   selectedKey: CliSessionKey | null;
@@ -14,6 +35,9 @@ export interface SessionListProps {
   pending?: ReadonlyMap<string, number>;
   hiddenTotal: number;
   showHidden: boolean;
+  /** logical-session rows from Core; absent in the isolated preview */
+  workbench?: ReadonlyMap<CliSessionKey, WorkbenchMeta>;
+  onWorkbenchAction?: WorkbenchActions;
   onSelect(key: CliSessionKey): void;
   onNew(deviceId: string): void;
   reloadSessions(): Promise<void>;
@@ -36,8 +60,9 @@ interface PendingFork {
   key?: CliSessionKey;
 }
 type Action = "id"|"fork"|"archive"|"delete";
-export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,onSelect,onNew,reloadSessions,onHide,onToggleHidden}:SessionListProps) {
+export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,workbench,onWorkbenchAction,onSelect,onNew,reloadSessions,onHide,onToggleHidden}:SessionListProps) {
   const review=useReview();
+  const wbActions = review ? undefined : onWorkbenchAction;
   const [closed,setClosed]=useState<Set<string>>(()=>new Set());
   const [filter,setFilter]=useState(""),[sort,setSort]=useState<SessionSort>("time"),[archived,setArchived]=useState(false);
   const [menu,setMenu]=useState<Selection|null>(null),[dialog,setDialog]=useState<{row:CliSessionView;action:Exclude<Action,"fork">}|null>(null);
@@ -56,12 +81,12 @@ export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,o
     document.addEventListener("pointerdown",outside);document.addEventListener("keydown",escape);
     return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape)};
   },[menu,dialog,busy]);
-  const meta=(key:CliSessionKey)=>review?.records[key];
-  const label=(s:CliSessionView)=>meta(s.key)?.title||sessionTitle(s);
+  const meta=(key:CliSessionKey)=>review?.records[key] ?? workbench?.get(key);
+  const label=(s:CliSessionView)=>{const own=meta(s.key);return (own&&"title" in own&&own.title)||sessionTitle(s)};
   function toggle(id:string){setClosed(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next})}
   function twist(id:string,name:string){const open=!!filter||!closed.has(id);return <button className="na-twist" disabled={!!filter} title={filter?"搜索时自动展开":undefined} aria-expanded={open} aria-label={(open?"收起":"展开")+name} onClick={()=>toggle(id)}>{open?<ChevronDown size={13}/>:<ChevronRight size={13}/>}</button>}
   const forkKey=forking?.key;
-  const forkReady=!!forkKey && review?.records[forkKey]?.parent===forking.parent.key &&
+  const forkReady=!!forkKey && meta(forkKey)?.parent===forking.parent.key &&
     groups.some(group=>group.agents.some(agent=>agent.sessions.some(session=>session.key===forkKey)));
   useEffect(()=>{
     if(!forkReady || !forkKey || !forking)return;
@@ -74,7 +99,8 @@ export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,o
     setMenu(null);
     setError("");
     if(action!=="fork"){setDialog({row,action});return}
-    if(!review || forkPending.current)return;
+    if(forkPending.current)return;
+    if(!review && !wbActions)return;
     forkPending.current=true;
     const title=label(row)+"（fork）";
     const known=new Set(groups.flatMap(group=>group.agents.flatMap(agent=>agent.sessions.map(session=>session.key))));
@@ -82,7 +108,7 @@ export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,o
     setClosed(current=>{const next=new Set(current);next.delete(row.key);return next});
     onSelect(row.key);
     try {
-      const key=await review.run("fork",row.key,{title});
+      const key=review ? await review.run("fork",row.key,{title}) : (await wbActions!.fork(row,title)).key;
       if(!key)throw Error("没有收到新分支会话");
       setForking({parent:row,title,known,key});
       void reloadSessions();
@@ -93,27 +119,36 @@ export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,o
     }
   }
   function edit(row:CliSessionView) {
-    if(!review || saving.current)return;
+    if((!review && !wbActions) || saving.current)return;
     setEditing({key:row.key,title:label(row)});
     setError("");
   }
   async function saveName(row:CliSessionView) {
-    if(!editing || !review || saving.current)return;
+    if(!editing || saving.current || (!review && !wbActions))return;
     const title=editing.title.trim();
     if(!title){setError("请输入会话名称");return}
     saving.current=true;
     try {
-      if(title!==label(row))await review.rename(row.key,title);
+      if(title!==label(row)){
+        const own=meta(row.key);
+        if(review)await review.rename(row.key,title);
+        else if(own && "id" in own && own.id && own.version!==undefined)await wbActions!.rename(own,title);
+      }
       setEditing(null);
       setError("");
     } catch(cause){setError((cause as Error).message)}
     finally{saving.current=false}
   }
   async function submit(){
-    if(!dialog||!review||busy)return;
+    if(!dialog||busy||(!review && !wbActions))return;
     const {row,action}=dialog;setBusy(true);setError("");
     try {
-      await review.run(action,row.key);
+      const own=meta(row.key);
+      if(review)await review.run(action,row.key);
+      else if(own && "id" in own && own.id && own.version!==undefined){
+        if(action==="archive")await wbActions!.archive(own,true);
+        else if(action==="delete")await wbActions!.remove(own);
+      }
       dismissDialog();
     } catch(e){setError((e as Error).message)}finally{setBusy(false)}
   }
@@ -201,10 +236,10 @@ export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,o
       e.preventDefault();const next=e.key==="Home"?0:e.key==="End"?buttons.length-1:(index+(e.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length;buttons[next].focus();
     }} onBlur={e=>{if(e.relatedTarget && !e.currentTarget.contains(e.relatedTarget))setMenu(null)}} style={{left:Math.max(5,Math.min(menu.x-140,innerWidth-198)),top:Math.max(5,Math.min(menu.y,innerHeight-265))}}>
       <small>{AGENT_LABEL[menu.row.engine]}</small>
-      {review&&archived?<button onClick={()=>{void review.run("restore",menu.row.key).then(()=>setArchived(false)).catch(e=>setError(e.message));setMenu(null)}}>恢复会话</button>:null}
-      {(["id",...(review&&!archived?["fork","archive","delete"]:[])] as Action[]).map(action=>{
+      {(review||wbActions)&&archived?<button onClick={()=>{const own=meta(menu.row.key);const run=review?review.run("restore",menu.row.key):(own&&"id" in own?wbActions!.archive(own,false):Promise.resolve());void run.then(()=>setArchived(false)).catch(e=>setError(e.message));setMenu(null)}}>恢复会话</button>:null}
+      {(["id",...((review||wbActions)&&!archived?["fork","archive","delete"]:[])] as Action[]).map(action=>{
         const p=meta(menu.row.key)?.parent,limit=action==="fork"&&p&&meta(p)?.parent;
-        const unavailable=action==="fork" && menu.row.engine!=="claude";
+        const unavailable=action==="fork" && (review ? menu.row.engine!=="claude" : menu.row.engine==="zcode");
         const Icon=actionIcons[action];
         return <button key={action} role="menuitem" className={action==="delete"?"na-danger":""} disabled={!!limit||unavailable||(action==="fork" && !!forking)} title={unavailable?"测试设备未安装该 Harness":undefined} onClick={()=>choose(menu.row,action)}><Icon size={14}/>{limit?"已达两级分支上限":actions[action]}</button>
       })}
@@ -218,7 +253,7 @@ export function SessionList({groups,selectedKey,pending,hiddenTotal,showHidden,o
     }} aria-label={actions[dialog.action]} onSubmit={e=>{e.preventDefault();void submit()}}>
       <h3>{actions[dialog.action]}</h3><p>{AGENT_LABEL[dialog.row.engine]} · {label(dialog.row)}</p>
       {dialog.action==="id"?<code>{dialog.row.nativeId}</code>:null}
-      {dialog.action==="delete"||dialog.action==="archive"?<small>本次操作作用于隔离评审会话。子会话单独保留。</small>:null}
+      {dialog.action==="delete"||dialog.action==="archive"?<small>{review?"本次操作作用于隔离评审会话。子会话单独保留。":"删除后子会话移到上一级；电脑上的原生会话不受影响。"}</small>:null}
       {error?<p role="alert">{error}</p>:null}
       <footer><button type="button" autoFocus disabled={busy} onClick={dismissDialog}>关闭</button>{dialog.action==="id"?<button type="button" onClick={()=>void navigator.clipboard.writeText(dialog.row.nativeId).then(dismissDialog).catch(()=>setError("请选中 ID 复制"))}>复制 ID</button>:<button className={dialog.action==="delete"?"na-confirm-delete":"primary"} disabled={busy}>{busy?"处理中…":actions[dialog.action]}</button>}</footer>
     </form></div>,document.body)}

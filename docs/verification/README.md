@@ -473,3 +473,10 @@ The [Agent mode spike](agent-mode-spike-20261115.md) covers herdr-core on Window
 [draft record](agent-mode-draft-20261115.md) covers sending while a person is
 typing at the computer. The [Agent mode MVP record](agent-mode-mvp-20261115.md)
 covers the browser smoke and the Agent mode test suites.
+
+The [NexAgent workbench dev record](nexagent-workbench-mvp-dev-20261115.md) covers
+the workbench MVP development slice on `codex/nexagent-project-ui-review`: the
+protocol/storage migration, the queue scheduler, the harness adapters (including
+ZCode), the composer over the real outbox and the workbench on Core data. The
+real-product matrix (P0) and the dual-client release acceptance (P8) stay open
+there, with retest conditions.

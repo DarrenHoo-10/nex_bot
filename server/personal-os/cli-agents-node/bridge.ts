@@ -37,6 +37,8 @@ import {
 } from "../../../shared/cli-agents.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { CodexDaemons, DaemonError, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
+import { DeviceGit } from "./device-git.ts";
+import { harnessFor } from "./harness.ts";
 import { HookError, HookServer, TurnTracker, locateHookPlugin } from "./hooks.ts";
 import { InboxError, sendToInbox } from "./inbox.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
@@ -59,6 +61,7 @@ import { CliLocalStore, type StoredReply } from "./local-store.ts";
 import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
 import { TranscriptReader } from "./reader.ts";
 import { TermStreams, hcErrorCode, type TermStream } from "./streams.ts";
+import { zcodeHomeExists, zcodeHomes, type ZcodeHostChannel } from "./zcode.ts";
 
 /** What the bridge needs from herdr-core. `HerdrCore` is one; tests pass a fake. */
 export interface HcLike {
@@ -100,6 +103,11 @@ export interface CliAgentBridgeOptions {
   binary?: string | null;
   claudeDirs?: string[];
   codexHomes?: string[];
+  /** ZCode database homes; defaults to ~/.zcode/cli */
+  zcodeHomes?: string[];
+  /** The ZCode host channel this device has, if any; without one the ZCode
+   * sessions stay read-only until the P0 verification provides it. */
+  zcodeHost?: ZcodeHostChannel | null;
   discovery?: Partial<SessionDiscoveryOptions>;
   resolveCli?: (engine: CliEngine) => Promise<string | null>;
   cliVersion?: (file: string) => Promise<string | null>;
@@ -215,11 +223,13 @@ export class CliAgentBridge {
   private readonly fallbackTimers = new Map<string, NodeJS.Timeout>();
   private readonly codexTails = new Map<string, TranscriptReader>();
   private readonly codexDaemons: CodexDaemons;
+  private readonly git: DeviceGit;
 
   constructor(private readonly options: CliAgentBridgeOptions) {
     this.platform = options.platform ?? process.platform;
     this.store = new CliLocalStore(path.join(options.dir, "cli-agents.db"));
     this.turns = new TurnTracker((message) => this.sendJson(message));
+    this.git = new DeviceGit({ platform: this.platform, ...(options.env ? { env: options.env } : {}) });
     this.codexDaemons = new CodexDaemons({
       connect: proxyConnector({ codexPath: () => this.findCli("codex"), ...(options.env ? { env: options.env } : {}), platform: this.platform }),
       emit: (message) => this.sendJson(message),
@@ -230,6 +240,8 @@ export class CliAgentBridge {
     this.discovery = new SessionDiscovery({
       ...(options.claudeDirs ? { claudeDirs: options.claudeDirs } : {}),
       ...(options.codexHomes ? { codexHomes: options.codexHomes } : {}),
+      ...(options.zcodeHomes ? { zcodeHomes: options.zcodeHomes } : {}),
+      ...(options.zcodeHost ? { zcode: { host: options.zcodeHost } } : {}),
       codexDaemon: { threads: (home) => this.codexDaemons.threads(home), refresh: (home) => this.codexDaemons.refresh(home) },
       ...options.discovery,
       nexbotTerminals: () => this.nexbotTerminals(),
@@ -252,7 +264,9 @@ export class CliAgentBridge {
 
   // -- what the device tells Core about itself ---------------------------------
 
-  /** Finds the installed CLIs. Call before the hello so `capability()` is accurate; it never throws. */
+  /** Finds the installed CLIs. Call before the hello so `capability()` is accurate; it never throws.
+   * ZCode needs no CLI on PATH: its sessions live in the local database, so its presence in
+   * the list only means the data directory exists. */
   prepare(): Promise<void> {
     this.prepared ??= (async () => {
       const find = this.options.resolveCli ?? ((engine: CliEngine) => resolveCli(engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}) }));
@@ -268,6 +282,13 @@ export class CliAgentBridge {
           }
         }),
       );
+      const homes = this.options.zcodeHomes ?? zcodeHomes();
+      for (const home of homes) {
+        if (await zcodeHomeExists(home)) {
+          found.push({ engine: "zcode", version: null });
+          break;
+        }
+      }
       this.engines = found.sort((a, b) => a.engine.localeCompare(b.engine));
     })();
     return this.prepared;
@@ -358,6 +379,7 @@ export class CliAgentBridge {
     if (hooks) this.track(hooks.close());
     for (const claim of this.pending.splice(0)) claim.waiter?.(null);
     this.codexDaemons.close();
+    this.discovery.closeZcode();
     this.dropHc();
     await Promise.race([Promise.allSettled(this.tasks), new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
     this.store.close();
@@ -741,7 +763,7 @@ export class CliAgentBridge {
       const labels = terminal.labels ?? {};
       if (labels.nexbot !== "1") continue;
       const engine = labels["nexbot.engine"];
-      if (engine !== "claude" && engine !== "codex") continue;
+      if (engine !== "claude" && engine !== "codex" && engine !== "zcode") continue;
       live.add(terminal.address);
       let nativeId: string | null = labels["nexbot.native"] ?? null;
       const known = this.terminals.get(terminal.address);
@@ -937,7 +959,12 @@ export class CliAgentBridge {
     const file = this.discovery.transcriptFor(watch.ref);
     if (!file) {
       const app = this.discovery.appChatFor(watch.ref);
-      if (app) await this.startAppWatch(watch, app);
+      if (app) {
+        await this.startAppWatch(watch, app);
+        return;
+      }
+      const zcode = this.discovery.zcodeChatFor(watch.ref);
+      if (zcode) await this.startAppWatch(watch, zcode);
       return;
     }
     const reader = new TranscriptReader({
@@ -1032,12 +1059,16 @@ export class CliAgentBridge {
         return this.exclusive((args as CliOpArgs["continue"]).ref, () => this.opContinue(args as CliOpArgs["continue"], budget));
       case "send":
         return this.exclusive((args as CliOpArgs["send"]).ref, () => this.opSend(args as CliOpArgs["send"]));
+      case "steer":
+        return this.exclusive((args as CliOpArgs["steer"]).ref, () => this.opSteer(args as CliOpArgs["steer"]));
       case "interrupt":
         return this.exclusive((args as CliOpArgs["interrupt"]).ref, () => this.opInterrupt(args as CliOpArgs["interrupt"]));
       case "open_local":
         return this.exclusive((args as CliOpArgs["open_local"]).ref, () => this.opOpenLocal(args as CliOpArgs["open_local"]));
       case "answer":
         return this.opAnswer(args as CliOpArgs["answer"]);
+      case "git":
+        return this.opGit(args as CliOpArgs["git"]);
       default:
         throw new OpFailure("invalid", "this operation is not available on this computer yet");
     }
@@ -1065,8 +1096,10 @@ export class CliAgentBridge {
     const limit = args.limit ?? PAGE_SIZE;
     if (!file) {
       const app = this.discovery.appChatFor(args.ref);
-      if (!app) return { items: [], more: false };
-      return app.db.page(app.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
+      if (app) return app.db.page(app.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
+      const zcode = this.discovery.zcodeChatFor(args.ref);
+      if (zcode) return zcode.db.page(zcode.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
+      return { items: [], more: false };
     }
     const live = this.watches.get(args.ref)?.reader;
     if (live) return live.page({ before: args.before, limit });
@@ -1167,7 +1200,7 @@ export class CliAgentBridge {
     }
   }
 
-  private async opStart(args: CliOpArgs["start"], budget: number): Promise<{ ref: CliSessionRef; terminal: string }> {
+  private async opStart(args: CliOpArgs["start"], budget: number): Promise<{ ref: CliSessionRef; terminal: string; cwd?: string }> {
     const hc = await this.requireHc();
     const executable = await this.cliPath(args.engine);
     const size = clampTermSize(args.cols, args.rows);
@@ -1178,9 +1211,17 @@ export class CliAgentBridge {
       await this.discovery.refresh();
       for (const row of this.discovery.snapshot()) if (row.engine === "codex") known.add(cliRef("codex", row.nativeId));
     }
+    // A worktree start builds the tree here first; the requestId dedups so a
+    // retried request reuses the tree it already created.
+    let cwd = args.cwd;
+    if (args.worktree) {
+      const tree = await this.git.worktree(args.cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform });
+      if (tree.source === "failed" || !tree.worktree) throw new OpFailure("invalid", tree.error ?? "无法创建工作树");
+      cwd = tree.worktree;
+    }
     const hooks = nativeId ? await this.hookLaunch(nativeId) : undefined;
     const plan = await planLaunch(
-      { engine: args.engine, mode: "new", nativeId, key: randomBytes(4).toString("hex"), cwd: args.cwd, executable, ...(hooks ? { hooks } : {}) },
+      { engine: args.engine, mode: "new", nativeId, key: randomBytes(4).toString("hex"), cwd, executable, ...(hooks ? { hooks } : {}) },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
     const launchedAt = Date.now();
@@ -1190,15 +1231,15 @@ export class CliAgentBridge {
     if (nativeId) {
       const ref = cliRef("claude", nativeId);
       await this.awaitRow(ref, budget - 1000);
-      return { ref, terminal: terminal.address };
+      return { ref, terminal: terminal.address, cwd: plan.cwd };
     }
     const claim: PendingClaim = { address: terminal.address, cwd: plan.cwd, launchedAt, known };
     this.pending.push(claim);
     this.armExpiry();
     const ref = await this.waitClaim(claim, Math.min(20_000, Math.max(0, budget - 3000)));
-    if (ref) return { ref, terminal: terminal.address };
+    if (ref) return { ref, terminal: terminal.address, cwd: plan.cwd };
     // No session file yet: the terminal runs and is claimed once the file shows up.
-    return { ref: cliRef("codex", `pending-${randomBytes(4).toString("hex")}`), terminal: terminal.address };
+    return { ref: cliRef("codex", `pending-${randomBytes(4).toString("hex")}`), terminal: terminal.address, cwd: plan.cwd };
   }
 
   private armExpiry(): void {
@@ -1285,7 +1326,8 @@ export class CliAgentBridge {
     throw new OpFailure(row.state === "stopped" ? "stopped" : "not_in_terminal");
   }
 
-  /** A session outside nex_bot's terminals that this device can still write to: a Claude inbox or a shared Codex daemon. */
+  /** A session outside nex_bot's terminals that this device can still write to: a Claude inbox, a shared
+   * Codex daemon, or a ZCode session the host channel has attached. */
   private async sendOutside(args: CliOpArgs["send"], row: CliSessionWire): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
     const route = this.discovery.routeFor(args.ref);
     if (!route || route.via !== row.sendVia) throw new OpFailure("not_in_terminal");
@@ -1299,6 +1341,11 @@ export class CliAgentBridge {
       });
       return { turn: 0, started: false, delivery: result.delivery, ...(result.waiting ? { waiting: true } : {}) };
     }
+    if (route.via === "host") {
+      if (!this.options.zcodeHost) throw new OpFailure("read_only");
+      const result = await this.options.zcodeHost.submit(route.sessionId, args.text);
+      return { turn: 0, started: result.accepted === true };
+    }
     const sent = await this.codexDaemons.send(route.home, route.threadId, args.text);
     return { turn: 0, started: !sent.steered };
   }
@@ -1308,7 +1355,7 @@ export class CliAgentBridge {
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     if (!this.addressFor(args.ref)) {
       const row = this.discovery.get(args.ref);
-      if (row && (row.sendVia === "inbox" || row.sendVia === "daemon")) return this.sendOutside(args, row);
+      if (row && (row.sendVia === "inbox" || row.sendVia === "daemon" || row.sendVia === "host")) return this.sendOutside(args, row);
     }
     const address = this.terminalOf(args.ref);
     const hc = await this.requireHc();
@@ -1322,11 +1369,65 @@ export class CliAgentBridge {
     }
   }
 
+  /** Guidance into a turn that is already running: typing into the live
+   * terminal, a daemon steer, or the host channel for ZCode. */
+  private async opSteer(args: CliOpArgs["steer"]): Promise<{ accepted: boolean }> {
+    if (args.text.length === 0) throw new OpFailure("invalid");
+    if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
+    const address = this.addressFor(args.ref);
+    if (address) {
+      const hc = await this.requireHc();
+      try {
+        const result = await hc.sendGuarded({ terminal: address, text: args.text });
+        return { accepted: result.started !== false };
+      } catch (error) {
+        if ((error as { kind?: string }).kind === "hc_draft") throw new OpFailure("busy", "电脑上有人正在输入");
+        throw error;
+      }
+    }
+    const row = this.discovery.get(args.ref);
+    const caps = row ? harnessFor(row.engine)?.caps(row) : undefined;
+    const route = this.discovery.routeFor(args.ref);
+    if (route?.via === "daemon" && row?.sendVia === "daemon") {
+      if (caps && !caps.steer) throw new OpFailure("invalid", "此入口不支持引导");
+      const sent = await this.codexDaemons.send(route.home, route.threadId, args.text);
+      return { accepted: sent.steered === true };
+    }
+    if (route?.via === "host" && row?.sendVia === "host") {
+      if (!this.options.zcodeHost) throw new OpFailure("read_only");
+      const result = await this.options.zcodeHost.submit(route.sessionId, args.text, { steer: true });
+      return { accepted: result.accepted === true };
+    }
+    // guidance needs a running turn to land in; a plain inbox is not one
+    throw new OpFailure(row?.state === "running" || row?.state === "waiting" ? "invalid" : "turn_changed");
+  }
+
   private async opInterrupt(args: CliOpArgs["interrupt"]): Promise<{ outcome: string }> {
-    const address = this.terminalOf(args.ref);
+    const address = this.addressFor(args.ref);
+    if (!address) {
+      // a session outside our terminals can only be stopped through its own
+      // channel; the harness registry says which ones have one
+      const row = this.discovery.get(args.ref);
+      const route = this.discovery.routeFor(args.ref);
+      if (row && route?.via === "host" && row.sendVia === "host") {
+        if (!this.options.zcodeHost) throw new OpFailure("read_only");
+        if (!harnessFor(row.engine)?.caps(row).interrupt) throw new OpFailure("invalid", "此入口不支持停止");
+        const result = await this.options.zcodeHost.interrupt(route.sessionId);
+        return { outcome: String(result.outcome ?? "unknown").slice(0, 100) };
+      }
+      if (row) throw new OpFailure(row.state === "stopped" ? "stopped" : "not_in_terminal");
+      throw new OpFailure("not_found");
+    }
     const hc = await this.requireHc();
     const result = await hc.interrupt(address, { timeout: 5 });
     return { outcome: String(result.outcome ?? "unknown").slice(0, 100) };
+  }
+
+  /** The Git snapshot of the session's repository, gathered here. */
+  private async opGit(args: CliOpArgs["git"]): Promise<unknown> {
+    const row = this.session(args.ref);
+    if (args.action === "worktree") return this.git.worktree(row.cwd, args.branch, args.requestId, { platform: this.platform });
+    return this.git.info(row.cwd);
   }
 
   private async opOpenLocal(args: CliOpArgs["open_local"]): Promise<Record<string, never>> {

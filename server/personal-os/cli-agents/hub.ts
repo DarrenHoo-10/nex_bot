@@ -9,6 +9,7 @@
 // Plan: docs/plans/2026-11-15-agent-mode-implementation.md sections 2, 4, 5.
 import {
   CLI_ERROR_CODES,
+  CLI_ERROR_TEXT,
   CLI_LIMITS,
   CLI_OP_MUTATING,
   CLI_OP_TIMEOUT_MS,
@@ -24,7 +25,9 @@ import {
   parseDeviceCliMessage,
   type CliAgentsCapability,
   type CliDeviceView,
+  type CliEngine,
   type CliErrorCode,
+  type CliGitInfo,
   type CliItem,
   type CliOp,
   type CliOpArgs,
@@ -32,8 +35,10 @@ import {
   type CliRequestQuestion,
   type CliRequestResolvedBy,
   type CliRequestView,
+  type CliQueueView,
   type CliSendVia,
   type CliSessionKey,
+  type CliWorkbenchSessionView,
   type CliSessionView,
   type CliSessionWire,
   type CliTurnReason,
@@ -80,6 +85,17 @@ export class CliOpError extends Error {
     message?: string,
   ) {
     super(message ?? code);
+  }
+}
+
+/** A `cli.op` that reached the device and then failed: the operation id rides
+ * along, so the outbox can reconcile the entry against the op row. */
+export class TrackedOpError extends Error {
+  constructor(
+    readonly opId: string,
+    readonly error: CliOpError,
+  ) {
+    super(error.message);
   }
 }
 
@@ -140,6 +156,12 @@ const asKey = (value: string) => value as CliSessionKey;
 export const CORE_REQUEST_PREFIX = "nexbot:";
 export type CoreAnswerHandler = (request: CliRequestView, decision: "allow" | "deny", answers: Record<string, string> | undefined, actor: string) => Promise<{ outcome: string }>;
 
+/** The workbench module answers this for the hub: which outbox belongs to a
+ * native session key, so a browser that just subscribed gets the queue too. */
+export interface WorkbenchSink {
+  queueForSessionKey(key: string): CliQueueView | null;
+}
+
 export class CliAgentHub {
   readonly tuning: CliHubTuning;
   private readonly caps = new Map<string, CliAgentsCapability>();
@@ -158,7 +180,12 @@ export class CliAgentHub {
   private lastSummary = { waiting: 0, running: 0 };
   private readonly requestListeners = new Set<(message: ServerMessage) => void>();
   private readonly turnListeners = new Set<(event: CliTurnEvent) => void>();
+  private readonly deviceOnlineListeners = new Set<(deviceId: string) => void>();
+  /** Set by the workbench module; queue snapshots ride on session subscribes. */
+  workbench: WorkbenchSink | null = null;
   private coreAnswer: CoreAnswerHandler | null = null;
+  private readonly queueListeners = new Set<(message: ServerMessage) => void>();
+  private readonly workbenchListeners = new Set<(message: ServerMessage) => void>();
   private readonly lastTurns = new Map<string, CliTurnEvent>();
   private readonly sweepTimer: NodeJS.Timeout;
   private readonly byBrowser = new Map<number, StreamEntry>();
@@ -226,6 +253,9 @@ export class CliAgentHub {
     }
     this.emitDeviceDelta(deviceId);
     this.refreshSummary();
+    for (const listener of [...this.deviceOnlineListeners]) {
+      try { listener(deviceId); } catch { /* a broken listener must not stop the others */ }
+    }
   }
 
   deviceOffline(deviceId: string) {
@@ -633,6 +663,45 @@ export class CliAgentHub {
     return () => { this.turnListeners.delete(listener); };
   }
 
+  /** The queue consumer retries paused sends when a device comes back. */
+  onDeviceOnline(listener: (deviceId: string) => void): () => void {
+    this.deviceOnlineListeners.add(listener);
+    return () => { this.deviceOnlineListeners.delete(listener); };
+  }
+
+  /** Whether a mutating operation is in flight for the session; the queue
+   * consumer waits for it instead of racing a dispatch the user just made. */
+  busy(key: string): boolean {
+    return this.busyKeys.has(key);
+  }
+
+  /** The workbench pushes one session's queue to its watchers and to listeners. */
+  notifyQueue(queue: CliQueueView) {
+    this.notify(queue.sessionKey, { type: "queue", queue });
+    for (const listener of [...this.queueListeners]) {
+      try { listener({ type: "queue", queue }); } catch { /* ignore a broken listener */ }
+    }
+  }
+
+  /** The workbench pushes the whole tree after a rename, archive, fork or delete. */
+  notifyWorkbench(sessions: CliWorkbenchSessionView[]) {
+    const message: ServerMessage = { type: "workbench", sessions };
+    for (const listener of [...this.workbenchListeners]) {
+      try { listener(message); } catch { /* ignore a broken listener */ }
+    }
+  }
+
+  onQueue(listener: (message: ServerMessage) => void): () => void {
+    this.queueListeners.add(listener);
+    return () => { this.queueListeners.delete(listener); };
+  }
+
+  /** The stream forwards tree snapshots to the browsers on the list channel. */
+  onWorkbench(listener: (message: ServerMessage) => void): () => void {
+    this.workbenchListeners.add(listener);
+    return () => { this.workbenchListeners.delete(listener); };
+  }
+
   /** The latest turn end Core saw for a session since it started. */
   lastTurn(key: string): CliTurnEvent | undefined {
     return this.lastTurns.get(key);
@@ -711,16 +780,33 @@ export class CliAgentHub {
    * operation is sent once: a timeout or a dropped link ends as `unknown` and
    * is never retried, so a retry can only be the user's decision. */
   op<K extends CliOp>(actor: string, deviceId: string, sessionKey: string | null, op: K, args: unknown): Promise<CliOpResult[K]> {
+    return this.beginOp(actor, deviceId, sessionKey, op, args).promise;
+  }
+
+  /** Like `op`, but the operation id comes back with the answer, so a caller
+   * that records dispatches (the outbox) can reconcile an uncertain outcome
+   * against the op row. */
+  async opTracked<K extends CliOp>(actor: string, deviceId: string, sessionKey: string | null, op: K, args: unknown): Promise<{ opId: string; result: CliOpResult[K] }> {
+    const begun = this.beginOp(actor, deviceId, sessionKey, op, args);
+    try {
+      return { opId: begun.opId, result: await begun.promise };
+    } catch (error) {
+      if (begun.opId && error instanceof CliOpError) throw new TrackedOpError(begun.opId, error);
+      throw error;
+    }
+  }
+
+  private beginOp<K extends CliOp>(actor: string, deviceId: string, sessionKey: string | null, op: K, args: unknown): { opId: string; promise: Promise<CliOpResult[K]> } {
     const mutating = CLI_OP_MUTATING.has(op);
-    if (this.closed || !this.caps.has(deviceId)) return Promise.reject(new CliOpError("device_offline"));
+    if (this.closed || !this.caps.has(deviceId)) return { opId: "", promise: Promise.reject(new CliOpError("device_offline")) };
     const parsed = parseCliOpArgs(op, args) as CliOpArgs[K] | null;
-    if (!parsed) return Promise.reject(new CliOpError("invalid"));
-    if (mutating && sessionKey && this.busyKeys.has(sessionKey)) return Promise.reject(new CliOpError("busy"));
+    if (!parsed) return { opId: "", promise: Promise.reject(new CliOpError("invalid")) };
+    if (mutating && sessionKey && this.busyKeys.has(sessionKey)) return { opId: "", promise: Promise.reject(new CliOpError("busy")) };
     const opId = id();
     const timeout = this.tuning.opTimeoutMs ?? CLI_OP_TIMEOUT_MS[op];
     if (mutating) {
       // Message text stays out of the record: the transcript is the place for it.
-      const recorded = op === "send"
+      const recorded = op === "send" || op === "steer"
         ? { ref: (parsed as CliOpArgs["send"]).ref, length: (parsed as CliOpArgs["send"]).text.length }
         : op === "answer"
           ? { id: (parsed as CliOpArgs["answer"]).id, decision: (parsed as CliOpArgs["answer"]).decision }
@@ -730,7 +816,7 @@ export class CliAgentHub {
         status: "sent", error_code: null, created_by: actor, created_at: now(), finished_at: null,
       });
     }
-    return new Promise<CliOpResult[K]>((resolve, reject) => {
+    const promise = new Promise<CliOpResult[K]>((resolve, reject) => {
       const pending: Pending = {
         opId, deviceId, op, sessionKey, resolve: resolve as (value: unknown) => void, reject,
         timer: setTimeout(() => this.settleUnknown(pending, "unknown", "device did not answer"), timeout + this.tuning.graceMs),
@@ -748,11 +834,33 @@ export class CliAgentHub {
         reject(new CliOpError("device_offline"));
       }
     });
+    return { opId, promise };
   }
 
-  async start(actor: string, deviceId: string, engine: "claude" | "codex", cwd: string): Promise<{ key: CliSessionKey; terminal: string }> {
+  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
     const result = await this.op(actor, deviceId, null, "start", { engine, cwd });
-    return { key: cliKey(deviceId, result.ref), terminal: result.terminal };
+    return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
+  }
+
+  /** Starts a session inside a fresh worktree of the repository at `cwd`; the
+   * device dedups by requestId, so a retry reuses the tree it built. */
+  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
+    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, worktree: { branch, requestId } });
+    return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
+  }
+
+  /** The Git snapshot of a session's repository, gathered on the device that
+   * owns it. An offline device answers "failed" instead of failing the page. */
+  async git(actor: string, key: string): Promise<CliGitInfo> {
+    const parsed = this.requireKey(key);
+    try {
+      return await this.op(actor, parsed.deviceId, key, "git", { ref: parsed.ref, action: "info" });
+    } catch (error) {
+      if (error instanceof CliOpError && (error.code === "device_offline" || error.code === "unknown")) {
+        return { source: "failed", error: CLI_ERROR_TEXT[error.code] };
+      }
+      throw error;
+    }
   }
 
   async continueSession(actor: string, key: string): Promise<{ key: CliSessionKey; terminal: string }> {
@@ -798,14 +906,19 @@ export class CliAgentHub {
   }
 
   /** The listener gets `items` messages for the session. The first listener
-   * starts a device watch, the last one stops it; a reconnect re-sends it. */
+   * starts a device watch, the last one stops it; a reconnect re-sends it. The
+   * session's outbox queue rides along on the first subscribe. */
   subscribe(key: string, listener: (message: ServerMessage) => void): () => void {
     const parsed = parseCliKey(key);
     if (!parsed) throw new CliOpError("invalid");
     let set = this.watchers.get(key);
     if (!set) { set = new Set(); this.watchers.set(key, set); }
     set.add(listener);
-    if (set.size === 1) this.watchOp("watch", key);
+    if (set.size === 1) {
+      this.watchOp("watch", key);
+      const queue = this.workbench?.queueForSessionKey(key);
+      if (queue) listener({ type: "queue", queue });
+    }
     return () => {
       const current = this.watchers.get(key);
       if (!current?.delete(listener) || current.size) return;

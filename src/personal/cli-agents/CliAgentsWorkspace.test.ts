@@ -8,10 +8,22 @@ import { CliStream, type SocketLike } from "./stream";
 
 const fixture = vi.hoisted(() => ({
   fetchSnapshot: vi.fn(),
+  fetchSnapshotWithWorkbench: vi.fn(),
   fetchItems: vi.fn(),
+  fetchQueue: vi.fn(),
+  fetchGit: vi.fn(),
   startSession: vi.fn(),
   continueSession: vi.fn(),
   sendMessage: vi.fn(),
+  stopSession: vi.fn(),
+  resumeQueue: vi.fn(),
+  editQueued: vi.fn(),
+  withdrawQueued: vi.fn(),
+  steerQueued: vi.fn(),
+  branchSession: vi.fn(),
+  renameWorkbenchSession: vi.fn(),
+  archiveWorkbenchSession: vi.fn(),
+  deleteWorkbenchSession: vi.fn(),
   interruptSession: vi.fn(),
   openLocal: vi.fn(),
   hideSession: vi.fn(),
@@ -49,6 +61,7 @@ const button = (label: string) => [...container.querySelectorAll("button")].find
 
 async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[] }, selected?: string) {
   fixture.fetchSnapshot.mockResolvedValue(rows);
+  fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ ...rows, workbench: [], queues: [] });
   if (selected) localStorage.setItem("nexbot.cliSelected", selected);
   await act(async () => {
     root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div", { "data-testid": "sidebar" }), dark: false, collapsed: false, onNavigation: () => {}, stream }));
@@ -60,9 +73,12 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} });
   localStorage.clear();
-  for (const key of ["fetchSnapshot", "fetchItems", "startSession", "continueSession", "sendMessage", "interruptSession", "openLocal", "hideSession"] as const) fixture[key].mockReset();
+  for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "openLocal", "hideSession"] as const) fixture[key].mockReset();
   fixture.fetchItems.mockResolvedValue({ items: [], more: false });
+  fixture.fetchQueue.mockResolvedValue({ workbenchId: "wb", sessionKey: "", paused: false, entries: [] });
+  fixture.fetchGit.mockRejectedValue(new Error("no git in this test"));
   fixture.sendMessage.mockResolvedValue({});
+  fixture.stopSession.mockResolvedValue({ outcome: "ok" });
   fixture.hideSession.mockResolvedValue({});
   socket = new FakeSocket();
   stream = new CliStream({ url: "ws://test", createSocket: () => socket });
@@ -105,10 +121,12 @@ describe("session list", () => {
 
   it("shows the Core error text when the first read fails", async () => {
     fixture.fetchSnapshot.mockRejectedValue(new CliApiError("raw", "device_offline", 502));
+    fixture.fetchSnapshotWithWorkbench.mockRejectedValue(new CliApiError("raw", "device_offline", 502));
     await act(async () => { root.render(createElement(CliAgentsWorkspace, { sidebar: null, dark: false, collapsed: false, onNavigation: () => {}, stream })); });
     await flush();
     expect(container.querySelector("[role=alert]")?.textContent).toContain("电脑离线");
     fixture.fetchSnapshot.mockResolvedValue({ devices: [device()], sessions: [session()] });
+    fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ devices: [device()], sessions: [session()], requests: [], workbench: [], queues: [] });
     await click(button("重新加载"));
     await flush();
     expect(container.querySelector("[role=alert]")).toBeNull();
@@ -165,7 +183,7 @@ describe("session pane", () => {
     await click(container.querySelector('button[aria-label="发送"]'));
     await flush();
     expect(fixture.continueSession).toHaveBeenCalledWith("dev1:claude:s1");
-    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:s9","继续测试");
+    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:s9","继续测试", expect.objectContaining({ delivery: "send" }));
     expect(localStorage.getItem("nexbot.cliSelected")).toBe("dev1:claude:s9");
   });
 
@@ -181,7 +199,7 @@ describe("session pane", () => {
     await type("跑一下测试");
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await flush();
-    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:s1", "跑一下测试");
+    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:s1", "跑一下测试", expect.objectContaining({ delivery: "send" }));
     expect(box.value).toBe("");
 
     fixture.sendMessage.mockRejectedValueOnce(new CliApiError("raw", "device_offline", 502));
@@ -192,11 +210,10 @@ describe("session pane", () => {
     expect(box.value).toBe("再来一次");
   });
 
-  it("offers an interrupt while the session runs", async () => {
-    fixture.interruptSession.mockResolvedValue({});
+  it("stops a running turn through the workbench contract and pauses the queue", async () => {
     await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
-    await click(button("中断"));
-    expect(fixture.interruptSession).toHaveBeenCalledWith("dev1:claude:s1");
+    await click(button("停止"));
+    expect(fixture.stopSession).toHaveBeenCalledWith("dev1:claude:s1", expect.any(String));
   });
 
   it("renders the transcript the Core returned", async () => {

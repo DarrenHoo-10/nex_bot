@@ -1,7 +1,8 @@
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CliItem, CliSessionKey } from "../../../shared/cli-agents";
+import type { CliEngine, CliItem, CliSessionKey } from "../../../shared/cli-agents";
+import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
 import {HarnessMark} from "./tokendance/HarnessMark";
 import { Languages } from "lucide-react";
@@ -59,7 +60,7 @@ function ReplyText({source, supplied}: { source: string; supplied?: string }) {
   </>;
 }
 
-function BlockView({ block, engine, translations }: { block: Block; engine?: "claude"|"codex"; translations?:Record<string,string> }) {
+function BlockView({ block, engine, translations, onEdit }: { block: Block; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void }) {
   switch (block.kind) {
     case "user":
       if(block.item.text.trim()==="[Request interrupted by user]")return <div className="cli-notice">你已中断本次请求</div>;
@@ -67,13 +68,14 @@ function BlockView({ block, engine, translations }: { block: Block; engine?: "cl
         <div className="cli-msg is-user" data-testid="cli-user">
           <div className="na-byline is-user"><span>你</span><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
           <div className="cli-bubble">{block.item.text}</div>
+          <div className="na-user-actions">{onEdit ? <button type="button" className="text-button na-edit-resend" aria-label="编辑并重发这条消息" title="编辑并重发" onClick={()=>onEdit(block.item.id, block.item.text)}>编辑并重发</button> : null}</div>
           {block.item.queued ? <small>排队中</small> : null}
         </div>
       );
     case "assistant":
       return (
         <div className="cli-msg is-assistant markdown" data-testid="cli-assistant">
-          <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine==="codex"?"Codex":"Claude Code"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
+          <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine?AGENT_LABEL[engine]:"助手"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
           <ReplyText key={block.item.text} source={block.item.text} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
         </div>
       );
@@ -84,7 +86,7 @@ function BlockView({ block, engine, translations }: { block: Block; engine?: "cl
   }
 }
 
-export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems }: { onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; engine?:"claude"|"codex"; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit }: { onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   useEffect(()=>{onItems?.(items)},[items,onItems]);
@@ -184,7 +186,7 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
       <div className="cli-transcript-list" ref={listRef}>
         {more ? <button type="button" className="cli-older" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "正在读取…" : "加载更早的记录"}</button> : null}
         {blocks.map(block => {
-          const message = <BlockView key={block.id} engine={engine} block={block} translations={translations}/>;
+          const message = <BlockView key={block.id} engine={engine} block={block} translations={translations} onEdit={onEdit}/>;
           return review && onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}
         {loading && !items.length ? <div className="cli-empty" role="status">正在读取…</div> : null}
