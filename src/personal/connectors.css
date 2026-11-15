@@ -25,6 +25,7 @@
 .connector-catalog-state.is-added > svg { color: var(--success); }
 .connectors-page .connector-icon { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 15px; border: 1px solid var(--input); background: var(--card); }
 .connectors-page .connector-icon.is-gmail { background: #fff; }
+.connectors-page .connector-icon.is-github { background: #fff; }
 .connector-icon img { width: 44px; height: 44px; object-fit: contain; }
 .connector-no-results { padding: 40px 12px; text-align: center; color: var(--muted-foreground); font-size: 13px; }
 .connector-navigation { margin-bottom: 30px; }
@@ -51,11 +52,6 @@
 .connector-account-heading .connection-status { font-size: 12px; }
 .rk-workspace .connector-account-menu { display: grid; place-items: center; padding: 0; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: var(--muted-foreground); }
 .rk-workspace .connector-account-menu:hover, .rk-workspace .connector-account-menu[aria-expanded="true"] { background: var(--secondary); color: var(--foreground); }
-.connector-account-grants { margin-top: 9px; }
-.connector-account-grants .connector-agent { border: 0; padding: 10px 0; }
-.connector-account-grants .connector-agent strong { font-size: 13px; font-weight: 400; color: var(--muted-foreground); }
-.connector-account-grants .connector-agent small { font-size: 11px; }
-.rk-workspace .connector-account-grants .connector-agent button { border-radius: 18px; padding: 7px 12px; font-size: 11px; white-space: nowrap; }
 .connector-account-management { padding: 5px 0 14px; }
 .connector-account-management .connector-remove { margin-top: 14px; padding-top: 12px; }
 .connector-account-management .connector-remove > .actions { margin-top: 0; }
@@ -90,8 +86,6 @@
 .gmail-authorization a { display: inline-flex; align-items: center; gap: 5px; color: var(--link); font-size: 12px; text-decoration: none; }
 .gmail-authorization a:hover { text-decoration: underline; }
 .gmail-authorization .actions { margin-top: 8px; }
-.connector-account .grant-editor { margin: 10px 0; }
-.connector-account .grant-editor input { width: auto; }
 .connector-mcp-detail .connector-profile-heading { margin-bottom: 26px; }
 .connector-mcp-controls .connector-remove { margin-top: 12px; padding-top: 12px; }
 @media (max-width: 640px) {
@@ -127,3 +121,11 @@
   .connector-app-row { padding: 18px 16px; }
   .connector-information { padding: 10px 16px; }
 }
+
+/* GitHub 令牌连接入口（PAT）。 */
+.connector-pat { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.connector-pat input { flex: 1 1 200px; min-width: 0; }
+
+/* GitHub 监视配置。 */
+.connector-monitor-copy { margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; word-break: break-all; }
+.connector-webhook-note { margin: 12px 0; padding: 12px; background: var(--secondary, #f5f5f4); border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }

@@ -38,12 +38,13 @@ struct HTMLPreviewMessage: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Text("预览").fontWeight(.semibold)
             Text(status).foregroundStyle(Theme.muted)
             Spacer(minLength: 0)
-            if model.running { Button("停止") { model.stop() } }
-            if eligible { Button("重新运行") { model.run() } }
-            Button(fullscreen ? "退出全屏" : "全屏") { fullscreen.toggle() }
+            if fullscreen {
+                Button("关闭") { fullscreen = false }
+            } else if eligible {
+                Button("全屏") { fullscreen = true }
+            }
         }.font(.caption).buttonStyle(.borderless).padding(10)
     }
 }

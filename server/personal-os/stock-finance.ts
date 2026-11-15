@@ -147,14 +147,11 @@ export class StockFinance {
     this.onHistorySession?.(sessionId);
     return { token, expiresAt: grant.expiresAt, botId };
   }
-  private saveDirectory(connectorId: string, botId: string, tools: ConnectorTool[]) {
+  private saveDirectory(connectorId: string, _botId: string, tools: ConnectorTool[]) {
     const row = this.store.get("SELECT tools_json FROM personal_connectors WHERE id=?", connectorId);
     if (!row) return;
     const json = JSON.stringify(tools);
     if (row.tools_json !== json) this.store.run("UPDATE personal_connectors SET tools_json=?,checked_at=?,version=version+1 WHERE id=?", json, now(), connectorId);
-    const role = this.store.get("SELECT bot_id FROM agent_roles WHERE workspace_id=? AND owner_user_id=? AND role='finance_assistant'", this.store.workspace, this.store.owner);
-    if (role?.bot_id !== botId || this.store.get("SELECT auto_grant FROM stock_finance_bindings WHERE connector_id=?", connectorId)?.auto_grant !== 1) return;
-    this.store.run("INSERT INTO personal_connector_grants(connector_id,bot_id,tools_json) VALUES(?,?,?) ON CONFLICT(connector_id,bot_id) DO UPDATE SET tools_json=excluded.tools_json", connectorId, botId, JSON.stringify(tools.map(tool => tool.name)));
   }
   private sessionLease(sessionId: string) {
     return this.store.get(`SELECT b.issuer,b.subject,b.grant_id,s.lease FROM stock_finance_sessions s JOIN stock_finance_bindings b ON b.instance_id=s.instance_id AND b.grant_id=s.grant_id WHERE s.session_id=?`, sessionId);
@@ -282,7 +279,7 @@ export class StockFinance {
     return {ok: true, count: tools.length};
   }
   async execute(call: Row, args: Document, authorize: () => Promise<void>, audience: "private" | "public") {
-    const row = connectorAccess(this.store, String(call.bot_id), args);
+    const row = connectorAccess(this.store, args);
     const binding = this.store.get("SELECT * FROM stock_finance_bindings WHERE connector_id=?", row.id);
     if (!binding) throw new IdentityError(401, "金融服务未绑定");
     const task = this.store.get("SELECT conversation_id FROM tasks WHERE id=?", call.task_id);
@@ -295,13 +292,13 @@ export class StockFinance {
       if (args.action === "connector.tools") {
         const tools = validTools(await this.request("tools", { method: "GET", grant: lease, audience, signal: controller.signal }));
         if (audience === "private") this.store.transaction(() => this.saveDirectory(String(row.id), String(call.bot_id), tools));
-        const current = connectorAccess(this.store, String(call.bot_id), args);
+        const current = connectorAccess(this.store, args);
         const allowed = JSON.parse(String(current.allowed_tools)) as string[];
         return { connectorId: row.id, connectorVersion: current.version, tools: tools.filter(tool => allowed.includes(tool.name)) };
       }
       const answer = await this.request("tools/call", { body: { name: args.tool, arguments: args.parameters ?? {}, operationId: String(call.id) }, grant: lease, audience, signal: controller.signal });
       await authorize();
-      connectorAccess(this.store, String(call.bot_id), args);
+      connectorAccess(this.store, args);
       return { text: JSON.stringify(answer), structured: answer, isError: answer.ok === false };
     } finally {
       active.delete(controller);

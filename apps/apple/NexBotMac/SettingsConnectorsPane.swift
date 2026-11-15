@@ -1,7 +1,7 @@
 import SwiftUI
 import NexClientKit
 
-/// Settings 连接器 category: MCP connectors, their tool catalogs and per-agent grants (web `ConnectorsPage` inside settings).
+/// Settings 连接器 category: MCP connectors and their tool catalogs (web `ConnectorsPage` inside settings).
 struct SettingsConnectorsPane: View {
     let workspace: WorkspaceStore
 
@@ -14,14 +14,13 @@ struct SettingsConnectorsPane: View {
     @State private var editor: Editor?
     @State private var testing = false
     @State private var busy = false
-    @State private var grantBot: String?
-    @State private var grantSelection: Set<String> = []
     @State private var confirmingRemove = false
     @State private var scrollTarget: String?
     @State private var openTools: Set<String> = []
     @State private var showingGmail = false
+    @State private var showingGithub = false
 
-    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && $0.kind != "feishu" } }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && !$0.isGithub && $0.kind != "feishu" } }
     private var visible: [ConnectorView] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         return q.isEmpty ? connectors : connectors.filter { $0.name.lowercased().contains(q) }
@@ -31,17 +30,18 @@ struct SettingsConnectorsPane: View {
     var body: some View {
         ZStack {
             if showingGmail { GmailConnectorView(workspace: workspace, back: { showingGmail = false }) }
+            else if showingGithub { GithubConnectorView(workspace: workspace, back: { showingGithub = false }) }
             else {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
                         GmailCatalogButton(workspace: workspace, open: { showingGmail = true }).padding(.top, 20)
+                        GithubCatalogButton(workspace: workspace, open: { showingGithub = true }).padding(.top, 20)
                         if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 24) }
                         if workspace.state?.feishu != nil { SettingsFeishuCard(workspace: workspace).padding(.top, 24) }
                         if workspace.state != nil, connectors.isEmpty { emptyState.padding(.top, 28) }
                         else if !connectors.isEmpty { twoPane.padding(.top, 24) }
-                        if !connectors.isEmpty { twoPane.padding(.top, 24) }
                     }
                     .padding(.bottom, 34)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -60,7 +60,7 @@ struct SettingsConnectorsPane: View {
                 }
             }
         }
-        .onChange(of: selected?.id) { grantBot = nil; confirmingRemove = false }
+        .onChange(of: selected?.id) { confirmingRemove = false }
         #if DEBUG
         .task { MBDebug.start() }
         .onReceive(NotificationCenter.default.publisher(for: .mbDebug)) { handleDebug($0) }
@@ -171,7 +171,6 @@ struct SettingsConnectorsPane: View {
                     .padding(.top, 14)
             }
             catalog(c).padding(.top, 28)
-            grants(c).padding(.top, 28).id("grants")
             Hairline().padding(.top, 28)
             removal(c).padding(.top, 18).id("remove")
         }
@@ -224,63 +223,10 @@ struct SettingsConnectorsPane: View {
         }
     }
 
-    private func grants(_ c: ConnectorView) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Agent 授权").font(.system(size: 12, weight: .bold))
-                Spacer()
-                Image(systemName: "checkmark.shield").font(.system(size: 12)).foregroundStyle(Theme.muted)
-            }
-            Text("只开放选中的工具。实际调用会在该 Agent 的对话中请求批准。").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.top, 12)
-            if workspace.bots.isEmpty {
-                Text("创建 Agent 后，可以在这里授权。").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.top, 14)
-            }
-            ForEach(workspace.bots) { bot in
-                HStack {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(bot.name).font(.system(size: 12, weight: .semibold))
-                        Text("\(c.grant(for: bot.id)?.tools.count ?? 0) 项工具已授权").font(.system(size: 10)).foregroundStyle(Theme.muted)
-                    }
-                    Spacer()
-                    MBButton(title: "管理授权", enabled: c.checkedAt != nil) {
-                        grantBot = bot.id
-                        grantSelection = Set(c.grant(for: bot.id)?.tools ?? [])
-                    }
-                }
-                .padding(.vertical, 14)
-                .overlay(alignment: .bottom) { Hairline() }
-            }
-            if let id = grantBot, let bot = workspace.bot(id) { grantEditor(c, bot) }
-        }
-    }
-
-    private func grantEditor(_ c: ConnectorView, _ bot: Bot) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("为 \(bot.name) 选择工具").font(.system(size: 12, weight: .bold))
-            ForEach(c.tools) { tool in
-                Toggle(isOn: Binding(get: { grantSelection.contains(tool.name) },
-                                     set: { if $0 { grantSelection.insert(tool.name) } else { grantSelection.remove(tool.name) } })) {
-                    Text(tool.name).font(.system(size: 12))
-                }
-                .toggleStyle(.checkbox)
-            }
-            HStack(spacing: 8) {
-                MBButton(title: "保存授权", kind: .primary, busy: busy) {
-                    let names = c.tools.map(\.name).filter(grantSelection.contains)
-                    perform("工具授权已更新。") { try await workspace.grantConnector(c.id, botID: bot.id, tools: names); grantBot = nil }
-                }
-                MBButton(title: "取消") { grantBot = nil }
-            }
-        }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .padding(.top, 14)
-    }
-
     @ViewBuilder private func removal(_ c: ConnectorView) -> some View {
         if confirmingRemove {
             VStack(alignment: .leading, spacing: 12) {
-                Text("移除连接器及全部工具授权？").font(.system(size: 12, weight: .semibold))
+                Text("移除连接器？").font(.system(size: 12, weight: .semibold))
                 HStack(spacing: 8) {
                     MBButton(title: "确认移除", kind: .danger, busy: busy) {
                         perform(nil) { try await workspace.removeConnector(c.id); confirmingRemove = false; selectedID = nil }
@@ -329,16 +275,6 @@ struct SettingsConnectorsPane: View {
         case "test": if let c = selected { test(c) }
         case "toggle": if let c = selected { perform(nil) { try await workspace.setConnectorEnabled(c.id, enabled: !c.enabled) } }
         case "expand": if let c = selected { openTools.insert(c.id + "/" + cmd.arg) }
-        case "grant":
-            if let c = selected, let bot = workspace.bots.first(where: { $0.name == cmd.arg }) {
-                grantBot = bot.id; grantSelection = Set(c.grant(for: bot.id)?.tools ?? [])
-            }
-        case "check": if grantSelection.contains(cmd.arg) { grantSelection.remove(cmd.arg) } else { grantSelection.insert(cmd.arg) }
-        case "savegrant":
-            if let c = selected, let id = grantBot {
-                let names = c.tools.map(\.name).filter(grantSelection.contains)
-                perform("工具授权已更新。") { try await workspace.grantConnector(c.id, botID: id, tools: names); grantBot = nil }
-            }
         case "confirmremove": confirmingRemove = true
         case "remove": if let c = selected { perform(nil) { try await workspace.removeConnector(c.id); confirmingRemove = false; selectedID = nil } }
         default: break

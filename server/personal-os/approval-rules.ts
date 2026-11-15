@@ -42,7 +42,8 @@ export function approvalRules(store: CoreStore) {
         const grant = store.get("SELECT g.policy_version FROM device_local_grants g JOIN devices d ON d.id=g.device_id WHERE g.device_id=? AND g.local_grant_id='shared' AND g.status='active' AND d.status='bound'", row.target_id);
         active = active && grant?.policy_version === row.resource_version;
       } else if (row.action === "connector.call") {
-        const connector = store.get("SELECT c.version,g.tools_json FROM personal_connectors c JOIN personal_connector_grants g ON g.connector_id=c.id WHERE c.id=? AND g.bot_id=? AND c.enabled=1", row.target_id, row.bot_id);
+        // Grants are gone; a remembered rule stays valid while the connector is enabled, unchanged and still lists the tool.
+        const connector = store.get("SELECT version,tools_json FROM personal_connectors WHERE id=? AND enabled=1", row.target_id);
         active = active && connector?.version === row.resource_version && JSON.parse(String(connector.tools_json)).includes(row.operation);
       } else if (row.action === "agent.update") active = active && !!store.get("SELECT id FROM bots WHERE id=? AND status='active'", row.target_id);
       return { ...row, id: String(row.id), bot_id: String(row.bot_id), active, label: approvalRuleLabel(store, { action: String(row.action), target: String(row.target_id), operation: String(row.operation) }) };

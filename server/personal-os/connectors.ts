@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import { RemoteMcpClient, McpHttpError } from "../mcp-http.ts";
 import { id, now, text, type CoreStore, type Row } from "./store.ts";
 import { ConnectorOAuth } from "./connector-oauth.ts";
+import { GITHUB_API, GithubProvider, GithubProviderError, validateGithubArguments, type GithubConfiguration } from "./github-provider.ts";
 import { GmailProvider, GmailProviderError, validateGmailArguments, type GmailConfiguration } from "./gmail-provider.ts";
 import type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors.ts";
 export type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors.ts";
@@ -21,17 +22,20 @@ export function connectorUrl(value: unknown): string {
   if (host === "0.0.0.0" || host === "::" || host.startsWith("169.254.") || (isIP(host) === 6 && /^fe[89ab]/i.test(host))) throw new Error("不能连接未指定地址或链路本地地址");
   return url.href;
 }
-export function connectorAccess(store: CoreStore, botId: string, args: Record<string, unknown>) {
+export function connectorAccess(store: CoreStore, args: Record<string, unknown>) {
   const connectorId = text(args.connectorId, 100);
-  const row = store.get("SELECT c.*,g.tools_json allowed_tools FROM personal_connectors c JOIN personal_connector_grants g ON g.connector_id=c.id WHERE c.id=? AND g.bot_id=? AND c.enabled=1 AND c.workspace_id=? AND c.owner_user_id=?", connectorId, botId, store.workspace, store.owner);
-  if (!row) throw new Error("连接器未启用或未授权给当前 Agent");
+  // Connector tool grants were retired: every enabled connector serves every bot in the workspace.
+  const row = store.get("SELECT * FROM personal_connectors WHERE id=? AND enabled=1 AND workspace_id=? AND owner_user_id=?", connectorId, store.workspace, store.owner);
+  if (!row) throw new Error("连接器不存在或已停用");
   if (row.provider === "gmail" && !row.credential) throw new Error("Gmail 授权已失效，请重新连接");
+  if (row.provider === "github" && !row.credential) throw new Error("GitHub 授权已失效，请重新连接");
   if (args.action === "connector.call") {
     const name = text(args.tool, 200);
-    if (!(JSON.parse(String(row.allowed_tools)) as string[]).includes(name) || !(JSON.parse(String(row.tools_json)) as ConnectorTool[]).some((tool) => tool.name === name)) throw new Error("该 Agent 未获准使用这个工具");
+    if (!(JSON.parse(String(row.tools_json)) as ConnectorTool[]).some((tool) => tool.name === name)) throw new Error("连接器没有这个工具");
     if (!object(args.parameters ?? {}) || JSON.stringify(args.parameters ?? {}).length > 32_000) throw new Error("连接器参数无效或过大");
     if (args.connectorVersion !== row.version) throw new Error("连接器配置或工具目录已变化，请重新读取工具目录");
     if (row.provider === "gmail") validateGmailArguments(name, (args.parameters ?? {}) as Record<string, unknown>);
+    if (row.provider === "github") validateGithubArguments(name, (args.parameters ?? {}) as Record<string, unknown>);
   }
   return row;
 }
@@ -42,8 +46,15 @@ export class ConnectorModule {
   private readonly pending = new Set<Promise<unknown>>();
   private closed = false;
   readonly oauth: ConnectorOAuth;
-  constructor(readonly store: CoreStore, readonly changed: () => void, gmail?: GmailConfiguration) { this.oauth = new ConnectorOAuth(store, changed, gmail ? new GmailProvider(gmail) : undefined); }
-  catalog() { return [{ id: "gmail" as const, name: "Gmail", available: !!this.oauth.provider }]; }
+  constructor(readonly store: CoreStore, readonly changed: () => void, gmail?: GmailConfiguration, github?: GithubConfiguration) {
+    this.oauth = new ConnectorOAuth(store, changed, gmail ? new GmailProvider(gmail) : undefined, new GithubProvider(github ?? {}));
+  }
+  catalog() {
+    return [
+      { id: "gmail" as const, name: "Gmail", available: !!this.oauth.provider },
+      { id: "github" as const, name: "GitHub", available: !!this.oauth.github },
+    ];
+  }
   private row(connectorId: string) {
     const row = this.store.get("SELECT * FROM personal_connectors WHERE id=? AND workspace_id=? AND owner_user_id=?", connectorId, this.store.workspace, this.store.owner);
     if (!row) throw new Error("连接器不存在");
@@ -51,56 +62,35 @@ export class ConnectorModule {
   }
   list(): ConnectorView[] {
     return this.store.all("SELECT * FROM personal_connectors WHERE workspace_id=? AND owner_user_id=? ORDER BY created_at,id", this.store.workspace, this.store.owner).map((row) => ({
-      id: String(row.id), provider: row.provider as "mcp" | "gmail", account: row.account as string | null, name: String(row.name), url: String(row.url), transport: row.transport as "http" | "sse", enabled: row.enabled === 1, version: Number(row.version), hasToken: !!row.credential,
+      id: String(row.id), provider: row.provider as "mcp" | "gmail" | "github", account: row.account as string | null, name: String(row.name), url: String(row.url), transport: row.transport as "http" | "sse", enabled: row.enabled === 1, version: Number(row.version), hasToken: !!row.credential,
       tools: JSON.parse(String(row.tools_json)), checkedAt: row.checked_at as number | null, error: row.error as string | null,
-      grants: this.store.all("SELECT bot_id,tools_json FROM personal_connector_grants WHERE connector_id=?", row.id).map((grant) => ({ botId: String(grant.bot_id), tools: JSON.parse(String(grant.tools_json)) as string[] })),
+      grants: [],
     }));
   }
   save(data: Record<string, unknown>) {
     const previous = data.id ? this.row(text(data.id, 100)) : undefined;
     if (previous?.kind === "stock-finance") throw new Error("金融服务地址和凭据由已绑定的 Stock 实例管理");
-    if (previous && previous.provider !== "mcp") throw new Error("Gmail 连接请使用 Google 重新授权");
+    if (previous && previous.provider === "gmail") throw new Error("Gmail 连接请使用 Google 重新授权");
+    const requested = data.provider === "github" ? "github" : data.provider === "mcp" ? "mcp" : undefined;
+    const github = requested ? requested === "github" : previous?.provider === "github";
+    if (previous && github !== (previous.provider === "github")) throw new Error(github ? "MCP 连接器不支持改为 GitHub，请移除后重新添加" : "GitHub 连接不支持改为自定义 MCP 服务");
     if (previous && previous.version !== data.version) throw new Error("连接器已被修改，请刷新后重试");
-    const name = text(data.name, 80), url = connectorUrl(data.url), transport = data.transport === "sse" ? "sse" : "http";
+    const name = github && data.name === undefined ? "GitHub" : text(data.name, 80);
+    const url = github ? GITHUB_API : connectorUrl(data.url);
+    const transport = github ? "http" as const : data.transport === "sse" ? "sse" as const : "http" as const;
     if (data.token !== undefined && (typeof data.token !== "string" || data.token.length > 4096 || /[\r\n\0]/.test(data.token))) throw new Error("令牌格式无效");
     const token = typeof data.token === "string" ? data.token.trim() : "";
-    const sameTarget = previous?.url === url && previous.transport === transport;
+    const sameTarget = previous ? (github ? previous.provider === "github" : previous.url === url && previous.transport === transport) : false;
     const credential = token ? this.store.encrypt(token) : data.clearToken === true ? null : sameTarget ? previous?.credential ?? null : null;
     const connectorId = previous ? String(previous.id) : id();
     this.abortConnector(connectorId);
     this.store.transaction(() => {
       if (previous) {
-        this.store.run("UPDATE personal_connectors SET name=?,url=?,transport=?,credential=?,enabled=?,version=version+1,tools_json='[]',checked_at=NULL,error=NULL WHERE id=?", name, url, transport, credential, data.enabled === false ? 0 : 1, connectorId);
-        // A changed destination cannot inherit authorization for identically named tools.
-        if (!sameTarget) this.store.run("DELETE FROM personal_connector_grants WHERE connector_id=?", connectorId);
-      } else this.store.insert("personal_connectors", { id: connectorId, ...this.store.scope(), name, url, transport, credential, enabled: data.enabled === false ? 0 : 1, created_at: now() });
+        this.store.run("UPDATE personal_connectors SET name=?,url=?,transport=?,credential=?,enabled=?,version=version+1,tools_json=?,checked_at=NULL,error=NULL WHERE id=?", name, url, transport, credential, data.enabled === false ? 0 : 1, github ? JSON.stringify(this.oauth.github!.tools) : "[]", connectorId);
+      } else this.store.insert("personal_connectors", { id: connectorId, ...this.store.scope(), name, url, transport, credential, enabled: data.enabled === false ? 0 : 1, created_at: now(), ...(github ? { provider: "github", tools_json: JSON.stringify(this.oauth.github!.tools) } : {}) });
       this.store.audit("connector.save", "connector", connectorId, {});
     });
-    this.changed(); return { id: connectorId };
-  }
-  grant(data: Record<string, unknown>) {
-    const row = this.row(text(data.id, 100)), botId = text(data.botId, 100);
-    if (row.version !== data.version) throw new Error("连接器已变化，请刷新后授权");
-    if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner)) throw new Error("Agent 不存在");
-    const known = new Set((JSON.parse(String(row.tools_json)) as ConnectorTool[]).map((tool) => tool.name));
-    if (!Array.isArray(data.tools) || data.tools.some((tool) => typeof tool !== "string" || !known.has(tool))) throw new Error("请选择工具目录中的工具");
-    const tools = [...new Set(data.tools as string[])];
-    this.abortConnector(String(row.id));
-    this.store.transaction(() => {
-      this.store.run("INSERT INTO personal_connector_grants VALUES(?,?,?) ON CONFLICT(connector_id,bot_id) DO UPDATE SET tools_json=excluded.tools_json", row.id, botId, JSON.stringify(tools));
-      if (row.kind === "stock-finance") {
-        this.store.run(`UPDATE stock_finance_bindings SET auto_grant=0 WHERE connector_id=? AND EXISTS (
-          SELECT 1 FROM agent_roles WHERE workspace_id=? AND owner_user_id=? AND role='finance_assistant' AND bot_id=?)`,
-          row.id, this.store.workspace, this.store.owner, botId);
-      }
-      const policy = this.store.get("SELECT * FROM bot_policies WHERE bot_id=?", botId)!;
-      const parsed = JSON.parse(String(policy.policy_json));
-      if (tools.length) parsed.tools = [...new Set([...(parsed.tools ?? []), "connector.list", "connector.tools", "connector.call"])];
-      this.store.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify(parsed), botId);
-      this.store.run("UPDATE personal_connectors SET version=version+1 WHERE id=?", row.id);
-      this.store.audit("connector.grant", "connector", String(row.id), { botId, tools });
-    });
-    this.changed(); return { ok: true };
+    this.changed(); return { id: connectorId, version: previous ? Number(previous.version) + 1 : 1 };
   }
   toggle(data: Record<string, unknown>) {
     const row = this.row(text(data.id, 100));
@@ -113,7 +103,7 @@ export class ConnectorModule {
     const row = this.row(text(data.id, 100));
     if (row.version !== data.version) throw new Error("连接器已变化，请刷新后重试");
     this.abortConnector(String(row.id)); this.store.run("DELETE FROM personal_connectors WHERE id=?", row.id); this.changed();
-    return row.provider === "gmail" ? this.oauth.disconnect(row) : { ok: true };
+    return row.provider !== "mcp" ? this.oauth.disconnect(row) : { ok: true };
   }
   private async session<T>(row: Row, taskId: string | undefined, operation: (client: RemoteMcpClient, signal: AbortSignal, redact: (value: string) => string) => Promise<T>): Promise<T> {
     if (this.closed) throw new Error("连接器正在关闭");
@@ -135,6 +125,23 @@ export class ConnectorModule {
   async test(data: Record<string, unknown>, authorize: () => Promise<void> = async () => {}) {
     const row = this.row(text(data.id, 100));
     if (row.version !== data.version) throw new Error("连接器已变化，请刷新后测试");
+    if (row.provider === "github") {
+      try {
+        await this.oauth.withCredential(row, undefined, authorize, async (provider, credential, signal) => {
+          const login = await provider.account(credential, signal);
+          if (row.account && String(row.account).toLowerCase() !== login.toLowerCase()) throw new Error("GitHub 账号已变化，请重新连接");
+          if (!row.account) this.store.run("UPDATE personal_connectors SET account=? WHERE id=? AND version=?", login, row.id, row.version);
+        });
+        const updated = this.store.run("UPDATE personal_connectors SET checked_at=?,error=NULL,version=version+1 WHERE id=? AND version=?", now(), row.id, row.version);
+        if (!updated.changes) throw new Error("连接器已变化，请重新测试");
+        this.changed(); return { ok: true, count: this.oauth.github!.tools.length };
+      } catch (error) {
+        await authorize();
+        const message = error instanceof GithubProviderError ? error.message : "GitHub 连接失败或配置已变化，请重试";
+        this.store.run("UPDATE personal_connectors SET error=? WHERE id=? AND version=?", message, row.id, row.version);
+        this.changed(); throw new Error(message);
+      }
+    }
     if (row.provider === "gmail") {
       try {
         await this.oauth.withCredential(row, undefined, authorize, async (provider, credential, signal) => {
@@ -180,29 +187,33 @@ export class ConnectorModule {
       this.changed(); throw new Error(message);
     }
   }
-  directory(botId: string) {
-    return this.list().filter((item) => item.enabled && (item.provider === "mcp" || item.hasToken) && item.grants.some((grant) => grant.botId === botId && grant.tools.length)).map((item) => ({ id: item.id, name: item.account ? `${item.name} (${item.account})` : item.name, version: item.version, tools: item.grants.find((grant) => grant.botId === botId)!.tools }));
+  directory(_botId: string) {
+    return this.list().filter((item) => item.enabled && (item.provider === "mcp" || item.hasToken)).map((item) => ({ id: item.id, name: item.account ? `${item.name} (${item.account})` : item.name, version: item.version, tools: item.tools.map((tool) => tool.name) }));
   }
   async execute(call: Row, args: Record<string, unknown>, authorize: () => Promise<void>) {
     if (args.action === "connector.list") return { connectors: this.directory(String(call.bot_id)) };
-    const row = connectorAccess(this.store, String(call.bot_id), args);
-    const tools = JSON.parse(String(row.tools_json)) as ConnectorTool[], allowed = JSON.parse(String(row.allowed_tools)) as string[];
-    if (args.action === "connector.tools") return { connectorId: row.id, connectorVersion: row.version, tools: tools.filter((tool) => allowed.includes(tool.name)) };
+    const row = connectorAccess(this.store, args);
+    const tools = JSON.parse(String(row.tools_json)) as ConnectorTool[];
+    if (args.action === "connector.tools") return { connectorId: row.id, connectorVersion: row.version, tools };
     if (row.provider === "gmail") {
-      const result = await this.oauth.withCredential(row, String(call.task_id), async () => { await authorize(); connectorAccess(this.store, String(call.bot_id), args); }, (provider, credential, signal) => provider.call(String(args.tool), (args.parameters ?? {}) as Record<string, unknown>, credential, signal));
+      const result = await this.oauth.withCredential(row, String(call.task_id), async () => { await authorize(); connectorAccess(this.store, args); }, (provider, credential, signal) => provider.call(String(args.tool), (args.parameters ?? {}) as Record<string, unknown>, credential, signal));
+      return { text: JSON.stringify(result), structured: result, isError: false };
+    }
+    if (row.provider === "github") {
+      const result = await this.oauth.withCredential(row, String(call.task_id), async () => { await authorize(); connectorAccess(this.store, args); }, (provider, credential, signal) => provider.call(String(args.tool), (args.parameters ?? {}) as Record<string, unknown>, credential, signal));
       return { text: JSON.stringify(result), structured: result, isError: false };
     }
     let dispatched = false;
     try {
       return await this.session(row, String(call.task_id), async (client, signal, redact) => {
         await authorize();
-        connectorAccess(this.store, String(call.bot_id), args);
+        connectorAccess(this.store, args);
         if (signal.aborted) throw new Error("已取消");
         dispatched = true;
         const raw = await client.request("tools/call", { name: args.tool, arguments: args.parameters ?? {} }, signal);
         if (!object(raw) || !Array.isArray(raw.content)) throw new Error("工具结果无效");
         await authorize();
-        connectorAccess(this.store, String(call.bot_id), args);
+        connectorAccess(this.store, args);
         const resultText = raw.content.filter((item) => object(item) && item.type === "text" && typeof item.text === "string").map((item) => redact(String(item.text))).join("\n");
         const images = raw.content.filter((item) => object(item) && item.type === "image" && ["image/png", "image/jpeg", "image/webp"].includes(String(item.mimeType)) && typeof item.data === "string").slice(0, 2).map((item) => ({ type: "image", data: item.data, mimeType: item.mimeType }));
         return { text: resultText, images, ...(raw.structuredContent !== undefined ? { structured: redactValue(raw.structuredContent, redact) } : {}), isError: raw.isError === true };

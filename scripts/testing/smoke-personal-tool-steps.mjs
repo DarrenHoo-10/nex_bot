@@ -81,6 +81,11 @@ try {
   await evaluate(`(()=>{const el=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,'把这条写作偏好记到长期记忆里：${memoryText}');el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await until(() => evaluate("!document.querySelector('.send').disabled"));
   await click(".send");
+  const send = async (text) => {
+    await evaluate(`(()=>{const el=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,${JSON.stringify(text)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await until(() => evaluate("!document.querySelector('.send').disabled"));
+    await click(".send");
+  };
   await until(async () => { if (await evaluate("!!document.querySelector('.approval')")) await click(".approval .actions button"); return evaluate("document.querySelector('.transcript').textContent.includes('已经写入长期记忆。')"); }, "tool reply committed", 60000);
   await evaluate("[...document.querySelectorAll('.transcript details')].forEach(el=>el.open=true)");
   await until(() => evaluate("!!document.querySelector('.transcript .step-row')"), "tool activity row");
@@ -102,6 +107,33 @@ try {
   assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
   await screenshot("tool-step-inline-mobile");
   cases.push("chat-memory-step-expands-inline-text", "chat-step-collapse-and-mobile-bounds");
+  // html.render publishes a preview-only message; the column widens proportionally,
+  // the card's left edge stays aligned with the messages, and narrow viewports scroll.
+  await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  const board = "<div style=\"font:14px system-ui;padding:18px\"><h2>经营看板</h2><p>宽度验证用示例内容</p></div>";
+  model.scripts.push({ kind: "openai-tool", calls: [{ id: "board-fixture", name: "broker", args: JSON.stringify({ action: "html.render", content: board }) }] }, { kind: "openai-text", text: "看板已生成。" });
+  await send("给我一个交互看板示例。");
+  await until(async () => { if (await evaluate("!!document.querySelector('.approval')")) await click(".approval .actions button"); return evaluate("document.querySelector('.transcript .html-preview iframe') !== null"); }, "published preview card", 60000);
+  await until(() => evaluate("document.querySelector('.transcript .html-preview').offsetWidth >= 950"), "preview fills the widened column");
+  const edges = await evaluate("(()=>{const card=document.querySelector('.transcript .message.assistant:has(.markdown > .html-preview) .html-preview').getBoundingClientRect();const pill=document.querySelector('.transcript .message.assistant:has(.markdown > .html-preview) .tool-activity-disclosure').getBoundingClientRect();return {card:card.left,pill:pill.left};})()");
+  assert.equal(Math.abs(edges.card - edges.pill) < 3, true, "preview left edge aligns with the message column");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.transcript .message.assistant:has(.markdown > .html-preview) .bubble')).paddingLeft"), "0px", "preview-only message drops bubble chrome");
+  assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
+  assert.equal(await evaluate("[...document.querySelectorAll('.html-preview-toolbar button')].map(b=>b.textContent).join(',')"), "全屏", "toolbar keeps only fullscreen");
+  await click(".html-preview-toolbar button");
+  await until(() => evaluate("!!document.querySelector('.html-preview-dialog')"), "fullscreen dialog opens");
+  assert.equal(await evaluate("!!document.querySelector('.html-preview-dialog [aria-label=\"关闭全屏预览\"]')"), true, "dialog is closable");
+  assert.equal(await evaluate("(()=>{const d=document.querySelector('.html-preview-dialog').getBoundingClientRect();return d.width < innerWidth && d.height < innerHeight;})()"), true, "dialog is bounded within the viewport");
+  await screenshot("html-preview-dialog");
+  await click('[aria-label="关闭全屏预览"]');
+  await until(() => evaluate("!document.querySelector('.html-preview-dialog')"), "dialog closes");
+  await screenshot("html-preview-wide-desktop");
+  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await until(() => evaluate("document.querySelector('.transcript .html-preview iframe').offsetWidth >= 900"), "iframe keeps a usable floor on mobile");
+  assert.equal(await evaluate("document.querySelector('.transcript .html-preview').scrollWidth > document.querySelector('.transcript .html-preview').clientWidth"), true, "narrow viewport scrolls the card horizontally");
+  assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
+  await screenshot("html-preview-wide-mobile");
+  cases.push("html-preview-spans-wide-desktop", "html-preview-fits-mobile");
   assert.deepEqual(exceptions, []);
   writeFileSync(path.join(evidence, "result.json"), JSON.stringify({ ok: true, cases, exceptions, coreOrigin: core.origin }, null, 2));
   console.log(JSON.stringify({ ok: true, cases, evidence }, null, 2));

@@ -8,6 +8,7 @@ import { requestBody } from "./http-body.ts";
 import { FeishuWorkspaceRouter } from "./feishu/workspace-router.ts";
 import { feishuScanToken } from "./feishu/module.ts";
 import { GOOGLE_CALLBACK } from "./gmail-provider.ts";
+import { GITHUB_CALLBACK } from "./github-provider.ts";
 import { CLI_STREAM_PATH } from "./upgrade.ts";
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
@@ -82,7 +83,7 @@ export async function createWorkspaceService(options: AppOptions) {
         if (!target || target === primary) return false;
         await target.handleRequest(request, response); return true;
       }
-      if (route === GOOGLE_CALLBACK && request.method === "GET") {
+      if ((route === GOOGLE_CALLBACK || route === GITHUB_CALLBACK) && request.method === "GET") {
         const state = new URL(request.url!, primary.origin).searchParams.get("state") ?? "";
         const target = apps().find((app) => app.connectors.oauth.ownsState(state));
         if (!target || target === primary) return false;

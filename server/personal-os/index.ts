@@ -35,6 +35,8 @@ import { ConnectorModule } from "./connectors.ts";
 import { FeishuModule, feishuScanPrefix, feishuScanToken, type FeishuModuleOptions } from "./feishu/module.ts";
 import { sdkRegisterApp, wsTransportFactory } from "./feishu/transport.ts";
 import { GOOGLE_CALLBACK, type GmailConfiguration } from "./gmail-provider.ts";
+import { GITHUB_CALLBACK, type GithubConfiguration } from "./github-provider.ts";
+import { GithubMonitorModule } from "./github-monitor.ts";
 import type { AttachmentObjects } from './attachment-objects.ts';
 export { OssAttachmentObjects } from './attachment-objects.ts';
 import { ChatFiles } from "./chat-files.ts";
@@ -47,7 +49,7 @@ import type { RetrievalDefaults } from "./retrieval-config.ts";
 import {StockHistory} from "./stock-history.ts";
 import { StockFinance, stockConnectionFromEnv, type StockConnection } from "./stock-finance.ts";
 
-export interface AppOptions { /** Disposable test fixtures only: shorter Agent mode timers and buffers. */ cliAgents?: Partial<CliHubTuning> & { pingMs?: number; pongTimeoutMs?: number; reauthMs?: number }; stock?: StockConnection; /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; sharedFeishuAppId?: string; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: FeishuModuleOptions }
+export interface AppOptions { /** Disposable test fixtures only: shorter Agent mode timers and buffers. */ cliAgents?: Partial<CliHubTuning> & { pingMs?: number; pongTimeoutMs?: number; reauthMs?: number }; stock?: StockConnection; /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; github?: GithubConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; sharedFeishuAppId?: string; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: FeishuModuleOptions }
 
 
 export async function createPersonalApp(options: AppOptions) {
@@ -93,7 +95,7 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const runtime = new TaskRuntime(store, changed);
   runtime.memory.retrieval.config.defaults = options.retrieval ?? {};
-  const connectors = new ConnectorModule(store, changed, options.gmail);
+  const connectors = new ConnectorModule(store, changed, options.gmail, options.github);
   runtime.connectorExecutor = (call, args, authorize) => finance.handles(args) ? finance.execute(call, args, authorize, runtime.isTopicTask(String(call.task_id))?.audience === "public" ? "public" : "private") : feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
@@ -115,6 +117,7 @@ export async function createPersonalApp(options: AppOptions) {
   const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
 
   const agents = new AgentModule(store, runtime);
+  const monitors = new GithubMonitorModule(store, changed, connectors.oauth, agents);
   const lifecycle = new AssistantLifecycle(store,runtime,ids=>feishu?.detachDeleted(ids));
   const stockHistory=new StockHistory(store,agents,runtime,finance);
   finance.onHistorySession=(sessionId)=>stockHistory.schedule(sessionId);
@@ -138,7 +141,6 @@ export async function createPersonalApp(options: AppOptions) {
   feishu = new FeishuModule(store, changed, agents, runtime, {
     ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
     ownershipAllowed: options.feishu?.ownershipAllowed ?? ((appId: string) => finance.mayUseChannel(appId)),
-    grantTools: (connectorId, version, botId, tools) => { connectors.grant({ id: connectorId, version, botId, tools }); },
   });
   finance.startReports(report => feishu.ingestReport(report));
   if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
@@ -205,7 +207,7 @@ export async function createPersonalApp(options: AppOptions) {
     return {
       ...base,
       ...(view === "summary" ? { view: "summary", memories: base.memories.map(({ content: _content, ...memory }) => memory) } : {}),
-      connectors: connectors.list(), connectorCatalog: connectors.catalog(),
+      connectors: connectors.list(), connectorCatalog: connectors.catalog(), connectorMonitors: monitors.list(),
       feishu: feishu.state(),
       sync: sync.snapshot(),
       hostDeviceId: gateway.hostDeviceId,
@@ -306,7 +308,27 @@ export async function createPersonalApp(options: AppOptions) {
       response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gmail · NexBot</title><body style="font:16px system-ui;margin:80px auto;padding:24px;max-width:480px"><h1>${connected ? "Gmail 已连接" : "连接未完成"}</h1><p>请返回 NexBot${connected ? " 选择可使用邮件的 Agent。" : " 查看连接状态并重试。"}</p></body></html>`);
       return;
     }
+    if (url.pathname.startsWith("/hooks/github/") && request.method === "POST") {
+      // GitHub webhooks：HMAC 签名校验在监视模块内完成；payload 是不可信外部资料。
+      let accepted = false, reason = "unknown monitor";
+      try {
+        const monitorId = text(url.pathname.slice("/hooks/github/".length), 100);
+        const result = await monitors.webhook(monitorId, request, String(request.headers["x-github-event"] ?? ""), String(request.headers["x-github-delivery"] ?? ""), request.headers["x-hub-signature-256"] as string | undefined);
+        accepted = result.accepted; reason = result.reason ?? "";
+      } catch { reason = "webhook failure"; }
+      const status = !accepted ? reason === "unknown monitor" ? 404 : reason?.includes("signature") ? 401 : reason?.includes("large") ? 413 : 400 : 202;
+      json(response, status, { accepted, ...(reason ? { reason } : {}) });
+      return;
+    }
+    if (url.pathname === GITHUB_CALLBACK && request.method === "GET") {
+      let connected = false;
+      try { await connectors.oauth.callback(url.searchParams); connected = true; } catch { /* Details are available only to the initiating authenticated client. */ }
+      response.writeHead(connected ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GitHub · NexBot</title><body style="font:16px system-ui;margin:80px auto;padding:24px;max-width:480px"><h1>${connected ? "GitHub 已连接" : "连接未完成"}</h1><p>请返回 NexBot${connected ? " 查看连接状态。" : " 查看连接状态并重试。"}</p></body></html>`);
+      return;
+    }
     if (url.pathname.startsWith("/api/connectors/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid connector request" }); return; }
+    if (url.pathname.startsWith("/api/connector-monitors/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid connector request" }); return; }
     const socketAddress = (request.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
     // Behind a local reverse proxy every socket is loopback. Only when the operator declares that proxy trusted
     // do we read the last X-Forwarded-For hop it appended; otherwise the header is attacker-controlled.
@@ -565,8 +587,8 @@ export async function createPersonalApp(options: AppOptions) {
 
       if (url.pathname === "/api/client/logout") { connectors.oauth.cancelSession(String(session.id)); cliStream.closeSession(String(session.id)); if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/connectors/oauth/start") {
-        if (data.provider !== "gmail") throw new Error("不支持此连接器");
-        json(response, 200, connectors.oauth.begin(data, requestOrigin, String(session.id), async () => { const current = await authenticate(token); if (!current || current.id !== session.id || current.user_id !== store.owner) throw new IdentityError(401, "登录已失效"); })); return;
+        if (data.provider !== "gmail" && data.provider !== "github") throw new Error("不支持此连接器");
+        json(response, 200, await connectors.oauth.begin(data, requestOrigin, String(session.id), async () => { const current = await authenticate(token); if (!current || current.id !== session.id || current.user_id !== store.owner) throw new IdentityError(401, "登录已失效"); })); return;
       }
       if (url.pathname === "/api/connectors/oauth/cancel") { json(response, 200, connectors.oauth.cancel(text(data.id, 100), String(session.id))); return; }
       if (url.pathname === "/api/connectors/save") { json(response, 200, connectors.save(data)); return; }
@@ -577,9 +599,14 @@ export async function createPersonalApp(options: AppOptions) {
           : await connectors.test(data, authorize);
         changed(); json(response, 200, result); return;
       }
-      if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
+      // Per-bot connector grants were retired; older clients still POST here, so acknowledge without side effects.
+      if (url.pathname === "/api/connectors/grant") { json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, await connectors.remove(data)); return; }
+      if (url.pathname === "/api/connector-monitors/list") { json(response, 200, { monitors: monitors.list() }); return; }
+      if (url.pathname === "/api/connector-monitors/save") { json(response, 200, monitors.save(data)); return; }
+      if (url.pathname === "/api/connector-monitors/toggle") { json(response, 200, monitors.toggle(data)); return; }
+      if (url.pathname === "/api/connector-monitors/delete") { json(response, 200, monitors.delete(data)); return; }
       if(url.pathname === "/api/feishu/subscriptions") {json(response,200,feishu.updateSubscription(data));return;}
       if(url.pathname === "/api/feishu/deliveries/reconcile") {
         if(session.user_id!==store.owner){json(response,403,{error:"仅主人可处理投递对账"});return;}
@@ -752,7 +779,7 @@ export async function createPersonalApp(options: AppOptions) {
   try { if (options.listen !== false) await listen(options.port ?? 0); }
   catch (error) {
     if (!options.strictPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE" && options.host !== "0.0.0.0") await listen(0);
-    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); cliStream.close(); cliSupervisor.close(); cliHub.close(); gateway.close(); store.close(); throw error; }
+    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await monitors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); cliStream.close(); cliSupervisor.close(); cliHub.close(); gateway.close(); store.close(); throw error; }
   }
   const address = server.address();
   if (options.listen === false && options.serviceOrigin) origin = options.serviceOrigin;
@@ -780,6 +807,7 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.startRecovered();
   runtime.scheduleStartupMaintenance();
   routines.start();
+  monitors.start();
   let archiveJob: Promise<unknown> | undefined;
   const archive = () => {
     if (closing || !options.attachmentObjects || archiveJob) return;
@@ -788,13 +816,13 @@ export async function createPersonalApp(options: AppOptions) {
   const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
   archiveTimer?.unref(); archive();
   if(!options.accountWorkspaces) feishu.start();
-  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliWorkbench, cliSupervisor, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliWorkbench, cliSupervisor, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, monitors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
     closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob; await lifecycle.close();
     await identity?.close();
     await heartbeatJob;
     routines.close();
-    await finance.close(); await stockHistory.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close();
+    await finance.close(); await stockHistory.close(); await feishu.close(); await connectors.close(); await monitors.close(); await memoryPlugin.close();
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
     // Upgraded sockets are not tracked by closeAllConnections, so the Agent mode stream ends its own.
