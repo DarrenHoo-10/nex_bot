@@ -487,4 +487,7 @@ the workbench MVP development slice on `codex/nexagent-project-ui-review`: the
 protocol/storage migration, the queue scheduler, the harness adapters (including
 ZCode), the composer over the real outbox and the workbench on Core data. The
 real-product matrix (P0) and the dual-client release acceptance (P8) stay open
-there, with retest conditions.
+there, with retest conditions. The [Core deploy record](nexagent-workbench-deploy-20261116.md)
+covers the production rollout (migration 55 rehearsed on real data copies, Mac Air
+switch and public verification); the device-executor upgrade stays with the next
+client release.
