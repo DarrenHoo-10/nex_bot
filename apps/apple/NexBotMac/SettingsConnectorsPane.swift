@@ -18,8 +18,9 @@ struct SettingsConnectorsPane: View {
     @State private var scrollTarget: String?
     @State private var openTools: Set<String> = []
     @State private var showingGmail = false
+    @State private var showingGithub = false
 
-    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && $0.kind != "feishu" } }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && !$0.isGithub && $0.kind != "feishu" } }
     private var visible: [ConnectorView] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         return q.isEmpty ? connectors : connectors.filter { $0.name.lowercased().contains(q) }
@@ -29,12 +30,14 @@ struct SettingsConnectorsPane: View {
     var body: some View {
         ZStack {
             if showingGmail { GmailConnectorView(workspace: workspace, back: { showingGmail = false }) }
+            else if showingGithub { GithubConnectorView(workspace: workspace, back: { showingGithub = false }) }
             else {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
                         GmailCatalogButton(workspace: workspace, open: { showingGmail = true }).padding(.top, 20)
+                        GithubCatalogButton(workspace: workspace, open: { showingGithub = true }).padding(.top, 20)
                         if let feedback { MBBanner(text: feedback.text, isError: feedback.isError).padding(.top, 24) }
                         if workspace.state?.feishu != nil { SettingsFeishuCard(workspace: workspace).padding(.top, 24) }
                         if workspace.state != nil, connectors.isEmpty { emptyState.padding(.top, 28) }

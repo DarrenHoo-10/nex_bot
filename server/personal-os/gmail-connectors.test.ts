@@ -180,7 +180,7 @@ describe("Gmail connectors in isolated Core", () => {
     expect(() => new GmailProvider({ clientId: "test", clientSecret: "test", fixtureOrigin: "https://real-provider.example" })).toThrow();
     const unconfigured = await createPersonalApp({ ...f.options, dir: temporaryDirectory(), gmail: undefined }); cleanup.push(() => unconfigured.close());
     expect(unconfigured.connectors.catalog()[0].available).toBe(false);
-    expect(() => unconfigured.connectors.oauth.begin({}, unconfigured.origin, unconfigured.store.session, async () => {})).toThrow("尚未配置");
+    await expect(unconfigured.connectors.oauth.begin({}, unconfigured.origin, unconfigured.store.session, async () => {})).rejects.toThrow("尚未配置");
   });
 
   it("refuses credential forwarding and malformed upstream responses", async () => {

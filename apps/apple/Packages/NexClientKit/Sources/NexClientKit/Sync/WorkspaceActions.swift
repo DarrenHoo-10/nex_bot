@@ -179,24 +179,44 @@ extension WorkspaceStore {
         try await act { try await client.feishuDelete(id: app.id, version: app.version) }
     }
 
-    public func startGmailAuthorization(connectorID: String? = nil) async throws -> ConnectorOAuthAttempt {
+    public func startConnectorAuthorization(provider: String = "gmail", connectorID: String? = nil) async throws -> ConnectorOAuthAttempt {
         guard !ended else { throw missing(Self.expiredMessage) }
         let connector = try connectorID.map { try currentConnector($0) }
-        guard connector == nil || connector?.isGmail == true else { throw missing("连接器类型不匹配") }
-        return try await act(refresh: false) { try await client.startConnectorAuthorization(id: connector?.id, version: connector?.version) }
+        guard connector == nil || connector?.provider == provider else { throw missing("连接器类型不匹配") }
+        return try await act(refresh: false) { try await client.startConnectorAuthorization(provider: provider, id: connector?.id, version: connector?.version) }
     }
-    public func gmailAuthorizationStatus(id: String) async throws -> ConnectorOAuthStatus {
+    public func connectorAuthorizationStatus(id: String) async throws -> ConnectorOAuthStatus {
         guard !ended else { throw missing(Self.expiredMessage) }
         return try await act(refresh: false) { try await client.connectorAuthorizationStatus(id: id) }
     }
-    public func cancelGmailAuthorization(id: String) async {
+    public func cancelConnectorAuthorization(id: String) async {
         // Best effort after navigation/logout; do not turn a cleanup failure into UI feedback.
         try? await client.cancelConnectorAuthorization(id: id)
     }
     public func disconnectGmail(_ connectorID: String) async throws -> String? {
         let connector = try currentConnector(connectorID)
-        guard connector.isGmail else { throw missing("连接器类型不匹配") }
+        guard connector.isGmail || connector.isGithub else { throw missing("连接器类型不匹配") }
         return try await act { try await client.disconnectConnector(id: connector.id, version: connector.version) }
+    }
+    public var githubMonitors: [ConnectorMonitor] { state?.connectorMonitors ?? [] }
+    @discardableResult
+    public func saveGithubMonitor(existing: ConnectorMonitor?, connectorId: String, botId: String, name: String, repos: [String], ciMode: String, delivery: String, intervalSeconds: Int, mutedRepos: [String], ignoreBranches: [String], enableWebhook: Bool, regenerateWebhookSecret: Bool) async throws -> ConnectorMonitorSaved {
+        try await act { try await client.saveGithubMonitor(ConnectorMonitorBody(id: existing?.id, version: existing?.version, connectorId: connectorId, botId: botId, name: name, repos: repos, ciMode: ciMode, delivery: delivery, intervalSeconds: intervalSeconds, mutedRepos: mutedRepos, ignoreBranches: ignoreBranches, enableWebhook: enableWebhook, regenerateWebhookSecret: regenerateWebhookSecret)) }
+    }
+    public func toggleGithubMonitor(_ monitorID: String, enabled: Bool) async throws {
+        let monitor = try state?.connectorMonitors.first { $0.id == monitorID } ?? { throw missing("监视配置不存在") }()
+        try await act { try await client.toggleGithubMonitor(id: monitor.id, version: monitor.version, enabled: enabled) }
+    }
+    public func deleteGithubMonitor(_ monitorID: String) async throws {
+        let monitor = try state?.connectorMonitors.first { $0.id == monitorID } ?? { throw missing("监视配置不存在") }()
+        try await act { try await client.deleteGithubMonitor(id: monitor.id, version: monitor.version) }
+    }
+    /// Binds a GitHub personal access token and immediately contacts GitHub to discover the account.
+    @discardableResult
+    public func saveGithubToken(_ token: String) async throws -> Int {
+        let saved = try await act(refresh: false) { try await client.saveGithubToken(token) }
+        await refresh()
+        return try await testConnector(saved.id)
     }
 
     // MARK: Devices and node
