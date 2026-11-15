@@ -120,3 +120,11 @@
   .connector-app-row { padding: 18px 16px; }
   .connector-information { padding: 10px 16px; }
 }
+
+/* GitHub 令牌连接入口（PAT）。 */
+.connector-pat { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.connector-pat input { flex: 1 1 200px; min-width: 0; }
+
+/* GitHub 监视配置。 */
+.connector-monitor-copy { margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; word-break: break-all; }
+.connector-webhook-note { margin: 12px 0; padding: 12px; background: var(--secondary, #f5f5f4); border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }

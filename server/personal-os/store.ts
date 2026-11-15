@@ -532,6 +532,47 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
       this.db.exec(dropGrants);
       this.insert("schema_migrations", { version: 52, checksum: hash(dropGrants), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=53")) this.transaction(() => {
+      // GitHub joins Gmail as a first-class provider: rebuild the table without the two-provider CHECK.
+      const schema = `CREATE TABLE personal_connectors_v53 (
+ id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, owner_user_id TEXT NOT NULL,
+ name TEXT NOT NULL, url TEXT NOT NULL, transport TEXT NOT NULL CHECK(transport IN ('http','sse')),
+ provider TEXT NOT NULL DEFAULT 'mcp' CHECK(provider IN ('mcp','gmail','github')),
+ account TEXT, kind TEXT NOT NULL DEFAULT 'mcp',
+ enabled INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1,
+ credential TEXT, tools_json TEXT NOT NULL DEFAULT '[]', checked_at INTEGER,
+ error TEXT, created_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO personal_connectors_v53 (id,workspace_id,owner_user_id,name,url,transport,provider,account,kind,enabled,version,credential,tools_json,checked_at,error,created_at)
+ SELECT id,workspace_id,owner_user_id,name,url,transport,provider,account,kind,enabled,version,credential,tools_json,checked_at,error,created_at FROM personal_connectors;
+DROP TABLE personal_connectors;
+ALTER TABLE personal_connectors_v53 RENAME TO personal_connectors;
+CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_id,owner_user_id,provider,account) WHERE provider!='mcp';`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 53, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=54")) this.transaction(() => {
+      // GitHub 监视配置与投递账本（设计 docs/design/github-connector.md 第 7 节）。
+      const schema = `CREATE TABLE personal_connector_monitors (
+ id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, owner_user_id TEXT NOT NULL,
+ connector_id TEXT NOT NULL REFERENCES personal_connectors(id) ON DELETE CASCADE,
+ bot_id TEXT NOT NULL, name TEXT NOT NULL, repos_json TEXT NOT NULL DEFAULT '[]',
+ ci_mode TEXT NOT NULL DEFAULT 'mine' CHECK(ci_mode IN ('default_branch','mine','all','off')),
+ muted_repos_json TEXT NOT NULL DEFAULT '[]',
+ ignore_branches_json TEXT NOT NULL DEFAULT '[]',
+ delivery TEXT NOT NULL DEFAULT 'notify' CHECK(delivery IN ('notify','task')),
+ enabled INTEGER NOT NULL DEFAULT 1, interval_seconds INTEGER NOT NULL DEFAULT 300,
+ secret_enc TEXT, last_run_at INTEGER, last_error TEXT,
+ state_json TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE personal_connector_deliveries (
+ monitor_id TEXT NOT NULL REFERENCES personal_connector_monitors(id) ON DELETE CASCADE,
+ fingerprint TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL,
+ delivered_at INTEGER NOT NULL, task_id TEXT, PRIMARY KEY(monitor_id, fingerprint)
+) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 54, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

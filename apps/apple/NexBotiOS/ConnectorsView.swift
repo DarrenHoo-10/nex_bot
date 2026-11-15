@@ -21,8 +21,9 @@ struct ConnectorsView: View {
     @State private var editor: ConnectorEditorRequest?
     @State private var selection: ConnectorSelection?
     @State private var showingGmail = false
+    @State private var showingGithub = false
 
-    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && $0.kind != "feishu" } }
+    private var connectors: [ConnectorView] { (workspace.state?.connectors ?? []).filter { !$0.isGmail && !$0.isGithub && $0.kind != "feishu" } }
     private var filtered: [ConnectorView] {
         let q = query.trimmingCharacters(in: .whitespaces)
         return q.isEmpty ? connectors : connectors.filter { $0.name.localizedCaseInsensitiveContains(q) }
@@ -32,6 +33,7 @@ struct ConnectorsView: View {
         VStack(alignment: .leading, spacing: 20) {
             header
             GmailCatalogButton(workspace: workspace, open: { showingGmail = true })
+            GithubCatalogButton(workspace: workspace, open: { showingGithub = true })
             if workspace.state?.feishu != nil { FeishuSection(workspace: workspace) }
             if !connectors.isEmpty { list }
         }
@@ -44,6 +46,7 @@ struct ConnectorsView: View {
             ConnectorDetailView(workspace: workspace, connectorID: item.id, notice: item.notice)
         }
         .navigationDestination(isPresented: $showingGmail) { GmailConnectorView(workspace: workspace) }
+        .navigationDestination(isPresented: $showingGithub) { GithubConnectorView(workspace: workspace) }
         .onDebugUI { cmd, arg in
             switch cmd {
             case "c-add":
