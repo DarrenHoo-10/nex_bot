@@ -1,3 +1,4 @@
+import { IdentityError } from "./identity-provider.ts";
 import { CoreStore, hash, id, now, optionalText, text, canonical, type Row } from "./store.ts";
 import { entryPage, entryText } from './context-tools.ts';
 import type { TaskRuntime } from "./runtime.ts";
@@ -19,7 +20,7 @@ export class AgentModule {
   jobs?: JobModule;
   constructor(readonly store: CoreStore, readonly runtime: TaskRuntime) {
     store.transaction(() => {
-      for (const bot of store.all("SELECT id FROM bots")) this.ensure(String(bot.id));
+      for (const bot of store.all("SELECT id FROM bots WHERE status!='deleted'")) this.ensure(String(bot.id));
       // Older releases bound background work to the owner inbox. Recovery must
       // drop that pointer without cancelling or replaying the routine.
       store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id IN (SELECT task_id FROM agent_task_links WHERE origin='routine')");
@@ -56,8 +57,8 @@ export class AgentModule {
     runtime.historySearch = (botId, query, page) => this.search(botId, query, page);
   }
   ensure(botId: string) {
-    const bot = this.store.get("SELECT id FROM bots WHERE id=? AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner);
-    if (!bot) throw new Error("Agent 不存在");
+    const bot = this.store.get("SELECT id FROM bots WHERE id=? AND workspace_id=? AND owner_user_id=? AND status!='deleted'", botId, this.store.workspace, this.store.owner);
+    if (!bot) throw new IdentityError(404,"Agent 不存在");
     this.store.run("INSERT OR IGNORE INTO agent_inboxes(bot_id,workspace_id,owner_user_id) VALUES(?,?,?)", botId, this.store.workspace, this.store.owner);
   }
   updateProfile(data: Record<string, unknown>) {
@@ -404,7 +405,7 @@ export class AgentModule {
   /** Durable, idempotent delivery. The scheduler also calls this after recovery. */
   reportRoutine(taskId: string) {
     return this.store.transaction(() => {
-      const task = this.store.get("SELECT t.*,c.title FROM tasks t JOIN agent_task_links l ON l.task_id=t.id JOIN conversations c ON c.id=t.conversation_id WHERE t.id=? AND l.origin='routine' AND t.ended_at IS NOT NULL", taskId);
+      const task = this.store.get("SELECT t.*,c.title FROM tasks t JOIN agent_task_links l ON l.task_id=t.id JOIN conversations c ON c.id=t.conversation_id WHERE t.id=? AND l.origin='routine' AND t.ended_at IS NOT NULL AND t.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", taskId);
       if (!task || this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", taskId)) return;
       // Upgrades already delivered old terminal answers/errors directly. Do not
       // replay the complete historical backlog under the new report key.
@@ -505,7 +506,7 @@ export class AgentModule {
   messagesAround(botId: string, messageId: string) {
     this.ensure(botId);
     const target=this.store.get("SELECT seq FROM " + visibleInbox + " m WHERE bot_id=? AND id=? AND content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id)",botId,messageId);
-    if (!target) throw new Error('该消息已不存在或已遗忘');
+    if (!target) throw new IdentityError(404,'该消息已不存在或已遗忘');
     const before=this.store.all('SELECT * FROM (SELECT * FROM ' + visibleInbox + ' WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 40) ORDER BY seq',botId,target.seq);
     const after=this.store.all('SELECT * FROM ' + visibleInbox + ' WHERE bot_id=? AND seq>=? ORDER BY seq LIMIT 60',botId,target.seq);
     return this.projectMessages([...before,...after]);
@@ -586,6 +587,6 @@ export class AgentModule {
     });
   }
   contacts() {
-    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM " + visibleInbox + " m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT content FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
+    return this.store.all("SELECT (SELECT bot_id FROM bot_lifecycle_operations WHERE replacement_id=b.id) replaces_id,b.id,b.name,b.instructions,b.version,b.memory_epoch,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM " + visibleInbox + " m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT content FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
   }
 }

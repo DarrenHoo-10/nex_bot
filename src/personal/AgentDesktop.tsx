@@ -1,3 +1,4 @@
+import { AssistantActionDialog } from "./components/AssistantActions";
 import { TopicBubble, topicTimeline, type FinanceTopic } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
 import { createContext, lazy, memo, Suspense, useMemo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
@@ -305,9 +306,17 @@ export function AgentDesktop() {
     early?.catch(() => undefined);
     const [next, topicList] = await Promise.all([
       api<State>("state"),
-      finance ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`) : undefined,
+      finance ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`).catch((error:Error)=>({topics:[],error})) : undefined,
     ]);
     if (request !== serial.current) return;
+    if (current && !next.bots.some(bot=>bot.id===current)) {
+      const replacement=next.bots.find(bot=>bot.replaces_id===current);
+      if(finance)setFinanceBotId(replacement ? str(replacement.id) : undefined);
+      drafts.current.delete(draftKey); attachmentDrafts.current.delete(draftKey); pendingDrafts.current.delete(draftKey);
+      loaded.current=undefined; historyTarget.current=undefined; setDraft(""); setPreview(undefined); setDraftPreview(undefined);
+      setState(next); setTopicId(undefined); setTopics([]); setBotId(str((replacement??next.bots[0])?.id)); setMessages([]); setStreaming([]); releaseSend(); return;
+    }
+    if(topicList && "error" in topicList)throw topicList.error;
     if (conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
       loaded.current = undefined; setMessages([]); setStreaming([]);
       setTopics(topicList?.topics ?? []); setTopicId(undefined); setError("");
@@ -318,7 +327,7 @@ export function AgentDesktop() {
       if (updated) setMemoryNotice(str(updated.title));
     }
     memoryVersions.current = new Map(next.memories.map((m) => [str(m.id), `${m.version}:${m.updated_at}`]));
-    if (current && !next.bots.some((bot) => bot.id === current)) { setState(next); setBotId(str(next.bots[0]?.id)); setMessages([]); setStreaming([]); releaseSend(); return; }
+
     if (current) {
       // Commit task state with its feed below, so the typing indicator cannot
       // disappear a network round trip before the final reply arrives.
@@ -580,6 +589,7 @@ export function AgentDesktop() {
     else setBotId(match.botId);
   };
   const closeDialog = () => setDialog(null), select = (target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
+  const assistantAction=(id:string,action:"reset_memory"|"delete")=>setDialog(<AssistantActionDialog botId={id} action={action} updated={reload} close={closeDialog}/>);
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) { await reload(); select(result.id); } closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
@@ -661,7 +671,7 @@ export function AgentDesktop() {
     if (target === "todo" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
     else openSettings();
   };
-  const sidebarNode = <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const sidebarNode = <ContactSidebar onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
 
   if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 

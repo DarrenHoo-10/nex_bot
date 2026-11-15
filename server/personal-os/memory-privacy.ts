@@ -119,7 +119,7 @@ export class MemoryPrivacy {
     this.store.run('DELETE FROM assistant_topics WHERE topic_id=?',key);
     this.store.run('DELETE FROM assistant_memories WHERE id=?',key);
   }
-  redact(plan: ForgetPlan, ruleId: string) {
+  redact(plan: ForgetPlan, ruleId: string, assistantLifecycle = false) {
     this.store.transaction(() => {
       this.store.run("UPDATE memory_privacy_maintenance SET active=1 WHERE id=1");
       for (const digest of plan.hashes) this.store.run("INSERT OR IGNORE INTO memory_tombstones VALUES(?)", digest);
@@ -144,11 +144,11 @@ export class MemoryPrivacy {
         this.store.run("UPDATE tasks SET objective=?,result_summary=? WHERE id=?", redacted, redacted, task);
         this.store.run("UPDATE conversation_inputs SET content_json=? WHERE task_id=?", JSON.stringify({ text: redacted }), task);
         this.store.run("UPDATE transcript SET content=? WHERE task_id=?", redacted, task);
-        this.store.run("UPDATE agent_messages SET content=? WHERE task_id=?", redacted, task);
+        if (!assistantLifecycle) this.store.run("UPDATE agent_messages SET content=? WHERE task_id=?", redacted, task);
         this.store.run("UPDATE agent_journal SET objective=?,result=? WHERE task_id=?", redacted, redacted, task);
         this.store.run("UPDATE tool_calls SET arguments_json='{}',canonical_envelope='{}',result_json=? WHERE task_id=?", JSON.stringify({ forgotten: true }), task);
         this.store.run("UPDATE routine_tool_receipts SET result_json=? WHERE call_id IN (SELECT id FROM tool_calls WHERE task_id=?)", JSON.stringify({ forgotten: true }), task);
-        for (const origin of this.store.all("SELECT routine_id FROM routine_origins WHERE task_id=?", task)) {
+        if (!assistantLifecycle) for (const origin of this.store.all("SELECT routine_id FROM routine_origins WHERE task_id=?", task)) {
           this.store.run("UPDATE agent_routines SET name=?,prompt=?,enabled=0,next_due_at=NULL,version=version+1 WHERE id=?", redacted, redacted, origin.routine_id);
           this.store.run("UPDATE routine_occurrences SET name=?,prompt=?,reason=NULL WHERE routine_id=?", redacted, redacted, origin.routine_id);
           this.store.run("UPDATE routine_occurrences SET status='cancelled' WHERE routine_id=? AND status='pending'", origin.routine_id);
@@ -186,29 +186,30 @@ export class MemoryPrivacy {
         // Remove complete mixed-source records (including prior versions),
         // while retaining unrelated facts in this assistant's bank.
         for(const memory of this.store.all('SELECT * FROM assistant_memories WHERE bot_id=?',bot)){
+          if (assistantLifecycle && this.store.get("SELECT 1 FROM assistant_topics WHERE topic_id=? AND owner='user'", memory.id)) continue;
           const versions=[memory,...this.store.all('SELECT refs_json FROM assistant_memory_versions WHERE id=?',memory.id)];
           // A topic is the union of its evidence's sources, so one forgotten fact takes every topic that cites it along.
           if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>plan.messages.includes(ref.id)||archives.has(ref.id)))) this.dropMemory(String(memory.id),forgotten);
         }
         // Containers, members, moves and cached vectors of the assistant go with the rest of what was derived from its conversations.
-        forgetBotTree(this.store,bot,forgotten);
+        if (!assistantLifecycle) forgetBotTree(this.store,bot,forgotten);
         this.store.run('DELETE FROM assistant_memory_imports WHERE bot_id=?',bot);
         this.store.run('DELETE FROM assistant_memory_steps WHERE bot_id=?',bot);
         this.store.run('UPDATE assistant_memory_settings SET version=version+1,consolidated_at=0,profile_at=0 WHERE bot_id=?',bot);
       }
       // User topics of other assistants rest on facts of several of them: one that cites anything forgotten goes, and its remaining facts are merged afresh.
-      for(const memory of this.store.all("SELECT m.* FROM assistant_memories m JOIN assistant_topics t ON t.topic_id=m.id WHERE t.owner='user'")){
+      if (!assistantLifecycle) for(const memory of this.store.all("SELECT m.* FROM assistant_memories m JOIN assistant_topics t ON t.topic_id=m.id WHERE t.owner='user'")){
         const versions=[memory,...this.store.all('SELECT refs_json FROM assistant_memory_versions WHERE id=?',memory.id)];
         if(versions.some(version=>(JSON.parse(String(version.refs_json)) as Array<{id:string}>).some(ref=>erased.has(ref.id))))this.dropMemory(String(memory.id),forgotten);
       }
       // Topics whose own text matched, whether or not anything they cite was forgotten.
       for(const key of plan.memories??[])this.dropMemory(key,forgotten);
       // Its grants go and the user topics it looked after pass to another steward; they are the user's, not the assistant's.
-      for(const bot of plan.bots)forgetBotAccess(this.store,bot);
+      if (!assistantLifecycle) for(const bot of plan.bots)forgetBotAccess(this.store,bot);
       new CoreMemory(this.store).dropRefs(forgotten);
-      this.store.run("INSERT INTO memory_forget_rules VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,completed_at=excluded.completed_at", ruleId, plan.selectorHash, JSON.stringify(plan), plan.banks.length ? "cleaning" : "completed", now(), plan.banks.length ? null : now());
+      if (!assistantLifecycle) this.store.run("INSERT INTO memory_forget_rules VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,completed_at=excluded.completed_at", ruleId, plan.selectorHash, JSON.stringify(plan), plan.banks.length ? "cleaning" : "completed", now(), plan.banks.length ? null : now());
       this.store.run("UPDATE memory_privacy_maintenance SET active=0 WHERE id=1");
-      this.store.audit("memory.forget", "forget", ruleId, { documents: plan.documents.length, messages: plan.messages.length, banks: plan.banks.length });
+      if (!assistantLifecycle) this.store.audit("memory.forget", "forget", ruleId, { documents: plan.documents.length, messages: plan.messages.length, banks: plan.banks.length });
     });
   }
 }

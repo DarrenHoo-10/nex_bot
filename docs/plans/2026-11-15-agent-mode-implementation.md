@@ -452,10 +452,10 @@ CREATE TABLE ops (op_id TEXT PRIMARY KEY, op TEXT NOT NULL,
 
 ## 5. Core
 
-### 5.1 迁移 48（`cli-agents/schema.ts`）
+### 5.1 迁移 50、51（`cli-agents/schema.ts`）
 
 - **写法**：仿照 [todo-schema.ts](../../server/personal-os/todo-schema.ts)，把 SQL 写成 TS 字符串。不用 `.sql` 文件，因为构建只复制固定的几个 `.sql` 文件（[build-personal.mjs:54](../../scripts/build-personal.mjs#L54)）。
-- **登记**：在 [store.ts](../../server/personal-os/store.ts) 的迁移序列里登记。写本文时最大编号是 47；真正合并时，取当时的下一个空闲编号。
+- **登记**：在 [store.ts](../../server/personal-os/store.ts) 的迁移序列里登记。写本文时最大编号是 47；合并 main 时 main 已用掉 48、49（助手重置和删除），因此 Agent 模式改用 50（会话表）和 51（请求与监督表）。
 
 ```sql
 CREATE TABLE cli_agent_sessions (

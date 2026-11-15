@@ -1,4 +1,4 @@
-// Agent mode ("cli-agent") tables, migration 48. The SQL lives in a TS string,
+// Agent mode ("cli-agent") tables, migration 50. The SQL lives in a TS string,
 // like todo-schema.ts, because the build copies only a fixed set of .sql files.
 // No sync_events triggers: these tables change constantly, and a trigger would
 // make every client refetch the whole state each time. The hub calls changed()
@@ -49,7 +49,7 @@ CREATE TABLE cli_agent_ops (
 ) STRICT;
 `;
 
-// Migration 49: pending permission / question requests from the Claude hook
+// Migration 51: pending permission / question requests from the Claude hook
 // (design section 8) and the supervisor's settings and action log (section 9).
 // The request text is encrypted at rest like cached transcript items; `tool`
 // is only a tool name. No sync_events triggers, for the same reason as above.

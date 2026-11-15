@@ -26,7 +26,7 @@ export class JobModule {
   }
   get runtime() { return this.agents.runtime; }
   private row(jobId: string) {
-    const job = this.store.get("SELECT * FROM agent_jobs WHERE id=?", text(jobId, 100));
+    const job = this.store.get("SELECT * FROM agent_jobs WHERE id=? AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", text(jobId, 100));
     if (!job) throw new Error("后台任务不存在");
     return job;
   }
@@ -215,7 +215,7 @@ export class JobModule {
   }
   /** After a restart (and after a settlement that failed): rounds that ended still get their report, and stopped ones stop their job. */
   recover() {
-    for (const task of this.store.all("SELECT t.id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id JOIN agent_jobs j ON j.conversation_id=t.conversation_id WHERE l.origin='job' AND t.ended_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) AND ((t.status IN ('succeeded','failed') AND NOT EXISTS(SELECT 1 FROM agent_job_reports r WHERE r.task_id=t.id AND (r.message_id IS NOT NULL OR (r.state='dropped' AND j.todo_id IS NULL)))) OR (t.status='cancelled' AND j.stopped_at IS NULL AND t.id=(SELECT id FROM tasks WHERE conversation_id=t.conversation_id ORDER BY created_at DESC,rowid DESC LIMIT 1)))")) this.settle(String(task.id));
+    for (const task of this.store.all("SELECT t.id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id JOIN agent_jobs j ON j.conversation_id=t.conversation_id WHERE l.origin='job' AND j.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND t.ended_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) AND ((t.status IN ('succeeded','failed') AND NOT EXISTS(SELECT 1 FROM agent_job_reports r WHERE r.task_id=t.id AND (r.message_id IS NOT NULL OR (r.state='dropped' AND j.todo_id IS NULL)))) OR (t.status='cancelled' AND j.stopped_at IS NULL AND t.id=(SELECT id FROM tasks WHERE conversation_id=t.conversation_id ORDER BY created_at DESC,rowid DESC LIMIT 1)))")) this.settle(String(task.id));
   }
   /** One job's stage, derived from prefetched facts (see ``views``). */
   private stageOf(job: Row, task: Row | undefined, report: Row | undefined, approval: boolean, todo: Row | undefined): JobStage {
@@ -262,7 +262,7 @@ export class JobModule {
   view(job: Row) { return this.views([job])[0]; }
   /** Every open job and the most recent closed ones, newest first. */
   list() {
-    const rows = this.store.all("SELECT * FROM agent_jobs j WHERE j.id IN (SELECT id FROM agent_jobs ORDER BY created_at DESC LIMIT 200) OR (j.stopped_at IS NULL AND EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=j.conversation_id AND t.ended_at IS NULL)) ORDER BY j.created_at DESC,j.rowid DESC");
+    const rows = this.store.all("SELECT * FROM agent_jobs j WHERE j.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND (j.id IN (SELECT id FROM agent_jobs ORDER BY created_at DESC LIMIT 200) OR (j.stopped_at IS NULL AND EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=j.conversation_id AND t.ended_at IS NULL))) ORDER BY j.created_at DESC,j.rowid DESC");
     let closed = 0;
     return this.views(rows).filter((job) => job.endedAt === null || closed++ < 50);
   }

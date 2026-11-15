@@ -49,6 +49,7 @@ public final class WorkspaceStore {
     /// The signed-in NexorAI account (display name), loaded when the store starts; nil until then or if unavailable.
     public private(set) var account: AccountStatus?
     /// Called once when the session ends (expired, revoked, identity unavailable).
+    @ObservationIgnored private var memoryEpochs: [String: Int] = [:]
     @ObservationIgnored public var onSessionEnded: (@MainActor (SessionEnd) -> Void)?
 
     public var bots: [Bot] { state?.bots ?? [] }
@@ -339,11 +340,17 @@ public final class WorkspaceStore {
         async let early = Self.capture(client, bot: current, after: afterSeq, around: target)
         let next = try await client.state(view: .summary)
         guard request == serial else { return }
+        let nextEpochs = Dictionary(uniqueKeysWithValues: next.bots.map { ($0.id, $0.row.int("memory_epoch") ?? 0) })
+        for (id, epoch) in memoryEpochs where nextEpochs[id] != epoch {
+            conversations[id]?.discardDraft()
+            conversations[id]?.focusedMessageID = nil
+        }
+        memoryEpochs = nextEpochs
         if let old = sync, !old.sameGeneration(as: next.sync) { for c in conversations.values { c.reset() } }
         if let current, let conv {
             if !next.bots.contains(where: { $0.id == current }) {
                 state = next; sync = next.sync; connection = .connected
-                conv.focusedMessageID = nil; conv.reset(); selectedBotID = next.bots.first?.id; notice = nil
+                conv.focusedMessageID = nil; conv.reset(); selectedBotID = next.bots.first(where: { $0.row.string("replaces_id") == current })?.id ?? next.bots.first?.id; notice = nil
                 releaseAcceptedSends(request)
                 if selectedBotID != nil { scheduleRefresh(after: 0) }
                 return
