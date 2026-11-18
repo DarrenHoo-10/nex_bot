@@ -52,7 +52,7 @@ export interface ComposerProps {
 export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, queue=null, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, onQueueSteer, onQueueResume }: ComposerProps) {
   const mode = draft ? {kind:"send",running:false,outside:false} as const : composerMode(session);
   const review=useReview(), details=draft?undefined:review?.records[session.key];
-  const model=draft?.model || details?.model || review?.models[session.engine]?.[0];
+  const model=draft?.model || details?.model || review?.models[session.engine]?.[0] || session.model?.trim() || "";
   const effort=draft?.effort || details?.effort || "标准";
   const [panel,setPanel]=useState<"add"|"skill"|"model"|"notes"|"context"|null>(null);
   const [delivery,setDelivery]=useState("queue");
@@ -155,6 +155,10 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const canSubmit=!!(body || extra.files.length) && (extra.goal===null || !!goal);
   // 排队/引导 only applies where a turn actually runs: a nex_bot terminal session
   const wantsDelivery = !draft && session.liveIn === "nexbot" && !!session.terminal && running;
+  // 排队/引导 is offered only where the choice is honoured: the review fixture, or a running nex_bot terminal
+  const offersDelivery = active && (!!review || wantsDelivery);
+  // the paused note matters only while something waits in the queue
+  const pausedNote = !review && queue?.paused && realQueue.length > 0;
   const submit = async () => {
     if(!canSubmit || busy || draft?.busy || tooLarge)return;
     setSending(true);
@@ -196,7 +200,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       {revision ? <div className="na-revising" role="status"><Pencil size={13}/>正在编辑已发送消息，发送后将作为新消息重发
         <button type="button" aria-label="取消编辑重发" onClick={() => { if (revisionStash.current !== null) drafts.set(key, revisionStash.current); revisionStash.current = null; onCancelRevision?.(); setText(drafts.get(key) ?? ""); }}><X size={12}/>取消</button></div> : null}
       {review&&details?.queue?.map((entry,i)=><div className="na-queued" key={entry.id}><ListOrdered size={14}/>排队 {i+1} · {entry.text}<button type="button" onClick={()=>void run(()=>review.run("unqueue",session.key,{id:entry.id}))}>撤回</button></div>)}
-      {!review&&queue?.paused ? <div className="na-queued-paused" role="status">队列已暂停{queue.pauseReason === "stopped" ? "（已停止）" : queue.pauseReason === "uncertain" ? "（结果待确认）" : queue.pauseReason === "failed" ? "（有失败条目）" : queue.pauseReason === "device_offline" ? "（电脑离线）" : ""}{onQueueResume ? <button type="button" onClick={()=>void run(onQueueResume)}>继续队列</button> : null}</div> : null}
+      {pausedNote && queue ? <div className="na-queued-paused" role="status">队列已暂停{queue.pauseReason === "stopped" ? "（已停止）" : queue.pauseReason === "uncertain" ? "（结果待确认）" : queue.pauseReason === "failed" ? "（有失败条目）" : queue.pauseReason === "device_offline" ? "（电脑离线）" : ""}{onQueueResume ? <button type="button" onClick={()=>void run(onQueueResume)}>继续队列</button> : null}</div> : null}
       {!review&&realQueue.map((entry: CliQueueEntry, i) => editingQueue?.id === entry.id ? (
         <div className="na-queued na-queued-edit" key={entry.id}>
           <ListOrdered size={14}/>排队 {i+1}
@@ -218,7 +222,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       {notes.length?<button className="na-skill-chip" type="button" title={notes.map(n=>n.quote+" — "+n.body).join("\n")} onClick={()=>setPanel(panel==="notes"?null:"notes")}>{notes.length} 条注释</button>:null}
       <textarea ref={draftRef} autoFocus={!!draft} readOnly={!!draft && (busy || draft.busy)}
         aria-label="发送给 Agent 的消息"
-        placeholder={review?"发消息，或输入 / 选择技能":"发消息"}
+        placeholder={review?"发消息，或输入 / 选择技能":draft?"发消息":"发消息，或输入 / 使用技能"}
         rows={Math.min(5, Math.max(1, text.split("\n").length))}
         value={text}
         onChange={(event) => {change(event.target.value);if(review)setPanel(/^\/\S*$/.test(event.target.value)?"skill":null)}}
@@ -231,7 +235,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           }
         }}
       />
-      {review&&panel?<div className="na-compose-pop" data-panel={panel}>
+      {panel?<div className="na-compose-pop" data-panel={panel}>
         {panel==="add" && <div className="na-add-menu" role="group" onKeyDown={event=>{
           if(event.key!=="ArrowDown" && event.key!=="ArrowUp")return;
           event.preventDefault();const buttons=Array.from(event.currentTarget.querySelectorAll("button"));const at=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[(at+(event.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length]?.focus();
@@ -240,22 +244,24 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
         </div>}
         {panel==="context"?<small role="status">当前 Harness 未提供上下文用量</small>:null}
-        {panel==="skill"?review.skills.filter(s=>!text.startsWith("/")||s.startsWith(text)).map(s=><button type="button" key={s} onClick={()=>{setSkill(s);if(text.startsWith("/"))change("");setPanel(null);draftRef.current?.focus()}}>{s}</button>):null}
-        {panel==="model"?<><label>模型<select aria-label="模型" value={model} onChange={e=>configure(e.target.value,effort)}>{(review.models[session.engine]??[]).map(m=><option key={m}>{m}</option>)}</select></label><label>推理强度<select aria-label="推理强度" value={effort} onChange={e=>configure(model!,e.target.value)}><option>标准</option><option>高</option></select></label></>:null}
+        {panel==="skill"&&review?review.skills.filter(s=>!text.startsWith("/")||s.startsWith(text)).map(s=><button type="button" key={s} onClick={()=>{setSkill(s);if(text.startsWith("/"))change("");setPanel(null);draftRef.current?.focus()}}>{s}</button>):null}
+        {panel==="model"&&review?<><label>模型<select aria-label="模型" value={model} onChange={e=>configure(e.target.value,effort)}>{(review.models[session.engine]??[]).map(m=><option key={m}>{m}</option>)}</select></label><label>推理强度<select aria-label="推理强度" value={effort} onChange={e=>configure(model!,e.target.value)}><option>标准</option><option>高</option></select></label></>:null}
         {panel==="notes"?notes.map(n=><div key={n.id}><b>{n.num}. {n.quote}</b><p>{n.body}</p><button type="button" onClick={()=>onNotes?.(notes.filter(v=>v.id!==n.id))}>移除</button></div>):null}
       </div>:null}
       <div className="cli-composer-actions">
-        {review && <>
+        <>
           <button type="button" className="na-add-trigger" disabled={busy || draft?.busy} aria-label="添加" title="添加" aria-expanded={panel==="add"} onClick={()=>setPanel(panel==="add"?null:"add")}><Plus size={20}/></button>
           <span className="na-grow"/>
           <button type="button" className="na-context" aria-label="上下文用量" title="查看上下文用量" aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><CircleDashed size={15}/></button>
-          <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
+          {review||draft ? <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
             <span>{model}</span><span className="na-effort">{effort}</span><ChevronDown size={13}/>
-          </button>
-        </>}
-        {active && <select aria-label="发送方式" value={delivery} onChange={e=>setDelivery(e.target.value)}><option value="queue">排队</option><option value="steer">引导</option></select>}
-        {mode.kind==="send" && mode.running ? <button type="button" aria-label={review?"中断":"停止"} title={review?"中断":"停止当前运行并暂停队列"} disabled={busy} onClick={() => void run(onInterrupt)}><Square size={14} />{review?"中断":"停止"}</button> : null}
-        <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":active?(delivery==="queue"?"排队发送":"引导当前任务"):"发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>
+          </button> : model ? <span className="na-model-label" title="当前模型">{model}</span> : null}
+        </>
+        {offersDelivery && <div className="na-delivery" role="radiogroup" aria-label="发送方式">
+          {([["queue","排队"],["steer","引导"]] as const).map(([value,text])=><button key={value} type="button" role="radio" aria-checked={delivery===value} onClick={()=>setDelivery(value)}>{text}</button>)}
+        </div>}
+        {mode.kind==="send" && mode.running ? <button type="button" className="na-stop" aria-label={review?"中断":"停止"} title={review?"中断":"停止当前运行并暂停队列"} disabled={busy} onClick={() => void run(onInterrupt)}><Square size={12} fill="currentColor" strokeWidth={0}/></button> : null}
+        <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":offersDelivery?(delivery==="queue"?"排队发送":"引导当前任务"):"发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>
       </div>
       {tooLarge ? <small role="alert" className="cli-composer-error">内容太长</small> : error ? <small role="alert" className="cli-composer-error">{error}</small> : null}
       {mode.kind==="send" && mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}

@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { device, session } from "./fixtures";
 import { newlyWaiting, notifyWaiting, sessionStates } from "./notifications";
-import { canAttach, composerMode, deviceBlocker, folderLabel, groupSessions, hiddenCount, recentCwds, sendsOutside, sessionStatusLabel, sessionTitle, waitingCount } from "./session-model";
+import { canAttach, composerMode, deviceBlocker, folderLabel, groupSessions, hiddenCount, recentCwds, samePath, sendsOutside, sessionStatusLabel, sessionTitle, waitingCount, worktreeName } from "./session-model";
 
 describe("grouping", () => {
   it("groups by computer, then agent, newest first, online computers first", () => {
@@ -145,5 +145,19 @@ describe("notifications", () => {
     localStorage.setItem("nexbot.cliNotify", "0");
     expect(notifyWaiting(session({ state: "waiting" }), open)).toBe(false);
     Object.defineProperty(document, "hidden", { value: false, configurable: true });
+  });
+});
+
+describe("worktree paths", () => {
+  it("names the linked worktrees Claude Code and NexAgent create, and nothing else", () => {
+    expect(worktreeName(String.raw`D:\ProgrammingProjects\nex_stock\.claude\worktrees\zen-kilby-6e0402`)).toBe("zen-kilby-6e0402");
+    expect(worktreeName("/Users/me/app/.claude/worktrees/busy-chaum/src")).toBe("busy-chaum");
+    expect(worktreeName(String.raw`D:\work\.nexbot-worktrees\alpha\feat-demo-1234abcd`)).toBe("feat-demo-1234abcd");
+    expect(worktreeName(String.raw`D:\ProgrammingProjects\nex_stock`)).toBeNull();
+  });
+
+  it("compares paths across the long-path prefix, separators, case and a trailing slash", () => {
+    expect(samePath(String.raw`\\?\D:\ProgrammingProjects\nex_stock`, "d:/programmingprojects/nex_stock/")).toBe(true);
+    expect(samePath(String.raw`D:\a\b`, String.raw`D:\a\c`)).toBe(false);
   });
 });

@@ -26,6 +26,19 @@ export function folderLabel(cwd: string): string {
   return parts[parts.length - 1] || cwd || "未知目录";
 }
 
+/** The name of the linked worktree a cwd sits in, for the worktrees Claude
+ * Code and NexAgent create; null for anything else (usually the main tree). */
+export function worktreeName(cwd: string): string | null {
+  const match = /[\\/]\.claude[\\/]worktrees[\\/]([^\\/]+)/i.exec(cwd) ?? /[\\/]\.nexbot-worktrees[\\/][^\\/]+[\\/]([^\\/]+)/i.exec(cwd);
+  return match ? match[1] : null;
+}
+
+/** Paths compare equal across `\\?\` prefixes, separators, case and a trailing slash. */
+export function samePath(a: string, b: string): boolean {
+  const norm = (value: string) => value.replace(/^\\\\\?\\/, "").replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
 export function sessionTitle(session: Pick<CliSessionView, "title" | "engine" | "cwd">): string {
   return session.title.trim() || `${ENGINE_LABEL[session.engine]} 会话`;
 }

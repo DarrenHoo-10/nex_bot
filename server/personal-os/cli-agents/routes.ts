@@ -201,9 +201,18 @@ export class CliAgentRoutes {
   private async sessionUpdate(data: Record<string, unknown>, action: "rename" | "archive" | "restore" | "delete"): Promise<CliRouteResult> {
     const workbench = this.extras.workbench;
     if (!workbench) return cliErrorResult("not_found");
-    const id = this.workbenchRef(data);
-    const version = data.expectedVersion;
-    if (!id || typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) return cliErrorResult("invalid");
+    // A logical id carries the version the client saw. A native key is enough
+    // on its own: most sessions have no logical row until the first change,
+    // which creates it here, so the current version is the expected one.
+    const key = this.key(data.key);
+    const ref = key ?? this.workbenchRef(data);
+    if (!ref) return cliErrorResult("invalid");
+    const expected = data.expectedVersion;
+    if (expected !== undefined && (typeof expected !== "number" || !Number.isSafeInteger(expected) || expected < 0)) return cliErrorResult("invalid");
+    if (!key && expected === undefined) return cliErrorResult("invalid");
+    const current = workbench.resolve(ref);
+    const id = String(current.id);
+    const version = typeof expected === "number" ? expected : Number(current.version);
     let row;
     switch (action) {
       case "rename": {

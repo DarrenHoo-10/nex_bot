@@ -32,7 +32,7 @@ export async function fileReference(entry:PickedFile,key:string,upload:boolean):
         if(!/[\x00-\x08\x0e-\x1f]/.test(text))return "文件："+file.name+"\n"+text;
       }catch{/* binary file */}
     }
-    throw Error("此预览只支持小型文本文件，请在新版预览中添加其他文件");
+    throw Error("目前只能附加小型文本文件");
   }
   const params=new URLSearchParams({key,name:file.name,id:entry.id});
   const response=await fetch("/__review/file?"+params,{method:"POST",body:file});

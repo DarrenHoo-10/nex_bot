@@ -2,8 +2,8 @@
 // the workbench contracts: sends carry idempotency ids, a running session
 // queues or steers, stopping pauses the outbox in Core, and edit-and-resend
 // records the revised message.
-import { useId, useRef, useState } from "react";
-import { ArrowLeft, List, Share2 } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { ArrowLeft, List, LoaderCircle, Share2, SquareTerminal } from "lucide-react";
 import type { CliItem, CliAnswerDecision, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { readNotes, storeNotes, useReview, type Note } from "./WorkbenchReview";
@@ -11,7 +11,7 @@ import {transferGoal} from "./composer-additions";
 import { Composer } from "./Composer";
 import { cardState, type RequestRecord } from "./requests";
 import { RequestCard } from "./RequestCard";
-import { askedSession, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
+import { askedSession, canAttach, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
 import type { CliStream } from "./stream";
 import { SessionInfoCard } from "./SessionInfoCard";
 import { TranscriptView } from "./TranscriptView";
@@ -51,9 +51,32 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const resumedKey = useRef<CliSessionKey|null>(null);
   const queue = useCliQueue(stream, session.key);
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
+  // From a send until the session answers: a resumed CLI can take a while to
+  // print anything, and without this the page looks like nothing happened.
+  const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean } | null>(null);
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!awaiting) return;
+    if (session.state === "waiting" || !session.online) { setAwaiting(null); return; }
+    // the device clock may differ from this one: a reply is an item that was not there at send time
+    if (items.some((item) => item.kind !== "user" && item.kind !== "turn" && !awaiting.known.has(item.id))) setAwaiting(null);
+  }, [awaiting, items, session.state, session.online]);
+  useEffect(() => {
+    setSlow(false);
+    if (!awaiting) return;
+    const timer = setTimeout(() => setSlow(true), 20_000);
+    return () => clearTimeout(timer);
+  }, [awaiting]);
+  const progress = awaiting ? (awaiting.resuming ? "正在恢复会话…" : "已送达，等待回复…")
+    : session.online && session.state === "running" ? "正在处理…" : "";
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
-    if(session.state==="stopped" && !resumedKey.current)resumedKey.current=(await continueSession(session.key)).key;
+    const known = new Set(items.map((item) => item.id));
+    if(session.state==="stopped" && !resumedKey.current){
+      setAwaiting({ known, resuming: true });
+      try { resumedKey.current=(await continueSession(session.key)).key; }
+      catch (cause) { setAwaiting(null); throw cause; }
+    }
     const key=resumedKey.current??session.key;
     let result: unknown;
     if(review&&details?.quote&&!details.quoteSent){
@@ -61,12 +84,18 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     } else {
       // the workbench contract: ids make a double click one message, a revision
       // keeps the link to the original, and the delivery follows the selector
-      result=await sendMessage(key, text, {
-        delivery: delivery ?? "send",
-        clientMessageId: crypto.randomUUID(),
-        requestId: crypto.randomUUID(),
-        ...(revision ? { revisesMessageId: revision.messageId } : {}),
-      });
+      try {
+        result=await sendMessage(key, text, {
+          delivery: delivery ?? "send",
+          clientMessageId: crypto.randomUUID(),
+          requestId: crypto.randomUUID(),
+          ...(revision ? { revisesMessageId: revision.messageId } : {}),
+        });
+      } catch (cause) { setAwaiting(null); throw cause; }
+      // a queued entry is not delivered yet: the queue strip shows it instead
+      const outcome = result as { queued?: boolean; status?: string };
+      if (outcome.queued && outcome.status !== "uncertain") setAwaiting(null);
+      else setAwaiting({ known, resuming: false });
     }
     if(revision)setRevision(null);
     if(key!==session.key){transferGoal(session.key,key);onKeyChange(key)}
@@ -106,6 +135,10 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
         </div>}
       </div>
+      {progress && !compact ? <div className="na-progress" role="status">
+        <LoaderCircle className="na-busy-icon" size={14}/><span>{progress}</span>
+        {slow && onTerminalOpen && canAttach(session) ? <button type="button" className="text-button" onClick={onTerminalOpen}><SquareTerminal size={13}/>打开远程终端</button> : null}
+      </div> : null}
       <Composer
         session={session} notes={notes} onNotes={updateNotes}
         onSend={send}

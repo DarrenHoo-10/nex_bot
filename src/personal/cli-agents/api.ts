@@ -271,12 +271,15 @@ export async function fetchGit(key: CliSessionKey): Promise<CliGitInfo> {
 
 export const branchSession = (parentKey: CliSessionKey, title: string, requestId: string) =>
   call<{ id: string; parentId: string | null; version: number }>("/sessions/branch", { parentKey, requestId, ...(title ? { title } : {}) });
-export const renameWorkbenchSession = (id: string, expectedVersion: number, title: string) =>
-  call<{ session: unknown }>("/sessions/rename", { id, expectedVersion, title });
-export const archiveWorkbenchSession = (id: string, expectedVersion: number, archived: boolean) =>
-  call<{ session: unknown }>(archived ? "/sessions/archive" : "/sessions/restore", { id, expectedVersion });
-export const deleteWorkbenchSession = (id: string, expectedVersion: number) =>
-  call<{ session: unknown }>("/sessions/delete", { id, expectedVersion });
+/** A logical row the client has seen (with its version), or just the native
+ * key of a session that has no logical row yet; Core creates it on demand. */
+export type WorkbenchRef = { id: string; expectedVersion: number } | { key: CliSessionKey };
+export const renameWorkbenchSession = (ref: WorkbenchRef, title: string) =>
+  call<{ session: unknown }>("/sessions/rename", { ...ref, title });
+export const archiveWorkbenchSession = (ref: WorkbenchRef, archived: boolean) =>
+  call<{ session: unknown }>(archived ? "/sessions/archive" : "/sessions/restore", ref);
+export const deleteWorkbenchSession = (ref: WorkbenchRef) =>
+  call<{ session: unknown }>("/sessions/delete", ref);
 
 /** `triage` classifies finished turns with a model; `decide` and `wake` only act on its verdict. */
 export interface SupervisionSettings { transientRetry: boolean; usageLimit: boolean; wakeup: boolean; triage: boolean; decide: boolean; wake: boolean }

@@ -337,6 +337,35 @@ describe("workbench tree", () => {
     // the native session itself is untouched
     expect(f.app.cliHub.list().sessions.some((s) => s.key === key)).toBe(true);
   });
+
+  it("archives and renames a session the workbench never touched, by its native key", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "by-key");
+    const key = await sessionOn(f, device, "k1", "idle");
+    expect((await f.get("cli-agents")).data.workbench.find((s: any) => s.sessionKey === key)).toBeUndefined();
+    const archived = await f.call("cli-agents/sessions/archive", { key });
+    expect(archived.status).toBe(200);
+    expect(archived.data.session.archived).toBe(true);
+    const renamed = await f.call("cli-agents/sessions/rename", { key, title: "新名字" });
+    expect(renamed.data.session).toMatchObject({ title: "新名字", archived: true });
+    // a stale version given with the key is still checked
+    const stale = await f.call("cli-agents/sessions/restore", { key, expectedVersion: 1 });
+    expect(stale.status).toBe(409);
+    // an id without its version stays a request error
+    expect((await f.call("cli-agents/sessions/restore", { id: renamed.data.session.id })).status).toBe(400);
+    const rows = (await f.get("cli-agents")).data.workbench.filter((s: any) => s.sessionKey === key);
+    expect(rows).toHaveLength(1);
+  });
+
+  it("answers the Git card for a computer whose executor predates the git op", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "old-executor");
+    const key = await sessionOn(f, device, "g1", "idle");
+    device.onOp = (message: Record<string, any>) => message.op === "git" ? { ok: false, error: { code: "invalid" } } : { ok: true, result: {} };
+    const git = await f.get("cli-agents/sessions/git?key=" + encodeURIComponent(key));
+    expect(git.status).toBe(200);
+    expect(git.data).toEqual({ source: "failed", error: "电脑端版本过旧，升级后可查看更改" });
+  });
 });
 
 describe("workbench start", () => {

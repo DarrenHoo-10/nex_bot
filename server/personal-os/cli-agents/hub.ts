@@ -79,6 +79,9 @@ export interface CliTurnEvent {
   error?: string;
 }
 
+/** What the Git card says when the computer runs an executor without the `git` op. */
+export const GIT_UNSUPPORTED = "电脑端版本过旧，升级后可查看更改";
+
 export class CliOpError extends Error {
   constructor(
     readonly code: CliErrorCode,
@@ -858,6 +861,11 @@ export class CliAgentHub {
     } catch (error) {
       if (error instanceof CliOpError && (error.code === "device_offline" || error.code === "unknown")) {
         return { source: "failed", error: CLI_ERROR_TEXT[error.code] };
+      }
+      // Core builds these arguments itself, so `invalid` means the executor
+      // predates the `git` op: an answer to show, not a request error.
+      if (error instanceof CliOpError && error.code === "invalid") {
+        return { source: "failed", error: GIT_UNSUPPORTED };
       }
       throw error;
     }

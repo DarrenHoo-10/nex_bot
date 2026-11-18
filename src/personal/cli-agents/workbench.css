@@ -66,7 +66,8 @@
 .na-stage .cli-app .cli-row.is-selected{background:var(--na-soft);box-shadow:inset 2px 0 var(--na-accent)}
 .na-stage .cli-app .cli-row.is-selected .cli-row-title{font-weight:600}
 .na-stage .cli-app .na-editing-name input{flex:1;min-width:0;width:0;border:1px solid var(--na-accent);border-radius:5px;padding:2px 4px;font:inherit;color:var(--na-ink);background:var(--na-paper);outline:none}
-.na-stage .cli-app .cli-row .cli-row-main{display:flex;align-items:center;gap:6px;padding:4px 0;min-width:0}
+/* the app-wide `button` rule centres its content: rows start at the left edge whatever the title length */
+.na-stage .cli-app .cli-row .cli-row-main{flex:1;display:flex;align-items:center;justify-content:flex-start;gap:6px;padding:4px 0;min-width:0;text-align:left}
 .na-stage .cli-app .cli-row-title{font-size:13px;min-width:0}
 .na-twist,.na-more{width:16px;min-width:16px;height:24px;display:inline-grid;place-items:center;padding:0!important;border:0;background:transparent;color:var(--na-muted)}
 .na-stage .cli-app .na-more{width:22px;min-width:22px;height:26px}.na-more{opacity:0}.cli-row:hover .na-more,.cli-row:focus-within .na-more,.cli-row.is-selected .na-more{opacity:1}
@@ -178,3 +179,12 @@
 .na-message-box .na-selected-fragment summary::-webkit-details-marker{display:none}
 .na-stage .cli-app .na-side form.na-message-box{width:calc(100% - 20px)}
 @media(max-width:720px){.na-stage .cli-app form.na-message-box{width:calc(100% - 18px);margin:8px auto 10px;padding:10px 9px 7px;border-radius:19px}.na-stage .cli-app .na-message-box textarea{min-height:54px}}
+/* running: queue/steer as a compact segmented switch, stop as a solid round button beside send */
+.na-stage .cli-app .na-message-box .na-delivery{display:inline-flex;gap:2px;padding:2px;border-radius:999px;background:var(--na-inset)}
+.na-stage .cli-app .na-message-box .na-delivery button{min-height:26px;padding:3px 10px;border-radius:999px;font-size:12px;color:var(--na-muted)}
+.na-stage .cli-app .na-message-box .na-delivery button[aria-checked="true"]{background:var(--na-paper);color:var(--na-ink);box-shadow:0 1px 2px #17271b14}
+.na-stage .cli-app .na-message-box .cli-composer-actions .na-stop{width:33px;min-width:33px;height:33px;padding:0;border-radius:50%;background:var(--na-ink);color:var(--na-paper)}
+.na-stage .cli-app .na-message-box .cli-composer-actions .na-stop:hover:enabled{background:#963f36;color:#fff}
+.na-message-box .na-model-label{font-size:13px;color:var(--na-ink);padding:0 6px;max-width:16ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.na-stage .cli-app .na-progress{box-sizing:border-box;width:min(940px,calc(100% - clamp(24px,5vw,80px)));margin:4px auto -4px;display:flex;align-items:center;gap:7px;padding:0 14px;color:var(--na-muted);font-size:12px}
+.na-stage .cli-app .na-progress .text-button{display:inline-flex;align-items:center;gap:4px;margin-left:auto;font-size:12px;color:var(--na-accent)}

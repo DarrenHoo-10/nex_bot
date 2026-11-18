@@ -144,23 +144,31 @@ describe("session list", () => {
     expect(text()).not.toContain("修复登录");
   });
 
-  it("hides a session at once and puts it back when Core refuses", async () => {
+  it("archives a session that has no workbench row yet, by its key", async () => {
+    fixture.archiveWorkbenchSession.mockResolvedValue({});
     await mount({ devices: [device()], sessions: [session()] });
-    fixture.hideSession.mockRejectedValueOnce(new CliApiError("x", "device_offline", 502));
     await click(container.querySelector(".na-more"));
-    await click([...document.querySelectorAll(".na-menu button")].find(el=>el.textContent==="隐藏")??null);
+    expect([...document.querySelectorAll(".na-menu button")].map((el) => el.textContent)).not.toContain("隐藏");
+    await click([...document.querySelectorAll(".na-menu button")].find((el) => el.textContent === "归档会话") ?? null);
+    await click([...document.querySelectorAll(".na-dialog button")].find((el) => el.textContent === "归档会话") ?? null);
     await flush();
-    expect(fixture.hideSession).toHaveBeenCalledWith("dev1:claude:s1", true);
-    expect(text()).toContain("修复登录");
-    expect(container.querySelector("[role=alert]")?.textContent).toContain("电脑离线");
+    expect(fixture.archiveWorkbenchSession).toHaveBeenCalledWith({ key: "dev1:claude:s1" }, true);
+    expect(document.querySelector(".na-dialog")).toBeNull();
   });
 
-  it("keeps hidden sessions behind a toggle", async () => {
+  it("lists older hidden sessions under 已归档 and restores them", async () => {
     await mount({ devices: [device()], sessions: [session(), session({ nativeId: "2", title: "旧任务", hidden: true })] });
     expect(text()).not.toContain("旧任务");
-    await click(button("已隐藏 1"));
+    await click(button("已归档"));
     expect(text()).toContain("旧任务");
+    expect(text()).not.toContain("修复登录");
+    await click(container.querySelector(".na-more"));
+    await click([...document.querySelectorAll(".na-menu button")].find((el) => el.textContent === "恢复会话") ?? null);
+    await flush();
+    expect(fixture.hideSession).toHaveBeenCalledWith("dev1:claude:2", false);
+    expect(fixture.archiveWorkbenchSession).not.toHaveBeenCalled();
   });
+
 });
 
 describe("session pane", () => {
@@ -214,6 +222,60 @@ describe("session pane", () => {
     await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
     await click(button("停止"));
     expect(fixture.stopSession).toHaveBeenCalledWith("dev1:claude:s1", expect.any(String));
+  });
+
+  it("offers the design's composer controls outside the review fixture", async () => {
+    await mount({ devices: [device()], sessions: [session({ state: "running", model: "claude-opus" })] }, "dev1:claude:s1");
+    const box = container.querySelector("[data-testid=cli-composer]")!;
+    expect(box.querySelector("textarea")?.getAttribute("placeholder")).toBe("发消息，或输入 / 使用技能");
+    expect(box.querySelector('button[aria-label="添加"]')).not.toBeNull();
+    expect(box.querySelector('button[aria-label="上下文用量"]')).not.toBeNull();
+    expect(box.querySelector(".na-model-label")?.textContent).toBe("claude-opus");
+    // running: a segmented switch and a stop button, no native select
+    expect(box.querySelector("select")).toBeNull();
+    const radios = [...box.querySelectorAll('[role=radiogroup][aria-label="发送方式"] [role=radio]')];
+    expect(radios.map((el) => [el.textContent, el.getAttribute("aria-checked")])).toEqual([["排队", "true"], ["引导", "false"]]);
+    await click(radios[1]);
+    expect(radios[1].getAttribute("aria-checked")).toBe("true");
+    expect(box.querySelector(".na-stop")?.getAttribute("aria-label")).toBe("停止");
+  });
+
+  it("keeps the delivery switch away from sessions that ignore it", async () => {
+    await mount({ devices: [device()], sessions: [session({ state: "running", liveIn: "terminal", terminal: undefined, sendVia: "inbox" })] }, "dev1:claude:s1");
+    expect(container.querySelector("[role=radiogroup]")).toBeNull();
+  });
+
+  it("shows the paused-queue note only while something waits", async () => {
+    fixture.fetchQueue.mockResolvedValue({ workbenchId: "wb", sessionKey: "dev1:claude:s1", paused: true, pauseReason: "stopped", entries: [] });
+    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+    await flush();
+    expect(text()).not.toContain("队列已暂停");
+  });
+
+  it("says a sent message was delivered until the session answers", async () => {
+    fixture.sendMessage.mockResolvedValue({ status: "sent" });
+    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+    const box = container.querySelector("textarea") as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "hi");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await flush();
+    expect(container.querySelector(".na-progress")?.textContent).toBe("已送达，等待回复…");
+  });
+
+  it("does not claim delivery for a message that only joined the queue", async () => {
+    fixture.sendMessage.mockResolvedValue({ queued: true, status: "pending" });
+    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+    const box = container.querySelector("textarea") as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "稍后");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await flush();
+    expect(container.querySelector(".na-progress")).toBeNull();
   });
 
   it("renders the transcript the Core returned", async () => {

@@ -12,10 +12,10 @@ import { ForkDialog, type CliBotChoice } from "./ForkDialog";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { newRequests, newlyWaiting, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
 import { pendingCounts, pendingViews } from "./requests";
-import { groupSessions, hiddenCount, waitingCount } from "./session-model";
+import { groupSessions, waitingCount } from "./session-model";
 import { useWorkbenchTree } from "./use-workbench";
 import type { WorkbenchMeta } from "./SessionList";
-import { archiveWorkbenchSession, branchSession, deleteWorkbenchSession, renameWorkbenchSession, startSession } from "./api";
+import { archiveWorkbenchSession, branchSession, deleteWorkbenchSession, renameWorkbenchSession, startSession, type WorkbenchRef } from "./api";
 import { useCliRequests } from "./use-requests";
 import { SessionList } from "./SessionList";
 import { Composer } from "./Composer";
@@ -168,9 +168,8 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     }
     return map;
   }, [tree]);
-  const runWorkbenchAction = useCallback(async (action: "fork" | "rename" | "archive" | "restore" | "delete", session: Pick<CliSessionView, "key" | "deviceId" | "engine" | "cwd"> | null, value?: { title?: string; row?: { id?: string; version?: number } }): Promise<{ key?: CliSessionKey }> => {
+  const runWorkbenchAction = useCallback(async (action: "fork" | "rename" | "archive" | "restore" | "delete", session: Pick<CliSessionView, "key" | "deviceId" | "engine" | "cwd">, value?: { title?: string; row?: { id?: string; version?: number } }): Promise<{ key?: CliSessionKey }> => {
     if (action === "fork") {
-      if (!session) return {};
       // the branch row exists first; the device session binds to it on start
       const created = await branchSession(session.key, value?.title ?? "", crypto.randomUUID());
       const started = await startSession(session.deviceId, session.engine, session.cwd, { parentId: created.id }).catch((cause) => {
@@ -181,18 +180,19 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
       void reload();
       return { key: started?.key };
     }
+    // a session the workbench never touched has no logical row: its key is
+    // enough, Core creates the row with this first change
     const id = value?.row?.id, version = value?.row?.version;
-    if (!id || version === undefined) return {};
-    if (action === "rename") await renameWorkbenchSession(id, version, value?.title ?? "");
-    else if (action === "archive") await archiveWorkbenchSession(id, version, true);
-    else if (action === "restore") await archiveWorkbenchSession(id, version, false);
-    else if (action === "delete") await deleteWorkbenchSession(id, version);
+    const ref: WorkbenchRef = id && version !== undefined ? { id, expectedVersion: version } : { key: session.key };
+    if (action === "rename") await renameWorkbenchSession(ref, value?.title ?? "");
+    else if (action === "archive") await archiveWorkbenchSession(ref, true);
+    else if (action === "restore") await archiveWorkbenchSession(ref, false);
+    else if (action === "delete") await deleteWorkbenchSession(ref);
     setReloadToken(token => token + 1);
     return {};
   }, [reload]);
   const [selectedKey, setSelectedKey] = useState<CliSessionKey | null>(readSelected);
   const [mobileView, setMobileView] = useState<"list" | "pane">("list");
-  const [showHidden, setShowHidden] = useState(false);
   const [creating, setCreating] = useState<{ deviceId?: string } | null>(null);
   const [forking, setForking] = useState<CliSessionView | null>(null);
 
@@ -203,7 +203,8 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     if (key) setMobileView("pane");
   }, []);
 
-  const groups = useMemo(() => groupSessions(devices, sessions, showHidden), [devices, sessions, showHidden]);
+  // archived (and the older "hidden") sessions stay in the groups: the list shows them in its archive view
+  const groups = useMemo(() => groupSessions(devices, sessions, true), [devices, sessions]);
   const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side") ?? null;
   const sideChats=useSideChats(selectedKey,sessions);
   const {draft:sideDraft,session:side}=sideChats;
@@ -260,20 +261,20 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
         groups={groups}
         selectedKey={selectedKey}
         pending={pending}
-        hiddenTotal={hiddenCount(sessions)}
-        showHidden={showHidden}
         workbench={review ? undefined : listMeta}
         onWorkbenchAction={review ? undefined : {
           fork: (session, title) => runWorkbenchAction("fork", session, { title }),
-          rename: async (row, title) => { await runWorkbenchAction("rename", null, { title, row: { id: row.id, version: row.version } }); },
-          archive: async (row, archived) => { await runWorkbenchAction(archived ? "archive" : "restore", null, { row: { id: row.id, version: row.version } }); },
-          remove: async (row) => { await runWorkbenchAction("delete", null, { row: { id: row.id, version: row.version } }); },
+          rename: async (session, row, title) => { await runWorkbenchAction("rename", session, { title, row: { id: row?.id, version: row?.version } }); },
+          archive: async (session, row, archived) => {
+            // "hidden" was the old archive: restoring clears it too
+            if (!archived && session.hidden) await hide(session, false);
+            if (archived || row?.archived) await runWorkbenchAction(archived ? "archive" : "restore", session, { row: { id: row?.id, version: row?.version } });
+          },
+          remove: async (session, row) => { await runWorkbenchAction("delete", session, { row: { id: row?.id, version: row?.version } }); },
         }}
         onSelect={select}
         reloadSessions={reload}
         onNew={(deviceId) => setCreating({ deviceId })}
-        onHide={(session, hidden) => void hide(session, hidden)}
-        onToggleHidden={() => setShowHidden((value) => !value)}
       />
     </>
   );
