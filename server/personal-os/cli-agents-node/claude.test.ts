@@ -367,6 +367,94 @@ describe("mergeClaude", () => {
   });
 });
 
+describe("SDK and automation sessions", () => {
+  it("never reports a transcript whose entrypoint is sdk-*, and it does not use up the cap", async () => {
+    const now = Date.now();
+    writeTranscript("proj", SID(1), [user("real one", { entrypoint: "cli" })], new Date(now - 5000));
+    writeTranscript("proj", SID(2), [user("assistant", { entrypoint: "sdk-ts" })], new Date(now - 1000));
+    writeTranscript("proj", SID(3), [user("print mode", { entrypoint: "sdk-cli" })], new Date(now - 2000));
+    // the entrypoint is on a later record, after a record that has none (queue operations come first)
+    writeTranscript("proj", SID(4), [{ type: "queue-operation", operation: "enqueue" }, user("late", { entrypoint: "sdk-cli" })], new Date(now - 3000));
+    const entries = await scanHistory(dir, { now, maxSessions: 1 });
+    expect(entries.map((e) => e.sessionId)).toEqual([SID(1)]);
+    expect(mergeClaude(dir, [], entries).map((r) => r.nativeId)).toEqual([SID(1)]);
+  });
+
+  it("drops a live session whose pid file says sdk-*, with or without a transcript", () => {
+    const sdk = { sessionId: SID(9), pid: 9, cwd: "/x", entrypoint: "sdk-ts", state: "running" as const, updatedAt: 1, unverified: false };
+    expect(mergeClaude("/cfg", [sdk], [])).toEqual([]);
+    const withTranscript: ClaudeHistoryEntry = { sessionId: SID(9), transcript: "/t", mtimeMs: 1, size: 1 };
+    expect(mergeClaude("/cfg", [sdk], [withTranscript])).toEqual([]);
+  });
+});
+
+describe("fork and continuation detection", () => {
+  const msg = (uuid: string, extra: Record<string, unknown> = {}) => ({ type: "user", uuid, parentUuid: null, timestamp: "2026-11-15T10:00:00.000Z", cwd: "/work/demo", entrypoint: "cli", message: { role: "user", content: uuid }, ...extra });
+  const history = ["u-1", "u-2", "u-3", "u-4", "u-5"];
+
+  it("attributes a copied history to the oldest session of its family by file creation time", async () => {
+    const now = Date.now();
+    // the child copies the parent's uuids (the sessionId differs) and adds its own after them
+    const parent = writeTranscript("proj", SID(1), history.map((u) => msg(u)).slice(0, 4), new Date(now - 9000));
+    const child = writeTranscript("proj", SID(2), [...history.map((u) => msg(u)), msg("child-only")], new Date(now - 1000));
+    const twin = writeTranscript("other", SID(3), history.map((u) => msg(u)), new Date(now - 2000));
+    writeTranscript("proj", SID(4), [msg("unrelated-1"), msg("unrelated-2")], new Date(now - 500));
+    const entries = await scanHistory(dir, { now });
+    expect(entries.every((e) => e.rootKey !== undefined)).toBe(true);
+    // a file system without birth times falls back to mtime; pin the order explicitly so the test does not depend on it
+    const born: Record<string, number> = { [parent]: 1000, [twin]: 2000, [child]: 3000 };
+    for (const e of entries) if (born[e.transcript] !== undefined) e.bornMs = born[e.transcript];
+    const rows = mergeClaude(dir, [], entries);
+    const forkOf = Object.fromEntries(rows.map((r) => [r.nativeId, r.forkOf]));
+    expect(forkOf).toEqual({ [SID(1)]: undefined, [SID(2)]: SID(1), [SID(3)]: SID(1), [SID(4)]: undefined });
+  });
+
+  it("reads only the head: the fingerprint is the first message uuids, whatever the file length", async () => {
+    const big = [...history.map((u) => msg(u)), ...Array.from({ length: 4000 }, (_, i) => msg(`later-${i}`, { message: { role: "user", content: "x".repeat(200) } }))];
+    writeTranscript("proj", SID(1), big);
+    const [entry] = await scanHistory(dir, { now: Date.now() });
+    expect(entry.rootKey).toBe("u-1,u-2,u-3");
+  });
+
+  it("does not count file-history snapshots or records without a uuid", async () => {
+    writeTranscript("proj", SID(1), [{ type: "file-history-snapshot", uuid: "snap" }, { type: "custom-title", customTitle: "t" }, msg("u-1"), msg("u-2")]);
+    const [entry] = await scanHistory(dir, { now: Date.now() });
+    expect(entry.rootKey).toBe("u-1,u-2");
+  });
+
+  it("prefers the desktop app's own parent, then the transcript's, and ignores parents that are not shown", () => {
+    const e = (id: string, extra: Partial<ClaudeHistoryEntry> = {}): ClaudeHistoryEntry => ({ sessionId: id, transcript: `/t/${id}`, mtimeMs: 1, size: 1, ...extra });
+    const entries = [e(SID(1), { rootKey: "a", bornMs: 1 }), e(SID(2), { rootKey: "a", bornMs: 2 }), e(SID(3), { rootKey: "a", bornMs: 3 }), e(SID(4), { forkedFrom: SID(1) }), e(SID(5), { forkedFrom: SID(99) })];
+    const desktop = new Map([[SID(3), { archived: false, forkedFrom: SID(2) }]]);
+    const rows = mergeClaude("/cfg", [], entries, { desktop });
+    const forkOf = Object.fromEntries(rows.map((r) => [r.nativeId, r.forkOf]));
+    expect(forkOf).toEqual({ [SID(1)]: undefined, [SID(2)]: SID(1), [SID(3)]: SID(2), [SID(4)]: SID(1), [SID(5)]: undefined });
+  });
+
+  it("never lets an explicit parent close a loop", () => {
+    const e = (id: string, extra: Partial<ClaudeHistoryEntry>): ClaudeHistoryEntry => ({ sessionId: id, transcript: `/t/${id}`, mtimeMs: 1, size: 1, ...extra });
+    const rows = mergeClaude("/cfg", [], [e(SID(1), { rootKey: "a", bornMs: 1, forkedFrom: SID(2) }), e(SID(2), { rootKey: "a", bornMs: 2 })]);
+    const parents = rows.map((r) => r.forkOf).filter(Boolean);
+    expect(parents).toHaveLength(1);
+  });
+
+  it("hides sessions the desktop app archived, unless they are running", () => {
+    const e = (id: string): ClaudeHistoryEntry => ({ sessionId: id, transcript: `/t/${id}`, mtimeMs: 1, size: 1 });
+    const desktop = new Map([[SID(1), { archived: true }], [SID(2), { archived: true }], [SID(3), { archived: false }]]);
+    const running: LiveClaudeSession = { sessionId: SID(2), pid: 2, cwd: "/x", state: "idle", updatedAt: 1, unverified: false };
+    const rows = mergeClaude("/cfg", [running], [e(SID(1)), e(SID(2)), e(SID(3))], { desktop });
+    expect(rows.map((r) => r.nativeId).sort()).toEqual([SID(2), SID(3)]);
+  });
+
+  it("does not point at an archived parent", () => {
+    const e = (id: string, extra: Partial<ClaudeHistoryEntry> = {}): ClaudeHistoryEntry => ({ sessionId: id, transcript: `/t/${id}`, mtimeMs: 1, size: 1, ...extra });
+    const desktop = new Map([[SID(1), { archived: true }]]);
+    const rows = mergeClaude("/cfg", [], [e(SID(1), { rootKey: "a", bornMs: 1 }), e(SID(2), { rootKey: "a", bornMs: 2 }), e(SID(3), { rootKey: "a", bornMs: 3 })], { desktop });
+    // the oldest visible one becomes the family root
+    expect(Object.fromEntries(rows.map((r) => [r.nativeId, r.forkOf]))).toEqual({ [SID(2)]: undefined, [SID(3)]: SID(2) });
+  });
+});
+
 describe("scan and merge end to end", () => {
   it("combines live files and transcripts from a temp config dir", async () => {
     writeTranscript("proj", SID(1), [user("running one"), { type: "custom-title", customTitle: "Named" }]);
@@ -378,5 +466,25 @@ describe("scan and merge end to end", () => {
     const by = Object.fromEntries(rows.map((r) => [r.nativeId, r]));
     expect(by[SID(1)]).toMatchObject({ state: "running", liveIn: "terminal", title: "Named" });
     expect(by[SID(2)]).toMatchObject({ state: "stopped", title: "finished one" });
+  });
+});
+
+describe("Claude desktop session store", () => {
+  it("reads archive and fork-parent state from the app's per-session files", async () => {
+    const store = path.join(dir, "Claude-3p", "claude-code-sessions", "acct", "org");
+    mkdirSync(store, { recursive: true });
+    const put = (name: string, body: unknown) => writeFileSync(path.join(store, name), typeof body === "string" ? body : JSON.stringify(body));
+    put(`local_${SID(1)}.json`, { sessionId: `local_${SID(1)}`, cliSessionId: SID(1), isArchived: true });
+    put(`local_${SID(2)}.json`, { sessionId: `local_${SID(2)}`, cliSessionId: SID(2), forkedFromSessionId: `local_${SID(3)}` });
+    put(`local_${SID(3)}.json`, { sessionId: `local_${SID(3)}`, cliSessionId: SID(3) });
+    put(`local_${SID(4)}.json`, "{ not json");
+    put("archived-sessions.idx", { v: 1, archived: [] });
+    const { ClaudeDesktopSessions } = await import("./claude-desktop.ts");
+    const state = await new ClaudeDesktopSessions([path.join(dir, "Claude-3p"), path.join(dir, "missing")]).scan();
+    expect(Object.fromEntries(state)).toEqual({
+      [SID(1)]: { archived: true },
+      [SID(2)]: { archived: false, forkedFrom: SID(3) },
+      [SID(3)]: { archived: false },
+    });
   });
 });

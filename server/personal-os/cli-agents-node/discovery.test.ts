@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_SESSIONS, parseCliSessionWire, type CliSessionRef } from "../../../shared/cli-agents.ts";
 import { resetClaudeHistoryCache } from "./claude.ts";
+import { RepoRoots } from "./device-git.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import { resetProcessStartCache, type CommandRunner } from "./liveness.ts";
 
@@ -53,7 +54,7 @@ function claudeLive(pid: number, id: string, status: string, dir = claudeDir): v
   );
 }
 
-function codexRollout(id: string, text: string, ageMs = 3_600_000): string {
+function codexRollout(id: string, text: string, ageMs = 3_600_000, extra: Record<string, unknown> = {}): string {
   const day = new Date(Date.now() - ageMs);
   const folder = path.join(
     codexHome,
@@ -67,7 +68,7 @@ function codexRollout(id: string, text: string, ageMs = 3_600_000): string {
   writeFileSync(
     file,
     [
-      JSON.stringify({ timestamp: new Date(Date.now() - ageMs).toISOString(), type: "session_meta", payload: { id, cwd: "/work/codex", originator: "codex_cli_rs", source: "cli", cli_version: "0.99.0" } }),
+      JSON.stringify({ timestamp: new Date(Date.now() - ageMs).toISOString(), type: "session_meta", payload: { id, cwd: "/work/codex", originator: "codex_cli_rs", source: "cli", cli_version: "0.99.0", ...extra } }),
       JSON.stringify({ timestamp: new Date(Date.now() - ageMs).toISOString(), type: "event_msg", payload: { type: "user_message", message: text } }),
     ].join("\n") + "\n",
   );
@@ -290,6 +291,79 @@ describe("SessionDiscovery nexbot terminals", () => {
     await discovery.start();
     expect(discovery.snapshot()).toHaveLength(1);
     expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe("SessionDiscovery project and fork fields", () => {
+  const fakeRoots = (map: Record<string, string>, calls: string[] = []) =>
+    new RepoRoots({
+      platform: "linux",
+      run: async (cwd) => {
+        calls.push(cwd);
+        if (!map[cwd]) throw Object.assign(new Error("fatal: not a git repository"), { code: 128 });
+        return `${map[cwd]}/.git\n`;
+      },
+    });
+
+  it("reports the repository root git resolves for each session's cwd, and none for other folders", async () => {
+    claudeTranscript(CID(1), "in a repo");
+    codexRollout(XID(1), "outside git");
+    const calls: string[] = [];
+    const { discovery } = make({ repoRoots: fakeRoots({ "/work/demo": "/work" }, calls) });
+    await discovery.start();
+    const rows = Object.fromEntries(discovery.snapshot().map((r) => [r.nativeId, r]));
+    expect(rows[CID(1)].repoRoot).toBe("/work");
+    expect("repoRoot" in rows[XID(1)]).toBe(false);
+    expect(parseCliSessionWire(rows[CID(1)])).toMatchObject({ repoRoot: "/work" });
+    // each directory is asked once however many scan rounds follow
+    await discovery.refresh();
+    expect(calls.filter((c) => c === "/work/demo")).toHaveLength(1);
+  });
+
+  it("does not run git unless asked to (hermetic by default)", async () => {
+    claudeTranscript(CID(1), "hi");
+    const { discovery } = make();
+    await discovery.start();
+    expect("repoRoot" in discovery.snapshot()[0]).toBe(false);
+  });
+
+  it("hides sessions of the SDK and the ones archived in the desktop app", async () => {
+    claudeTranscript(CID(1), "kept");
+    claudeTranscript(CID(2), "archived");
+    const sdk = claudeTranscript(CID(3), "automation");
+    writeFileSync(sdk, JSON.stringify({ type: "user", timestamp: new Date().toISOString(), cwd: "/work/demo", entrypoint: "sdk-cli", message: { role: "user", content: "automation" } }) + "\n");
+    const desktopRoot = mkdtempSync(path.join(os.tmpdir(), "cli-disc-desktop-"));
+    try {
+      const store = path.join(desktopRoot, "claude-code-sessions", "acct", "org");
+      mkdirSync(store, { recursive: true });
+      writeFileSync(path.join(store, `local_${CID(2)}.json`), JSON.stringify({ sessionId: `local_${CID(2)}`, cliSessionId: CID(2), isArchived: true }));
+      const { discovery } = make({ claudeDesktopRoots: [desktopRoot] });
+      await discovery.start();
+      expect(discovery.snapshot().map((r) => r.nativeId)).toEqual([CID(1)]);
+    } finally {
+      rmSync(desktopRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reports forkOf only when the parent is in the same list", async () => {
+    codexRollout(XID(1), "parent", 7_200_000);
+    codexRollout(XID(2), "child", 3_600_000, { forked_from_id: XID(1) });
+    codexRollout(XID(3), "orphan", 1_800_000, { forked_from_id: XID(99) });
+    const { discovery } = make();
+    await discovery.start();
+    const forkOf = Object.fromEntries(discovery.snapshot().map((r) => [r.nativeId, r.forkOf]));
+    expect(forkOf).toEqual({ [XID(1)]: undefined, [XID(2)]: XID(1), [XID(3)]: undefined });
+    for (const row of discovery.snapshot()) expect(parseCliSessionWire(row)).not.toBeNull();
+  });
+
+  it("drops forkOf when the parent falls outside the session cap", async () => {
+    codexRollout(XID(1), "parent", 7_200_000);
+    codexRollout(XID(2), "child", 3_600_000, { forked_from_id: XID(1) });
+    const { discovery } = make({ codex: { writer: () => "no", maxSessions: 1 } });
+    await discovery.start();
+    const rows = discovery.snapshot();
+    expect(rows.map((r) => r.nativeId)).toEqual([XID(2)]);
+    expect("forkOf" in rows[0]).toBe(false);
   });
 });
 

@@ -38,6 +38,7 @@ import {
   type CliQueueView,
   type CliSendVia,
   type CliSessionKey,
+  type CliSessionRef,
   type CliWorkbenchSessionView,
   type CliSessionView,
   type CliSessionWire,
@@ -81,6 +82,7 @@ export interface CliTurnEvent {
 
 /** What the Git card says when the computer runs an executor without the `git` op. */
 export const GIT_UNSUPPORTED = "电脑端版本过旧，升级后可查看更改";
+export const FORK_UNSUPPORTED = "电脑端版本过旧，升级后可分叉会话";
 
 export class CliOpError extends Error {
   constructor(
@@ -175,6 +177,8 @@ export class CliAgentHub {
   private readonly writerUnknown = new Set<string>();
   /** `sendVia` has no column either: the device reports it again on every connection. */
   private readonly sendVia = new Map<string, CliSendVia>();
+  /** `repoRoot` and `forkOf` have no column either (no migration): same lifetime as `sendVia`. */
+  private readonly placement = new Map<string, { repoRoot?: string; forkOf?: string }>();
   private readonly pending = new Map<string, Pending>();
   private readonly busyKeys = new Set<string>();
   private readonly watchers = new Map<string, Set<(message: ServerMessage) => void>>();
@@ -267,6 +271,7 @@ export class CliAgentHub {
     this.seqs.delete(deviceId);
     for (const key of [...this.writerUnknown]) if (key.startsWith(deviceId + ":")) this.writerUnknown.delete(key);
     for (const key of [...this.sendVia.keys()]) if (key.startsWith(deviceId + ":")) this.sendVia.delete(key);
+    for (const key of [...this.placement.keys()]) if (key.startsWith(deviceId + ":")) this.placement.delete(key);
     for (const pending of [...this.pending.values()]) {
       if (pending.deviceId !== deviceId) continue;
       // A write may have reached the device: its outcome is unknown, never "failed".
@@ -396,12 +401,16 @@ export class CliAgentHub {
         const via = this.sendVia.get(key);
         const viaChanged = via !== wire.sendVia;
         if (wire.sendVia) this.sendVia.set(key, wire.sendVia); else this.sendVia.delete(key);
+        const place = this.placement.get(key);
+        const placeChanged = place?.repoRoot !== wire.repoRoot || place?.forkOf !== wire.forkOf;
+        if (wire.repoRoot || wire.forkOf) this.placement.set(key, { ...(wire.repoRoot ? { repoRoot: wire.repoRoot } : {}), ...(wire.forkOf ? { forkOf: wire.forkOf } : {}) });
+        else this.placement.delete(key);
         const values = this.columnsOf(deviceId, wire);
         const previous = existing.get(key);
         if (!previous) {
           this.store.insert("cli_agent_sessions", { key, ...values, hidden: 0, first_seen_at: now(), updated_at: now() });
           upserts.push(key);
-        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged || viaChanged) {
+        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged || viaChanged || placeChanged) {
           this.store.run(
             `UPDATE cli_agent_sessions SET ${SESSION_COLUMNS.map((column) => `${column}=?`).join(",")},updated_at=? WHERE key=?`,
             ...SESSION_COLUMNS.map((column) => values[column]), now(), key,
@@ -416,7 +425,7 @@ export class CliAgentHub {
         const key = cliKey(deviceId, ref);
         if (existing.has(key) && !removes.includes(asKey(key))) removes.push(asKey(key));
       }
-      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); this.sendVia.delete(key); }
+      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); this.sendVia.delete(key); this.placement.delete(key); }
     });
     for (const key of removes) { this.lastTurns.delete(key); this.resolveRequests(key, "gone"); }
     const views = upserts.map((key) => this.viewOf(key)).filter((view): view is CliSessionView => view !== null);
@@ -840,8 +849,14 @@ export class CliAgentHub {
     return { opId, promise };
   }
 
-  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
-    const result = await this.op(actor, deviceId, null, "start", { engine, cwd });
+  /** `forkFrom` starts the session from that session's context. An executor that does not list the
+   * engine in `forkEngines` would ignore the field and open a blank session, so it is refused here. */
+  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string, forkFrom?: CliSessionRef): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
+    if (forkFrom) {
+      const caps = this.caps.get(deviceId);
+      if (caps && !caps.forkEngines?.includes(engine)) throw new CliOpError("invalid", FORK_UNSUPPORTED);
+    }
+    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}) });
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
   }
 
@@ -977,6 +992,9 @@ export class CliAgentHub {
     if (row.cli_version !== null) view.cliVersion = String(row.cli_version);
     const via = this.sendVia.get(key);
     if (via) view.sendVia = via;
+    const place = this.placement.get(key);
+    if (place?.repoRoot) view.repoRoot = place.repoRoot;
+    if (place?.forkOf) view.forkOf = place.forkOf;
     if (this.writerUnknown.has(key)) view.writerUnknown = true;
     return view;
   }

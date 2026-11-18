@@ -4,7 +4,7 @@
 // what is under test — not just a fresh install.
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./schema.ts";
+import { cliAgentNotesSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./schema.ts";
 
 describe("engine CHECK migration", () => {
   it("copies every row and accepts a third engine afterwards", () => {
@@ -76,5 +76,29 @@ describe("workbench tables", () => {
     }
     expect(duplicateRejected).toBe(true);
     fresh.close();
+  });
+});
+
+// Migration 56 runs on a database that already went through 50-55 and holds
+// workbench rows: the new table is additive and ties notes to those rows.
+describe("notes table (migration 56)", () => {
+  it("is added to a migration-55 database without touching its rows", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(cliAgentSchema);
+    db.exec(cliAgentSessionsRebuild);
+    db.exec(cliAgentWorkbenchSchema);
+    db.prepare("INSERT INTO cli_agent_workbench (id,session_key,device_id,engine,cwd,parent_id,kind,title,archived,deleted_at,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run("wb1", "d:claude:a", "d", "claude", "w", null, "main", "旧会话", 0, null, 3, 1, 1);
+    db.exec(cliAgentNotesSchema);
+    expect(db.prepare("SELECT title,version FROM cli_agent_workbench WHERE id='wb1'").get()).toMatchObject({ title: "旧会话", version: 3 });
+    db.prepare("INSERT INTO cli_agent_notes (id,workbench_id,message_id,num,sel_start,sel_end,content,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run("n1", "wb1", "m1", 1, 0, 4, "enc", 1, 1, 1);
+    expect(db.prepare("SELECT workbench_id,message_id,version FROM cli_agent_notes WHERE id='n1'").get()).toMatchObject({ workbench_id: "wb1", message_id: "m1", version: 1 });
+    // selection offsets are optional; a note must belong to a logical session
+    db.prepare("INSERT INTO cli_agent_notes (id,workbench_id,message_id,content,created_at,updated_at) VALUES (?,?,?,?,?,?)").run("n2", "wb1", "m2", "enc", 1, 1);
+    expect(db.prepare("SELECT num,sel_start,version FROM cli_agent_notes WHERE id='n2'").get()).toMatchObject({ num: 1, sel_start: null, version: 1 });
+    db.exec("PRAGMA foreign_keys=ON");
+    expect(() => db.prepare("INSERT INTO cli_agent_notes (id,workbench_id,message_id,content,created_at,updated_at) VALUES (?,?,?,?,?,?)").run("n3", "missing", "m", "enc", 1, 1)).toThrow();
+    db.close();
   });
 });

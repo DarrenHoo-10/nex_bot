@@ -74,12 +74,14 @@ export async function fetchItems(key: CliSessionKey, before?: string): Promise<{
   return { items, more: data.more === true };
 }
 
-export const startSession = (deviceId: string, engine: CliEngine, cwd: string, options: { worktreeBranch?: string; requestId?: string; parentId?: string } = {}) =>
+/** `parentId` binds the started session to a pending branch row; `forkFrom` makes it a real context fork of that session (same computer and tool). */
+export const startSession = (deviceId: string, engine: CliEngine, cwd: string, options: { worktreeBranch?: string; requestId?: string; parentId?: string; forkFrom?: CliSessionKey } = {}) =>
   call<{ key: CliSessionKey; cwd?: string }>("/start", {
     deviceId, engine, cwd,
     ...(options.worktreeBranch ? { worktreeBranch: options.worktreeBranch } : {}),
     ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.parentId ? { parentId: options.parentId } : {}),
+    ...(options.forkFrom ? { forkFrom: options.forkFrom } : {}),
   });
 export const continueSession = (key: CliSessionKey) => call<{ key: CliSessionKey }>("/continue", { key });
 /** `delivery` and `waiting` come only from a session outside nex_bot's terminals; the
@@ -269,8 +271,55 @@ export async function fetchGit(key: CliSessionKey): Promise<CliGitInfo> {
   };
 }
 
-export const branchSession = (parentKey: CliSessionKey, title: string, requestId: string) =>
-  call<{ id: string; parentId: string | null; version: number }>("/sessions/branch", { parentKey, requestId, ...(title ? { title } : {}) });
+export const branchSession = (parentKey: CliSessionKey, title: string, requestId: string, kind: "fork" | "side" = "fork") =>
+  call<{ id: string; parentId: string | null; version: number }>("/sessions/branch", { parentKey, requestId, ...(title ? { title } : {}), ...(kind === "side" ? { kind } : {}) });
+
+// ---------------------------------------------------------------------------
+// Notes: annotations on a conversation's messages, kept in Core
+
+export interface CliNote {
+  id: string;
+  message: string;
+  num: number;
+  start: number;
+  end: number;
+  quote: string;
+  body: string;
+  version: number;
+}
+
+function parseNote(value: unknown): CliNote | null {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  if (!row || typeof row.id !== "string" || typeof row.message !== "string" || typeof row.quote !== "string" || typeof row.body !== "string") return null;
+  return {
+    id: row.id, message: row.message, quote: row.quote, body: row.body,
+    num: typeof row.num === "number" ? row.num : 1,
+    start: typeof row.start === "number" ? row.start : 0,
+    end: typeof row.end === "number" ? row.end : 0,
+    version: typeof row.version === "number" ? row.version : 1,
+  };
+}
+
+export async function fetchNotes(key: CliSessionKey): Promise<CliNote[]> {
+  const data = await call<{ notes?: unknown }>(`/notes?key=${encodeURIComponent(key)}`, undefined, "GET");
+  return (Array.isArray(data.notes) ? data.notes : []).map(parseNote).filter((note): note is CliNote => note !== null);
+}
+
+export async function createNote(key: CliSessionKey, note: { id: string; message: string; quote: string; body: string; num: number; start?: number; end?: number }): Promise<CliNote> {
+  const data = await call<{ note?: unknown }>("/notes", { key, ...note });
+  const saved = parseNote(data.note);
+  if (!saved) throw new CliApiError("注释保存失败");
+  return saved;
+}
+
+export async function updateNote(id: string, expectedVersion: number, body: string): Promise<CliNote> {
+  const data = await call<{ note?: unknown }>("/notes/update", { id, expectedVersion, body });
+  const saved = parseNote(data.note);
+  if (!saved) throw new CliApiError("注释保存失败");
+  return saved;
+}
+
+export const deleteNote = (id: string, expectedVersion: number) => call<{ ok: boolean }>("/notes/delete", { id, expectedVersion });
 /** A logical row the client has seen (with its version), or just the native
  * key of a session that has no logical row yet; Core creates it on demand. */
 export type WorkbenchRef = { id: string; expectedVersion: number } | { key: CliSessionKey };

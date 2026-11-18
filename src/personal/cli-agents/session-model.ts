@@ -1,6 +1,6 @@
 // Pure helpers over the session rows Core sends: grouping, labels and what the
 // composer may do. No React, no network.
-import { CLI_ENGINES, type CliDeviceView, type CliEngine, type CliSessionView } from "../../../shared/cli-agents";
+import { CLI_ENGINES, type CliDeviceView, type CliEngine, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 
 export const ENGINE_LABEL: Record<CliEngine, string> = { claude: "Claude", codex: "Codex", zcode: "ZCode" };
 /** The agent names the session list groups by. */
@@ -33,10 +33,115 @@ export function worktreeName(cwd: string): string | null {
   return match ? match[1] : null;
 }
 
+/** A path without the Windows long-path prefix (`\\?\D:\x` -> `D:\x`, `\\?\UNC\h\s` -> `\\h\s`). */
+export function stripLongPath(path: string): string {
+  return path.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "");
+}
+
+/** The form paths are compared in: no long-path prefix, one separator, no trailing slash, lower case. */
+export function normalizePath(path: string): string {
+  return stripLongPath(path).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+}
+
 /** Paths compare equal across `\\?\` prefixes, separators, case and a trailing slash. */
 export function samePath(a: string, b: string): boolean {
-  const norm = (value: string) => value.replace(/^\\\\\?\\/, "").replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
-  return norm(a) === norm(b);
+  return normalizePath(a) === normalizePath(b);
+}
+
+/** The repository root a linked-worktree cwd belongs to (`<root>\.claude\worktrees\<name>`,
+ * `<parent>\.nexbot-worktrees\<repo>\<name>`); any other cwd is its own root. The long-path prefix is dropped. */
+export function worktreeRoot(cwd: string): string {
+  const clean = stripLongPath(cwd).replace(/[\\/]+$/, "");
+  const sep = clean.includes("\\") ? "\\" : "/";
+  const claude = /^(.*?)[\\/]\.claude[\\/]worktrees(?:[\\/]|$)/i.exec(clean);
+  if (claude) return claude[1] || sep;
+  const nexbot = /^(.*?)[\\/]\.nexbot-worktrees[\\/]([^\\/]+)(?:[\\/]|$)/i.exec(clean);
+  if (nexbot) return `${nexbot[1]}${sep}${nexbot[2]}`;
+  return clean || cwd;
+}
+
+/** A throwaway Codex chat folder: `…\Documents\Codex\<yyyy-mm-dd>\<anything>`. */
+export function isScratchCwd(cwd: string): boolean {
+  return /\/documents\/codex\/\d{4}-\d{2}-\d{2}(?:\/|$)/.test(normalizePath(cwd));
+}
+
+export const SCRATCH_LABEL = "未关联项目";
+const SCRATCH_KEY = "\u0000scratch";
+
+export interface ProjectRef {
+  /** what sessions group by: the normalized root, or one shared key for scratch chats */
+  key: string;
+  /** the root path in its original casing; empty for the scratch group */
+  root: string;
+  label: string;
+  scratch: boolean;
+}
+
+/** The project a session belongs to. `root` overrides the derived root (the review fixture names one). */
+export function projectOf(session: CliSessionView, root?: string): ProjectRef {
+  // `repoRoot` is absent on devices that predate it
+  const explicit = root || session.repoRoot?.trim();
+  if (!explicit && isScratchCwd(session.cwd)) return { key: SCRATCH_KEY, root: "", label: SCRATCH_LABEL, scratch: true };
+  const path = stripLongPath(explicit || worktreeRoot(session.cwd)).replace(/[\\/]+$/, "") || session.cwd;
+  return { key: normalizePath(path), root: path, label: folderLabel(path), scratch: false };
+}
+
+export interface ProjectGroup<T = CliSessionView> extends ProjectRef { rows: T[]; latest: number }
+
+/** Rows grouped by project: real projects by latest activity, the scratch group last. */
+export function projectGroups(rows: readonly CliSessionView[], rootOf?: (row: CliSessionView) => string | undefined): ProjectGroup[] {
+  const groups = new Map<string, ProjectGroup>();
+  for (const row of rows) {
+    const ref = projectOf(row, rootOf?.(row));
+    let group = groups.get(ref.key);
+    if (!group) groups.set(ref.key, (group = { ...ref, rows: [], latest: 0 }));
+    // label and path casing follow the newest session
+    if (row.lastActivityAt >= group.latest && group.rows.length) Object.assign(group, ref);
+    group.rows.push(row);
+    group.latest = Math.max(group.latest, row.lastActivityAt);
+  }
+  return [...groups.values()].sort((a, b) => Number(a.scratch) - Number(b.scratch) || b.latest - a.latest || a.label.localeCompare(b.label));
+}
+
+/** The session this one was forked from on the same computer and agent, when Core reports it. */
+export function forkParentKey(session: CliSessionView): CliSessionKey | null {
+  const key: CliSessionKey | null = session.forkOf ? `${session.deviceId}:${session.engine}:${session.forkOf}` : null;
+  return key && key !== session.key ? key : null;
+}
+
+/** Tree parent per session key within `rows`: the parent only counts when it is in `rows`, and a loop is
+ * cut so every session stays reachable from a root. */
+export function treeParents(rows: readonly CliSessionView[], parentOf: (row: CliSessionView) => CliSessionKey | null | undefined): Map<CliSessionKey, CliSessionKey | null> {
+  const keys = new Set(rows.map((row) => row.key));
+  const parents = new Map<CliSessionKey, CliSessionKey | null>();
+  for (const row of rows) {
+    const parent = parentOf(row);
+    parents.set(row.key, parent && parent !== row.key && keys.has(parent) ? parent : null);
+  }
+  for (const row of rows) {
+    const seen = new Set([row.key]);
+    for (let p = parents.get(row.key); p; p = parents.get(p)) {
+      if (p === row.key) { parents.set(row.key, null); break; }
+      if (seen.has(p)) break;
+      seen.add(p);
+    }
+  }
+  return parents;
+}
+
+export const RECENT_MS = 7 * 24 * 3600 * 1000;
+/** A toggle row for a single older session saves no space, so history folds from this many sessions up. */
+export const FOLD_MIN = 2;
+
+/** Keys of the sessions worth showing without opening history: those `active` accepts plus their ancestors.
+ * Fewer than `FOLD_MIN` hidden sessions are not worth a toggle row, so everything stays shown then. */
+export function foldHistory(rows: readonly CliSessionView[], parents: ReadonlyMap<CliSessionKey, CliSessionKey | null>, active: (row: CliSessionView) => boolean): Set<CliSessionKey> {
+  const shown = new Set<CliSessionKey>();
+  for (const row of rows) {
+    if (!active(row)) continue;
+    for (let key: CliSessionKey | null | undefined = row.key; key && !shown.has(key); key = parents.get(key)) shown.add(key);
+  }
+  return rows.length - shown.size < FOLD_MIN ? new Set(rows.map((row) => row.key)) : shown;
 }
 
 export function sessionTitle(session: Pick<CliSessionView, "title" | "engine" | "cwd">): string {

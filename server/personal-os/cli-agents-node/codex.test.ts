@@ -85,6 +85,18 @@ describe("exclusions and liveIn", () => {
   });
 });
 
+describe("CodexScanner fork parent", () => {
+  it("maps session_meta.forked_from_id to forkOf, and ignores a missing, self or invalid one", async () => {
+    rollout(ID(1), [meta(ID(1)), userMsg("parent")]);
+    rollout(ID(2), [meta(ID(2), { forked_from_id: ID(1) }), userMsg("child")]);
+    rollout(ID(3), [meta(ID(3), { forked_from_id: ID(3) }), userMsg("self")]);
+    rollout(ID(4), [meta(ID(4), { forked_from_id: "bad id with spaces" }), userMsg("bad")]);
+    const rows = await scan(new CodexScanner(home, writerOf("no")));
+    const forkOf = Object.fromEntries(rows.map((r) => [r.nativeId, r.forkOf]));
+    expect(forkOf).toEqual({ [ID(1)]: undefined, [ID(2)]: ID(1), [ID(3)]: undefined, [ID(4)]: undefined });
+  });
+});
+
 describe("CodexScanner rows", () => {
   it("builds a row from session_meta, turn_context and the first user message", async () => {
     rollout(ID(1), [

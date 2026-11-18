@@ -52,6 +52,8 @@ export interface CodexMeta {
   threadSource?: string;
   gitBranch?: string;
   cliVersion?: string;
+  /** `forked_from_id` of a thread made by `codex fork` or the app's fork */
+  forkedFrom?: string;
 }
 
 /** The cases that are not user conversations: subagents (including Guardian),
@@ -82,8 +84,10 @@ function parseMeta(record: Rec): CodexMeta | null {
   const id = text(payload?.id);
   if (!payload || !id || !isCliNativeId(id)) return null;
   const git = asRec(payload.git);
+  const forked = text(payload.forked_from_id);
   return {
     id,
+    forkedFrom: forked && forked !== id && isCliNativeId(forked) ? forked : undefined,
     cwd: text(payload.cwd),
     originator: text(payload.originator),
     source: payload.source,
@@ -356,6 +360,8 @@ export class CodexScanner {
     const model = tail.model ?? head.model;
     if (model) row.model = clipUnits(model, CLI_LIMITS.model);
     if (meta.cliVersion) row.cliVersion = clipUnits(meta.cliVersion, CLI_LIMITS.cliVersion);
+    // discovery keeps it only when that thread is in the list too
+    if (meta.forkedFrom) row.forkOf = meta.forkedFrom;
     if (writerUnknown) row.writerUnknown = true;
     return row;
   }

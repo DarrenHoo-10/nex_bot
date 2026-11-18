@@ -46,7 +46,7 @@ function Activity({ items }: { items: ActivityItem[] }) {
   );
 }
 
-function ReplyText({source, supplied}: { source: string; supplied?: string }) {
+export function ReplyText({source, supplied}: { source: string; supplied?: string }) {
   const [original, setOriginal] = useState(false);
   const { translation, status, request } = useChineseReply(source, supplied);
   const shown = original ? source : translation || source;
@@ -187,7 +187,8 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
         {more ? <button type="button" className="cli-older" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "正在读取…" : "加载更早的记录"}</button> : null}
         {blocks.map(block => {
           const message = <BlockView key={block.id} engine={engine} block={block} translations={translations} onEdit={onEdit}/>;
-          return review && onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
+          // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
+          return onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}
         {loading && !items.length ? <div className="cli-empty" role="status">正在读取…</div> : null}
         {!loading && !error && !items.length ? <div className="cli-empty">暂无记录</div> : null}

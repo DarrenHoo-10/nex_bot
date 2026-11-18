@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CliSessionKey } from "../../../shared/cli-agents";
 import { device, session } from "./fixtures";
 import { newlyWaiting, notifyWaiting, sessionStates } from "./notifications";
-import { canAttach, composerMode, deviceBlocker, folderLabel, groupSessions, hiddenCount, recentCwds, samePath, sendsOutside, sessionStatusLabel, sessionTitle, waitingCount, worktreeName } from "./session-model";
+import { canAttach, composerMode, deviceBlocker, folderLabel, foldHistory, forkParentKey, groupSessions, hiddenCount, isScratchCwd, normalizePath, projectGroups, projectOf, recentCwds, samePath, sendsOutside, sessionStatusLabel, sessionTitle, treeParents, waitingCount, worktreeName, worktreeRoot } from "./session-model";
 
 describe("grouping", () => {
   it("groups by computer, then agent, newest first, online computers first", () => {
@@ -159,5 +160,93 @@ describe("worktree paths", () => {
   it("compares paths across the long-path prefix, separators, case and a trailing slash", () => {
     expect(samePath(String.raw`\\?\D:\ProgrammingProjects\nex_stock`, "d:/programmingprojects/nex_stock/")).toBe(true);
     expect(samePath(String.raw`D:\a\b`, String.raw`D:\a\c`)).toBe(false);
+    expect(normalizePath(String.raw`\\?\UNC\host\share\dir\\`)).toBe("/host/share/dir");
+  });
+
+  it("maps linked worktrees to their repository root and leaves other paths alone", () => {
+    expect(worktreeRoot(String.raw`D:\ProgrammingProjects\nex_bot\.claude\worktrees\gallant-gagarin-443e9a`)).toBe(String.raw`D:\ProgrammingProjects\nex_bot`);
+    expect(worktreeRoot(String.raw`\\?\D:\ProgrammingProjects\nex_bot\.claude\worktrees\gallant-gagarin-443e9a\src`)).toBe(String.raw`D:\ProgrammingProjects\nex_bot`);
+    expect(worktreeRoot("/Users/me/app/.claude/worktrees/busy-chaum/src")).toBe("/Users/me/app");
+    expect(worktreeRoot(String.raw`D:\work\.nexbot-worktrees\alpha\feat-demo-1234abcd`)).toBe(String.raw`D:\work\alpha`);
+    expect(worktreeRoot("\\\\?\\D:\\ProgrammingProjects\\nex_stock\\")).toBe(String.raw`D:\ProgrammingProjects\nex_stock`);
+  });
+});
+
+
+describe("projects", () => {
+  it("recognises Codex scratch chats", () => {
+    expect(isScratchCwd(String.raw`C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat`)).toBe(true);
+    expect(isScratchCwd(String.raw`\\?\C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat-2`)).toBe(true);
+    expect(isScratchCwd("/Users/me/Documents/Codex/2026-11-18")).toBe(true);
+    expect(isScratchCwd(String.raw`C:\Users\Administrator\Documents\Codex\notes`)).toBe(false);
+    expect(isScratchCwd(String.raw`D:\ProgrammingProjects\nex_stock`)).toBe(false);
+  });
+
+  it("derives one project from worktrees, the long-path prefix and case", () => {
+    const main = projectOf(session({ cwd: String.raw`D:\ProgrammingProjects\nex_stock` }));
+    const prefixed = projectOf(session({ cwd: String.raw`\\?\D:\ProgrammingProjects\nex_stock` }));
+    const lower = projectOf(session({ cwd: "d:/programmingprojects/nex_stock/" }));
+    const worktree = projectOf(session({ cwd: String.raw`D:\ProgrammingProjects\nex_stock\.claude\worktrees\zen-kilby-6e0402` }));
+    expect(new Set([main.key, prefixed.key, lower.key, worktree.key]).size).toBe(1);
+    expect(worktree).toMatchObject({ label: "nex_stock", root: String.raw`D:\ProgrammingProjects\nex_stock`, scratch: false });
+  });
+
+  it("prefers the device-reported repo root, then an explicit override", () => {
+    const row = session({ repoRoot: String.raw`D:\Repos\Main`, cwd: String.raw`D:\Elsewhere\feature-tree` });
+    expect(projectOf(row)).toMatchObject({ label: "Main", root: String.raw`D:\Repos\Main` });
+    expect(projectOf(row, String.raw`D:\Override`).label).toBe("Override");
+    expect(projectOf(session({ cwd: "" })).label).toBe("未知目录");
+  });
+
+  it("groups real projects by latest activity and puts scratch chats last under one label", () => {
+    const groups = projectGroups([
+      session({ nativeId: "1", engine: "codex", cwd: String.raw`C:\Users\Administrator\Documents\Codex\2026-11-18\new-chat`, lastActivityAt: 90 }),
+      session({ nativeId: "2", engine: "codex", cwd: String.raw`C:\Users\Administrator\Documents\Codex\2026-11-17\new-chat`, lastActivityAt: 80 }),
+      session({ nativeId: "3", cwd: String.raw`D:\ProgrammingProjects\nex_bot\.claude\worktrees\gallant-gagarin-443e9a`, lastActivityAt: 10 }),
+      session({ nativeId: "4", cwd: String.raw`D:\ProgrammingProjects\nex_bot`, lastActivityAt: 20 }),
+      session({ nativeId: "5", cwd: String.raw`D:\ProgrammingProjects\nex_stock`, lastActivityAt: 5 }),
+      session({ nativeId: "6", cwd: String.raw`\\?\D:\ProgrammingProjects\nex_stock`, lastActivityAt: 6 }),
+    ]);
+    expect(groups.map((group) => [group.label, group.rows.map((row) => row.nativeId).sort()])).toEqual([
+      ["nex_bot", ["3", "4"]],
+      ["nex_stock", ["5", "6"]],
+      ["未关联项目", ["1", "2"]],
+    ]);
+    expect(groups[2].scratch).toBe(true);
+  });
+});
+
+describe("fork nesting", () => {
+  it("reads the parent from forkOf on the same computer and agent only", () => {
+    expect(forkParentKey(session({ nativeId: "s1", forkOf: "s0" }))).toBe("dev1:claude:s0");
+    expect(forkParentKey(session({ nativeId: "s2", engine: "codex", forkOf: "s0" }))).toBe("dev1:codex:s0");
+    expect(forkParentKey(session({ nativeId: "s1", forkOf: "s1" }))).toBeNull();
+    expect(forkParentKey(session())).toBeNull();
+  });
+
+  it("keeps only parents that are listed and cuts loops so every row stays reachable", () => {
+    const rows = [session({ nativeId: "a" }), session({ nativeId: "b" }), session({ nativeId: "c" }), session({ nativeId: "d" })];
+    const links: Record<string, CliSessionKey> = { "dev1:claude:a": "dev1:claude:b", "dev1:claude:b": "dev1:claude:a", "dev1:claude:c": "dev1:claude:b", "dev1:claude:d": "dev1:claude:gone" };
+    const parents = treeParents(rows, (row) => links[row.key]);
+    expect(parents.get("dev1:claude:d")).toBeNull();
+    expect(parents.get("dev1:claude:c")).toBe("dev1:claude:b");
+    const roots = rows.filter((row) => !parents.get(row.key));
+    expect(roots.map((row) => row.nativeId)).toContain("a");
+    expect(parents.get("dev1:claude:b")).toBe("dev1:claude:a");
+  });
+});
+
+describe("history fold", () => {
+  const parents = (links: Record<string, string>) => treeParents(rows, (row) => links[row.nativeId] ? `dev1:claude:${links[row.nativeId]}` : null);
+  const rows = ["a", "b", "c", "d", "e"].map((nativeId) => session({ nativeId }));
+  const active = (...ids: string[]) => (row: { nativeId: string }) => ids.includes(row.nativeId);
+
+  it("shows active sessions and their ancestors, and folds the rest", () => {
+    const shown = foldHistory(rows, parents({ b: "a", c: "b" }), active("c"));
+    expect([...shown].sort()).toEqual(["dev1:claude:a", "dev1:claude:b", "dev1:claude:c"]);
+  });
+
+  it("does not fold a single older session", () => {
+    expect(foldHistory(rows, parents({}), active("a", "b", "c", "d")).size).toBe(5);
   });
 });

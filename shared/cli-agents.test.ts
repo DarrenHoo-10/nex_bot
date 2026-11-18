@@ -283,6 +283,15 @@ describe("parseCliSessionWire", () => {
     expect(parseCliSessionWire(full)).toEqual(full);
   });
 
+  it("carries repoRoot and forkOf, and validates them", () => {
+    const placed = wire({ repoRoot: "D:\\ProgrammingProjects\\nex_bot", forkOf: UUID });
+    expect(parseCliSessionWire(placed)).toEqual(placed);
+    expect(parseCliSessionWire(wire({ repoRoot: "r".repeat(CLI_LIMITS.cwd) }))).not.toBeNull();
+    for (const bad of [wire({ repoRoot: "" }), wire({ repoRoot: 5 }), wire({ repoRoot: "r".repeat(CLI_LIMITS.cwd + 1) }), wire({ forkOf: "" }), wire({ forkOf: "a:b" }), wire({ forkOf: 3 })]) {
+      expect(parseCliSessionWire(bad), JSON.stringify(bad)).toBeNull();
+    }
+  });
+
   it("treats undefined optionals as absent and drops unknown keys", () => {
     const parsed = parseCliSessionWire(wire({ gitBranch: undefined, transcript: "C:\\secret.jsonl", extra: 1 }));
     expect(parsed).toEqual(wire());
@@ -425,6 +434,12 @@ describe("parseCliAgentsCapability", () => {
   it("dedupes engines", () => {
     expect(parseCliAgentsCapability({ ...capability, engines: ["claude", "claude"] })?.engines).toEqual(["claude"]);
   });
+  it("carries the engines that can fork, and stays valid without them (older executors)", () => {
+    expect(parseCliAgentsCapability(capability)).not.toHaveProperty("forkEngines");
+    expect(parseCliAgentsCapability({ ...capability, forkEngines: ["claude", "claude", "codex"] })?.forkEngines).toEqual(["claude", "codex"]);
+    expect(parseCliAgentsCapability({ ...capability, forkEngines: ["gemini"] })).toBeNull();
+    expect(parseCliAgentsCapability({ ...capability, forkEngines: "claude" })).toBeNull();
+  });
   it("rejects other versions, engines and terminals", () => {
     for (const bad of [
       null,
@@ -482,6 +497,17 @@ describe("parseCliOpArgs", () => {
     expect(parseCliOpArgs("interrupt", {})).toBeNull();
     expect(parseCliOpArgs("bogus" as "read", { ref })).toBeNull();
     expect(parseCliOpArgs("__proto__" as "read", { ref })).toBeNull();
+  });
+
+  it("accepts forkFrom for the engine being started and nothing else", () => {
+    const parent = `claude:${UUID}`;
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", forkFrom: parent })).toEqual({ engine: "claude", cwd: "/x", forkFrom: parent });
+    // an old device drops the unknown key; one that knows it must not accept a parent of another engine
+    expect(parseCliOpArgs("start", { engine: "codex", cwd: "/x", forkFrom: parent })).toBeNull();
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", forkFrom: "claude:" })).toBeNull();
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", forkFrom: UUID })).toBeNull();
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", forkFrom: 5 })).toBeNull();
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", forkFrom: undefined })).toEqual({ engine: "claude", cwd: "/x" });
   });
 
   it("limits send text by bytes, not characters", () => {

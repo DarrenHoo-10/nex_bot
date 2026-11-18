@@ -172,13 +172,20 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     if (action === "fork") {
       // the branch row exists first; the device session binds to it on start
       const created = await branchSession(session.key, value?.title ?? "", crypto.randomUUID());
-      const started = await startSession(session.deviceId, session.engine, session.cwd, { parentId: created.id }).catch((cause) => {
-        setError(cliErrorText(cause, "分支会话启动失败"));
-        return null;
-      });
+      // forkFrom: the child carries the parent's conversation instead of starting blank
+      let started: { key: CliSessionKey };
+      try {
+        started = await startSession(session.deviceId, session.engine, session.cwd, { parentId: created.id, forkFrom: session.key });
+      } catch (cause) {
+        // a row that never got its session would sit in Core unseen: settle it,
+        // and let the list show why (an old executor or a harness without fork)
+        await deleteWorkbenchSession({ id: created.id, expectedVersion: created.version }).catch(() => undefined);
+        setReloadToken(token => token + 1);
+        throw new Error(cliErrorText(cause, "分支会话启动失败"));
+      }
       setReloadToken(token => token + 1);
       void reload();
-      return { key: started?.key };
+      return { key: started.key };
     }
     // a session the workbench never touched has no logical row: its key is
     // enough, Core creates the row with this first change
@@ -205,8 +212,12 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
 
   // archived (and the older "hidden") sessions stay in the groups: the list shows them in its archive view
   const groups = useMemo(() => groupSessions(devices, sessions, true), [devices, sessions]);
-  const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side") ?? null;
-  const sideChats=useSideChats(selectedKey,sessions);
+  const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side" && (review || listMeta.get(s.key)?.kind!=="side")) ?? null;
+  const sideHost = useMemo(() => review ? undefined : { meta: listMeta, refresh: () => { setReloadToken(token => token + 1); void reload(); } }, [review, listMeta, reload]);
+  const sideChats=useSideChats(selectedKey,sessions,sideHost);
+  /** Side chats start a new session on the session's computer, so it must run there (the preview fixture only has Claude). */
+  const canSide = (entry: CliSessionView) => review ? entry.engine==="claude"
+    : (entry.engine==="claude" || entry.engine==="codex") && entry.online && !!devices.find(d => d.id===entry.deviceId)?.cliAgents?.engines.includes(entry.engine);
   const {draft:sideDraft,session:side}=sideChats;
   const terminalActive=sideChats.selected?.id===sideChats.terminalId;
   useEffect(()=>{
@@ -306,8 +317,10 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                 <SessionPane
                   key={selected.key}
                   session={selected}
+                  title={listMeta.get(selected.key)?.title}
                   onTerminalOpen={sideChats.openTerminal}
-                  onSideOpen={review&&selected.engine==="claude"?(q,m)=>sideChats.open(selected,q,m):undefined}
+                  onSideOpen={canSide(selected)?(q,m)=>sideChats.open(selected,q,m):undefined}
+                  sideCount={sideChats.selected?0:sideChats.tabs.filter(t=>t.id!==sideChats.terminalId).length}
                   stream={stream}
                   onKeyChange={select}
                   onBack={() => setMobileView("list")}
@@ -333,9 +346,9 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                   <button role="tab" tabIndex={t.id===sideChats.selected?.id?0:-1} aria-selected={t.id===sideChats.selected?.id} onClick={()=>sideChats.select(t.id)} title={t.title}>{t.id===sideChats.terminalId?<SquareTerminal size={14}/>:<MessageSquare size={13}/>}<span>{t.title}</span></button>
                   <button aria-label={t.id===sideChats.terminalId?"关闭远程终端":"关闭标签："+t.title} disabled={t.id===sideDraft?.id && sideDraft.busy} onClick={()=>sideChats.close(t.id)}><X size={12}/></button>
                 </div>)}
-              </div>{review && selected.engine==="claude" && <button aria-label="新建侧边聊天" title="新建侧边聊天" onClick={()=>void sideChats.open(selected,"","",true)}><Plus size={15}/></button>}
+              </div>{canSide(selected) && <button aria-label="新建侧边聊天" title="新建侧边聊天" onClick={()=>void sideChats.open(selected,"","",true)}><Plus size={15}/></button>}
               <button className="na-side-hide" aria-label={terminalActive?"收起侧边栏":"关闭侧边会话"} title="收起侧边栏" onClick={()=>sideChats.select(null)}><PanelLeftOpen size={15}/></button></header>
-              {terminalActive ? <TerminalView key={selected.key} sessionKey={selected.key} stream={stream} connected={status==="open"}/> : side ? <SessionPane key={side.key} session={side} stream={stream} compact onSideOpen={side.engine==="claude"?(q,m)=>sideChats.open(side,q,m):undefined} onBack={()=>sideChats.select(null)} onKeyChange={sideChats.changeSession} requests={requests.store.get(side.key)} now={requests.now} onAnswer={(id,d,a)=>answer(side.key,id,d,a)}/>
+              {terminalActive ? <TerminalView key={selected.key} sessionKey={selected.key} stream={stream} connected={status==="open"}/> : side ? <SessionPane key={side.key} session={side} stream={stream} compact onSideOpen={canSide(side)?(q,m)=>sideChats.open(side,q,m):undefined} onBack={()=>sideChats.select(null)} onKeyChange={sideChats.changeSession} requests={requests.store.get(side.key)} now={requests.now} onAnswer={(id,d,a)=>answer(side.key,id,d,a)}/>
                 : sideDraft && <section className="na-side-blank"><Composer key={sideDraft.id} session={sideDraft.source}
                   draft={{...sideDraft,busy:sideDraft.busy||sideDraft.sent,configure:(model,effort)=>sideChats.patch(sideDraft.id,{model,effort})}}
                   onSend={text=>sideChats.send(sideDraft,text)} onInterrupt={async()=>{}}/></section>}

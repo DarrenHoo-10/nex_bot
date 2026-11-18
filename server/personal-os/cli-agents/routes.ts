@@ -15,6 +15,7 @@ import {
   utf8ByteLength,
   type CliDeliveryAction,
   type CliErrorCode,
+  type CliSessionRef,
 } from "../../../shared/cli-agents.ts";
 import type { CoreStore } from "../store.ts";
 import { forkToTopic, type ForkAgents } from "./fork.ts";
@@ -42,6 +43,8 @@ export interface CliRouteResult {
 const STATUS: Partial<Record<CliErrorCode, number>> = { invalid: 400, cwd_missing: 400, too_large: 413, not_found: 404 };
 
 const MAX_ERROR_TEXT = 200;
+const MAX_NOTE_QUOTE = 8000;
+const MAX_NOTE_BODY = 4000;
 
 /** `message` is the device's own wording (already cleaned by the hub); without it the code's standard text is used. */
 export function cliErrorResult(code: CliErrorCode, message?: string): CliRouteResult {
@@ -81,6 +84,7 @@ export class CliAgentRoutes {
           case "/api/cli-agents/queue": return this.queue(request);
           case "/api/cli-agents/supervision": return this.supervision();
           case "/api/cli-agents/sessions/git": return await this.gitInfo(request);
+          case "/api/cli-agents/notes": return this.notes(request);
           default: return {
             status: 200,
             body: {
@@ -110,6 +114,9 @@ export class CliAgentRoutes {
         case "/api/cli-agents/sessions/archive": return await this.sessionUpdate(data, "archive");
         case "/api/cli-agents/sessions/restore": return await this.sessionUpdate(data, "restore");
         case "/api/cli-agents/sessions/delete": return await this.sessionUpdate(data, "delete");
+        case "/api/cli-agents/notes": return this.createNote(request, data);
+        case "/api/cli-agents/notes/update": return this.updateNote(data);
+        case "/api/cli-agents/notes/delete": return this.deleteNote(data);
         default: return this.hide(data);
       }
     } catch (error) {
@@ -228,6 +235,60 @@ export class CliAgentRoutes {
     return { status: 200, body: { session: workbench.viewOf(row) } };
   }
 
+  /** Annotations of one conversation, by native key or logical id. */
+  private notes(request: CliRouteRequest): CliRouteResult {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const key = request.search.get("key");
+    if (!key || key.length > 200) return cliErrorResult("invalid");
+    return { status: 200, body: { notes: workbench.listNotes(key) } };
+  }
+
+  private createNote(request: CliRouteRequest, data: Record<string, unknown>): CliRouteResult {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const ref = this.key(data.key) ?? this.workbenchRef(data);
+    const { id, message, quote, body, num, start, end } = data;
+    if (!ref) return cliErrorResult("invalid");
+    if (id !== undefined && (typeof id !== "string" || id.length < 1 || id.length > 128)) return cliErrorResult("invalid");
+    if (typeof message !== "string" || message.length < 1 || message.length > 200) return cliErrorResult("invalid");
+    if (typeof quote !== "string" || !quote.trim()) return cliErrorResult("invalid");
+    if (typeof body !== "string" || !body.trim()) return cliErrorResult("invalid");
+    if (quote.length > MAX_NOTE_QUOTE || body.length > MAX_NOTE_BODY) return cliErrorResult("too_large");
+    const integer = (value: unknown, max: number): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;
+    if (num !== undefined && (!integer(num, 100_000) || num < 1)) return cliErrorResult("invalid");
+    if ((start === undefined) !== (end === undefined)) return cliErrorResult("invalid");
+    if (start !== undefined && (!integer(start, 10_000_000) || !integer(end, 10_000_000) || end <= start)) return cliErrorResult("invalid");
+    this.store.audit("cli.note_create", "cli_session", ref, { sessionId: request.sessionId, length: body.length });
+    const note = workbench.createNote(ref, {
+      ...(typeof id === "string" ? { id } : {}), message, quote, body,
+      ...(typeof num === "number" ? { num } : {}),
+      ...(typeof start === "number" && typeof end === "number" ? { start, end } : {}),
+    });
+    return { status: 200, body: { note } };
+  }
+
+  private updateNote(data: Record<string, unknown>): CliRouteResult {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const { id, expectedVersion, body } = data;
+    if (typeof id !== "string" || id.length < 1 || id.length > 128) return cliErrorResult("invalid");
+    if (typeof expectedVersion !== "number" || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return cliErrorResult("invalid");
+    if (typeof body !== "string" || !body.trim()) return cliErrorResult("invalid");
+    if (body.length > MAX_NOTE_BODY) return cliErrorResult("too_large");
+    return { status: 200, body: { note: workbench.updateNote(id, expectedVersion, body) } };
+  }
+
+  private deleteNote(data: Record<string, unknown>): CliRouteResult {
+    const workbench = this.extras.workbench;
+    if (!workbench) return cliErrorResult("not_found");
+    const { id, expectedVersion } = data;
+    if (typeof id !== "string" || id.length < 1 || id.length > 128) return cliErrorResult("invalid");
+    if (typeof expectedVersion !== "number" || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return cliErrorResult("invalid");
+    workbench.deleteNote(id, expectedVersion);
+    return { status: 200, body: { ok: true } };
+  }
+
   private async gitInfo(request: CliRouteRequest): Promise<CliRouteResult> {
     const key = this.key(request.search.get("key"));
     if (!key) return cliErrorResult("invalid");
@@ -326,10 +387,21 @@ export class CliAgentRoutes {
       if (typeof worktreeBranch !== "string" || worktreeBranch.length < 1 || worktreeBranch.length > 120 || !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(worktreeBranch)) return cliErrorResult("invalid");
       if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128) return cliErrorResult("invalid");
     }
-    this.store.audit("cli.start", "device", deviceId, { engine, cwd, ...(withWorktree ? { worktree: worktreeBranch } : {}), sessionId: request.sessionId });
+    // A fork is a session of the same device and engine, one this Core knows; the device
+    // gets its ref and decides how to resume it (a worktree start and a fork do not mix)
+    let forkRef: CliSessionRef | undefined;
+    if (data.forkFrom !== undefined) {
+      const source = this.key(data.forkFrom);
+      const parsed = source ? parseCliKey(source) : null;
+      if (!source || !parsed || withWorktree) return cliErrorResult("invalid");
+      if (parsed.deviceId !== deviceId || parsed.engine !== engine) return cliErrorResult("invalid");
+      if (!this.hub.session(source)) return cliErrorResult("not_found");
+      forkRef = parsed.ref;
+    }
+    this.store.audit("cli.start", "device", deviceId, { engine, cwd, ...(withWorktree ? { worktree: worktreeBranch } : {}), ...(forkRef ? { forkFrom: forkRef } : {}), sessionId: request.sessionId });
     const started = withWorktree && this.extras.workbench
       ? await this.hub.startWorktree(request.sessionId, deviceId, engine, cwd, worktreeBranch as string, requestId as string)
-      : await this.hub.start(request.sessionId, deviceId, engine, cwd);
+      : await this.hub.start(request.sessionId, deviceId, engine, cwd, forkRef);
     // A start that belongs to a pending branch row binds it, so the tree shows
     // the child as soon as the device has the session.
     const parentId = this.workbenchRef(data);
@@ -441,6 +513,9 @@ const POST_ROUTES = new Set([
   "/api/cli-agents/sessions/archive",
   "/api/cli-agents/sessions/restore",
   "/api/cli-agents/sessions/delete",
+  "/api/cli-agents/notes",
+  "/api/cli-agents/notes/update",
+  "/api/cli-agents/notes/delete",
 ]);
 
 const GET_ROUTES = new Set([
@@ -450,6 +525,7 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/queue",
   "/api/cli-agents/supervision",
   "/api/cli-agents/sessions/git",
+  "/api/cli-agents/notes",
 ]);
 
 /** The delivery a workbench submit carries; absent means the legacy contract. */

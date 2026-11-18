@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, ChevronDown, ChevronRight, Ellipsis, Folder, Monitor, Plus, Search } from "lucide-react";
 import type { CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
-import { AGENT_LABEL, askedSession, sessionStatusLabel, sessionTone, folderLabel, sessionTitle, type DeviceGroup } from "./session-model";
+import { AGENT_LABEL, RECENT_MS, askedSession, forkParentKey, foldHistory, projectGroups, sessionStatusLabel, sessionTone, sessionTitle, treeParents, type DeviceGroup } from "./session-model";
 import { SessionSortMenu, type SessionSort } from "./SessionSortMenu";
 import {HarnessMark} from "./tokendance/HarnessMark";
 import { useReview } from "./WorkbenchReview";
@@ -61,6 +61,8 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   const review=useReview();
   const wbActions = review ? undefined : onWorkbenchAction;
   const [closed,setClosed]=useState<Set<string>>(()=>new Set());
+  /** projects whose earlier history is expanded; collapsed by default */
+  const [earlier,setEarlier]=useState<Set<string>>(()=>new Set());
   const [filter,setFilter]=useState(""),[sort,setSort]=useState<SessionSort>("time"),[archived,setArchived]=useState(false);
   const [menu,setMenu]=useState<Selection|null>(null),[dialog,setDialog]=useState<{row:CliSessionView;action:Exclude<Action,"fork">}|null>(null);
   const [editing,setEditing]=useState<{key:CliSessionKey; title:string}|null>(null);
@@ -84,6 +86,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   const isArchived=(s:CliSessionView)=>Boolean(meta(s.key)?.archived)||(!review&&!!s.hidden);
   const ownRow=(key:CliSessionKey)=>{const own=meta(key);return own&&"id" in own&&own.id?own as WorkbenchMeta:undefined};
   function toggle(id:string){setClosed(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next})}
+  function toggleEarlier(id:string){setEarlier(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next})}
   function twist(id:string,name:string){const open=!!filter||!closed.has(id);return <button className="na-twist" disabled={!!filter} title={filter?"搜索时自动展开":undefined} aria-expanded={open} aria-label={(open?"收起":"展开")+name} onClick={()=>toggle(id)}>{open?<ChevronDown size={13}/>:<ChevronRight size={13}/>}</button>}
   const forkKey=forking?.key;
   const forkReady=!!forkKey && meta(forkKey)?.parent===forking.parent.key &&
@@ -148,9 +151,12 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       dismissDialog();
     } catch(e){setError((e as Error).message)}finally{setBusy(false)}
   }
-  function sessions(rows:CliSessionView[],parent:CliSessionKey|null,depth:number,ancestors:Set<string>):ReactNode {
+  /** A row's tree parent: the workbench parent, else the session it was forked from (Core's `forkOf`). */
+  const parentOf=(s:CliSessionView)=>meta(s.key)?.parent||forkParentKey(s);
+  function sessions(rows:CliSessionView[],parents:ReadonlyMap<CliSessionKey,CliSessionKey|null>,parent:CliSessionKey|null,depth:number,ancestors:Set<string>):ReactNode {
     const keys=new Set(rows.map(s=>s.key));
-    const actualParent=(s:CliSessionView)=>{const p=meta(s.key)?.parent;return p&&keys.has(p)?p:null};
+    // a parent outside `rows` leaves the row at the top level
+    const actualParent=(s:CliSessionView)=>{const p=parents.get(s.key);return p&&keys.has(p)?p:null};
     const siblings=rows.filter(s=>actualParent(s)===parent&&!ancestors.has(s.key));
     siblings.sort((a,b)=>(sort==="engine"?a.engine.localeCompare(b.engine):0)||b.lastActivityAt-a.lastActivityAt);
     return siblings.map(s=>{
@@ -181,7 +187,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
           {creatingChild && <div className="na-node"><div className="cli-row" role="status" aria-label="正在创建分支"><span className="na-twist"/>
             <div className="cli-row-main"><LoaderCircle className="na-busy-icon" size={14}/><span className="cli-row-title">{forking.title}</span></div>
           </div></div>}
-          {sessions(rows,s.key,depth+1,new Set([...ancestors,s.key]))}
+          {sessions(rows,parents,s.key,depth+1,new Set([...ancestors,s.key]))}
         </div>:null}
       </div>
     });
@@ -189,16 +195,11 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   const checkout = (s:CliSessionView) => review?.checkouts?.[s.cwd] ?? {
     project:s.cwd, worktree:s.cwd, branch:s.gitBranch?.trim() || "未记录分支"
   };
-  function grouped(rows:CliSessionView[], by:(row:CliSessionView)=>string) {
-    const groups = new Map<string,CliSessionView[]>();
-    for (const row of rows) {
-      const name = by(row);
-      if (!groups.has(name)) groups.set(name,[]);
-      groups.get(name)!.push(row);
-    }
-    const latest = (items:CliSessionView[]) => Math.max(...items.map(row=>row.lastActivityAt));
-    return [...groups].sort(([a,left],[b,right]) => (latest(right)-latest(left)) || a.localeCompare(b));
-  }
+  /** Worth showing without opening history: live, recent, or the open session. */
+  const current=(s:CliSessionView,now:number)=>{
+    const shown=askedSession(s,pending?.get(s.key)||0);
+    return s.key===selectedKey || (shown.online && (shown.state==="running"||shown.state==="waiting")) || now-s.lastActivityAt<=RECENT_MS;
+  };
   const actions:Record<Action,string>={fork:"创建分支",archive:"归档会话",delete:"删除会话",id:"查看会话 ID"};
   return <nav className="cli-list" aria-label="Agent 会话">
     <label className="na-search"><Search size={15}/><input aria-label="搜索项目或会话" value={filter} placeholder="搜索项目或会话" onChange={e=>setFilter(e.target.value)}/></label>
@@ -209,14 +210,26 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
         s.deviceId!==forking.parent.deviceId || s.engine!==forking.parent.engine || s.cwd!==forking.parent.cwd ||
         (forking.key ? s.key!==forking.key || forkReady : !!meta(s.key)?.parent && meta(s.key)?.parent!==forking.parent.key);
       const all=agents.flatMap(a=>a.sessions).filter(visibleDuringFork).filter(s=>!meta(s.key)?.deleted && meta(s.key)?.kind!=="side" && isArchived(s)===archived);
-      const folders=grouped(all,s=>checkout(s).project);
+      const projects=projectGroups(all,s=>review?.checkouts?.[s.cwd]?.project);
+      const now=Date.now();
       return <section className="cli-device" key={device.id}><header>{twist(device.id,device.name)}<Monitor size={15}/><strong>{device.name}</strong><small className={device.online?"na-online":undefined}>{device.online?"在线":"离线"}</small><button className="icon-button" aria-label={"在 "+device.name+" 上新建会话"} onClick={()=>onNew(device.id)}><Plus size={15}/></button></header>
-      {(filter||!closed.has(device.id))&&folders.map(([cwd,entries])=>{
-        const id=JSON.stringify([device.id,cwd]); const query=filter.trim().toLocaleLowerCase();
-        const matched=new Set(entries.filter(s=>([label(s),cwd,AGENT_LABEL[s.engine],checkout(s).worktree,checkout(s).branch].join(" ")).toLocaleLowerCase().includes(query)).map(s=>s.key));
-        for(const key of matched){let p=meta(key)?.parent;while(p&&!matched.has(p)){matched.add(p);p=meta(p)?.parent}}
+      {(filter||!closed.has(device.id))&&projects.map(project=>{
+        const entries=project.rows;
+        const id=JSON.stringify([device.id,project.key]); const query=filter.trim().toLocaleLowerCase();
+        const parents=treeParents(entries,parentOf);
+        const hits=entries.filter(s=>([label(s),project.label,project.root,s.cwd,AGENT_LABEL[s.engine],checkout(s).worktree,checkout(s).branch].join(" ")).toLocaleLowerCase().includes(query));
+        // a match shows its whole path up to the top
+        const matched=new Set(hits.map(s=>s.key));
+        for(const {key} of hits)for(let p=parents.get(key);p&&!matched.has(p);p=parents.get(p))matched.add(p);
         const visible=entries.filter(s=>matched.has(s.key));if(!visible.length)return null;
-        return <div className="na-project" key={id}><div className="na-folder">{twist(id,folderLabel(cwd))}<Folder size={15}/><strong title={cwd}>{folderLabel(cwd)}</strong><small>{visible.length}</small></div>{filter||!closed.has(id)?<div className="na-branch">{sessions(visible,null,0,new Set())}</div>:null}</div>
+        // history folds away unless searching or looking at the archive
+        const keep=!filter&&!archived?foldHistory(visible,parents,s=>current(s,now)):null;
+        const olderCount=keep?visible.filter(s=>!keep.has(s.key)).length:0;
+        const open=earlier.has(id);
+        const shown=keep&&!open?visible.filter(s=>keep.has(s.key)):visible;
+        return <div className="na-project" key={id}><div className="na-folder">{twist(id,project.label)}<Folder size={15}/><strong title={project.root||project.label}>{project.label}</strong><small>{visible.length}</small></div>{filter||!closed.has(id)?<div className="na-branch">{sessions(shown,parents,null,0,new Set())}
+          {olderCount>0?<button type="button" className="na-older" aria-expanded={open} onClick={()=>toggleEarlier(id)}>{open?<ChevronDown size={13}/>:<ChevronRight size={13}/>}<span>更早 {olderCount}</span></button>:null}
+        </div>:null}</div>
       })}</section>
     })}
     {archived && !groups.some(({agents})=>agents.some(a=>a.sessions.some(s=>isArchived(s)&&!meta(s.key)?.deleted&&meta(s.key)?.kind!=="side"))) ? <p className="cli-empty">没有已归档的会话</p> : null}
@@ -235,9 +248,12 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       {(review||wbActions)&&archived?<button role="menuitem" onClick={()=>{const run=review?review.run("restore",menu.row.key):wbActions!.archive(menu.row,ownRow(menu.row.key),false);void run.then(()=>setArchived(false)).catch(e=>setError(e.message));setMenu(null)}}><ArchiveRestore size={14}/>恢复会话</button>:null}
       {(["id",...((review||wbActions)&&!archived?["fork","archive","delete"]:[])] as Action[]).map(action=>{
         const p=meta(menu.row.key)?.parent,limit=action==="fork"&&p&&meta(p)?.parent;
-        const unavailable=action==="fork" && (review ? menu.row.engine!=="claude" : menu.row.engine==="zcode");
+        // a real fork needs an executor that lists the engine; an older one would open a blank session
+        const forkEngines=groups.find(group=>group.device.id===menu.row.deviceId)?.device.cliAgents?.forkEngines;
+        const unavailable=action==="fork" && (review ? menu.row.engine!=="claude" : !forkEngines?.includes(menu.row.engine));
+        const forkHint=review?"测试设备未安装该 Harness":forkEngines?"该 Harness 暂不支持分支":"电脑端版本过旧，升级后可分叉会话";
         const Icon=actionIcons[action];
-        return <button key={action} role="menuitem" className={action==="delete"?"na-danger":""} disabled={!!limit||unavailable||(action==="fork" && !!forking)} title={unavailable?"测试设备未安装该 Harness":undefined} onClick={()=>choose(menu.row,action)}><Icon size={14}/>{limit?"已达两级分支上限":actions[action]}</button>
+        return <button key={action} role="menuitem" className={action==="delete"?"na-danger":""} disabled={!!limit||unavailable||(action==="fork" && !!forking)} title={unavailable?forkHint:undefined} onClick={()=>choose(menu.row,action)}><Icon size={14}/>{limit?"已达两级分支上限":actions[action]}</button>
       })}
     </div>,document.body)}
     {dialog&&createPortal(<div className="modal-backdrop"><form className="modal na-dialog" role="dialog" aria-modal="true" onKeyDown={e=>{

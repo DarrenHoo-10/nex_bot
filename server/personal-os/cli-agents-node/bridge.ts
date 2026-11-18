@@ -37,7 +37,7 @@ import {
 } from "../../../shared/cli-agents.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { CodexDaemons, DaemonError, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
-import { DeviceGit } from "./device-git.ts";
+import { DeviceGit, RepoRoots } from "./device-git.ts";
 import { harnessFor } from "./harness.ts";
 import { HookError, HookServer, TurnTracker, locateHookPlugin } from "./hooks.ts";
 import { InboxError, sendToInbox } from "./inbox.ts";
@@ -176,6 +176,9 @@ interface Watch {
 
 const HC_LABELS = { nexbot: "1" } as const;
 /** herdr-core events after which the list of terminals may differ; status, title and size do not matter here */
+/** Engines whose CLI can start from another session's context (`claude --resume <id> --fork-session`, `codex fork <id>`). */
+const FORK_ENGINES: readonly CliEngine[] = ["claude", "codex"];
+
 const TERMINAL_CHANGES = new Set(["created", "lost", "restarted", "finished", "removed"]);
 const REGISTER_GRACE_MS = 5000;
 const REPLY_RESULT_LIMIT = 900_000;
@@ -242,6 +245,8 @@ export class CliAgentBridge {
       ...(options.codexHomes ? { codexHomes: options.codexHomes } : {}),
       ...(options.zcodeHomes ? { zcodeHomes: options.zcodeHomes } : {}),
       ...(options.zcodeHost ? { zcode: { host: options.zcodeHost } } : {}),
+      // the real machine only when the Claude directories are the default ones: tests that name their own stay hermetic
+      ...(options.claudeDirs ? {} : { repoRoots: new RepoRoots({ platform: this.platform, ...(options.env ? { env: options.env } : {}) }) }),
       codexDaemon: { threads: (home) => this.codexDaemons.threads(home), refresh: (home) => this.codexDaemons.refresh(home) },
       ...options.discovery,
       nexbotTerminals: () => this.nexbotTerminals(),
@@ -299,6 +304,7 @@ export class CliAgentBridge {
     return {
       version: 1,
       engines: this.engines.map((entry) => entry.engine),
+      forkEngines: this.engines.map((entry) => entry.engine).filter((engine) => FORK_ENGINES.includes(engine)),
       terminal: {
         name: "herdr-core",
         version: HERDR_CORE_VERSION,
@@ -1200,7 +1206,23 @@ export class CliAgentBridge {
     }
   }
 
+  /** The session a `start` forks, checked before anything is launched. A fork runs where the parent
+   * does (the CLI finds a transcript by its project directory) and, unlike `continue`, may run while
+   * the parent is open elsewhere: it only reads the parent's history. */
+  private forkSource(args: CliOpArgs["start"]): { nativeId: string; row: CliSessionWire } | null {
+    if (!args.forkFrom) return null;
+    const parent = parseCliRef(args.forkFrom);
+    if (!parent || parent.engine !== args.engine) throw new OpFailure("invalid");
+    // ZCode has no fork flag; a blank session in its place would look like a fork that lost its context
+    if (!FORK_ENGINES.includes(args.engine)) throw new OpFailure("invalid", "此入口不支持分叉");
+    if (args.worktree) throw new OpFailure("invalid", "分叉不能同时新建工作树");
+    const row = this.session(args.forkFrom);
+    if (!this.discovery.transcriptFor(args.forkFrom)) throw new OpFailure("invalid", "此会话没有本地记录，无法分叉");
+    return { nativeId: parent.nativeId, row };
+  }
+
   private async opStart(args: CliOpArgs["start"], budget: number): Promise<{ ref: CliSessionRef; terminal: string; cwd?: string }> {
+    const fork = this.forkSource(args);
     const hc = await this.requireHc();
     const executable = await this.cliPath(args.engine);
     const size = clampTermSize(args.cols, args.rows);
@@ -1213,7 +1235,7 @@ export class CliAgentBridge {
     }
     // A worktree start builds the tree here first; the requestId dedups so a
     // retried request reuses the tree it already created.
-    let cwd = args.cwd;
+    let cwd = fork ? fork.row.cwd : args.cwd;
     if (args.worktree) {
       const tree = await this.git.worktree(args.cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform });
       if (tree.source === "failed" || !tree.worktree) throw new OpFailure("invalid", tree.error ?? "无法创建工作树");
@@ -1221,9 +1243,20 @@ export class CliAgentBridge {
     }
     const hooks = nativeId ? await this.hookLaunch(nativeId) : undefined;
     const plan = await planLaunch(
-      { engine: args.engine, mode: "new", nativeId, key: randomBytes(4).toString("hex"), cwd, executable, ...(hooks ? { hooks } : {}) },
+      {
+        engine: args.engine,
+        mode: fork ? "fork" : "new",
+        nativeId,
+        ...(fork ? { forkFrom: fork.nativeId } : {}),
+        key: randomBytes(4).toString("hex"),
+        cwd,
+        executable,
+        ...(hooks ? { hooks } : {}),
+      },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
+    // the fork reads the parent from the config home the parent lives in
+    if (fork) plan.env = { ...plan.env, ...this.launchEnvironment(args.engine, fork.row.configDir) };
     const launchedAt = Date.now();
     const terminal = await this.runTerminal(hc, args.engine, plan, size);
     this.register(terminal, args.engine, nativeId ?? null, plan.cwd);

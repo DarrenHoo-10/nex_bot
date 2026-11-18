@@ -9,6 +9,7 @@ import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliLiveIn, type CliSessionState } from "../../../shared/cli-agents.ts";
+import type { DesktopSessionState } from "./claude-desktop.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { isPidAlive, processStartTimes, sameProcessStart, type ProcessStartOptions } from "./liveness.ts";
 
@@ -225,7 +226,22 @@ export interface ClaudeHistoryEntry {
   firstUser?: string;
   /** epoch ms of the last record that has a timestamp */
   lastTimestamp?: number;
+  /** epoch ms the transcript file was created (mtime where the file system has no birth time) */
+  bornMs?: number;
+  /** the first message uuids of the head: a fork or continuation copies the parent's history, uuids included */
+  rootKey?: string;
+  /** the session id the transcript itself names as its fork parent (`forkedFrom`), when it does */
+  forkedFrom?: string;
 }
+
+/** Sessions the Agent SDK or `claude -p` run for automation (`sdk-ts`, `sdk-cli`, ...):
+ * no one sits in them, so they are not conversations to list. */
+export function isSdkEntrypoint(entrypoint: string | undefined): boolean {
+  return typeof entrypoint === "string" && /^sdk/i.test(entrypoint);
+}
+
+/** How many leading message uuids identify a copied history. */
+const ROOT_UUIDS = 3;
 
 export interface HistoryCache {
   get(file: string): { size: number; mtimeMs: number; entry: ClaudeHistoryEntry | null } | undefined;
@@ -265,9 +281,10 @@ export async function scanHistory(configDir: string, options: ScanHistoryOptions
   } catch {
     return [];
   }
-  const found: { file: string; sessionId: string; size: number; mtimeMs: number }[] = [];
+  type Candidate = { file: string; sessionId: string; size: number; mtimeMs: number; bornMs: number };
+  const found: Candidate[] = [];
   const include = new Set(options.include ?? []);
-  const wanted: { file: string; sessionId: string; size: number; mtimeMs: number }[] = [];
+  const wanted: Candidate[] = [];
   for (let i = 0; i < dirs.length; i += 16) {
     await Promise.all(
       dirs.slice(i, i + 16).map(async (dir) => {
@@ -290,7 +307,7 @@ export async function scanHistory(configDir: string, options: ScanHistoryOptions
             continue;
           }
           if (!info.isFile()) continue;
-          const entry = { file, sessionId, size: info.size, mtimeMs: info.mtimeMs };
+          const entry = { file, sessionId, size: info.size, mtimeMs: info.mtimeMs, bornMs: info.birthtimeMs > 0 ? info.birthtimeMs : info.mtimeMs };
           if (info.mtimeMs >= cutoff) found.push(entry);
           else if (include.has(sessionId)) wanted.push(entry);
         }
@@ -298,25 +315,49 @@ export async function scanHistory(configDir: string, options: ScanHistoryOptions
     );
   }
   found.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const chosen = found.slice(0, max);
-  const chosenIds = new Set(chosen.map((f) => f.sessionId));
-  for (const f of found.slice(max)) if (include.has(f.sessionId)) chosen.push(f);
-  for (const f of wanted) if (!chosenIds.has(f.sessionId)) chosen.push(f);
-  const keep = new Set(chosen.map((f) => f.file));
-  for (const key of cache.keys()) if (!keep.has(key) && key.startsWith(projects)) cache.delete(key);
+  const load = async (f: Candidate): Promise<ClaudeHistoryEntry | null> => {
+    const cached = cache.get(f.file);
+    if (cached && cached.size === f.size && cached.mtimeMs === f.mtimeMs) return cached.entry;
+    const entry = await parseTranscriptEdges(f.file, f.sessionId, f.size, f.mtimeMs, f.bornMs);
+    cache.set(f.file, { size: f.size, mtimeMs: f.mtimeMs, entry });
+    return entry;
+  };
+  // Newest first, until `max` sessions that count: sidechain and SDK transcripts
+  // are parsed (once, then cached as excluded) but never use up the cap, so a
+  // pile of automation runs cannot push real conversations out of the list.
   const out: ClaudeHistoryEntry[] = [];
-  for (let i = 0; i < chosen.length; i += 8) {
-    const batch = await Promise.all(
-      chosen.slice(i, i + 8).map(async (f) => {
-        const cached = cache.get(f.file);
-        if (cached && cached.size === f.size && cached.mtimeMs === f.mtimeMs) return cached.entry;
-        const entry = await parseTranscriptEdges(f.file, f.sessionId, f.size, f.mtimeMs);
-        cache.set(f.file, { size: f.size, mtimeMs: f.mtimeMs, entry });
-        return entry;
-      }),
-    );
-    for (const entry of batch) if (entry) out.push(entry);
+  const visited = new Set<string>();
+  const ids = new Set<string>();
+  let next = 0;
+  while (next < found.length && out.length < max) {
+    const batch = found.slice(next, next + 8);
+    next += batch.length;
+    const entries = await Promise.all(batch.map(load));
+    batch.forEach((f, i) => {
+      visited.add(f.file);
+      const entry = entries[i];
+      // a live session (`include`) is kept even when the batch it was parsed in overshoots the cap
+      if (entry && (out.length < max || include.has(f.sessionId))) {
+        out.push(entry);
+        ids.add(f.sessionId);
+      }
+    });
   }
+  // live sessions beyond the cap and transcripts outside the window are still wanted
+  const extra = [...found.slice(next).filter((f) => include.has(f.sessionId)), ...wanted].filter((f) => !ids.has(f.sessionId));
+  for (let i = 0; i < extra.length; i += 8) {
+    const batch = extra.slice(i, i + 8);
+    const entries = await Promise.all(batch.map(load));
+    batch.forEach((f, j) => {
+      visited.add(f.file);
+      const entry = entries[j];
+      if (entry && !ids.has(f.sessionId)) {
+        out.push(entry);
+        ids.add(f.sessionId);
+      }
+    });
+  }
+  for (const key of cache.keys()) if (!visited.has(key) && key.startsWith(projects)) cache.delete(key);
   return out;
 }
 
@@ -377,6 +418,7 @@ export async function parseTranscriptEdges(
   sessionId: string,
   size: number,
   mtimeMs: number,
+  bornMs: number = mtimeMs,
 ): Promise<ClaudeHistoryEntry | null> {
   let head: Rec[] = [];
   let tail: Rec[] = [];
@@ -395,8 +437,16 @@ export async function parseTranscriptEdges(
     await handle?.close().catch(() => {});
   }
   if (head[0]?.isSidechain === true) return null;
-  const entry: ClaudeHistoryEntry = { sessionId, transcript: file, mtimeMs, size };
+  const entry: ClaudeHistoryEntry = { sessionId, transcript: file, mtimeMs, size, bornMs };
+  const rootUuids: string[] = [];
   for (const rec of head) {
+    // a fork copies the parent's history with the same message uuids; the first few identify it.
+    // Only the head already read for the title is looked at, so this costs no extra I/O.
+    if (rootUuids.length < ROOT_UUIDS && typeof rec.uuid === "string" && rec.uuid !== "" && rec.type !== "file-history-snapshot") rootUuids.push(rec.uuid);
+    if (!entry.forkedFrom) {
+      const parent = asRec(rec.forkedFrom)?.sessionId;
+      if (typeof parent === "string" && parent !== sessionId && isCliNativeId(parent)) entry.forkedFrom = parent;
+    }
     if (!entry.cwd && text(rec.cwd)) entry.cwd = text(rec.cwd);
     if (!entry.gitBranch && text(rec.gitBranch)) entry.gitBranch = text(rec.gitBranch);
     if (!entry.entrypoint && text(rec.entrypoint)) entry.entrypoint = text(rec.entrypoint);
@@ -407,6 +457,8 @@ export async function parseTranscriptEdges(
     }
     if (rec.type === "custom-title" && typeof rec.customTitle === "string") entry.customTitle = rec.customTitle.trim() || undefined;
   }
+  if (isSdkEntrypoint(entry.entrypoint)) return null;
+  if (rootUuids.length > 0) entry.rootKey = rootUuids.join(",");
   let lastTs: number | undefined;
   for (const rec of tail) {
     if (rec.type === "custom-title" && typeof rec.customTitle === "string") entry.customTitle = rec.customTitle.trim() || undefined;
@@ -439,21 +491,85 @@ export function claudeTitle(entry: ClaudeHistoryEntry | undefined, live: LiveCla
 
 /** One row per session id. A session without a live process is `stopped`; a
  * live session without a transcript yet has an empty `transcript`. */
-export function mergeClaude(configDir: string, live: readonly LiveClaudeSession[], history: readonly ClaudeHistoryEntry[]): LocalSession[] {
+export function mergeClaude(
+  configDir: string,
+  live: readonly LiveClaudeSession[],
+  history: readonly ClaudeHistoryEntry[],
+  options: { desktop?: ReadonlyMap<string, DesktopSessionState> } = {},
+): LocalSession[] {
   const liveById = new Map(live.map((l) => [l.sessionId, l]));
   const rows: LocalSession[] = [];
   const seen = new Set<string>();
+  const kept: ClaudeHistoryEntry[] = [];
   for (const entry of history) {
     if (seen.has(entry.sessionId)) continue;
     seen.add(entry.sessionId);
-    rows.push(row(configDir, entry.sessionId, entry, liveById.get(entry.sessionId)));
+    const liveRow = liveById.get(entry.sessionId);
+    if (isSdkEntrypoint(entry.entrypoint) || isSdkEntrypoint(liveRow?.entrypoint)) continue;
+    // archived in the desktop app: the user put it away. A session that is running right now stays visible.
+    if (options.desktop?.get(entry.sessionId)?.archived && !liveRow) continue;
+    kept.push(entry);
+    rows.push(row(configDir, entry.sessionId, entry, liveRow));
   }
   for (const l of live) {
     if (seen.has(l.sessionId)) continue;
     seen.add(l.sessionId);
+    if (isSdkEntrypoint(l.entrypoint)) continue;
     rows.push(row(configDir, l.sessionId, undefined, l));
   }
+  const forks = claudeForks(kept, new Set(rows.map((r) => r.nativeId)), options.desktop);
+  for (const r of rows) {
+    const parent = forks.get(r.nativeId);
+    if (parent) r.forkOf = parent;
+  }
   return rows;
+}
+
+/** Which session each one was forked or continued from, only among `visible`
+ * ids so a parent is always a row the caller can find.
+ *
+ * Sources, strongest first: the desktop app's own `forkedFromSessionId`, a
+ * `forkedFrom` the transcript names, then the copied history itself: sessions
+ * whose head starts with the same message uuids share one conversation, and
+ * every later member of that family (by file creation time, then mtime) is
+ * attributed to the oldest one that is still visible. The family root is the
+ * one attribution that is true however the later copies were chained, and it
+ * needs no more than the head already read for the title. */
+export function claudeForks(
+  entries: readonly ClaudeHistoryEntry[],
+  visible: ReadonlySet<string>,
+  desktop?: ReadonlyMap<string, DesktopSessionState>,
+): Map<string, string> {
+  const parents = new Map<string, string>();
+  const families = new Map<string, ClaudeHistoryEntry[]>();
+  for (const entry of entries) {
+    if (!entry.rootKey) continue;
+    const members = families.get(entry.rootKey);
+    if (members) members.push(entry);
+    else families.set(entry.rootKey, [entry]);
+  }
+  for (const members of families.values()) {
+    if (members.length < 2) continue;
+    members.sort((a, b) => (a.bornMs ?? a.mtimeMs) - (b.bornMs ?? b.mtimeMs) || a.mtimeMs - b.mtimeMs || a.sessionId.localeCompare(b.sessionId));
+    for (const member of members.slice(1)) parents.set(member.sessionId, members[0].sessionId);
+  }
+  for (const entry of entries) {
+    const explicit = desktop?.get(entry.sessionId)?.forkedFrom ?? entry.forkedFrom;
+    if (explicit && explicit !== entry.sessionId && visible.has(explicit)) parents.set(entry.sessionId, explicit);
+  }
+  // an explicit parent must never close a loop with an inferred one
+  for (const id of parents.keys()) {
+    const seen = new Set<string>([id]);
+    for (let at = parents.get(id); at; at = parents.get(at)) {
+      if (seen.has(at)) {
+        parents.delete(id);
+        break;
+      }
+      seen.add(at);
+    }
+  }
+  for (const [id, parent] of parents) if (!visible.has(id) || !visible.has(parent)) parents.delete(id);
+  return parents;
 }
 
 function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined): LocalSession {

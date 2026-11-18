@@ -392,3 +392,112 @@ describe("workbench start", () => {
     expect(tree.find((s) => s.id === branch.data.id)?.sessionKey).toBe(keyOf(device, "child1"));
   });
 });
+
+describe("side chats", () => {
+  it("binds a side row to a session the hub has not listed yet, so the first send stays in that row", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "side");
+    const key = await sessionOn(f, device, "p1", "idle");
+    const requestId = ids.request();
+    const branch = await f.call("cli-agents/sessions/branch", { parentKey: key, requestId, title: "侧聊", kind: "side" });
+    expect(branch.status).toBe(200);
+    // a retry of the same branch is the same row
+    expect((await f.call("cli-agents/sessions/branch", { parentKey: key, requestId, title: "侧聊", kind: "side" })).data.id).toBe(branch.data.id);
+    // the device answers the start before it lists the new session
+    device.onOp = (message: Record<string, any>) => message.op === "start"
+      ? { ok: true, result: { ref: "claude:side1", terminal: "hc://side1", cwd: message.args.cwd } }
+      : message.op === "send" ? { ok: true, result: { turn: 1, started: true } } : { ok: true, result: {} };
+    const started = await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", parentId: branch.data.id });
+    expect(started.status).toBe(200);
+    const sideKey = keyOf(device, "side1");
+    let tree = (await f.get("cli-agents")).data.workbench as Array<Record<string, any>>;
+    expect(tree.find((s) => s.id === branch.data.id)).toMatchObject({ sessionKey: sideKey, kind: "side", parentId: tree.find((s) => s.sessionKey === key)?.id });
+    device.sessions([runningWire("side1", { state: "idle" })]);
+    await until(() => f.app.cliHub.list().sessions.some((s) => s.key === sideKey), "side session listed");
+    const sent = await f.call("cli-agents/send", { key: sideKey, text: "引用「x」\n\n问题", delivery: "send", clientMessageId: ids.client(), requestId: ids.request() });
+    expect(sent.status).toBe(200);
+    tree = (await f.get("cli-agents")).data.workbench as Array<Record<string, any>>;
+    // no second row appeared for the side session
+    expect(tree.filter((s) => s.sessionKey === sideKey)).toHaveLength(1);
+    expect(tree.find((s) => s.sessionKey === sideKey)?.kind).toBe("side");
+  });
+});
+
+describe("notes", () => {
+  it("creates, lists, edits and deletes notes, and keeps them encrypted at rest", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "notes");
+    const key = await sessionOn(f, device, "n1", "idle");
+    expect((await f.get("cli-agents/notes?key=" + encodeURIComponent(key))).data.notes).toEqual([]);
+    // asking for notes does not create a logical row
+    expect((await f.get("cli-agents")).data.workbench.find((s: any) => s.sessionKey === key)).toBeUndefined();
+    const noteId = "note-" + ids.client();
+    const created = await f.call("cli-agents/notes", { key, id: noteId, message: "m1", quote: "竞态条件", body: "这里要加锁", start: 4, end: 8, num: 1 });
+    expect(created.status).toBe(200);
+    expect(created.data.note).toMatchObject({ id: noteId, sessionKey: key, message: "m1", quote: "竞态条件", body: "这里要加锁", start: 4, end: 8, num: 1, version: 1 });
+    // the same id again is the same note, not a second one
+    const again = await f.call("cli-agents/notes", { key, id: noteId, message: "m1", quote: "竞态条件", body: "这里要加锁", start: 4, end: 8, num: 1 });
+    expect(again.data.note.id).toBe(noteId);
+    const second = await f.call("cli-agents/notes", { key, message: "m2", quote: "另一段", body: "第二条" });
+    expect(second.data.note).toMatchObject({ num: 2, start: null, end: null });
+    const listed = (await f.get("cli-agents/notes?key=" + encodeURIComponent(key))).data.notes as Array<Record<string, any>>;
+    expect(listed.map((n) => n.body)).toEqual(["这里要加锁", "第二条"]);
+    // the quote and the text never sit in the table as plain text
+    const stored = f.app.store.all("SELECT content FROM cli_agent_notes").map((row) => String(row.content)).join("");
+    expect(stored).not.toContain("竞态条件");
+    expect(stored).not.toContain("这里要加锁");
+
+    const edited = await f.call("cli-agents/notes/update", { id: noteId, expectedVersion: 1, body: "改成读写锁" });
+    expect(edited.data.note).toMatchObject({ body: "改成读写锁", version: 2, quote: "竞态条件" });
+    const stale = await f.call("cli-agents/notes/update", { id: noteId, expectedVersion: 1, body: "旧版本的修改" });
+    expect(stale.status).toBe(409);
+    expect((await f.call("cli-agents/notes/delete", { id: noteId, expectedVersion: 1 })).status).toBe(409);
+    expect((await f.call("cli-agents/notes/delete", { id: noteId, expectedVersion: 2 })).status).toBe(200);
+    expect((await f.call("cli-agents/notes/delete", { id: noteId, expectedVersion: 2 })).status).toBe(404);
+    expect((await f.call("cli-agents/notes/update", { id: noteId, expectedVersion: 2, body: "x" })).status).toBe(404);
+    const left = (await f.get("cli-agents/notes?key=" + encodeURIComponent(key))).data.notes as Array<Record<string, any>>;
+    expect(left.map((n) => n.body)).toEqual(["第二条"]);
+  });
+
+  it("scopes notes to their session, follows the logical session across a key change, and rejects bad input", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "scope");
+    const a = await sessionOn(f, device, "a1", "idle");
+    // a delta, not another full snapshot: that would drop the first session
+    const b = keyOf(device, "b1");
+    device.sessions([runningWire("b1", { state: "idle" })]);
+    await until(() => f.app.cliHub.list().sessions.some((s) => s.key === b), "second session listed");
+    const made = await f.call("cli-agents/notes", { key: a, id: "shared-id", message: "m", quote: "q", body: "a 的注释" });
+    expect(made.status).toBe(200);
+    expect((await f.get("cli-agents/notes?key=" + encodeURIComponent(b))).data.notes).toEqual([]);
+    // an id that belongs to another session is not reusable there
+    expect((await f.call("cli-agents/notes", { key: b, id: "shared-id", message: "m", quote: "q", body: "b" })).status).toBe(409);
+    // rebinding the logical session to a new native key keeps its notes
+    const row = (await f.get("cli-agents")).data.workbench.find((s: any) => s.sessionKey === a);
+    device.sessions([runningWire("a2", { state: "idle" })]);
+    await until(() => f.app.cliHub.list().sessions.some((s) => s.key === keyOf(device, "a2")), "resumed key listed");
+    f.app.cliWorkbench.bind(row.id, keyOf(device, "a2"));
+    expect((await f.get("cli-agents/notes?key=" + encodeURIComponent(keyOf(device, "a2")))).data.notes.map((n: any) => n.body)).toEqual(["a 的注释"]);
+    expect((await f.get("cli-agents/notes?key=" + encodeURIComponent(row.id))).data.notes).toHaveLength(1);
+    for (const bad of [
+      { key: a, message: "", quote: "q", body: "x" },
+      { key: a, message: "m", quote: "  ", body: "x" },
+      { key: a, message: "m", quote: "q", body: "" },
+      { key: a, message: "m", quote: "q", body: "x", start: 5, end: 5 },
+      { key: a, message: "m", quote: "q", body: "x", start: 1 },
+      { key: "not a key", message: "m", quote: "q", body: "x" },
+    ]) expect((await f.call("cli-agents/notes", bad)).status).toBe(400);
+    expect((await f.call("cli-agents/notes", { key: a, message: "m", quote: "q", body: "x".repeat(4001) })).status).toBe(413);
+    expect((await f.call("cli-agents/notes/update", { id: "shared-id", body: "x" })).status).toBe(400);
+  });
+
+  it("is for the owner only", async () => {
+    const f = await fixture();
+    const anon = await fetch(f.app.origin + "/api/cli-agents/notes?key=x");
+    expect(anon.status).toBe(401);
+    const member = await f.app.cliRoutes.handle({ method: "GET", pathname: "/api/cli-agents/notes", search: new URLSearchParams({ key: "d:claude:a" }), sessionId: "s", owner: false });
+    expect(member?.status).toBe(403);
+    const write = await f.app.cliRoutes.handle({ method: "POST", pathname: "/api/cli-agents/notes", search: new URLSearchParams(), sessionId: "s", owner: false, data: { key: "d:claude:a", message: "m", quote: "q", body: "b" } });
+    expect(write?.status).toBe(403);
+  });
+});

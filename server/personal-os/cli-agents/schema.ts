@@ -185,3 +185,25 @@ CREATE TABLE cli_agent_send_requests (
   created_at INTEGER NOT NULL
 ) STRICT;
 `;
+
+// Migration 56: annotations on a conversation's messages. Keyed by the logical
+// workbench session, so a resume that changes the native key keeps the notes.
+// The quoted excerpt and the note text are encrypted by the store (one JSON
+// blob in `content`) like outbox bodies; offsets, ids and the message id are
+// not sensitive. `version` guards concurrent edits from two clients. New
+// table only: no existing row is touched.
+export const cliAgentNotesSchema = `
+CREATE TABLE cli_agent_notes (
+  id TEXT PRIMARY KEY,
+  workbench_id TEXT NOT NULL REFERENCES cli_agent_workbench(id),
+  message_id TEXT NOT NULL,
+  num INTEGER NOT NULL DEFAULT 1,
+  sel_start INTEGER,
+  sel_end INTEGER,
+  content TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX cli_agent_notes_session ON cli_agent_notes(workbench_id, created_at, id);
+`;

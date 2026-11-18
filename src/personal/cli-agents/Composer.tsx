@@ -24,7 +24,7 @@ export function deliveryNote(result: unknown): string {
   return [sent.delivery === "unconfirmed" ? UNCONFIRMED_NOTE : "", sent.waiting ? WAITING_NOTE : ""].filter(Boolean).join("，");
 }
 
-import { storeNotes, useReview, type Note } from "./WorkbenchReview";
+import { useReview, type Note } from "./WorkbenchReview";
 
 export interface SideDraftOptions {
   id:string; quote:string; model:string; effort:string;
@@ -176,7 +176,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
     const sameDraft=(drafts.get(key) ?? "")===text;
     if(sameDraft)drafts.delete(key);
     saveExtras(key,{files:[],goal:extra.goal});
-    if (!mounted.current) { if(notes.length)storeNotes(key,[]); return; }
+    if (!mounted.current) { if(notes.length)onNotes?.([]); return; }
     setExtra(getExtras(key));if(sameDraft){change("");setPanel(null)}setSkill("");onNotes?.([]);if(!active)setSentAt(Date.now());
     setNote(deliveryNote(sent.result));
   };
@@ -253,7 +253,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <button type="button" className="na-add-trigger" disabled={busy || draft?.busy} aria-label="添加" title="添加" aria-expanded={panel==="add"} onClick={()=>setPanel(panel==="add"?null:"add")}><Plus size={20}/></button>
           <span className="na-grow"/>
           <button type="button" className="na-context" aria-label="上下文用量" title="查看上下文用量" aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><CircleDashed size={15}/></button>
-          {review||draft ? <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
+          {review ? <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
             <span>{model}</span><span className="na-effort">{effort}</span><ChevronDown size={13}/>
           </button> : model ? <span className="na-model-label" title="当前模型">{model}</span> : null}
         </>

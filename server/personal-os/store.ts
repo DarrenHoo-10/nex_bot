@@ -21,7 +21,7 @@ import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 import { todoSchema } from "./todo-schema.ts";
-import { cliAgentRequestSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./cli-agents/schema.ts";
+import { cliAgentNotesSchema, cliAgentRequestSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./cli-agents/schema.ts";
 import { jobSchema } from "./job-schema.ts";
 import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
 import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
@@ -594,6 +594,11 @@ CREATE TABLE personal_connector_deliveries (
         this.db.exec("PRAGMA foreign_keys=ON");
       }
     }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=56")) this.transaction(() => {
+      // Agent mode workbench: persisted message annotations, keyed by logical session; see cli-agents/schema.ts. New table only.
+      this.db.exec(cliAgentNotesSchema);
+      this.insert("schema_migrations", { version: 56, checksum: hash(cliAgentNotesSchema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

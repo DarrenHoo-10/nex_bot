@@ -262,6 +262,35 @@ describe("session list", () => {
     expect(f.app.cliHub.session(keyOf(device, "c"))?.sendVia).toBeUndefined();
   });
 
+  it("carries repoRoot and forkOf into the views, announces a change of either and forgets them with the connection", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "placed");
+    const deltas: Array<{ upserts: any[]; removes: string[] }> = [];
+    f.app.cliHub.onList((delta) => deltas.push(delta));
+    device.sessions([wire("p", { repoRoot: "D:\\proj" }), wire("c", { repoRoot: "D:\\proj", forkOf: "p" }), wire("n")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 3, "listed");
+    const place = () => Object.fromEntries(f.app.cliHub.list().sessions.map((s) => [s.nativeId, [s.repoRoot, s.forkOf]]));
+    expect(place()).toEqual({ p: ["D:\\proj", undefined], c: ["D:\\proj", "p"], n: [undefined, undefined] });
+    expect((await f.call("cli-agents")).data.sessions.find((s: any) => s.nativeId === "c")).toMatchObject({ repoRoot: "D:\\proj", forkOf: "p" });
+
+    const before = deltas.length;
+    device.sessions([wire("n", { repoRoot: "D:\\other" })]);
+    await until(() => deltas.length === before + 1, "repoRoot change");
+    expect(deltas.at(-1)!.upserts[0]).toMatchObject({ nativeId: "n", repoRoot: "D:\\other" });
+    device.sessions([wire("n")]);
+    await until(() => f.app.cliHub.session(keyOf(device, "n"))?.repoRoot === undefined, "repoRoot dropped");
+
+    // a malformed value never reaches the list: the device message is rejected as a whole
+    device.sessions([wire("bad", { forkOf: "a:b" })]);
+    await wait(100);
+    expect(f.app.cliHub.session(keyOf(device, "bad"))).toBeNull();
+
+    device.kill();
+    await until(() => f.app.cliHub.session(keyOf(device, "c"))?.online === false, "offline");
+    expect(f.app.cliHub.session(keyOf(device, "c"))?.forkOf).toBeUndefined();
+    expect(f.app.cliHub.session(keyOf(device, "c"))?.repoRoot).toBeUndefined();
+  });
+
   it("re-asks a reconnecting device for its state with cli.resync", async () => {
     const f = await fixture();
     const first = await connectDevice(f, "resync");
@@ -363,6 +392,44 @@ describe("operations", () => {
     const interrupted = await f.call("cli-agents/interrupt", { key: keyOf(device, "new1", "codex") });
     expect(interrupted).toMatchObject({ status: 200, data: { outcome: "interrupted" } });
     expect(f.app.store.all("SELECT op FROM cli_agent_ops ORDER BY rowid").map((r) => r.op)).toEqual(["start", "interrupt"]);
+  });
+
+  it("forks through a device that lists the engine, and refuses an older executor instead of opening a blank session", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "fork", { cap: { ...CAP, forkEngines: ["claude"] } });
+    device.onOp = (message) => (message.op === "start" ? { ok: true, result: { ref: "claude:child", terminal: "term-1" } } : defaultOp(message));
+    device.sessions([wire("parent"), wire("other", { engine: "codex" })], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 2, "listed");
+    const parent = keyOf(device, "parent");
+
+    const forked = await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", forkFrom: parent });
+    expect(forked).toMatchObject({ status: 200, data: { key: keyOf(device, "child") } });
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", forkFrom: "claude:parent" });
+    expect(JSON.parse(String(f.app.store.get("SELECT args_json FROM cli_agent_ops WHERE op='start'")?.args_json))).toMatchObject({ forkFrom: "claude:parent" });
+
+    // not a key, another device's or another engine's session, a session Core does not know, a fork inside a new worktree
+    const bad = async (extra: Record<string, unknown>, data: Record<string, unknown> = {}) => (await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", ...data, forkFrom: parent, ...extra })).status;
+    expect(await bad({ forkFrom: "nope" })).toBe(400);
+    expect(await bad({ forkFrom: keyOf(device, "other", "codex") })).toBe(400);
+    expect(await bad({ forkFrom: `someone-else:claude:parent` })).toBe(400);
+    expect(await bad({ forkFrom: keyOf(device, "ghost") })).toBe(404);
+    expect(await bad({}, { worktreeBranch: "feat/x", requestId: "abcdefgh1234" })).toBe(400);
+    expect(device.ops("start")).toHaveLength(1);
+
+    // an executor that does not list the engine would ignore forkFrom and start a blank session
+    const codex = await f.call("cli-agents/start", { deviceId: device.id, engine: "codex", cwd: "C:/proj", forkFrom: keyOf(device, "other", "codex") });
+    expect(codex.status).toBe(400);
+    expect(String(codex.data.error)).toContain("版本过旧");
+    const old = await connectDevice(f, "old");
+    old.sessions([wire("p2")], { full: true });
+    await until(() => f.app.cliHub.session(keyOf(old, "p2")), "old listed");
+    const refused = await f.call("cli-agents/start", { deviceId: old.id, engine: "claude", cwd: "C:/proj", forkFrom: keyOf(old, "p2") });
+    expect(refused.status).toBe(400);
+    expect(String(refused.data.error)).toContain("版本过旧");
+    expect(old.ops("start")).toHaveLength(0);
+    // a plain start still works there
+    old.onOp = (message) => (message.op === "start" ? { ok: true, result: { ref: "claude:plain", terminal: "t" } } : defaultOp(message));
+    expect((await f.call("cli-agents/start", { deviceId: old.id, engine: "claude", cwd: "C:/proj" })).status).toBe(200);
   });
 
   it("ends a mutating op that times out as unknown, and a read as a cached page", async () => {

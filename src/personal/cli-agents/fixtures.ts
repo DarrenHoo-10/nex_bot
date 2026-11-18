@@ -6,7 +6,7 @@ export function device(overrides: Partial<CliDeviceView> = {}): CliDeviceView {
     id: "dev1",
     name: "办公室电脑",
     online: true,
-    cliAgents: { version: 1, engines: ["claude", "codex"], terminal: { name: "herdr-core", version: "0.1.21", ready: true } },
+    cliAgents: { version: 1, engines: ["claude", "codex"], forkEngines: ["claude", "codex"], terminal: { name: "herdr-core", version: "0.1.21", ready: true } },
     ...overrides,
   };
 }

@@ -27,6 +27,10 @@ const fixture = vi.hoisted(() => ({
   interruptSession: vi.fn(),
   openLocal: vi.fn(),
   hideSession: vi.fn(),
+  fetchNotes: vi.fn(),
+  createNote: vi.fn(),
+  updateNote: vi.fn(),
+  deleteNote: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./api")>()), ...fixture }));
@@ -59,9 +63,9 @@ const text = () => container.textContent ?? "";
 const click = (element: Element | null) => act(async () => { (element as HTMLElement).click(); });
 const button = (label: string) => [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label || entry.getAttribute("aria-label") === label) ?? null;
 
-async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[] }, selected?: string) {
+async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[]; workbench?: unknown[] }, selected?: string) {
   fixture.fetchSnapshot.mockResolvedValue(rows);
-  fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ ...rows, workbench: [], queues: [] });
+  fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ ...rows, workbench: rows.workbench ?? [], queues: [] });
   if (selected) localStorage.setItem("nexbot.cliSelected", selected);
   await act(async () => {
     root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div", { "data-testid": "sidebar" }), dark: false, collapsed: false, onNavigation: () => {}, stream }));
@@ -73,7 +77,8 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} });
   localStorage.clear();
-  for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "openLocal", "hideSession"] as const) fixture[key].mockReset();
+  for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "openLocal", "hideSession", "fetchNotes", "createNote", "updateNote", "deleteNote"] as const) fixture[key].mockReset();
+  fixture.fetchNotes.mockResolvedValue([]);
   fixture.fetchItems.mockResolvedValue({ items: [], more: false });
   fixture.fetchQueue.mockResolvedValue({ workbenchId: "wb", sessionKey: "", paused: false, entries: [] });
   fixture.fetchGit.mockRejectedValue(new Error("no git in this test"));
@@ -224,6 +229,16 @@ describe("session pane", () => {
     expect(fixture.stopSession).toHaveBeenCalledWith("dev1:claude:s1", expect.any(String));
   });
 
+  it("titles the pane with the name Core keeps, not the CLI's own title", async () => {
+    await mount({
+      devices: [device()],
+      sessions: [session({ title: "新会话已建立" })],
+      workbench: [{ id: "wb1", sessionKey: "dev1:claude:s1", cwd: "D:\\work\\alpha", kind: "fork", title: "修复登录（fork）", archived: false, version: 1 }],
+    }, "dev1:claude:s1");
+    await flush();
+    expect(container.querySelector(".cli-pane-title strong")?.textContent).toBe("修复登录（fork）");
+  });
+
   it("offers the design's composer controls outside the review fixture", async () => {
     await mount({ devices: [device()], sessions: [session({ state: "running", model: "claude-opus" })] }, "dev1:claude:s1");
     const box = container.querySelector("[data-testid=cli-composer]")!;
@@ -325,5 +340,80 @@ describe("new session", () => {
     await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
     expect(container.querySelector(".cli-dialog [role=status]")?.textContent).toBe("电脑离线");
     expect(container.querySelector<HTMLButtonElement>(".cli-dialog button[type=submit]")!.disabled).toBe(true);
+  });
+});
+
+const row = (overrides: Record<string, unknown>) => ({ id: "row", sessionKey: null, deviceId: "dev1", engine: "claude", cwd: "D:\\work\\alpha", parentId: null, kind: "main", title: "", archived: false, version: 1, ...overrides });
+
+async function chooseFork() {
+  await click(container.querySelector(".na-more"));
+  await click([...document.querySelectorAll(".na-menu button")].find((el) => el.textContent === "创建分支") ?? null);
+  await flush();
+}
+
+describe("fork", () => {
+  it("starts the child as a real context fork of the parent", async () => {
+    fixture.branchSession.mockResolvedValue({ id: "row-fork", parentId: "row-main", version: 1 });
+    fixture.startSession.mockResolvedValue({ key: "dev1:claude:f1" });
+    await mount({ devices: [device()], sessions: [session()] });
+    await chooseFork();
+    expect(fixture.branchSession).toHaveBeenCalledTimes(1);
+    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", "D:\\work\\alpha", { parentId: "row-fork", forkFrom: "dev1:claude:s1" });
+    expect(fixture.deleteWorkbenchSession).not.toHaveBeenCalled();
+  });
+
+  it("settles the pending row and shows the device's refusal when the start fails", async () => {
+    fixture.branchSession.mockResolvedValue({ id: "row-fork", parentId: "row-main", version: 1 });
+    fixture.startSession.mockRejectedValue(new CliApiError("raw", "invalid", 400, "电脑端版本过旧，无法分支"));
+    fixture.deleteWorkbenchSession.mockResolvedValue({});
+    await mount({ devices: [device()], sessions: [session()] });
+    await chooseFork();
+    expect(fixture.deleteWorkbenchSession).toHaveBeenCalledWith({ id: "row-fork", expectedVersion: 1 });
+    expect([...container.querySelectorAll("[role=alert]")].map((entry) => entry.textContent)).toContain("电脑端版本过旧，无法分支");
+  });
+});
+
+describe("side chats from Core", () => {
+  it("lists the side rows of the open session as tabs, keeps them out of the tree and survives a reload", async () => {
+    const rows = {
+      devices: [device()],
+      sessions: [session(), session({ nativeId: "side1", title: "侧边的会话" }), session({ nativeId: "other", title: "别的会话" }), session({ nativeId: "side2", title: "别处的侧聊" })],
+    };
+    const workbench = [
+      row({ id: "main", sessionKey: "dev1:claude:s1" }),
+      row({ id: "side-a", sessionKey: "dev1:claude:side1", parentId: "main", kind: "side", title: "竞态条件" }),
+      row({ id: "other", sessionKey: "dev1:claude:other" }),
+      row({ id: "side-b", sessionKey: "dev1:claude:side2", parentId: "other", kind: "side", title: "不属于这里" }),
+    ];
+    fixture.fetchSnapshot.mockResolvedValue(rows);
+    fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ ...rows, workbench, queues: [] });
+    localStorage.setItem("nexbot.cliSelected", "dev1:claude:s1");
+    const render = () => act(async () => { root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div"), dark: false, collapsed: false, onNavigation: () => {}, stream })); });
+    await render();
+    await flush();
+    // never in the left tree
+    const rowTitles = () => [...container.querySelectorAll(".cli-row-title")].map((entry) => entry.textContent);
+    expect(rowTitles()).toContain("别的会话");
+    expect(rowTitles()).not.toContain("侧边的会话");
+    expect(rowTitles()).not.toContain("别处的侧聊");
+    // a reload reads the same rows again: only this session's own side chat is a tab, one click away
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await render();
+    await flush();
+    expect(rowTitles()).not.toContain("侧边的会话");
+    expect(container.querySelector(".na-side")).toBeNull();
+    expect(button("侧边会话 1")).not.toBeNull();
+    await click(button("侧边会话 1"));
+    await flush();
+    const tabs = [...container.querySelectorAll(".na-side [role=tab]")].map((entry) => entry.textContent);
+    expect(tabs).toEqual(["竞态条件"]);
+    expect(button("侧边会话 1")).toBeNull();
+    expect(container.querySelector(".na-side .cli-pane")).not.toBeNull();
+  });
+
+  it("does not offer a side chat for a session whose computer is offline or cannot run its tool", async () => {
+    await mount({ devices: [device({ online: false })], sessions: [session({ online: false })] }, "dev1:claude:s1");
+    expect(container.querySelector('button[aria-label="新建侧边聊天"]')).toBeNull();
   });
 });

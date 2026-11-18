@@ -12,11 +12,14 @@ import path from "node:path";
 import { CLI_ENGINES, type CliEngine } from "../../../shared/cli-agents.ts";
 
 export { CLI_ENGINES, type CliEngine };
-export type LaunchMode = "new" | "resume";
+/** `fork`: a new session that starts from the context of another one (`forkFrom`). */
+export type LaunchMode = "new" | "resume" | "fork";
 
 export interface LaunchIds {
   /** The CLI's own session id: chosen by us for a new Claude session, discovered for the rest. */
   nativeId: string;
+  /** The session a `fork` starts from. */
+  forkFrom: string;
   /** Claude only: nex_bot's own plugin directory (`--plugin-dir`), see validatePluginDir. */
   pluginDir: string;
 }
@@ -200,19 +203,33 @@ export function validatePluginDir(dir: string, platform: NodeJS.Platform = proce
  * choose so the transcript can be found at once; Codex assigns its own. */
 export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<LaunchIds> = {}, options: PlatformOptions = {}): string[] {
   let args: string[];
+  if (mode === "fork") {
+    if (!ids.forkFrom) throw new LaunchError("invalid_argument", "a fork needs the session to fork");
+    assertSafeId(ids.forkFrom, "the session to fork");
+  }
   if (engine === "claude") {
     if (!ids.nativeId) throw new LaunchError("invalid_argument", "a Claude session needs a session id");
     assertSafeId(ids.nativeId, "the Claude session");
-    args = mode === "new" ? ["--session-id", ids.nativeId] : ["--resume", ids.nativeId];
+    // a real context fork: the CLI copies the parent's history into the new id we choose
+    args =
+      mode === "new"
+        ? ["--session-id", ids.nativeId]
+        : mode === "fork"
+          ? ["--resume", ids.forkFrom as string, "--fork-session", "--session-id", ids.nativeId]
+          : ["--resume", ids.nativeId];
   } else if (engine === "codex") {
     if (mode === "new") {
       args = [];
+    } else if (mode === "fork") {
+      // `codex fork <id>` opens the interactive CLI on a new thread that starts from the parent's; Codex assigns the id
+      args = ["fork", ids.forkFrom as string];
     } else {
       if (!ids.nativeId) throw new LaunchError("invalid_argument", "resuming Codex needs a session id");
       assertSafeId(ids.nativeId, "the Codex session");
       args = ["resume", ids.nativeId];
     }
   } else if (engine === "zcode") {
+    if (mode === "fork") throw new LaunchError("invalid_argument", "ZCode cannot fork a session");
     // the installed ZCode CLI's resume flag still needs the live check P0 asks
     // for; the shape mirrors the other CLIs until then
     if (mode === "new") {
@@ -341,7 +358,7 @@ export interface PlannedLaunch {
 
 /** Everything `terminal.run` needs for one Agent mode terminal. */
 export async function planLaunch(
-  input: { engine: CliEngine; mode: LaunchMode; nativeId?: string; key?: string; cwd: string; executable?: string; hooks?: HookLaunch },
+  input: { engine: CliEngine; mode: LaunchMode; nativeId?: string; forkFrom?: string; key?: string; cwd: string; executable?: string; hooks?: HookLaunch },
   options: PlatformOptions & { homedir?: string; wrapCmd?: boolean } = {},
 ): Promise<PlannedLaunch> {
   const cwd = await validateCwd(input.cwd, options);
@@ -355,7 +372,13 @@ export async function planLaunch(
       if (!value || /[\u0000-\u001f\u007f]/.test(value)) throw new LaunchError("invalid_argument", `the hook ${name} is not valid`);
     }
   }
-  const argv = buildArgv(input.engine, input.mode, { nativeId: input.nativeId, ...(hooks ? { pluginDir: hooks.pluginDir } : {}) }, executable, options);
+  const argv = buildArgv(
+    input.engine,
+    input.mode,
+    { nativeId: input.nativeId, ...(input.forkFrom ? { forkFrom: input.forkFrom } : {}), ...(hooks ? { pluginDir: hooks.pluginDir } : {}) },
+    executable,
+    options,
+  );
   // A brand-new Codex session has no id until the CLI writes its transcript;
   // `key` (the Agent mode session id) keeps its terminal name unique meanwhile.
   const nativeId = input.nativeId ?? PENDING_NATIVE_ID;

@@ -27,39 +27,59 @@ function sanitizedEnv(options: DeviceGitOptions): NodeJS.ProcessEnv {
   };
 }
 
+const GIT_MISSING = "找不到 git";
+
+/** git could not be started at all (not installed or not on PATH), as opposed
+ * to git running and refusing. */
+function isGitMissing(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "ENOENT";
+}
+
+function gitRunner(options: DeviceGitOptions): (cwd: string, args: string[]) => Promise<string> {
+  return (
+    options.run ??
+    ((cwd, args) =>
+      new Promise((resolve, reject) => {
+        execFile(
+          "git",
+          ["--no-optional-locks", "-C", cwd, ...args],
+          {
+            timeout: options.timeoutMs ?? DEFAULT_TIMEOUT,
+            windowsHide: true,
+            encoding: "utf8",
+            maxBuffer: 4 * 1024 * 1024,
+            env: sanitizedEnv(options),
+          },
+          (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
+        );
+      }))
+  );
+}
+
 export class DeviceGit {
   private readonly run: (cwd: string, args: string[]) => Promise<string>;
 
   constructor(private readonly options: DeviceGitOptions = {}) {
-    this.run =
-      options.run ??
-      ((cwd, args) =>
-        new Promise((resolve, reject) => {
-          execFile(
-            "git",
-            ["--no-optional-locks", "-C", cwd, ...args],
-            {
-              timeout: options.timeoutMs ?? DEFAULT_TIMEOUT,
-              windowsHide: true,
-              encoding: "utf8",
-              maxBuffer: 4 * 1024 * 1024,
-              env: sanitizedEnv(options),
-            },
-            (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
-          );
-        }));
+    this.run = gitRunner(options);
   }
 
   /** The status snapshot of `cwd`, or `source: "none"` when it is not a
    * repository. A failing git answers `source: "failed"` with a short reason. */
   async info(cwd: string): Promise<CliGitInfo> {
+    // git refusing (not a repository, no commits yet) is an answer; git not
+    // starting at all is a failure the user can act on
+    const soft = (work: Promise<string>): Promise<string> =>
+      work.catch((error) => {
+        if (isGitMissing(error)) throw error;
+        return "";
+      });
     try {
       const [head, branch, changes, stats, root] = await Promise.all([
-        this.run(cwd, ["rev-parse", "--short", "HEAD"]).catch(() => ""),
-        this.run(cwd, ["branch", "--show-current"]).catch(() => ""),
-        this.run(cwd, ["status", "--porcelain=v1", "--no-renames", "-z", "--untracked-files=all"]).catch(() => ""),
-        this.run(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", "HEAD", "--"]).catch(() => ""),
-        this.run(cwd, ["rev-parse", "--show-toplevel"]).catch(() => ""),
+        soft(this.run(cwd, ["rev-parse", "--short", "HEAD"])),
+        soft(this.run(cwd, ["branch", "--show-current"])),
+        soft(this.run(cwd, ["status", "--porcelain=v1", "--no-renames", "-z", "--untracked-files=all"])),
+        soft(this.run(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", "HEAD", "--"])),
+        soft(this.run(cwd, ["rev-parse", "--show-toplevel"])),
       ]);
       if (!head && !branch) return { source: "none" };
       let added = 0;
@@ -114,7 +134,99 @@ export class DeviceGit {
   }
 }
 
+const ROOT_TTL_MS = 10 * 60_000;
+/** a miss (not a repository, directory gone, git missing) is looked at again sooner */
+const ROOT_MISS_TTL_MS = 2 * 60_000;
+const ROOT_TIMEOUT_MS = 3000;
+const ROOT_CACHE_MAX = 2000;
+const ROOT_PARALLEL = 4;
+
+export interface RepoRootsOptions extends DeviceGitOptions {
+  now?: () => number;
+}
+
+/** The main-worktree path of the repository a directory belongs to, for grouping
+ * sessions by project (a linked worktree such as `.claude/worktrees/<name>`
+ * reports the checkout it was made from). Discovery asks for every session's cwd
+ * on every scan, so answers are cached per cwd, a burst of distinct directories
+ * runs a few git processes at a time, and a missing git is remembered instead of
+ * being spawned once per directory. */
+export class RepoRoots {
+  private readonly run: (cwd: string, args: string[]) => Promise<string>;
+  private readonly cache = new Map<string, { root: string | null; at: number }>();
+  private readonly inflight = new Map<string, Promise<string | null>>();
+  private gitMissingAt = Number.NEGATIVE_INFINITY;
+
+  constructor(private readonly options: RepoRootsOptions = {}) {
+    this.run = gitRunner({ ...options, timeoutMs: options.timeoutMs ?? ROOT_TIMEOUT_MS });
+  }
+
+  private now(): number {
+    return (this.options.now ?? Date.now)();
+  }
+
+  /** The cached answer: a path, null for a known miss, undefined when never asked or expired. */
+  peek(cwd: string): string | null | undefined {
+    const hit = this.cache.get(cwd);
+    if (!hit) return undefined;
+    return this.now() - hit.at < (hit.root ? ROOT_TTL_MS : ROOT_MISS_TTL_MS) ? hit.root : undefined;
+  }
+
+  /** Resolves every directory that has no fresh answer, a few at a time. Never rejects. */
+  async warm(cwds: Iterable<string>): Promise<void> {
+    const todo = [...new Set(cwds)].filter((cwd) => cwd && this.peek(cwd) === undefined);
+    for (let i = 0; i < todo.length; i += ROOT_PARALLEL) {
+      await Promise.all(todo.slice(i, i + ROOT_PARALLEL).map((cwd) => this.resolve(cwd)));
+    }
+  }
+
+  /** The repository root of `cwd`, or null. Never rejects. */
+  resolve(cwd: string): Promise<string | null> {
+    const fresh = this.peek(cwd);
+    if (fresh !== undefined) return Promise.resolve(fresh);
+    const pending = this.inflight.get(cwd);
+    if (pending) return pending;
+    const work = this.lookup(cwd)
+      .catch(() => null)
+      .then((root) => {
+        if (this.cache.size >= ROOT_CACHE_MAX) this.cache.delete(this.cache.keys().next().value as string);
+        this.cache.set(cwd, { root, at: this.now() });
+        return root;
+      })
+      .finally(() => this.inflight.delete(cwd));
+    this.inflight.set(cwd, work);
+    return work;
+  }
+
+  private async lookup(cwd: string): Promise<string | null> {
+    if (this.now() - this.gitMissingAt < ROOT_MISS_TTL_MS) return null;
+    const platform = this.options.platform ?? process.platform;
+    const pathApi = platform === "win32" ? path.win32 : path.posix;
+    if (!cwd || !pathApi.isAbsolute(cwd)) return null;
+    try {
+      const common = clean(await this.run(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+      let root: string | undefined;
+      if (common && /^\.git$/i.test(pathApi.basename(pathApi.normalize(common)))) root = pathApi.dirname(pathApi.normalize(common));
+      // a submodule's or bare repository's common dir is not `<root>/.git`: its own top level is the project
+      if (!root) root = clean(await this.run(cwd, ["rev-parse", "--show-toplevel"]));
+      if (!root) return null;
+      const normalized = pathApi.normalize(root);
+      return pathApi.isAbsolute(normalized) ? normalized : null;
+    } catch (error) {
+      if (isGitMissing(error)) this.gitMissingAt = this.now();
+      return null;
+    }
+  }
+}
+
+/** First line of git's answer, without the `\\?\` extended-length prefix. */
+function clean(output: string): string {
+  const line = output.split(/\r?\n/).find((entry) => entry.trim()) ?? "";
+  return line.trim().replace(/^\\\\\?\\(?!UNC\\)/i, "");
+}
+
 function shortReason(error: unknown): string {
+  if (isGitMissing(error)) return GIT_MISSING;
   const message = error instanceof Error ? error.message : String(error);
   const first = message.split(/\r?\n/).find((line) => line.trim());
   return (first ?? "git 执行失败").slice(0, 200);

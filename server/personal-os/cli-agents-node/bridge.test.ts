@@ -253,6 +253,90 @@ describe("read and watch", () => {
   });
 });
 
+describe("start with forkFrom", () => {
+  /** The forked CLI writes its transcript under the id we chose. */
+  function forkWritesTranscript(): void {
+    hc.onRun = (terminal) => {
+      const index = terminal.argv.indexOf("--session-id");
+      if (index >= 0) claudeTranscript(terminal.argv[index + 1], "forked history", 0, terminal.cwd);
+    };
+  }
+
+  it("lists the engines that can fork in the capability", async () => {
+    const t = setup();
+    await t.bridge.prepare();
+    expect(t.bridge.capability().forkEngines).toEqual(["claude", "codex"]);
+  });
+
+  it("forks a Claude session with --resume --fork-session into a new id, in the parent's directory", async () => {
+    claudeTranscript(CID(1), "parent history");
+    forkWritesTranscript();
+    const other = path.join(root, "elsewhere");
+    mkdirSync(other);
+    const t = setup();
+    await t.start();
+    const reply = await t.call("start", { engine: "claude", cwd: other, forkFrom: `claude:${CID(1)}` });
+    expect(reply.ok).toBe(true);
+    const result = reply.result as { ref: string; terminal: string; cwd?: string };
+    const newId = result.ref.slice("claude:".length);
+    expect(newId).not.toBe(CID(1));
+    const terminal = hc.terminals.get(result.terminal)!;
+    expect(terminal.argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--fork-session", "--session-id", newId]);
+    // the CLI finds a transcript by its project directory: the fork runs where the parent does
+    expect(terminal.cwd).toBe(path.resolve(workDir));
+    expect(result.cwd).toBe(path.resolve(workDir));
+    expect(terminal.labels).toEqual({ nexbot: "1", "nexbot.engine": "claude", "nexbot.native": newId });
+    expect(t.sessions().find((row) => row.nativeId === newId)).toMatchObject({ liveIn: "nexbot", terminal: result.terminal });
+  });
+
+  it("may fork a session that is running elsewhere: the parent is only read", async () => {
+    claudeTranscript(CID(1), "parent history");
+    claudeLive(901, CID(1), "busy");
+    forkWritesTranscript();
+    const t = setup();
+    await t.start();
+    const reply = await t.call("start", { engine: "claude", cwd: workDir, forkFrom: `claude:${CID(1)}` });
+    expect(reply.ok).toBe(true);
+  });
+
+  it("refuses a parent the device does not know, one without a local transcript and a fork inside a new worktree", async () => {
+    claudeLive(902, CID(2), "idle");
+    const t = setup();
+    await t.start();
+    expect(await t.call("start", { engine: "claude", cwd: workDir, forkFrom: `claude:${CID(9)}` })).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(await t.call("start", { engine: "claude", cwd: workDir, forkFrom: `claude:${CID(2)}` })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    claudeTranscript(CID(3), "parent");
+    await t.bridge.refreshSessions();
+    const withTree = await t.call("start", { engine: "claude", cwd: workDir, forkFrom: `claude:${CID(3)}`, worktree: { branch: "feat/x", requestId: "abcdefgh1234" } });
+    expect(withTree).toMatchObject({ ok: false, error: { code: "invalid" } });
+    // nothing was launched for any of them
+    expect(hc.runs).toHaveLength(0);
+  });
+
+  it("refuses to fork ZCode instead of opening a blank session", async () => {
+    const t = setup();
+    await t.start();
+    const reply = await t.call("start", { engine: "zcode", cwd: workDir, forkFrom: "zcode:abc" });
+    expect(reply).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(hc.runs).toHaveLength(0);
+  });
+
+  it("forks Codex with `codex fork <id>` and claims the new thread by directory", async () => {
+    codexRollout(XID(1), "parent thread");
+    const t = setup();
+    await t.start();
+    hc.onRun = (_terminal, params) => {
+      setTimeout(() => codexRollout(XID(2), "forked thread", 0, params.cwd), 60);
+    };
+    const reply = await t.call("start", { engine: "codex", cwd: workDir, forkFrom: `codex:${XID(1)}` });
+    expect(reply.ok).toBe(true);
+    const result = reply.result as { ref: string; terminal: string };
+    expect(result.ref).toBe(`codex:${XID(2)}`);
+    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1)]);
+    expect(hc.terminals.get(result.terminal)!.cwd).toBe(path.resolve(workDir));
+  });
+});
+
 describe("start", () => {
   it("starts a Claude session in a labelled terminal and lists it as running in nex_bot", async () => {
     claudeWritesTranscript();

@@ -197,6 +197,12 @@ export interface CliSessionWire {
   terminal?: string;
   /** how a message can reach the session; set by the device */
   sendVia?: CliSendVia;
+  /** absolute path of the repository's main worktree for `cwd`, as the device
+   * sees it (a linked worktree reports its main checkout); absent outside git */
+  repoRoot?: string;
+  /** nativeId of another session of the same device and engine this one was
+   * forked or continued from; only set when that session is in the device's list */
+  forkOf?: string;
   model?: string;
   cliVersion?: string;
   /** epoch ms */
@@ -367,6 +373,9 @@ export interface CliAgentsCapability {
   version: 1;
   engines: CliEngine[];
   terminal: { name: "herdr-core"; version: string; ready: boolean; error?: string };
+  /** engines whose `start` honours `forkFrom`; absent on executors that predate
+   * forks, which would otherwise ignore the field and start a blank session */
+  forkEngines?: CliEngine[];
 }
 
 export interface CliDeviceView {
@@ -411,6 +420,10 @@ export interface CliOpArgs {
     /** create an independent worktree of the repository at `cwd` first, then
      * run the CLI inside it; the device dedups by requestId */
     worktree?: { branch: string; requestId: string };
+    /** a real context fork of this session (same device and engine as `engine`):
+     * the CLI resumes it into a new session id instead of starting blank. A device
+     * that does not list the engine in `capability.forkEngines` must not be sent it. */
+    forkFrom?: CliSessionRef;
   };
   continue: { ref: CliSessionRef; cols?: number; rows?: number };
   send: { ref: CliSessionRef; text: string };
@@ -787,6 +800,8 @@ function sessionWire(value: unknown): CliSessionWire {
     liveIn: present(o, "liveIn") ? oneOf(o.liveIn, CLI_LIVE_IN) : undefined,
     terminal: optStr(o, "terminal", CLI_LIMITS.terminal, 1),
     sendVia: present(o, "sendVia") ? oneOf(o.sendVia, CLI_SEND_VIA) : undefined,
+    repoRoot: optStr(o, "repoRoot", CLI_LIMITS.cwd, 1),
+    forkOf: present(o, "forkOf") ? nativeIdOf(o.forkOf) : undefined,
     model: optStr(o, "model", CLI_LIMITS.model),
     cliVersion: optStr(o, "cliVersion", CLI_LIMITS.cliVersion),
     lastActivityAt,
@@ -871,7 +886,15 @@ function capability(value: unknown): CliAgentsCapability {
     ready: bool(t.ready),
     error: optStr(t, "error", CLI_LIMITS.message),
   });
-  return { version: 1, engines, terminal };
+  let forkEngines: CliEngine[] | undefined;
+  if (present(o, "forkEngines")) {
+    forkEngines = [];
+    for (const engine of arr(o.forkEngines, CLI_ENGINES.length * 2)) {
+      const parsed = oneOf(engine, CLI_ENGINES);
+      if (!forkEngines.includes(parsed)) forkEngines.push(parsed);
+    }
+  }
+  return { version: 1, engines, terminal, ...(forkEngines ? { forkEngines } : {}) };
 }
 
 function deviceView(value: unknown): CliDeviceView {
@@ -1060,12 +1083,20 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
       if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(branch)) fail();
       worktree = { branch, requestId: str(tree.requestId, 128, 1) };
     }
+    const engine = oneOf(o.engine, CLI_ENGINES);
+    let forkFrom: CliSessionRef | undefined;
+    if (present(o, "forkFrom")) {
+      forkFrom = ref(o.forkFrom);
+      // a fork resumes a session of the engine being started, never another one
+      if (!forkFrom.startsWith(`${engine}:`)) fail();
+    }
     return pick({
-      engine: oneOf(o.engine, CLI_ENGINES),
+      engine,
       cwd,
       cols: present(o, "cols") ? cols(o.cols) : undefined,
       rows: present(o, "rows") ? rows(o.rows) : undefined,
       worktree,
+      forkFrom,
     });
   },
   continue: (o) =>

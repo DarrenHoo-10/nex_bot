@@ -64,6 +64,39 @@ describe("cliArgs", () => {
     expect(() => cliArgs("vim" as never, "new")).toThrow(/unknown engine/);
   });
 
+  describe("fork", () => {
+    const PARENT = "11111111-2222-4333-8444-555555555555";
+
+    it("forks Claude into a session id we choose, and Codex with its own fork command", () => {
+      expect(cliArgs("claude", "fork", { nativeId: UUID, forkFrom: PARENT })).toEqual(["--resume", PARENT, "--fork-session", "--session-id", UUID]);
+      expect(cliArgs("codex", "fork", { forkFrom: PARENT })).toEqual(["fork", PARENT]);
+    });
+
+    it("needs the session to fork, and a new id for Claude", () => {
+      expect(() => cliArgs("claude", "fork", { nativeId: UUID })).toThrow(/session to fork/);
+      expect(() => cliArgs("codex", "fork", {})).toThrow(/session to fork/);
+      expect(() => cliArgs("claude", "fork", { forkFrom: PARENT })).toThrow(/session id/);
+    });
+
+    it("refuses a parent id that is not a plain token or looks like a flag", () => {
+      for (const bad of ["a b", "x;rm", "$(id)", "--dangerously-skip-permissions", "-x", ""]) {
+        expect(() => cliArgs("claude", "fork", { nativeId: UUID, forkFrom: bad }), bad).toThrow(LaunchError);
+        expect(() => cliArgs("codex", "fork", { forkFrom: bad }), bad).toThrow(LaunchError);
+      }
+    });
+
+    it("has no fork for ZCode", () => {
+      expect(() => cliArgs("zcode", "fork", { forkFrom: PARENT })).toThrow(LaunchError);
+    });
+
+    it("plans a fork launch in the given directory, labelled with the new session id", async () => {
+      const plan = await planLaunch({ engine: "claude", mode: "fork", nativeId: UUID, forkFrom: PARENT, cwd: root, executable: "/bin/claude" });
+      expect(plan.argv).toEqual(["/bin/claude", "--resume", PARENT, "--fork-session", "--session-id", UUID]);
+      expect(plan.cwd).toBe(path.resolve(root));
+      expect(plan.labels["nexbot.native"]).toBe(UUID);
+    });
+  });
+
   it("only allows the documented argument alphabet", () => {
     expect(SAFE_ARG.test("a-b_c.d:e/f=g")).toBe(true);
     expect(SAFE_ARG.test("a,b")).toBe(false);

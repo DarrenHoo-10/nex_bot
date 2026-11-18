@@ -20,8 +20,10 @@ import {
   type LiveClaudeSession,
   type ScanLiveOptions,
 } from "./claude.ts";
+import { ClaudeDesktopSessions, claudeDesktopRoots, type DesktopSessionState } from "./claude-desktop.ts";
 import { CodexScanner, codexHomes, type CodexScannerOptions } from "./codex.ts";
 import type { CodexAppDb } from "./codex-app-db.ts";
+import type { RepoRoots } from "./device-git.ts";
 import type { AppChat, LocalSession, SendRoute } from "./items.ts";
 import { ZcodeScanner, type ZcodeScannerOptions } from "./zcode.ts";
 
@@ -40,6 +42,12 @@ export interface SessionDiscoveryOptions {
   /** defaults to ~/.zcode/cli; tests pass temp directories */
   zcodeHomes?: string[];
   zcode?: ZcodeScannerOptions;
+  /** Claude desktop app data folders (the sessions' archive and fork state). Defaults to the
+   * platform's own folders when `claudeDirs` is not overridden, and to none otherwise. */
+  claudeDesktopRoots?: string[];
+  /** resolves each session's `repoRoot` with git; opt-in like the ZCode homes, so tests that
+   * spell out their sources never spawn git */
+  repoRoots?: RepoRoots;
   /** sessions that run in a nex_bot terminal: ref to herdr-core terminal address */
   nexbotTerminals?: () => ReadonlyMap<string, string>;
   /** Codex threads loaded in a shared app-server daemon, per CODEX_HOME: `threads` is the last known
@@ -65,6 +73,9 @@ export class SessionDiscovery {
   private readonly scanners: CodexScanner[];
   private readonly zcodes: ZcodeScanner[];
   private readonly options: SessionDiscoveryOptions;
+  private readonly desktop: ClaudeDesktopSessions | null;
+  /** the desktop app's per-session state (archived, fork parent) by CLI session id, from the last history scan */
+  private desktopState: ReadonlyMap<string, DesktopSessionState> = new Map();
 
   private readonly live = new Map<string, LiveClaudeSession[]>();
   private readonly history = new Map<string, ClaudeHistoryEntry[]>();
@@ -94,6 +105,8 @@ export class SessionDiscovery {
     // opt-in, resolved by the bridge: tests that spell out their other sources
     // stay hermetic instead of picking up the developer's own ZCode database
     this.zcodes = (options.zcodeHomes ?? []).map((home) => new ZcodeScanner(home, options.zcode));
+    const desktopRoots = options.claudeDesktopRoots ?? (options.claudeDirs ? [] : claudeDesktopRoots());
+    this.desktop = desktopRoots.length > 0 ? new ClaudeDesktopSessions(desktopRoots) : null;
   }
 
   /** Runs one full round, reports it, then keeps scanning on the timers. */
@@ -180,6 +193,7 @@ export class SessionDiscovery {
     // live first: the history scan must also find the transcripts of the live sessions
     await this.scanLiveRound(false);
     await this.scanHistoryRound(false);
+    await this.warmRoots();
     this.scanned = true;
     this.recompute();
     this.schedule(options.flush === true);
@@ -229,6 +243,8 @@ export class SessionDiscovery {
       ]);
       if (report && !this.stopped && this.unresolvedLive()) await this.scanHistoryRound(false);
       if (report && !this.stopped) {
+        await this.warmRoots();
+        if (this.stopped) return;
         this.recompute();
         this.schedule(false);
       }
@@ -262,8 +278,8 @@ export class SessionDiscovery {
   private scanHistoryRound(report = true): Promise<void> {
     if (this.historyBusy) return this.historyBusy;
     const run = (async () => {
-      await Promise.all(
-        this.claudeDirs.map(async (dir) => {
+      await Promise.all([
+        ...this.claudeDirs.map(async (dir) => {
           try {
             const include = (this.live.get(dir) ?? []).map((l) => l.sessionId);
             this.history.set(dir, await scanHistory(dir, { now: this.now(), include }));
@@ -271,8 +287,17 @@ export class SessionDiscovery {
             this.fail(error);
           }
         }),
-      );
+        (async () => {
+          try {
+            if (this.desktop) this.desktopState = await this.desktop.scan();
+          } catch (error) {
+            this.fail(error);
+          }
+        })(),
+      ]);
       if (report && !this.stopped) {
+        await this.warmRoots();
+        if (this.stopped) return;
         this.recompute();
         this.schedule(false);
       }
@@ -281,6 +306,22 @@ export class SessionDiscovery {
     });
     this.historyBusy = run;
     return run;
+  }
+
+  /** Asks git for the repository root of every directory the scans found, before the list is built. */
+  private async warmRoots(): Promise<void> {
+    const roots = this.options.repoRoots;
+    if (!roots) return;
+    const cwds = new Set<string>();
+    for (const lives of this.live.values()) for (const l of lives) cwds.add(l.cwd);
+    for (const entries of this.history.values()) for (const e of entries) if (e.cwd) cwds.add(e.cwd);
+    for (const rows of this.codex.values()) for (const r of rows) cwds.add(r.cwd);
+    for (const rows of this.zcodeRows.values()) for (const r of rows) cwds.add(r.cwd);
+    try {
+      await roots.warm(cwds);
+    } catch (error) {
+      this.fail(error);
+    }
   }
 
   private recompute(): void {
@@ -296,10 +337,19 @@ export class SessionDiscovery {
       if (!existing || row.lastActivityAt > existing.lastActivityAt) merged.set(ref, row);
     };
     for (const dir of this.claudeDirs) {
-      for (const row of mergeClaude(dir, this.live.get(dir) ?? [], this.history.get(dir) ?? [])) add(row);
+      for (const row of mergeClaude(dir, this.live.get(dir) ?? [], this.history.get(dir) ?? [], { desktop: this.desktopState })) add(row);
     }
     for (const rows of this.codex.values()) for (const row of rows) add(row);
     for (const rows of this.zcodeRows.values()) for (const row of rows) add(row);
+
+    // the project each session belongs to (rows are copied: the scanners keep the originals in their caches)
+    const roots = this.options.repoRoots;
+    if (roots) {
+      for (const [ref, row] of merged) {
+        const repoRoot = roots.peek(row.cwd);
+        if (repoRoot) merged.set(ref, { ...row, repoRoot });
+      }
+    }
 
     let terminals: ReadonlyMap<string, string> | undefined;
     try {
@@ -343,6 +393,15 @@ export class SessionDiscovery {
     const active = sorted.filter(([, row]) => row.state !== "stopped");
     const stopped = sorted.filter(([, row]) => row.state === "stopped").slice(0, Math.max(0, MAX_SESSIONS - active.length));
     const kept = new Map([...active, ...stopped].sort((a, b) => b[1].lastActivityAt - a[1].lastActivityAt).slice(0, MAX_SESSIONS));
+    // a fork parent is only reported when it is in the list the report carries, so the
+    // reference always resolves (the cap, an archive or a window edge may have dropped it)
+    for (const [ref, row] of kept) {
+      if (row.forkOf === undefined) continue;
+      if (row.forkOf !== row.nativeId && kept.has(`${row.engine}:${row.forkOf}`)) continue;
+      const next: Row = { ...row };
+      delete next.forkOf;
+      kept.set(ref, next);
+    }
     this.rows = kept;
   }
 
@@ -408,6 +467,8 @@ function toWire(row: Row): CliSessionWire {
   if (row.liveIn !== undefined) wire.liveIn = row.liveIn;
   if (row.terminal !== undefined) wire.terminal = row.terminal;
   if (row.sendVia !== undefined) wire.sendVia = row.sendVia;
+  if (row.repoRoot !== undefined) wire.repoRoot = row.repoRoot;
+  if (row.forkOf !== undefined) wire.forkOf = row.forkOf;
   if (row.model !== undefined) wire.model = row.model;
   if (row.cliVersion !== undefined) wire.cliVersion = row.cliVersion;
   if (row.writerUnknown !== undefined) wire.writerUnknown = row.writerUnknown;

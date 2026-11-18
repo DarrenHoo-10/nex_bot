@@ -3,10 +3,11 @@
 // queues or steers, stopping pauses the outbox in Core, and edit-and-resend
 // records the revised message.
 import { useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, List, LoaderCircle, Share2, SquareTerminal } from "lucide-react";
+import { ArrowLeft, List, LoaderCircle, MessageSquare, Share2, SquareTerminal } from "lucide-react";
 import type { CliItem, CliAnswerDecision, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
-import { readNotes, storeNotes, useReview, type Note } from "./WorkbenchReview";
+import { useReview } from "./WorkbenchReview";
+import { useNotes } from "./use-notes";
 import {transferGoal} from "./composer-additions";
 import { Composer } from "./Composer";
 import { cardState, type RequestRecord } from "./requests";
@@ -31,19 +32,24 @@ export interface SessionPaneProps {
   onFork?(): void;
   onSideOpen?(quote?:string,message?:string):Promise<void>;
   onTerminalOpen?():void;
+  /** side chats of this session that are not showing: a button brings the panel back */
+  sideCount?:number;
   compact?:boolean;
+  /** the display name Core keeps for the session (renames, "（fork）"), over the CLI's own title */
+  title?:string;
 }
 
 const NO_REQUESTS: readonly RequestRecord[] = [];
 
-export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onSideOpen, onTerminalOpen, compact }: SessionPaneProps) {
+export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onSideOpen, onTerminalOpen, sideCount = 0, compact, title }: SessionPaneProps) {
   const review=useReview();
   const details=review?.records[session.key];
+  const heading=details?.title||title?.trim()||sessionTitle(session);
   const [workspaceOpen,setWorkspaceOpen]=useState(false);
   const workspaceId=useId();
   const workspaceToggle=useRef<HTMLButtonElement>(null);
-  const [notes,setNotes]=useState<Note[]>(()=>readNotes(session.key));
-  const updateNotes=(next:Note[])=>{setNotes(next);storeNotes(session.key,next)};
+  // Core keeps the notes; the isolated review fixture keeps them in the tab
+  const {notes,update:updateNotes,error:noteError,dismissError:dismissNoteError}=useNotes(session.key,!review);
   const [items,setItems]=useState<CliItem[]>([]);
   const cards = [...requests].sort((a, b) => Number(a.closed) - Number(b.closed));
   const pending = requests.filter((record) => cardState(record, now) === "pending").length;
@@ -107,14 +113,15 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const resume = () => resumeQueue(session.key);
 
   return (
-    <section className="cli-pane" aria-label={details?.title||sessionTitle(session)}>
+    <section className="cli-pane" aria-label={heading}>
       <header className="cli-pane-head">
         <button type="button" className="icon-button cli-back" aria-label="返回会话列表" onClick={onBack}><ArrowLeft size={18} /></button>
         <div className="cli-pane-title">
-          <strong title={details?.title||sessionTitle(session)}>{details?.title||sessionTitle(session)}</strong>
+          <strong title={heading}>{heading}</strong>
 
         </div>
         {(!shown.online||shown.state==="waiting"||shown.state==="running")?<span className="cli-chip" data-tone={sessionTone(shown)}>{sessionStatusLabel(shown)}</span>:null}
+        {sideCount>0 && onSideOpen && !compact ? <button type="button" className="cli-open-local na-side-count" title="侧边会话" aria-label={"侧边会话 "+sideCount} onClick={()=>void onSideOpen()}><MessageSquare size={14}/>{sideCount}</button> : null}
         {onFork ? <button type="button" className="cli-open-local na-square" title="交给助手" aria-label="交给助手" onClick={onFork}><Share2 size={15} /></button> : null}
         {!compact && <button type="button" ref={workspaceToggle} className="na-workspace-toggle"
           aria-label="Git 工作区" aria-controls={workspaceId} aria-expanded={workspaceOpen}
@@ -127,6 +134,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
           {cards.map((record) => <RequestCard key={record.view.id} record={record} now={now} onAnswer={onAnswer} />)}
         </div>
       ) : null}
+      {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
         <TranscriptView onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />

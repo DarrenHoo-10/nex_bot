@@ -50,6 +50,34 @@ export interface WorkbenchEntryInput {
   expectedVersion: number;
 }
 
+/** What the page sends to create a note. `start`/`end` are the selection
+ * offsets inside the message text, kept so the mark can be painted again. */
+export interface CliNoteInput {
+  id?: string;
+  message: string;
+  quote: string;
+  body: string;
+  num?: number;
+  start?: number;
+  end?: number;
+}
+
+export interface CliNoteView {
+  id: string;
+  sessionKey: CliSessionKey | null;
+  message: string;
+  num: number;
+  start: number | null;
+  end: number | null;
+  quote: string;
+  body: string;
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const MAX_NOTES_PER_SESSION = 500;
+
 /** An op that reached the device: the id survives a rejection, so an uncertain
  * outcome can be reconciled against the op row later. */
 class DispatchFailure extends Error {
@@ -173,12 +201,16 @@ export class CliAgentWorkbench {
   bind(logicalId: string, key: string): Row {
     const row = this.rowOf(logicalId);
     if (!row) throw new CliOpError("not_found");
+    // The device may answer a start before its session row reaches the hub; the
+    // key itself names the device and engine, so the binding does not wait
+    // (otherwise the first send would create a root row for the new session).
     const session = this.hub.session(key);
-    if (!session) throw new CliOpError("not_found");
+    const parsed = parseCliKey(key);
+    if (!session && !parsed) throw new CliOpError("not_found");
     this.store.transaction(() => {
       this.store.run(
         "UPDATE cli_agent_workbench SET session_key=?,device_id=?,engine=?,cwd=?,version=version+1,updated_at=? WHERE id=?",
-        key, session.deviceId, session.engine, session.cwd, now(), logicalId,
+        key, session?.deviceId ?? parsed!.deviceId, session?.engine ?? parsed!.engine, session?.cwd ?? String(row.cwd), now(), logicalId,
       );
       this.store.run(
         `INSERT INTO cli_agent_queue_state(workbench_id,session_key,paused,pause_reason,next_seq,updated_at)
@@ -266,6 +298,89 @@ export class CliAgentWorkbench {
 
   private staleOrMissing(logicalId: string): CliOpError {
     return this.rowOf(logicalId) ? new CliOpError("conflict") : new CliOpError("not_found");
+  }
+
+  // -------------------------------------------------------------------------
+  // Notes: annotations on a conversation's messages
+
+  /** The notes of one logical session, by logical id or native key. A session
+   * the workbench never touched has none, and asking does not create its row. */
+  listNotes(ref: string): CliNoteView[] {
+    const row = this.rowOf(ref) ?? this.store.get("SELECT * FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", ref);
+    if (!row) return [];
+    return this.store.all("SELECT * FROM cli_agent_notes WHERE workbench_id=? ORDER BY created_at,id", String(row.id)).map((note) => this.noteView(note, row));
+  }
+
+  /** Creates a note. The client's id makes a retry harmless: the same id under
+   * the same session answers with the stored note, under another one it is a conflict. */
+  createNote(ref: string, input: CliNoteInput): CliNoteView {
+    const row = this.resolve(ref);
+    const noteId = input.id ?? id();
+    const existing = this.store.get("SELECT * FROM cli_agent_notes WHERE id=?", noteId);
+    if (existing) {
+      if (String(existing.workbench_id) !== String(row.id)) throw new CliOpError("conflict");
+      return this.noteView(existing, row);
+    }
+    const count = Number(this.store.get("SELECT COUNT(*) n FROM cli_agent_notes WHERE workbench_id=?", String(row.id))?.n ?? 0);
+    if (count >= MAX_NOTES_PER_SESSION) throw new CliOpError("too_large", "注释太多，先删除一些");
+    const at = now();
+    this.store.insert("cli_agent_notes", {
+      id: noteId, workbench_id: String(row.id), message_id: input.message, num: input.num ?? count + 1,
+      sel_start: input.start ?? null, sel_end: input.end ?? null,
+      content: this.store.encrypt(JSON.stringify({ quote: input.quote, body: input.body })),
+      version: 1, created_at: at, updated_at: at,
+    });
+    return this.noteView(this.noteRow(noteId), row);
+  }
+
+  /** Changes the text of a note; a stale version is a conflict. */
+  updateNote(noteId: string, expectedVersion: number, body: string): CliNoteView {
+    const current = this.noteRow(noteId);
+    const content = this.noteContent(current);
+    const changes = Number(this.store.run(
+      "UPDATE cli_agent_notes SET content=?,version=version+1,updated_at=? WHERE id=? AND version=?",
+      this.store.encrypt(JSON.stringify({ quote: content.quote, body })), now(), noteId, expectedVersion,
+    ).changes);
+    if (!changes) throw new CliOpError("conflict");
+    return this.noteView(this.noteRow(noteId), this.rowOf(String(current.workbench_id)));
+  }
+
+  deleteNote(noteId: string, expectedVersion: number): void {
+    this.noteRow(noteId);
+    const changes = Number(this.store.run("DELETE FROM cli_agent_notes WHERE id=? AND version=?", noteId, expectedVersion).changes);
+    if (!changes) throw new CliOpError("conflict");
+  }
+
+  private noteRow(noteId: string): Row {
+    const row = this.store.get("SELECT * FROM cli_agent_notes WHERE id=?", noteId);
+    if (!row) throw new CliOpError("not_found");
+    return row;
+  }
+
+  private noteContent(row: Row): { quote: string; body: string } {
+    try {
+      const value = JSON.parse(this.store.decrypt(String(row.content))) as { quote?: string; body?: string };
+      return { quote: typeof value.quote === "string" ? value.quote : "", body: typeof value.body === "string" ? value.body : "" };
+    } catch {
+      return { quote: "", body: "" };
+    }
+  }
+
+  private noteView(row: Row, workbench: Row | undefined): CliNoteView {
+    const { quote, body } = this.noteContent(row);
+    return {
+      id: String(row.id),
+      sessionKey: workbench?.session_key == null ? null : (String(workbench.session_key) as CliSessionKey),
+      message: String(row.message_id),
+      num: Number(row.num),
+      start: row.sel_start === null ? null : Number(row.sel_start),
+      end: row.sel_end === null ? null : Number(row.sel_end),
+      quote,
+      body,
+      version: Number(row.version),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
   }
 
   // -------------------------------------------------------------------------
