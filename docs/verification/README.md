@@ -490,4 +490,7 @@ real-product matrix (P0) and the dual-client release acceptance (P8) stay open
 there, with retest conditions. The [Core deploy record](nexagent-workbench-deploy-20261116.md)
 covers the production rollout (migration 55 rehearsed on real data copies, Mac Air
 switch and public verification); the device-executor upgrade stays with the next
-client release.
+client release. The [0.9.36 release record](nexagent-workbench-release-20261119.md)
+covers the post-launch fixes and the remaining workbench features (repo grouping,
+forks, side chats, persisted notes, Chinese-first replies), migration 56, the Core
+deploy, Windows 0.9.36 and Android 0.2.35, and what stays unverified.
