@@ -72,11 +72,13 @@ describe("what the composer offers", () => {
     expect(composerMode(session({ state: "stopped" }))).toEqual({ kind: "stopped", hint: undefined });
   });
 
-  it("sends to a session on the computer through its inbox or daemon, without an interrupt", () => {
+  it("sends to a session on the computer through its inbox or daemon; only the inbox takes Stop while it works", () => {
     for (const sendVia of ["inbox", "daemon"] as const) {
       expect(composerMode(session({ liveIn: "terminal", terminal: undefined, sendVia }))).toEqual({ kind: "send", running: false, outside: true });
-      expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "running", sendVia }))).toEqual({ kind: "send", running: false, outside: true });
     }
+    expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "running", sendVia: "inbox" }))).toEqual({ kind: "send", running: true, outside: true });
+    expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "waiting", sendVia: "inbox" }))).toEqual({ kind: "send", running: true, outside: true });
+    expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "running", sendVia: "daemon" }))).toEqual({ kind: "send", running: false, outside: true });
     expect(sendsOutside(session({ sendVia: "terminal" }))).toBe(false);
     expect(sendsOutside(session())).toBe(false);
   });

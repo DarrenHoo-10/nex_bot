@@ -41,9 +41,10 @@ const claude: HarnessAdapter = {
   label: "Claude Code",
   caps(session) {
     if (session.terminal) return terminalCaps(session);
-    // the local inbox takes plain messages; it cannot steer a turn and the
-    // interrupt would hit whoever owns the terminal
-    if (session.sendVia === "inbox") return { sendVia: "inbox", steer: false, interrupt: false, terminal: false, fork: "copy" };
+    // the local inbox takes plain messages; it cannot steer a turn. Stop is a
+    // message at priority now, which aborts the running turn (nwverse/persona's
+    // `interruptOutside`), so no key is ever typed into someone else's terminal.
+    if (session.sendVia === "inbox") return { sendVia: "inbox", steer: false, interrupt: true, terminal: false, fork: "copy" };
     return none();
   },
 };

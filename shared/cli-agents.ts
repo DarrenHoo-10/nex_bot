@@ -203,6 +203,9 @@ export interface CliSessionWire {
   /** nativeId of another session of the same device and engine this one was
    * forked or continued from; only set when that session is in the device's list */
   forkOf?: string;
+  /** nativeId of the session (same device and engine) this one is a side chat of
+   * (a /btw question in the desktop app): shown in that session's side tabs, not as a row */
+  sideOf?: string;
   model?: string;
   cliVersion?: string;
   /** epoch ms */
@@ -802,6 +805,7 @@ function sessionWire(value: unknown): CliSessionWire {
     sendVia: present(o, "sendVia") ? oneOf(o.sendVia, CLI_SEND_VIA) : undefined,
     repoRoot: optStr(o, "repoRoot", CLI_LIMITS.cwd, 1),
     forkOf: present(o, "forkOf") ? nativeIdOf(o.forkOf) : undefined,
+    sideOf: present(o, "sideOf") ? nativeIdOf(o.sideOf) : undefined,
     model: optStr(o, "model", CLI_LIMITS.model),
     cliVersion: optStr(o, "cliVersion", CLI_LIMITS.cliVersion),
     lastActivityAt,

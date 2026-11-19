@@ -212,7 +212,7 @@ describe("harness registry", () => {
 
   it("zcode host sessions can steer and stop; inbox sessions only send", () => {
     expect(harnessFor("zcode")!.caps(session({ sendVia: "host" }) as never)).toMatchObject({ sendVia: "host", steer: true, interrupt: true });
-    expect(harnessFor("claude")!.caps(session({ sendVia: "inbox" }) as never)).toMatchObject({ sendVia: "inbox", steer: false, interrupt: false });
+    expect(harnessFor("claude")!.caps(session({ sendVia: "inbox" }) as never)).toMatchObject({ sendVia: "inbox", steer: false, interrupt: true });
     const readOnly = harnessFor("zcode")!.caps(session({}) as never);
     expect(readOnly.sendVia).toBeUndefined();
     expect(readOnly.steer).toBe(false);

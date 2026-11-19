@@ -5,6 +5,8 @@
 // argument array — no shell — and results never carry absolute paths.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { isSafeCliArg } from "../../../shared/cli-agents.ts";
 import type { CliGitInfo } from "../../../shared/cli-agents.ts";
@@ -137,29 +139,37 @@ export class DeviceGit {
 const ROOT_TTL_MS = 10 * 60_000;
 /** a miss (not a repository, directory gone, git missing) is looked at again sooner */
 const ROOT_MISS_TTL_MS = 2 * 60_000;
-const ROOT_TIMEOUT_MS = 3000;
 const ROOT_CACHE_MAX = 2000;
-const ROOT_PARALLEL = 4;
+const ROOT_PARALLEL = 8;
+/** how many folders up a lookup walks before it gives up */
+const ROOT_MAX_DEPTH = 64;
 
-export interface RepoRootsOptions extends DeviceGitOptions {
+export interface RepoRootsOptions {
+  platform?: NodeJS.Platform;
   now?: () => number;
+  /** the user's home folder: it, and any folder above it, is no project */
+  home?: string;
 }
 
 /** The main-worktree path of the repository a directory belongs to, for grouping
  * sessions by project (a linked worktree such as `.claude/worktrees/<name>`
- * reports the checkout it was made from). Discovery asks for every session's cwd
- * on every scan, so answers are cached per cwd, a burst of distinct directories
- * runs a few git processes at a time, and a missing git is remembered instead of
- * being spawned once per directory. */
-export class RepoRoots {
-  private readonly run: (cwd: string, args: string[]) => Promise<string>;
+ * reports the checkout it was made from). It reads the repository's own files and
+ * runs no git: the nearest `.git` going up from the directory is either the main
+ * checkout's folder, or a linked worktree's file whose `gitdir` (and that folder's
+ * `commondir`) leads back to the main checkout's `.git`; a submodule's file leads
+ * elsewhere, and its own folder is the project. The home folder, or one above it,
+ * is no project. Answers are cached per directory. */
+/** What discovery needs of a repository-root lookup (a fake in tests). */
+export interface RepoRootLookup {
+  peek(cwd: string): string | null | undefined;
+  warm(cwds: Iterable<string>): Promise<void>;
+}
+
+export class RepoRoots implements RepoRootLookup {
   private readonly cache = new Map<string, { root: string | null; at: number }>();
   private readonly inflight = new Map<string, Promise<string | null>>();
-  private gitMissingAt = Number.NEGATIVE_INFINITY;
 
-  constructor(private readonly options: RepoRootsOptions = {}) {
-    this.run = gitRunner({ ...options, timeoutMs: options.timeoutMs ?? ROOT_TIMEOUT_MS });
-  }
+  constructor(private readonly options: RepoRootsOptions = {}) {}
 
   private now(): number {
     return (this.options.now ?? Date.now)();
@@ -199,30 +209,44 @@ export class RepoRoots {
   }
 
   private async lookup(cwd: string): Promise<string | null> {
-    if (this.now() - this.gitMissingAt < ROOT_MISS_TTL_MS) return null;
     const platform = this.options.platform ?? process.platform;
     const pathApi = platform === "win32" ? path.win32 : path.posix;
-    if (!cwd || !pathApi.isAbsolute(cwd)) return null;
-    try {
-      const common = clean(await this.run(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
-      let root: string | undefined;
-      if (common && /^\.git$/i.test(pathApi.basename(pathApi.normalize(common)))) root = pathApi.dirname(pathApi.normalize(common));
-      // a submodule's or bare repository's common dir is not `<root>/.git`: its own top level is the project
-      if (!root) root = clean(await this.run(cwd, ["rev-parse", "--show-toplevel"]));
-      if (!root) return null;
-      const normalized = pathApi.normalize(root);
-      return pathApi.isAbsolute(normalized) ? normalized : null;
-    } catch (error) {
-      if (isGitMissing(error)) this.gitMissingAt = this.now();
-      return null;
+    const bare = cwd.replace(/^\\\\\?\\(?!UNC\\)/i, "");
+    if (!bare || !pathApi.isAbsolute(bare)) return null;
+    let dir = pathApi.normalize(bare);
+    for (let depth = 0; depth < ROOT_MAX_DEPTH; depth++) {
+      const dotGit = pathApi.join(dir, ".git");
+      const info = await stat(dotGit).catch(() => null);
+      if (info?.isDirectory()) return this.project(dir, pathApi);
+      if (info?.isFile()) {
+        const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(await readFile(dotGit, "utf8").catch(() => ""));
+        if (pointer) {
+          const gitdir = pathApi.resolve(dir, pointer[1]);
+          const commondir = (await readFile(pathApi.join(gitdir, "commondir"), "utf8").catch(() => "")).trim();
+          if (commondir) {
+            const common = pathApi.resolve(gitdir, commondir);
+            if (/^\.git$/i.test(pathApi.basename(common))) return this.project(pathApi.dirname(common), pathApi);
+          }
+        }
+        // a submodule, or a layout this does not know: its own folder is the project
+        return this.project(dir, pathApi);
+      }
+      const parent = pathApi.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
     }
+    return null;
   }
-}
 
-/** First line of git's answer, without the `\\?\` extended-length prefix. */
-function clean(output: string): string {
-  const line = output.split(/\r?\n/).find((entry) => entry.trim()) ?? "";
-  return line.trim().replace(/^\\\\\?\\(?!UNC\\)/i, "");
+  /** `root`, unless it is the home folder or one above it. */
+  private project(root: string, pathApi: typeof path.posix): string | null {
+    const home = pathApi.normalize(this.options.home ?? os.homedir());
+    const fold = (value: string) => (pathApi === path.win32 ? value.toLowerCase() : value);
+    const relative = pathApi.relative(fold(root), fold(home));
+    // home is root itself or inside it
+    if (relative === "" || (!relative.startsWith("..") && !pathApi.isAbsolute(relative))) return null;
+    return root;
+  }
 }
 
 function shortReason(error: unknown): string {

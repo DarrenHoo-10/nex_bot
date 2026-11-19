@@ -38,10 +38,13 @@ export function useSideChats(parent:CliSessionKey|null,sessions:CliSessionView[]
   const sending=useRef(new Set<string>());
   const attempts=useRef(new Map<string,Attempt>());
   const local=drafts.filter(d=>d.parent===parent);
+  const byKey=new Map(sessions.map(s=>[s.key,s]));
+  // a side chat NexAgent started (a workbench row), or one the desktop app recorded (a /btw question, Core's `sideOf`)
+  const nativeSide=(key:CliSessionKey):CliSessionKey|undefined=>{const s=byKey.get(key);return s?.sideOf?`${s.deviceId}:${s.engine}:${s.sideOf}` as CliSessionKey:undefined};
   const sideOf=(key:CliSessionKey)=>review ? (review.records[key]?.kind==="side" && !review.records[key].deleted ? review.records[key].parent : undefined)
-    : (host?.meta.get(key)?.kind==="side" ? host.meta.get(key)?.parent ?? undefined : undefined);
+    : (host?.meta.get(key)?.kind==="side" ? host.meta.get(key)?.parent ?? undefined : nativeSide(key));
   const remote=sessions.filter(s=>parent!==null && sideOf(s.key)===parent);
-  const remoteTitle=(key:CliSessionKey)=>(review?.records[key]?.title ?? host?.meta.get(key)?.title) || "侧边聊天";
+  const remoteTitle=(key:CliSessionKey)=>(review?.records[key]?.title ?? host?.meta.get(key)?.title) || byKey.get(key)?.title || "侧边聊天";
   const tabs=[
     ...remote.filter(s=>!closed.includes(s.key) && !local.some(d=>d.target===s.key)).map(s=>({id:s.key,title:remoteTitle(s.key)})),
     ...local.map(d=>({id:d.id,title:d.quote.slice(0,24)||"侧边聊天"})),
@@ -56,7 +59,7 @@ export function useSideChats(parent:CliSessionKey|null,sessions:CliSessionView[]
   async function open(source:CliSessionView,quote="",message="",fresh=false) {
     if(!review && !host)return;
     const record=review?.records[source.key];
-    const side=review ? record?.kind==="side" ? record.parent : undefined : host?.meta.get(source.key)?.kind==="side" ? host.meta.get(source.key)?.parent ?? undefined : undefined;
+    const side=review ? record?.kind==="side" ? record.parent : undefined : sideOf(source.key);
     const owner=side ?? source.key;
     if(!fresh && !quote && owner===parent) {
       if(selected && selected.id!==terminalId)return;

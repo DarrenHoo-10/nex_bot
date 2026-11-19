@@ -246,7 +246,7 @@ export class CliAgentBridge {
       ...(options.zcodeHomes ? { zcodeHomes: options.zcodeHomes } : {}),
       ...(options.zcodeHost ? { zcode: { host: options.zcodeHost } } : {}),
       // the real machine only when the Claude directories are the default ones: tests that name their own stay hermetic
-      ...(options.claudeDirs ? {} : { repoRoots: new RepoRoots({ platform: this.platform, ...(options.env ? { env: options.env } : {}) }) }),
+      ...(options.claudeDirs ? {} : { repoRoots: new RepoRoots({ platform: this.platform, ...(options.homedir ? { home: options.homedir } : {}) }) }),
       codexDaemon: { threads: (home) => this.codexDaemons.threads(home), refresh: (home) => this.codexDaemons.refresh(home) },
       ...options.discovery,
       nexbotTerminals: () => this.nexbotTerminals(),
@@ -1447,6 +1447,20 @@ export class CliAgentBridge {
         if (!harnessFor(row.engine)?.caps(row).interrupt) throw new OpFailure("invalid", "此入口不支持停止");
         const result = await this.options.zcodeHost.interrupt(route.sessionId);
         return { outcome: String(result.outcome ?? "unknown").slice(0, 100) };
+      }
+      // a Claude in the desktop app or the user's own terminal: Stop goes through its
+      // inbox at priority now, which aborts the running turn (as Claude Code's "send now")
+      if (row && route?.via === "inbox" && row.sendVia === "inbox") {
+        if (row.state !== "running" && row.state !== "waiting") throw new OpFailure("turn_changed");
+        const result = await sendToInbox({ configDir: route.configDir, pid: route.pid, socketPath: route.socketPath, sessionId: route.sessionId }, "", {
+          stop: true,
+          transcript: this.discovery.transcriptFor(args.ref),
+          state: row.state,
+          platform: this.platform,
+          ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }),
+        });
+        this.scheduleRefresh();
+        return { outcome: result.delivery === "confirmed" ? "stopped" : "unconfirmed" };
       }
       if (row) throw new OpFailure(row.state === "stopped" ? "stopped" : "not_in_terminal");
       throw new OpFailure("not_found");

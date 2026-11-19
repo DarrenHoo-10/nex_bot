@@ -209,7 +209,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       const visibleDuringFork=(s:CliSessionView)=>!forking || forking.known.has(s.key) ||
         s.deviceId!==forking.parent.deviceId || s.engine!==forking.parent.engine || s.cwd!==forking.parent.cwd ||
         (forking.key ? s.key!==forking.key || forkReady : !!meta(s.key)?.parent && meta(s.key)?.parent!==forking.parent.key);
-      const all=agents.flatMap(a=>a.sessions).filter(visibleDuringFork).filter(s=>!meta(s.key)?.deleted && meta(s.key)?.kind!=="side" && isArchived(s)===archived);
+      const all=agents.flatMap(a=>a.sessions).filter(visibleDuringFork).filter(s=>!meta(s.key)?.deleted && meta(s.key)?.kind!=="side" && !s.sideOf && isArchived(s)===archived);
       const projects=projectGroups(all,s=>review?.checkouts?.[s.cwd]?.project);
       const now=Date.now();
       return <section className="cli-device" key={device.id}><header>{twist(device.id,device.name)}<Monitor size={15}/><strong>{device.name}</strong><small className={device.online?"na-online":undefined}>{device.online?"在线":"离线"}</small><button className="icon-button" aria-label={"在 "+device.name+" 上新建会话"} onClick={()=>onNew(device.id)}><Plus size={15}/></button></header>
@@ -232,7 +232,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
         </div>:null}</div>
       })}</section>
     })}
-    {archived && !groups.some(({agents})=>agents.some(a=>a.sessions.some(s=>isArchived(s)&&!meta(s.key)?.deleted&&meta(s.key)?.kind!=="side"))) ? <p className="cli-empty">没有已归档的会话</p> : null}
+    {archived && !groups.some(({agents})=>agents.some(a=>a.sessions.some(s=>isArchived(s)&&!meta(s.key)?.deleted&&meta(s.key)?.kind!=="side"&&!s.sideOf))) ? <p className="cli-empty">没有已归档的会话</p> : null}
     {review && !archived && !filter && <details className="na-harness-samples" open>
       <summary><ChevronRight size={13}/>Harness 图标示例<small>{Object.keys(HARNESS_SAMPLES).length}</small></summary>
       <ul>{Object.entries(HARNESS_SAMPLES).map(([id,label])=><li key={id}><HarnessMark agentId={id} size="sm"/><span>{label}</span></li>)}</ul>

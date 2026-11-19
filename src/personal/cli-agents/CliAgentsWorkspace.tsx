@@ -212,7 +212,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
 
   // archived (and the older "hidden") sessions stay in the groups: the list shows them in its archive view
   const groups = useMemo(() => groupSessions(devices, sessions, true), [devices, sessions]);
-  const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side" && (review || listMeta.get(s.key)?.kind!=="side")) ?? null;
+  const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side" && (review || (listMeta.get(s.key)?.kind!=="side" && !s.sideOf))) ?? null;
   const sideHost = useMemo(() => review ? undefined : { meta: listMeta, refresh: () => { setReloadToken(token => token + 1); void reload(); } }, [review, listMeta, reload]);
   const sideChats=useSideChats(selectedKey,sessions,sideHost);
   /** Side chats start a new session on the session's computer, so it must run there (the preview fixture only has Claude). */

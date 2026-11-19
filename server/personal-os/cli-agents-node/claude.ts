@@ -9,7 +9,7 @@ import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliLiveIn, type CliSessionState } from "../../../shared/cli-agents.ts";
-import type { DesktopSessionState } from "./claude-desktop.ts";
+import { desktopHides, EMPTY_DESKTOP_INDEX, type DesktopIndex, type DesktopSessionState } from "./claude-desktop.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { isPidAlive, processStartTimes, sameProcessStart, type ProcessStartOptions } from "./liveness.ts";
 
@@ -217,6 +217,8 @@ export interface ClaudeHistoryEntry {
   cwd?: string;
   gitBranch?: string;
   entrypoint?: string;
+  /** the last entrypoint the transcript's tail names: a session can move between clients */
+  lastEntrypoint?: string;
   version?: string;
   model?: string;
   mode?: string;
@@ -228,20 +230,23 @@ export interface ClaudeHistoryEntry {
   lastTimestamp?: number;
   /** epoch ms the transcript file was created (mtime where the file system has no birth time) */
   bornMs?: number;
-  /** the first message uuids of the head: a fork or continuation copies the parent's history, uuids included */
-  rootKey?: string;
   /** the session id the transcript itself names as its fork parent (`forkedFrom`), when it does */
   forkedFrom?: string;
 }
 
-/** Sessions the Agent SDK or `claude -p` run for automation (`sdk-ts`, `sdk-cli`, ...):
- * no one sits in them, so they are not conversations to list. */
+/** A claude an SDK runs (`sdk-ts`, `sdk-py`, `sdk-cli`): while it runs it belongs to
+ * its host, so it is not listed as a running session of the user's. */
 export function isSdkEntrypoint(entrypoint: string | undefined): boolean {
   return typeof entrypoint === "string" && /^sdk/i.test(entrypoint);
 }
 
-/** How many leading message uuids identify a copied history. */
-const ROOT_UUIDS = 3;
+/** A program's one-shot `claude -p` run (`sdk-cli` from its first entrypoint to its
+ * last): not a conversation to list. The Agent SDKs' runs (`sdk-ts`, `sdk-py`) are
+ * listed, since interactive hosts run the user's sessions through them, and so is a
+ * session that was also used from a terminal or the app, either way round. */
+export function isClaudeOneShot(entry: Pick<ClaudeHistoryEntry, "entrypoint" | "lastEntrypoint">): boolean {
+  return entry.entrypoint === "sdk-cli" && (entry.lastEntrypoint === undefined || entry.lastEntrypoint === "sdk-cli");
+}
 
 export interface HistoryCache {
   get(file: string): { size: number; mtimeMs: number; entry: ClaudeHistoryEntry | null } | undefined;
@@ -438,11 +443,7 @@ export async function parseTranscriptEdges(
   }
   if (head[0]?.isSidechain === true) return null;
   const entry: ClaudeHistoryEntry = { sessionId, transcript: file, mtimeMs, size, bornMs };
-  const rootUuids: string[] = [];
   for (const rec of head) {
-    // a fork copies the parent's history with the same message uuids; the first few identify it.
-    // Only the head already read for the title is looked at, so this costs no extra I/O.
-    if (rootUuids.length < ROOT_UUIDS && typeof rec.uuid === "string" && rec.uuid !== "" && rec.type !== "file-history-snapshot") rootUuids.push(rec.uuid);
     if (!entry.forkedFrom) {
       const parent = asRec(rec.forkedFrom)?.sessionId;
       if (typeof parent === "string" && parent !== sessionId && isCliNativeId(parent)) entry.forkedFrom = parent;
@@ -457,10 +458,9 @@ export async function parseTranscriptEdges(
     }
     if (rec.type === "custom-title" && typeof rec.customTitle === "string") entry.customTitle = rec.customTitle.trim() || undefined;
   }
-  if (isSdkEntrypoint(entry.entrypoint)) return null;
-  if (rootUuids.length > 0) entry.rootKey = rootUuids.join(",");
   let lastTs: number | undefined;
   for (const rec of tail) {
+    if (text(rec.entrypoint)) entry.lastEntrypoint = text(rec.entrypoint);
     if (rec.type === "custom-title" && typeof rec.customTitle === "string") entry.customTitle = rec.customTitle.trim() || undefined;
     else if (rec.type === "agent-name" && typeof rec.agentName === "string") entry.agentName = rec.agentName.trim() || undefined;
     else if (rec.type === "mode" && typeof rec.mode === "string") entry.mode = rec.mode;
@@ -476,17 +476,18 @@ export async function parseTranscriptEdges(
     if (!entry.gitBranch && text(rec.gitBranch)) entry.gitBranch = text(rec.gitBranch);
   }
   if (lastTs !== undefined) entry.lastTimestamp = lastTs;
+  if (isClaudeOneShot(entry)) return null;
   return entry;
 }
 
 // ---------------------------------------------------------------------------
 // Merge
 
-/** customTitle, then the live file's name (unless derived), then agentName,
- * then the first user text. */
-export function claudeTitle(entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined): string {
+/** customTitle, then the live file's name (unless derived), then agentName, then
+ * the desktop app's sidebar title, then the first user text. */
+export function claudeTitle(entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined, sidebarTitle?: string): string {
   const liveName = live?.name && live.nameSource !== "derived" ? live.name : undefined;
-  return clipUnits(entry?.customTitle || liveName || entry?.agentName || entry?.firstUser || "", CLI_LIMITS.title);
+  return clipUnits(entry?.customTitle || liveName || entry?.agentName || sidebarTitle || entry?.firstUser || "", CLI_LIMITS.title);
 }
 
 /** One row per session id. A session without a live process is `stopped`; a
@@ -495,9 +496,14 @@ export function mergeClaude(
   configDir: string,
   live: readonly LiveClaudeSession[],
   history: readonly ClaudeHistoryEntry[],
-  options: { desktop?: ReadonlyMap<string, DesktopSessionState> } = {},
+  options: { desktop?: DesktopIndex; now?: number } = {},
 ): LocalSession[] {
-  const liveById = new Map(live.map((l) => [l.sessionId, l]));
+  const desktop = options.desktop ?? EMPTY_DESKTOP_INDEX;
+  const now = options.now ?? Date.now();
+  // a claude an SDK runs belongs to its host while it runs: its transcript is listed, not the process
+  const liveById = new Map(live.filter((l) => !isSdkEntrypoint(l.entrypoint)).map((l) => [l.sessionId, l]));
+  const mtimes = new Map(history.map((e) => [e.sessionId, e.mtimeMs]));
+  const listed = new Set([...mtimes.keys(), ...liveById.keys()]);
   const rows: LocalSession[] = [];
   const seen = new Set<string>();
   const kept: ClaudeHistoryEntry[] = [];
@@ -505,59 +511,62 @@ export function mergeClaude(
     if (seen.has(entry.sessionId)) continue;
     seen.add(entry.sessionId);
     const liveRow = liveById.get(entry.sessionId);
-    if (isSdkEntrypoint(entry.entrypoint) || isSdkEntrypoint(liveRow?.entrypoint)) continue;
-    // archived in the desktop app: the user put it away. A session that is running right now stays visible.
-    if (options.desktop?.get(entry.sessionId)?.archived && !liveRow) continue;
+    // the desktop app's sidebar: archived, an earlier transcript of a session listed by its
+    // current one, or a session deleted in the app. A running session always stays.
+    const hidden = desktopHides(desktop, entry.sessionId, {
+      entrypoint: entry.lastEntrypoint ?? entry.entrypoint,
+      mtimeMs: entry.mtimeMs,
+      running: !!liveRow,
+      now,
+      listed,
+      mtimeOf: (id) => mtimes.get(id),
+    });
+    if (hidden) continue;
     kept.push(entry);
-    rows.push(row(configDir, entry.sessionId, entry, liveRow));
+    rows.push(row(configDir, entry.sessionId, entry, liveRow, desktop.sessions.get(entry.sessionId)));
   }
-  for (const l of live) {
+  for (const l of liveById.values()) {
     if (seen.has(l.sessionId)) continue;
     seen.add(l.sessionId);
-    if (isSdkEntrypoint(l.entrypoint)) continue;
-    rows.push(row(configDir, l.sessionId, undefined, l));
+    rows.push(row(configDir, l.sessionId, undefined, l, desktop.sessions.get(l.sessionId)));
   }
-  const forks = claudeForks(kept, new Set(rows.map((r) => r.nativeId)), options.desktop);
+  const visible = new Set(rows.map((r) => r.nativeId));
+  const { forks, sides } = claudeLineage(kept, visible, desktop);
   for (const r of rows) {
-    const parent = forks.get(r.nativeId);
-    if (parent) r.forkOf = parent;
+    const side = sides.get(r.nativeId);
+    if (side) r.sideOf = side;
+    else {
+      const parent = forks.get(r.nativeId);
+      if (parent) r.forkOf = parent;
+    }
   }
   return rows;
 }
 
-/** Which session each one was forked or continued from, only among `visible`
- * ids so a parent is always a row the caller can find.
- *
- * Sources, strongest first: the desktop app's own `forkedFromSessionId`, a
- * `forkedFrom` the transcript names, then the copied history itself: sessions
- * whose head starts with the same message uuids share one conversation, and
- * every later member of that family (by file creation time, then mtime) is
- * attributed to the oldest one that is still visible. The family root is the
- * one attribution that is true however the later copies were chained, and it
- * needs no more than the head already read for the title. */
-export function claudeForks(
+/** Which session each one came from, only among `visible` ids so a parent is always
+ * a row the caller can find. Only what is recorded counts, never a guess from copied
+ * history (a resume or a rewind copies it too): the desktop app's index
+ * (`spawnedFrom`, else `forkedFromSessionId`), else the `forkedFrom` a transcript
+ * names. A /btw question is a side chat of its parent (`sides`), the rest are
+ * children (`forks`). */
+export function claudeLineage(
   entries: readonly ClaudeHistoryEntry[],
   visible: ReadonlySet<string>,
-  desktop?: ReadonlyMap<string, DesktopSessionState>,
-): Map<string, string> {
+  desktop: DesktopIndex = EMPTY_DESKTOP_INDEX,
+): { forks: Map<string, string>; sides: Map<string, string> } {
   const parents = new Map<string, string>();
-  const families = new Map<string, ClaudeHistoryEntry[]>();
-  for (const entry of entries) {
-    if (!entry.rootKey) continue;
-    const members = families.get(entry.rootKey);
-    if (members) members.push(entry);
-    else families.set(entry.rootKey, [entry]);
+  const sides = new Map<string, string>();
+  const byId = new Map(entries.map((e) => [e.sessionId, e]));
+  const ids = new Set([...byId.keys(), ...visible]);
+  for (const id of ids) {
+    const recorded = desktop.sessions.get(id);
+    const entry = byId.get(id);
+    const parent = recorded?.parent ?? entry?.forkedFrom;
+    if (!parent || parent === id || !visible.has(parent) || !visible.has(id)) continue;
+    if (recorded?.parent && recorded.side) sides.set(id, parent);
+    else parents.set(id, parent);
   }
-  for (const members of families.values()) {
-    if (members.length < 2) continue;
-    members.sort((a, b) => (a.bornMs ?? a.mtimeMs) - (b.bornMs ?? b.mtimeMs) || a.mtimeMs - b.mtimeMs || a.sessionId.localeCompare(b.sessionId));
-    for (const member of members.slice(1)) parents.set(member.sessionId, members[0].sessionId);
-  }
-  for (const entry of entries) {
-    const explicit = desktop?.get(entry.sessionId)?.forkedFrom ?? entry.forkedFrom;
-    if (explicit && explicit !== entry.sessionId && visible.has(explicit)) parents.set(entry.sessionId, explicit);
-  }
-  // an explicit parent must never close a loop with an inferred one
+  // recorded ids could still loop (a hand-edited index): a loop links nothing
   for (const id of parents.keys()) {
     const seen = new Set<string>([id]);
     for (let at = parents.get(id); at; at = parents.get(at)) {
@@ -568,19 +577,18 @@ export function claudeForks(
       seen.add(at);
     }
   }
-  for (const [id, parent] of parents) if (!visible.has(id) || !visible.has(parent)) parents.delete(id);
-  return parents;
+  return { forks: parents, sides };
 }
 
-function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined): LocalSession {
+function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry | undefined, live: LiveClaudeSession | undefined, sidebar?: DesktopSessionState): LocalSession {
   const configDir = clipUnits(rawConfigDir, CLI_LIMITS.configDir);
   const base = entry?.lastTimestamp ?? entry?.mtimeMs ?? 0;
   const result: LocalSession = {
     engine: "claude",
     nativeId: sessionId,
     configDir,
-    cwd: clipUnits(live?.cwd || entry?.cwd || "", CLI_LIMITS.cwd),
-    title: claudeTitle(entry, live),
+    cwd: clipUnits(live?.cwd || entry?.cwd || sidebar?.cwd || "", CLI_LIMITS.cwd),
+    title: claudeTitle(entry, live, sidebar?.title),
     state: live ? live.state : "stopped",
     lastActivityAt: Math.max(0, Math.round(live ? Math.max(base, live.updatedAt) : base)),
     transcript: entry?.transcript ?? "",

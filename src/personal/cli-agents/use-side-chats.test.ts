@@ -187,6 +187,13 @@ describe("drafts and tabs", () => {
     expect(latest.tabs.map((tab) => tab.id)).toEqual([latest.draft!.id]);
   });
 
+  it("lists the desktop app's /btw questions of the open session as tabs (Core's sideOf), titled as the app titles them", async () => {
+    const btw = session({ nativeId: "btw1", title: "这个函数为什么慢", sideOf: parent.nativeId });
+    const other = session({ nativeId: "btw2", title: "别处的", sideOf: "someone-else" });
+    await mount(emptyHost(), [parent, btw, other]);
+    expect(latest.tabs).toEqual([{ id: btw.key, title: "这个函数为什么慢" }]);
+  });
+
   it("does nothing outside the preview when no host is given", async () => {
     await act(async () => { root.render(createElement(() => { latest = useSideChats(parent.key, [parent]); return null; })); });
     await open();

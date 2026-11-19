@@ -51,7 +51,16 @@ export interface InboxSendOptions {
   connectMs?: number;
   pollMs?: number;
   uuid?: () => string;
+  /** The user pressed Stop: the inbox's priority `now` aborts the running turn (Claude
+   * Code's own "send now"), and the words ask the model to stop and say where. */
+  stop?: boolean;
 }
+
+/** What Stop sends: start nothing else, say in one sentence where it stopped. */
+export const INBOX_STOP =
+  "[NexBot 远程停止 / NexBot remote stop]\n" +
+  "用户在 NexBot 上按了停止：请立即停下当前的工作，不要开始任何新的事情，用一句话说明停在了哪里（用本会话的语言）。\n" +
+  "The user pressed Stop in NexBot: stop what you are doing now, start nothing else, and say in one sentence where you stopped, in this conversation's language.";
 
 export interface InboxResult {
   delivery: CliDelivery;
@@ -196,16 +205,16 @@ function sleep(ms: number): Promise<void> {
 /** Writes `text` to the session's inbox. Throws InboxError when it could not be written;
  * otherwise says whether the transcript showed it arrive (`unconfirmed` is no failure and is never retried). */
 export async function sendToInbox(target: InboxTarget, text: string, options: InboxSendOptions = {}): Promise<InboxResult> {
-  if (isSlashCommand(text)) throw new InboxError("invalid", "不能发送斜杠命令");
+  if (!options.stop && isSlashCommand(text)) throw new InboxError("invalid", "不能发送斜杠命令");
   const platform = options.platform ?? process.platform;
   const messageId = (options.uuid ?? randomUUID)();
   const line =
     JSON.stringify({
       type: "user",
-      message: { role: "user", content: inboxMessageText(text) },
+      message: { role: "user", content: options.stop ? INBOX_STOP : inboxMessageText(text) },
       msgV: 1,
       msg_id: messageId,
-      priority: "next",
+      priority: options.stop ? "now" : "next",
       session_id: target.sessionId,
     }) + "\n";
   if (Buffer.byteLength(line, "utf8") > FRAME_MAX) throw new InboxError("too_large", "内容太长");
@@ -227,7 +236,7 @@ export async function sendToInbox(target: InboxTarget, text: string, options: In
   const waiting = options.state === "waiting";
   const file = options.transcript;
   if (!file || before === null) return { delivery: "unconfirmed", waiting };
-  const markers = [messageId, "NexBot remote message"];
+  const markers = [messageId, options.stop ? "NexBot remote stop" : "NexBot remote message"];
   const deadline = Date.now() + (options.confirmMs ?? CONFIRM_MS);
   let from = before;
   for (;;) {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_SESSIONS, parseCliSessionWire, type CliSessionRef } from "../../../shared/cli-agents.ts";
 import { resetClaudeHistoryCache } from "./claude.ts";
-import { RepoRoots } from "./device-git.ts";
+import type { RepoRootLookup } from "./device-git.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import { resetProcessStartCache, type CommandRunner } from "./liveness.ts";
 
@@ -295,15 +295,20 @@ describe("SessionDiscovery nexbot terminals", () => {
 });
 
 describe("SessionDiscovery project and fork fields", () => {
-  const fakeRoots = (map: Record<string, string>, calls: string[] = []) =>
-    new RepoRoots({
-      platform: "linux",
-      run: async (cwd) => {
-        calls.push(cwd);
-        if (!map[cwd]) throw Object.assign(new Error("fatal: not a git repository"), { code: 128 });
-        return `${map[cwd]}/.git\n`;
+  // the lookup itself is covered in device-git.test.ts; here only what discovery does with its answers
+  const fakeRoots = (map: Record<string, string>, calls: string[] = []): RepoRootLookup => {
+    const known = new Map<string, string | null>();
+    return {
+      peek: (cwd) => known.get(cwd),
+      warm: async (cwds) => {
+        for (const cwd of cwds) {
+          if (known.has(cwd)) continue;
+          calls.push(cwd);
+          known.set(cwd, map[cwd] ?? null);
+        }
       },
-    });
+    };
+  };
 
   it("reports the repository root git resolves for each session's cwd, and none for other folders", async () => {
     claudeTranscript(CID(1), "in a repo");

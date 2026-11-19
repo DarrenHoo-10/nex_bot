@@ -2,7 +2,7 @@
 // creation against real temporary repositories, the way the review fixture
 // does. No shell interpolation, argument arrays only.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -97,54 +97,65 @@ describe("repository roots", () => {
     expect(await roots.resolve("relative/dir")).toBeNull();
   });
 
-  it("asks git with an argument array, strips the extended-length prefix and uses the common dir's parent", async () => {
-    const calls: string[][] = [];
-    const run = async (_cwd: string, args: string[]): Promise<string> => {
-      calls.push(args);
-      return "\\\\?\\D:/proj/.git\n";
-    };
-    const roots = new RepoRoots({ run, platform: "win32" });
-    expect(await roots.resolve("D:\\proj\\.claude\\worktrees\\zen-kilby-6e0402")).toBe("D:\\proj");
-    expect(calls).toEqual([["rev-parse", "--path-format=absolute", "--git-common-dir"]]);
+  it("reads the files git writes and runs no git: a .git folder, a worktree's gitdir and commondir, a submodule", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "nex-device-git-layout-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const proj = path.join(root, "proj");
+    mkdirSync(path.join(proj, ".git", "worktrees", "zen"), { recursive: true });
+    writeFileSync(path.join(proj, ".git", "worktrees", "zen", "commondir"), "../..\n");
+    const zen = path.join(proj, ".claude", "worktrees", "zen");
+    mkdirSync(path.join(zen, "src"), { recursive: true });
+    // git writes forward slashes into the gitdir pointer, on Windows too
+    writeFileSync(path.join(zen, ".git"), "gitdir: " + path.join(proj, ".git", "worktrees", "zen").replaceAll("\\", "/") + "\n");
+    const sub = path.join(root, "super", "sub");
+    mkdirSync(path.join(root, "super", ".git", "modules", "sub"), { recursive: true });
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(path.join(sub, ".git"), "gitdir: ../.git/modules/sub\n");
+    const roots = new RepoRoots({ home: path.join(root, "home") });
+    expect(await roots.resolve(path.join(proj, "a", "b"))).toBe(proj);
+    expect(await roots.resolve(path.join(zen, "src"))).toBe(proj);
+    // a submodule's gitdir has no commondir back to a main checkout: its own folder is the project
+    expect(await roots.resolve(sub)).toBe(sub);
   });
 
-  it("falls back to the top level when the common dir is not <root>/.git (a submodule or bare repository)", async () => {
-    const run = async (_cwd: string, args: string[]): Promise<string> => (args.includes("--git-common-dir") ? "/super/.git/modules/sub\n" : "/super/sub\n");
-    expect(await new RepoRoots({ run, platform: "linux" }).resolve("/super/sub/src")).toBe("/super/sub");
+  it("strips the extended-length prefix on Windows", async () => {
+    if (process.platform !== "win32") return;
+    const root = mkdtempSync(path.join(os.tmpdir(), "nex-device-git-long-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(path.join(root, ".git"));
+    expect(await new RepoRoots({ platform: "win32", home: String.raw`C:\nowhere` }).resolve("\\\\?\\" + path.join(root, "x"))).toBe(root);
   });
 
-  it("caches per directory with a TTL and runs each lookup once, even concurrently", async () => {
+  it("is no project in the home folder or above it", async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "nex-device-git-home-"));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    mkdirSync(path.join(home, ".git"));
+    const roots = new RepoRoots({ home });
+    expect(await roots.resolve(path.join(home, "Documents"))).toBeNull();
+    expect(await new RepoRoots({ home: path.join(home, "inner") }).resolve(home)).toBeNull();
+  });
+
+  it("caches per directory: a hit for 10 minutes, a miss for 2", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "nex-device-git-cache-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     let clock = 1000;
-    let runs = 0;
-    const run = async (): Promise<string> => {
-      runs += 1;
-      return "/proj/.git\n";
-    };
-    const roots = new RepoRoots({ run, platform: "linux", now: () => clock });
-    expect(roots.peek("/proj/a")).toBeUndefined();
-    await Promise.all([roots.resolve("/proj/a"), roots.resolve("/proj/a"), roots.warm(["/proj/a", "/proj/b"])]);
-    expect(runs).toBe(2);
-    expect(roots.peek("/proj/a")).toBe("/proj");
+    const roots = new RepoRoots({ home: path.join(root, "home"), now: () => clock });
+    const plain = path.join(root, "plain");
+    mkdirSync(plain);
+    expect(roots.peek(plain)).toBeUndefined();
+    await roots.warm([plain, plain]);
+    expect(roots.peek(plain)).toBeNull();
+    mkdirSync(path.join(plain, ".git"));
     clock += 60_000;
-    await roots.warm(["/proj/a"]);
-    expect(runs).toBe(2);
-    clock += 11 * 60_000;
-    expect(roots.peek("/proj/a")).toBeUndefined();
-    await roots.warm(["/proj/a"]);
-    expect(runs).toBe(3);
-  });
-
-  it("remembers that git is missing instead of spawning it for every directory", async () => {
-    let runs = 0;
-    const run = async (): Promise<string> => {
-      runs += 1;
-      return noGit();
-    };
-    const roots = new RepoRoots({ run, platform: "linux" });
-    await roots.warm(["/a", "/b", "/c", "/d", "/e", "/f", "/g", "/h"]);
-    // the first batch runs in parallel; every later directory short-circuits
-    expect(runs).toBeLessThanOrEqual(4);
-    expect(roots.peek("/h")).toBeNull();
+    expect(roots.peek(plain)).toBeNull();
+    clock += 2 * 60_000;
+    expect(roots.peek(plain)).toBeUndefined();
+    await roots.warm([plain]);
+    expect(roots.peek(plain)).toBe(plain);
+    clock += 9 * 60_000;
+    expect(roots.peek(plain)).toBe(plain);
+    clock += 2 * 60_000;
+    expect(roots.peek(plain)).toBeUndefined();
   });
 });
 

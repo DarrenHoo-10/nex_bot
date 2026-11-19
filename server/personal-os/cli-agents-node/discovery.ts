@@ -20,10 +20,10 @@ import {
   type LiveClaudeSession,
   type ScanLiveOptions,
 } from "./claude.ts";
-import { ClaudeDesktopSessions, claudeDesktopRoots, type DesktopSessionState } from "./claude-desktop.ts";
+import { ClaudeDesktopSessions, claudeDesktopRoots, desktopAlwaysListed, EMPTY_DESKTOP_INDEX, type DesktopIndex } from "./claude-desktop.ts";
 import { CodexScanner, codexHomes, type CodexScannerOptions } from "./codex.ts";
 import type { CodexAppDb } from "./codex-app-db.ts";
-import type { RepoRoots } from "./device-git.ts";
+import type { RepoRootLookup } from "./device-git.ts";
 import type { AppChat, LocalSession, SendRoute } from "./items.ts";
 import { ZcodeScanner, type ZcodeScannerOptions } from "./zcode.ts";
 
@@ -47,7 +47,7 @@ export interface SessionDiscoveryOptions {
   claudeDesktopRoots?: string[];
   /** resolves each session's `repoRoot` with git; opt-in like the ZCode homes, so tests that
    * spell out their sources never spawn git */
-  repoRoots?: RepoRoots;
+  repoRoots?: RepoRootLookup;
   /** sessions that run in a nex_bot terminal: ref to herdr-core terminal address */
   nexbotTerminals?: () => ReadonlyMap<string, string>;
   /** Codex threads loaded in a shared app-server daemon, per CODEX_HOME: `threads` is the last known
@@ -74,8 +74,8 @@ export class SessionDiscovery {
   private readonly zcodes: ZcodeScanner[];
   private readonly options: SessionDiscoveryOptions;
   private readonly desktop: ClaudeDesktopSessions | null;
-  /** the desktop app's per-session state (archived, fork parent) by CLI session id, from the last history scan */
-  private desktopState: ReadonlyMap<string, DesktopSessionState> = new Map();
+  /** the desktop app's sidebar index (sessions, earlier transcripts, deletions), from the last history scan */
+  private desktopIndex: DesktopIndex = EMPTY_DESKTOP_INDEX;
 
   private readonly live = new Map<string, LiveClaudeSession[]>();
   private readonly history = new Map<string, ClaudeHistoryEntry[]>();
@@ -278,23 +278,23 @@ export class SessionDiscovery {
   private scanHistoryRound(report = true): Promise<void> {
     if (this.historyBusy) return this.historyBusy;
     const run = (async () => {
-      await Promise.all([
-        ...this.claudeDirs.map(async (dir) => {
+      // the sidebar index first: every session it lists is read whatever its age
+      try {
+        if (this.desktop) this.desktopIndex = await this.desktop.scan();
+      } catch (error) {
+        this.fail(error);
+      }
+      const sidebar = desktopAlwaysListed(this.desktopIndex);
+      await Promise.all(
+        this.claudeDirs.map(async (dir) => {
           try {
-            const include = (this.live.get(dir) ?? []).map((l) => l.sessionId);
+            const include = [...(this.live.get(dir) ?? []).map((l) => l.sessionId), ...sidebar];
             this.history.set(dir, await scanHistory(dir, { now: this.now(), include }));
           } catch (error) {
             this.fail(error);
           }
         }),
-        (async () => {
-          try {
-            if (this.desktop) this.desktopState = await this.desktop.scan();
-          } catch (error) {
-            this.fail(error);
-          }
-        })(),
-      ]);
+      );
       if (report && !this.stopped) {
         await this.warmRoots();
         if (this.stopped) return;
@@ -337,7 +337,7 @@ export class SessionDiscovery {
       if (!existing || row.lastActivityAt > existing.lastActivityAt) merged.set(ref, row);
     };
     for (const dir of this.claudeDirs) {
-      for (const row of mergeClaude(dir, this.live.get(dir) ?? [], this.history.get(dir) ?? [], { desktop: this.desktopState })) add(row);
+      for (const row of mergeClaude(dir, this.live.get(dir) ?? [], this.history.get(dir) ?? [], { desktop: this.desktopIndex, now: this.now() })) add(row);
     }
     for (const rows of this.codex.values()) for (const row of rows) add(row);
     for (const rows of this.zcodeRows.values()) for (const row of rows) add(row);
@@ -396,10 +396,12 @@ export class SessionDiscovery {
     // a fork parent is only reported when it is in the list the report carries, so the
     // reference always resolves (the cap, an archive or a window edge may have dropped it)
     for (const [ref, row] of kept) {
-      if (row.forkOf === undefined) continue;
-      if (row.forkOf !== row.nativeId && kept.has(`${row.engine}:${row.forkOf}`)) continue;
+      const forkOk = row.forkOf === undefined || (row.forkOf !== row.nativeId && kept.has(`${row.engine}:${row.forkOf}`));
+      const sideOk = row.sideOf === undefined || (row.sideOf !== row.nativeId && kept.has(`${row.engine}:${row.sideOf}`));
+      if (forkOk && sideOk) continue;
       const next: Row = { ...row };
-      delete next.forkOf;
+      if (!forkOk) delete next.forkOf;
+      if (!sideOk) delete next.sideOf;
       kept.set(ref, next);
     }
     this.rows = kept;
@@ -469,6 +471,7 @@ function toWire(row: Row): CliSessionWire {
   if (row.sendVia !== undefined) wire.sendVia = row.sendVia;
   if (row.repoRoot !== undefined) wire.repoRoot = row.repoRoot;
   if (row.forkOf !== undefined) wire.forkOf = row.forkOf;
+  if (row.sideOf !== undefined) wire.sideOf = row.sideOf;
   if (row.model !== undefined) wire.model = row.model;
   if (row.cliVersion !== undefined) wire.cliVersion = row.cliVersion;
   if (row.writerUnknown !== undefined) wire.writerUnknown = row.writerUnknown;

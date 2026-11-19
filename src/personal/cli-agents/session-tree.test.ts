@@ -117,6 +117,14 @@ describe("fork nesting", () => {
     expect(titles(children[0].querySelector(":scope > .na-branch")!)).toEqual(["孙分支"]);
   });
 
+  it("leaves a side chat out of the tree: it is reached from its parent's side tabs", async () => {
+    await mount([
+      session({ nativeId: "a", title: "主会话", lastActivityAt: recent(30) }),
+      session({ nativeId: "q", title: "顺手一问", sideOf: "a", lastActivityAt: recent(5) }),
+    ]);
+    expect(titles(project("alpha"))).toEqual(["主会话"]);
+  });
+
   it("lets the workbench parent win over forkOf and ignores a fork of an unlisted session", async () => {
     const workbench = new Map<CliSessionKey, WorkbenchMeta>([["dev1:claude:b", { title: "B", parent: "dev1:claude:c" }]]);
     await mount([

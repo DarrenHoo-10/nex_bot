@@ -7,7 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INBOX_PREAMBLE, InboxError, canonicalSocketPath, inboxMessageText, isSlashCommand, keyFileName, sendToInbox, type InboxTarget } from "./inbox.ts";
+import { INBOX_PREAMBLE, INBOX_STOP, InboxError, canonicalSocketPath, inboxMessageText, isSlashCommand, keyFileName, sendToInbox, type InboxTarget } from "./inbox.ts";
 
 const SESSION = "11111111-2222-4333-8444-555555555555";
 const TOKEN = "peer-token-" + "a".repeat(24);
@@ -131,6 +131,15 @@ describe("sendToInbox", () => {
       priority: "next",
       session_id: SESSION,
     });
+  });
+
+  it("sends Stop at priority now with the stop words, a slash or not", async () => {
+    const inbox = await listen();
+    writeKey(inbox.socketPath);
+    await sendToInbox(target(inbox.socketPath), "", { platform: process.platform, uuid: () => "stop-1", stop: true });
+    await settle(inbox, 2);
+    const message = JSON.parse(inbox.lines[1]);
+    expect(message).toMatchObject({ type: "user", msg_id: "stop-1", priority: "now", session_id: SESSION, message: { role: "user", content: INBOX_STOP } });
   });
 
   it("confirms delivery when the transcript shows a queue entry", async () => {

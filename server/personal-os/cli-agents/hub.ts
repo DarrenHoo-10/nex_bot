@@ -178,7 +178,7 @@ export class CliAgentHub {
   /** `sendVia` has no column either: the device reports it again on every connection. */
   private readonly sendVia = new Map<string, CliSendVia>();
   /** `repoRoot` and `forkOf` have no column either (no migration): same lifetime as `sendVia`. */
-  private readonly placement = new Map<string, { repoRoot?: string; forkOf?: string }>();
+  private readonly placement = new Map<string, { repoRoot?: string; forkOf?: string; sideOf?: string }>();
   private readonly pending = new Map<string, Pending>();
   private readonly busyKeys = new Set<string>();
   private readonly watchers = new Map<string, Set<(message: ServerMessage) => void>>();
@@ -402,8 +402,8 @@ export class CliAgentHub {
         const viaChanged = via !== wire.sendVia;
         if (wire.sendVia) this.sendVia.set(key, wire.sendVia); else this.sendVia.delete(key);
         const place = this.placement.get(key);
-        const placeChanged = place?.repoRoot !== wire.repoRoot || place?.forkOf !== wire.forkOf;
-        if (wire.repoRoot || wire.forkOf) this.placement.set(key, { ...(wire.repoRoot ? { repoRoot: wire.repoRoot } : {}), ...(wire.forkOf ? { forkOf: wire.forkOf } : {}) });
+        const placeChanged = place?.repoRoot !== wire.repoRoot || place?.forkOf !== wire.forkOf || place?.sideOf !== wire.sideOf;
+        if (wire.repoRoot || wire.forkOf || wire.sideOf) this.placement.set(key, { ...(wire.repoRoot ? { repoRoot: wire.repoRoot } : {}), ...(wire.forkOf ? { forkOf: wire.forkOf } : {}), ...(wire.sideOf ? { sideOf: wire.sideOf } : {}) });
         else this.placement.delete(key);
         const values = this.columnsOf(deviceId, wire);
         const previous = existing.get(key);
@@ -995,6 +995,7 @@ export class CliAgentHub {
     const place = this.placement.get(key);
     if (place?.repoRoot) view.repoRoot = place.repoRoot;
     if (place?.forkOf) view.forkOf = place.forkOf;
+    if (place?.sideOf) view.sideOf = place.sideOf;
     if (this.writerUnknown.has(key)) view.writerUnknown = true;
     return view;
   }
