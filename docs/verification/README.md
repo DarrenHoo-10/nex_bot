@@ -493,4 +493,8 @@ switch and public verification); the device-executor upgrade stays with the next
 client release. The [0.9.36 release record](nexagent-workbench-release-20261119.md)
 covers the post-launch fixes and the remaining workbench features (repo grouping,
 forks, side chats, persisted notes, Chinese-first replies), migration 56, the Core
-deploy, Windows 0.9.36 and Android 0.2.35, and what stays unverified.
+deploy, Windows 0.9.36 and Android 0.2.35, and what stays unverified. The
+[0.9.37 release record](nexagent-desktop-sidebar-release-20261120.md) covers the
+session list following the Claude desktop app's sidebar (after nwverse/persona:
+one row per session, archived and deleted sessions left out, recorded lineage
+only, Stop through the inbox), Windows 0.9.37 and Android 0.2.36.
