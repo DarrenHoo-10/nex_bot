@@ -219,6 +219,11 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliTranscript.merge(base, [item("a", 1, text: "new")]).first?.text, "new", "same id replaces in place")
         XCTAssertEqual(CliTranscript.merge(base, [item("x", 5), item("x", 5)]).map(\.id), ["a", "c", "x"])
         XCTAssertEqual(CliTranscript.merge(base, [item("z", 1), item("z", 1)], reset: true).map(\.id), ["z"], "reset replaces and dedupes")
+        let kept = CliTranscript.reset([item("a", 1), item("b", 2), item("c", 3)], [item("b", 2), item("d", 4)])
+        XCTAssertEqual(kept.items.map(\.id), ["a", "b", "d"], "a reset page that starts at a shown item keeps the earlier ones")
+        XCTAssertTrue(kept.kept)
+        let replaced = CliTranscript.reset([item("a", 1)], [item("z", 9)])
+        XCTAssertEqual(replaced.items.map(\.id), ["z"]); XCTAssertFalse(replaced.kept)
         XCTAssertEqual(CliTranscript.prepend([item("c", 3, text: "shown")], [item("a", 1), item("c", 3, text: "old")]).map(\.text), ["", "shown"])
     }
 

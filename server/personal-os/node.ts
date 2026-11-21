@@ -9,6 +9,7 @@ import os from "node:os";
 import { ComputerExecutor } from "./computer.ts";
 import { CliAgentBridge, type CliAgentBridgeOptions } from "./cli-agents-node/bridge.ts";
 import { DEVICE_LEASE_MS } from "./devices.ts";
+import { CLI_LINK_FRAME_MAX } from "../../shared/cli-agents.ts";
 
 /** A call whose absolute lease is staler than this means the device clock is badly wrong, not merely drifting. */
 const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
@@ -129,7 +130,8 @@ export class DeviceNode {
   connect() {
     if (this.stopping || !this.config) return;
     const endpoint = new URL(this.config.origin); endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:"; endpoint.pathname = "/dcp/v1/connect";
-    const ws = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${this.config.token}` }, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 10_000 });
+    // Core may send one Agent attachment (base64 of CLI_ATTACH_MAX_BYTES) in a single message
+    const ws = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${this.config.token}` }, maxPayload: CLI_LINK_FRAME_MAX, handshakeTimeout: 10_000 });
     this.socket = ws; this.status = "连接中"; this.syncBridge(); this.changed();
     const hello = () => { if (this.socket !== ws || this.stopping) return; const cli = this.bridge; ws.send(JSON.stringify({ type: "hello", policyVersion: this.config!.policyVersion, read: !!this.config!.root, exec: this.config!.exec, computer: this.config!.computer === true && this.computer.available(), identity: this.identity(), platform: this.identity().platform, ...(cli ? { cliAgents: cli.capability() } : {}) })); };
     ws.on("open", () => { if (this.socket !== ws || this.stopping) return; const cli = this.bridge; if (cli) void cli.prepare().then(hello, hello); else hello(); });

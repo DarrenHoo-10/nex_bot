@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CliSessionKey } from "../../../shared/cli-agents";
 import { device, session } from "./fixtures";
 import { newlyWaiting, notifyWaiting, sessionStates } from "./notifications";
-import { canAttach, composerMode, deviceBlocker, folderLabel, foldHistory, forkParentKey, groupSessions, hiddenCount, isScratchCwd, normalizePath, projectGroups, projectOf, recentCwds, samePath, sendsOutside, sessionStatusLabel, sessionTitle, treeParents, waitingCount, worktreeName, worktreeRoot } from "./session-model";
+import { canAttach, composerMode, deviceBlocker, folderLabel, foldHistory, forkParentKey, groupSessions, hiddenCount, isScratchCwd, matchesTerms, moveProject, normalizePath, orderProjects, projectGroups, rememberProjects, projectOf, recentCwds, samePath, sendsOutside, sessionStatusLabel, sessionTitle, treeParents, waitingCount, worktreeName, worktreeRoot } from "./session-model";
 
 describe("grouping", () => {
   it("groups by computer, then agent, newest first, online computers first", () => {
@@ -250,5 +250,35 @@ describe("history fold", () => {
 
   it("does not fold a single older session", () => {
     expect(foldHistory(rows, parents({}), active("a", "b", "c", "d")).size).toBe(5);
+  });
+});
+
+describe("project order", () => {
+  const group = (key: string, latest: number, scratch = false) => ({ key, root: key, label: key, scratch, latest });
+
+  it("puts new projects first, keeps the saved order for the rest and the scratch group last", () => {
+    const groups = [group("s", 9, true), group("a", 5), group("b", 7), group("c", 1), group("d", 3)];
+    expect(orderProjects(groups, ["c", "a"]).map((g) => g.key)).toEqual(["b", "d", "c", "a", "s"]);
+    // nothing saved yet: newest activity first
+    expect(orderProjects(groups, []).map((g) => g.key)).toEqual(["b", "a", "d", "c", "s"]);
+  });
+
+  it("remembers new projects in front without moving known ones", () => {
+    expect(rememberProjects([group("a", 1), group("n", 2), group("s", 3, true)], ["x", "a"])).toEqual(["n", "x", "a"]);
+    expect(rememberProjects([group("a", 1)], ["x", "a"])).toEqual(["x", "a"]);
+  });
+
+  it("moves a dragged project before or after the one it was dropped on", () => {
+    expect(moveProject(["a", "b", "c"], "c", "a", false)).toEqual(["c", "a", "b"]);
+    expect(moveProject(["a", "b", "c"], "a", "b", true)).toEqual(["b", "a", "c"]);
+    expect(moveProject(["a", "b"], "a", "missing", true)).toEqual(["a", "b"]);
+  });
+});
+
+describe("search terms", () => {
+  it("needs every term, in any order and case", () => {
+    expect(matchesTerms("修复 Login 页面", "login 修复")).toBe(true);
+    expect(matchesTerms("修复 Login 页面", "login 注册")).toBe(false);
+    expect(matchesTerms("anything", "  ")).toBe(true);
   });
 });

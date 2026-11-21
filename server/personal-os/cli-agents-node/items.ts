@@ -160,7 +160,9 @@ export function summarizeInput(input: unknown): string {
   if (typeof input.subject === "string" && typeof input.description === "string") {
     return summary(JSON.stringify({ subject: truncateUtf8(input.subject, 200), taskId: input.taskId, status: input.status }));
   }
-  for (const key of ["command", "file_path", "path", "pattern", "url", "query", "prompt", "description"]) {
+  // a sub-agent call names its task (Claude's Agent `description`, Codex's spawn_agent `task_name`);
+  // `prompt` and `message` are the whole brief
+  for (const key of ["command", "file_path", "path", "pattern", "url", "query", "task_name", "description", "prompt"]) {
     const value = input[key];
     if (typeof value === "string" && value) return summary(value);
     if (key === "command" && Array.isArray(value) && value.every((part) => typeof part === "string")) return summary(value.join(" "));

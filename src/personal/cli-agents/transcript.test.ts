@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CliItem } from "../../../shared/cli-agents";
 import { assistantItem, toolItem, userItem } from "./fixtures";
-import { activityStats, groupItems, mergeItems, oldestId, prependItems, toolSummary, type ActivityItem } from "./transcript";
+import { activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
 
 const ids = (items: readonly CliItem[]) => items.map((item) => item.id);
 const thinking = (id: string, ts: number): CliItem => ({ kind: "thinking", id, ts, text: "想一想" });
@@ -37,6 +37,32 @@ describe("mergeItems", () => {
     const existing = [userItem("u1", 1)];
     mergeItems(existing, [assistantItem("a1", 2)]);
     expect(existing).toHaveLength(1);
+  });
+});
+
+describe("resetItems", () => {
+  it("keeps the earlier pages the reader loaded when the newest page is sent again", () => {
+    const shown = [userItem("u1", 1), assistantItem("a1", 2), userItem("u2", 3), toolItem("t1", 4, "running")];
+    const { items, kept } = resetItems(shown, [userItem("u2", 3), toolItem("t1", 4, "ok"), assistantItem("a2", 5)]);
+    expect(ids(items)).toEqual(["u1", "a1", "u2", "t1", "a2"]);
+    expect(items[3]).toMatchObject({ status: "ok" });
+    expect(kept).toBe(true);
+  });
+
+  it("drops what the page no longer has after its first item (a rewind)", () => {
+    const { items } = resetItems([userItem("u1", 1), userItem("u2", 2), assistantItem("gone", 3)], [userItem("u2", 2), assistantItem("a2", 4)]);
+    expect(ids(items)).toEqual(["u1", "u2", "a2"]);
+  });
+
+  it("replaces everything when the page shares nothing with the list", () => {
+    expect(resetItems([userItem("old", 1)], [userItem("u1", 2)])).toEqual({ items: [userItem("u1", 2)], kept: false });
+    expect(resetItems([userItem("old", 1)], [])).toEqual({ items: [], kept: false });
+  });
+});
+
+describe("userTurns", () => {
+  it("counts user messages", () => {
+    expect(userTurns([userItem("u1", 1), assistantItem("a1", 2), toolItem("t1", 3), userItem("u2", 4)])).toBe(2);
   });
 });
 

@@ -9,7 +9,7 @@ import { access, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { CLI_ENGINES, type CliEngine } from "../../../shared/cli-agents.ts";
+import { CLI_ENGINES, isCliEffort, isCliModel, type CliEngine, type CliLaunchOptions } from "../../../shared/cli-agents.ts";
 
 export { CLI_ENGINES, type CliEngine };
 /** `fork`: a new session that starts from the context of another one (`forkFrom`). */
@@ -199,9 +199,37 @@ export function validatePluginDir(dir: string, platform: NodeJS.Platform = proce
   return dir;
 }
 
+/** What `cliArgs` takes: the ids plus the model and effort the user picked. */
+export type LaunchArgs = Partial<LaunchIds> & CliLaunchOptions;
+
+/** The model and effort flags: Claude Code 2.1 `--model <m> --effort <level>`,
+ * Codex 0.163 `-m <m> -c model_reasoning_effort=<level>` (after `resume <id>` /
+ * `fork <id>`, whose subcommands take the same options). A model name may carry
+ * `[` `]` (`opus[1m]`): it is checked against CLI_MODEL_RE instead of SAFE_ARG;
+ * neither bracket means anything to cmd.exe, and it can never start with `-`. */
+function launchFlags(engine: CliEngine, options: CliLaunchOptions): string[] {
+  const { model, effort } = options;
+  if (model === undefined && effort === undefined) return [];
+  if (engine === "zcode") throw new LaunchError("invalid_argument", "ZCode cannot choose a model or effort");
+  if (model !== undefined && !isCliModel(model)) throw new LaunchError("invalid_argument", "the model name is not allowed");
+  if (effort !== undefined && !isCliEffort(engine, effort)) throw new LaunchError("invalid_argument", `${engine} has no effort ${JSON.stringify(effort)}`);
+  const flags: string[] = [];
+  if (engine === "claude") {
+    if (model !== undefined) flags.push("--model", model);
+    if (effort !== undefined) flags.push("--effort", effort);
+  } else {
+    if (model !== undefined) flags.push("-m", model);
+    if (effort !== undefined) flags.push("-c", `model_reasoning_effort=${effort}`);
+  }
+  for (const flag of flags) {
+    if (flag !== model && !SAFE_ARG.test(flag)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(flag)} is not allowed`);
+  }
+  return flags;
+}
+
 /** The CLI arguments (without the executable). New Claude sessions get an id we
  * choose so the transcript can be found at once; Codex assigns its own. */
-export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<LaunchIds> = {}, options: PlatformOptions = {}): string[] {
+export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: LaunchArgs = {}, options: PlatformOptions = {}): string[] {
   let args: string[];
   if (mode === "fork") {
     if (!ids.forkFrom) throw new LaunchError("invalid_argument", "a fork needs the session to fork");
@@ -245,6 +273,7 @@ export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<Launch
   for (const arg of args) {
     if (!SAFE_ARG.test(arg)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(arg)} is not allowed`);
   }
+  args.push(...launchFlags(engine, ids));
   if (ids.pluginDir !== undefined) {
     if (engine !== "claude") throw new LaunchError("invalid_argument", "only Claude takes a plugin directory");
     args.push("--plugin-dir", validatePluginDir(ids.pluginDir, options.platform ?? process.platform));
@@ -262,7 +291,7 @@ export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: Partial<Launch
 export function buildArgv(
   engine: CliEngine,
   mode: LaunchMode,
-  ids: Partial<LaunchIds>,
+  ids: LaunchArgs,
   executable: string,
   options: PlatformOptions & { wrapCmd?: boolean } = {},
 ): string[] {
@@ -358,7 +387,7 @@ export interface PlannedLaunch {
 
 /** Everything `terminal.run` needs for one Agent mode terminal. */
 export async function planLaunch(
-  input: { engine: CliEngine; mode: LaunchMode; nativeId?: string; forkFrom?: string; key?: string; cwd: string; executable?: string; hooks?: HookLaunch },
+  input: { engine: CliEngine; mode: LaunchMode; nativeId?: string; forkFrom?: string; key?: string; cwd: string; executable?: string; hooks?: HookLaunch } & CliLaunchOptions,
   options: PlatformOptions & { homedir?: string; wrapCmd?: boolean } = {},
 ): Promise<PlannedLaunch> {
   const cwd = await validateCwd(input.cwd, options);
@@ -375,7 +404,13 @@ export async function planLaunch(
   const argv = buildArgv(
     input.engine,
     input.mode,
-    { nativeId: input.nativeId, ...(input.forkFrom ? { forkFrom: input.forkFrom } : {}), ...(hooks ? { pluginDir: hooks.pluginDir } : {}) },
+    {
+      nativeId: input.nativeId,
+      ...(input.forkFrom ? { forkFrom: input.forkFrom } : {}),
+      ...(hooks ? { pluginDir: hooks.pluginDir } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.effort !== undefined ? { effort: input.effort } : {}),
+    },
     executable,
     options,
   );

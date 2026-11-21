@@ -187,6 +187,19 @@ public enum CliTranscript {
         return out
     }
 
+    /// A reset page (the newest page sent again). When it starts at an item already shown, everything before
+    /// that item stays, so earlier pages the reader loaded survive; `kept` says so. A page that shares nothing
+    /// with the list replaces it.
+    public static func reset(_ existing: [CliItem], _ incoming: [CliItem]) -> (items: [CliItem], kept: Bool) {
+        let page = dedupe(incoming)
+        guard let first = page.first, let at = existing.firstIndex(where: { $0.id == first.id }), at > 0 else { return (page, false) }
+        let fresh = Set(page.map(\.id))
+        return (existing[..<at].filter { !fresh.contains($0.id) } + page, true)
+    }
+
+    /// User messages in the list, to tell whether earlier turns are in view.
+    public static func userTurns(_ items: [CliItem]) -> Int { items.filter { $0.kind == .user }.count }
+
     /// An older page goes in front; items already shown win over the page's copy.
     public static func prepend(_ existing: [CliItem], _ older: [CliItem]) -> [CliItem] {
         let shown = Set(existing.map(\.id))

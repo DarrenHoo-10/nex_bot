@@ -16,14 +16,32 @@ export function saveExtras(key:string,value:ComposerExtras){
   if(!value.files.length && value.goal===null)extras.delete(key);else extras.set(key,value);
   try{if(value.goal===null)sessionStorage.removeItem(goalKey(key));else sessionStorage.setItem(goalKey(key),value.goal)}catch{/* memory still works */}
 }
+/** The model and effort chosen for a session, kept in this browser. */
+const launchKey=(key:string)=>"nexagent.launch."+key;
+export function getLaunch(key:string):{model:string;effort:string}{
+  try{const value=JSON.parse(localStorage.getItem(launchKey(key))||"{}") as {model?:unknown;effort?:unknown};
+    return {model:typeof value.model==="string"?value.model:"",effort:typeof value.effort==="string"?value.effort:""};
+  }catch{return {model:"",effort:""}}
+}
+export function saveLaunch(key:string,value:{model:string;effort:string}){
+  try{if(!value.model&&!value.effort)localStorage.removeItem(launchKey(key));else localStorage.setItem(launchKey(key),JSON.stringify(value))}catch{/* lasts for the page */}
+}
 export function transferGoal(from:string,to:string){
   const goal=getExtras(from).goal;
   if(goal!==null && from!==to)saveExtras(to,{...getExtras(to),goal});
+  if(from!==to && !getLaunch(to).model && !getLaunch(to).effort)saveLaunch(to,getLaunch(from));
 }
-export async function fileReference(entry:PickedFile,key:string,upload:boolean):Promise<string>{
+/** What a message says about an attached file. `upload` is true for the review fixture's endpoint, a
+ * function that puts the file on the session's computer, or false where only small text files go inline. */
+export async function fileReference(entry:PickedFile,key:string,upload:boolean|((file:File)=>Promise<{path:string}>)):Promise<string>{
   const {file}=entry;
   const cached=deliveredFiles.get(file);
   if(cached)return cached;
+  if(typeof upload==="function"){
+    const {path}=await upload(file);
+    const reference=(file.type.startsWith("image/")?"图片：":"附件：")+file.name+"\n"+path;
+    deliveredFiles.set(file,reference);return reference;
+  }
   if(!upload){
     if(file.size<=MAX_SEND_TEXT){
       try{const text=new TextDecoder("utf-8",{fatal:true}).decode(await file.arrayBuffer());

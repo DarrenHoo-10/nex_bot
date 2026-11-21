@@ -8,9 +8,11 @@
 //
 // Plan: docs/plans/2026-11-15-agent-mode-implementation.md sections 2, 4, 5.
 import {
+  CLI_ATTACH_MAX_BYTES,
   CLI_ERROR_CODES,
   CLI_ERROR_TEXT,
   CLI_LIMITS,
+  CLI_OUTDATED_TEXT,
   CLI_OP_MUTATING,
   CLI_OP_TIMEOUT_MS,
   CORE_ITEM_CACHE,
@@ -19,6 +21,7 @@ import {
   PAGE_SIZE,
   cliKey,
   cliRef,
+  hasCliFeature,
   parseCliKey,
   parseCliOpArgs,
   parseCliOpResult,
@@ -29,6 +32,7 @@ import {
   type CliErrorCode,
   type CliGitInfo,
   type CliItem,
+  type CliLaunchOptions,
   type CliOp,
   type CliOpArgs,
   type CliOpResult,
@@ -851,20 +855,67 @@ export class CliAgentHub {
 
   /** `forkFrom` starts the session from that session's context. An executor that does not list the
    * engine in `forkEngines` would ignore the field and open a blank session, so it is refused here. */
-  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string, forkFrom?: CliSessionRef): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
+  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
     if (forkFrom) {
       const caps = this.caps.get(deviceId);
       if (caps && !caps.forkEngines?.includes(engine)) throw new CliOpError("invalid", FORK_UNSUPPORTED);
     }
-    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}) });
+    const options = this.launchOptions(deviceId, launch);
+    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}), ...options });
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
   }
 
   /** Starts a session inside a fresh worktree of the repository at `cwd`; the
    * device dedups by requestId, so a retry reuses the tree it built. */
-  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
-    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, worktree: { branch, requestId } });
+  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
+    const options = this.launchOptions(deviceId, launch);
+    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, worktree: { branch, requestId }, ...options });
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
+  }
+
+  /** Model and effort only go to an executor that lists `launchOptions`: an older
+   * one would drop them from the args and start with its defaults unasked. */
+  private launchOptions(deviceId: string, launch: CliLaunchOptions): CliLaunchOptions {
+    const options: CliLaunchOptions = {
+      ...(launch.model !== undefined ? { model: launch.model } : {}),
+      ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
+    };
+    if (!Object.keys(options).length) return options;
+    const caps = this.caps.get(deviceId);
+    if (caps && !hasCliFeature(caps, "launchOptions")) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
+    return options;
+  }
+
+  /** Content search across the online computers that can search, in parallel. A
+   * computer that fails or runs out of time adds nothing; hits for sessions Core
+   * does not list are dropped. Newest activity first. */
+  async search(actor: string, query: string, limit?: number): Promise<Array<{ key: CliSessionKey; snippet: string }>> {
+    const devices = [...this.caps.entries()].filter(([, caps]) => hasCliFeature(caps, "search")).map(([deviceId]) => deviceId);
+    const answers = await Promise.allSettled(devices.map(async (deviceId) => {
+      const result = await this.op(actor, deviceId, null, "search", { query, ...(limit ? { limit } : {}) });
+      return result.hits.map((hit) => ({ key: asKey(cliKey(deviceId, hit.ref)), snippet: hit.snippet }));
+    }));
+    const hits: Array<{ key: CliSessionKey; snippet: string; at: number }> = [];
+    const seen = new Set<string>();
+    for (const answer of answers) {
+      if (answer.status !== "fulfilled") continue;
+      for (const hit of answer.value) {
+        const row = seen.has(hit.key) ? undefined : this.sessionRow(hit.key);
+        if (!row) continue;
+        seen.add(hit.key);
+        hits.push({ ...hit, at: Number(row.last_activity_at) });
+      }
+    }
+    return hits.sort((a, b) => b.at - a.at).map(({ key, snippet }) => ({ key, snippet }));
+  }
+
+  /** Puts a file on the session's computer for the CLI to read; the answer is its absolute path there. */
+  async attach(actor: string, key: string, name: string, bytes: Uint8Array): Promise<{ path: string }> {
+    const parsed = this.requireKey(key);
+    if (bytes.length > CLI_ATTACH_MAX_BYTES) throw new CliOpError("too_large", "附件不能超过 8 MB");
+    const caps = this.caps.get(parsed.deviceId);
+    if (caps && !hasCliFeature(caps, "attach")) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
+    return this.op(actor, parsed.deviceId, key, "attach", { ref: parsed.ref, name, data: Buffer.from(bytes).toString("base64") });
   }
 
   /** The Git snapshot of a session's repository, gathered on the device that
@@ -886,9 +937,10 @@ export class CliAgentHub {
     }
   }
 
-  async continueSession(actor: string, key: string): Promise<{ key: CliSessionKey; terminal: string }> {
+  async continueSession(actor: string, key: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal: string }> {
     const parsed = this.requireKey(key);
-    const result = await this.op(actor, parsed.deviceId, key, "continue", { ref: parsed.ref });
+    const options = this.launchOptions(parsed.deviceId, launch);
+    const result = await this.op(actor, parsed.deviceId, key, "continue", { ref: parsed.ref, ...options });
     return { key: cliKey(parsed.deviceId, result.ref), terminal: result.terminal };
   }
 

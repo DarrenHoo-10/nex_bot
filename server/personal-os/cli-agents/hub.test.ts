@@ -797,3 +797,112 @@ describe("summary", () => {
     expect(hub.list().sessions).toEqual([]);
   });
 });
+
+describe("search, launch options and attachments", () => {
+  const FULL = { ...CAP, features: ["search", "launchOptions", "attach"] };
+
+  it("searches the online computers that can, keys the hits, drops unknown sessions and survives a failing computer", async () => {
+    const f = await fixture();
+    const a = await connectDevice(f, "search-a", { cap: FULL });
+    const b = await connectDevice(f, "search-b", { cap: FULL });
+    const old = await connectDevice(f, "search-old");
+    a.sessions([wire("older", { lastActivityAt: 1000 }), wire("newer", { lastActivityAt: 5000 })], { full: true });
+    b.sessions([wire("b1", { lastActivityAt: 3000 })], { full: true });
+    old.sessions([wire("o1")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 4, "listed");
+    a.onOp = (message) => message.op === "search"
+      ? { ok: true, result: { hits: [{ ref: "claude:older", snippet: "old hit" }, { ref: "claude:newer", snippet: "new hit" }, { ref: "claude:ghost", snippet: "unknown" }] } }
+      : defaultOp(message);
+    b.onOp = (message) => message.op === "search" ? { ok: false, error: { code: "unknown" } } : defaultOp(message);
+
+    const found = await f.call(`cli-agents/search?q=${encodeURIComponent("部署 main")}`);
+    expect(found.status).toBe(200);
+    expect(found.data.hits).toEqual([
+      { key: keyOf(a, "newer"), snippet: "new hit" },
+      { key: keyOf(a, "older"), snippet: "old hit" },
+    ]);
+    expect(a.ops("search").at(-1)!.args).toEqual({ query: "部署 main" });
+    expect(b.ops("search")).toHaveLength(1);
+    // an executor without the feature is never asked
+    expect(old.ops("search")).toHaveLength(0);
+    // a search is not a change: nothing is recorded
+    expect(f.app.store.all("SELECT op FROM cli_agent_ops")).toEqual([]);
+
+    expect((await f.call("cli-agents/search?q=")).status).toBe(400);
+    expect((await f.call("cli-agents/search?q=%20%20")).status).toBe(400);
+    expect((await f.call(`cli-agents/search?q=${"x".repeat(201)}`)).status).toBe(400);
+  });
+
+  it("passes model and effort to a computer that can take them and refuses an older one", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "launch", { cap: FULL });
+    const old = await connectDevice(f, "launch-old");
+    device.sessions([wire("c1", { engine: "codex" })], { full: true });
+    old.sessions([wire("o1")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 2, "listed");
+    device.onOp = (message) => {
+      if (message.op === "start") return { ok: true, result: { ref: "claude:new1", terminal: "t" } };
+      if (message.op === "continue") return { ok: true, result: { ref: message.args.ref, terminal: "t2" } };
+      return defaultOp(message);
+    };
+
+    const started = await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", model: "opus", effort: "xhigh" });
+    expect(started).toMatchObject({ status: 200, data: { key: keyOf(device, "new1") } });
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", model: "opus", effort: "xhigh" });
+    const continued = await f.call("cli-agents/continue", { key: keyOf(device, "c1", "codex"), effort: "ultra" });
+    expect(continued.status).toBe(200);
+    expect(device.ops("continue").at(-1)!.args).toEqual({ ref: "codex:c1", effort: "ultra" });
+    // empty values are "not chosen", today's launch
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", model: "", effort: null })).status).toBe(200);
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj" });
+
+    // an effort the engine lacks, a model that is not a plain name
+    const before = device.ops().length;
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", effort: "ultra" })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", model: "--yolo" })).status).toBe(400);
+    expect((await f.call("cli-agents/continue", { key: keyOf(device, "c1", "codex"), effort: "turbo" })).status).toBe(400);
+    expect(device.ops()).toHaveLength(before);
+
+    const refused = await f.call("cli-agents/start", { deviceId: old.id, engine: "claude", cwd: "C:/proj", model: "opus" });
+    expect(refused).toMatchObject({ status: 400, data: { code: "invalid", error: "电脑端版本过旧，升级后可用" } });
+    const refusedContinue = await f.call("cli-agents/continue", { key: keyOf(old, "o1"), effort: "low" });
+    expect(refusedContinue.data.error).toBe("电脑端版本过旧，升级后可用");
+    expect(old.ops("start")).toHaveLength(0);
+    expect(old.ops("continue")).toHaveLength(0);
+  });
+
+  it("uploads an attachment as the raw body, forwards it as base64 and refuses what is too big or too old", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "attach", { cap: FULL });
+    const old = await connectDevice(f, "attach-old");
+    device.sessions([wire("a")], { full: true });
+    old.sessions([wire("o")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 2, "listed");
+    device.onOp = (message) => message.op === "attach" ? { ok: true, result: { path: "/tmp/nexbot-attachments/claude-a/1234abcd-shot.png" } } : defaultOp(message);
+    const upload = (key: string, name: string, body: Uint8Array | string, headers: Record<string, string> = {}) =>
+      fetch(`${f.app.origin}/api/cli-agents/attach?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, { method: "POST", headers: { Authorization: "Bearer " + OWNER, "Content-Type": "image/png", ...headers }, body })
+        .then(async (response) => ({ status: response.status, data: await response.json() as Record<string, any> }));
+
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255]);
+    const ok = await upload(keyOf(device, "a"), "截图 1.png", bytes);
+    expect(ok).toEqual({ status: 200, data: { path: "/tmp/nexbot-attachments/claude-a/1234abcd-shot.png" } });
+    const op = device.ops("attach").at(-1)!;
+    expect(op.args).toEqual({ ref: "claude:a", name: "截图 1.png", data: Buffer.from(bytes).toString("base64") });
+    // the file is neither in the op record nor in the audit trail; the audit keeps its size
+    expect(f.app.store.all("SELECT op FROM cli_agent_ops WHERE op='attach'")).toEqual([]);
+    const audit = f.app.store.all("SELECT details_json FROM audit_records WHERE action='cli.attach'").map((row) => String(row.details_json));
+    expect(audit).toHaveLength(1);
+    expect(JSON.parse(audit[0])).toMatchObject({ size: 8 });
+    expect(audit[0]).not.toContain("截图");
+
+    const tooBig = await upload(keyOf(device, "a"), "big.bin", new Uint8Array(8 * 1024 * 1024 + 1));
+    expect(tooBig).toMatchObject({ status: 413, data: { code: "too_large" } });
+    const outdated = await upload(keyOf(old, "o"), "a.png", bytes);
+    expect(outdated).toMatchObject({ status: 400, data: { code: "invalid", error: "电脑端版本过旧，升级后可用" } });
+    expect(old.ops("attach")).toHaveLength(0);
+    expect((await upload("bad key", "a.png", bytes)).status).toBe(400);
+    expect((await upload(keyOf(device, "a"), "", bytes)).status).toBe(400);
+    expect((await upload(keyOf(device, "a"), "a.png", bytes, { "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+    expect(device.ops("attach")).toHaveLength(1);
+  });
+});

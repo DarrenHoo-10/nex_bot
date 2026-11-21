@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CLI_ATTACH_MAX_BYTES,
+  CLI_EFFORTS,
+  CLI_LINK_FRAME_MAX,
+  CLI_MODELS,
+  CLI_OUTDATED_TEXT,
+  base64DecodedLength,
+  hasCliFeature,
+  isCliEffort,
+  isCliModel,
   CLI_ERROR_CODES,
   CLI_ERROR_TEXT,
   CLI_LIMITS,
@@ -257,6 +266,8 @@ describe("constants and tables", () => {
       open_local: 10_000,
       answer: 10_000,
       git: 20_000,
+      search: 10_000,
+      attach: 20_000,
     });
     expect([...CLI_OP_MUTATING].sort()).toEqual(["answer", "continue", "interrupt", "open_local", "send", "start", "steer"]);
   });
@@ -662,6 +673,8 @@ describe("parseCoreCliMessage", () => {
       open_local: { ref },
       answer: { id: "req-1", decision: "allow", answers: { "Which one?": "A" }, message: "ok" },
       git: { ref, action: "info" },
+      search: { query: "部署 main", limit: 20 },
+      attach: { ref, name: "截图.png", data: "aGk=" },
     };
     expect(Object.keys(ops).sort()).toEqual([...CLI_OPS].sort());
     for (const [op, args] of Object.entries(ops)) {
@@ -967,5 +980,81 @@ describe("cli.turn and cli.request", () => {
     ]) {
       expect(parseDeviceCliMessage(bad), JSON.stringify(bad)?.slice(0, 70)).toBeNull();
     }
+  });
+});
+
+describe("launch options", () => {
+  const ref = `codex:${UUID}`;
+  it("lists the efforts and suggested models of each engine", () => {
+    expect(CLI_EFFORTS.claude).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(CLI_EFFORTS.codex).toEqual(expect.arrayContaining(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]));
+    expect(CLI_EFFORTS.zcode).toEqual([]);
+    expect(CLI_MODELS.claude.map((m) => m.id)).toEqual(["fable", "opus", "sonnet", "haiku"]);
+    expect(CLI_MODELS.codex[0]).toEqual({ id: "gpt-6.2-sol", label: "gpt-6.2-sol" });
+    expect(CLI_MODELS.zcode).toEqual([]);
+    for (const engine of ["claude", "codex"] as const) for (const model of CLI_MODELS[engine]) expect(isCliModel(model.id)).toBe(true);
+  });
+  it("accepts model names and an engine's own efforts only", () => {
+    for (const ok of ["opus", "opus[1m]", "claude-opus-5-5", "gpt-6.2-sol", "us.anthropic.x:1"]) expect(isCliModel(ok), ok).toBe(true);
+    for (const bad of ["", "-m", "has space", "a;b", "a\"b", "x".repeat(101), 5]) expect(isCliModel(bad), String(bad)).toBe(false);
+    expect(isCliEffort("claude", "max")).toBe(true);
+    expect(isCliEffort("claude", "ultra")).toBe(false);
+    expect(isCliEffort("codex", "ultra")).toBe(true);
+    expect(isCliEffort("zcode", "low")).toBe(false);
+  });
+  it("carries model and effort on start and continue, and rejects what the engine lacks", () => {
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", model: "opus", effort: "xhigh" })).toEqual({ engine: "claude", cwd: "/x", model: "opus", effort: "xhigh" });
+    expect(parseCliOpArgs("continue", { ref, model: "gpt-6.2-sol", effort: "minimal" })).toEqual({ ref, model: "gpt-6.2-sol", effort: "minimal" });
+    expect(parseCliOpArgs("continue", { ref })).toEqual({ ref });
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", effort: "ultra" })).toBeNull();
+    expect(parseCliOpArgs("start", { engine: "zcode", cwd: "/x", effort: "low" })).toBeNull();
+    expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", model: "--dangerously" })).toBeNull();
+    expect(parseCliOpArgs("continue", { ref: `claude:${UUID}`, effort: "ultra" })).toBeNull();
+  });
+});
+
+describe("features", () => {
+  it("parses the feature list, drops names it does not know and stays valid without one", () => {
+    expect(parseCliAgentsCapability(capability)).not.toHaveProperty("features");
+    expect(parseCliAgentsCapability({ ...capability, features: ["search", "attach", "search", "teleport"] })?.features).toEqual(["search", "attach"]);
+    expect(parseCliAgentsCapability({ ...capability, features: "search" })).toBeNull();
+    expect(parseCliAgentsCapability({ ...capability, features: [1] })).toBeNull();
+    const parsed = parseCliAgentsCapability({ ...capability, features: ["launchOptions"] });
+    expect(hasCliFeature(parsed, "launchOptions")).toBe(true);
+    expect(hasCliFeature(parsed, "search")).toBe(false);
+    expect(hasCliFeature(null, "search")).toBe(false);
+    expect(CLI_OUTDATED_TEXT).toBe("电脑端版本过旧，升级后可用");
+  });
+});
+
+describe("search and attach ops", () => {
+  const ref = `claude:${UUID}`;
+  it("bounds the query and the limit", () => {
+    expect(parseCliOpArgs("search", { query: "foo bar" })).toEqual({ query: "foo bar" });
+    expect(parseCliOpArgs("search", { query: "foo", limit: 100 })).toEqual({ query: "foo", limit: 100 });
+    for (const bad of [{ query: "" }, { query: "   " }, { query: "x".repeat(201) }, { query: "x", limit: 0 }, { query: "x", limit: 101 }, { query: 5 }]) {
+      expect(parseCliOpArgs("search", bad), JSON.stringify(bad).slice(0, 80)).toBeNull();
+    }
+    expect(parseCliOpResult("search", { hits: [{ ref, snippet: "…found it…" }] })).toEqual({ hits: [{ ref, snippet: "…found it…" }] });
+    expect(parseCliOpResult("search", { hits: [{ ref: "nope", snippet: "" }] })).toBeNull();
+    expect(parseCliOpResult("search", { hits: Array.from({ length: 101 }, () => ({ ref, snippet: "" })) })).toBeNull();
+  });
+  it("takes canonical base64 up to the attachment cap", () => {
+    expect(base64DecodedLength("")).toBe(0);
+    expect(base64DecodedLength("aGk=")).toBe(2);
+    expect(base64DecodedLength("aGk")).toBe(-1);
+    expect(base64DecodedLength("a$k=")).toBe(-1);
+    expect(parseCliOpArgs("attach", { ref, name: "a.png", data: "aGk=" })).toEqual({ ref, name: "a.png", data: "aGk=" });
+    expect(parseCliOpArgs("attach", { ref, name: "", data: "aGk=" })).toBeNull();
+    expect(parseCliOpArgs("attach", { ref, name: "x".repeat(201), data: "aGk=" })).toBeNull();
+    expect(parseCliOpArgs("attach", { ref, name: "a", data: "not base64!" })).toBeNull();
+    const full = "A".repeat(Math.ceil(CLI_ATTACH_MAX_BYTES / 3) * 4);
+    expect(parseCliOpArgs("attach", { ref, name: "a", data: full })).not.toBeNull();
+    expect(parseCliOpArgs("attach", { ref, name: "a", data: full + "AAAA" })).toBeNull();
+    // the largest attach message fits in what the executor's link accepts
+    expect(JSON.stringify({ type: "cli.op", opId: "x".repeat(64), op: "attach", args: { ref, name: "x".repeat(200), data: full }, deadlineMs: 20_000 }).length).toBeLessThan(CLI_LINK_FRAME_MAX);
+    expect(parseCliOpResult("attach", { path: "/tmp/nexbot-attachments/x/a.png" })).toEqual({ path: "/tmp/nexbot-attachments/x/a.png" });
+    expect(parseCliOpResult("attach", { path: "C:\\Temp\\a.png" })).toEqual({ path: "C:\\Temp\\a.png" });
+    expect(parseCliOpResult("attach", { path: "relative.png" })).toBeNull();
   });
 });

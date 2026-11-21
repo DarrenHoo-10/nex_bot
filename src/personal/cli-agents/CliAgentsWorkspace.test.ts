@@ -195,9 +195,48 @@ describe("session pane", () => {
     });
     await click(container.querySelector('button[aria-label="发送"]'));
     await flush();
-    expect(fixture.continueSession).toHaveBeenCalledWith("dev1:claude:s1");
+    expect(fixture.continueSession).toHaveBeenCalledWith("dev1:claude:s1", undefined);
     expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:s9","继续测试", expect.objectContaining({ delivery: "send" }));
     expect(localStorage.getItem("nexbot.cliSelected")).toBe("dev1:claude:s9");
+  });
+
+  it("continues a stopped session with the model and effort picked in the composer", async () => {
+    fixture.continueSession.mockResolvedValue({ key: "dev1:claude:s9" });
+    const capable = device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "attach"] } });
+    await mount({ devices: [capable], sessions: [session({ state: "stopped", terminal: undefined })] }, "dev1:claude:s1");
+    await click(container.querySelector('button[aria-label="模型设置"]'));
+    const pick = async (label: string, value: string) => {
+      const select = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+      expect(select.disabled).toBe(false);
+      await act(async () => { select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    };
+    await pick("模型", "opus");
+    await pick("推理强度", "high");
+    expect(container.querySelector('[data-panel="model"] small')?.textContent).toBe("继续会话时生效");
+    const input = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "继续");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(container.querySelector('button[aria-label="发送"]'));
+    await flush();
+    expect(fixture.continueSession).toHaveBeenCalledWith("dev1:claude:s1", { model: "opus", effort: "high" });
+    expect(JSON.parse(localStorage.getItem("nexagent.launch.dev1:claude:s9")!)).toEqual({ model: "opus", effort: "high" });
+  });
+
+  it("switches a Claude running in a NexBot terminal with /model and /effort before the message", async () => {
+    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+    await click(container.querySelector('button[aria-label="模型设置"]'));
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="模型"]')!;
+    await act(async () => { select.value = "sonnet"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const input = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "下一步");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(container.querySelector('button[aria-label="发送"]'));
+    await flush();
+    expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model sonnet", "下一步"]);
   });
 
   it("sends a message with Enter and shows Core's error text", async () => {
@@ -245,7 +284,7 @@ describe("session pane", () => {
     expect(box.querySelector("textarea")?.getAttribute("placeholder")).toBe("发消息，或输入 / 使用技能");
     expect(box.querySelector('button[aria-label="添加"]')).not.toBeNull();
     expect(box.querySelector('button[aria-label="上下文用量"]')).not.toBeNull();
-    expect(box.querySelector(".na-model-label")?.textContent).toBe("claude-opus");
+    expect(box.querySelector('button[aria-label="模型设置"]')?.textContent).toBe("claude-opus");
     // running: a segmented switch and a stop button, no native select
     expect(box.querySelector("select")).toBeNull();
     const radios = [...box.querySelectorAll('[role=radiogroup][aria-label="发送方式"] [role=radio]')];

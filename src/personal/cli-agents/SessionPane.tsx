@@ -8,8 +8,8 @@ import type { CliItem, CliAnswerDecision, CliSessionKey, CliSessionView } from "
 import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
 import { useNotes } from "./use-notes";
-import {transferGoal} from "./composer-additions";
-import { Composer } from "./Composer";
+import {getLaunch,saveLaunch,transferGoal} from "./composer-additions";
+import { Composer, type LaunchChoice } from "./Composer";
 import { cardState, type RequestRecord } from "./requests";
 import { RequestCard } from "./RequestCard";
 import { askedSession, canAttach, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
@@ -37,11 +37,13 @@ export interface SessionPaneProps {
   compact?:boolean;
   /** the display name Core keeps for the session (renames, "（fork）"), over the CLI's own title */
   title?:string;
+  /** what the session's computer supports */
+  features?: readonly string[];
 }
 
 const NO_REQUESTS: readonly RequestRecord[] = [];
 
-export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onSideOpen, onTerminalOpen, sideCount = 0, compact, title }: SessionPaneProps) {
+export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features }: SessionPaneProps) {
   const review=useReview();
   const details=review?.records[session.key];
   const heading=details?.title||title?.trim()||sessionTitle(session);
@@ -57,6 +59,10 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const resumedKey = useRef<CliSessionKey|null>(null);
   const queue = useCliQueue(stream, session.key);
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
+  const [launch, setLaunch] = useState<LaunchChoice>(() => getLaunch(session.key));
+  /** what this page last told the running CLI, so a send only switches when the choice changed */
+  const applied = useRef<string>(JSON.stringify({ model: "", effort: "" }));
+  const chooseLaunch = (next: LaunchChoice) => { setLaunch(next); saveLaunch(session.key, next); };
   // From a send until the session answers: a resumed CLI can take a while to
   // print anything, and without this the page looks like nothing happened.
   const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean } | null>(null);
@@ -78,12 +84,24 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
     const known = new Set(items.map((item) => item.id));
+    const options = { ...(launch.model ? { model: launch.model } : {}), ...(launch.effort ? { effort: launch.effort } : {}) };
     if(session.state==="stopped" && !resumedKey.current){
       setAwaiting({ known, resuming: true });
-      try { resumedKey.current=(await continueSession(session.key)).key; }
+      // the chosen model and effort start the CLI (an older executor only takes a plain continue)
+      const launchOptions = !review && features?.includes("launchOptions") && Object.keys(options).length ? options : undefined;
+      try { resumedKey.current=(await continueSession(session.key, launchOptions)).key; }
       catch (cause) { setAwaiting(null); throw cause; }
+      applied.current = JSON.stringify(launch);
     }
     const key=resumedKey.current??session.key;
+    // a Claude in a NexBot terminal takes the change at once, typed as its own commands
+    if(!review && session.engine==="claude" && session.liveIn==="nexbot" && !!session.terminal && session.state!=="stopped" && applied.current!==JSON.stringify(launch)){
+      const before = JSON.parse(applied.current) as LaunchChoice;
+      for (const command of [launch.model && launch.model!==before.model ? "/model "+launch.model : "", launch.effort && launch.effort!==before.effort ? "/effort "+launch.effort : ""].filter(Boolean)) {
+        await sendMessage(key, command, { delivery: delivery ?? "send", clientMessageId: crypto.randomUUID(), requestId: crypto.randomUUID() });
+      }
+      applied.current = JSON.stringify(launch);
+    }
     let result: unknown;
     if(review&&details?.quote&&!details.quoteSent){
       result=await review.run("quoted-send",key,{text});
@@ -149,6 +167,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       </div> : null}
       <Composer
         session={session} notes={notes} onNotes={updateNotes}
+        features={features} launch={launch} onLaunch={chooseLaunch}
         onSend={send}
         onInterrupt={() => review ? interruptSession(session.key) : stop()}
         queue={queue}

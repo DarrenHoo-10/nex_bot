@@ -2,9 +2,10 @@
 // (and interrupt while running), continue a stopped session, or a plain hint
 // when the session cannot be driven from here.
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil } from "lucide-react";
-import { MAX_SEND_TEXT, utf8ByteLength, type CliSessionView } from "../../../shared/cli-agents";
-import { cliErrorText, type CliQueueEntry, type SendResult } from "./api";
+import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus } from "lucide-react";
+import { CLI_EFFORTS, CLI_MODELS, MAX_SEND_TEXT, utf8ByteLength, type CliSessionView } from "../../../shared/cli-agents";
+import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
+import { imageFilesFromClipboard } from "../transcript-session";
 import {fileReference,getExtras,saveExtras,type ComposerExtras} from "./composer-additions";
 import { composerMode } from "./session-model";
 import type { CliQueue } from "./api";
@@ -31,8 +32,19 @@ export interface SideDraftOptions {
   busy?:boolean;
   configure(model:string,effort:string):void;
 }
+/** The model and reasoning effort a session runs with; empty strings leave the CLI's own default. */
+export interface LaunchChoice { model: string; effort: string }
+
+/** Biggest attachment the computer accepts. */
+export const ATTACH_MAX = 8 * 1024 * 1024;
+
 export interface ComposerProps {
   draft?: SideDraftOptions;
+  /** what the session's computer supports (Core's device view); absent for older executors */
+  features?: readonly string[];
+  /** the model and effort chosen for this session, and where the choice goes */
+  launch?: LaunchChoice;
+  onLaunch?(next: LaunchChoice): void;
   notes?:Note[];
   onNotes?(notes:Note[]):void;
   session: CliSessionView;
@@ -49,7 +61,7 @@ export interface ComposerProps {
   onQueueResume?(): Promise<void>;
 }
 
-export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, queue=null, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, onQueueSteer, onQueueResume }: ComposerProps) {
+export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, features, launch, onLaunch, queue=null, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, onQueueSteer, onQueueResume }: ComposerProps) {
   const mode = draft ? {kind:"send",running:false,outside:false} as const : composerMode(session);
   const review=useReview(), details=draft?undefined:review?.records[session.key];
   const model=draft?.model || details?.model || review?.models[session.engine]?.[0] || session.model?.trim() || "";
@@ -75,8 +87,14 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   },[panel]);
   const key = draft?.id ?? session.key;
   const [extra,setExtra]=useState(()=>getExtras(key));
-  const picker=useRef<HTMLInputElement>(null),goalField=useRef<HTMLInputElement>(null);
+  const picker=useRef<HTMLInputElement>(null),imagePicker=useRef<HTMLInputElement>(null),goalField=useRef<HTMLInputElement>(null);
   function changeExtra(next:ComposerExtras){saveExtras(key,next);setExtra(next);setError("")}
+  function addFiles(files:File[]){
+    if(!files.length)return;
+    if(files.some(file=>file.size>ATTACH_MAX)){setError("单个附件不能超过 8 MB");return}
+    const current=getExtras(key);
+    changeExtra({...current,files:[...current.files,...files.map(file=>({id:crypto.randomUUID(),file}))]});
+  }
   // edit-and-resend: the original text loads in place; cancelling restores the
   // draft the user had, sending leaves the box empty like any send
   const revisionStash = useRef<string | null>(null);
@@ -89,6 +107,17 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const [note, setNote] = useState("");
   const imeEndedAt = useRef(0);
   const mounted = useRef(true);
+  // outside the review fixture: the CLI's own models and effort levels
+  const choice:LaunchChoice=draft?{model:draft.model,effort:draft.effort}:launch??{model:"",effort:""};
+  const models=CLI_MODELS[session.engine]??[], efforts=CLI_EFFORTS[session.engine]??[];
+  const canAttach=!!review?.fileUpload || !!features?.includes("attach");
+  const launchOptions=!!features?.includes("launchOptions");
+  /** a Claude in a NexBot terminal switches at once (/model, /effort); anything else on its next start */
+  const switchesNow=!draft && mode.kind==="send" && !mode.outside && session.engine==="claude";
+  const pickerOff=!launchOptions && !switchesNow;
+  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : switchesNow || draft ? "" : mode.kind==="stopped" ? "继续会话时生效" : "下次在 NexBot 中继续时生效";
+  const modelName=(id:string)=>models.find(m=>m.id===id)?.label??id;
+  function choose(next:LaunchChoice){if(draft)draft.configure(next.model,next.effort);else onLaunch?.(next)}
   function configure(nextModel:string,nextEffort:string) {
     if(draft)draft.configure(nextModel,nextEffort);
     else if(review)void run(()=>review.run("settings",session.key,{model:nextModel,effort:nextEffort}));
@@ -165,7 +194,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
     if (revisionId) revisionSent.current = true;
     const sent=await run(async()=>{
       const references=[];
-      for(const file of extra.files)references.push(await fileReference(file,session.key,!!review?.fileUpload));
+      // the computer keeps the file and the message names its path, which the CLI reads (images too)
+      const upload=review?.fileUpload ? true : features?.includes("attach") ? (file:File)=>uploadAttachment(session.key,file) : false;
+      for(const file of extra.files)references.push(await fileReference(file,session.key,upload));
       const value=[body,...references].filter(Boolean).join("\n\n");
       if(utf8ByteLength(value)>MAX_SEND_TEXT)throw Error("消息和附件内容超过可发送长度");
       if(active&&review)return review.run(delivery,session.key,{text:value});
@@ -190,11 +221,12 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   return (
     <form ref={formRef} className="cli-composer na-message-box" data-testid="cli-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
       <input type="file" hidden multiple ref={picker} aria-label="选择文件" onChange={e=>{
-        const files=Array.from(e.currentTarget.files||[]);e.currentTarget.value="";
-        if(files.some(file=>file.size>32*1024*1024)){setError("单个附件不能超过 32 MB");return}
-        if(files.length)changeExtra({...extra,files:[...extra.files,...files.map(file=>({id:crypto.randomUUID(),file}))]});
+        const files=Array.from(e.currentTarget.files||[]);e.currentTarget.value="";addFiles(files);
       }}/>
-      {!!extra.files.length && <div className="na-file-list">{extra.files.map(entry=><span key={entry.id} className="na-file-chip"><Paperclip size={14}/><span title={entry.file.name}>{entry.file.name}</span><button type="button" disabled={busy} aria-label={"移除 "+entry.file.name} onClick={()=>changeExtra({...extra,files:extra.files.filter(f=>f.id!==entry.id)})}><X size={12}/></button></span>)}</div>}
+      <input type="file" hidden multiple accept="image/*" ref={imagePicker} aria-label="选择图片" onChange={e=>{
+        const files=Array.from(e.currentTarget.files||[]);e.currentTarget.value="";addFiles(files);
+      }}/>
+      {!!extra.files.length && <div className="na-file-list">{extra.files.map(entry=><span key={entry.id} className="na-file-chip" data-image={entry.file.type.startsWith("image/")||undefined}>{entry.file.type.startsWith("image/")?<FileThumb file={entry.file}/>:<Paperclip size={14}/>}<span title={entry.file.name}>{entry.file.name}</span><button type="button" disabled={busy} aria-label={"移除 "+entry.file.name} onClick={()=>changeExtra({...extra,files:extra.files.filter(f=>f.id!==entry.id)})}><X size={12}/></button></span>)}</div>}
       {extra.goal!==null && <div className="na-goal-field"><Target size={15}/><label>目标<input autoFocus ref={goalField} aria-label="会话目标" placeholder="想持续完成什么？" value={extra.goal} disabled={busy} onChange={e=>changeExtra({...extra,goal:e.target.value})}/></label><button type="button" disabled={busy} aria-label="退出目标模式" onClick={()=>changeExtra({...extra,goal:null})}><X size={13}/></button></div>}
       {draft?.quote && <details className="na-selected-fragment"><summary><MessageSquareText size={14}/>1 个已选文本片段</summary><blockquote>{draft.quote}</blockquote></details>}
       {revision ? <div className="na-revising" role="status"><Pencil size={13}/>正在编辑已发送消息，发送后将作为新消息重发
@@ -227,6 +259,14 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         value={text}
         onChange={(event) => {change(event.target.value);if(review)setPanel(/^\/\S*$/.test(event.target.value)?"skill":null)}}
         onCompositionEnd={() => { imeEndedAt.current = Date.now(); }}
+        onPaste={(event) => {
+          // a pasted screenshot becomes an attachment, as in the assistant's composer
+          const images = imageFilesFromClipboard(event.clipboardData);
+          if (!images.length) return;
+          event.preventDefault();
+          if (!canAttach) { setError("电脑端版本过旧，升级后可发送图片"); return; }
+          addFiles(images);
+        }}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return;
           if (event.key === "Enter" && !event.shiftKey) {
@@ -240,11 +280,23 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           if(event.key!=="ArrowDown" && event.key!=="ArrowUp")return;
           event.preventDefault();const buttons=Array.from(event.currentTarget.querySelectorAll("button"));const at=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[(at+(event.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length]?.focus();
         }} aria-label="添加到消息">
+          <button type="button" disabled={!canAttach} title={!canAttach ? "电脑端版本过旧，升级后可发送图片" : undefined} onClick={()=>{setPanel(null);imagePicker.current?.click()}}><ImagePlus size={16}/><span>图片</span></button>
           <button type="button" onClick={()=>{setPanel(null);picker.current?.click()}}><Paperclip size={16}/><span>文件</span></button>
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
         </div>}
         {panel==="context"?<small role="status">当前 Harness 未提供上下文用量</small>:null}
         {panel==="skill"&&review?review.skills.filter(s=>!text.startsWith("/")||s.startsWith(text)).map(s=><button type="button" key={s} onClick={()=>{setSkill(s);if(text.startsWith("/"))change("");setPanel(null);draftRef.current?.focus()}}>{s}</button>):null}
+        {panel==="model"&&!review?<div className="na-model-pick">
+          <label>模型<select aria-label="模型" value={choice.model} disabled={pickerOff} onChange={e=>choose({...choice,model:e.target.value})}>
+            <option value="">{session.model?.trim()?"当前（"+session.model.trim()+"）":"默认"}</option>
+            {models.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+            {choice.model&&!models.some(m=>m.id===choice.model)?<option value={choice.model}>{choice.model}</option>:null}
+          </select></label>
+          {efforts.length?<label>推理强度<select aria-label="推理强度" value={choice.effort} disabled={pickerOff} onChange={e=>choose({...choice,effort:e.target.value})}>
+            <option value="">默认</option>{efforts.map(level=><option key={level} value={level}>{level}</option>)}
+          </select></label>:null}
+          {pickerNote?<small role="status">{pickerNote}</small>:null}
+        </div>:null}
         {panel==="model"&&review?<><label>模型<select aria-label="模型" value={model} onChange={e=>configure(e.target.value,effort)}>{(review.models[session.engine]??[]).map(m=><option key={m}>{m}</option>)}</select></label><label>推理强度<select aria-label="推理强度" value={effort} onChange={e=>configure(model!,e.target.value)}><option>标准</option><option>高</option></select></label></>:null}
         {panel==="notes"?notes.map(n=><div key={n.id}><b>{n.num}. {n.quote}</b><p>{n.body}</p><button type="button" onClick={()=>onNotes?.(notes.filter(v=>v.id!==n.id))}>移除</button></div>):null}
       </div>:null}
@@ -255,7 +307,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <button type="button" className="na-context" aria-label="上下文用量" title="查看上下文用量" aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><CircleDashed size={15}/></button>
           {review ? <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
             <span>{model}</span><span className="na-effort">{effort}</span><ChevronDown size={13}/>
-          </button> : model ? <span className="na-model-label" title="当前模型">{model}</span> : null}
+          </button> : <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
+            <span>{choice.model?modelName(choice.model):model||"默认模型"}</span>{choice.effort?<span className="na-effort">{choice.effort}</span>:null}<ChevronDown size={13}/>
+          </button>}
         </>
         {offersDelivery && <div className="na-delivery" role="radiogroup" aria-label="发送方式">
           {([["queue","排队"],["steer","引导"]] as const).map(([value,text])=><button key={value} type="button" role="radio" aria-checked={delivery===value} onClick={()=>setDelivery(value)}>{text}</button>)}
@@ -267,4 +321,16 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       {mode.kind==="send" && mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}
     </form>
   );
+}
+
+/** A small preview of an image about to be sent. A data: URL, since the page's CSP refuses blob: images. */
+function FileThumb({file}:{file:File}) {
+  const [url,setUrl]=useState("");
+  useEffect(()=>{
+    let live=true;const reader=new FileReader();
+    reader.onload=()=>{if(live&&typeof reader.result==="string")setUrl(reader.result)};
+    reader.readAsDataURL(file);
+    return ()=>{live=false;reader.abort()};
+  },[file]);
+  return url?<img className="na-file-thumb" src={url} alt=""/>:<Paperclip size={14}/>;
 }

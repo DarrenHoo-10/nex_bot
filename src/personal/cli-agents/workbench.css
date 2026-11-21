@@ -60,6 +60,21 @@
 .na-project{margin-left:9px}.na-folder{min-height:31px;padding:0 6px 0 2px;font-size:12px}
 .na-folder strong{flex:1;min-width:0;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .na-folder small,.na-folder svg{color:var(--na-muted)}
+/* the list header's icons: the clock turns green while sessions are listed by time */
+.na-nav-icons{display:flex;align-items:center;gap:2px}
+.na-stage .cli-app .na-nav-icon{width:28px;height:28px;display:grid;place-items:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--na-muted)}
+.na-stage .cli-app .na-nav-icon[aria-pressed="true"]{color:var(--na-accent);background:var(--na-soft)}
+.na-search-clear{display:grid;place-items:center;padding:0;border:0;background:transparent;color:var(--na-muted);cursor:pointer}
+/* a project's + shows while the pointer is on its row */
+.na-stage .cli-app .na-folder-new{width:22px;min-width:22px;height:24px;display:grid;place-items:center;padding:0;border:0;border-radius:5px;background:transparent;color:var(--na-muted);opacity:0}
+.na-folder:hover .na-folder-new,.na-folder:focus-within .na-folder-new{opacity:1}
+@media(hover:none){.na-folder .na-folder-new{opacity:1}}
+.na-folder[draggable="true"]{cursor:grab}.na-folder[data-dragging]{opacity:.45}
+.na-project{border-radius:6px}
+.na-project[data-drop="before"]{box-shadow:inset 0 2px var(--na-accent)}
+.na-project[data-drop="after"]{box-shadow:inset 0 -2px var(--na-accent)}
+.na-snippet{margin:-2px 6px 3px 40px;font-size:11.5px;line-height:16px;color:var(--na-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.na-flat{padding:0 2px}
 .na-branch{margin-left:8px;border-left:1px solid var(--na-line);padding-left:4px}
 .na-stage .cli-app .cli-row{border-radius:6px;min-height:32px;gap:1px;margin:1px 0}
 .na-stage .cli-app .cli-row:hover{background:var(--na-hover)}
@@ -170,6 +185,12 @@
 .na-file-list,.na-goal-field{flex:0 0 100%;display:flex;align-items:center;gap:6px;min-width:0}
 .na-file-list{flex-wrap:wrap}.na-file-chip,.na-goal-field{border:1px solid var(--na-line);background:var(--na-inset);border-radius:8px;padding:5px 7px;font-size:12px}
 .na-file-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%}.na-file-chip>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.na-file-thumb{width:28px;height:28px;border-radius:5px;object-fit:cover;flex:none}
+.na-file-chip[data-image]{padding:3px 7px 3px 3px}
+.na-model-pick{display:grid;gap:4px;min-width:240px}
+.na-model-pick label{white-space:nowrap}
+.na-model-pick select{min-width:128px}
+.na-model-pick small{padding:2px 4px;color:var(--na-muted);font-size:12px}
 .na-file-chip button,.na-goal-field button{display:grid;place-items:center;padding:3px;background:transparent;color:var(--na-muted);border:0}
 .na-goal-field{box-sizing:border-box;color:var(--na-accent)}
 .na-goal-field label{display:flex;align-items:center;flex:1;gap:8px;min-width:0;white-space:nowrap}

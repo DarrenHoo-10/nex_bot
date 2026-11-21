@@ -5,16 +5,23 @@
 // Errors are `{error, code}` with a 4xx status only: a 5xx from Core would be
 // rewritten by proxies in front of it and lose the code.
 import {
+  CLI_ATTACH_MAX_BYTES,
+  CLI_ATTACH_NAME_MAX,
   CLI_ERROR_TEXT,
   CLI_LIMITS,
+  CLI_SEARCH,
   MAX_SEND_TEXT,
   isAbsoluteCwd,
   isCliDeviceId,
+  isCliEffort,
   isCliEngine,
+  isCliModel,
   parseCliKey,
   utf8ByteLength,
   type CliDeliveryAction,
+  type CliEngine,
   type CliErrorCode,
+  type CliLaunchOptions,
   type CliSessionRef,
 } from "../../../shared/cli-agents.ts";
 import type { CoreStore } from "../store.ts";
@@ -33,6 +40,8 @@ export interface CliRouteRequest {
   owner: boolean;
   /** parsed JSON body of a POST */
   data?: Record<string, unknown>;
+  /** the raw body of `POST /api/cli-agents/attach` (index.ts reads it instead of JSON) */
+  bytes?: Uint8Array;
 }
 
 export interface CliRouteResult {
@@ -52,6 +61,22 @@ export function cliErrorResult(code: CliErrorCode, message?: string): CliRouteRe
   // CliOpError's default message is the code itself, which says nothing more than the code
   const error = own && own !== code ? own : CLI_ERROR_TEXT[code];
   return { status: STATUS[code] ?? 409, body: { error, code } };
+}
+
+/** Reads the raw body of an attachment upload, at most CLI_ATTACH_MAX_BYTES;
+ * null when it is larger (a declared Content-Length is refused before reading). */
+export async function readCliAttachment(body: AsyncIterable<Uint8Array | string>, contentLength?: string): Promise<Buffer | null> {
+  const declared = contentLength === undefined ? NaN : Number(contentLength);
+  if (Number.isFinite(declared) && declared > CLI_ATTACH_MAX_BYTES) return null;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of body) {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    size += buffer.length;
+    if (size > CLI_ATTACH_MAX_BYTES) return null;
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 export interface CliRouteExtras {
@@ -85,6 +110,7 @@ export class CliAgentRoutes {
           case "/api/cli-agents/supervision": return this.supervision();
           case "/api/cli-agents/sessions/git": return await this.gitInfo(request);
           case "/api/cli-agents/notes": return this.notes(request);
+          case "/api/cli-agents/search": return await this.search(request);
           default: return {
             status: 200,
             body: {
@@ -117,6 +143,7 @@ export class CliAgentRoutes {
         case "/api/cli-agents/notes": return this.createNote(request, data);
         case "/api/cli-agents/notes/update": return this.updateNote(data);
         case "/api/cli-agents/notes/delete": return this.deleteNote(data);
+        case "/api/cli-agents/attach": return await this.attach(request);
         default: return this.hide(data);
       }
     } catch (error) {
@@ -377,9 +404,42 @@ export class CliAgentRoutes {
     return { status: 200, body: { items: page.items, more: page.more } };
   }
 
+  /** `GET /search?q=`: sessions on the online computers whose messages hold every term. */
+  private async search(request: CliRouteRequest): Promise<CliRouteResult> {
+    const query = request.search.get("q") ?? "";
+    if (!query.trim() || query.length > CLI_SEARCH.queryMax) return cliErrorResult("invalid");
+    const hits = await this.hub.search(request.sessionId, query);
+    return { status: 200, body: { hits } };
+  }
+
+  /** `POST /attach?key=&name=` with the file itself as the body. */
+  private async attach(request: CliRouteRequest): Promise<CliRouteResult> {
+    const key = this.key(request.search.get("key"));
+    const name = request.search.get("name") ?? "";
+    const bytes = request.bytes;
+    if (!key || !name.trim() || name.length > CLI_ATTACH_NAME_MAX || !bytes) return cliErrorResult("invalid");
+    if (bytes.length > CLI_ATTACH_MAX_BYTES) return cliErrorResult("too_large", "附件不能超过 8 MB");
+    // the audit row says how big the file was, never its name or content
+    this.store.audit("cli.attach", "cli_session", key, { sessionId: request.sessionId, size: bytes.length });
+    return { status: 200, body: await this.hub.attach(request.sessionId, key, name, bytes) };
+  }
+
+  /** `model` / `effort` of a start or continue body; null when one is malformed. */
+  private launchOptions(data: Record<string, unknown>, engine: CliEngine): CliLaunchOptions | null {
+    const { model, effort } = data;
+    if (model !== undefined && model !== null && model !== "" && !isCliModel(model)) return null;
+    if (effort !== undefined && effort !== null && effort !== "" && !isCliEffort(engine, effort)) return null;
+    return {
+      ...(typeof model === "string" && model ? { model } : {}),
+      ...(typeof effort === "string" && effort ? { effort } : {}),
+    };
+  }
+
   private async start(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
     const { deviceId, engine, cwd } = data;
     if (!isCliDeviceId(deviceId) || !isCliEngine(engine) || !isAbsoluteCwd(cwd)) return cliErrorResult("invalid");
+    const launch = this.launchOptions(data, engine);
+    if (!launch) return cliErrorResult("invalid", "模型或推理强度不可用");
     const worktreeBranch = data.worktreeBranch;
     const requestId = data.requestId;
     const withWorktree = worktreeBranch !== undefined || requestId !== undefined;
@@ -398,10 +458,10 @@ export class CliAgentRoutes {
       if (!this.hub.session(source)) return cliErrorResult("not_found");
       forkRef = parsed.ref;
     }
-    this.store.audit("cli.start", "device", deviceId, { engine, cwd, ...(withWorktree ? { worktree: worktreeBranch } : {}), ...(forkRef ? { forkFrom: forkRef } : {}), sessionId: request.sessionId });
+    this.store.audit("cli.start", "device", deviceId, { engine, cwd, ...(withWorktree ? { worktree: worktreeBranch } : {}), ...(forkRef ? { forkFrom: forkRef } : {}), ...launch, sessionId: request.sessionId });
     const started = withWorktree && this.extras.workbench
-      ? await this.hub.startWorktree(request.sessionId, deviceId, engine, cwd, worktreeBranch as string, requestId as string)
-      : await this.hub.start(request.sessionId, deviceId, engine, cwd, forkRef);
+      ? await this.hub.startWorktree(request.sessionId, deviceId, engine, cwd, worktreeBranch as string, requestId as string, launch)
+      : await this.hub.start(request.sessionId, deviceId, engine, cwd, forkRef, launch);
     // A start that belongs to a pending branch row binds it, so the tree shows
     // the child as soon as the device has the session.
     const parentId = this.workbenchRef(data);
@@ -418,8 +478,10 @@ export class CliAgentRoutes {
   private async continueSession(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
     const key = this.key(data.key);
     if (!key) return cliErrorResult("invalid");
-    this.store.audit("cli.continue", "cli_session", key, { sessionId: request.sessionId });
-    const continued = await this.hub.continueSession(request.sessionId, key);
+    const launch = this.launchOptions(data, parseCliKey(key)!.engine);
+    if (!launch) return cliErrorResult("invalid", "模型或推理强度不可用");
+    this.store.audit("cli.continue", "cli_session", key, { sessionId: request.sessionId, ...launch });
+    const continued = await this.hub.continueSession(request.sessionId, key, launch);
     return { status: 200, body: { key: continued.key } };
   }
 
@@ -516,6 +578,7 @@ const POST_ROUTES = new Set([
   "/api/cli-agents/notes",
   "/api/cli-agents/notes/update",
   "/api/cli-agents/notes/delete",
+  "/api/cli-agents/attach",
 ]);
 
 const GET_ROUTES = new Set([
@@ -526,6 +589,7 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/supervision",
   "/api/cli-agents/sessions/git",
   "/api/cli-agents/notes",
+  "/api/cli-agents/search",
 ]);
 
 /** The delivery a workbench submit carries; absent means the legacy contract. */

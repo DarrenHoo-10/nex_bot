@@ -4,6 +4,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliApiError } from "./api";
+
+const uploadAttachment = vi.hoisted(() => vi.fn(async (_key: string, file: File) => ({ path: "C:\\Temp\\nexbot-attachments\\claude-s1\\ab12cd34-" + file.name })));
+vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), uploadAttachment }));
 import { Composer, deliveryNote, OUTSIDE_NOTE, UNCONFIRMED_NOTE, WAITING_NOTE } from "./Composer";
 import { session } from "./fixtures";
 
@@ -122,5 +125,36 @@ describe("composer for a session outside nex_bot's terminals", () => {
     await show(session({ nativeId: "o3", liveIn: "terminal", terminal: undefined, sendVia: "daemon", online: false }));
     expect(container.querySelector("textarea")).toBeNull();
     expect(container.textContent).toContain("电脑离线");
+  });
+});
+
+describe("images", () => {
+  const paste = async (file: File) => {
+    await act(async () => {
+      const event = new Event("paste", { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown };
+      event.clipboardData = { items: [{ kind: "file", type: file.type, getAsFile: () => file }], files: [file] };
+      area().dispatchEvent(event);
+    });
+  };
+  const png = () => new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+
+  it("takes a pasted screenshot, puts it on the computer and names its path in the message", async () => {
+    const onSend = vi.fn(async (_text: string) => ({ turn: 1 }));
+    const row = session({ nativeId: "s1" });
+    await act(async () => { root.render(createElement(Composer, { session: row, onSend, onInterrupt: async () => ({}), features: ["attach"] })); });
+    await paste(png());
+    for (let i = 0; i < 20 && !container.querySelector(".na-file-thumb"); i++) await flush();
+    expect(container.querySelector<HTMLImageElement>(".na-file-chip[data-image] img.na-file-thumb")?.src).toMatch(/^data:image\/png;base64,/);
+    await type("看看这个报错");
+    await submit();
+    expect(uploadAttachment).toHaveBeenCalledWith(row.key, expect.objectContaining({ name: "shot.png" }));
+    expect(onSend.mock.calls[0][0]).toBe("看看这个报错\n\n图片：shot.png\nC:\\Temp\\nexbot-attachments\\claude-s1\\ab12cd34-shot.png");
+  });
+
+  it("says the computer needs an update when its executor cannot take files", async () => {
+    await act(async () => { root.render(createElement(Composer, { session: session({ nativeId: "s2" }), onSend: async () => ({}), onInterrupt: async () => ({}), features: [] })); });
+    await paste(png());
+    expect(container.querySelector(".na-file-chip")).toBeNull();
+    expect(container.querySelector(".cli-composer-error")?.textContent).toBe("电脑端版本过旧，升级后可发送图片");
   });
 });

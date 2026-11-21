@@ -12,7 +12,13 @@ import { useReview, type Note } from "./WorkbenchReview";
 import { ToolActivityDisclosure } from "../vendor/rakazo/ToolActivityDisclosure";
 import { cliErrorText, fetchItems } from "./api";
 import type { CliStream } from "./stream";
-import { activityStats, groupItems, mergeItems, oldestId, prependItems, toolSummary, type ActivityItem, type Block } from "./transcript";
+import { activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
+
+/** Earlier turns load on their own until this many user messages are in view. */
+const MIN_TURNS_IN_VIEW = 3;
+const MAX_AUTO_PAGES = 6;
+/** Scrolling this close to the top loads the next older page. */
+const OLDER_SCROLL_PX = 160;
 
 // AgentDesktop imports this page, so its message renderer is loaded lazily.
 const RichText = lazy(() => import("../AgentDesktop").then((module) => ({ default: module.RichText })));
@@ -129,8 +135,13 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
     const off = stream.on((event) => {
       if (event.type !== "message" || event.message.type !== "items" || event.message.key !== sessionKey) return;
       const message = event.message;
-      setItems((current) => mergeItems(current, message.items, message.reset === true));
-      if (message.reset && message.more !== undefined) setMore(message.more);
+      if (!message.reset) { setItems((current) => mergeItems(current, message.items)); return; }
+      // the newest page again (a reconnect, a rewritten file, a changed App chat): earlier pages stay
+      setItems((current) => {
+        const next = resetItems(current, message.items);
+        if (!next.kept) setMore(message.more === true);
+        return next.items;
+      });
     });
     return () => {
       generation.current++;
@@ -155,29 +166,46 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
 
   useBottomFollowResize(scrollRef, listRef, followingRef, sessionKey);
 
-  const onScroll = () => {
-    const scroller = scrollRef.current;
-    if (!scroller) return;
-    followingRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= BOTTOM_FOLLOW_THRESHOLD;
-  };
-
-  const loadOlder = async () => {
+  const olderBusy = useRef(false);
+  const loadOlder = useCallback(async () => {
     const before = oldestId(itemsRef.current);
     const scroller = scrollRef.current;
-    if (!before || !scroller || loadingOlder) return;
+    if (!before || !scroller || olderBusy.current) return;
+    const mine = generation.current;
+    olderBusy.current = true;
     setLoadingOlder(true);
     setError("");
     try {
       const page = await fetchItems(sessionKey, before);
+      if (generation.current !== mine) return;
       anchorRef.current = { height: scroller.scrollHeight, top: scroller.scrollTop };
       setItems((current) => prependItems(current, page.items));
       setMore(page.more);
     } catch (cause) {
-      setError(cliErrorText(cause, "记录读取失败"));
+      if (generation.current === mine) setError(cliErrorText(cause, "记录读取失败"));
     } finally {
+      olderBusy.current = false;
       setLoadingOlder(false);
     }
+  }, [sessionKey]);
+
+  const onScroll = () => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    followingRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= BOTTOM_FOLLOW_THRESHOLD;
+    // reading upwards loads earlier records without a click
+    if (more && !error && scroller.scrollTop < OLDER_SCROLL_PX) void loadOlder();
   };
+
+  // A page is 40 items, which one busy turn can fill: earlier turns load until a few are in view.
+  const autoLoads = useRef(0);
+  useEffect(() => { autoLoads.current = 0; }, [sessionKey]);
+  useEffect(() => {
+    if (loading || loadingOlder || !more || error || autoLoads.current >= MAX_AUTO_PAGES) return;
+    if (userTurns(items) >= MIN_TURNS_IN_VIEW) return;
+    autoLoads.current++;
+    void loadOlder();
+  }, [items, more, loading, loadingOlder, error, loadOlder]);
 
   const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
   const blocks = useMemo(() => groupItems(details?.history?.length?mergeItems(details.history,items):items), [items,details?.history]);

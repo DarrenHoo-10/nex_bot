@@ -174,6 +174,7 @@ public final class CliAgentsModel {
             if !t.loaded { t.items = CliTranscript.merge(t.items, page.items); t.more = page.more; t.loaded = true }
             t.error = nil
             transcripts[key] = t
+            await fillEarlierTurns(key)
         } catch {
             guard subscribed[key] != nil else { return }
             var t = transcript(key)
@@ -193,6 +194,15 @@ public final class CliAgentsModel {
     public func reloadTranscript(_ key: CliSessionKey) {
         var t = transcript(key); t.loaded = false; t.error = nil; transcripts[key] = t
         Task { await loadTranscript(key) }
+    }
+
+    /// A page is 40 items, which one busy turn can fill: earlier pages load until a few turns are in view.
+    func fillEarlierTurns(_ key: CliSessionKey) async {
+        for _ in 0..<6 {
+            let t = transcript(key)
+            guard subscribed[key] != nil, t.more, t.error == nil, CliTranscript.userTurns(t.items) < 3 else { return }
+            await loadOlder(key)
+        }
     }
 
     public func loadOlder(_ key: CliSessionKey) async {
@@ -379,8 +389,15 @@ public final class CliAgentsModel {
         case .items(let key, let items, let reset, let more):
             guard subscribed[key] != nil else { return }
             var t = transcript(key)
-            t.items = CliTranscript.merge(t.items, items, reset: reset)
-            if let more { t.more = more }
+            if reset {
+                // the newest page again (a reconnect, a rewritten file): earlier pages stay
+                let next = CliTranscript.reset(t.items, items)
+                t.items = next.items
+                if !next.kept { t.more = more ?? false }
+            } else {
+                t.items = CliTranscript.merge(t.items, items)
+                if let more { t.more = more }
+            }
             t.loaded = true; t.error = nil
             transcripts[key] = t
         case .requests(let key, let list):

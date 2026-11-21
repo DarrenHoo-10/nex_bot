@@ -31,6 +31,23 @@ export function mergeItems(existing: readonly CliItem[], incoming: readonly CliI
   return out;
 }
 
+/** Applies a reset page (the newest page sent again). When the page starts at an item already shown,
+ * everything before that item stays, so earlier pages the reader loaded survive; the page replaces the
+ * rest. A page that shares nothing with what is shown replaces it all. `kept` says whether older
+ * items were kept, in which case the page's own `more` no longer describes the list. */
+export function resetItems(existing: readonly CliItem[], incoming: readonly CliItem[]): { items: CliItem[]; kept: boolean } {
+  const page = dedupe(incoming);
+  const at = page.length ? existing.findIndex((item) => item.id === page[0].id) : -1;
+  if (at <= 0) return { items: page, kept: false };
+  const fresh = new Set(page.map((item) => item.id));
+  return { items: [...existing.slice(0, at).filter((item) => !fresh.has(item.id)), ...page], kept: true };
+}
+
+/** User messages in the list, to tell whether earlier turns are in view. */
+export function userTurns(items: readonly CliItem[]): number {
+  return items.reduce((count, item) => count + (item.kind === "user" ? 1 : 0), 0);
+}
+
 /** Puts an older page in front. Items already shown win over the page's copy. */
 export function prependItems(existing: readonly CliItem[], older: readonly CliItem[]): CliItem[] {
   const shown = new Set(existing.map((item) => item.id));
