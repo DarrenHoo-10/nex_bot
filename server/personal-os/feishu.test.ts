@@ -372,4 +372,94 @@ describe("feishu connector in disposable Core", () => {
     const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_drive'")?.task_id);
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
   }, 60_000);
+  it("connects several apps, shows each bot's identity, and refuses a duplicate app", async () => {
+    const f = await fixture();
+    f.fake.queueAppIds("cli_one", "cli_two");
+    expect((await f.api("feishu/register/start", { botId: f.bot.id })).status).toBe(200);
+    await until(() => f.app.store.get("SELECT connection FROM personal_feishu_apps WHERE app_id='cli_one'")?.connection === "connected");
+    expect((await f.api("feishu/register/start", { botId: f.bot.id })).status).toBe(200);
+    await until(() => f.app.store.get("SELECT connection FROM personal_feishu_apps WHERE app_id='cli_two'")?.connection === "connected");
+    await until(async () => (await f.state()).apps.every((app) => (app as { name?: string }).name === "假机器人"));
+    const apps = (await f.state()).apps as unknown as Array<{ appId: string; name: string; avatarUrl: string; groupCount: number }>;
+    expect(apps.map((app) => app.appId)).toEqual(["cli_one", "cli_two"]);
+    expect(apps[0]).toMatchObject({ avatarUrl: "https://example.invalid/bot.png", groupCount: 0 });
+    const duplicate = await f.api("feishu/save", { appId: "cli_two", appSecret: "x", brand: "feishu", botId: f.bot.id });
+    expect(duplicate.status).not.toBe(200);
+    expect(JSON.stringify(duplicate.body)).toContain("该应用已添加");
+  }, 60_000);
+
+  it("lists the bot's groups and applies each group's reply mode and context", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    await until(() => f.app.store.get("SELECT bot_open_id FROM personal_feishu_apps")?.bot_open_id === "ou_fake_bot");
+    f.fake.setChats([{ chatId: "oc_team", name: "投研群", members: 5 }, { chatId: "oc_topics", name: "盯盘话题", mode: "topic", members: 8 }]);
+    const id = (await f.state()).apps[0].id;
+    type Group = { chatId: string; name: string; kind: string; members: number; claimed: boolean; trigger: string; session: string; context: string; version: number };
+    const listed = (await f.api(`feishu/groups?id=${id}`)).body as { groups: Group[]; error: string | null };
+    expect(listed.error).toBeNull();
+    expect(listed.groups).toEqual([
+      expect.objectContaining({ chatId: "oc_team", name: "投研群", kind: "group", members: 5, claimed: false, trigger: "topic", session: "new-topic", context: "" }),
+      expect.objectContaining({ chatId: "oc_topics", name: "盯盘话题", kind: "topic", members: 8, claimed: false }),
+    ]);
+    const stale = await f.api("feishu/groups/save", { id, chatId: "oc_team", trigger: "never", session: "chat", context: "x", version: 9 });
+    expect(stale.status).not.toBe(200);
+    const saved = (await f.api("feishu/groups/save", { id, chatId: "oc_team", trigger: "never", session: "chat", context: "回答先给结论", version: 1 })).body as Group;
+    expect(saved).toMatchObject({ claimed: true, trigger: "never", session: "chat", context: "回答先给结论", version: 2 });
+
+    // Whole group, no @ needed: every message joins the group's own topic and is answered inline.
+    f.model.scripts.push({ kind: "openai-text", text: "群答一" }, { kind: "openai-text", text: "群答二" });
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_c1", chatId: "oc_team", chatType: "group", senderOpenId: "ou_member", content: JSON.stringify({ text: "今天大盘怎么样" }) }));
+    await until(() => f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("群答一")));
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_c2", chatId: "oc_team", chatType: "group", senderOpenId: "ou_member", content: JSON.stringify({ text: "那成交量呢" }) }));
+    await until(() => f.fake.sent.some((entry) => JSON.stringify(entry.body).includes("群答二")));
+    const routed = f.app.store.all("SELECT conversation_id,inline FROM personal_feishu_messages WHERE message_id IN ('om_c1','om_c2')");
+    expect(new Set(routed.map((row) => row.conversation_id)).size).toBe(1);
+    expect(routed.every((row) => row.inline === 1)).toBe(true);
+    expect(f.fake.sent.filter((entry) => entry.path === "reply").every((entry) => entry.body.reply_in_thread === undefined)).toBe(true);
+    const system = JSON.stringify(f.model.requests.at(-1)?.body);
+    expect(system).toContain("回答先给结论");
+    const topics = (await f.api(`agents/topics?bot=${encodeURIComponent(String(f.bot.id))}`)).body as { topics: Array<{ conversationId: string; title: string; audience: string; sourceContext: Record<string, unknown> }> };
+    expect(topics.topics.find((topic) => topic.conversationId === routed[0].conversation_id)).toMatchObject({ title: "投研群", audience: "public", sourceContext: { chatName: "投研群", scope: "group" } });
+  }, 60_000);
+
+  it("shares one topic for top-level @ messages and gives each Feishu thread its own", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    await until(() => f.app.store.get("SELECT bot_open_id FROM personal_feishu_apps")?.bot_open_id === "ou_fake_bot");
+    f.fake.setChats([{ chatId: "oc_mix", name: "混合群" }]);
+    const id = (await f.state()).apps[0].id;
+    await f.api(`feishu/groups?id=${id}`);
+    expect((await f.api("feishu/groups/save", { id, chatId: "oc_mix", trigger: "ambient", session: "chat-topic", context: "", version: 1 })).status).toBe(200);
+    const mention = (open_id: string) => [{ key: "@_user_1", id: { open_id }, name: "某人" }];
+    const conversation = (messageId: string) => String(f.app.store.get("SELECT conversation_id FROM personal_feishu_messages WHERE message_id=?", messageId)?.conversation_id ?? "");
+    f.model.scripts.push({ kind: "openai-text", text: "a" }, { kind: "openai-text", text: "b" }, { kind: "openai-text", text: "c" }, { kind: "openai-text", text: "d" });
+    // Ambient: answers without @, stays silent when someone else is @-mentioned.
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_m1", chatId: "oc_mix", chatType: "group", senderOpenId: "ou_member", content: JSON.stringify({ text: "大家好" }) }));
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_m2", chatId: "oc_mix", chatType: "group", senderOpenId: "ou_member", content: JSON.stringify({ text: "@_user_1 你看下" }), mentions: mention("ou_someone") }));
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_m3", chatId: "oc_mix", chatType: "group", senderOpenId: "ou_member", content: JSON.stringify({ text: "第二条顶层" }) }));
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_t1", chatId: "oc_mix", chatType: "group", senderOpenId: "ou_member", threadId: "omt_a", parentId: "om_m1", content: JSON.stringify({ text: "话题里问" }) }));
+    await until(() => !!conversation("om_m1") && !!conversation("om_m3") && !!conversation("om_t1"));
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_t2", chatId: "oc_mix", chatType: "group", senderOpenId: "ou_member", threadId: "omt_a", parentId: "om_t1", content: JSON.stringify({ text: "话题里继续" }) }));
+    await until(() => !!conversation("om_t2"));
+    expect(f.app.store.get("SELECT state FROM personal_feishu_messages WHERE message_id='om_m2'")?.state).toBe("ignored");
+    expect(conversation("om_m1")).toBe(conversation("om_m3"));
+    expect(conversation("om_t1")).not.toBe(conversation("om_m1"));
+    expect(conversation("om_t2")).toBe(conversation("om_t1"));
+    expect(f.app.store.get("SELECT inline FROM personal_feishu_messages WHERE message_id='om_t1'")?.inline).toBe(0);
+  }, 60_000);
+
+  it("requires an @ in every message when the group's trigger is 'always'", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    await until(() => f.app.store.get("SELECT bot_open_id FROM personal_feishu_apps")?.bot_open_id === "ou_fake_bot");
+    f.fake.setChats([{ chatId: "oc_strict", name: "严格群" }]);
+    const id = (await f.state()).apps[0].id;
+    await f.api(`feishu/groups?id=${id}`);
+    expect((await f.api("feishu/groups/save", { id, chatId: "oc_strict", trigger: "always", session: "new-topic", context: "", version: 1 })).status).toBe(200);
+    f.model.scripts.push({ kind: "openai-text", text: "首答" });
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_s1", chatId: "oc_strict", chatType: "group", senderOpenId: "ou_member", content: JSON.stringify({ text: "@_user_1 问题" }), mentions: [{ key: "@_user_1", id: { open_id: "ou_fake_bot" }, name: "秘书" }] }));
+    await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_s1'")?.task_id);
+    f.fake.deliver("cli_fake", messageEvent({ messageId: "om_s2", chatId: "oc_strict", chatType: "group", senderOpenId: "ou_member", parentId: "om_s1", content: JSON.stringify({ text: "追问不带@" }) }));
+    await until(() => f.app.store.get("SELECT state FROM personal_feishu_messages WHERE message_id='om_s2'")?.state === "ignored");
+  }, 60_000);
 });

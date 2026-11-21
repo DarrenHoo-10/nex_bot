@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 飞书多应用</title>
+<style>
+:root{
+  --accent:#2f6bf5;--accent-soft:rgba(47,107,245,.1);--fg:#0f1419;--muted:#76808f;
+  --border:rgba(15,23,42,.08);--input:rgba(15,23,42,.13);--card:#fff;--secondary:rgba(15,23,42,.045);
+  --success:#1f9d55;--danger:#d93838;--warn:#c97a00;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--fg);background:linear-gradient(160deg,#f5f8fc 0%,#eef3fa 100%);font-size:14px}
+button{font:inherit;color:inherit;cursor:pointer}
+button:disabled{cursor:not-allowed;opacity:.45}
+input,select{font:inherit;color:inherit}
+
+/* prototype toolbar (not part of product) */
+.proto-bar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:14px;padding:7px 16px;background:#1d2330;color:#d7dce5;font-size:12px}
+.proto-bar b{color:#fff;font-weight:600}
+.proto-bar label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.proto-bar button{border:1px solid #3a4255;background:#2a3142;color:#d7dce5;border-radius:6px;padding:3px 9px;font-size:12px}
+.proto-bar .sp{flex:1}
+.proto-only{border:1px dashed #a3acbb!important;background:#fafbfd!important;color:#5b6576!important}
+
+.titlebar{text-align:center;font-weight:600;padding:8px 0 0;font-size:15px}
+.settings{display:grid;grid-template-columns:300px minmax(0,1fr);max-width:1400px;margin:0 auto;padding:20px 40px 60px}
+.settings aside h1{font-size:34px;margin:40px 0 46px 30px;letter-spacing:-.5px}
+.nav{display:flex;flex-direction:column;gap:6px;padding-right:56px}
+.nav a{display:flex;align-items:center;gap:14px;padding:16px 18px;border-radius:12px;color:#4a5361;text-decoration:none;font-size:15px}
+.nav a.on{background:#e2ebfb;color:var(--accent);font-weight:600}
+.nav svg{width:20px;height:20px}
+main{padding-top:96px;min-width:0;max-width:1030px}
+
+/* catalog */
+.head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:26px}
+.head h2{margin:0;font-size:28px;font-weight:700;letter-spacing:-.4px}
+.pill-btn{display:inline-flex;align-items:center;gap:7px;border:0;border-radius:22px;padding:11px 18px;background:#e7edf6;font-size:14px}
+.pill-btn:hover{background:#dde5f1}
+.pill-btn.primary{background:var(--accent);color:#fff}
+.pill-btn.primary:hover{background:#2459d6}
+.search{display:flex;align-items:center;gap:10px;border:1px solid var(--input);border-radius:10px;padding:0 16px;color:var(--muted);background:rgba(255,255,255,.4)}
+.search input{border:0;background:transparent;outline:0;width:100%;padding:14px 0;font-size:15px}
+.rows{margin-top:24px}
+.row{display:grid;grid-template-columns:76px minmax(0,1fr) auto;align-items:center;gap:20px;width:100%;text-align:left;padding:16px 12px;margin:4px 0;border:0;border-radius:14px;background:transparent}
+.row:hover{background:var(--secondary)}
+.icon{width:76px;height:76px;border-radius:18px;border:1px solid var(--input);background:#fff;display:grid;place-items:center}
+.icon svg{width:44px;height:44px}
+.row strong{display:block;font-size:20px;font-weight:600}
+.row .sub{display:block;margin-top:6px;color:var(--muted);font-size:16px}
+.state{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:15px;white-space:nowrap;padding-right:14px}
+.state.ok{color:#4a5361}.state.ok svg{color:var(--success)}
+.state.bad{color:var(--danger)}
+
+/* feishu profile */
+.back{display:inline-flex;align-items:center;gap:4px;border:0;background:transparent;color:var(--muted);font-size:14px;padding:4px 0;margin-bottom:28px}
+.back:hover{color:var(--fg)}
+.profile{display:flex;align-items:center;gap:18px}
+.profile>div{flex:1;min-width:0}
+.profile .icon{width:68px;height:68px}
+.profile h2{margin:0 0 4px;font-size:26px;font-weight:600;letter-spacing:-.5px}
+.profile .meta{color:var(--muted);font-size:13px}
+.section{margin-top:30px}
+.section>h3{display:flex;align-items:center;justify-content:space-between;margin:0 0 10px;padding:0 6px 0 18px;font-size:13px;font-weight:400;color:var(--muted)}
+.section>h3 .link{border:0;background:transparent;color:var(--accent);font-size:13px;padding:2px 4px}
+.surface{border:1px solid var(--input);border-radius:18px;background:var(--card)}
+.surface>:first-child{border-top-left-radius:17px;border-top-right-radius:17px}
+.surface>:last-child{border-bottom-left-radius:17px;border-bottom-right-radius:17px}
+.app-wrap{position:relative;display:flex;align-items:center;border-top:1px solid var(--border)}
+.app-wrap:first-child{border-top:0}
+.app-wrap:hover{background:#f7f9fc}
+.app-wrap .app{border-top:0;flex:1;min-width:0;background:transparent!important}
+.more{width:34px;height:34px;margin-right:14px;border:0;border-radius:50%;background:transparent;color:var(--muted);font-size:18px;line-height:1;flex-shrink:0}
+.more:hover,.more[aria-expanded=true]{background:rgba(15,23,42,.07);color:var(--fg)}
+.menu{position:absolute;right:14px;top:calc(100% - 10px);z-index:10;min-width:190px;background:#fff;border:1px solid var(--input);border-radius:12px;box-shadow:0 10px 30px rgba(15,20,30,.12);padding:6px}
+.menu button{display:block;width:100%;text-align:left;border:0;background:transparent;padding:9px 12px;border-radius:8px;font-size:13px}
+.menu button:hover{background:var(--secondary)}
+.menu .danger{color:var(--danger)}
+.menu p{margin:6px 12px 4px;font-size:12px;color:var(--muted)}
+.group{border-top:1px solid var(--border)}
+.group:first-child{border-top:0}
+.group-head{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:15px 20px;border:0;background:transparent;border-radius:inherit}
+.group-head:hover{background:#f7f9fc}
+.group-head .grow{flex:1;min-width:0}
+.group-head b{font-weight:500;font-size:14px}
+.group-head small{display:block;color:var(--muted);font-size:12px;margin-top:3px;overflow-wrap:anywhere}
+.chev svg{transition:transform .15s}
+.chev.up svg{transform:rotate(90deg)}
+.group-body{padding:0 20px 18px 62px}
+.opt-title{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin:14px 0 8px}
+.opt-title span{color:var(--muted);font-size:12px}
+.opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px}
+.opt{position:relative;display:block;border:1px solid var(--input);border-radius:10px;padding:10px 12px;cursor:pointer;background:#fff}
+.opt:hover{border-color:#b9c3d3}
+.opt input{position:absolute;opacity:0;pointer-events:none}
+.opt b{display:block;font-weight:500;font-size:13px}
+.opt small{display:block;color:var(--muted);font-size:12px;margin-top:3px;line-height:1.45}
+.opt.on{border-color:var(--accent);background:var(--accent-soft)}
+.opt.on b{color:var(--accent)}
+.opt:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.fixed{margin:0;font-size:13px;color:var(--muted)}
+textarea{display:block;width:100%;border:1px solid var(--input);border-radius:10px;padding:10px 12px;font:inherit;font-size:13px;resize:vertical;line-height:1.6;background:#fff}
+textarea:focus{outline:2px solid var(--accent);border-color:transparent}
+.actions.end{justify-content:flex-end;margin-top:14px}
+.banner.off{background:#f1f3f7;color:#4a5361}
+.app{display:grid;grid-template-columns:44px minmax(0,1fr) auto 18px;gap:14px;align-items:center;width:100%;text-align:left;padding:16px 20px;border:0;background:transparent;border-top:1px solid var(--border)}
+.app:first-child{border-top:0}
+.app:hover{background:#f7f9fc}
+.avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:600;font-size:17px;flex-shrink:0}
+.avatar.lg{width:68px;height:68px;font-size:26px}
+.app strong{font-size:15px;font-weight:500;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.app .line{display:block;margin-top:4px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.app .line.err{color:var(--danger)}
+.tag{display:inline-block;padding:1px 7px;border-radius:9px;background:#eef1f6;color:#5b6576;font-size:11px;font-weight:400}
+.tag.blue{background:var(--accent-soft);color:var(--accent)}
+.chev{color:#a3acbb}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;color:var(--muted)}
+.status i{width:7px;height:7px;border-radius:50%;background:#a3acbb}
+.status.connected{color:var(--success)}.status.connected i{background:var(--success)}
+.status.error{color:var(--danger)}.status.error i{background:var(--danger)}
+.status.busy{color:var(--warn)}.status.busy i{background:var(--warn)}
+.status.connecting{color:var(--accent)}.status.connecting i{background:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.3}}
+.empty{padding:34px 20px;text-align:center}
+.empty p{margin:0 0 16px;color:var(--muted)}
+
+/* app detail */
+.banner{display:flex;align-items:center;gap:12px;justify-content:space-between;margin-top:20px;padding:12px 16px;border-radius:12px;font-size:13px}
+.banner.error{background:#fdeeee;color:#a82828}
+.banner.busy{background:#fdf4e4;color:#8a5600}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;align-items:center}
+.btn{border:1px solid var(--input);background:#fff;border-radius:8px;padding:7px 13px;font-size:13px}
+.btn:hover:not(:disabled){background:#f4f6fa}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover:not(:disabled){background:#2459d6}
+.btn.danger{color:var(--danger)}
+.btn.sm{padding:4px 10px;font-size:12px}
+.confirm{display:inline-flex;align-items:center;gap:8px;font-size:13px}
+dl.info{margin:0;padding:6px 20px}
+dl.info>div{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:12px 0;font-size:13px;border-top:1px solid var(--border);min-height:52px}
+dl.info>div:first-child{border-top:0}
+dl.info dt{flex-shrink:0}
+dl.info dd{margin:0;color:var(--muted);display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;text-align:right}
+dl.info select{border:1px solid var(--input);border-radius:8px;padding:5px 8px;background:#fff}
+.code{font-family:ui-monospace,Consolas,monospace;font-size:15px;letter-spacing:2px;color:var(--fg);background:#f1f4f9;padding:2px 8px;border-radius:6px}
+.list>div{display:flex;align-items:center;gap:12px;padding:13px 20px;border-top:1px solid var(--border);font-size:13px}
+.list>div:first-child{border-top:0}
+.list .grow{flex:1;min-width:0}
+.list .grow small{display:block;color:var(--muted);font-size:12px;margin-top:3px;overflow-wrap:anywhere}
+.chat-ico{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:#eef2f8;color:#5b6576;font-size:12px;flex-shrink:0}
+.sub-form{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;padding:14px 20px;border-top:1px solid var(--border);background:#fafbfd;align-items:end}
+.sub-form label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.sub-form input,.sub-form select{border:1px solid var(--input);border-radius:8px;padding:6px 8px;background:#fff;font-size:13px}
+.p1{position:relative}
+.p1-badge{font-size:10px;padding:1px 6px;border-radius:8px;background:#efe6fb;color:#7a43c9;margin-left:6px}
+.req{display:flex;align-items:center;gap:12px}
+
+/* modal */
+.scrim{position:fixed;inset:0;background:rgba(15,20,30,.35);display:grid;place-items:center;z-index:40}
+.modal{width:min(520px,92vw);background:#fff;border-radius:18px;padding:24px 26px;box-shadow:0 20px 60px rgba(15,20,30,.2)}
+.modal h3{margin:0 0 18px;font-size:18px}
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;font-size:13px}
+.field input,.field select{border:1px solid var(--input);border-radius:10px;padding:10px 12px;background:#fff;font-size:14px}
+.field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
+.err-text{color:var(--danger);font-size:12px;margin:-4px 0 12px}
+.qr{display:flex;gap:20px;align-items:center}
+.qr svg{width:180px;height:180px;flex-shrink:0;border:1px solid var(--border);border-radius:10px;padding:8px;background:#fff}
+.steps{list-style:none;margin:0;padding:0;font-size:13px;display:flex;flex-direction:column;gap:10px}
+.steps li{display:flex;align-items:center;gap:8px;color:#a3acbb}
+.steps li.done{color:var(--success)}
+.steps li.now{color:var(--fg);font-weight:500}
+.modal .actions{justify-content:flex-end;margin-top:22px}
+
+.toast{position:fixed;left:50%;bottom:32px;transform:translateX(-50%);background:#1d2330;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:50}
+@media (max-width:900px){.settings{grid-template-columns:1fr;padding:12px 16px}.settings aside{display:none}main{padding-top:20px}.group-body{padding-left:20px}}
+</style>
+</head>
+<body>
+<div class="proto-bar">
+  <b>原型 · 飞书多应用</b><span>数据为模拟，操作不会连接飞书</span>
+  <span class="sp"></span>
+  <button id="empty">空状态</button>
+  <button id="reset">重置数据</button>
+</div>
+<div class="titlebar">设置</div>
+<div class="settings">
+  <aside>
+    <h1>设置</h1>
+    <nav class="nav">
+      <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>账号与登录设备</a>
+      <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-4 4 3 3"/></svg>模型</a>
+      <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v4m0 10v4M3 12h4m10 0h4M6 6l2 2m8 8 2 2M6 18l2-2m8-8 2-2"/></svg>长期记忆</a>
+      <a class="on" href="#" data-go="connectors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 3v5m6-5v5M6 8h12v3a6 6 0 0 1-12 0V8zm6 9v4"/></svg>连接器</a>
+      <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></svg>设备</a>
+      <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.5"/></svg>关于</a>
+    </nav>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="layer"></div>
+
+<script>
+const ICON = {
+  check:'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m5 12 5 5 9-10"/></svg>',
+  plus:'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
+  search:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  plug:'<svg viewBox="0 0 24 24" fill="none" stroke="#5b6576" stroke-width="1.6"><path d="M9 3v5m6-5v5M6 8h12v3a6 6 0 0 1-12 0V8zm6 9v4"/></svg>',
+  chev:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>',
+  back:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 6-6 6 6 6"/></svg>',
+  gmail:'<svg viewBox="0 0 48 48"><path fill="#4285f4" d="M6 38h7V22L4 15v20a3 3 0 0 0 2 3z"/><path fill="#34a853" d="M35 38h7a3 3 0 0 0 2-3V15l-9 7z"/><path fill="#fbbc04" d="M35 12v10l9-7v-3c0-4-4-6-7-4z"/><path fill="#ea4335" d="M13 22V12l11 8 11-8v10l-11 8z"/><path fill="#c5221f" d="M4 12v3l9 7V12l-2-1c-3-2-7 0-7 1z"/></svg>',
+  github:'<svg viewBox="0 0 24 24"><path fill="#111" d="M12 1.5a10.5 10.5 0 0 0-3.3 20.5c.5.1.7-.2.7-.5v-1.9c-2.9.6-3.5-1.3-3.5-1.3-.5-1.2-1.2-1.5-1.2-1.5-1-.7.1-.6.1-.6 1 .1 1.6 1.1 1.6 1.1.9 1.6 2.5 1.2 3.1.9.1-.7.4-1.2.7-1.4-2.3-.3-4.8-1.2-4.8-5.2 0-1.1.4-2.1 1.1-2.8-.1-.3-.5-1.4.1-2.8 0 0 .9-.3 2.9 1.1a10 10 0 0 1 5.2 0c2-1.4 2.9-1.1 2.9-1.1.6 1.4.2 2.5.1 2.8.7.7 1.1 1.7 1.1 2.8 0 4-2.5 4.9-4.8 5.2.4.3.7 1 .7 2v2.9c0 .3.2.6.7.5A10.5 10.5 0 0 0 12 1.5z"/></svg>',
+  feishu:'<svg viewBox="0 0 48 48"><path fill="#00d6b9" d="M24.5 21.5 30 16c-3-3.5-8-8-13-10h20.5c2 2.5 3.5 6 4 9z"/><path fill="#3370ff" d="M8 18c5 6 11 10.5 18.5 13.5L44 22c-2 9.5-10 17-21 17-6 0-11-1.5-15-4.5z"/><path fill="#133c9a" d="M24.5 21.5 41.5 15c-3 1-6.5 3-9 5.5l-6 5.5c-1 1-2 1.5-1 .5z" opacity=".9"/></svg>'
+};
+const BOTS = ['金融助手','工作助手','通用助手'];
+const STATUS = {connected:'已连接',connecting:'连接中',error:'连接异常',busy:'已在其他位置连接',disabled:'已停用'};
+const COLORS = ['#3370ff','#7a5af8','#00a870','#f07b3f','#e04f8a'];
+
+const TRIGGER=[['always','必须 @','只回复 @ 它的消息'],['topic','话题内免 @','它参与过的话题里不用 @'],['ambient','默认应答','回复所有消息，有人 @ 别人时不插话'],['never','全部回复','回复群里每条消息']];
+const SESSION=[['chat-topic','群聊共享，话题独立','直接 @ 的消息共用一个会话，每个话题各一个'],['chat','整群一个会话','群里所有消息共用一个会话'],['new-topic','每次 @ 开新话题','每次 @ 都新开话题，在话题里继续']];
+const label=(list,k)=>list.find(o=>o[0]===k)?.[1]??k;
+
+const seed = () => [
+  {id:'a1',name:'Nex 金融',appId:'cli_a7f3c2e9b1d04e21',brand:'feishu',bot:'金融助手',status:'connected',color:'#3370ff',groups:[
+    {id:'oc_8f2a91',name:'投研讨论组',kind:'group',members:12,trigger:'always',session:'chat-topic',context:'成员是投研团队。先给结论，再列关键数据，数据注明来源和日期。'},
+    {id:'oc_77d0c3',name:'家庭理财',kind:'group',members:3,trigger:'ambient',session:'chat',context:''},
+    {id:'oc_c41e07',name:'港股盯盘',kind:'topic',members:8,trigger:'topic',session:'topic',context:'只讨论港股，金额统一用港元。'}]},
+  {id:'a2',name:'工作小助手',appId:'cli_b21e88aa04f7c913',brand:'feishu',bot:'工作助手',status:'error',color:'#7a5af8',
+   error:'App Secret 已失效，请在飞书开放平台重置后重新填写',groups:[
+    {id:'oc_a19be0',name:'产品周会',kind:'group',members:9,trigger:'always',session:'new-topic',context:''}]},
+  {id:'a3',name:'Nex Assistant',appId:'cli_c9d01f5e3a7b2284',brand:'lark',bot:'通用助手',status:'busy',color:'#00a870',groups:[]},
+  {id:'sh',shared:true,name:'NexBot 金融助手',appId:'cli_9e00shared4b1c',brand:'feishu',bot:'金融助手',status:'connected',color:'#f07b3f',groups:[
+    {id:'oc_5b20aa',name:'NexBot 用户群',kind:'group',members:46,trigger:'always',session:'chat-topic',context:''}]}
+];
+
+const S = {view:{name:'connectors'},apps:seed(),modal:null,toast:'',confirm:null,menu:null,open:null,draft:null,q:''};
+const $ = s=>document.querySelector(s);
+const esc = s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const app = id=>S.apps.find(a=>a.id===id);
+const isBad = a=>a.status==='error'||a.status==='busy';
+let toastTimer;
+function toast(t){S.toast=t;renderLayer();clearTimeout(toastTimer);toastTimer=setTimeout(()=>{S.toast='';renderLayer();},2200);}
+function go(view){S.view=view;S.confirm=null;S.menu=null;S.open=null;render();window.scrollTo(0,0);}
+function statusHtml(st){return `<span class="status ${st}"><i></i>${STATUS[st]}</span>`;}
+function avatar(a,lg){return `<span class="avatar${lg?' lg':''}" style="background:${a.color}">${esc([...a.name][0])}</span>`;}
+
+function render(){
+  const v=S.view;
+  $('#main').innerHTML = v.name==='connectors'?connectors():v.name==='feishu'?feishu():appDetail(app(v.id));
+  renderLayer();
+}
+
+/* 连接器目录：飞书合成一条 */
+function connectors(){
+  const bad=S.apps.filter(isBad).length,n=S.apps.length;
+  const fsState = !n?'<span class="state">未连接</span>':bad?`<span class="state bad">${bad} 个异常</span>`:`<span class="state ok">${ICON.check}已连接</span>`;
+  const fsSub = n?`${n} 个应用 · ${[...new Set(S.apps.map(a=>a.bot))].join('、')}`:'接收和发送飞书消息';
+  const rows=[
+    {k:'gmail',icon:ICON.gmail,name:'Gmail',sub:'搜索、读取邮件与会话。',state:`<span class="state ok">${ICON.check}已添加</span>`},
+    {k:'github',icon:ICON.github,name:'GitHub',sub:'仓库、PR、CI 与 issue。',state:`<span class="state ok">${ICON.check}已添加</span>`},
+    {k:'feishu',icon:ICON.feishu,name:'飞书',sub:fsSub,state:fsState},
+    {k:'stock',icon:ICON.plug,name:'nex_stock 金融服务',sub:'MCP 连接器',state:`<span class="state ok">${ICON.check}连接测试通过</span>`}
+  ].filter(r=>!S.q||r.name.toLowerCase().includes(S.q.toLowerCase()));
+  return `<div class="head"><h2>连接器</h2><button class="pill-btn">${ICON.plus}添加连接器</button></div>
+  <label class="search">${ICON.search}<input id="q" placeholder="搜索连接器" value="${esc(S.q)}"></label>
+  <div class="rows">${rows.map(r=>`<button class="row" data-row="${r.k}"><span class="icon">${r.icon}</span><span><strong>${r.name}</strong><span class="sub">${esc(r.sub)}</span></span>${r.state}</button>`).join('')}</div>`;
+}
+
+/* 飞书：应用列表，应用的启停/移除放在每行的“⋯”菜单 */
+function menu(a){
+  if(S.confirm===a.id) return `<div class="menu"><p>${a.shared?'解除本账号与该应用的绑定？':`移除「${esc(a.name)}」？`}</p>
+    <button class="danger" data-menu="${a.shared?'unbind':'remove'}" data-id="${a.id}">${a.shared?'确认解除':'确认移除'}</button><button data-menu="cancel" data-id="${a.id}">取消</button></div>`;
+  const off=a.status==='disabled';
+  return `<div class="menu">${a.shared?`<button class="danger" data-menu="ask" data-id="${a.id}">解除绑定</button>`
+    :`${off?'':`<button data-menu="reconnect" data-id="${a.id}">重新连接</button>`}<button data-menu="toggle" data-id="${a.id}">${off?'启用':'停用'}</button><button class="danger" data-menu="ask" data-id="${a.id}">移除</button>`}</div>`;
+}
+function feishu(){
+  const own=S.apps.filter(a=>!a.shared),shared=S.apps.filter(a=>a.shared);
+  const row=a=>`<div class="app-wrap"><button class="app" data-app="${a.id}">${avatar(a)}<span><strong>${esc(a.name)}${a.brand==='lark'?'<span class="tag">Lark</span>':''}</strong>
+    <span class="line">${esc(a.appId)} · 接收助手 ${esc(a.bot)} · ${a.groups.length} 个群</span>${a.status==='error'?`<span class="line err">${esc(a.error)}</span>`:''}</span>${statusHtml(a.status)}</button>
+    <button class="more" data-more="${a.id}" aria-label="更多操作" aria-expanded="${S.menu===a.id}">⋯</button>${S.menu===a.id?menu(a):''}</div>`;
+  const body = S.apps.length ? `
+    <div class="section"><h3>我的应用</h3><div class="surface">${own.length?own.map(row).join(''):`<div class="empty"><p>没有自己的飞书应用</p><button class="btn primary" data-add>添加飞书应用</button></div>`}</div></div>
+    ${shared.length?`<div class="section"><h3>共享应用</h3><div class="surface">${shared.map(row).join('')}</div></div>`:''}`
+  : `<div class="section"><div class="surface empty"><p>还没有飞书应用</p><div class="actions" style="justify-content:center"><button class="btn primary" data-add="scan">扫码连接飞书</button><button class="btn" data-add="manual">使用已有应用</button></div></div></div>`;
+  return `<button class="back" data-go="connectors">${ICON.back}连接器</button>
+  <div class="profile"><span class="icon">${ICON.feishu}</span><div><h2>飞书</h2><span class="meta">${S.apps.length?`${S.apps.length} 个应用`:'未连接'}</span></div>
+  ${S.apps.length?`<button class="pill-btn" data-add>${ICON.plus}添加飞书应用</button>`:''}</div>${body}`;
+}
+
+/* 单个应用：只管理每个群的回复模式与系统上下文 */
+const dirty=x=>['trigger','session','context'].some(k=>S.draft[k]!==x[k]);
+function opts(list,name,value){
+  return `<div class="opts">${list.map(o=>`<label class="opt ${value===o[0]?'on':''}"><input type="radio" name="${name}" value="${o[0]}" ${value===o[0]?'checked':''}><b>${o[1]}</b><small>${o[2]}</small></label>`).join('')}</div>`;
+}
+function groupRow(x){
+  const open=S.open===x.id,d=open?S.draft:x,topic=x.kind==='topic';
+  const summary=`${topic?'话题群':'普通群'} · ${x.members} 人 · ${label(TRIGGER,x.trigger)} · ${topic?'每个话题一个会话':label(SESSION,x.session)}${x.context?' · 已设上下文':''}`;
+  return `<div class="group"><button class="group-head" data-group="${x.id}" aria-expanded="${open}"><span class="chat-ico">${topic?'话':'群'}</span>
+    <span class="grow"><b>${esc(x.name)}</b><small>${summary}</small></span><span class="chev ${open?'up':''}">${ICON.chev}</span></button>
+    ${open?`<div class="group-body">
+      <div class="opt-title">触发方式</div>${opts(TRIGGER,'trigger',d.trigger)}
+      <div class="opt-title">会话方式</div>${topic?'<p class="fixed">话题群：每个话题一个会话</p>':opts(SESSION,'session',d.session)}
+      <div class="opt-title">系统上下文<span id="ctxn">${d.context.length} / 2000</span></div>
+      <textarea data-ctx maxlength="2000" rows="5" placeholder="例如：成员是投研团队，回答先给结论。">${esc(d.context)}</textarea>
+      <div class="actions end"><button class="btn" data-gact="cancel">取消</button><button class="btn primary" id="gsave" data-gact="save" ${dirty(x)?'':'disabled'}>保存</button></div>
+    </div>`:''}</div>`;
+}
+function appDetail(a){
+  if(!a) return feishu();
+  const banner = a.status==='error'?`<div class="banner error"><span>${esc(a.error)}</span><button class="btn sm" data-act="fix">更新 App Secret</button></div>`
+    : a.status==='busy'?`<div class="banner busy"><span>另一个程序正在使用这个应用的长连接，消息会被随机分走。</span><button class="btn sm" data-act="reconnect">在这里接管</button></div>`
+    : a.status==='disabled'?`<div class="banner off"><span>已停用，不收发消息</span><button class="btn sm" data-act="toggle">启用</button></div>`:'';
+  return `<button class="back" data-go="feishu">${ICON.back}飞书</button>
+  <div class="profile">${avatar(a,true)}<div><h2>${esc(a.name)}</h2><span class="meta">${esc(a.appId)} · ${a.brand==='lark'?'Lark':'飞书'} · 接收助手 ${esc(a.bot)}${a.shared?' · 共享应用':''}</span></div>${statusHtml(a.status)}</div>
+  ${banner}
+  <div class="section"><h3>群 · ${a.groups.length}</h3><div class="surface">${a.groups.length?a.groups.map(groupRow).join(''):'<div class="empty"><p>把机器人拉进飞书群后，群会出现在这里</p></div>'}</div></div>`;
+}
+
+/* 添加应用 */
+function modal(){
+  const m=S.modal;if(!m)return '';
+  let body='';
+  if(m.step==='choose'||m.step==='manual'){
+    const pick=`<label class="field">接收助手<select id="mbot">${BOTS.map(b=>`<option ${b===m.bot?'selected':''}>${b}</option>`).join('')}</select></label>`;
+    body = m.step==='choose' ? `<h3>添加飞书应用</h3>${pick}<div class="actions"><button class="btn" data-m="close">取消</button><button class="btn" data-m="manual">使用已有应用</button><button class="btn primary" data-m="scan">扫码新建</button></div>`
+    : `<h3>使用已有应用</h3>${pick}
+      <label class="field">App ID<input id="mid" placeholder="cli_xxx" value="${esc(m.appId??'')}"></label>
+      <label class="field">App Secret<input id="msec" type="password" autocomplete="new-password" value="${esc(m.secret??'')}"></label>
+      <label class="field">品牌<select id="mbrand"><option value="feishu">飞书</option><option value="lark" ${m.brand==='lark'?'selected':''}>Lark</option></select></label>
+      ${m.err?`<p class="err-text">${esc(m.err)}</p>`:''}
+      <div class="actions"><button class="btn" data-m="choose">返回</button><button class="btn primary" data-m="save" ${m.busy?'disabled':''}>${m.busy?'连接中…':'保存并连接'}</button></div>`;
+  } else {
+    const steps=['等待扫码','正在创建应用','正在配置权限和事件','正在连接'];
+    body = `<h3>扫码新建飞书应用</h3><div class="qr">${fakeQr()}<ol class="steps">${steps.map((s,i)=>`<li class="${i<m.i?'done':i===m.i?'now':''}">${i<m.i?ICON.check:'<span style="width:17px;text-align:center">·</span>'}${s}</li>`).join('')}</ol></div>
+      <div class="actions"><button class="btn" data-m="close">取消</button>${m.i===0?'<button class="btn proto-only" data-m="simscan">模拟扫码</button>':''}</div>`;
+  }
+  return `<div class="scrim" data-m="scrim"><div class="modal">${body}</div></div>`;
+}
+let qrCache;
+function fakeQr(){
+  if(qrCache) return qrCache;
+  const n=25;let r='';let seed=7;const rnd=()=>(seed=(seed*9301+49297)%233280)/233280;
+  const finder=(x,y)=>`<rect x="${x}" y="${y}" width="7" height="7" fill="#111"/><rect x="${x+1}" y="${y+1}" width="5" height="5" fill="#fff"/><rect x="${x+2}" y="${y+2}" width="3" height="3" fill="#111"/>`;
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++){const inF=(x<8&&y<8)||(x>n-9&&y<8)||(x<8&&y>n-9);if(!inF&&rnd()>.52)r+=`<rect x="${x}" y="${y}" width="1" height="1" fill="#111"/>`;}
+  return qrCache=`<svg viewBox="0 0 ${n} ${n}" shape-rendering="crispEdges">${r}${finder(0,0)}${finder(n-7,0)}${finder(0,n-7)}</svg>`;
+}
+function renderLayer(){ $('#layer').innerHTML = modal() + (S.toast?`<div class="toast">${esc(S.toast)}</div>`:''); }
+
+function connect(a,after){
+  a.status='connecting';render();
+  setTimeout(()=>{a.status='connected';a.error='';render();after&&after();},1100);
+}
+function addApp(fields){
+  const n=S.apps.filter(a=>!a.shared).length;
+  const a={id:'n'+Date.now(),name:fields.name,appId:fields.appId,brand:fields.brand,bot:fields.bot,status:'connecting',color:COLORS[(n+1)%COLORS.length],groups:[]};
+  S.apps.splice(n,0,a);S.modal=null;go({name:'app',id:a.id});connect(a,()=>toast(`已连接「${a.name}」`));
+}
+
+function toggle(a){ if(a.status==='disabled') return connect(a,()=>toast('已启用')); a.status='disabled';render();toast('已停用，机器人不再收发消息'); }
+document.addEventListener('click',e=>{
+  if(S.menu&&!e.target.closest('.menu,[data-more]')){S.menu=null;S.confirm=null;render();}
+  const t=e.target.closest('[data-go],[data-row],[data-app],[data-add],[data-act],[data-m],[data-more],[data-menu],[data-group],[data-gact]');
+  if(!t) return;
+  const d=t.dataset;
+  if(d.go){e.preventDefault();return go({name:d.go});}
+  if(d.row){ if(d.row==='feishu') go({name:'feishu'}); else toast('原型只做了飞书'); return; }
+  if(d.app) return go({name:'app',id:d.app});
+  if(d.more){S.menu=S.menu===d.more?null:d.more;S.confirm=null;return render();}
+  if(d.menu){
+    const a=app(d.id);
+    switch(d.menu){
+      case 'ask': S.confirm=a.id;return render();
+      case 'cancel': S.confirm=null;S.menu=null;return render();
+      case 'reconnect': S.menu=null;return connect(a,()=>toast('已重新连接'));
+      case 'toggle': S.menu=null;return toggle(a);
+      case 'remove': case 'unbind': S.apps=S.apps.filter(x=>x!==a);S.menu=null;S.confirm=null;render();return toast(d.menu==='remove'?`已移除「${a.name}」`:'已解除绑定');
+    }
+  }
+  if(d.add!==undefined){ S.modal={step:d.add==='manual'?'manual':d.add==='scan'?'qr':'choose',bot:BOTS[0],i:0}; return renderLayer(); }
+  if(d.m){
+    const m=S.modal;
+    if(d.m==='scrim'&&e.target!==t) return;
+    if(d.m==='close'||d.m==='scrim'){S.modal=null;return renderLayer();}
+    const bot=$('#mbot')?.value; if(bot)m.bot=bot;
+    if(d.m==='manual'||d.m==='choose'){m.step=d.m;m.err='';return renderLayer();}
+    if(d.m==='scan'){m.step='qr';m.i=0;return renderLayer();}
+    if(d.m==='simscan'){
+      const tick=()=>{if(S.modal!==m)return;m.i++;renderLayer();if(m.i<3)setTimeout(tick,900);else setTimeout(()=>S.modal===m&&addApp({name:m.bot==='金融助手'?'Nex 金融 2':'Nex '+m.bot,appId:'cli_'+Math.random().toString(16).slice(2,18),brand:'feishu',bot:m.bot}),700);};
+      return tick();
+    }
+    if(d.m==='save'){
+      m.appId=$('#mid').value.trim();m.secret=$('#msec').value;m.brand=$('#mbrand').value;
+      if(!/^cli_[0-9a-z]{8,}$/i.test(m.appId)){m.err='App ID 格式应为 cli_ 开头';return renderLayer();}
+      if(!m.secret){m.err='请填写 App Secret';return renderLayer();}
+      const dup=!m.fixing&&S.apps.find(a=>a.appId===m.appId);
+      if(dup){m.err=dup.shared?'这是共享应用，无需重复添加':`该应用已添加为「${dup.name}」`;return renderLayer();}
+      m.busy=true;renderLayer();
+      return setTimeout(()=>{ if(S.modal!==m)return; if(m.secret==='bad'){m.busy=false;m.err='App ID 或 App Secret 不正确';return renderLayer();}
+        addApp({name:'Nex '+m.bot,appId:m.appId,brand:m.brand,bot:m.bot}); },900);
+    }
+  }
+  const a=app(S.view.id); if(!a) return;
+  if(d.group){
+    const x=a.groups.find(g=>g.id===d.group);
+    if(S.open===x.id) S.open=null; else {S.open=x.id;S.draft={trigger:x.trigger,session:x.session,context:x.context};}
+    return render();
+  }
+  if(d.gact){
+    if(d.gact==='cancel'){S.open=null;return render();}
+    const x=a.groups.find(g=>g.id===S.open);Object.assign(x,S.draft);S.open=null;render();return toast(`「${x.name}」已保存`);
+  }
+  switch(d.act){
+    case 'reconnect': return connect(a,()=>toast('已重新连接'));
+    case 'fix': S.modal={step:'manual',bot:a.bot,appId:a.appId,brand:a.brand,fixing:a.id};return renderLayer();
+    case 'toggle': return toggle(a);
+  }
+});
+// manual-form save also handles "fix secret" on an existing app
+const origAdd=addApp;
+addApp=function(f){const m=S.modal;if(m?.fixing){const a=app(m.fixing);S.modal=null;render();return connect(a,()=>toast('App Secret 已更新'));}return origAdd(f);};
+document.addEventListener('change',e=>{
+  if(S.open&&(e.target.name==='trigger'||e.target.name==='session')){S.draft[e.target.name]=e.target.value;render();}
+});
+document.addEventListener('input',e=>{
+  if(e.target.id==='q'){S.q=e.target.value;const pos=e.target.selectionStart;render();const q=$('#q');q.focus();q.setSelectionRange(pos,pos);}
+  if(e.target.matches('[data-ctx]')){
+    S.draft.context=e.target.value;$('#ctxn').textContent=`${e.target.value.length} / 2000`;
+    const x=app(S.view.id).groups.find(g=>g.id===S.open);$('#gsave').disabled=!dirty(x);
+  }
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.modal){S.modal=null;renderLayer();}});
+$('#reset').onclick=()=>{S.apps=seed();S.modal=null;go({name:'connectors'});};
+$('#empty').onclick=()=>{S.apps=[];S.modal=null;go({name:'feishu'});};
+render();
+</script>
+</body>
+</html>

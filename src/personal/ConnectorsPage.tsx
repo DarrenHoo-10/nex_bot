@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, MoreHorizontal, Plug, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { api, type ConnectorView, type State } from "./api";
 import type { ConnectorMonitorView, MonitorCiMode } from "../../shared/personal-connectors";
-import { FeishuCard } from "./FeishuCard";
+import { FeishuCard, FeishuStatus } from "./FeishuCard";
+import { FeishuAppDetail } from "./FeishuAppDetail";
 import { GmailConnect } from "./GmailConnect";
 import { GithubConnect } from "./GithubConnect";
 import gmailIcon from "./assets/gmail.png";
@@ -36,7 +37,8 @@ const connectionStatus = (item: ConnectorView) => !item.enabled ? "已停用" : 
 const ConnectorIcon = ({ gmail = false, github = false }: { gmail?: boolean; github?: boolean }) => <span className={`connector-icon ${gmail ? "is-gmail" : github ? "is-github" : ""}`} aria-hidden="true">{gmail ? <img src={gmailIcon} alt="" width="48" height="48"/> : github ? <img src={githubMark} alt="" width="48" height="48"/> : <Plug size={24}/>}</span>;
 
 export function ConnectorsPage({ state, financeBotId, refresh }: { state: State; financeBotId?: string; refresh(): Promise<void> }) {
-  const [view, setView] = useState<"catalog" | "gmail" | "github" | "mcp">("catalog");
+  const [view, setView] = useState<"catalog" | "gmail" | "github" | "mcp" | "feishu">(() => typeof location !== "undefined" && new URLSearchParams(location.search).get("settings") === "feishu" ? "feishu" : "catalog");
+  const [feishuAppId, setFeishuAppId] = useState("");
   const [editing, setEditing] = useState<ConnectorView | "new" | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [managedAccount, setManagedAccount] = useState("");
@@ -59,11 +61,12 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
       if (editing) setEditing(null);
       else if (confirmRemove) setConfirmRemove("");
       else if (managedAccount) setManagedAccount("");
+      else if (feishuAppId) setFeishuAppId("");
       else { setView("catalog"); setError(""); setNotice(""); }
     };
     window.addEventListener("nex-android-back", back, true);
     return () => window.removeEventListener("nex-android-back", back, true);
-  }, [editing, confirmRemove, managedAccount, view, busy]);
+  }, [editing, confirmRemove, managedAccount, feishuAppId, view, busy]);
   useEffect(() => {
     if (previousView.current === view) return;
     previousView.current = view;
@@ -90,7 +93,10 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   const accounts = (state.connectors ?? []).filter((item) => item.provider === "gmail");
   const githubAccounts = (state.connectors ?? []).filter((item) => item.provider === "github");
   const connections = (state.connectors ?? []).filter((item) => item.provider === "mcp");
-  const feishu = <FeishuCard state={state} financeBotId={financeBotId} refresh={refresh}/>;
+  const feishuApps = state.feishu?.apps ?? [];
+  const feishuApp = feishuApps.find((app) => app.id === feishuAppId);
+  const feishuIssues = feishuApps.filter((app) => app.status === "error" || app.status === "busy").length;
+  const showFeishu = `飞书 feishu lark ${feishuApps.map((app) => `${app.name ?? ""} ${app.appId}`).join(" ")}`.toLowerCase().includes(search.trim().toLowerCase());
   const selected = connections.find((item) => item.id === selectedId);
   const gmailAvailable = state.connectorCatalog?.find((item) => item.id === "gmail")?.available === true;
   const githubAvailable = state.connectorCatalog?.find((item) => item.id === "github")?.available === true;
@@ -103,9 +109,9 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   const githubConnectorIds = new Set(githubAccounts.map((item) => item.id));
   const usableTools = new Set(gmailAvailable ? accounts.filter(ready).flatMap((item) => item.tools.map((tool) => tool.name)) : []);
   const usableGithubTools = new Set(githubAccounts.filter(ready).flatMap((item) => item.tools.map((tool) => tool.name)));
-  const openDetail = (provider: "gmail" | "github" | "mcp", id = "") => {
-    returnTo.current = provider === "gmail" || provider === "github" ? provider : id;
-    setView(provider); setSelectedId(id); setManagedAccount(""); setConfirmRemove(""); setError(""); setNotice("");
+  const openDetail = (provider: "gmail" | "github" | "mcp" | "feishu", id = "") => {
+    returnTo.current = provider === "mcp" ? id : provider;
+    setView(provider); setSelectedId(id); setFeishuAppId(""); setManagedAccount(""); setConfirmRemove(""); setError(""); setNotice("");
   };
   const connected = async (id: string) => { setSelectedId(id); setConfirmRemove(""); await refresh(); setNotice("Gmail 已连接"); };
   const githubConnected = async (id: string) => { setSelectedId(id); setConfirmRemove(""); await refresh(); setNotice("GitHub 已连接"); };
@@ -159,16 +165,17 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
     {remove(item)}
   </>;
   return <div className="connectors-page" ref={page}>
-    {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation"><button className="connector-back" onClick={() => { setView("catalog"); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button></div>}
+    {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation">{view === "feishu" && feishuApp ? <button className="connector-back" onClick={() => setFeishuAppId("")}><ChevronLeft size={20}/>飞书</button> : <button className="connector-back" onClick={() => { setView("catalog"); setFeishuAppId(""); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button>}</div>}
     {error && <div className="connector-feedback is-error" role="alert">{error}</div>}{notice && <div className="connector-feedback" role="status"><Check size={16}/>{notice}</div>}
-    {view === "catalog" && feishu}
+    {view === "feishu" && (feishuApp ? <FeishuAppDetail key={feishuApp.id} app={feishuApp} refresh={refresh}/> : <FeishuCard state={state} financeBotId={financeBotId} refresh={refresh} onOpenApp={setFeishuAppId}/>)}
     {view === "catalog" && <section className="connector-catalog" aria-label="连接器列表">
       <label className="connector-search"><Search size={16}/><input aria-label="搜索连接器" placeholder="搜索连接器" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
       <div className="connector-catalog-rows">
         {showGmail && <div className="connector-catalog-item"><button className="connector-catalog-row" data-connector="gmail" onClick={() => openDetail("gmail")}><ConnectorIcon gmail/><span className="connector-catalog-copy"><strong>Gmail</strong><span>搜索、读取邮件与会话。</span></span>{(accounts.length > 0 || !gmailAvailable) && <span className={`connector-catalog-state ${accounts.length ? "is-added" : ""}`}>{accounts.length ? <><Check size={17}/>已添加</> : "暂不可用"}</span>}</button>{!accounts.length && gmailAvailable && <GmailConnect available={!busy} label="连接" variant="subtle" connected={connected}/>}</div>}
         {showGithub && <div className="connector-catalog-item"><button className="connector-catalog-row" data-connector="github" onClick={() => openDetail("github")}><ConnectorIcon github/><span className="connector-catalog-copy"><strong>GitHub</strong><span>仓库、PR、CI 与 issue。</span></span>{githubAccounts.length > 0 && <span className="connector-catalog-state is-added"><Check size={17}/>已添加</span>}</button>{!githubAccounts.length && <GithubConnect available={githubAvailable && !busy} label="连接" variant="subtle" connected={githubConnected}/>}</div>}
+        {showFeishu && <button className="connector-catalog-row" data-connector="feishu" onClick={() => openDetail("feishu")}><span className="connector-icon feishu-icon" aria-hidden="true">飞</span><span className="connector-catalog-copy"><strong>飞书</strong><span>{feishuApps.length ? `${feishuApps.length} 个应用 · ${[...new Set(feishuApps.map((app) => app.botName))].join("、")}` : "接收和回复飞书消息"}</span></span>{feishuApps.length > 0 && (feishuIssues ? <span className="connector-catalog-state is-error">{feishuIssues} 个异常</span> : feishuApps.some((app) => app.status === "connected") ? <span className="connector-catalog-state is-added"><Check size={17}/>已连接</span> : <span className="connector-catalog-state"><FeishuStatus status={feishuApps[0].status}/></span>)}</button>}
         {otherConnections.map((item) => <button className="connector-catalog-row" data-connector={item.id} key={item.id} onClick={() => openDetail("mcp", item.id)}><ConnectorIcon/><span className="connector-catalog-copy"><strong>{item.name}</strong><span>MCP 连接器</span></span><span className={`connector-catalog-state ${ready(item) ? "is-added" : ""}`}>{ready(item) && <Check size={17}/>}<span>{connectionStatus(item)}</span></span></button>)}
-        {!showGmail && !showGithub && !otherConnections.length && <p className="connector-no-results">没有匹配的连接器</p>}
+        {!showGmail && !showGithub && !showFeishu && !otherConnections.length && <p className="connector-no-results">没有匹配的连接器</p>}
       </div>
     </section>}
     {view === "gmail" && <section className="connector-detail connector-profile" aria-label="Gmail 连接器详情">

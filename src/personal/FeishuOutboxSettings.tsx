@@ -16,7 +16,8 @@ function preview(content:string) {
 /** Owner settings only. Reconciliation never posts a diagnostic into the destination chat. */
 export function FeishuOutboxSettings({revision}:{revision:unknown}) {
   const [parts,setParts]=useState<Part[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
-  const reload=useCallback(async()=>{const result=await api<{parts:Part[]}>('feishu/deliveries');setParts(result.parts);},[]);
+  // Only deliveries that need the owner's decision are shown; delivered and cancelled parts stay out of settings.
+  const reload=useCallback(async()=>{const result=await api<{parts:Part[]}>('feishu/deliveries');setParts(result.parts.filter(part=>part.state==='needs_reconciliation'));},[]);
   useEffect(()=>{void reload().catch(e=>setError(e instanceof Error?e.message:'无法读取投递状态'));},[revision,reload]);
   function reconcile(event:FormEvent<HTMLFormElement>,part:Part) {
     event.preventDefault();

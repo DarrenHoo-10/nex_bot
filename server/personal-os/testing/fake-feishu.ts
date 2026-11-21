@@ -2,13 +2,13 @@ import { createServer, type Server } from "node:http";
 
 export interface FakeTransportEntry { handlers: { onMessage(event: unknown): void; onCardAction(event: unknown): Promise<unknown> } }
 
-export function messageEvent(input: { appId?: string; messageId: string; chatId: string; chatType?: "p2p" | "group"; senderOpenId: string; senderType?: string; messageType?: string; content: string; mentions?: unknown[]; parentId?: string }) {
+export function messageEvent(input: { appId?: string; messageId: string; chatId: string; chatType?: "p2p" | "group"; senderOpenId: string; senderType?: string; messageType?: string; content: string; mentions?: unknown[]; parentId?: string; threadId?: string }) {
   return {
     schema: "2.0",
     header: { event_id: `evt_${input.messageId}`, event_type: "im.message.receive_v1", create_time: String(Date.now()), tenant_key: "fake", app_id: input.appId ?? "cli_fake" },
     event: {
       sender: { sender_id: { union_id: "un_x", user_id: "u_x", open_id: input.senderOpenId }, sender_type: input.senderType ?? "user", tenant_key: "fake" },
-      message: { message_id: input.messageId, root_id: input.parentId ?? "", parent_id: input.parentId ?? "", create_time: String(Date.now()), chat_id: input.chatId, chat_type: input.chatType ?? "p2p", message_type: input.messageType ?? "text", content: input.content, ...(input.mentions ? { mentions: input.mentions } : {}) },
+      message: { message_id: input.messageId, root_id: input.parentId ?? "", parent_id: input.parentId ?? "", create_time: String(Date.now()), chat_id: input.chatId, chat_type: input.chatType ?? "p2p", ...(input.threadId ? { thread_id: input.threadId } : {}), message_type: input.messageType ?? "text", content: input.content, ...(input.mentions ? { mentions: input.mentions } : {}) },
     },
   };
 }
@@ -37,6 +37,10 @@ export interface FakeFeishu {
   setUserOpenId(openId: string): void;
   /** 设备码轮询在前 N 次返回 authorization_pending。 */
   setPendingPolls(count: number): void;
+  /** Groups the bot is in, served by the chat list and chat info endpoints. */
+  setChats(chats: Array<{ chatId: string; name: string; mode?: "group" | "topic"; members?: number }>): void;
+  /** App id returned by the next scan registrations, in order. */
+  queueAppIds(...ids: string[]): void;
 }
 
 /** 假飞书：OpenAPI 子集 + 可注入的长连接传输。只监听 127.0.0.1。 */
@@ -47,6 +51,8 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
   let online = 0, tokenRequests = 0, userAccess = 0, polls = 0, pendingPolls = 0;
   let registerFailure = "";
   let userOpenId = "ou_owner";
+  let chats: Array<{ chatId: string; name: string; mode?: "group" | "topic"; members?: number }> = [];
+  const appIds: string[] = [];
   const server: Server = createServer((request, response) => { void (async () => {
     const url = new URL(request.url ?? "/", "http://fixture");
     let body = "";
@@ -78,7 +84,15 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
     if (url.pathname === "/open-apis/authen/v1/user_info") { json({ code: 0, data: { open_id: userOpenId, name: "主人" } }); return; }
     if (url.pathname === "/open-apis/auth/v3/tenant_access_token/internal") { tokenRequests += 1; json({ code: 0, msg: "ok", tenant_access_token: `tenant-${tokenRequests}`, expire: 7200 }); return; }
     if (url.pathname === "/open-apis/event/v1/connection") { json({ code: 0, msg: "ok", online_instance_cnt: online }); return; }
-    if (url.pathname === "/open-apis/bot/v3/info") { json({ code: 0, msg: "ok", bot: { open_id: "ou_fake_bot", activate_status: 2 } }); return; }
+    if (url.pathname === "/open-apis/bot/v3/info") { json({ code: 0, msg: "ok", bot: { open_id: "ou_fake_bot", app_name: "假机器人", avatar_url: "https://example.invalid/bot.png", activate_status: 2 } }); return; }
+    if (url.pathname === "/open-apis/im/v1/chats") { json({ code: 0, data: { items: chats.map((c) => ({ chat_id: c.chatId, name: c.name })), has_more: false, page_token: "" } }); return; }
+    const chatInfo = /^\/open-apis\/im\/v1\/chats\/([^/]+)$/.exec(url.pathname);
+    if (chatInfo && request.method === "GET") {
+      const chat = chats.find((c) => c.chatId === decodeURIComponent(chatInfo[1]));
+      if (!chat) { json({ code: 232011, msg: "bot not in chat" }); return; }
+      json({ code: 0, data: { name: chat.name, chat_mode: chat.mode === "topic" ? "topic" : "group", group_message_type: chat.mode === "topic" ? "thread" : "chat", user_count: String(chat.members ?? 3) } });
+      return;
+    }
     if (url.pathname === "/open-apis/im/v1/messages" && url.searchParams.get("receive_id_type") === "chat_id") {
       sent.push({ path: "send", body: payload });
       json({ code: 0, msg: "success", data: { message_id: `om_out_${sent.length}` } });
@@ -108,7 +122,7 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
     async registerApp(options) {
       options.onQRCodeReady({ url: `${origin}/fake-qr?scan=1`, expireIn: 300 });
       if (registerFailure) throw new Error(registerFailure);
-      return { client_id: "cli_fake", client_secret: "fake-secret", user_info: { open_id: "ou_owner", tenant_brand: "feishu" } };
+      return { client_id: appIds.shift() ?? "cli_fake", client_secret: "fake-secret", user_info: { open_id: "ou_owner", tenant_brand: "feishu" } };
     },
     async createTransport(app, handlers) {
       transports.set(app.appId, { handlers });
@@ -120,5 +134,7 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
     failRegister(message: string) { registerFailure = message; },
     setUserOpenId(openId: string) { userOpenId = openId; },
     setPendingPolls(count: number) { pendingPolls = count; polls = 0; },
+    setChats(next) { chats = next; },
+    queueAppIds(...ids) { appIds.push(...ids); },
   };
 }

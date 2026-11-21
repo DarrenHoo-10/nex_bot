@@ -121,11 +121,13 @@ export function AgentDesktop() {
   // topics are the finance assistant's; a session handed to another assistant opens one there too
   const [forkBotId, setForkBotId] = useState<string>();
   const finance = Boolean((financeBotId && financeBotId === botId) || (forkBotId && forkBotId === botId));
+  // An assistant that receives a Feishu app shows its Feishu topics the way the finance assistant does; its main chat stays continuous.
+  const topicMode = finance || Boolean(botId && state?.feishu?.apps.some((app) => app.botId === botId));
   const [topicId, setTopicId] = useState<string>();
   const [topics,setTopics] = useState<FinanceTopic[]>([]);
   const [olderEnd,setOlderEnd] = useState(false);
   const [editInput,setEditInput] = useState<string>();
-  const conversation = finance ? topicId : undefined;
+  const conversation = topicMode ? topicId : undefined;
   const draftKey = conversation ? JSON.stringify([botId,conversation]) : botId;
   const destination = useRef(draftKey);
   destination.current = draftKey;
@@ -220,7 +222,7 @@ export function AgentDesktop() {
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
   const [focusedMessage,setFocusedMessage]=useState("");
-  const messages = useMemo(() => finance && !conversation && !focusedMessage ? topicTimeline(rawMessages,topics) : rawMessages, [finance, conversation, focusedMessage, rawMessages, topics]);
+  const messages = useMemo(() => topicMode && !conversation && !focusedMessage ? topicTimeline(rawMessages,topics) : rawMessages, [topicMode, conversation, focusedMessage, rawMessages, topics]);
   const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), transcriptInner = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
   // Set once Core has accepted the send. Cleared only when a later reload publishes
@@ -306,7 +308,7 @@ export function AgentDesktop() {
     early?.catch(() => undefined);
     const [next, topicList] = await Promise.all([
       api<State>("state"),
-      finance ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`).catch((error:Error)=>({topics:[],error})) : undefined,
+      topicMode ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`).catch((error:Error)=>({topics:[],error})) : undefined,
     ]);
     if (request !== serial.current) return;
     if (current && !next.bots.some(bot=>bot.id===current)) {
@@ -381,7 +383,7 @@ export function AgentDesktop() {
       }
     }
     if (request === serial.current) { setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
-  }, [offline, finance, conversation, draftKey, botId]);
+  }, [offline, finance, topicMode, conversation, draftKey, botId]);
   useEffect(() => {
     // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
     if (!selected.current) void reload().catch((e: Error) => setError(e.message));
@@ -471,7 +473,7 @@ export function AgentDesktop() {
         const result = await api<{conversationId?:string}>(editInput ? "agents/edit" : "agents/input", {
           botId:target, text:content, clientId, attachments:attachmentIds,
           ...(editInput ? {messageId:editInput} : {}),
-          ...(finance ? replyConversation ? {conversationId:replyConversation} : {newConversation:true, sourceContext:{channel:"nexbot"}} : {}),
+          ...(topicMode && replyConversation ? {conversationId:replyConversation} : finance ? {newConversation:true, sourceContext:{channel:"nexbot"}} : {}),
         });
         if (destination.current === draftKey) {
           setEditInput(undefined);
@@ -513,7 +515,7 @@ export function AgentDesktop() {
     });
   };
   // The chat's working state and its stop key follow the main chat only: background jobs, routines and delegated children have their own.
-  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status)) && (!finance || (conversation ? topic?.activeTask?.id === t.id : !topics.some(item => item.activeTask?.id === t.id)))) ?? [];
+  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status)) && (!topicMode || (conversation ? topic?.activeTask?.id === t.id : !topics.some(item => item.activeTask?.id === t.id)))) ?? [];
   const botJobs = state?.jobs?.filter((job) => job.botId === botId) ?? [], openJobs = botJobs.filter(openJob);
   const jobById = new Map((state?.jobs ?? []).map((job) => [job.id, job]));
   useEffect(() => {
@@ -530,7 +532,7 @@ export function AgentDesktop() {
     }
   }, [botId, tasks[0]?.id]);
   const avatarState = !connected ? "offline" : tasks.length ? companionState(tasks[0], state?.approvals.some((a) => a.bot_id === botId), connected) : sendingBotId === botId ? "thinking" : settledState;
-  const liveStreaming = withoutCommittedStreaming(messages, finance && !conversation ? streaming.filter(s => !topics.some(item => item.activeTask?.id === s.taskId)) : streaming);
+  const liveStreaming = withoutCommittedStreaming(messages, topicMode && !conversation ? streaming.filter(s => !topics.some(item => item.activeTask?.id === s.taskId)) : streaming);
   const processing = connected && !liveStreaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
   const setFollowing = useCallback((next: boolean) => {
     stickToBottom.current = next;

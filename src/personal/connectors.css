@@ -129,3 +129,60 @@
 /* GitHub 监视配置。 */
 .connector-monitor-copy { margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; word-break: break-all; }
 .connector-webhook-note { margin: 12px 0; padding: 12px; background: var(--secondary, #f5f5f4); border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+
+/* Feishu: app list, per-app group settings. */
+.connectors-page .connector-icon.feishu-icon { background: #3370ff; border-color: transparent; color: #fff; font-size: 22px; font-weight: 600; }
+.connector-catalog-state.is-error { color: var(--destructive); }
+.feishu-page .connector-profile-heading > .feishu-status { flex-shrink: 0; }
+.rk-workspace .feishu-add { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 20px; padding: 9px 14px; background: var(--secondary); font-size: 12px; white-space: nowrap; }
+.feishu-add-form { margin-top: 20px; padding: 16px 20px; }
+.feishu-add-form .actions { margin-top: 12px; }
+.feishu-qr { align-items: center; flex-wrap: wrap; gap: 12px; }
+.feishu-avatar { width: 40px; height: 40px; flex-shrink: 0; display: grid; place-items: center; border-radius: 50%; background: #3370ff; color: #fff; font-size: 16px; font-weight: 600; }
+.feishu-avatar.is-large { width: 68px; height: 68px; font-size: 26px; }
+.feishu-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; color: var(--muted-foreground); }
+.feishu-status > i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .7; }
+.feishu-status.is-connected { color: var(--success); }
+.feishu-status.is-error { color: var(--destructive); }
+.feishu-status.is-busy { color: #b7791f; }
+.feishu-app, .feishu-group { position: relative; border-top: 1px solid var(--border); }
+.feishu-app:first-child, .feishu-group:first-child { border-top: 0; }
+.feishu-app-row { display: flex; align-items: center; }
+.rk-workspace .feishu-app-open, .rk-workspace .feishu-group-head { flex: 1; min-width: 0; display: flex; align-items: center; gap: 13px; width: 100%; padding: 15px 8px 15px 20px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.rk-workspace .feishu-group-head { padding-right: 20px; }
+.rk-workspace .feishu-app-open:hover, .rk-workspace .feishu-group-head:hover { background: var(--secondary); }
+.feishu-app:first-child .feishu-app-open, .feishu-group:first-child .feishu-group-head { border-top-left-radius: 17px; border-top-right-radius: 17px; }
+.feishu-app-copy { flex: 1; min-width: 0; }
+.feishu-app-copy > strong { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.feishu-app-copy > small { display: block; margin-top: 4px; color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
+.feishu-app-copy > small.is-error, .feishu-app-note.is-error { color: var(--destructive); }
+.feishu-tag { padding: 1px 7px; border-radius: 9px; background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-weight: 400; }
+.rk-workspace .feishu-more { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; margin: 0 12px 0 4px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted-foreground); }
+.rk-workspace .feishu-more:hover, .rk-workspace .feishu-more[aria-expanded="true"] { background: var(--secondary); color: var(--foreground); }
+.feishu-menu { position: absolute; right: 12px; top: calc(100% - 8px); z-index: 20; min-width: 180px; padding: 6px; border: 1px solid var(--input); border-radius: 12px; background: var(--card); box-shadow: 0 10px 30px rgba(15, 20, 30, .12); }
+.rk-workspace .feishu-menu > button { display: block; width: 100%; padding: 9px 12px; border: 0; border-radius: 8px; background: transparent; text-align: left; font-size: 13px; }
+.rk-workspace .feishu-menu > button:hover { background: var(--secondary); }
+.feishu-menu > p { margin: 6px 12px 4px; color: var(--muted-foreground); font-size: 12px; }
+.feishu-app-note { margin: 0; padding: 0 20px 14px 73px; font-size: 12px; }
+.feishu-app-note code { padding: 1px 6px; border-radius: 5px; background: var(--secondary); font-size: 13px; letter-spacing: 1px; }
+.feishu-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding: 11px 15px; border-radius: 12px; background: var(--secondary); font-size: 13px; }
+.feishu-banner.is-error { color: var(--destructive); }
+.feishu-banner.is-busy { color: #8a5600; }
+.feishu-empty { margin: 0; padding: 26px 20px; text-align: center; font-size: 13px; }
+.feishu-chat-icon { width: 30px; height: 30px; flex-shrink: 0; display: grid; place-items: center; border-radius: 8px; background: var(--secondary); color: var(--muted-foreground); font-size: 12px; }
+.feishu-group-head > svg { flex-shrink: 0; color: var(--muted-foreground); transition: transform .15s; }
+.feishu-group-head > svg.is-open { transform: rotate(90deg); }
+.feishu-group-body { padding: 0 20px 18px 63px; }
+.feishu-field-title { display: flex; justify-content: space-between; align-items: baseline; margin: 14px 0 8px; font-size: 13px; }
+.feishu-field-title > span { color: var(--muted-foreground); font-size: 12px; }
+.feishu-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.feishu-option { position: relative; display: block; padding: 10px 12px; border: 1px solid var(--input); border-radius: 10px; cursor: pointer; }
+.feishu-option > input { position: absolute; opacity: 0; pointer-events: none; }
+.feishu-option > strong { display: block; font-size: 13px; font-weight: 500; }
+.feishu-option > small { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
+.feishu-option.is-selected { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 9%, transparent); }
+.feishu-option.is-selected > strong { color: var(--primary); }
+.feishu-option:focus-within { outline: 2px solid var(--primary); outline-offset: 1px; }
+.rk-workspace .feishu-group-body textarea { display: block; width: 100%; min-height: 96px; padding: 10px 12px; border: 1px solid var(--input); border-radius: 10px; background: var(--card); font: inherit; font-size: 13px; line-height: 1.6; resize: vertical; }
+.feishu-group-actions { justify-content: flex-end; margin-top: 14px; }
+@media (max-width: 640px) { .feishu-group-body { padding-left: 20px; } .feishu-app-note { padding-left: 20px; } }

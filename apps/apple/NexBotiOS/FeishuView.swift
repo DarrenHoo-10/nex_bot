@@ -2,21 +2,24 @@ import SwiftUI
 import CoreImage.CIFilterBuiltins
 import NexClientKit
 
-/// 连接器页的飞书入口行（状态）与详情屏：扫码建应用、已有应用、绑定码、主人授权与启停。
+/// 连接器页的飞书入口行：应用数量与异常数。
 struct FeishuSection: View {
     let workspace: WorkspaceStore
 
     var body: some View {
         let feishu = workspace.state?.feishu
+        let apps = feishu?.apps ?? []
+        let issues = apps.filter { $0.status == "error" || $0.status == "busy" }.count
         NavigationLink {
             FeishuDetailView(workspace: workspace)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: "message.fill").font(.subheadline).foregroundStyle(Theme.muted).frame(width: 26)
+                Text("飞").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    .frame(width: 26, height: 26).background(Color(hex: 0x3370FF), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("飞书").font(.subheadline.weight(.semibold))
-                    Text(feishu?.app.map { $0.enabled ? $0.statusLabel : "已停用" } ?? (feishu?.job?.isRunning == true ? "等待扫码" : "未连接"))
-                        .font(.caption).foregroundStyle(Theme.muted)
+                    Text(apps.isEmpty ? (feishu?.job?.isRunning == true ? "等待扫码" : "未连接") : issues > 0 ? "\(apps.count) 个应用 · \(issues) 个异常" : "\(apps.count) 个应用")
+                        .font(.caption).foregroundStyle(issues > 0 ? Theme.danger : Theme.muted)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Theme.muted)
@@ -28,28 +31,38 @@ struct FeishuSection: View {
     }
 }
 
+/// 飞书应用列表与添加应用。
 struct FeishuDetailView: View {
     let workspace: WorkspaceStore
-    @Environment(\.dismiss) private var dismiss
     @State private var selectedBotID = ""
     private var botID: String { workspace.feishuReceiverID(selection: selectedBotID) }
     @State private var manual = false
-    @State private var bindCode = ""
+    @State private var adding = false
+    @State private var bindCodes: [String: String] = [:]
+    @State private var confirmingRemove: FeishuAppView?
     @State private var busy = false
-    @State private var notice: String?
     @State private var errorText: String?
 
     private var feishu: FeishuState? { workspace.state?.feishu }
-    private var app: FeishuAppView? { feishu?.app }
+    private var apps: [FeishuAppView] { feishu?.apps ?? [] }
     private var job: FeishuJob? { feishu?.job }
     private var auth: FeishuJob? { feishu?.userAuth }
+    private var showAdd: Bool { apps.isEmpty || adding || job?.isRunning == true || job?.stage == "error" }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if let notice { InlineBanner(text: notice, tone: .good) }
                 if let errorText { InlineBanner(text: errorText) }
-                if let app { connected(app) } else { setup }
+                if showAdd { setup }
+                if !apps.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
+                            if index > 0 { Divider().overlay(Theme.border) }
+                            row(app)
+                        }
+                    }
+                    .padding(.horizontal, 14).cardStyle()
+                }
             }
             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -59,49 +72,62 @@ struct FeishuDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbarBackground(Theme.background, for: .navigationBar)
+        .toolbar {
+            if !apps.isEmpty && !showAdd {
+                ToolbarItem(placement: .topBarTrailing) { Button("添加飞书应用", systemImage: "plus") { adding = true; errorText = nil } }
+            }
+        }
         .refreshable { await workspace.refresh() }
         .sheet(isPresented: $manual) {
             FeishuManualSheet(workspace: workspace, botID: botID) { manual = false }
         }
+        .confirmationDialog("移除「\(confirmingRemove?.displayName ?? "")」？", isPresented: Binding(get: { confirmingRemove != nil }, set: { if !$0 { confirmingRemove = nil } }), titleVisibility: .visible) {
+            Button("确认移除", role: .destructive) { if let app = confirmingRemove { run { try await workspace.removeFeishu(appID: app.id) } } }
+        }
         .task(id: feishu?.needsPolling == true) { await poll() }
+        .onChange(of: apps.count) { old, new in if new > old { adding = false } }
     }
 
-    @ViewBuilder private func connected(_ app: FeishuAppView) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Image(systemName: "message.fill").font(.title3).foregroundStyle(Theme.muted).frame(width: 44, height: 44)
-                    .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("飞书").font(.title3.weight(.bold))
-                    StatusChip(text: app.enabled ? app.statusLabel : "已停用", tone: !app.enabled ? .neutral : app.status == "error" || app.error != nil ? .bad : app.status == "connected" ? .good : .neutral)
-                }
-                Spacer()
-            }
-            VStack(spacing: 0) {
-                FactRow(title: "App ID", value: app.appID)
-                Divider().overlay(Theme.border)
-                FactRow(title: "接收助手", value: app.botName)
-                Divider().overlay(Theme.border)
-                FactRow(title: "品牌", value: app.brand == "lark" ? "Lark" : "飞书")
-                Divider().overlay(Theme.border)
-                FactRow(title: "主人授权", value: app.userAuthorized ? "已授权 · \(app.userScopes.count) 项权限" : "未授权")
-            }
-            .padding(.horizontal, 14).cardStyle()
-            if let appError = app.error { InlineBanner(text: appError) }
-            bindCodeSection(app)
-            authSection
+    @ViewBuilder private func row(_ app: FeishuAppView) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Button { run { try await workspace.startFeishuUserAuth() } } label: {
-                    HStack(spacing: 6) { if busy { ProgressView().controlSize(.small) }; Text(app.userAuthorized ? "重新授权" : "授权文档访问") }
+                NavigationLink { FeishuAppScreen(workspace: workspace, appID: app.id) } label: {
+                    HStack(spacing: 12) {
+                        FeishuAvatar(app: app)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(app.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.foreground)
+                            Text("接收助手 \(app.botName) · \(app.groupCount) 个群").font(.caption).foregroundStyle(Theme.muted)
+                            Text(app.statusLabel).font(.caption.weight(.medium)).foregroundStyle(app.statusTint)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(PillButtonStyle(primary: true)).disabled(busy)
-                Button(app.enabled ? "停用" : "启用") { run { try await workspace.setFeishuEnabled(!app.enabled) } }
-                    .buttonStyle(PillButtonStyle()).disabled(busy)
-                Spacer()
+                .buttonStyle(.plain)
+                Menu {
+                    if !app.ownerBound { Button("绑定主人") { run { bindCodes[app.id] = try await workspace.startFeishuBind(appID: app.id) } } }
+                    Button(app.userAuthorized ? "重新授权文档" : "授权文档访问") { run { try await workspace.startFeishuUserAuth(appID: app.id) } }
+                    Button(app.enabled ? "停用" : "启用") { run { try await workspace.setFeishuEnabled(appID: app.id, !app.enabled) } }
+                    Button("移除", role: .destructive) { confirmingRemove = app }
+                } label: { Image(systemName: "ellipsis.circle").font(.body).foregroundStyle(Theme.muted).frame(width: 36, height: 36) }
+                .disabled(busy)
+                .accessibilityLabel("更多操作")
             }
-            Button("移除飞书连接", role: .destructive) { run { try await workspace.removeFeishu(); bindCode = "" } }
-                .buttonStyle(PillButtonStyle(danger: true)).disabled(busy)
+            if app.status == "error", let appError = app.error { Text(appError).font(.caption).foregroundStyle(Theme.danger) }
+            if let code = bindCodes[app.id], !app.ownerBound {
+                Text("在飞书私聊机器人发送 \(code)，10 分钟内有效").font(.footnote).foregroundStyle(Theme.muted).textSelection(.enabled)
+            }
+            if let auth, auth.appID == app.id {
+                if auth.isRunning, let url = auth.url {
+                    VStack(alignment: .leading, spacing: 10) {
+                        FeishuQRView(text: url)
+                        Text("用飞书扫码完成文档授权").font(.footnote).foregroundStyle(Theme.muted)
+                        Button("取消") { run { try await workspace.cancelFeishuUserAuth() } }.buttonStyle(PillButtonStyle()).disabled(busy)
+                    }
+                } else if auth.stage == "error", let authError = auth.error { Text(authError).font(.caption).foregroundStyle(Theme.danger) }
+            }
         }
+        .padding(.vertical, 12)
     }
 
     @ViewBuilder private var setup: some View {
@@ -125,34 +151,11 @@ struct FeishuDetailView: View {
                         HStack(spacing: 6) { if busy { ProgressView().controlSize(.small) }; Text("扫码连接飞书") }
                     }
                     .buttonStyle(PillButtonStyle(primary: true)).disabled(busy || botID.isEmpty)
-                    Button("使用已有应用") { errorText = nil; notice = nil; manual = true }
+                    Button("使用已有应用") { errorText = nil; manual = true }
                         .buttonStyle(PillButtonStyle()).disabled(busy)
+                    if !apps.isEmpty { Button("取消") { adding = false }.buttonStyle(PillButtonStyle()).disabled(busy) }
                 }
             }
-        }
-    }
-
-    @ViewBuilder private func bindCodeSection(_ app: FeishuAppView) -> some View {
-        if !app.ownerBound {
-            if bindCode.isEmpty {
-                Button("生成绑定码") { run { bindCode = try await workspace.startFeishuBind() } }
-                    .buttonStyle(PillButtonStyle()).disabled(busy)
-            } else {
-                Text("绑定码 \(bindCode)：在飞书私聊机器人发送这串数字，10 分钟内有效。")
-                    .font(.footnote).foregroundStyle(Theme.muted).textSelection(.enabled)
-            }
-        }
-    }
-
-    @ViewBuilder private var authSection: some View {
-        if let auth, auth.isRunning, let url = auth.url {
-            VStack(alignment: .leading, spacing: 12) {
-                FeishuQRView(text: url)
-                Text("用飞书扫码完成主人身份授权。").font(.footnote).foregroundStyle(Theme.muted)
-                Button("取消") { run { try await workspace.cancelFeishuUserAuth() } }.buttonStyle(PillButtonStyle()).disabled(busy)
-            }
-        } else if let auth, auth.stage == "error", let authError = auth.error {
-            InlineBanner(text: authError)
         }
     }
 
@@ -166,7 +169,7 @@ struct FeishuDetailView: View {
     }
 
     private func run(_ work: @escaping () async throws -> Void) {
-        busy = true; notice = nil; errorText = nil
+        busy = true; errorText = nil
         Task {
             defer { busy = false }
             do { try await work() } catch { errorText = coreMessage(error) }
@@ -175,7 +178,62 @@ struct FeishuDetailView: View {
     }
 }
 
-/// 使用已有应用（兜底）：粘贴 App ID / Secret，主人稍后用绑定码绑定。
+/// 单个飞书应用：只管理每个群的回复模式与系统上下文。
+struct FeishuAppScreen: View {
+    let workspace: WorkspaceStore
+    let appID: String
+    @State private var busy = false
+    @State private var errorText: String?
+
+    var body: some View {
+        ScrollView {
+            if let app = workspace.state?.feishu?.app(appID) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 12) {
+                        FeishuAvatar(app: app, size: 52)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(app.displayName).font(.title3.weight(.bold))
+                            Text("\(app.appID) · 接收助手 \(app.botName)").font(.caption).foregroundStyle(Theme.muted).textSelection(.enabled)
+                            Text(app.statusLabel).font(.caption.weight(.medium)).foregroundStyle(app.statusTint)
+                        }
+                        Spacer()
+                    }
+                    if app.status == "error" { InlineBanner(text: app.error ?? "连接异常") }
+                    else if app.status == "busy" { InlineBanner(text: "另一个程序正在使用这个应用的长连接") }
+                    else if !app.enabled {
+                        HStack {
+                            Text("已停用，不收发消息").font(.footnote).foregroundStyle(Theme.muted)
+                            Spacer()
+                            Button("启用") { run { try await workspace.setFeishuEnabled(appID: app.id, true) } }.buttonStyle(PillButtonStyle()).disabled(busy)
+                        }
+                    }
+                    if let errorText { InlineBanner(text: errorText) }
+                    FeishuGroupsView(workspace: workspace, app: app)
+                }
+                .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 32)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("应用已移除").font(.footnote).foregroundStyle(Theme.muted).padding(.top, 40).frame(maxWidth: .infinity)
+            }
+        }
+        .background(Theme.background)
+        .navigationTitle(workspace.state?.feishu?.app(appID)?.displayName ?? "飞书应用")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarRole(.editor)
+        .toolbarBackground(Theme.background, for: .navigationBar)
+    }
+
+    private func run(_ work: @escaping () async throws -> Void) {
+        busy = true; errorText = nil
+        Task {
+            defer { busy = false }
+            do { try await work() } catch { errorText = coreMessage(error) }
+            await workspace.refresh()
+        }
+    }
+}
+
+// 使用已有应用（兜底）：粘贴 App ID / Secret，主人稍后用绑定码绑定。
 private struct FeishuManualSheet: View {
     let workspace: WorkspaceStore
     let botID: String

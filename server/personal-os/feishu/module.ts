@@ -121,7 +121,7 @@ export class FeishuModule {
   private readonly api: FeishuApi;
   private readonly transportFactory: TransportFactory;
   private job: RegisterJob | undefined;
-  private userAuth?: { stage: "polling" | "done" | "error"; url?: string; expiresAt?: number; error?: string; controller: AbortController };
+  private userAuth?: { id: string; stage: "polling" | "done" | "error"; url?: string; expiresAt?: number; error?: string; controller: AbortController };
   private readonly transports = new Map<string, FeishuTransport>();
   private readonly active = new Map<AbortController, string>();
   private readonly refreshing = new Map<string, Promise<UserTokenGrant | null>>();
@@ -149,12 +149,14 @@ export class FeishuModule {
   state() {
     return {
       ...(this.job ? { job: { stage: this.job.stage, ...(this.job.url ? { url: this.job.url } : {}), ...(this.job.stage === "qr" && this.job.scanToken ? { scanPath: feishuScanPrefix + this.job.scanToken } : {}), ...(this.job.expiresAt ? { expiresAt: this.job.expiresAt } : {}), ...(this.job.error ? { error: this.job.error } : {}) } } : {}),
-      ...(this.userAuth ? { userAuth: { stage: this.userAuth.stage, ...(this.userAuth.url ? { url: this.userAuth.url } : {}), ...(this.userAuth.expiresAt ? { expiresAt: this.userAuth.expiresAt } : {}), ...(this.userAuth.error ? { error: this.userAuth.error } : {}) } } : {}),
-      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY a.created_at")
+      ...(this.userAuth ? { userAuth: { id: this.userAuth.id, stage: this.userAuth.stage, ...(this.userAuth.url ? { url: this.userAuth.url } : {}), ...(this.userAuth.expiresAt ? { expiresAt: this.userAuth.expiresAt } : {}), ...(this.userAuth.error ? { error: this.userAuth.error } : {}) } } : {}),
+      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.bot_name, a.bot_avatar, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY a.created_at")
         .map((row) => ({
           id: String(row.id), appId: String(row.app_id), brand: String(row.brand), status: String(row.status), error: row.error === null ? null : String(row.error),
           ownerBound: !!row.owner_open_id, botId: String(row.bot_id), botName: String(this.store.get("SELECT name FROM bots WHERE id=?", String(row.bot_id))?.name ?? ""),
           enabled: row.enabled === 1, version: Number(row.version),
+          name: row.bot_name ? String(row.bot_name) : null, avatarUrl: row.bot_avatar ? String(row.bot_avatar) : null,
+          groupCount: Number(this.store.get("SELECT COUNT(*) n FROM feishu_group_settings WHERE app_id=? AND in_group=1", row.app_id)?.n ?? 0),
           userAuthorized: !!row.user_token, userScopes: JSON.parse(String(row.user_scopes_json ?? "[]")) as string[], userExpiresAt: row.user_token_expires_at === null ? null : Number(row.user_token_expires_at),
         })),
     };
@@ -199,7 +201,6 @@ export class FeishuModule {
   startRegister(data: Record<string, unknown>) {
     const botId = text(data.botId, 100);
     if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner)) throw new Error("Agent 不存在");
-    if (this.store.get("SELECT connector_id FROM personal_feishu_apps")) throw new Error("已连接飞书应用，请先移除");
     if (this.job && this.job.stage !== "done" && this.job.stage !== "error") throw new Error("已有进行中的扫码，请先取消");
     const controller = new AbortController();
     const job: RegisterJob = { stage: "preparing", botId, controller };
@@ -239,7 +240,7 @@ export class FeishuModule {
         signal: job.controller.signal,
       });
       if (job.controller.signal.aborted || this.closed) return;
-      if (this.store.get("SELECT connector_id FROM personal_feishu_apps")) throw new Error("已连接飞书应用");
+      if (this.store.get("SELECT connector_id FROM personal_feishu_apps WHERE app_id=?", result.client_id)) throw new Error("该应用已添加");
       const connectorId = this.persistApp({ appId: result.client_id, appSecret: result.client_secret, brand: result.user_info?.tenant_brand === "lark" ? "lark" : "feishu", ownerOpenId: typeof result.user_info?.open_id === "string" ? result.user_info.open_id : null, botId: job.botId });
       job.stage = "done";
       this.changed();
@@ -254,10 +255,10 @@ export class FeishuModule {
 
   /** 使用已有应用（兜底）。主人绑定用绑定码完成。 */
   save(data: Record<string, unknown>) {
-    if (this.store.get("SELECT connector_id FROM personal_feishu_apps")) throw new Error("已连接飞书应用，请先移除");
     const appId = text(data.appId, 100), appSecret = text(data.appSecret, 300), botId = text(data.botId, 100);
     const brand: Brand = data.brand === "lark" ? "lark" : "feishu";
     if (!appId.startsWith("cli_")) throw new Error("App ID 无效");
+    if (this.store.get("SELECT connector_id FROM personal_feishu_apps WHERE app_id=?", appId)) throw new Error("该应用已添加");
     if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner)) throw new Error("Agent 不存在");
     const connectorId = this.persistApp({ appId, appSecret, brand, ownerOpenId: null, botId });
     void this.connect(connectorId);
@@ -292,7 +293,7 @@ export class FeishuModule {
     if (!app) throw new Error("应用不存在");
     if (this.userAuth?.stage === "polling") throw new Error("已有进行中的授权，请先取消");
     const controller = new AbortController();
-    this.userAuth = { stage: "polling", controller };
+    this.userAuth = { id: String(app.connector_id), stage: "polling", controller };
     this.changed();
     void this.userAuthFlow(String(app.connector_id), controller);
     return { started: true };
@@ -333,14 +334,14 @@ export class FeishuModule {
         } else if (info.openId !== owner) throw new Error("授权账号与应用主人不一致，已丢弃令牌");
         this.store.run("UPDATE personal_feishu_apps SET user_token=?,user_scopes_json=?,user_token_expires_at=? WHERE connector_id=?", this.store.encrypt(JSON.stringify(grant)), JSON.stringify(grant.scope), grant.expiresAt, connectorId);
         this.store.audit("feishu.user.auth", "connector", connectorId, { scopes: grant.scope.length });
-        this.userAuth = { stage: "done", controller };
+        this.userAuth = { id: connectorId, stage: "done", controller };
         this.changed();
         return;
       }
       throw new Error("设备授权已过期，请重新发起");
     } catch (error) {
       if (controller.signal.aborted) return;
-      this.userAuth = { stage: "error", controller, error: safe(error) };
+      this.userAuth = { id: connectorId, stage: "error", controller, error: safe(error) };
       this.changed();
     }
   }
@@ -610,8 +611,8 @@ export class FeishuModule {
     } catch { this.connecting.delete(connectorId); appConsumers.delete(String(app.app_id)); return; }
     if (this.transports.has(connectorId)) return;
     try {
-      void this.api.botOpenId(credentials).then((openId) => {
-        if (openId && !this.closed) { this.store.run("UPDATE personal_feishu_apps SET bot_open_id=? WHERE connector_id=?", openId, connectorId); this.changed(); }
+      void this.api.botInfo(credentials).then((info) => {
+        if (info.openId && !this.closed) { this.store.run("UPDATE personal_feishu_apps SET bot_open_id=?,bot_name=COALESCE(?,bot_name),bot_avatar=COALESCE(?,bot_avatar) WHERE connector_id=?", info.openId, info.name ?? null, info.avatarUrl ?? null, connectorId); this.changed(); }
       }).catch(() => {});
       const transport = await this.transportFactory({ appId: credentials.appId, appSecret: credentials.appSecret, brand: credentials.brand }, {
         onMessage: (event) => this.options.routeInbound ? Promise.resolve(this.options.routeInbound(credentials.appId, event, "message")).then(() => {}) : this.receiveMessage(credentials.appId, event),
@@ -659,6 +660,7 @@ export class FeishuModule {
     this.store.transaction(() => {
       this.store.run("DELETE FROM personal_feishu_messages WHERE app_id=?", row.app_id);
       this.store.run("DELETE FROM personal_feishu_outbound WHERE app_id=?", row.app_id);
+      this.store.run("DELETE FROM feishu_group_settings WHERE app_id=?", row.app_id);
       this.store.run("DELETE FROM personal_connectors WHERE id=?", row.id);
       this.store.audit("feishu.remove", "connector", String(row.id), {});
     });
@@ -711,7 +713,11 @@ export class FeishuModule {
     this.recovering=true;
     try {
     for (const row of this.store.all("SELECT * FROM personal_feishu_messages WHERE state IN ('pending','retry') AND payload IS NOT NULL AND next_at<=? ORDER BY created_at,rowid", now())) {
-      try { if(await this.channelAvailable(String(row.app_id),"receive") && !this.closed)this.routeMessage(row); }
+      try {
+        if(!await this.channelAvailable(String(row.app_id),"receive") || this.closed)continue;
+        if(row.chat_type==="group")await this.ensureGroupInfo(String(row.app_id),String(row.chat_id));
+        if(!this.closed)this.routeMessage(row);
+      }
       catch (error) {
         if(this.closed)break;
         this.store.run("UPDATE personal_feishu_messages SET state='retry',attempts=attempts+1,next_at=?,error=? WHERE app_id=? AND chat_id=? AND message_id=?", retryAt(Number(row.attempts)), safe(error), row.app_id, row.chat_id, row.message_id);
@@ -738,9 +744,21 @@ export class FeishuModule {
       ignore(); return;
     }
     const refs = [pick(envelope, ["parent_id"]), pick(envelope, ["root_id"]), pick(envelope, ["thread_id"] )].filter((v): v is string => !!v);
-    const aliases = [...refs,messageId].map((ref) => this.store.get("SELECT * FROM feishu_topic_aliases WHERE app_id=? AND chat_id=? AND alias=?", appId, chatId, ref)).filter((v): v is Row => !!v);
-    if (new Set(aliases.map((v) => v.conversation_id)).size > 1) throw new Error("conflicting_topic_aliases");
-    const alias = aliases[0];
+    const threadId = pick(envelope, ["thread_id"]);
+    const lookup = (ref: string) => this.store.get("SELECT * FROM feishu_topic_aliases WHERE app_id=? AND chat_id=? AND alias=?", appId, chatId, ref);
+    const group = row.chat_type === "group" ? this.groupSetting(appId, chatId) : undefined;
+    // p2p and topic groups keep one NexBot topic per Feishu thread; regular groups follow their session mode.
+    const session = group && group.kind !== "topic" ? String(group.session) : "new-topic";
+    // shared: the group's own long-running topic, answered inline instead of in a Feishu thread.
+    const shared = session === "chat" || (session === "chat-topic" && !threadId);
+    let alias: Row | undefined;
+    if (session === "chat-topic" && !shared) {
+      alias = [threadId!, ...refs].map(lookup).find((v): v is Row => !!v && v.conversation_id !== group?.conversation_id);
+    } else if (!shared) {
+      const aliases = [...refs,messageId].map(lookup).filter((v): v is Row => !!v);
+      if (new Set(aliases.map((v) => v.conversation_id)).size > 1) throw new Error("conflicting_topic_aliases");
+      alias = aliases[0];
+    }
     if (alias && this.store.get("SELECT id FROM conversations WHERE id=? AND status='deleted'", alias.conversation_id)) { ignore(); return; }
     const destination = this.store.get("SELECT * FROM feishu_destinations WHERE app_id=? AND chat_id=? AND enabled=1", appId, chatId);
     if (row.chat_type === "group") {
@@ -750,35 +768,153 @@ export class FeishuModule {
         this.claimGroup({ appId, chatId, actorOpenId: actor });
       }
       const botOpenId = String(app.bot_open_id ?? "");
-      const mentioned = botOpenId && (Array.isArray(envelope.mentions) ? envelope.mentions : []).some((entry) => pick(record(record(entry).id), ["open_id"]) === botOpenId);
-      if (!mentioned && !alias) { ignore(); return; }
+      const mentions = Array.isArray(envelope.mentions) ? envelope.mentions : [];
+      const mentioned = !!botOpenId && mentions.some((entry) => pick(record(record(entry).id), ["open_id"]) === botOpenId);
+      // A reply to a message the bot has already seen or sent counts as joining that conversation.
+      const participated = !!alias || refs.some((ref) => !!lookup(ref));
+      const trigger = String(group?.trigger ?? "topic");
+      const respond = mentioned || trigger === "never" || (trigger === "topic" && participated) || (trigger === "ambient" && mentions.length === 0);
+      if (!respond) { ignore(); return; }
       content = this.stripMentions(envelope, content, botOpenId).trim();
       if (!content) { ignore(); return; }
     } else {
       this.store.run("INSERT OR IGNORE INTO feishu_destinations(app_id,chat_id,chat_type,actor_open_id) VALUES(?,?,'p2p',?)", appId, chatId, actor);
     }
     // Child-before-root claims the trusted external root now. Later root events reuse it.
-    const rootId = alias ? String(alias.root_id) : pick(envelope, ["root_id", "thread_id"]) ?? messageId;
+    const rootId = shared ? messageId : alias ? String(alias.root_id) : pick(envelope, ["root_id", "thread_id"]) ?? messageId;
+    const clientId = `feishu:${hash(appId + ":" + chatId + ":" + messageId)}`;
+    const chatName = typeof group?.name === "string" && group.name ? group.name : undefined;
     this.store.transaction(() => {
-      const directJob = alias?.job_id ? this.store.get("SELECT id FROM agent_jobs WHERE id=? AND bot_id=? AND stopped_at IS NULL", alias.job_id, app.bot_id) : undefined;
+      const directJob = !shared && alias?.job_id ? this.store.get("SELECT id FROM agent_jobs WHERE id=? AND bot_id=? AND stopped_at IS NULL", alias.job_id, app.bot_id) : undefined;
       const accepted = directJob && this.agents.jobs && owner
-        ? this.agents.jobs.input(String(directJob.id), content, `feishu:${hash(appId + ":" + chatId + ":" + messageId)}`, "direct", this.store.session)
-        : this.agents.send(String(app.bot_id), content, `feishu:${hash(appId + ":" + chatId + ":" + messageId)}`, this.store.session, {
-          ...(alias ? { conversationId: String(alias.conversation_id) } : { newConversation: true }),
-          audience: alias ? (this.store.get("SELECT audience FROM agent_topics WHERE conversation_id=?",alias.conversation_id)?.audience === "public" ? "public" : "private") : row.chat_type === "group" ? "public" : "private",
-          ...(!alias ? { sourceContext: { channel: "feishu", appId, chatId, chatType: row.chat_type, actorOpenId: actor, tenantKey: event.tenant_key ?? record(event.sender).tenant_key ?? null } } : {}),
-        });
+        ? this.agents.jobs.input(String(directJob.id), content, clientId, "direct", this.store.session)
+        : shared
+          ? this.agents.send(String(app.bot_id), content, clientId, this.store.session, { conversationId: this.groupConversation(app, chatId, chatName, event), audience: "public" })
+          : this.agents.send(String(app.bot_id), content, clientId, this.store.session, {
+            ...(alias ? { conversationId: String(alias.conversation_id) } : { newConversation: true }),
+            audience: alias ? (this.store.get("SELECT audience FROM agent_topics WHERE conversation_id=?",alias.conversation_id)?.audience === "public" ? "public" : "private") : row.chat_type === "group" ? "public" : "private",
+            ...(!alias ? { sourceContext: { channel: "feishu", appId, chatId, chatType: row.chat_type, actorOpenId: actor, tenantKey: event.tenant_key ?? record(event.sender).tenant_key ?? null, ...(chatName ? { chatName } : {}) } } : {}),
+          });
       const taskId = accepted.taskId;
       const conversationId = directJob && alias ? String(alias.conversation_id) : "conversationId" in accepted ? String(accepted.conversationId) : String(this.store.get("SELECT conversation_id FROM tasks WHERE id=?", taskId!)?.conversation_id);
-      for (const ref of new Set([messageId, rootId, ...refs])) {
-        const old = this.store.get("SELECT conversation_id FROM feishu_topic_aliases WHERE app_id=? AND chat_id=? AND alias=?", appId, chatId, ref);
-        if (old && old.conversation_id !== conversationId) throw new Error("conflicting_topic_aliases");
-        this.store.run("INSERT OR IGNORE INTO feishu_topic_aliases(app_id,chat_id,alias,conversation_id,root_id,job_id) VALUES(?,?,?,?,?,?)", appId, chatId, ref, conversationId, rootId, directJob?.id ?? null);
+      // The first input would title the topic after itself; the group's own topic keeps the group's name.
+      if (shared && chatName) this.store.run("UPDATE conversations SET title=? WHERE id=? AND title!=?", chatName, conversationId, chatName);
+      if (session === "new-topic") {
+        for (const ref of new Set([messageId, rootId, ...refs])) {
+          const old = lookup(ref);
+          if (old && old.conversation_id !== conversationId) throw new Error("conflicting_topic_aliases");
+          this.store.run("INSERT OR IGNORE INTO feishu_topic_aliases(app_id,chat_id,alias,conversation_id,root_id,job_id) VALUES(?,?,?,?,?,?)", appId, chatId, ref, conversationId, rootId, directJob?.id ?? null);
+        }
+      } else {
+        // The group's shared topic and its threads overlap on root messages; only this message and its thread are claimed.
+        for (const ref of new Set([messageId, ...(shared ? [] : [threadId!, rootId])]))
+          this.store.run("INSERT OR IGNORE INTO feishu_topic_aliases(app_id,chat_id,alias,conversation_id,root_id,job_id) VALUES(?,?,?,?,?,?)", appId, chatId, ref, conversationId, rootId, directJob?.id ?? null);
       }
-      this.store.run("UPDATE personal_feishu_messages SET state='routed',task_id=?,conversation_id=?,root_id=?,parent_id=?,thread_id=?,error=NULL WHERE app_id=? AND chat_id=? AND message_id=?", taskId, conversationId, rootId, pick(envelope,["parent_id"]) ?? null, pick(envelope,["thread_id"]) ?? null, appId, chatId, messageId);
-      this.enqueuePart({ source: `placeholder:${appId}:${chatId}:${messageId}`, appId, chatId, conversationId, rootId, content: markdownCard("正在分析…"), actor, audience: row.chat_type === "group" ? "public" : "private", part: 0 });
+      this.store.run("UPDATE personal_feishu_messages SET state='routed',task_id=?,conversation_id=?,root_id=?,parent_id=?,thread_id=?,inline=?,error=NULL WHERE app_id=? AND chat_id=? AND message_id=?", taskId, conversationId, rootId, pick(envelope,["parent_id"]) ?? null, threadId ?? null, shared ? 1 : 0, appId, chatId, messageId);
+      this.enqueuePart({ source: `placeholder:${appId}:${chatId}:${messageId}`, appId, chatId, conversationId, rootId, content: markdownCard("正在分析…"), actor, audience: row.chat_type === "group" ? "public" : "private", part: 0, inline: shared });
     });
     this.changed();
+  }
+
+  private groupSetting(appId: string, chatId: string) {
+    return this.store.get("SELECT * FROM feishu_group_settings WHERE app_id=? AND chat_id=?", appId, chatId);
+  }
+
+  /** The group's own topic for shared session modes, recreated when deleted or owned by another assistant. */
+  private groupConversation(app: Row, chatId: string, chatName: string | undefined, event: Record<string, unknown>) {
+    const appId = String(app.app_id), current = this.groupSetting(appId, chatId)?.conversation_id;
+    if (current && this.store.get("SELECT p.conversation_id FROM agent_topics p JOIN conversations c ON c.id=p.conversation_id WHERE p.conversation_id=? AND p.bot_id=? AND c.status='open'", current, app.bot_id)) return String(current);
+    const { conversationId } = this.agents.createTopic(String(app.bot_id), { title: chatName ?? "飞书群聊", audience: "public",
+      sourceContext: { channel: "feishu", appId, chatId, chatType: "group", scope: "group", tenantKey: event.tenant_key ?? record(event.sender).tenant_key ?? null, ...(chatName ? { chatName } : {}) } });
+    this.store.run("INSERT INTO feishu_group_settings(app_id,chat_id,conversation_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(app_id,chat_id) DO UPDATE SET conversation_id=excluded.conversation_id", appId, chatId, conversationId, now());
+    return conversationId;
+  }
+
+  private readonly groupInfoAttempts = new Map<string, number>();
+  /** Caches the group's name, member count and whether it is a Feishu topic group. */
+  private async refreshGroup(appId: string, chatId: string, name?: string) {
+    const result = await this.requestForApp(appId, "GET", `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`);
+    const data = record(result.data);
+    const topic = data.chat_mode === "topic" || data.group_message_type === "thread";
+    const members = Number(data.user_count);
+    this.store.run(`INSERT INTO feishu_group_settings(app_id,chat_id,name,kind,members,in_group,refreshed_at,updated_at) VALUES(?,?,?,?,?,1,?,?)
+      ON CONFLICT(app_id,chat_id) DO UPDATE SET name=excluded.name,kind=excluded.kind,members=excluded.members,in_group=1,refreshed_at=excluded.refreshed_at`,
+      appId, chatId, (pick(data, ["name"]) ?? name ?? "").slice(0, 200) || null, topic ? "topic" : "group", data.user_count != null && Number.isFinite(members) ? members : null, now(), now());
+  }
+  /** Routing needs to know whether a group is a topic group. A failed lookup falls back to the defaults and retries later. */
+  private async ensureGroupInfo(appId: string, chatId: string) {
+    if (this.groupSetting(appId, chatId)?.refreshed_at) return;
+    const key = `${appId}:${chatId}`;
+    if ((this.groupInfoAttempts.get(key) ?? 0) > now() - 60_000) return;
+    this.groupInfoAttempts.set(key, now());
+    try { await this.refreshGroup(appId, chatId); }
+    catch { this.store.run("INSERT OR IGNORE INTO feishu_group_settings(app_id,chat_id,updated_at) VALUES(?,?,?)", appId, chatId, now()); }
+  }
+
+  private groupRows(appId: string) {
+    this.store.run("INSERT OR IGNORE INTO feishu_group_settings(app_id,chat_id,updated_at) SELECT app_id,chat_id,? FROM feishu_destinations WHERE app_id=? AND chat_type='group' AND enabled=1", now(), appId);
+    return this.store.all("SELECT s.*,d.chat_id AS claimed FROM feishu_group_settings s LEFT JOIN feishu_destinations d ON d.app_id=s.app_id AND d.chat_id=s.chat_id AND d.chat_type='group' AND d.enabled=1 WHERE s.app_id=? AND s.in_group=1 ORDER BY s.name IS NULL,s.name,s.chat_id", appId)
+      .map((row) => ({ chatId: String(row.chat_id), name: row.name ? String(row.name) : null, kind: String(row.kind), members: row.members == null ? null : Number(row.members),
+        claimed: !!row.claimed, trigger: String(row.trigger), session: String(row.session), context: String(row.context ?? ""), version: Number(row.version) }));
+  }
+  private ownApp(connectorId: unknown) {
+    const app = this.store.get("SELECT a.*,c.enabled FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.connector_id=?", text(connectorId, 100));
+    if (!app) throw new Error("应用不存在");
+    return app;
+  }
+
+  /** Groups the app's bot is in. Feishu is asked when connected; otherwise the cached list is returned with the error. */
+  async groups(data: Record<string, unknown>) {
+    const app = this.ownApp(data.id), appId = String(app.app_id);
+    let error: string | null = null;
+    if (app.enabled === 1 && app.connection === "connected") {
+      try {
+        const seen = new Set<string>();
+        let pageToken = "";
+        for (let page = 0; page < 10; page++) {
+          const result = await this.requestForApp(appId, "GET", `/open-apis/im/v1/chats?page_size=100${pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : ""}`);
+          const list = record(result.data);
+          for (const item of Array.isArray(list.items) ? list.items : []) {
+            const chat = record(item), chatId = pick(chat, ["chat_id"]);
+            if (!chatId) continue;
+            seen.add(chatId);
+            const cached = this.groupSetting(appId, chatId);
+            if (cached?.refreshed_at && Number(cached.refreshed_at) > now() - 10 * 60_000) { this.store.run("UPDATE feishu_group_settings SET in_group=1 WHERE app_id=? AND chat_id=?", appId, chatId); continue; }
+            await this.refreshGroup(appId, chatId, pick(chat, ["name"])).catch(() => {
+              this.store.run("INSERT INTO feishu_group_settings(app_id,chat_id,name,updated_at) VALUES(?,?,?,?) ON CONFLICT(app_id,chat_id) DO UPDATE SET in_group=1", appId, chatId, pick(chat, ["name"]) ?? null, now());
+            });
+          }
+          pageToken = pick(list, ["page_token"]) ?? "";
+          if (list.has_more !== true || !pageToken) break;
+        }
+        for (const row of this.store.all("SELECT chat_id FROM feishu_group_settings WHERE app_id=? AND in_group=1", appId))
+          if (!seen.has(String(row.chat_id))) this.store.run("UPDATE feishu_group_settings SET in_group=0 WHERE app_id=? AND chat_id=?", appId, row.chat_id);
+      } catch (e) { error = safe(e); }
+    }
+    return { groups: this.groupRows(appId), error };
+  }
+
+  /** Saves one group's reply mode and context. Saving an unclaimed group lets the bound owner claim it. */
+  saveGroup(data: Record<string, unknown>) {
+    const app = this.ownApp(data.id), appId = String(app.app_id), chatId = text(data.chatId, 100);
+    const trigger = String(data.trigger), session = String(data.session);
+    if (!["always", "topic", "ambient", "never"].includes(trigger)) throw new Error("触发方式无效");
+    if (!["chat-topic", "chat", "new-topic"].includes(session)) throw new Error("会话方式无效");
+    if (typeof data.context !== "string" || data.context.length > 2000) throw new Error("系统上下文最多 2000 字");
+    const context = data.context.trim();
+    const row = this.groupSetting(appId, chatId);
+    if (!row || row.in_group !== 1) throw new Error("群不存在，请刷新");
+    if (Number(data.version) !== Number(row.version)) throw new Error("设置已变化，请刷新后重试");
+    this.store.transaction(() => {
+      if (!this.store.get("SELECT 1 AS ok FROM feishu_destinations WHERE app_id=? AND chat_id=? AND chat_type='group' AND enabled=1", appId, chatId)) {
+        if (!app.owner_open_id) throw new Error("请先绑定主人");
+        this.claimGroup({ appId, chatId, actorOpenId: String(app.owner_open_id) });
+      }
+      this.store.run("UPDATE feishu_group_settings SET trigger=?,session=?,context=?,version=version+1,updated_at=? WHERE app_id=? AND chat_id=?", trigger, session, context, now(), appId, chatId);
+      this.store.audit("feishu.group.save", "connector", String(app.connector_id), { chatId, trigger, session, context: !!context });
+    });
+    this.changed();
+    return this.groupRows(appId).find((group) => group.chatId === chatId);
   }
 
   claimGroup(data: { appId: string; chatId: string; actorOpenId: string }) {
@@ -812,9 +948,9 @@ export class FeishuModule {
     void this.flushOutbox();
   }
 
-  private enqueuePart(input: { source: string; appId: string; chatId: string; conversationId: string; rootId?: string; content: string; actor: string; audience: string; part: number; jobId?: string; targetId?: string; subscriptionId?: string; subscriptionVersion?: number; contentKind?: string; scenario?:string }) {
+  private enqueuePart(input: { source: string; appId: string; chatId: string; conversationId: string; rootId?: string; content: string; actor: string; audience: string; part: number; jobId?: string; targetId?: string; subscriptionId?: string; subscriptionVersion?: number; contentKind?: string; scenario?:string; inline?: boolean }) {
     const key = hash(`${input.source}:${input.appId}:${input.chatId}:${input.part}`);
-    this.store.run("INSERT OR IGNORE INTO feishu_delivery_parts(id,source_key,app_id,chat_id,conversation_id,root_id,job_id,content,part,operation,target_id,uuid,actor_open_id,audience,subscription_id,subscription_version,content_kind,scenario,created_at,post_tracking_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)", key, input.source, input.appId, input.chatId, input.conversationId, input.rootId ?? null, input.jobId ?? null, input.content, input.part, input.targetId ? "patch" : "send", input.targetId ?? null, key.slice(0,32), input.actor, input.audience, input.subscriptionId ?? null, input.subscriptionVersion ?? null, input.contentKind ?? null, input.scenario ?? (input.subscriptionId ? "proactive" : "conversation"), now());
+    this.store.run("INSERT OR IGNORE INTO feishu_delivery_parts(id,source_key,app_id,chat_id,conversation_id,root_id,job_id,content,part,operation,target_id,uuid,actor_open_id,audience,subscription_id,subscription_version,content_kind,scenario,created_at,post_tracking_version,inline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)", key, input.source, input.appId, input.chatId, input.conversationId, input.rootId ?? null, input.jobId ?? null, input.content, input.part, input.targetId ? "patch" : "send", input.targetId ?? null, key.slice(0,32), input.actor, input.audience, input.subscriptionId ?? null, input.subscriptionVersion ?? null, input.contentKind ?? null, input.scenario ?? (input.subscriptionId ? "proactive" : "conversation"), now(), input.inline ? 1 : 0);
   }
 
   private queueReply(mapping: Row, message: Row) {
@@ -844,7 +980,7 @@ export class FeishuModule {
       this.store.run("INSERT OR IGNORE INTO personal_feishu_outbound(source_key,app_id,chat_id,created_at,job_id) VALUES(?,?,?,?,?)", source, appId, chatId, now(), jobId ?? null);
       const placeholder = !report ? this.store.get("SELECT message_id FROM feishu_delivery_parts WHERE source_key=? AND state='sent'", `placeholder:${appId}:${chatId}:${mapping.message_id}`) : undefined;
       const context = safeJson(this.store.get("SELECT source_context FROM agent_topics WHERE conversation_id=?",conversationId)?.source_context) as Record<string,unknown>;
-      chunks.forEach((chunk, part) => this.enqueuePart({ source, appId, chatId, conversationId, rootId: String(mapping.root_id ?? mapping.message_id), content: markdownCard(chunk), actor: String(mapping.sender_open_id), audience: mapping.chat_type === "group" ? "public" : "private", part, contentKind:typeof context.kind === "string" ? context.kind : undefined, jobId: jobId ? String(jobId) : undefined, ...(part === 0 && placeholder?.message_id ? { targetId: String(placeholder.message_id) } : {}) }));
+      chunks.forEach((chunk, part) => this.enqueuePart({ source, appId, chatId, conversationId, rootId: String(mapping.root_id ?? mapping.message_id), content: markdownCard(chunk), actor: String(mapping.sender_open_id), audience: mapping.chat_type === "group" ? "public" : "private", part, contentKind:typeof context.kind === "string" ? context.kind : undefined, jobId: jobId ? String(jobId) : undefined, inline: mapping.inline === 1 && !report, ...(part === 0 && placeholder?.message_id ? { targetId: String(placeholder.message_id) } : {}) }));
     });
   }
 
@@ -936,7 +1072,7 @@ export class FeishuModule {
         if (Number(this.store.run("UPDATE feishu_delivery_parts SET state='sending',root_id=?,attempts=attempts+1 WHERE id=? AND state='pending'", part.root_id??null, part.id).changes) !== 1) continue;
         try {
           const path = part.operation === "patch" ? `/open-apis/im/v1/messages/${encodeURIComponent(String(part.target_id))}` : part.root_id ? `/open-apis/im/v1/messages/${encodeURIComponent(String(part.root_id))}/reply` : "/open-apis/im/v1/messages?receive_id_type=chat_id";
-          const result = await this.requestForApp(String(part.app_id), part.operation === "patch" ? "PATCH" : "POST", path, part.operation === "patch" ? { content: part.content } : { receive_id: part.chat_id, msg_type: "interactive", content: part.content, uuid: part.uuid, ...(part.root_id ? { reply_in_thread: true } : {}) },()=>{
+          const result = await this.requestForApp(String(part.app_id), part.operation === "patch" ? "PATCH" : "POST", path, part.operation === "patch" ? { content: part.content } : { receive_id: part.chat_id, msg_type: "interactive", content: part.content, uuid: part.uuid, ...(part.root_id && part.inline !== 1 ? { reply_in_thread: true } : {}) },()=>{
             if(!this.deliveryAllowed(part))throw new DeliveryCancelled("delivery_rules_changed");
             if(part.operation!=="patch") {
               const current=this.store.get("SELECT first_post_at,state,uuid FROM feishu_delivery_parts WHERE id=?",part.id)!;

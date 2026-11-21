@@ -146,37 +146,47 @@ extension WorkspaceStore {
 
     // MARK: Feishu
 
-    private var currentFeishuApp: FeishuAppView? { state?.feishu?.app }
+    private func feishuApp(_ id: String) throws -> FeishuAppView {
+        guard let app = state?.feishu?.app(id) else { throw missing("应用不存在") }
+        return app
+    }
 
     /// Starts the scan-to-create job; the QR URL arrives through `state.feishu.job` (poll while `needsPolling`).
     public func startFeishuRegister(botID: String) async throws {
-        guard currentFeishuApp == nil else { throw missing("已连接飞书应用，请先移除") }
         try await act { try await client.feishuRegisterStart(botID: botID) }
     }
     public func cancelFeishuRegister() async throws { try await act { try await client.feishuRegisterCancel() } }
-    /// Pastes an existing app (owner binds later via code). Returns the connector id.
+    /// Pastes an existing app; returns the new connector id.
     @discardableResult
     public func saveFeishuApp(appID: String, secret: String, brand: String, botID: String) async throws -> String {
         try await act { try await client.feishuSave(appID: appID, secret: secret, brand: brand, botID: botID) }
     }
-    /// Returns the 6-digit bind code the owner sends to the bot in a p2p chat.
-    public func startFeishuBind() async throws -> String {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    /// Six-digit owner bind code for one app.
+    public func startFeishuBind(appID: String) async throws -> String {
+        let app = try feishuApp(appID)
         return try await act { try await client.feishuBindStart(id: app.id) }
     }
     /// Starts the owner device-flow authorization; the verification URL arrives through `state.feishu.userAuth`.
-    public func startFeishuUserAuth() async throws {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    public func startFeishuUserAuth(appID: String) async throws {
+        let app = try feishuApp(appID)
         try await act { try await client.feishuUserAuthStart(id: app.id) }
     }
     public func cancelFeishuUserAuth() async throws { try await act { try await client.feishuUserAuthCancel() } }
-    public func setFeishuEnabled(_ enabled: Bool) async throws {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    public func setFeishuEnabled(appID: String, _ enabled: Bool) async throws {
+        let app = try feishuApp(appID)
         try await act { try await client.feishuToggle(id: app.id, version: app.version, enabled: enabled) }
     }
-    public func removeFeishu() async throws {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    public func removeFeishu(appID: String) async throws {
+        let app = try feishuApp(appID)
         try await act { try await client.feishuDelete(id: app.id, version: app.version) }
+    }
+    public func feishuGroups(appID: String) async throws -> FeishuGroupList {
+        let app = try feishuApp(appID)
+        return try await client.feishuGroups(id: app.id)
+    }
+    public func saveFeishuGroup(appID: String, group: FeishuGroup, trigger: String, session: String, context: String) async throws -> FeishuGroup {
+        let app = try feishuApp(appID)
+        return try await act { try await client.feishuSaveGroup(id: app.id, chatID: group.chatID, trigger: trigger, session: session, context: context, version: group.version) }
     }
 
     public func startConnectorAuthorization(provider: String = "gmail", connectorID: String? = nil) async throws -> ConnectorOAuthAttempt {
