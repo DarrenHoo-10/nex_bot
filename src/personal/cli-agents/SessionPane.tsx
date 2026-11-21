@@ -59,7 +59,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
   // From a send until the session answers: a resumed CLI can take a while to
   // print anything, and without this the page looks like nothing happened.
-  const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean } | null>(null);
+  const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean; unconfirmed?: boolean } | null>(null);
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     if (!awaiting) return;
@@ -73,7 +73,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     const timer = setTimeout(() => setSlow(true), 20_000);
     return () => clearTimeout(timer);
   }, [awaiting]);
-  const progress = awaiting ? (awaiting.resuming ? "正在恢复会话…" : "已送达，等待回复…")
+  const progress = awaiting ? (awaiting.resuming ? "正在恢复会话…" : awaiting.unconfirmed ? "已发送，等待会话接收…" : "已送达，等待回复…")
     : session.online && session.state === "running" ? "正在处理…" : "";
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
@@ -99,9 +99,9 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
         });
       } catch (cause) { setAwaiting(null); throw cause; }
       // a queued entry is not delivered yet: the queue strip shows it instead
-      const outcome = result as { queued?: boolean; status?: string };
+      const outcome = result as { queued?: boolean; status?: string; delivery?: string };
       if (outcome.queued && outcome.status !== "uncertain") setAwaiting(null);
-      else setAwaiting({ known, resuming: false });
+      else setAwaiting({ known, resuming: false, unconfirmed: outcome.delivery === "unconfirmed" });
     }
     if(revision)setRevision(null);
     if(key!==session.key){transferGoal(session.key,key);onKeyChange(key)}

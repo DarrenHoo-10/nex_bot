@@ -9,6 +9,7 @@
 // or interrupt at a time, through the hub.
 import {
   CLI_LIMITS,
+  type CliDelivery,
   type CliDeliveryAction,
   type CliErrorCode,
   type CliQueueEntryView,
@@ -43,6 +44,10 @@ export interface WorkbenchSubmitResult {
   version: number;
   /** true when the entry waits in the outbox instead of having been dispatched */
   queued: boolean;
+  /** a session outside nex_bot's terminals: whether its transcript showed the message arrive */
+  delivery?: CliDelivery;
+  /** a session outside nex_bot's terminals that was waiting on a question when the message went */
+  waiting?: boolean;
 }
 
 export interface WorkbenchEntryInput {
@@ -88,6 +93,9 @@ class DispatchFailure extends Error {
     super(code);
   }
 }
+
+/** What a successful send to a session outside nex_bot's terminals reported back. */
+interface DispatchOutcome { delivery?: CliDelivery; waiting?: boolean }
 
 /** Outbox statuses a browser is shown, oldest queue position first. */
 const LIVE_STATUSES: readonly CliQueueStatus[] = ["pending", "claimed", "sent", "uncertain", "failed"];
@@ -433,8 +441,9 @@ export class CliAgentWorkbench {
       ).changes);
       if (!claimed) return this.submitResult(this.entryRow(entryId), null);
     }
-    const failure = await this.dispatch(actor, key, session.deviceId, op, entryId);
-    if (!failure) return this.submitResult(this.entryRow(entryId), this.entryOpId(entryId));
+    const outcome: DispatchOutcome = {};
+    const failure = await this.dispatch(actor, key, session.deviceId, op, entryId, outcome);
+    if (!failure) return { ...this.submitResult(this.entryRow(entryId), this.entryOpId(entryId)), ...outcome };
     if (failure.code === "unknown") {
       this.store.run("UPDATE cli_agent_outbox SET status='uncertain',op_id=?,version=version+1,updated_at=? WHERE id=?", failure.opId, now(), entryId);
       this.pause(workbenchId, "uncertain");
@@ -465,12 +474,15 @@ export class CliAgentWorkbench {
    * success, otherwise the failure code (with the op id when the device
    * actually got the command). Sets `lastDispatchStarted` to the device's
    * "this began a turn" answer, which the consumer uses to wait or advance. */
-  private async dispatch(actor: string, key: string, deviceId: string, op: "send" | "steer", entryId: string): Promise<DispatchFailure | null> {
+  private async dispatch(actor: string, key: string, deviceId: string, op: "send" | "steer", entryId: string, outcome?: DispatchOutcome): Promise<DispatchFailure | null> {
     const ref = parseCliKey(key)?.ref ?? "";
     const text = this.entryText(this.entryRow(entryId));
     try {
       const { result, opId } = await this.hub.opTracked(actor, deviceId, key, op, { ref, text });
       this.lastDispatchStarted = (result as { started?: boolean }).started === true;
+      const { delivery, waiting } = result as { delivery?: unknown; waiting?: unknown };
+      if (outcome && (delivery === "confirmed" || delivery === "unconfirmed")) outcome.delivery = delivery;
+      if (outcome && waiting === true) outcome.waiting = true;
       this.store.run(
         "UPDATE cli_agent_outbox SET status=?,op_id=?,version=version+1,updated_at=? WHERE id=?",
         (result as { delivery?: string }).delivery === "confirmed" ? "confirmed" : "sent", opId, now(), entryId,

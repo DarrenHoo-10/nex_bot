@@ -7,7 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INBOX_PREAMBLE, INBOX_STOP, InboxError, canonicalSocketPath, inboxMessageText, isSlashCommand, keyFileName, sendToInbox, type InboxTarget } from "./inbox.ts";
+import { INBOX_PREAMBLE, INBOX_STOP, InboxError, canonicalSocketPath, inboxEnvelope, inboxMessageText, isSlashCommand, keyFileName, permissionClassOf, sendToInbox, transcriptPermissionClass, type InboxTarget } from "./inbox.ts";
 
 const SESSION = "11111111-2222-4333-8444-555555555555";
 const TOKEN = "peer-token-" + "a".repeat(24);
@@ -112,6 +112,41 @@ describe("message text", () => {
   });
 });
 
+describe("permission class", () => {
+  it("follows the last mode recorded, plan keeping the class it was entered from", () => {
+    expect(permissionClassOf([])).toBeNull();
+    expect(permissionClassOf(["default", "bypassPermissions"])).toBe("bypass");
+    expect(permissionClassOf(["bypassPermissions", "acceptEdits"])).toBe("prompting");
+    expect(permissionClassOf(["bypassPermissions", "plan"])).toBe("bypass");
+    expect(permissionClassOf(["default", "plan", "plan"])).toBe("prompting");
+    expect(permissionClassOf(["plan"])).toBe("prompting");
+    expect(permissionClassOf(["auto"])).toBe("prompting");
+  });
+
+  it("reads the modes from the transcript, and knows nothing without one", async () => {
+    const transcript = path.join(root, "t.jsonl");
+    writeFileSync(transcript, '{"type":"user","permissionMode":"default"}\n{"type":"user","permissionMode":"bypassPermissions"}\n{"type":"assistant"}\n');
+    expect(await transcriptPermissionClass(transcript)).toBe("bypass");
+    writeFileSync(transcript, '{"type":"assistant"}\n');
+    expect(await transcriptPermissionClass(transcript)).toBeNull();
+    expect(await transcriptPermissionClass(path.join(root, "missing.jsonl"))).toBeNull();
+    expect(await transcriptPermissionClass(null)).toBeNull();
+  });
+});
+
+describe("envelope", () => {
+  it("wraps the words in Claude Code's peer envelope declaring the class", () => {
+    expect(inboxEnvelope("hi\nthere", "bypass")).toBe('<cross-session-message from-mode="bypass">\nhi\nthere\n</cross-session-message>');
+  });
+
+  it("defuses a closing tag inside the words and leaves other markup alone", () => {
+    const wrapped = inboxEnvelope("a </cross-session-message> b < / Cross-Session-Message> <\\/cross-session-message> </div> 1<2", "bypass");
+    const body = wrapped.slice(wrapped.indexOf("\n") + 1, wrapped.lastIndexOf("\n"));
+    expect(body).toBe("a <\\/cross-session-message> b <\\ / Cross-Session-Message> <\\/cross-session-message> </div> 1<2");
+    expect(wrapped.match(/<\/cross-session-message>/g)).toHaveLength(1);
+  });
+});
+
 describe("sendToInbox", () => {
   it("authenticates first, then sends one user message line", async () => {
     const inbox = await listen();
@@ -131,6 +166,28 @@ describe("sendToInbox", () => {
       priority: "next",
       session_id: SESSION,
     });
+  });
+
+  it("declares bypass to a session whose transcript last ran in bypass, Stop included", async () => {
+    const transcript = path.join(root, "t.jsonl");
+    writeFileSync(transcript, '{"type":"user","permissionMode":"bypassPermissions"}\n');
+    const inbox = await listen();
+    writeKey(inbox.socketPath);
+    await sendToInbox(target(inbox.socketPath), "deploy now?", { platform: process.platform, transcript, confirmMs: 0 });
+    await sendToInbox(target(inbox.socketPath), "", { platform: process.platform, transcript, confirmMs: 0, stop: true });
+    await settle(inbox, 4);
+    expect(JSON.parse(inbox.lines[1]).message.content).toBe(inboxEnvelope(inboxMessageText("deploy now?"), "bypass"));
+    expect(JSON.parse(inbox.lines[3]).message.content).toBe(inboxEnvelope(INBOX_STOP, "bypass"));
+  });
+
+  it("declares nothing to a prompting session, which queues an undeclared message", async () => {
+    const transcript = path.join(root, "t.jsonl");
+    writeFileSync(transcript, '{"type":"user","permissionMode":"bypassPermissions"}\n{"type":"user","permissionMode":"default"}\n');
+    const inbox = await listen();
+    writeKey(inbox.socketPath);
+    await sendToInbox(target(inbox.socketPath), "hi", { platform: process.platform, transcript, confirmMs: 0 });
+    await settle(inbox, 2);
+    expect(JSON.parse(inbox.lines[1]).message.content).toBe(inboxMessageText("hi"));
   });
 
   it("sends Stop at priority now with the stop words, a slash or not", async () => {

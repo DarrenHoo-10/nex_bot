@@ -189,6 +189,24 @@ describe("queue delivery", () => {
     expect(device.ops("send")[0].args.text).toBe("排队");
   });
 
+  it("tells the page whether a session outside nex_bot's terminals showed the message arrive", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "outside");
+    const key = keyOf(device, "o1");
+    device.sessions([runningWire("o1", { state: "idle", liveIn: "desktop", terminal: undefined, sendVia: "inbox" })], { full: true });
+    await until(() => f.app.cliHub.list().sessions.find((s) => s.key === key)?.sendVia === "inbox", "outside session listed");
+    let delivery = "unconfirmed";
+    device.onOp = (message) => message.op === "send" ? { ok: true, result: { turn: 0, started: false, delivery } } : { ok: true, result: {} };
+
+    const held = await f.call("cli-agents/send", { key, text: "能部署了吗", delivery: "send", clientMessageId: ids.client(), requestId: ids.request() });
+    expect(held.status).toBe(200);
+    expect(held.data).toMatchObject({ status: "sent", delivery: "unconfirmed" });
+
+    delivery = "confirmed";
+    const seen = await f.call("cli-agents/send", { key, text: "再问一次", delivery: "send", clientMessageId: ids.client(), requestId: ids.request() });
+    expect(seen.data).toMatchObject({ status: "confirmed", delivery: "confirmed" });
+  });
+
   it("steers a running turn and refuses when the turn has ended", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "steer");

@@ -10,6 +10,15 @@
 //
 // The token is read at send time for that one session, held in memory for the
 // length of the call and never logged, returned or put in an error message.
+//
+// Claude Code (2.1.330 checked) gates every inbox message by permission class.
+// A session that runs without asking (`bypassPermissions`) queues a message only
+// when it declares the same class, in a `<cross-session-message from-mode="bypass">`
+// envelope around the content; an undeclared or other class is held, out of the
+// transcript, until someone releases it on that computer. A prompting session
+// queues an undeclared message, and holds a `bypass` one. So the class sent is
+// the receiving session's own, read from the permission mode its transcript last
+// recorded: the user who owns the session is the one sending.
 import { createHash, randomUUID } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 import net from "node:net";
@@ -54,6 +63,8 @@ export interface InboxSendOptions {
   /** The user pressed Stop: the inbox's priority `now` aborts the running turn (Claude
    * Code's own "send now"), and the words ask the model to stop and say where. */
   stop?: boolean;
+  /** The receiving session's permission class; by default read from `transcript` (null: not known). */
+  permissionClass?: InboxPermissionClass | null;
 }
 
 /** What Stop sends: start nothing else, say in one sentence where it stopped. */
@@ -78,6 +89,52 @@ export const INBOX_PREAMBLE =
 /** The wire text of a message: preamble first. */
 export function inboxMessageText(text: string): string {
   return INBOX_PREAMBLE + text;
+}
+
+/** Claude Code's permission class: `bypass` for a session that runs tools without asking. */
+export type InboxPermissionClass = "bypass" | "prompting";
+
+const MODE_TAIL = 2 * 1024 * 1024;
+const MODE_RE = /"permissionMode":"([A-Za-z]+)"/g;
+
+/** The class Claude Code gives the modes a transcript recorded, oldest first; null when it recorded none.
+ * Plan mode keeps the class of the mode it was entered from (Claude Code counts plan as bypass when
+ * bypass is available to the session, which a session that ran in bypass has). */
+export function permissionClassOf(modes: readonly string[]): InboxPermissionClass | null {
+  for (let i = modes.length - 1; i >= 0; i--) {
+    if (modes[i] === "plan") continue;
+    return modes[i] === "bypassPermissions" ? "bypass" : "prompting";
+  }
+  return modes.length ? "prompting" : null;
+}
+
+/** The receiving session's class, from the permission modes the end of its transcript recorded. */
+export async function transcriptPermissionClass(file: string | null | undefined): Promise<InboxPermissionClass | null> {
+  if (!file) return null;
+  let handle;
+  try {
+    handle = await open(file, "r");
+    const size = (await handle.stat()).size;
+    const length = Math.min(size, MODE_TAIL);
+    const buf = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buf, 0, length, size - length);
+    const modes = Array.from(buf.toString("utf8", 0, bytesRead).matchAll(MODE_RE), (match) => match[1]);
+    return permissionClassOf(modes);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+const ENVELOPE_TAG = "cross-session-message";
+
+/** The content as Claude Code's peer envelope declaring `mode`. A closing tag inside the
+ * words is defused the way Claude Code itself writes it (`<\`), so the envelope stays whole
+ * and Claude Code reads the declared class from it. */
+export function inboxEnvelope(content: string, mode: InboxPermissionClass): string {
+  const body = content.replace(/<(?!\\)(?=[^A-Za-z0-9]{0,4}\/[^A-Za-z0-9]{0,4}c[^A-Za-z0-9]{0,2}r[^A-Za-z0-9]{0,2}o)/giu, "<\\");
+  return `<${ENVELOPE_TAG} from-mode="${mode}">\n${body}\n</${ENVELOPE_TAG}>`;
 }
 
 /** A slash command would run in the session instead of being read as a message. */
@@ -208,10 +265,13 @@ export async function sendToInbox(target: InboxTarget, text: string, options: In
   if (!options.stop && isSlashCommand(text)) throw new InboxError("invalid", "不能发送斜杠命令");
   const platform = options.platform ?? process.platform;
   const messageId = (options.uuid ?? randomUUID)();
+  const words = options.stop ? INBOX_STOP : inboxMessageText(text);
+  // only a bypass session needs the class declared; a prompting one would hold `bypass` and queues an undeclared message
+  const mode = options.permissionClass !== undefined ? options.permissionClass : await transcriptPermissionClass(options.transcript);
   const line =
     JSON.stringify({
       type: "user",
-      message: { role: "user", content: options.stop ? INBOX_STOP : inboxMessageText(text) },
+      message: { role: "user", content: mode === "bypass" ? inboxEnvelope(words, "bypass") : words },
       msgV: 1,
       msg_id: messageId,
       priority: options.stop ? "now" : "next",

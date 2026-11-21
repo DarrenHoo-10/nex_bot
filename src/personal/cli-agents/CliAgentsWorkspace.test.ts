@@ -280,6 +280,20 @@ describe("session pane", () => {
     expect(container.querySelector(".na-progress")?.textContent).toBe("已送达，等待回复…");
   });
 
+  it("does not claim delivery when the computer could not see the message arrive", async () => {
+    fixture.sendMessage.mockResolvedValue({ status: "sent", delivery: "unconfirmed" });
+    await mount({ devices: [device()], sessions: [session({ state: "idle", liveIn: "terminal", terminal: undefined, sendVia: "inbox" })] }, "dev1:claude:s1");
+    const box = container.querySelector("textarea") as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "能部署了吗");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await flush();
+    expect(container.querySelector(".na-progress")?.textContent).toBe("已发送，等待会话接收…");
+    expect(container.querySelector("[data-testid=cli-composer-note]")?.textContent).toBe("已发送，未确认");
+  });
+
   it("does not claim delivery for a message that only joined the queue", async () => {
     fixture.sendMessage.mockResolvedValue({ queued: true, status: "pending" });
     await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
