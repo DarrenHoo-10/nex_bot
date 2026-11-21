@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [NexAgent 发往跳过权限模式 Claude 会话的消息：全平台发布 0.9.40（2026-11-21）](nexagent-inbox-release-20261121.md)
 - [NexAgent 排序、搜索、模型与图片：全平台发布（2026-11-21）](nexagent-1121-release-20261121.md)
 
 - [飞书多应用与按群回复设置：全平台发布（2026-11-21）](feishu-multi-app-release-20261121.md)
