@@ -199,6 +199,8 @@ private struct AgentTranscript: View {
                                 Button(t.loadingOlder ? "正在读取…" : "加载更早的记录") { Task { await model.loadOlder(key) } }
                                     .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent).disabled(t.loadingOlder)
                                     .frame(maxWidth: .infinity)
+                                    // reading upwards loads earlier records without a tap
+                                    .onAppear { Task { await model.loadOlder(key) } }
                             }
                             ForEach(blocks) { block in AgentBlockView(block: block) }
                             Color.clear.frame(height: 1).id("bottom")

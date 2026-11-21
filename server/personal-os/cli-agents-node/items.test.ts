@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ITEM_TEXT_MAX, SUMMARY_MAX, TOOL_OUTPUT_MAX, parseCliItem, utf8ByteLength, type CliItem } from "../../../shared/cli-agents.ts";
-import { claudeRecordToItems, codexRecordToItems, type ItemContext } from "./items.ts";
+import { claudeRecordToItems, codexRecordToItems, summarizeInput, type ItemContext } from "./items.ts";
 
 const TS = "2026-11-15T10:00:00.000Z";
 const MS = Date.parse(TS);
@@ -121,6 +121,16 @@ describe("claude: assistant records", () => {
   it("summarizes tool input as JSON when there is no well-known key", () => {
     const { items } = claude({ type: "assistant", uuid: "a6", message: { content: [{ type: "tool_use", id: "t", name: "Custom", input: { a: 1, b: [2] } }] } });
     expect(items[0]).toMatchObject({ input: '{"a":1,"b":[2]}' });
+  });
+
+  it("shows a sub-agent call by its task name, not its whole brief", () => {
+    const prompt = "Read every file under src and report…\n".repeat(40);
+    const { items } = claude({ type: "assistant", uuid: "a7", message: { content: [{ type: "tool_use", id: "t", name: "Agent", input: { description: "Survey the sidebar", prompt, subagent_type: "Explore" } }] } });
+    expect(items[0]).toMatchObject({ name: "Agent", input: "Survey the sidebar" });
+  });
+
+  it("shows a Codex spawn_agent call by its task name", () => {
+    expect(summarizeInput({ task_name: "review_sidebar", message: "Look at…\n".repeat(50), fork_turns: "none" })).toBe("review_sidebar");
   });
 });
 

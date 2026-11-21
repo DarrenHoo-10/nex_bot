@@ -372,6 +372,15 @@ export interface CliError {
 // ---------------------------------------------------------------------------
 // Capability (hello.cliAgents)
 
+/** What an executor can do beyond the first protocol: content search (`search`),
+ * model and effort at launch (`model`/`effort` on `start` and `continue`), and
+ * attachments written to the computer (`attach`). Older executors send none. */
+export type CliFeature = "search" | "launchOptions" | "attach";
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach"];
+
+/** What the page shows when the computer's executor lacks a feature. */
+export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
+
 export interface CliAgentsCapability {
   version: 1;
   engines: CliEngine[];
@@ -379,6 +388,74 @@ export interface CliAgentsCapability {
   /** engines whose `start` honours `forkFrom`; absent on executors that predate
    * forks, which would otherwise ignore the field and start a blank session */
   forkEngines?: CliEngine[];
+  /** absent on executors that predate them; Core refuses the feature there */
+  features?: CliFeature[];
+}
+
+export function hasCliFeature(capability: CliAgentsCapability | null | undefined, feature: CliFeature): boolean {
+  return capability?.features?.includes(feature) === true;
+}
+
+// ---------------------------------------------------------------------------
+// Launch options: model and reasoning effort (Claude Code 2.1 `--model` /
+// `--effort`, Codex 0.163 `-m` / `-c model_reasoning_effort=`)
+
+/** Effort levels each CLI accepts; ZCode has no such switch. */
+export const CLI_EFFORTS: Record<CliEngine, readonly string[]> = {
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+  zcode: [],
+};
+
+/** Suggestions for the model picker; any name matching CLI_MODEL_RE is accepted. */
+export const CLI_MODELS: Record<CliEngine, readonly { id: string; label: string }[]> = {
+  claude: [
+    { id: "fable", label: "Fable" },
+    { id: "opus", label: "Opus" },
+    { id: "sonnet", label: "Sonnet" },
+    { id: "haiku", label: "Haiku" },
+  ],
+  codex: ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"].map((id) => ({ id, label: id })),
+  zcode: [],
+};
+
+// an alias or full model name (`opus[1m]`, `gpt-6.2-sol`); it starts alphanumeric
+// so it can never read as a flag, and carries nothing a shell or cmd.exe interprets
+export const CLI_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]{0,99}$/;
+
+export function isCliModel(value: unknown): value is string {
+  return typeof value === "string" && CLI_MODEL_RE.test(value);
+}
+
+export function isCliEffort(engine: CliEngine, value: unknown): value is string {
+  return typeof value === "string" && (CLI_EFFORTS[engine] ?? []).includes(value);
+}
+
+export interface CliLaunchOptions {
+  model?: string;
+  effort?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Search and attachments
+
+export const CLI_SEARCH = { queryMax: 200, defaultLimit: 50, maxLimit: 100, snippetMax: 120 } as const;
+
+/** Decoded bytes of one attachment. Base64 makes it ~11.2 MB on the device link,
+ * whose frames the executor accepts up to CLI_LINK_FRAME_MAX. */
+export const CLI_ATTACH_MAX_BYTES = 8 * 1024 * 1024;
+export const CLI_ATTACH_NAME_MAX = 200;
+const ATTACH_BASE64_MAX = Math.ceil(CLI_ATTACH_MAX_BYTES / 3) * 4;
+/** The largest message the executor takes from Core: one attachment plus its envelope. */
+export const CLI_LINK_FRAME_MAX = 12 * 1024 * 1024;
+
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** Bytes a base64 string decodes to, or -1 when it is not canonical padded base64. */
+export function base64DecodedLength(value: string): number {
+  if (value.length % 4 !== 0 || !BASE64_RE.test(value)) return -1;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
 }
 
 export interface CliDeviceView {
@@ -403,6 +480,8 @@ export const CLI_OPS = [
   "open_local",
   "answer",
   "git",
+  "search",
+  "attach",
 ] as const;
 export type CliOp = (typeof CLI_OPS)[number];
 
@@ -427,8 +506,11 @@ export interface CliOpArgs {
      * the CLI resumes it into a new session id instead of starting blank. A device
      * that does not list the engine in `capability.forkEngines` must not be sent it. */
     forkFrom?: CliSessionRef;
+    /** launch options; only sent to executors that list `launchOptions` */
+    model?: string;
+    effort?: string;
   };
-  continue: { ref: CliSessionRef; cols?: number; rows?: number };
+  continue: { ref: CliSessionRef; cols?: number; rows?: number; model?: string; effort?: string };
   send: { ref: CliSessionRef; text: string };
   /** guidance into a turn that is already running; the device only accepts it
    * while the session has an active turn (workbench plan section 3) */
@@ -439,6 +521,15 @@ export interface CliOpArgs {
   answer: { id: string; decision: CliAnswerDecision; answers?: Record<string, string>; message?: string };
   /** a Git query or worktree creation for the session's repository on the device */
   git: { ref: CliSessionRef; action: "info" } | { ref: CliSessionRef; action: "worktree"; branch: string; requestId: string };
+  /** every listed session's user and assistant text, newest sessions first */
+  search: { query: string; limit?: number };
+  /** writes a file next to the session's other attachments; `data` is base64 */
+  attach: { ref: CliSessionRef; name: string; data: string };
+}
+
+export interface CliSearchHit {
+  ref: CliSessionRef;
+  snippet: string;
 }
 
 /** What a device answers for `git` (workbench plan section 3: Git lives on the
@@ -471,6 +562,8 @@ export interface CliOpResult {
   open_local: Record<string, never>;
   answer: { outcome: string };
   git: CliGitInfo;
+  search: { hits: CliSearchHit[] };
+  attach: { path: string };
 }
 
 export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
@@ -485,9 +578,15 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   open_local: 10_000,
   answer: 10_000,
   git: 20_000,
+  // the device stops scanning well before this (its own budget is ~8 s)
+  search: 10_000,
+  attach: 20_000,
 };
 
-/** Operations that change state: never re-sent after a timeout or a drop. */
+/** Operations that change state: never re-sent after a timeout or a drop.
+ * `attach` is not one: each call writes a new uniquely named file and touches no
+ * session, and keeping it out keeps the file bytes out of the op record and lets
+ * several files of one session upload at once. */
 export const CLI_OP_MUTATING: ReadonlySet<CliOp> = new Set<CliOp>([
   "start",
   "continue",
@@ -898,7 +997,17 @@ function capability(value: unknown): CliAgentsCapability {
       if (!forkEngines.includes(parsed)) forkEngines.push(parsed);
     }
   }
-  return { version: 1, engines, terminal, ...(forkEngines ? { forkEngines } : {}) };
+  // a newer executor may list features this side does not know yet: those are
+  // dropped instead of failing the whole capability (and with it the device)
+  let features: CliFeature[] | undefined;
+  if (present(o, "features")) {
+    features = [];
+    for (const entry of arr(o.features, 32)) {
+      const name = str(entry, 64);
+      if ((CLI_FEATURES as readonly string[]).includes(name) && !features.includes(name as CliFeature)) features.push(name as CliFeature);
+    }
+  }
+  return { version: 1, engines, terminal, ...(forkEngines ? { forkEngines } : {}), ...(features ? { features } : {}) };
 }
 
 function deviceView(value: unknown): CliDeviceView {
@@ -1068,6 +1177,21 @@ export function parseCliRequestView(value: unknown): CliRequestView | null {
   return guard(() => requestView(value));
 }
 
+/** `model` and `effort` of a start or continue; an effort the engine does not
+ * have is invalid rather than dropped, so the user never gets a silent default. */
+function launchOptions(o: Rec, engine: CliEngine): CliLaunchOptions {
+  const out: CliLaunchOptions = {};
+  if (present(o, "model")) {
+    if (!isCliModel(o.model)) fail();
+    out.model = o.model;
+  }
+  if (present(o, "effort")) {
+    if (!isCliEffort(engine, o.effort)) fail();
+    out.effort = o.effort;
+  }
+  return out;
+}
+
 const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
   read: (o) =>
     pick({
@@ -1101,14 +1225,29 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
       rows: present(o, "rows") ? rows(o.rows) : undefined,
       worktree,
       forkFrom,
+      ...launchOptions(o, engine),
     });
   },
-  continue: (o) =>
-    pick({
-      ref: ref(o.ref),
+  continue: (o) => {
+    const target = ref(o.ref);
+    return pick({
+      ref: target,
       cols: present(o, "cols") ? cols(o.cols) : undefined,
       rows: present(o, "rows") ? rows(o.rows) : undefined,
-    }),
+      ...launchOptions(o, target.slice(0, target.indexOf(":")) as CliEngine),
+    });
+  },
+  search: (o) => {
+    const query = str(o.query, CLI_SEARCH.queryMax, 1);
+    if (!query.trim()) fail();
+    return pick({ query, limit: optInt(o, "limit", 1, CLI_SEARCH.maxLimit) });
+  },
+  attach: (o) => {
+    const name = str(o.name, CLI_ATTACH_NAME_MAX, 1);
+    const data = str(o.data, ATTACH_BASE64_MAX);
+    if (base64DecodedLength(data) < 0) fail();
+    return { ref: ref(o.ref), name, data };
+  },
   send: (o) => {
     const text = str(o.text, MAX_SEND_TEXT, 1);
     if (utf8ByteLength(text) > MAX_SEND_TEXT) fail();
@@ -1174,6 +1313,17 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
       removed: optInt(o, "removed", 0, 1_000_000),
       error: optStr(o, "error", CLI_LIMITS.message, 1),
     });
+  },
+  search: (o) => ({
+    hits: arr(o.hits, CLI_SEARCH.maxLimit).map((entry) => {
+      const hit = rec(entry);
+      return { ref: ref(hit.ref), snippet: str(hit.snippet, CLI_SEARCH.snippetMax * 2) };
+    }),
+  }),
+  attach: (o) => {
+    const path = str(o.path, CLI_LIMITS.imagePath, 1);
+    if (!isAbsoluteCwd(path)) fail();
+    return { path };
   },
 };
 

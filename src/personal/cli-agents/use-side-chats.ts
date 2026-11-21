@@ -67,7 +67,8 @@ export function useSideChats(parent:CliSessionKey|null,sessions:CliSessionView[]
       if(existing){setClosed(c=>c.filter(k=>k!==existing));setActive(existing);return}
     }
     const id=crypto.randomUUID();
-    setDrafts(current=>[...current,{id,parent:owner,source,quote,message,model:record?.model||review?.models[source.engine]?.[0]||source.model?.trim()||"",effort:record?.effort||"标准"}]);
+    setDrafts(current=>[...current,{id,parent:owner,source,quote,message,// the review fixture names its own models; the CLI default stays unless the user picks one
+      model:review?record?.model||review.models[source.engine]?.[0]||source.model?.trim()||"":"",effort:review?record?.effort||"标准":""}]);
     setActive(id);
   }
   function openTerminal() {
@@ -109,7 +110,7 @@ export function useSideChats(parent:CliSessionKey|null,sessions:CliSessionView[]
         const created=await branchSession(d.parent,d.quote.slice(0,24)||"侧边聊天",attempt.branchRequestId,"side");
         attempt.row={id:created.id,version:created.version};
       }
-      const started=await startSession(d.source.deviceId,d.source.engine,d.source.cwd,{parentId:attempt.row.id});
+      const started=await startSession(d.source.deviceId,d.source.engine,d.source.cwd,{parentId:attempt.row.id,...(d.model?{model:d.model}:{}),...(d.effort?{effort:d.effort}:{})});
       attempt.key=started.key;
       patch(d.id,{target:started.key});
       host?.refresh();

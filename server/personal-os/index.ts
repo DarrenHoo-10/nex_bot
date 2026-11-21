@@ -12,7 +12,7 @@ import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
 import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
 import { CliAgentWorkbench } from "./cli-agents/workbench.ts";
-import { CliAgentRoutes } from "./cli-agents/routes.ts";
+import { CliAgentRoutes, readCliAttachment } from "./cli-agents/routes.ts";
 import { CliAgentSupervisor } from "./cli-agents/supervisor.ts";
 import { assistantModelCaller, createTriage } from "./cli-agents/triage.ts";
 import { cliToolExecutor } from "./cli-agents/tools.ts";
@@ -571,6 +571,15 @@ export async function createPersonalApp(options: AppOptions) {
           } catch { /* ignore */ }
         }
         json(response, 200, { kind: "file", path: targetPath, title: path.basename(targetPath), exists: false, content: "未在当前授权共享目录或最近读取记录中找到该文件。可在「设备网络」中配置后端允许读取的目录或让 Agent 调用 device.read 读取。" }); return;
+      }
+      if (url.pathname === "/api/cli-agents/attach" && request.method === "POST") {
+        // the file itself is the body, not JSON: read it here, bounded, before the JSON reader could
+        if (request.headers["sec-fetch-site"] === "cross-site") { json(response, 403, { error: "Invalid request" }); return; }
+        const bytes = await readCliAttachment(request, request.headers["content-length"]);
+        if (!bytes) { json(response, 413, { error: "附件不能超过 8 MB", code: "too_large" }); return; }
+        if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+        const result = await cliRoutes.handle({ method: "POST", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner, bytes });
+        if (result) { json(response, result.status, result.body); return; }
       }
       if (!mutating) { json(response, 404, { error: "Not found" }); return; }
       const data = await body(request);

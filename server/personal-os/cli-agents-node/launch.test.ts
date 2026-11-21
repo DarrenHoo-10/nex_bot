@@ -102,6 +102,42 @@ describe("cliArgs", () => {
     expect(SAFE_ARG.test("a,b")).toBe(false);
     expect(SAFE_ARG.test("with space")).toBe(false);
   });
+
+  describe("model and effort", () => {
+    it("adds no flag when none was picked", () => {
+      expect(cliArgs("claude", "new", { nativeId: UUID })).toEqual(["--session-id", UUID]);
+      expect(cliArgs("codex", "new", {})).toEqual([]);
+    });
+
+    it("passes Claude's --model and --effort, in every mode", () => {
+      expect(cliArgs("claude", "new", { nativeId: UUID, model: "opus", effort: "xhigh" })).toEqual(["--session-id", UUID, "--model", "opus", "--effort", "xhigh"]);
+      expect(cliArgs("claude", "resume", { nativeId: UUID, effort: "low" })).toEqual(["--resume", UUID, "--effort", "low"]);
+      expect(cliArgs("claude", "fork", { nativeId: UUID, forkFrom: "parent-1", model: "opus[1m]" })).toEqual(["--resume", "parent-1", "--fork-session", "--session-id", UUID, "--model", "opus[1m]"]);
+    });
+
+    it("passes Codex's -m and -c model_reasoning_effort after the subcommand", () => {
+      expect(cliArgs("codex", "new", { model: "gpt-6.2-sol", effort: "high" })).toEqual(["-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"]);
+      expect(cliArgs("codex", "resume", { nativeId: UUID, effort: "minimal" })).toEqual(["resume", UUID, "-c", "model_reasoning_effort=minimal"]);
+      expect(cliArgs("codex", "fork", { forkFrom: UUID, model: "gpt-6-astra" })).toEqual(["fork", UUID, "-m", "gpt-6-astra"]);
+      // the config override is a plain token: no quoting needed with or without cmd.exe
+      expect(SAFE_ARG.test("model_reasoning_effort=high")).toBe(true);
+    });
+
+    it("refuses a model that is not a plain name, an effort the engine lacks, and any option for ZCode", () => {
+      for (const model of ["--yolo", "-m", "a b", "a;b", "a&b", "x".repeat(101)]) {
+        expect(() => cliArgs("claude", "new", { nativeId: UUID, model }), model).toThrow(LaunchError);
+      }
+      expect(() => cliArgs("claude", "new", { nativeId: UUID, effort: "ultra" })).toThrow(LaunchError);
+      expect(() => cliArgs("codex", "new", { effort: "turbo" })).toThrow(LaunchError);
+      expect(() => cliArgs("zcode", "new", { model: "opus" })).toThrow(LaunchError);
+      expect(() => cliArgs("zcode", "resume", { nativeId: UUID, effort: "low" })).toThrow(LaunchError);
+    });
+
+    it("reaches the argv planLaunch builds", async () => {
+      const plan = await planLaunch({ engine: "codex", mode: "new", cwd: root, executable: "/usr/bin/codex", model: "gpt-6.1-terra", effort: "ultra" }, { platform: process.platform, env: {} });
+      expect(plan.argv).toEqual(["/usr/bin/codex", "-m", "gpt-6.1-terra", "-c", "model_reasoning_effort=ultra"]);
+    });
+  });
 });
 
 describe("buildArgv", () => {

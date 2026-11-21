@@ -984,3 +984,81 @@ describe("Claude hooks and turn ends", () => {
     ]);
   });
 });
+
+describe("launch options, search and attachments", () => {
+  it("lists the features this executor has", async () => {
+    const t = setup();
+    await t.bridge.prepare();
+    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach"]);
+  });
+
+  it("starts and continues with the model and effort the user picked", async () => {
+    claudeWritesTranscript();
+    codexRollout(XID(1), "resume codex");
+    const t = setup();
+    await t.start();
+    const started = await t.call("start", { engine: "claude", cwd: workDir, model: "opus", effort: "max" });
+    expect(started.ok).toBe(true);
+    const id = (started.result as { ref: string }).ref.slice("claude:".length);
+    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", id, "--model", "opus", "--effort", "max"]);
+    expect((await t.call("continue", { ref: `codex:${XID(1)}`, model: "gpt-6.2-sol", effort: "ultra" })).ok).toBe(true);
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=ultra"]);
+  });
+
+  it("refuses an effort the engine lacks, and any option for ZCode", async () => {
+    const t = setup();
+    await t.start();
+    // the device parses the op itself: a bad effort never reaches cliArgs
+    expect(await t.call("start", { engine: "claude", cwd: workDir, effort: "ultra" })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    const zcode = await t.call("start", { engine: "zcode", cwd: workDir, model: "glm-5" });
+    expect(zcode).toMatchObject({ ok: false, error: { code: "invalid", message: "ZCode 不支持选择模型和推理强度" } });
+    expect(hc.runs).toHaveLength(0);
+  });
+
+  it("searches every listed session's messages, newest first", async () => {
+    claudeTranscript(CID(1), "Deploy the main branch", 120_000);
+    claudeTranscript(CID(2), "deploy something else", 60_000);
+    const file = codexRollout(XID(1), "ignored event text");
+    appendFileSync(file, JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "main deploy done" }] } }) + "\n");
+    const t = setup();
+    await t.start();
+    const reply = await t.call("search", { query: "deploy MAIN" });
+    expect(reply).toMatchObject({ ok: true });
+    // the Claude transcripts are newer than the rollout
+    expect((reply.result as { hits: unknown[] }).hits).toEqual([
+      { ref: `claude:${CID(1)}`, snippet: "Deploy the main branch" },
+      { ref: `codex:${XID(1)}`, snippet: "main deploy done" },
+    ]);
+    expect(await t.call("search", { query: "deploy", limit: 1 })).toMatchObject({ ok: true, result: { hits: [{ ref: `claude:${CID(2)}` }] } });
+    expect(await t.call("search", { query: "nowhere" })).toMatchObject({ ok: true, result: { hits: [] } });
+  });
+
+  it("writes an attachment under the session's folder with a safe name and returns its absolute path", async () => {
+    claudeTranscript(CID(1), "attach here");
+    const attachDir = path.join(root, "attachments");
+    const t = setup({ attachDir });
+    await t.start();
+    const data = Buffer.from("png bytes").toString("base64");
+    const reply = await t.call("attach", { ref: `claude:${CID(1)}`, name: "..\\../.hidden\\evil name?.png", data });
+    expect(reply.ok).toBe(true);
+    const saved = (reply.result as { path: string }).path;
+    expect(path.isAbsolute(saved)).toBe(true);
+    expect(path.dirname(saved)).toBe(path.join(attachDir, `claude-${CID(1)}`));
+    expect(path.basename(saved)).toMatch(/^[0-9a-f]{8}-evil_name_.png$/);
+    expect(readFileSync(saved, "utf8")).toBe("png bytes");
+    // a second file of the same name gets its own path
+    const again = await t.call("attach", { ref: `claude:${CID(1)}`, name: "图 1.png", data });
+    expect(path.basename((again.result as { path: string }).path)).toMatch(/^[0-9a-f]{8}-图_1.png$/);
+  });
+
+  it("refuses an attachment for an unknown session or over 8 MiB", async () => {
+    claudeTranscript(CID(1), "attach here");
+    const t = setup({ attachDir: path.join(root, "attachments") });
+    await t.start();
+    expect(await t.call("attach", { ref: `claude:${CID(9)}`, name: "a.txt", data: "aGk=" })).toMatchObject({ ok: false, error: { code: "not_found" } });
+    // the longest base64 the parser takes still decodes to one byte too many
+    const big = "A".repeat(Math.ceil((8 * 1024 * 1024) / 3) * 4);
+    expect(await t.call("attach", { ref: `claude:${CID(1)}`, name: "big.bin", data: big })).toMatchObject({ ok: false, error: { code: "too_large" } });
+    expect(existsSync(path.join(root, "attachments", `claude-${CID(1)}`))).toBe(false);
+  });
+});

@@ -103,6 +103,38 @@ export function projectGroups(rows: readonly CliSessionView[], rootOf?: (row: Cl
   return [...groups.values()].sort((a, b) => Number(a.scratch) - Number(b.scratch) || b.latest - a.latest || a.label.localeCompare(b.label));
 }
 
+/** Projects in the user's order: projects not in `saved` yet are new and go first (newest activity
+ * first), the rest keep their saved order, and the scratch group stays last. */
+export function orderProjects<T extends ProjectRef & { latest: number }>(groups: readonly T[], saved: readonly string[]): T[] {
+  const at = new Map(saved.map((key, index) => [key, index]));
+  const fresh = groups.filter((group) => !group.scratch && !at.has(group.key)).sort((a, b) => b.latest - a.latest);
+  const known = groups.filter((group) => !group.scratch && at.has(group.key)).sort((a, b) => at.get(a.key)! - at.get(b.key)!);
+  return [...fresh, ...known, ...groups.filter((group) => group.scratch)];
+}
+
+/** The saved order after `groups` were shown: new projects go in front, nothing known moves. */
+export function rememberProjects(groups: readonly (ProjectRef & { latest: number })[], saved: readonly string[], max = 300): string[] {
+  const known = new Set(saved);
+  const fresh = orderProjects(groups, saved).filter((group) => !group.scratch && !known.has(group.key)).map((group) => group.key);
+  return fresh.length ? [...fresh, ...saved].slice(0, max) : [...saved];
+}
+
+/** The saved order with `key` dropped before or after `target`. */
+export function moveProject(saved: readonly string[], key: string, target: string, after: boolean): string[] {
+  if (key === target) return [...saved];
+  const rest = saved.filter((entry) => entry !== key);
+  const index = rest.indexOf(target);
+  if (index < 0) return [...saved];
+  rest.splice(index + (after ? 1 : 0), 0, key);
+  return rest;
+}
+
+/** Every whitespace-separated term of `query` occurs in `text`, ignoring case. An empty query matches. */
+export function matchesTerms(text: string, query: string): boolean {
+  const haystack = text.toLocaleLowerCase();
+  return query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).every((term) => haystack.includes(term));
+}
+
 /** The session this one was forked from on the same computer and agent, when Core reports it. */
 export function forkParentKey(session: CliSessionView): CliSessionKey | null {
   const key: CliSessionKey | null = session.forkOf ? `${session.deviceId}:${session.engine}:${session.forkOf}` : null;

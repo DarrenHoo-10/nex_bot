@@ -9,6 +9,9 @@ import { device, session } from "./fixtures";
 import { groupSessions } from "./session-model";
 import { SessionList, type WorkbenchActions, type WorkbenchMeta } from "./SessionList";
 
+const searchSessions = vi.hoisted(() => vi.fn(async (_query: string, _signal?: AbortSignal): Promise<{ key: CliSessionKey; snippet: string }[]> => []));
+vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), searchSessions }));
+
 const DAY = 86_400_000;
 const now = Date.now();
 const recent = (minutes: number) => now - minutes * 60_000;
@@ -19,6 +22,7 @@ const forked = (forkOf: string, overrides: Parameters<typeof session>[0] = {}) =
 let root: Root;
 let container: HTMLDivElement;
 const onSelect = vi.fn();
+const onNew = vi.fn();
 const actions: WorkbenchActions = { fork: vi.fn(), rename: vi.fn(), archive: vi.fn(), remove: vi.fn() };
 
 type Row = ReturnType<typeof session>;
@@ -30,7 +34,7 @@ async function mount(sessions: Row[], options: { selectedKey?: CliSessionKey; wo
       workbench: options.workbench,
       onWorkbenchAction: actions,
       onSelect,
-      onNew: () => {},
+      onNew,
       reloadSessions: async () => {},
     }));
   });
@@ -42,6 +46,7 @@ const titles = (scope: ParentNode = container) => [...scope.querySelectorAll(".c
 const older = () => container.querySelector<HTMLButtonElement>(".na-older");
 const project = (label: string) => [...container.querySelectorAll(".na-project")].find((entry) => entry.querySelector(".na-folder strong")?.textContent === label)!;
 async function search(value: string) {
+  if (!container.querySelector(".na-search input")) await click(container.querySelector('[aria-label="搜索会话"]'));
   const input = container.querySelector<HTMLInputElement>(".na-search input")!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
@@ -56,6 +61,10 @@ async function openMenu(title: string) {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   onSelect.mockReset();
+  onNew.mockReset();
+  searchSessions.mockReset();
+  searchSessions.mockResolvedValue([]);
+  localStorage.clear();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -242,5 +251,81 @@ describe("fork menu", () => {
     const claude = (await openMenu("克劳德")).find((entry) => entry.textContent === "创建分支")!;
     expect(claude.disabled).toBe(true);
     expect(claude.title).toBe("电脑端版本过旧，升级后可分叉会话");
+  });
+});
+
+describe("project order", () => {
+  const two = () => [
+    session({ nativeId: "a", title: "甲", cwd: String.raw`D:\work\alpha`, lastActivityAt: recent(1) }),
+    session({ nativeId: "b", title: "乙", cwd: String.raw`D:\work\beta`, lastActivityAt: recent(2) }),
+  ];
+
+  it("keeps its order when activity changes and puts a newly added project first", async () => {
+    await mount(two());
+    expect(folders()).toEqual(["alpha", "beta"]);
+    // beta becomes the most active: the order stays
+    await mount([session({ nativeId: "a", title: "甲", cwd: String.raw`D:\work\alpha`, lastActivityAt: recent(9) }), session({ nativeId: "b", title: "乙", cwd: String.raw`D:\work\beta`, lastActivityAt: recent(1) })]);
+    expect(folders()).toEqual(["alpha", "beta"]);
+    await mount([...two(), session({ nativeId: "g", title: "丙", cwd: String.raw`D:\work\gamma`, lastActivityAt: recent(30) })]);
+    expect(folders()).toEqual(["gamma", "alpha", "beta"]);
+  });
+
+  it("moves a project by dragging its folder row and remembers it", async () => {
+    await mount(two());
+    const transfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" };
+    const fire = (target: Element, type: string, clientY = 0) => act(async () => {
+      const event = new Event(type, { bubbles: true, cancelable: true }) as Event & { dataTransfer: unknown; clientY: number };
+      Object.assign(event, { dataTransfer: transfer, clientY });
+      target.dispatchEvent(event);
+    });
+    await fire(project("beta").querySelector(".na-folder")!, "dragstart");
+    await fire(project("alpha"), "dragover", -100);
+    await fire(project("alpha"), "drop", -100);
+    expect(folders()).toEqual(["beta", "alpha"]);
+    expect(JSON.parse(localStorage.getItem("nexagent.projectOrder")!)).toEqual({ [device().id]: ["d:/work/beta", "d:/work/alpha"] });
+  });
+
+  it("starts a new session in a project from its +", async () => {
+    await mount(two());
+    await click(container.querySelector('[aria-label="在 beta 中新建会话"]'));
+    expect(onNew).toHaveBeenCalledWith(device().id, String.raw`D:\work\beta`);
+  });
+});
+
+describe("time view", () => {
+  it("lists every session by time alone, without computers, projects or branches", async () => {
+    await mount([
+      session({ nativeId: "a", title: "甲", cwd: String.raw`D:\work\alpha`, lastActivityAt: recent(5) }),
+      forked("a", { nativeId: "f", title: "甲的分支", cwd: String.raw`D:\work\alpha`, lastActivityAt: recent(1) }),
+      session({ nativeId: "b", title: "乙", cwd: String.raw`D:\work\beta`, lastActivityAt: recent(3) }),
+    ]);
+    const clock = container.querySelector<HTMLButtonElement>('[aria-label="按时间排序"]')!;
+    await click(clock);
+    expect(clock.getAttribute("aria-pressed")).toBe("true");
+    expect(folders()).toEqual([]);
+    expect(container.querySelector(".cli-device")).toBeNull();
+    expect(titles()).toEqual(["甲的分支", "乙", "甲"]);
+    expect(localStorage.getItem("nexagent.timeSort")).toBe("1");
+    await click(clock);
+    expect(folders()).toEqual(["alpha", "beta"]);
+  });
+});
+
+describe("content search", () => {
+  it("finds a session by what was said in it and shows the matching line", async () => {
+    vi.useFakeTimers();
+    try {
+      const rows = [
+        session({ nativeId: "a", title: "甲", cwd: String.raw`D:\work\alpha`, lastActivityAt: recent(1) }),
+        session({ nativeId: "b", title: "乙", cwd: String.raw`D:\work\beta`, lastActivityAt: recent(2) }),
+      ];
+      searchSessions.mockResolvedValue([{ key: rows[1].key, snippet: "…把登录页改成扫码…" }]);
+      await mount(rows);
+      await search("扫码");
+      await act(async () => { await vi.advanceTimersByTimeAsync(350); });
+      expect(searchSessions).toHaveBeenCalledWith("扫码", expect.anything());
+      expect(titles()).toEqual(["乙"]);
+      expect(container.querySelector(".na-snippet")?.textContent).toBe("…把登录页改成扫码…");
+    } finally { vi.useRealTimers(); }
   });
 });

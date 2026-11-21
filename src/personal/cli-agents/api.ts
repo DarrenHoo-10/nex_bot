@@ -2,8 +2,11 @@
 // keeps only the error text, and this page needs Core's `code` to say what
 // happened. Responses are validated with the shared parsers.
 import {
+  CLI_ATTACH_MAX_BYTES,
+  CLI_ATTACH_NAME_MAX,
   CLI_ERROR_TEXT,
   isCliErrorCode,
+  parseCliKey,
   parseCliDeviceView,
   parseCliItems,
   parseCliRequestView,
@@ -13,6 +16,7 @@ import {
   type CliEngine,
   type CliErrorCode,
   type CliItem,
+  type CliLaunchOptions,
   type CliAnswerDecision,
   type CliRequestView,
   type CliSessionKey,
@@ -36,11 +40,19 @@ export function cliErrorText(error: unknown, fallback = "操作失败"): string 
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-async function call<T>(path: string, body?: unknown, method = "POST"): Promise<T> {
+/** `body` is sent as JSON, except a Blob, which goes as it is (an attachment). */
+async function call<T>(path: string, body?: unknown, method = "POST", signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`/api/cli-agents${path}`, body === undefined ? undefined : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  } catch {
+    const init: RequestInit | undefined = body === undefined
+      ? undefined
+      : body instanceof Blob
+        ? { method, headers: { "Content-Type": body.type || "application/octet-stream" }, body }
+        : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+    response = await fetch(`/api/cli-agents${path}`, signal ? { ...init, signal } : init);
+  } catch (error) {
+    // an aborted search is the caller's own doing, not a connection failure
+    if (signal?.aborted) throw error;
     throw new CliApiError("连接失败");
   }
   let data: unknown = null;
@@ -74,16 +86,47 @@ export async function fetchItems(key: CliSessionKey, before?: string): Promise<{
   return { items, more: data.more === true };
 }
 
-/** `parentId` binds the started session to a pending branch row; `forkFrom` makes it a real context fork of that session (same computer and tool). */
-export const startSession = (deviceId: string, engine: CliEngine, cwd: string, options: { worktreeBranch?: string; requestId?: string; parentId?: string; forkFrom?: CliSessionKey } = {}) =>
+/** `parentId` binds the started session to a pending branch row; `forkFrom` makes it a real context fork of that session (same computer and tool).
+ * `model` / `effort` (see CLI_MODELS / CLI_EFFORTS) need a computer whose capability lists `launchOptions`. */
+export const startSession = (deviceId: string, engine: CliEngine, cwd: string, options: { worktreeBranch?: string; requestId?: string; parentId?: string; forkFrom?: CliSessionKey } & CliLaunchOptions = {}) =>
   call<{ key: CliSessionKey; cwd?: string }>("/start", {
     deviceId, engine, cwd,
     ...(options.worktreeBranch ? { worktreeBranch: options.worktreeBranch } : {}),
     ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.parentId ? { parentId: options.parentId } : {}),
     ...(options.forkFrom ? { forkFrom: options.forkFrom } : {}),
+    ...launchBody(options),
   });
-export const continueSession = (key: CliSessionKey) => call<{ key: CliSessionKey }>("/continue", { key });
+export const continueSession = (key: CliSessionKey, options: CliLaunchOptions = {}) => call<{ key: CliSessionKey }>("/continue", { key, ...launchBody(options) });
+
+function launchBody(options: CliLaunchOptions): CliLaunchOptions {
+  return { ...(options.model ? { model: options.model } : {}), ...(options.effort ? { effort: options.effort } : {}) };
+}
+
+export interface CliSearchHit { key: CliSessionKey; snippet: string }
+
+/** Sessions whose messages hold every word of `query`, newest activity first. */
+export async function searchSessions(query: string, signal?: AbortSignal): Promise<CliSearchHit[]> {
+  const data = await call<{ hits?: unknown }>(`/search?q=${encodeURIComponent(query)}`, undefined, "GET", signal);
+  if (!Array.isArray(data.hits)) throw new CliApiError("搜索结果格式不对");
+  const hits: CliSearchHit[] = [];
+  for (const entry of data.hits) {
+    const hit = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    if (!hit || typeof hit.key !== "string" || !parseCliKey(hit.key) || typeof hit.snippet !== "string") continue;
+    hits.push({ key: hit.key as CliSessionKey, snippet: hit.snippet });
+  }
+  return hits;
+}
+
+/** Copies a file to the session's computer; the answer is the absolute path the CLI can read it at. */
+export async function uploadAttachment(key: CliSessionKey, file: File): Promise<{ path: string }> {
+  if (file.size > CLI_ATTACH_MAX_BYTES) throw new CliApiError("附件不能超过 8 MB", "too_large", 413);
+  // Core takes a name of up to 200 units; the end keeps the extension
+  const name = (file.name || "file").slice(-CLI_ATTACH_NAME_MAX);
+  const data = await call<{ path?: unknown }>(`/attach?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, file);
+  if (typeof data.path !== "string" || !data.path) throw new CliApiError("附件上传结果格式不对");
+  return { path: data.path };
+}
 /** `delivery` and `waiting` come only from a session outside nex_bot's terminals; the
  * workbench contract answers with the outbox entry instead. */
 export interface SendResult { turn: number; started?: boolean; delivery?: CliDelivery; waiting?: boolean }

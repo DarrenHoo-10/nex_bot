@@ -8,16 +8,20 @@
 // `detach()` on close. herdr-core and its terminals are never stopped here; a
 // closed or paused device just stops watching them.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  CLI_ATTACH_MAX_BYTES,
   CLI_ERROR_TEXT,
+  CLI_FEATURES,
   CLI_OP_MUTATING,
   CLI_OP_TIMEOUT_MS,
   HERDR_CORE_VERSION,
   MAX_ITEMS_PER_MESSAGE,
   MAX_SEND_TEXT,
   PAGE_SIZE,
+  base64DecodedLength,
   clampTermSize,
   cliRef,
   parseCliOpResult,
@@ -60,6 +64,7 @@ import { LaunchError, PENDING_NATIVE_ID, clearCliCache, cliVersion, launchEnv, p
 import { CliLocalStore, type StoredReply } from "./local-store.ts";
 import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
 import { TranscriptReader } from "./reader.ts";
+import { searchSessions, type SearchSource } from "./search.ts";
 import { TermStreams, hcErrorCode, type TermStream } from "./streams.ts";
 import { zcodeHomeExists, zcodeHomes, type ZcodeHostChannel } from "./zcode.ts";
 
@@ -139,6 +144,10 @@ export interface CliAgentBridgeOptions {
   codexDaemon?: Partial<Pick<CodexDaemonOptions, "connect" | "detect" | "ttlMs" | "rpcTimeoutMs" | "retryMs" | "listEveryMs">>;
   /** How long a message to a Claude inbox may take to show up in the transcript. Default 6 s. */
   inboxConfirmMs?: number;
+  /** Where `attach` writes files. Default: `<os.tmpdir()>/nexbot-attachments`. */
+  attachDir?: string;
+  /** Wall-clock budget of one `search`. Default 8 s (the op itself has 10). */
+  searchBudgetMs?: number;
 }
 
 class OpFailure extends Error {
@@ -305,6 +314,7 @@ export class CliAgentBridge {
       version: 1,
       engines: this.engines.map((entry) => entry.engine),
       forkEngines: this.engines.map((entry) => entry.engine).filter((engine) => FORK_ENGINES.includes(engine)),
+      features: [...CLI_FEATURES],
       terminal: {
         name: "herdr-core",
         version: HERDR_CORE_VERSION,
@@ -1075,6 +1085,10 @@ export class CliAgentBridge {
         return this.opAnswer(args as CliOpArgs["answer"]);
       case "git":
         return this.opGit(args as CliOpArgs["git"]);
+      case "search":
+        return this.opSearch(args as CliOpArgs["search"], budget);
+      case "attach":
+        return this.opAttach(args as CliOpArgs["attach"]);
       default:
         throw new OpFailure("invalid", "this operation is not available on this computer yet");
     }
@@ -1222,6 +1236,7 @@ export class CliAgentBridge {
   }
 
   private async opStart(args: CliOpArgs["start"], budget: number): Promise<{ ref: CliSessionRef; terminal: string; cwd?: string }> {
+    refuseZcodeOptions(args.engine, args);
     const fork = this.forkSource(args);
     const hc = await this.requireHc();
     const executable = await this.cliPath(args.engine);
@@ -1252,6 +1267,7 @@ export class CliAgentBridge {
         cwd,
         executable,
         ...(hooks ? { hooks } : {}),
+        ...launchOptionsOf(args),
       },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
@@ -1288,10 +1304,12 @@ export class CliAgentBridge {
   private async opContinue(args: CliOpArgs["continue"], budget: number): Promise<{ ref: CliSessionRef; terminal: string }> {
     const parsed = parseCliRef(args.ref);
     if (!parsed) throw new OpFailure("invalid");
+    refuseZcodeOptions(parsed.engine, args);
     this.session(args.ref);
     const hc = await this.requireHc();
     await this.refreshTerminals();
     const mapped = this.addressFor(args.ref);
+    // already running in our terminal: the CLI keeps the model it runs with
     if (mapped) return { ref: args.ref, terminal: mapped };
 
     // One more look right before launching: single writer (plan 3.5).
@@ -1304,7 +1322,7 @@ export class CliAgentBridge {
     const size = clampTermSize(undefined, undefined);
     const hooks = parsed.engine === "claude" ? await this.hookLaunch(parsed.nativeId) : undefined;
     const plan = await planLaunch(
-      { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable, ...(hooks ? { hooks } : {}) },
+      { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable, ...(hooks ? { hooks } : {}), ...launchOptionsOf(args) },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
     plan.env = { ...plan.env, ...this.launchEnvironment(parsed.engine, row.configDir) };
@@ -1477,6 +1495,48 @@ export class CliAgentBridge {
     return this.git.info(row.cwd);
   }
 
+  /** Every listed session, newest first, hidden and archived ones included: the
+   * transcript file where there is one, else the Codex App or ZCode database. */
+  private async opSearch(args: CliOpArgs["search"], budget: number): Promise<{ hits: Array<{ ref: CliSessionRef; snippet: string }> }> {
+    const sources: SearchSource[] = [];
+    for (const row of this.discovery.snapshot().sort((a, b) => b.lastActivityAt - a.lastActivityAt)) {
+      let ref: CliSessionRef;
+      try {
+        ref = cliRef(row.engine, row.nativeId);
+      } catch {
+        continue;
+      }
+      const file = this.discovery.transcriptFor(ref);
+      if (file) {
+        sources.push({ ref, engine: row.engine, file });
+        continue;
+      }
+      const chat = this.discovery.appChatFor(ref) ?? this.discovery.zcodeChatFor(ref);
+      if (chat) sources.push({ ref, engine: row.engine, items: () => allItems(chat.db, chat.chat.threadId) });
+    }
+    const hits = await searchSessions(sources, args.query, {
+      ...(args.limit === undefined ? {} : { limit: args.limit }),
+      budgetMs: Math.max(500, Math.min(this.options.searchBudgetMs ?? 8000, budget - 500)),
+    });
+    return { hits };
+  }
+
+  /** Writes one file the user attached to a session where the CLI can read it:
+   * `<tmp>/nexbot-attachments/<engine>-<nativeId>/<8 hex>-<safe name>`. */
+  private async opAttach(args: CliOpArgs["attach"]): Promise<{ path: string }> {
+    const parsed = parseCliRef(args.ref);
+    if (!parsed) throw new OpFailure("invalid");
+    this.session(args.ref);
+    const size = base64DecodedLength(args.data);
+    if (size < 0) throw new OpFailure("invalid");
+    if (size > CLI_ATTACH_MAX_BYTES) throw new OpFailure("too_large", "附件不能超过 8 MB");
+    const dir = path.join(this.options.attachDir ?? path.join(os.tmpdir(), "nexbot-attachments"), `${parsed.engine}-${parsed.nativeId}`);
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${randomBytes(4).toString("hex")}-${safeFileName(args.name)}`);
+    await writeFile(file, Buffer.from(args.data, "base64"), { flag: "wx", mode: 0o600 });
+    return { path: path.resolve(file) };
+  }
+
   private async opOpenLocal(args: CliOpArgs["open_local"]): Promise<Record<string, never>> {
     const address = this.terminalOf(args.ref);
     const scope = this.hcScope ?? this.scopeFor();
@@ -1526,6 +1586,46 @@ export class CliAgentBridge {
     }
     await this.streams.open({ sid: message.sid, ref: message.ref, address, cols: message.cols, rows: message.rows, observe: message.observe });
   }
+}
+
+/** The CLIs have no model or effort switch for ZCode; a launch that asks for one is refused, not silently plain. */
+function refuseZcodeOptions(engine: CliEngine, args: { model?: string; effort?: string }): void {
+  if (engine === "zcode" && (args.model !== undefined || args.effort !== undefined)) throw new OpFailure("invalid", "ZCode 不支持选择模型和推理强度");
+}
+
+function launchOptionsOf(args: { model?: string; effort?: string }): { model?: string; effort?: string } {
+  return { ...(args.model !== undefined ? { model: args.model } : {}), ...(args.effort !== undefined ? { effort: args.effort } : {}) };
+}
+
+/** Up to SEARCH_DB_ITEMS items of a database chat, oldest first. The Codex App
+ * database reads the whole chat per page anyway and hands it over at once; ZCode
+ * caps a page, so it is read a page at a time. */
+const SEARCH_DB_ITEMS = 5000;
+async function allItems(db: { page(id: string, o?: { before?: string; limit?: number }): Promise<{ items: CliItem[]; more: boolean }> }, threadId: string): Promise<CliItem[]> {
+  const pages: CliItem[][] = [];
+  let before: string | undefined;
+  let count = 0;
+  for (let round = 0; round < 200 && count < SEARCH_DB_ITEMS; round += 1) {
+    const page = await db.page(threadId, { ...(before ? { before } : {}), limit: SEARCH_DB_ITEMS - count });
+    count += page.items.length;
+    pages.unshift(page.items);
+    if (!page.more || page.items.length === 0 || page.items[0].id === before) break;
+    before = page.items[0].id;
+  }
+  return pages.flat();
+}
+
+/** A file name that is safe on every platform: letters, digits, `.`, `_` and `-`
+ * only, no leading dot, at most 100 characters with the extension kept. */
+export function safeFileName(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? "";
+  let safe = base.normalize("NFC").replace(/[^\p{L}\p{N}._-]+/gu, "_").replace(/_+/g, "_").replace(/^[._]+/, "").replace(/[._]+$/, "");
+  if (safe.length > 100) {
+    const dot = safe.lastIndexOf(".");
+    const ext = dot > 0 && safe.length - dot <= 16 ? safe.slice(dot) : "";
+    safe = safe.slice(0, 100 - ext.length) + ext;
+  }
+  return safe || "file";
 }
 
 class DeadlineError extends Error {}

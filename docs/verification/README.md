@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 排序、搜索、模型与图片：全平台发布（2026-11-21）](nexagent-1121-release-20261121.md)
+
 - [飞书多应用与按群回复设置：全平台发布（2026-11-21）](feishu-multi-app-release-20261121.md)
 
 - [飞书多应用与按群回复设置：本地验证（2026-11-21）](feishu-multi-app-20261121.md)
