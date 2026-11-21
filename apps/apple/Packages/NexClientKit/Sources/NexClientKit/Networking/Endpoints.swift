@@ -297,6 +297,7 @@ struct TopicBody: Encodable { let botId: String }
 struct FeishuIDBody: Encodable { let id: String }
 struct FeishuSaveBody: Encodable { let appId: String; let appSecret: String; let brand: String; let botId: String }
 struct FeishuToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
+struct FeishuGroupBody: Encodable { let id: String; let chatId: String; let trigger: String; let session: String; let context: String; let version: Int }
 struct EmptyPost: Encodable {}
 struct BindCodeResult: Decodable { let code: String }
 struct NameBody: Encodable { let name: String }
@@ -416,6 +417,12 @@ extension CoreClient {
         try await post("/api/feishu/toggle", body: FeishuToggleBody(id: id, version: version, enabled: enabled))
     }
     public func feishuDelete(id: String, version: Int) async throws { try await post("/api/feishu/delete", body: IDVersion(id: id, version: version)) }
+    /// `GET /api/feishu/groups?id=`: groups the app's bot is in. `error` carries a failed refresh; the cached list is still returned.
+    public func feishuGroups(id: String) async throws -> FeishuGroupList { try await get("/api/feishu/groups", query: [("id", id)]) }
+    /// `POST /api/feishu/groups/save`: one group's reply mode and context. Saving an unclaimed group claims it for the bound owner.
+    public func feishuSaveGroup(id: String, chatID: String, trigger: String, session: String, context: String, version: Int) async throws -> FeishuGroup {
+        try await post("/api/feishu/groups/save", body: FeishuGroupBody(id: id, chatId: chatID, trigger: trigger, session: session, context: context, version: version), as: FeishuGroup.self)
+    }
 
     // Chat attachments and permission mode
     /// `POST /api/attachments`: uploads one file (base64 in JSON) for `botID`. At most 5 MiB and not empty; the 5-per-message

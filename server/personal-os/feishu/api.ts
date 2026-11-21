@@ -89,9 +89,10 @@ export class FeishuApi {
     const data = await this.request<{ online_instance_cnt?: number }>(app, "GET", "/open-apis/event/v1/connection");
     return Number(data.online_instance_cnt ?? 0);
   }
-  async botOpenId(app: FeishuCredentials): Promise<string | undefined> {
-    const data = await this.request<{ bot?: { open_id?: string } }>(app, "GET", "/open-apis/bot/v3/info");
-    return typeof data.bot?.open_id === "string" ? data.bot.open_id : undefined;
+  async botInfo(app: FeishuCredentials): Promise<{ openId?: string; name?: string; avatarUrl?: string }> {
+    const data = await this.request<{ bot?: { open_id?: string; app_name?: string; avatar_url?: string } }>(app, "GET", "/open-apis/bot/v3/info");
+    const str = (value: unknown) => typeof value === "string" && value ? value : undefined;
+    return { openId: str(data.bot?.open_id), name: str(data.bot?.app_name), avatarUrl: str(data.bot?.avatar_url) };
   }
 
   /** 用户身份调用：与 request 相同的限流与重试，Bearer 换成 user_access_token。 */

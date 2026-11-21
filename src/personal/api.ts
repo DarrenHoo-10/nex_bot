@@ -1,7 +1,8 @@
 import type { ConnectorCatalogEntry, ConnectorView, ConnectorMonitorView } from "../../shared/personal-connectors";
 export type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors";
-export interface FeishuAppView { id: string; appId: string; brand: string; status: string; error: string | null; ownerBound: boolean; botId: string; botName: string; enabled: boolean; version: number; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null }
-export interface FeishuState { job?: { stage: string; url?: string; scanPath?: string; expiresAt?: number; error?: string }; userAuth?: { stage: string; url?: string; expiresAt?: number; error?: string }; apps: FeishuAppView[] }
+export interface FeishuAppView { id: string; appId: string; brand: string; status: string; error: string | null; ownerBound: boolean; botId: string; botName: string; enabled: boolean; version: number; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null; name?: string | null; avatarUrl?: string | null; groupCount?: number }
+export interface FeishuState { job?: { stage: string; url?: string; scanPath?: string; expiresAt?: number; error?: string }; userAuth?: { id?: string; stage: string; url?: string; expiresAt?: number; error?: string }; apps: FeishuAppView[] }
+export interface FeishuGroupView { chatId: string; name: string | null; kind: "group" | "topic"; members: number | null; claimed: boolean; trigger: "always" | "topic" | "ambient" | "never"; session: "chat-topic" | "chat" | "new-topic"; context: string; version: number }
 export type RecordRow = Record<string, string | number | null>;
 export interface MemoryPluginState {
   providers: Array<{ id: string; name: string; protocol: string }>;

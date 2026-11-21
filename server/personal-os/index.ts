@@ -482,6 +482,7 @@ export async function createPersonalApp(options: AppOptions) {
         if(session.user_id!==store.owner){json(response,403,{error:"仅主人可查看投递对账"});return;}
         json(response,200,{parts:feishu.deliveries()});return;
       }
+      if(url.pathname === "/api/feishu/groups" && request.method === "GET") {json(response,200,await feishu.groups({id:url.searchParams.get("id")??""}));return;}
       if(url.pathname === "/api/feishu/accounts" && request.method === "GET") {json(response,200,await feishuAccounts?.("list",{}) ?? []);return;}
       if (url.pathname === "/api/state") {
         const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
@@ -624,6 +625,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/feishu/bind/start") { json(response, 200, feishu.bindStart(data)); return; }
       if (url.pathname === "/api/feishu/user-auth/start") { json(response, 200, feishu.startUserAuth(data)); return; }
       if (url.pathname === "/api/feishu/user-auth/cancel") { feishu.cancelUserAuth(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/feishu/groups/save") { json(response, 200, feishu.saveGroup(data)); return; }
       if (url.pathname === "/api/feishu/toggle") { json(response, 200, await feishu.toggle(data)); return; }
       if (url.pathname === "/api/feishu/delete") { json(response, 200, await feishu.remove(data)); return; }
       if (url.pathname === "/api/models/images") {

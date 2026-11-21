@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [飞书多应用与按群回复设置：本地验证（2026-11-21）](feishu-multi-app-20261121.md)
+
 - [html.render 预览卡拓宽:本地验证(2026-11-15)](html-preview-width-20261115.md)
 
 - [工具步骤就地展开:本地验证(2026-11-15)](tool-step-inline-20261115.md)

@@ -12,7 +12,7 @@ public struct FinanceTopic: RowBacked, Identifiable {
     public var activeTask: Row? { row["activeTask"]?.objectValue }
     public var source: Row { row["sourceContext"]?.objectValue ?? [:] }
     public var destinationLabel: String {
-        if source.string("chatType") == "group" { return "回复到飞书群 · \(source.string("chatId") ?? "")" }
+        if source.string("chatType") == "group" { return "飞书 · \(source.string("chatName") ?? source.string("chatId") ?? "群聊")" }
         if source.string("channel") == "feishu" { return "飞书私聊" }
         return audience == "public" ? "公开话题" : "本人私人话题"
     }
