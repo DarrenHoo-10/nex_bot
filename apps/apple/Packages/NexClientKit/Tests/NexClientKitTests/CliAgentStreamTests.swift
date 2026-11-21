@@ -601,13 +601,16 @@ final class CliAgentsModelTests: XCTestCase {
         r.model.openSession("k")
         await eventually { r.model.transcript("k").loaded }
         XCTAssertTrue(r.socket.sentJSON.contains { $0["type"] as? String == "sub.session" && $0["key"] as? String == "k" })
-        XCTAssertEqual(r.model.transcript("k").items.map(\.id), ["1"])
-        r.socket.push(["type": "items", "key": "k", "items": [["id": "2", "ts": 2, "kind": "assistant", "text": "yo"]]])
-        await eventually { r.model.transcript("k").items.count == 2 }
-        r.socket.push(["type": "items", "key": "unwatched", "items": [["id": "9", "ts": 9, "kind": "assistant", "text": "no"]]])
-        await r.model.loadOlder("k")
-        XCTAssertEqual(r.model.transcript("k").items.map(\.id), ["0", "1", "2"])
+        // one user turn on the first page and more before it: the earlier page loads on its own
+        await eventually { r.model.transcript("k").items.map(\.id) == ["0", "1"] }
         XCTAssertFalse(r.model.transcript("k").more)
+        r.socket.push(["type": "items", "key": "k", "items": [["id": "2", "ts": 2, "kind": "assistant", "text": "yo"]]])
+        await eventually { r.model.transcript("k").items.map(\.id) == ["0", "1", "2"] }
+        r.socket.push(["type": "items", "key": "unwatched", "items": [["id": "9", "ts": 9, "kind": "assistant", "text": "no"]]])
+        // the newest page sent again (a reconnect) keeps the earlier record
+        r.socket.push(["type": "items", "key": "k", "reset": true, "items": [["id": "1", "ts": 1, "kind": "user", "text": "hi"], ["id": "2", "ts": 2, "kind": "assistant", "text": "yo!"]]])
+        await eventually { r.model.transcript("k").items.last?.text == "yo!" }
+        XCTAssertEqual(r.model.transcript("k").items.map(\.id), ["0", "1", "2"])
         XCTAssertTrue(r.model.transcript("unwatched").items.isEmpty)
         r.model.closeSession("k")
         await eventually { r.socket.sentTypes().contains("unsub.session") }
