@@ -1,102 +1,53 @@
-# CI job selection
+# CI
 
-Every PR still runs the workflow and its static checks: locale validation,
-typecheck, lint, Electron checks, the UI build, CI-selection tests and the
-verification-documentation checks. Selection never skips the entire workflow.
+Since 2026-11-21 the repository keeps only core-path tests: NexBot Core with
+Agent mode (`server/personal-os`), its web UI (`src/personal`) and the contracts
+they share (`shared`), 156 files. The 1,037 other test files (the old OpenMausBot
+desktop server, its UI components and libraries, Electron, scripts, companion,
+enterprise, evals and Cloudflare workers) were deleted, with the CI jobs, smokes,
+evals and shard balancing that ran them. None of the 200 main runs from
+2026-10-20 to 2026-11-21 had passed: the static job failed first, so the test
+shards never ran, and releases ran the whole suite locally instead, more than an
+hour one file at a time.
+
+Deploys and releases do not run tests (AGENTS.md, "Shipping a change"): only the
+static checks below. CI runs the core tests after a push; a failure there is
+fixed afterwards and never holds a deploy.
+
+## Jobs
+
+- **`typecheck + lint`** (`static`): CI selection, locale catalogs, typecheck,
+  lint, the Electron syntax check and the production UI build.
+- **`core tests`**: `pnpm exec vitest run` on Ubuntu, one file at a time
+  (`vite.config.ts` keeps `fileParallelism: false`: the Core tests start real
+  servers and fake CLIs).
+- **`Kotlin tests + Android fixtures`** (`android-core`): advisory, only when
+  the change selects it. Runs the Kotlin and app suites, builds the debug APK
+  and compares the captured fixtures against a disposable Core.
+- **`CI`** (`gate`): passes when `static` and `core tests` passed, or when the
+  selection chose the docs-only path and `core tests` was skipped.
+
+## Selection
+
+`scripts/ci-scope.mjs` decides what runs:
 
 - Root Markdown files, Markdown under `docs/`, and `.github/FUNDING.yml` alone
-  do not run the runtime or Android jobs.
-- Any other change runs the runtime suite.
-- A change under `android/` runs the Kotlin protocol suite and the fixture
-  drift gate instead of the runtime suite.
+  do not run the core tests or the Android job.
+- Any other change runs the core tests.
+- A change under `android/` runs the Android job instead.
 - A change to the fixture capture, to CI selection itself, or to a workflow
-  runs both suites.
-- Main pushes, merge groups and manual runs always run all jobs. Empty or
-  unreadable PR diffs also fall back to all jobs.
+  runs both.
+- Main pushes, merge groups and manual runs always run everything. Empty or
+  unreadable PR diffs also fall back to everything.
 
-PR selection uses a local merge-base diff with rename detection disabled, so
-moving a source file into documentation still selects its original runtime
-path. There is no changed-files API truncation or new action dependency.
+## Concurrency
 
-The single `CI` gate keeps the existing required dependencies. It accepts a
-skipped runtime job only when static validation passed and explicitly selected
-the docs-only path. Failures, cancellations, missing selection and unexpected
-skips fail the gate. Existing advisory jobs remain advisory.
-
-The Android job (`android-core`) is advisory for now: it runs only when the
-change selects it and is not one of the gate's required jobs. It installs the
-platform and build tools the Compose module needs, runs the Kotlin and app
-suites, builds the debug APK and compares the captured fixtures against a
-disposable Core.
-
-The separate shared-terminal smoke workflow is manual-only: its tests already
-run in the Windows Vitest/Electron jobs.
-
-## Vitest shards
-
-The suite runs one file at a time, so a shard takes as long as its files added
-up. Vitest's own `--shard` deals out equal numbers of files, and in October
-2026 that put three of the four slowest e2e files in one shard: about 24
-minutes of tests on Windows against 13 to 16 for the others, and every PR
-waited for it. `scripts/testing/duration-sequencer.ts` deals the files out by
-recorded time instead, slowest first, each to the shard with the least time so
-far. The times are `scripts/testing/vitest-shard-weights.json`: each file's
-median seconds on the Windows runners, for every file over five seconds and
-every e2e file. A file not in it counts one second, or the median e2e time if
-it is an e2e file. Every file still runs exactly once, and each shard job logs
-a `duration-sequencer:` line with its share.
-
-Refresh the times from a few recent green runs when shards drift apart:
-
-```sh
-node scripts/testing/update-shard-weights.mjs --run <run id> --run <run id> --run <run id>
-```
-
-Deleting or renaming a test file in the weights fails
-`scripts/testing/duration-sequencer.test.ts` until its entry is removed or
-refreshed. A refresh moves some files to other shards; a failure that appears
-only after one is a real ordering dependency between test files.
-
-## macOS runners
-
-The account runs at most five macOS jobs at a time, and a PR used to queue
-seven (four Vitest shards, two smokes, the iOS job with its hour-long
-simulator suite). With 25 open PRs the macOS jobs waited a median of six and a
-half hours. Now:
-
-- A PR runs the Vitest shards on Ubuntu and Windows; main pushes, merge groups
-  and manual runs add the macOS shards. Only a couple of test blocks are
-  macOS-only.
-- Every PR's macOS checks are one job: the packaged-server smoke and the
-  Electron smokes.
-- `ci-stop-closed.yml` cancels a PR's CI run when the PR is merged or closed. PR runs share a group named by the PR number (`ci-pr-<n>`), never by `github.ref`: a merged PR's closed event reports the base branch as `github.ref`, which made every merge cancel main's CI (fixed Oct 3 2026).
-
-## Main and releases
-
-Main keeps one CI run going and one waiting. Each merge replaces the waiting
-run, and the running one always finishes, so a burst of merges costs two full
-runs instead of one per merge (fifteen queued behind each other in October
-2026, with the release waiting behind them).
-
-`release.yml` ships only a commit whose own `CI` check passed
-(`scripts/release-ci.mjs`, overlapping the platform builds). If main's run for
-that commit was replaced or never ran, the script starts CI on the commit in
-its own lane: a `release-ci/v<version>` branch that no merge can touch,
-deleted afterwards. A red verdict stops the release; re-run the failed CI jobs
-(`gh run rerun <id> --failed`), and the waiting release picks up the new
-attempt. A manual release can skip the wait with `ship_without_ci`, for
-emergencies only.
-
-NexBot releases (AGENTS.md, "Shipping a change") are built by hand from a
-pushed `main` commit and gate on `pnpm test:release`
-(`scripts/testing/release-gate.mjs`) instead of the whole suite: the static
-CI-selection and verification-record checks, then `vitest run --changed` against
-the last `nexbot-v*` tag, which runs the test files whose imports reach a
-changed file (all of them when `package.json` or the Vite config changed). The
-full suite stays CI's job. None of the 200 main runs from 2026-10-20 to
-2026-11-21 passed: the static job failed (lately on stale verification-record
-citations), so the shards never ran, and releases ran the full suite locally
-instead, more than an hour one file at a time.
+A new PR push supersedes that PR's older checks. Main keeps one run going and
+one waiting, so a burst of merges costs two runs instead of one per merge. A
+PR's group is named by its number, never by `github.ref`: a merged PR's closed
+event reports the base branch as `github.ref`, which made every merge cancel
+main's CI (fixed Oct 3 2026). `ci-stop-closed.yml` cancels a PR's run when the
+PR is merged or closed.
 
 ## Required check
 
