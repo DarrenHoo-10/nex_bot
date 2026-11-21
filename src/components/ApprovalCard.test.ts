@@ -578,7 +578,8 @@ describe("ApprovalCard for a change that applied on its own", () => {
     const at = new Date();
     at.setHours(14, 30, 0, 0);
     const markup = render(routineCard(createRoutineOperation, { name: "Check before dentist", schedule: { type: "once", at: at.getTime() } }));
-    expect(markup).toMatch(/Scout scheduled a routine: Check before dentist, today 2:30/);
+    // 12- or 24-hour, as the machine's locale formats it
+    expect(markup).toMatch(/Scout scheduled a routine: Check before dentist, today (2|14):30/);
     expect(markup).toContain(">Undo<");
     expect(markup).toContain(">Details<");
     // The cron expression and the approval box stay out of the line.

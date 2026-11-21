@@ -26,10 +26,10 @@ corepack pnpm exec tsc -b && corepack pnpm exec tsc -p tsconfig.server.json --no
 
 - **结果：69 个测试文件、1107 项测试全部通过**（6 skipped 为既有跳过项）。首次全量运行曾出现 6 项并发端口抖动失败（`fetch failed: bad port`），单独重跑与第二次全量均全绿。
 - 新增专项：
-  - `cli-agents/workbench.test.ts`（10 项）：运行轮次后按序排队投递、send 冲突返回 busy、停止暂停队列且迟到 END 不放行、引导命中运行轮次/超时返回 turn_changed、双击幂等与 requestId 冲突、双端并发改队首（先到者赢、后到者 409）、撤回终态、丢回执→uncertain→迟到回执对账→不重发、分支树（fork 深度上限、同名 requestId 幂等、改名版本冲突、归档/恢复/删除后子项上移、原生会话不动）、worktree 启动并绑定分支行。
-  - `cli-agents/schema.test.ts`（3 项）：迁移 55（合并时改号，main 的 53/54 已被连接器重建占用） 对旧形状库逐行拷贝、ZCode 行可写、state CHECK 与 items 外键级联保留、outbox 唯一约束。
-  - `cli-agents-node/zcode.test.ts`（11 项）：发现（live/idle/archived/deleted、host 路由）、死 pid、无库、转录分页（隐藏消息/工具部件跳过、before 边界）、marker、host 通道契约、harness 注册表（三家逐会话能力矩阵）。
-  - `cli-agents-node/device-git.test.ts`（4 项）：真实临时仓库的状态快照（分支/头/更改文件/增删行）、非 Git 目录 none、worktree 建/重试复用/已存在分支 detach 附着、非法分支名拒绝。
+  - `server/personal-os/cli-agents/workbench.test.ts`（10 项）：运行轮次后按序排队投递、send 冲突返回 busy、停止暂停队列且迟到 END 不放行、引导命中运行轮次/超时返回 turn_changed、双击幂等与 requestId 冲突、双端并发改队首（先到者赢、后到者 409）、撤回终态、丢回执→uncertain→迟到回执对账→不重发、分支树（fork 深度上限、同名 requestId 幂等、改名版本冲突、归档/恢复/删除后子项上移、原生会话不动）、worktree 启动并绑定分支行。
+  - `server/personal-os/cli-agents/schema.test.ts`（3 项）：迁移 55（合并时改号，main 的 53/54 已被连接器重建占用） 对旧形状库逐行拷贝、ZCode 行可写、state CHECK 与 items 外键级联保留、outbox 唯一约束。
+  - `server/personal-os/cli-agents-node/zcode.test.ts`（11 项）：发现（live/idle/archived/deleted、host 路由）、死 pid、无库、转录分页（隐藏消息/工具部件跳过、before 边界）、marker、host 通道契约、harness 注册表（三家逐会话能力矩阵）。
+  - `server/personal-os/cli-agents-node/device-git.test.ts`（4 项）：真实临时仓库的状态快照（分支/头/更改文件/增删行）、非 Git 目录 none、worktree 建/重试复用/已存在分支 detach 附着、非法分支名拒绝。
   - `src/personal/cli-agents/use-queue.test.ts`（6 项）：队列展示/撤回/原位编辑/暂停横幅/待确认条目无操作/运行中才可引导；编辑重发载入原文、以当前发送方式重发、取消恢复草稿。
 - 夹具回归：`node scripts/smoke-cli-agents.mjs --workbench --serve=18819` 启动成功（隔离 Core + 真实 herdr-core 设备进程 + 构建产物），评审入口可进；正式入口（不带 `workspace=nexagent-review`）经无头浏览器核对：会话树/设备/项目/Harness 图标来自 Core 数据、发送经工作台契约送达并出现在转录、Git 卡片走 `/api/cli-agents/sessions/git`（非 Git 目录正确显示"当前目录没有 Git 信息"）、"编辑并重发"入口出现、新建会话对话框显示真实工作树开关。夹具已停止、临时目录已删除、端口已释放。
 

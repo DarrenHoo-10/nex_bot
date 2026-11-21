@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, LoaderCircle, Plus } from "lucide-react";
 import type { ConnectorOAuthView } from "../../shared/personal-connectors";
 import { api, desktop } from "./api";
+import { copyText } from "../lib/copy-text";
 
 interface Flow { id: string; authorizationUrl?: string; userCode?: string; verificationUri?: string; expiresAt: number }
 function safeAuthorizationUrl(raw: string) {
@@ -76,7 +77,9 @@ export function GithubConnect({ connector, available, label = "连接 GitHub", v
   };
   const copyCode = async () => {
     if (!flow?.userCode) return;
-    try { await navigator.clipboard.writeText(flow.userCode); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* 剪贴板不可用时保持代码可见，用户可手动选择 */ }
+    // 剪贴板不可用时保持代码可见，用户可手动选择
+    if ((await copyText(flow.userCode)) !== "copied") return;
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
   const start = async () => {
     if (opening.current) return;

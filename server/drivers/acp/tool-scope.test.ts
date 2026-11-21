@@ -1,6 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { ensureDirs } from "../../config.ts";
@@ -12,6 +12,21 @@ import { acpNativeIncomingLogMessage } from "./core.ts";
 import { GrokAgentDriver, grokInheritedProfile, grokToolScopeProfile } from "./grok.ts";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "../../testing/fake-acp-cli.ts");
+// Grok reads every .grok/config.toml from the working directory up to the root. On Windows the temp folder sits
+// inside the user's real home (setup.ts only redirects HOME), so a fixture there would also read the real ~/.grok of
+// whoever runs the tests. Such a machine gets its fixtures in a folder at the drive root instead.
+const grokAbove = (directory: string): boolean => {
+  for (let at = directory; ; at = dirname(at)) {
+    if (existsSync(join(at, ".grok", "config.toml"))) return true;
+    if (dirname(at) === at) return false;
+  }
+};
+const scratch = (() => {
+  const temp = realpathSync.native(tmpdir());
+  if (!grokAbove(temp)) return temp;
+  const outside = join(parse(temp).root, "omb-test-scratch"); mkdirSync(outside, { recursive: true });
+  return outside;
+})();
 const directories: string[] = [];
 const instances: ProviderInstance[] = [];
 afterEach(async () => {
@@ -20,7 +35,7 @@ afterEach(async () => {
 });
 async function fixture(driver = GrokAgentDriver, environment: Record<string, string> = {}) {
   ensureDirs(); chmodSync(cli, 0o755);
-  const home = mkdtempSync(join(tmpdir(), "omb-acp-selection-")); directories.push(home);
+  const home = mkdtempSync(join(scratch, "omb-acp-selection-")); directories.push(home);
   mkdirSync(join(home, ".grok")); writeFileSync(join(home, ".grok/auth.json"), "{}");
   const dump = join(home, "dump.json"); const launches = join(home, "launches.txt");
   const instance = await driver.create({ instanceId: "selection", displayName: "Scope fixture", enabled: true, config: { cli, fullAuto: true }, environment: { HOME: home, USERPROFILE: home, FAKE_ACP_DUMP: dump, FAKE_ACP_LAUNCH_COUNT_FILE: launches, ...environment } });
@@ -58,7 +73,7 @@ it("intersects an inherited Grok profile rather than re-enabling its disabled to
 });
 
 it("reads the actual configured Grok profile and refuses unknown profile sources", () => {
-  const home = mkdtempSync(join(tmpdir(), "omb-grok-profile-")); directories.push(home);
+  const home = mkdtempSync(join(scratch, "omb-grok-profile-")); directories.push(home);
   const directory = join(home, ".grok"); mkdirSync(directory);
   const path = join(home, "profile.md");
   writeFileSync(path, '---\nname: reader\ndescription: Existing profile\ninjectDefaultTools: false\ntools: [read_file]\ndisallowedTools: [write]\n---\nKeep the owner instructions.\n');
@@ -84,7 +99,7 @@ it.each([
   'agent = { definition = PROFILE }',
   '[agent]\n"definition" = PROFILE',
 ])("preserves or refuses inherited restrictions in alternate TOML syntax: %s", text => {
-  const home = mkdtempSync(join(tmpdir(), "omb-grok-syntax-")); directories.push(home); mkdirSync(join(home, ".grok"));
+  const home = mkdtempSync(join(scratch, "omb-grok-syntax-")); directories.push(home); mkdirSync(join(home, ".grok"));
   const path = join(home, "reader.md");
   writeFileSync(path, '---\nname: reader\ndescription: Existing restriction\ntools: [read_file]\ndisallowedTools: [write]\n---\n');
   writeFileSync(join(home, ".grok/config.toml"), text.replace("PROFILE", JSON.stringify(path)) + "\n");
@@ -96,14 +111,14 @@ it.each([
 });
 
 it.each(["--tools=write", "--disallowed-tools read_file", "--agent-profile", "--agent-profile=reader.md --agent-profile=other.md"])("refuses ambiguous Grok CLI restrictions before overriding a profile: %s", flags => {
-  const home = mkdtempSync(join(tmpdir(), "omb-grok-cli-")); directories.push(home);
+  const home = mkdtempSync(join(scratch, "omb-grok-cli-")); directories.push(home);
   expect(() => grokInheritedProfile(`grok ${flags}`, { HOME: home }, home)).toThrow(/cannot be safely intersected/);
 });
 
 it("establishes the restricted Grok profile on the selected model without inheriting its default harness", async () => {
-  const rpc = join(mkdtempSync(join(tmpdir(), "omb-grok-rpc-")), "requests.json"); directories.push(dirname(rpc));
+  const rpc = join(mkdtempSync(join(scratch, "omb-grok-rpc-")), "requests.json"); directories.push(dirname(rpc));
   const f = await fixture(GrokAgentDriver, { FAKE_ACP_GROK_VERSION: "1.0.41", FAKE_ACP_SESSION_MODELS: "fake-acp-model", FAKE_ACP_RPC_DUMP: rpc });
-  await f.instance.adapter.sendTurn({ threadId: "pinned", text: "Must stay restricted", model: "fake-acp-model", toolScope: { allow: [] } });
+  await f.instance.adapter.sendTurn({ threadId: "pinned", cwd: dirname(f.dump), text: "Must stay restricted", model: "fake-acp-model", toolScope: { allow: [] } });
   await f.recorder.until(event => event.type === "turn.completed");
   const launch = JSON.parse(readFileSync(f.dump, "utf8"));
   expect(launch.env.GROK_AGENT).toBe("grok-build");
@@ -116,7 +131,7 @@ it("establishes the restricted Grok profile on the selected model without inheri
 
 it("refuses a restricted Grok prompt when its selected model cannot be confirmed", async () => {
   const f = await fixture(GrokAgentDriver, { FAKE_ACP_GROK_VERSION: "1.0.41" });
-  await f.instance.adapter.sendTurn({ threadId: "missing-model", text: "Must not run", model: "fake-acp-model", toolScope: { allow: [] } });
+  await f.instance.adapter.sendTurn({ threadId: "missing-model", cwd: dirname(f.dump), text: "Must not run", model: "fake-acp-model", toolScope: { allow: [] } });
   await f.recorder.until(event => event.type === "turn.completed");
   expect(f.recorder.events.some(event => event.type === "runtime.error" && /confirm.*selected model/.test(event.message))).toBe(true);
 });

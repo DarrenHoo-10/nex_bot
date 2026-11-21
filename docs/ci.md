@@ -87,6 +87,17 @@ deleted afterwards. A red verdict stops the release; re-run the failed CI jobs
 attempt. A manual release can skip the wait with `ship_without_ci`, for
 emergencies only.
 
+NexBot releases (AGENTS.md, "Shipping a change") are built by hand from a
+pushed `main` commit and gate on `pnpm test:release`
+(`scripts/testing/release-gate.mjs`) instead of the whole suite: the static
+CI-selection and verification-record checks, then `vitest run --changed` against
+the last `nexbot-v*` tag, which runs the test files whose imports reach a
+changed file (all of them when `package.json` or the Vite config changed). The
+full suite stays CI's job. None of the 200 main runs from 2026-10-20 to
+2026-11-21 passed: the static job failed (lately on stale verification-record
+citations), so the shards never ran, and releases ran the full suite locally
+instead, more than an hour one file at a time.
+
 ## Required check
 
 The `main-ci-gate` ruleset requires the single `CI` check (it replaced the

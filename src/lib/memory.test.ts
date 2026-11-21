@@ -98,7 +98,8 @@ describe("relativeTime", () => {
   });
 
   it("falls back to a date past a week and never goes negative", () => {
-    expect(relativeTime(now - 10 * 86_400_000, now)).toMatch(/Aug|Sep/);
+    // a short date in the machine's locale ("Aug 31", "8月31日")
+    expect(relativeTime(now - 10 * 86_400_000, now)).toMatch(/Aug|Sep|8月|9月/);
     expect(relativeTime(now + 60_000, now)).toBe("just now");
   });
 });

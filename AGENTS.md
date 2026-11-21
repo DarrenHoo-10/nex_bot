@@ -26,6 +26,12 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    and re-verify on the merged tree. Build everything from that pushed commit. If
    GitHub is unreachable, use the machine's proxy on git/`gh` commands only
    (`git -c http.proxy=…`, `HTTPS_PROXY=… gh`); never change global config.
+   Tests: the pre-push hook (lint, typecheck, locale) plus `pnpm test:release`
+   on the merged tree, which runs CI's static checks and only the tests related
+   to what changed since the last `nexbot-v*` tag (`git fetch origin --tags`
+   first). Do not run the full suite for a release: it takes over an hour
+   serially here, and CI runs it sharded on every push to `main`. After pushing,
+   check that run and fix what it finds; a release does not wait for it.
 2. **Core and web UI → Mac Air** (`ssh mac-air`; root `~/nexbot`). Since
    2026-11-14 production Core runs there; Tokyo's Core is retired, so never
    deploy to it. The launchd job `gui/<uid>/cn.nexorai.nexbot-core` runs

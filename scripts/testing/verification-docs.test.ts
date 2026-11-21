@@ -35,8 +35,14 @@ const ROUTES_DIR = join(ROOT, "server", "routes");
 const routeModules = readdirSync(ROUTES_DIR).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts")).sort();
 const serverSource = [join(ROOT, "server", "index.ts"), ...routeModules.map((name) => join(ROUTES_DIR, name))]
   .map((file) => readFileSync(file, "utf8")).join("\n");
-const personalSource = readFileSync(join(ROOT, "server", "personal-os", "index.ts"), "utf8");
-const hooksSource = readFileSync(join(ROOT, "server", "webhook-ingress.ts"), "utf8");
+// The Personal OS core also routes through its Agent-mode module and names its
+// OAuth callbacks in the provider modules.
+const personalSource = ["index.ts", "cli-agents/routes.ts", "github-provider.ts", "gmail-provider.ts"]
+  .map((file) => readFileSync(join(ROOT, "server", "personal-os", file), "utf8")).join("\n");
+// Webhooks arrive at the desktop server's ingress or at the Personal OS core.
+const hooksSource = `${readFileSync(join(ROOT, "server", "webhook-ingress.ts"), "utf8")}\n${personalSource}`;
+// Both also register whole subtrees: `url.pathname.startsWith("/hooks/github/")`.
+const prefixRoutes = (source: string) => [...source.matchAll(/startsWith\("(\/(?:api|hooks)\/[^"\n]+\/)"\)/g)].map((match) => match[1]!);
 const hostedSource = readFileSync(join(ROOT, "enterprise", "server", "workspace-access.ts"), "utf8");
 // Only constants named in the public handler's accepted-path guard are routes.
 // Outbound post("/api/handoff/...") calls belong to the identity service, not us.
@@ -79,6 +85,7 @@ describe("docs/verification recipes cite things that exist", () => {
       const path = route.replace(/[.,;:]+$/, "");
       if (hostedPublicRoutes.has(path)) return true;
       const source = path.startsWith("/hooks/") ? hooksSource : `${serverSource}\n${personalSource}`;
+      if (prefixRoutes(source).some((prefix) => path.startsWith(prefix))) return true;
       const segments = path.split("/").slice(1);
       const literal = segments.findIndex((segment) => PLACEHOLDER.test(segment));
       const quotes = ['"', "'"];

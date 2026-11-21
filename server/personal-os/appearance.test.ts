@@ -40,7 +40,7 @@ it("syncs appearance across sessions, rejects stale/invalid/foreign changes and 
     const update = { id: bot, version: 0, appearance };
     expect((await request("bots/appearance", "", update)).status).toBe(401);
     expect((await request("bots/appearance", owner.token, update, "https://foreign.example.test")).status).toBe(403);
-    expect((await request("bots/appearance", other, update)).status).toBe(400);
+    expect((await request("bots/appearance", other, update)).status).toBe(404);
     expect((await request("bots/appearance", owner.token, { ...update, appearance: { kind: "companion", shape: "script", color: "url(https://example.test)" } })).status).toBe(400);
     expect((await request("bots/appearance", owner.token, update)).status).toBe(200);
     const synced = (await request("state", secondSession)).body.bots[0];

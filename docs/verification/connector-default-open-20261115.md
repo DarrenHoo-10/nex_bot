@@ -43,8 +43,8 @@ rows or management UI.
   (pre-existing: the script's module path was never extended for the
   NexMarkdown package); the full xcodebuild covers that target.
 - Known pre-existing on `origin/main`, reproduced there without my changes:
-  `workspaces.test.ts` (404 vs 400 on foreign agents/input),
-  `image-models.test.ts` and `sender-device.test.ts`, and the
+  `server/personal-os/workspaces.test.ts` (404 vs 400 on foreign agents/input),
+  `server/personal-os/image-models.test.ts` and `server/personal-os/sender-device.test.ts`, and the
   `smoke-personal-workspace.mjs` renderer smoke times out at the composer
   wait after the composer-menu group (reproduced on a pristine rebuild of
   main). `feishu` and `stock-finance` flake only under full-suite parallel

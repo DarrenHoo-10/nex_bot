@@ -4,6 +4,7 @@ import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, Ch
 import type { CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { AGENT_LABEL, RECENT_MS, askedSession, forkParentKey, foldHistory, matchesTerms, moveProject, orderProjects, projectGroups, rememberProjects, sessionStatusLabel, sessionTone, sessionTitle, treeParents, type DeviceGroup } from "./session-model";
 import { searchSessions } from "./api";
+import { copyText } from "../../lib/copy-text";
 import {HarnessMark} from "./tokendance/HarnessMark";
 import { useReview } from "./WorkbenchReview";
 
@@ -339,7 +340,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       {dialog.action==="id"?<code>{dialog.row.nativeId}</code>:null}
       {dialog.action==="delete"||dialog.action==="archive"?<small>{review?"本次操作作用于隔离评审会话。子会话单独保留。":dialog.action==="archive"?"可在「已归档」中恢复。电脑上的原生会话不受影响。":"删除后子会话移到上一级；电脑上的原生会话不受影响。"}</small>:null}
       {error?<p role="alert">{error}</p>:null}
-      <footer><button type="button" autoFocus disabled={busy} onClick={dismissDialog}>关闭</button>{dialog.action==="id"?<button type="button" onClick={()=>void navigator.clipboard.writeText(dialog.row.nativeId).then(dismissDialog).catch(()=>setError("请选中 ID 复制"))}>复制 ID</button>:<button className={dialog.action==="delete"?"na-confirm-delete":"primary"} disabled={busy}>{busy?"处理中…":actions[dialog.action]}</button>}</footer>
+      <footer><button type="button" autoFocus disabled={busy} onClick={dismissDialog}>关闭</button>{dialog.action==="id"?<button type="button" onClick={()=>void copyText(dialog.row.nativeId).then(result=>result==="copied"?dismissDialog():setError("请选中 ID 复制"))}>复制 ID</button>:<button className={dialog.action==="delete"?"na-confirm-delete":"primary"} disabled={busy}>{busy?"处理中…":actions[dialog.action]}</button>}</footer>
     </form></div>,document.body)}
     {!dialog&&error?<small role="alert">{error}</small>:null}
   </nav>;

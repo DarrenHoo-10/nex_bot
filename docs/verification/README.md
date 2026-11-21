@@ -13,6 +13,8 @@
 
 - [Gmail connector catalog fix: production deploy (2026-11-15)](gmail-connector-catalog-fix-20261115.md)
 
+- [Connectors default-open: per-bot grants retired (2026-11-15)](connector-default-open-20261115.md)
+
 - [Agent 会话发布验收（0.9.35，2026-11-15）](agent-mode-release-20261115.md)
 
 - [助手重置和后台删除发布验收（2026-11-15）](assistant-lifecycle-release-20261115.md)

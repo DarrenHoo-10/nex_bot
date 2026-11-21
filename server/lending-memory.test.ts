@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -364,7 +364,15 @@ describe("a bot's memory and a lent Mac (server/lending-memory.ts)", () => {
       snapshot();
       runs.push(performance.now() - started);
     }
-    expect(Math.min(...runs)).toBeLessThan(process.platform === "win32" ? 250 : 100);
+    // A fixed bound fails on machines whose file system is slow for reasons of its own (an antivirus scanning the
+    // temp folder made 3,000 lstat calls take a second): compare with the same look-ups done bare, on this machine.
+    const bare: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now();
+      for (let t = 0; t < 3_000; t += 1) lstatSync(join(tasks, "bot1", `t${t}`));
+      bare.push(performance.now() - started);
+    }
+    expect(Math.min(...runs)).toBeLessThan(Math.max(process.platform === "win32" ? 250 : 100, 3 * Math.min(...bare) + 50));
     // …and the record stays small: only the files that exist are kept.
     const memory = createLendingMemory({ file: join(dir, "record.json"), files: snapshot, knownBots: () => ["bot1"] });
     memory.reconcile("bot1", false);

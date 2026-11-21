@@ -62,10 +62,12 @@ it('lets device.inventory report the client the user is messaging from, without 
   const fromMac = await ask(f, mac, '帮我读一下桌面上的笔记');
   expect(fromMac.result.currentClient).toEqual({ name: '合成 MacBook', deviceId: device.id });
   expect(fromMac.result.devices.find((item) => item.id === device.id)?.online).toBe(true);
-  expect(f.app.runtime.systemPrompt(fromMac.taskId)).not.toContain('currentClient');
-
   // A phone is a client but not a device: nothing to default to.
-  expect((await ask(f, phone, '手机上继续')).result.currentClient).toEqual({ name: '合成 Pixel · Android', deviceId: null });
+  const fromPhone = await ask(f, phone, '手机上继续');
+  expect(fromPhone.result.currentClient).toEqual({ name: '合成 Pixel · Android', deviceId: null });
+  // The tool brief names the currentClient field, but which client sent the message stays out of the prompt:
+  // the phone is not a device, so its name could only get there as the current client.
+  expect(f.app.runtime.systemPrompt(fromPhone.taskId)).not.toContain('合成 Pixel');
 
   // The device is still the Mac's while offline; the directory carries the online state.
   device.ws.terminate();

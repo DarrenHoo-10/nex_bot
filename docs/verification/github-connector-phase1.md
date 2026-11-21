@@ -15,7 +15,7 @@
 
 | 验证 | 命令/位置 | 结果 |
 | --- | --- | --- |
-| 连接器测试（GitHub 5 + Gmail 15 + MCP 13） | `pnpm vitest run server/personal-os/{github,gmail}-connectors.test.ts server/personal-os/connectors.test.ts` | 33/33 通过 |
+| 连接器测试（GitHub 5 + Gmail 15 + MCP 13） | `pnpm vitest run server/personal-os/github-connectors.test.ts server/personal-os/gmail-connectors.test.ts server/personal-os/connectors.test.ts` | 33/33 通过 |
 | 更广回归（app/service/feishu/stock-finance/broker-tool） | `pnpm vitest run …` | 全部通过 |
 | typecheck（前端 + server） | `pnpm typecheck` | 0 错误 |
 | NexClientKit 测试（含 GithubConnectorTests 7 项） | mac-air 临时目录 `swift test` | 252/252 通过，0 失败（245 既有 + 7 新增） |
