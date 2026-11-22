@@ -32,6 +32,8 @@ const fixture = vi.hoisted(() => ({
   updateNote: vi.fn(),
   deleteNote: vi.fn(),
   fetchModels: vi.fn(),
+  listDirs: vi.fn(),
+  uploadAttachment: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./api")>()), ...fixture }));
@@ -123,6 +125,26 @@ afterEach(async () => {
 });
 
 describe("session list", () => {
+  it("folds the pinned 进行中 section to its heading and remembers it", async () => {
+    await mount({ devices: [device()], sessions: [session({ nativeId: "r1", title: "在跑", state: "running" }), session({ nativeId: "w1", title: "等我", state: "waiting" })] });
+    const head = () => container.querySelector<HTMLButtonElement>(".na-active .na-section-head")!;
+    const pinned = () => [...container.querySelectorAll(".na-active .cli-row-title")].map((entry) => entry.textContent);
+    expect(pinned()).toEqual(["在跑", "等我"]);
+    await click(head());
+    expect(head().getAttribute("aria-expanded")).toBe("false");
+    expect(pinned()).toEqual([]);
+    // folded, it still counts them and says one waits
+    expect(head().textContent).toContain("2");
+    expect(head().querySelector(".na-dot[data-tone=waiting]")).toBeTruthy();
+    expect(localStorage.getItem("nexagent.activeFolded")).toBe("1");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount({ devices: [device()], sessions: [session({ nativeId: "r1", title: "在跑", state: "running" })] });
+    expect(head().getAttribute("aria-expanded")).toBe("false");
+    await click(head());
+    expect(pinned()).toEqual(["在跑"]);
+  });
+
   it("groups sessions by computer and project, identifies each harness and surfaces actionable states", async () => {
     await mount({
       devices: [device({ id: "dev1", name: "办公室电脑" }), device({ id: "dev2", name: "笔记本", online: false })],
@@ -134,11 +156,14 @@ describe("session list", () => {
     });
     const devices = [...container.querySelectorAll(".cli-device")];
     expect(devices.map((entry) => entry.querySelector("strong")?.textContent)).toEqual(["办公室电脑", "笔记本"]);
-    expect([...devices[0].querySelectorAll(".na-engine")].map((entry) => entry.getAttribute("title"))).toEqual(["Codex", "Claude Code"]);
+    expect([...devices[0].querySelectorAll(".na-engine")].map((entry) => entry.getAttribute("title"))).toEqual(["Codex · 运行中", "Claude Code · 等你处理"]);
+    // the two live sessions are pinned above the computers
+    expect([...container.querySelectorAll(".na-active .cli-row-title")].map((entry) => entry.textContent)).toEqual(["写测试", "修复登录"]);
+    expect([...container.querySelectorAll(".na-active .na-engine")].map((entry) => entry.getAttribute("data-tone"))).toEqual(["running", "waiting"]);
     expect([...devices[0].querySelectorAll(".na-folder strong")].map((entry) => entry.textContent)).toEqual(["beta", "alpha"]);
     expect(devices[0].querySelector(".na-project > .na-branch > .na-node .cli-row-title")?.textContent).toBe("写测试");
     expect(devices[0].querySelector("[data-group]")).toBeNull();
-    const chips = [...container.querySelectorAll(".cli-row .cli-chip")].map((entry) => entry.textContent);
+    const chips = [...container.querySelectorAll(".cli-device .cli-row .cli-chip")].map((entry) => entry.textContent);
     expect(chips).toEqual(["运行中", "等你处理", "电脑离线"]);
     expect(text()).toContain("选择一个会话");
   });
@@ -231,7 +256,7 @@ describe("session pane", () => {
     await pickModel("Opus");
     // stops: 默认, low, medium, high, …
     await pickEffort(3);
-    expect(document.querySelector(".na-model-menu [role=status]")?.textContent).toBe("继续会话时生效");
+    expect(document.querySelector(".na-model-menu .na-model-note")?.textContent).toBe("继续会话时生效");
     expect(container.querySelector('button[aria-label="模型设置"]')?.textContent).toContain("高");
     const input = container.querySelector("textarea")!;
     await act(async () => {
@@ -257,6 +282,25 @@ describe("session pane", () => {
     expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model sonnet", "下一步"]);
   });
 
+  it("shows how full the context is as a ring, with the numbers when opened", async () => {
+    await mount({ devices: [device()], sessions: [session({ context: { used: 776256, window: 1000000 } })] }, "dev1:claude:s1");
+    const ring = container.querySelector<HTMLButtonElement>("button[aria-label=上下文用量]")!;
+    expect(ring.getAttribute("data-level")).toBe("high");
+    expect(ring.getAttribute("title")).toBe("上下文 78% · 77.6 万 / 100 万");
+    expect(ring.querySelector(".na-context-fill")).toBeTruthy();
+    await click(ring);
+    expect(container.querySelector(".na-context-detail strong")?.textContent).toBe("78%");
+    expect(container.querySelector(".na-context-detail small")?.textContent).toBe("已用 77.6 万 / 100 万 tokens");
+  });
+
+  it("says there is no usage yet before the session has answered", async () => {
+    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+    const ring = container.querySelector<HTMLButtonElement>("button[aria-label=上下文用量]")!;
+    expect(ring.getAttribute("data-level")).toBe("none");
+    await click(ring);
+    expect(container.querySelector(".na-context-detail small")?.textContent).toBe("还没有记录：会话回复过一次后显示");
+  });
+
   it("lists the models the CLI offers on the computer, as NexBot's menu does", async () => {
     fixture.fetchModels.mockResolvedValue({
       current: "auto/claude-opus-5-5[1m]",
@@ -272,7 +316,7 @@ describe("session pane", () => {
     const rows = [...document.querySelectorAll(".na-model-menu [role=option] .model-menu-name")].map((entry) => entry.textContent);
     expect(rows).toEqual(["默认", "Opus", "Claude Opus 5.5 · routing group"]);
     // the default row names what the CLI's settings choose
-    expect(document.querySelector(".na-model-menu [role=option] .model-menu-tag")?.textContent).toBe("Claude Opus 5.5 · routing group");
+    expect(document.querySelector(".na-model-menu [role=option] small")?.textContent).toBe("Claude Opus 5.5 · routing group");
     await pickModel("Claude Opus 5.5 · routing group");
     // that model takes three levels: 默认 and its own
     await click(container.querySelector('button[aria-label="模型设置"]'));
@@ -364,7 +408,26 @@ describe("session pane", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await flush();
-    expect(container.querySelector(".na-progress")?.textContent).toBe("已送达，等待回复…");
+    expect(container.querySelector(".na-working-caption")?.textContent).toBe("已送达，等待回复…");
+  });
+
+  it("names the agent once per reply and shows its work as dots in the conversation", async () => {
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [
+      { kind: "user", id: "u1", ts: 1, text: "第一问" },
+      { kind: "assistant", id: "a1", ts: 2, text: "先看看" },
+      { kind: "tool", id: "t1", ts: 3, name: "Read", input: "a.ts", status: "ok" },
+      { kind: "assistant", id: "a2", ts: 4, text: "看完了" },
+      { kind: "user", id: "u2", ts: 5, text: "第二问" },
+      { kind: "assistant", id: "a3", ts: 6, text: "继续" },
+    ] });
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
+    const replies = [...container.querySelectorAll("[data-testid=cli-assistant]")];
+    expect(replies.map((reply) => !!reply.querySelector(".na-byline"))).toEqual([true, false, true]);
+    // the running turn already has a reply: the dots follow it without another name, inside the transcript
+    const working = container.querySelector("[data-testid=cli-transcript] [data-testid=cli-working]")!;
+    expect(working.querySelector(".na-byline")).toBeNull();
+    expect(working.querySelectorAll(".na-working-dots > span")).toHaveLength(3);
+    expect(working.querySelector(".na-working-caption")?.textContent).toBe("执行中");
   });
 
   it("does not claim delivery when the computer could not see the message arrive", async () => {
@@ -377,7 +440,7 @@ describe("session pane", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await flush();
-    expect(container.querySelector(".na-progress")?.textContent).toBe("已发送，等待会话接收…");
+    expect(container.querySelector(".na-working-caption")?.textContent).toBe("已发送，等待会话接收…");
     expect(container.querySelector("[data-testid=cli-composer-note]")?.textContent).toBe("已发送，未确认");
   });
 
@@ -391,7 +454,7 @@ describe("session pane", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await flush();
-    expect(container.querySelector(".na-progress")).toBeNull();
+    expect(container.querySelector(".na-working")).toBeNull();
   });
 
   it("renders the transcript the Core returned", async () => {
@@ -416,76 +479,104 @@ it("opens attachable sessions directly in chat without subscribing to terminal o
 });
 
 describe("new session", () => {
-  it("closes at once and shows the new session with its first message while it starts", async () => {
+  const ALPHA = "D:\\work\\alpha";
+  const listing = (path: string) => path === ""
+    ? { path: "", exists: true, entries: [{ name: "D:\\", path: "D:\\" }] }
+    : path === ALPHA ? { path: ALPHA, parent: "D:\\work", exists: true, git: true, entries: [{ name: "src", path: ALPHA + "\\src" }] }
+    : path === "D:\\work" ? { path: "D:\\work", parent: "D:\\", exists: true, entries: [{ name: "alpha", path: ALPHA, git: true }, { name: "beta", path: "D:\\work\\beta" }] }
+    : { path, parent: "D:\\work", exists: false, entries: [] };
+  const capable = () => device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models", "dirs"] } });
+  const typeInto = async (element: HTMLInputElement | HTMLTextAreaElement, value: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value")!.set!.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const openNew = async () => {
+    await click(container.querySelector(".na-new-session"));
+    await flush();
+    return container.querySelector("[data-testid=cli-new-session]")!;
+  };
+  beforeEach(() => { fixture.listDirs.mockReset(); fixture.listDirs.mockImplementation(async (_device: string, path: string) => listing(path)); });
+
+  it("opens in the pane, not a dialog, and shows the session with its first message while it starts", async () => {
     let started!: (value: { key: string }) => void;
     fixture.startSession.mockReturnValue(new Promise((resolve) => { started = resolve; }));
-    await mount({ devices: [device()], sessions: [session({ cwd: "D:\\work\\alpha" })] });
-    await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
-    const input = container.querySelector<HTMLInputElement>(".cli-dialog input")!;
-    const type = async (value: string) => act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await type("relative/path");
-    expect(container.querySelector(".cli-dialog [role=alert]")?.textContent).toBe("需要绝对路径");
-    expect(container.querySelector<HTMLButtonElement>(".cli-dialog button[type=submit]")!.disabled).toBe(true);
-    await click(button("alpha"));
-    const prompt = container.querySelector<HTMLTextAreaElement>('.cli-dialog textarea[aria-label="第一条消息"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "修一下登录页");
-      prompt.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => { container.querySelector(".cli-dialog")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
-    // no waiting on the dialog: the session pane shows the question and that it is being handled
+    await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    expect(page).toBeTruthy();
     expect(container.querySelector("[role=dialog]")).toBeNull();
-    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", "D:\\work\\alpha", {});
+    // the newest folder of that computer is chosen
+    expect(page.querySelector("button[aria-label=工作目录]")?.textContent).toContain("alpha");
+    await typeInto(page.querySelector("textarea")!, "修一下登录页");
+    await act(async () => { page.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    expect(container.querySelector("[data-testid=cli-new-session]")).toBeNull();
+    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", ALPHA, {});
     const pane = container.querySelector("[data-testid=cli-launch]")!;
     expect(pane.querySelector(".cli-bubble")?.textContent).toBe("修一下登录页");
-    expect(pane.querySelector(".na-progress")?.textContent).toBe("处理中…");
-    expect(container.querySelector(".cli-side")?.textContent).toContain("修一下登录页");
+    expect(pane.querySelector("[data-testid=cli-working] .na-working-caption")?.textContent).toBe("执行中");
 
     await act(async () => { started({ key: "dev1:claude:new1" }); });
     await flush();
     expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:new1", "修一下登录页", expect.objectContaining({ delivery: "send" }));
-    // the device lists the session: its own pane takes over, showing the message until the records hold it
     socket.open();
-    await act(async () => { socket.push({ type: "list.delta", upserts: [session({ nativeId: "new1", cwd: "D:\\work\\alpha", state: "running" })], removes: [] }); });
+    await act(async () => { socket.push({ type: "list.delta", upserts: [session({ nativeId: "new1", cwd: ALPHA, state: "running" })], removes: [] }); });
     await flush();
     expect(container.querySelector("[data-testid=cli-launch]")).toBeNull();
     expect(container.querySelector("[data-testid=cli-user-echo] .cli-bubble")?.textContent).toBe("修一下登录页");
     expect(localStorage.getItem("nexbot.cliSelected")).toBe("dev1:claude:new1");
   });
 
-  it("names a new worktree nexagent/<random> unless the user changes it", async () => {
-    fixture.startSession.mockResolvedValue({ key: "dev1:claude:new2" });
-    await mount({ devices: [device()], sessions: [session({ cwd: "D:\\work\\alpha" })] });
-    await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
-    await click(button("alpha"));
-    await act(async () => { container.querySelector<HTMLInputElement>(".na-worktree-switch input")!.click(); });
-    const branch = container.querySelector<HTMLInputElement>('input[aria-label="分支名称"]')!;
-    expect(branch.value).toMatch(/^nexagent\/[a-z0-9]{6}$/);
-    const typeBranch = async (value: string) => act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(branch, value);
-      branch.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await typeBranch("nexagent/login fix");
-    expect(container.querySelector(".cli-dialog [role=alert]")?.textContent).toBe("分支名称不合法");
-    expect(container.querySelector<HTMLButtonElement>(".cli-dialog button[type=submit]")!.disabled).toBe(true);
-    await typeBranch("nexagent/login-fix");
-    await act(async () => { container.querySelector(".cli-dialog")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+  it("browses up and down, and creates a typed folder that does not exist", async () => {
+    fixture.startSession.mockResolvedValue({ key: "dev1:claude:new4" });
+    await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    await click(page.querySelector("button[aria-label=工作目录]"));
     await flush();
-    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", "D:\\work\\alpha", expect.objectContaining({ worktreeBranch: "nexagent/login-fix", requestId: expect.any(String) }));
-    // no first message: nothing is sent
+    const menu = () => document.querySelector(".na-dir-menu")!;
+    const names = () => [...menu().querySelectorAll(".na-dir-row .na-dir-name")].map((row) => row.textContent);
+    await flush();
+    expect(names()).toEqual(["src"]);
+    await click(menu().querySelector("button[aria-label=上一级]"));
+    await flush();
+    expect(names()).toEqual(["alpha", "beta"]);
+    // down again, then a name that is not there becomes a new folder
+    await click([...menu().querySelectorAll<HTMLButtonElement>(".na-dir-main")].find((button) => button.textContent?.includes("beta"))!);
+    await flush();
+    expect(fixture.listDirs).toHaveBeenLastCalledWith("dev1", "D:\\work\\beta");
+    await click(menu().querySelector("button[aria-label=上一级]"));
+    await flush();
+    await typeInto(menu().querySelector("input")!, "gamma");
+    expect(names()).toEqual(["新建文件夹 gamma"]);
+    await act(async () => { menu().querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    expect(page.querySelector("button[aria-label=工作目录]")?.textContent).toContain("gamma新建");
+    await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", "D:\\work\\gamma", { createDir: true });
+  });
+
+  it("offers a worktree for a Git folder, named nexagent/<random> unless changed", async () => {
+    fixture.startSession.mockResolvedValue({ key: "dev1:claude:new2" });
+    await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    await flush();
+    await click([...page.querySelectorAll("button")].find((button) => button.textContent === "工作树")!);
+    const branch = document.querySelector<HTMLInputElement>("input[aria-label=新分支名称]")!;
+    expect(branch.value).toMatch(/^nexagent\/[a-z0-9]{6}$/);
+    await typeInto(branch, "nexagent/login fix");
+    expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(true);
+    await typeInto(branch, "nexagent/login-fix");
+    await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", ALPHA, expect.objectContaining({ worktreeBranch: "nexagent/login-fix", requestId: expect.any(String) }));
     expect(fixture.sendMessage).not.toHaveBeenCalled();
   });
 
   it("keeps a failed start on the pane with a retry that reuses the worktree request", async () => {
     fixture.startSession.mockRejectedValueOnce(new CliApiError("工作树已存在", "invalid", 400, "工作树已存在")).mockResolvedValue({ key: "dev1:claude:new3" });
-    await mount({ devices: [device()], sessions: [session({ cwd: "D:\\work\\alpha" })] });
-    await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
-    await click(button("alpha"));
-    await act(async () => { container.querySelector<HTMLInputElement>(".na-worktree-switch input")!.click(); });
-    await act(async () => { container.querySelector(".cli-dialog")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    await flush();
+    await click([...page.querySelectorAll("button")].find((button) => button.textContent === "工作树")!);
+    await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();
     expect(container.querySelector("[data-testid=cli-launch] [role=alert]")?.textContent).toContain("工作树已存在");
     await click(button("重试"));
@@ -495,11 +586,29 @@ describe("new session", () => {
     expect(second.worktreeBranch).toBe(first.worktreeBranch);
   });
 
+  it("is the same message box: files picked with + go to the computer once the session runs", async () => {
+    fixture.startSession.mockResolvedValue({ key: "dev1:claude:new5" });
+    fixture.uploadAttachment.mockReset();
+    fixture.uploadAttachment.mockResolvedValue({ path: "D:/work/alpha/.nexbot/shot.png" });
+    await mount({ devices: [device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models", "dirs", "attach"] } })], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    expect(page.querySelector("[data-testid=cli-composer] .na-add-trigger")).toBeTruthy();
+    const picker = page.querySelector<HTMLInputElement>("input[aria-label=选择图片]")!;
+    Object.defineProperty(picker, "files", { configurable: true, value: [new File([new Uint8Array([137, 80])], "shot.png", { type: "image/png" })] });
+    await act(async () => { picker.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(page.querySelector(".na-file-chip")?.textContent).toContain("shot.png");
+    await typeInto(page.querySelector("textarea")!, "看看这张图");
+    await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(fixture.uploadAttachment).toHaveBeenCalledWith("dev1:claude:new5", expect.any(File));
+    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:new5", "看看这张图\n\n图片：shot.png\nD:/work/alpha/.nexbot/shot.png", expect.objectContaining({ delivery: "send" }));
+  });
+
   it("names why a computer cannot start a session", async () => {
     await mount({ devices: [device({ online: false })], sessions: [] });
-    await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
-    expect(container.querySelector(".cli-dialog [role=status]")?.textContent).toBe("电脑离线");
-    expect(container.querySelector<HTMLButtonElement>(".cli-dialog button[type=submit]")!.disabled).toBe(true);
+    const page = await openNew();
+    expect(page.querySelector(".na-new-path")?.textContent).toBe("电脑离线");
+    expect(page.querySelector<HTMLButtonElement>("button[aria-label=发送]")!.disabled).toBe(true);
   });
 });
 

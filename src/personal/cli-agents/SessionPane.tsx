@@ -3,7 +3,7 @@
 // queues or steers, stopping pauses the outbox in Core, and edit-and-resend
 // records the revised message.
 import { useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, List, LoaderCircle, MessageSquare, Share2, SquareTerminal } from "lucide-react";
+import { ArrowLeft, List, MessageSquare, Share2, SquareTerminal } from "lucide-react";
 import type { CliItem, CliAnswerDecision, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
@@ -81,8 +81,12 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     const timer = setTimeout(() => setSlow(true), 20_000);
     return () => clearTimeout(timer);
   }, [awaiting]);
-  const progress = awaiting ? (awaiting.fresh ? "正在处理…" : awaiting.resuming ? "正在恢复会话…" : awaiting.unconfirmed ? "已发送，等待会话接收…" : "已送达，等待回复…")
-    : session.online && session.state === "running" ? "正在处理…" : "";
+  const progress = awaiting ? (awaiting.fresh ? "执行中" : awaiting.resuming ? "正在恢复会话…" : awaiting.unconfirmed ? "已发送，等待会话接收…" : "已送达，等待回复…")
+    : session.online && session.state === "running" ? "执行中" : "";
+  const working = progress && !compact ? {
+    label: progress,
+    action: slow && onTerminalOpen && canAttach(session) ? <button type="button" className="text-button" onClick={onTerminalOpen}><SquareTerminal size={12}/>打开远程终端</button> : undefined,
+  } : undefined;
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
     const known = new Set(items.map((item) => item.id));
@@ -157,16 +161,12 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView echo={echo} onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView echo={echo} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
         </div>}
       </div>
-      {progress && !compact ? <div className="na-progress" role="status">
-        <LoaderCircle className="na-busy-icon" size={14}/><span>{progress}</span>
-        {slow && onTerminalOpen && canAttach(session) ? <button type="button" className="text-button" onClick={onTerminalOpen}><SquareTerminal size={13}/>打开远程终端</button> : null}
-      </div> : null}
       <Composer
         session={session} notes={notes} onNotes={updateNotes}
         features={features} launch={launch} onLaunch={chooseLaunch}

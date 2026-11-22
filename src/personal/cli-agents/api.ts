@@ -8,6 +8,7 @@ import {
   isCliErrorCode,
   parseCliKey,
   parseCliModelCatalog,
+  parseCliDirListing,
   parseCliDeviceView,
   parseCliItems,
   parseCliRequestView,
@@ -19,6 +20,7 @@ import {
   type CliItem,
   type CliLaunchOptions,
   type CliModelCatalog,
+  type CliDirListing,
   type CliAnswerDecision,
   type CliRequestView,
   type CliSessionKey,
@@ -90,9 +92,10 @@ export async function fetchItems(key: CliSessionKey, before?: string): Promise<{
 
 /** `parentId` binds the started session to a pending branch row; `forkFrom` makes it a real context fork of that session (same computer and tool).
  * `model` / `effort` (see CLI_MODELS / CLI_EFFORTS) need a computer whose capability lists `launchOptions`. */
-export const startSession = (deviceId: string, engine: CliEngine, cwd: string, options: { worktreeBranch?: string; requestId?: string; parentId?: string; forkFrom?: CliSessionKey } & CliLaunchOptions = {}) =>
+export const startSession = (deviceId: string, engine: CliEngine, cwd: string, options: { worktreeBranch?: string; requestId?: string; parentId?: string; forkFrom?: CliSessionKey; createDir?: boolean } & CliLaunchOptions = {}) =>
   call<{ key: CliSessionKey; cwd?: string }>("/start", {
     deviceId, engine, cwd,
+    ...(options.createDir ? { createDir: true } : {}),
     ...(options.worktreeBranch ? { worktreeBranch: options.worktreeBranch } : {}),
     ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.parentId ? { parentId: options.parentId } : {}),
@@ -103,6 +106,14 @@ export const continueSession = (key: CliSessionKey, options: CliLaunchOptions = 
 
 function launchBody(options: CliLaunchOptions): CliLaunchOptions {
   return { ...(options.model ? { model: options.model } : {}), ...(options.effort ? { effort: options.effort } : {}) };
+}
+
+/** The sub-folders of a folder on a computer; "" lists its drives and home folder. */
+export async function listDirs(deviceId: string, path: string): Promise<CliDirListing> {
+  const data = await call<unknown>(`/dirs?deviceId=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(path)}`, undefined, "GET");
+  const listing = parseCliDirListing(data);
+  if (!listing) throw new CliApiError("目录格式不对");
+  return listing;
 }
 
 /** A computer's model lists, read again after this long (the CLI's settings may change). */

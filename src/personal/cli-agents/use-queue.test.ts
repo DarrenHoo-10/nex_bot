@@ -17,6 +17,8 @@ const area = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-l
 const queueBox = () => container.querySelector<HTMLTextAreaElement>("textarea[aria-label=编辑排队消息]")!;
 const sendButton = () => container.querySelector<HTMLButtonElement>("button[aria-label=发送]")!;
 const buttons = (label: string) => [...container.querySelectorAll("button")].filter((b) => b.getAttribute("aria-label") === label || b.textContent?.trim() === label);
+/** the queued card's own icon buttons (the send-mode toggle has a 引导 too) */
+const queued = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(`.na-queued button[aria-label="${label}"]`)];
 
 const entry = (over: Partial<CliQueue["entries"][number]> = {}): CliQueue["entries"][number] => ({
   id: "e1", seq: 1, text: "排队的消息", status: "pending", version: 1, createdAt: 1, updatedAt: 1, ...over,
@@ -55,8 +57,11 @@ describe("the real queue under the composer", () => {
   it("shows queued entries with withdraw and steer-now, and the paused banner", async () => {
     const onQueueWithdraw = vi.fn(async () => {});
     await show({ queue: queue(), onQueueWithdraw });
-    expect(container.textContent).toContain("排队 1 · 排队的消息");
-    await act(async () => { buttons("撤回")[0].click(); });
+    expect(container.querySelector(".na-queued-label")?.textContent).toBe("排队 1");
+    expect(container.querySelector(".na-queued-text")?.textContent).toBe("排队的消息");
+    // the actions sit together at the end of the card
+    expect([...container.querySelectorAll(".na-queued .na-queued-actions button")].map((button) => [button.getAttribute("aria-label"), button.textContent])).toEqual([["撤销", ""]]);
+    await act(async () => { queued("撤销")[0].click(); });
     expect(onQueueWithdraw).toHaveBeenCalledWith("e1", 1);
     expect(container.textContent).not.toContain("队列已暂停");
     await show({ queue: queue({ paused: true, pauseReason: "stopped" }), onQueueWithdraw });
@@ -79,16 +84,16 @@ describe("the real queue under the composer", () => {
   it("an uncertain entry says so and offers no actions", async () => {
     await show({ queue: queue({ entries: [entry({ status: "uncertain" })] }) });
     expect(container.textContent).toContain("待确认");
-    expect(buttons("撤回")).toHaveLength(0);
-    expect(buttons("立即引导")).toHaveLength(0);
+    expect(queued("撤销")).toHaveLength(0);
+    expect(queued("引导")).toHaveLength(0);
   });
 
   it("steering appears only while the session runs", async () => {
     const onQueueSteer = vi.fn(async () => {});
     await show({ queue: queue(), onQueueSteer });
-    expect(buttons("立即引导")).toHaveLength(1);
+    expect(queued("引导")).toHaveLength(1);
     await show({ queue: queue(), onQueueSteer, session: session({ nativeId: "idle1", state: "idle" }) });
-    expect(buttons("立即引导")).toHaveLength(0);
+    expect(queued("引导")).toHaveLength(0);
   });
 });
 

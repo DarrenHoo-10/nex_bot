@@ -9,12 +9,13 @@ import type { CliAnswerDecision, CliDeviceView, CliRequestView, CliSessionKey, C
 import { desktop } from "../api";
 import { answerRequest, cliErrorText, fetchSnapshot, hideSession } from "./api";
 import { ForkDialog, type CliBotChoice } from "./ForkDialog";
-import { NewSessionDialog } from "./NewSessionDialog";
+import { NewSessionComposer } from "./NewSessionComposer";
+import { apiDirectorySource } from "./directory-source";
 import { LaunchPane } from "./LaunchPane";
 import { isLaunchKey, launchRow, useLaunches } from "./use-launches";
 import { newRequests, newlyWaiting, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
 import { pendingCounts, pendingViews } from "./requests";
-import { groupSessions, waitingCount } from "./session-model";
+import { groupSessions, recentCwds, waitingCount } from "./session-model";
 import { useWorkbenchTree } from "./use-workbench";
 import type { WorkbenchMeta } from "./SessionList";
 import { archiveWorkbenchSession, branchSession, deleteWorkbenchSession, renameWorkbenchSession, startSession, type WorkbenchRef } from "./api";
@@ -209,6 +210,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
 
   const select = useCallback((key: CliSessionKey | null) => {
     didSelect.current=true;
+    setCreating(null);
     setSelectedKey(key);
     // a session still starting has no key that outlives the page
     if (!isLaunchKey(key)) writeSelected(key);
@@ -223,6 +225,11 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
   }, [launcher.launches, sessions]);
   const groups = useMemo(() => groupSessions(devices, listed, true), [devices, listed]);
   const launching = launcher.launches.find((launch) => launch.key === selectedKey) ?? null;
+  const devicesRef = useRef(devices);
+  devicesRef.current = devices;
+  const dirSource = useCallback((deviceId: string) => apiDirectorySource(deviceId, () => devicesRef.current.find((device) => device.id === deviceId)?.cliAgents?.features), []);
+  const recentFor = useCallback((deviceId: string) => recentCwds(sessions, deviceId), [sessions]);
+  const create = useCallback((next: { deviceId?: string; cwd?: string }) => { setCreating(next); setMobileView("pane"); }, []);
   // the real row took over: the pane follows it
   useEffect(() => {
     const moved = launcher.done.find((launch) => launch.key === selectedKey);
@@ -301,13 +308,14 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
         }}
         onSelect={select}
         reloadSessions={reload}
-        onNew={(deviceId, cwd) => setCreating({ deviceId, cwd })}
+        onNew={(deviceId, cwd) => create({ deviceId, cwd })}
+        onCreate={() => create({ deviceId: selected?.deviceId, cwd: selected?.cwd })}
       />
     </>
   );
   // the list is rendered in exactly one place: the app sidebar on wide screens, its own column otherwise
   const slotted = typeof sidebar === "function" && sidebarList;
-  const sidebarNode = typeof sidebar === "function" ? sidebar({ list: slotted ? list : null, onCreate: () => setCreating({ deviceId: selected?.deviceId }) }) : sidebar;
+  const sidebarNode = typeof sidebar === "function" ? sidebar({ list: slotted ? list : null, onCreate: () => create({ deviceId: selected?.deviceId, cwd: selected?.cwd }) }) : sidebar;
   const linkText = status === "connecting" ? "正在连接" : status === "reconnecting" ? "正在重新连接" : status === "closed" ? "连接已断开" : "";
   return (
     <div className="workspace-stage na-stage" data-shell={desktop?.mode === "client" ? "1" : "0"} data-dark={dark ? "1" : "0"}>
@@ -329,7 +337,18 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
           <div className="cli-body" data-side={sideChats.selected?"open":undefined}>
             {slotted ? null : <aside className="cli-side glass" aria-busy={!loaded}>{list}</aside>}
             <div className="cli-content glass">
-              {launching ? (
+              {creating ? (
+                <NewSessionComposer
+                  key={`${creating.deviceId ?? ""}\n${creating.cwd ?? ""}`}
+                  devices={devices}
+                  initialDeviceId={creating.deviceId}
+                  initialCwd={creating.cwd}
+                  recents={recentFor}
+                  source={dirSource}
+                  onBack={() => { setCreating(null); setMobileView("list"); }}
+                  onLaunch={(request) => select(launcher.launch(request).key)}
+                />
+              ) : launching ? (
                 <LaunchPane key={launching.id} launch={launching} onBack={() => setMobileView("list")}
                   onRetry={() => launcher.retry(launching.id)}
                   onDismiss={() => { launcher.dismiss(launching.id); if (launching.target) select(launching.target); else select(null); }}/>
@@ -337,7 +356,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                 <SessionPane
                   key={selected.key}
                   session={selected}
-                  title={listMeta.get(selected.key)?.title}
+                  title={listMeta.get(selected.key)?.title || (selected.title.trim() ? undefined : launcher.echo(selected.key)?.text.split("\n")[0])}
                   onTerminalOpen={sideChats.openTerminal}
                   onSideOpen={canSide(selected)?(q,m)=>sideChats.open(selected,q,m):undefined}
                   sideCount={sideChats.selected?0:sideChats.tabs.filter(t=>t.id!==sideChats.terminalId).length}
@@ -355,7 +374,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                 <div className="cli-placeholder">选择一个会话</div>
               )}
             </div>
-            {sideChats.selected && selected && <aside className="na-side" aria-label="右侧工作区">
+            {sideChats.selected && selected && !creating && <aside className="na-side" aria-label="右侧工作区">
               <header className="na-side-tabs"><div className="na-tab-strip" role="tablist" aria-label="右侧工作区" onKeyDown={e=>{
                 if(!(e.target instanceof HTMLButtonElement) || e.target.getAttribute("role")!=="tab")return;
                 if(!["ArrowLeft","ArrowRight","Home","End"].includes(e.key))return;
@@ -378,16 +397,6 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
           </div>
         </main>
       </div>
-      {creating ? (
-        <NewSessionDialog
-          devices={devices}
-          sessions={sessions}
-          initialDeviceId={creating.deviceId}
-          initialCwd={creating.cwd ?? (selected?.deviceId === creating.deviceId ? selected?.cwd : undefined)}
-          onClose={() => setCreating(null)}
-          onLaunch={(request) => { setCreating(null); select(launcher.launch(request).key); }}
-        />
-      ) : null}
       {forking && bots && onOpenTopic ? (
         <ForkDialog
           session={forking}

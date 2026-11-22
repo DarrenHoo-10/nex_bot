@@ -851,6 +851,43 @@ describe("search, launch options and attachments", () => {
     expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", model: "auto/claude-opus-5-5[1m]" });
   });
 
+  it("passes each session's context usage to the page, and a change of usage alone", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "context", { cap: FULL });
+    device.sessions([wire("c1", { context: { used: 5100, window: 200000 } }), wire("c2")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 2, "listed");
+    const byKey = () => new Map(f.app.cliHub.list().sessions.map((session) => [session.nativeId, session]));
+    expect(byKey().get("c1")?.context).toEqual({ used: 5100, window: 200000 });
+    expect(byKey().get("c2")?.context).toBeUndefined();
+    // the next turn: only the usage moved, and it still reaches the page
+    device.sessions([wire("c1", { context: { used: 90000, window: 200000 } })]);
+    await until(() => byKey().get("c1")?.context?.used === 90000, "usage updated");
+  });
+
+  it("lists a computer's folders and starts in a folder it creates, and refuses an executor that cannot", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "dirs", { cap: { ...FULL, features: [...FULL.features, "dirs"] } });
+    const old = await connectDevice(f, "dirs-old", { cap: FULL });
+    const folder = { path: "C:\\proj", parent: "C:\\", exists: true, git: true, entries: [{ name: "src", path: "C:\\proj\\src" }, { name: "bad", path: "relative" }] };
+    device.onOp = (message) => message.op === "dirs" ? { ok: true, result: folder }
+      : message.op === "start" ? { ok: true, result: { ref: "claude:new7", terminal: "t" } } : defaultOp(message);
+    const listed = await f.call(`cli-agents/dirs?deviceId=${device.id}&path=${encodeURIComponent("C:\\proj")}`);
+    expect(listed).toMatchObject({ status: 200, data: { path: "C:\\proj", git: true, entries: [{ name: "src", path: "C:\\proj\\src" }] } });
+    expect(device.ops("dirs").at(-1)!.args).toEqual({ path: "C:\\proj" });
+    expect((await f.call(`cli-agents/dirs?deviceId=${device.id}`)).status).toBe(200);
+    expect(device.ops("dirs").at(-1)!.args).toEqual({ path: "" });
+    expect((await f.call(`cli-agents/dirs?deviceId=${device.id}&path=relative`)).status).toBe(400);
+    expect((await f.call(`cli-agents/dirs?deviceId=${old.id}&path=${encodeURIComponent("C:\\proj")}`)).status).toBe(400);
+    expect(old.ops("dirs")).toHaveLength(0);
+
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/new/app", createDir: true })).status).toBe(200);
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/new/app", createDir: true });
+    // a new folder has no repository to make a worktree of; an old executor would ignore the flag
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/new/app", createDir: true, worktreeBranch: "nexagent/x", requestId: "r-1" })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: old.id, engine: "claude", cwd: "C:/new/app", createDir: true })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/new/app", createDir: "yes" })).status).toBe(400);
+  });
+
   it("passes model and effort to a computer that can take them and refuses an older one", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "launch", { cap: FULL });

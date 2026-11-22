@@ -66,6 +66,7 @@ import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
 import { TranscriptReader } from "./reader.ts";
 import { searchSessions, type SearchSource } from "./search.ts";
 import { cliModels } from "./models.ts";
+import { ensureDir, listDirs } from "./dirs.ts";
 import { TermStreams, hcErrorCode, type TermStream } from "./streams.ts";
 import { zcodeHomeExists, zcodeHomes, type ZcodeHostChannel } from "./zcode.ts";
 
@@ -1092,6 +1093,8 @@ export class CliAgentBridge {
         return this.opAttach(args as CliOpArgs["attach"]);
       case "models":
         return cliModels((args as CliOpArgs["models"]).engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
+      case "dirs":
+        return listDirs((args as CliOpArgs["dirs"]).path, { platform: this.platform, ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
       default:
         throw new OpFailure("invalid", "this operation is not available on this computer yet");
     }
@@ -1241,6 +1244,11 @@ export class CliAgentBridge {
   private async opStart(args: CliOpArgs["start"], budget: number): Promise<{ ref: CliSessionRef; terminal: string; cwd?: string }> {
     refuseZcodeOptions(args.engine, args);
     const fork = this.forkSource(args);
+    if (args.createDir) {
+      // a folder typed in the picker that did not exist yet; a worktree needs an existing repository
+      if (fork || args.worktree) throw new OpFailure("invalid", "新建目录不能同时分叉或新建工作树");
+      try { await ensureDir(args.cwd); } catch (error) { throw new OpFailure("invalid", "无法创建目录：" + String((error as NodeJS.ErrnoException).code ?? "error")); }
+    }
     const size = clampTermSize(args.cols, args.rows);
     const claude = args.engine === "claude";
     const nativeId = claude ? randomUUID() : undefined;

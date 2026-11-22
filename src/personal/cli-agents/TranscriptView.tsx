@@ -1,6 +1,6 @@
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CliEngine, CliItem, CliSessionKey } from "../../../shared/cli-agents";
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
@@ -66,7 +66,7 @@ export function ReplyText({source, supplied}: { source: string; supplied?: strin
   </>;
 }
 
-function BlockView({ block, engine, translations, onEdit }: { block: Block; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void }) {
+function BlockView({ block, engine, translations, onEdit, byline = true }: { block: Block; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean }) {
   switch (block.kind) {
     case "user":
       if(block.item.text.trim()==="[Request interrupted by user]")return <div className="cli-notice">你已中断本次请求</div>;
@@ -81,7 +81,7 @@ function BlockView({ block, engine, translations, onEdit }: { block: Block; engi
     case "assistant":
       return (
         <div className="cli-msg is-assistant markdown" data-testid="cli-assistant">
-          <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine?AGENT_LABEL[engine]:"助手"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
+          {byline ? <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine?AGENT_LABEL[engine]:"助手"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div> : null}
           <ReplyText key={block.item.text} source={block.item.text} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
         </div>
       );
@@ -90,6 +90,29 @@ function BlockView({ block, engine, translations, onEdit }: { block: Block; engi
     case "notice":
       return <div className="cli-notice" data-level={block.level} role={block.level === "error" ? "alert" : undefined}>{block.text}</div>;
   }
+}
+
+/** The agent is working on the turn: NexBot's three dots in the conversation, with what is happening under them.
+ * The agent's name heads it only when nothing of this reply is shown yet. */
+export function WorkingRow({ engine, label, byline, action }: { engine?: CliEngine; label: string; byline: boolean; action?: ReactNode }) {
+  return (
+    <div className="cli-msg is-assistant na-working" data-testid="cli-working">
+      {byline ? <div className="na-byline"><HarnessMark agentId={engine ?? "claude"}/><b>{engine ? AGENT_LABEL[engine] : "助手"}</b></div> : null}
+      <div className="na-working-dots" role="status" aria-label={label}><span aria-hidden="true"/><span aria-hidden="true"/><span aria-hidden="true"/></div>
+      <small className="na-working-caption">{label}{action}</small>
+    </div>
+  );
+}
+
+/** Which assistant blocks head their reply: the first one after each user message. */
+export function replyHeads(blocks: readonly Block[]): { heads: Set<string>; replying: boolean } {
+  const heads = new Set<string>();
+  let replying = false;
+  for (const block of blocks) {
+    if (block.kind === "user") replying = false;
+    else if (block.kind === "assistant" && !replying) { heads.add(block.id); replying = true; }
+  }
+  return { heads, replying };
 }
 
 /** A message the user sent that the session's records do not hold yet. */
@@ -102,7 +125,7 @@ export function EchoMessage({ text, at }: { text: string; at: number }) {
   );
 }
 
-export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo }: { echo?:{text:string;at:number}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo,working }: { echo?:{text:string;at:number}; working?:{label:string;action?:ReactNode}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   useEffect(()=>{onItems?.(items)},[items,onItems]);
@@ -172,7 +195,7 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
       return;
     }
     followBottomGrowth(scroller, followingRef.current);
-  }, [items]);
+  }, [items, !!working]);
 
   useBottomFollowResize(scrollRef, listRef, followingRef, sessionKey);
 
@@ -219,16 +242,19 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
 
   const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
   const blocks = useMemo(() => groupItems(details?.history?.length?mergeItems(details.history,items):items), [items,details?.history]);
+  const { heads, replying } = useMemo(() => replyHeads(blocks), [blocks]);
+  const echoShown = !!echo && !items.some((item) => item.kind === "user");
   return (
     <div className="cli-transcript" ref={scrollRef} onScroll={onScroll} data-testid="cli-transcript">
       <div className="cli-transcript-list" ref={listRef}>
         {more ? <button type="button" className="cli-older" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "正在读取…" : "加载更早的记录"}</button> : null}
         {blocks.map(block => {
-          const message = <BlockView key={block.id} engine={engine} block={block} translations={translations} onEdit={onEdit}/>;
+          const message = <BlockView key={block.id} engine={engine} block={block} translations={translations} onEdit={onEdit} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
           return onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}
-        {echo && !items.some((item) => item.kind === "user") ? <EchoMessage text={echo.text} at={echo.at}/> : null}
+        {echoShown && echo ? <EchoMessage text={echo.text} at={echo.at}/> : null}
+        {working ? <WorkingRow engine={engine} label={working.label} action={working.action} byline={echoShown || !replying}/> : null}
         {loading && !items.length && !echo ? <div className="cli-empty" role="status">正在读取…</div> : null}
         {!loading && !error && !items.length && !echo ? <div className="cli-empty">暂无记录</div> : null}
         {error ? <div className="cli-notice" data-level="error" role="alert">{error}<button type="button" className="text-button" onClick={() => void loadFirst()}>重试</button></div> : null}

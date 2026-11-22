@@ -474,6 +474,7 @@ function toWire(row: Row): CliSessionWire {
   if (row.sideOf !== undefined) wire.sideOf = row.sideOf;
   if (row.model !== undefined) wire.model = row.model;
   if (row.cliVersion !== undefined) wire.cliVersion = row.cliVersion;
+  if (row.context !== undefined) wire.context = { ...row.context };
   if (row.writerUnknown !== undefined) wire.writerUnknown = row.writerUnknown;
   return wire;
 }

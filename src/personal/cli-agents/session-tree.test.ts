@@ -42,7 +42,8 @@ async function mount(sessions: Row[], options: { selectedKey?: CliSessionKey; wo
 
 const click = (element: Element | null) => act(async () => { (element as HTMLElement).click(); });
 const folders = () => [...container.querySelectorAll(".na-folder strong")].map((entry) => entry.textContent);
-const titles = (scope: ParentNode = container) => [...scope.querySelectorAll(".cli-row-title")].map((entry) => entry.textContent);
+/** titles in the project tree (the pinned 进行中 rows repeat live sessions) */
+const titles = (scope: ParentNode = container) => [...scope.querySelectorAll(".cli-row-title")].filter((entry) => !entry.closest(".na-active")).map((entry) => entry.textContent);
 const older = () => container.querySelector<HTMLButtonElement>(".na-older");
 const project = (label: string) => [...container.querySelectorAll(".na-project")].find((entry) => entry.querySelector(".na-folder strong")?.textContent === label)!;
 async function search(value: string) {

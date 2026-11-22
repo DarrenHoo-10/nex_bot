@@ -5,7 +5,8 @@
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliLiveIn } from "../../../shared/cli-agents.ts";
+import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliContextUsage, type CliLiveIn } from "../../../shared/cli-agents.ts";
+import { codexContext } from "./context-usage.ts";
 import { CodexAppDb } from "./codex-app-db.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { codexWriter, type CodexWriter } from "./liveness.ts";
@@ -206,6 +207,7 @@ interface TailInfo {
   open: boolean;
   lastTimestamp?: number;
   model?: string;
+  context?: CliContextUsage;
 }
 
 const TURN_START = new Set(["task_started", "turn_started"]);
@@ -231,6 +233,7 @@ async function parseTail(file: string, size: number, mtimeMs: number): Promise<T
         if (typeof kind === "string") {
           if (TURN_START.has(kind)) info.open = true;
           else if (TURN_END.has(kind)) info.open = false;
+          else if (kind === "token_count") info.context = codexContext(payload) ?? info.context;
         }
       } else if (rec.type === "turn_context") {
         const model = text(payload?.model);
@@ -360,6 +363,7 @@ export class CodexScanner {
     const model = tail.model ?? head.model;
     if (model) row.model = clipUnits(model, CLI_LIMITS.model);
     if (meta.cliVersion) row.cliVersion = clipUnits(meta.cliVersion, CLI_LIMITS.cliVersion);
+    if (tail.context) row.context = tail.context;
     // discovery keeps it only when that thread is in the list too
     if (meta.forkedFrom) row.forkOf = meta.forkedFrom;
     if (writerUnknown) row.writerUnknown = true;

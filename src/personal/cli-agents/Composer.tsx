@@ -2,8 +2,8 @@
 // (and interrupt while running), continue a stopped session, or a plain hint
 // when the session cannot be driven from here.
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus } from "lucide-react";
-import { MAX_SEND_TEXT, utf8ByteLength, type CliSessionView } from "../../../shared/cli-agents";
+import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2 } from "lucide-react";
+import { MAX_SEND_TEXT, utf8ByteLength, type CliContextUsage, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
 import {fileReference,getExtras,saveExtras,type ComposerExtras} from "./composer-additions";
@@ -35,11 +35,21 @@ export interface SideDraftOptions {
 }
 export type { LaunchChoice } from "./CliModelMenu";
 
+/** The message box of a session that does not exist yet: sending starts it with this message (and the picked files). */
+export interface ComposerStarter {
+  /** the folder, CLI and computer are set */
+  ready: boolean;
+  /** `text` already carries the goal, skill and notes; files go up once the session runs */
+  onStart(text: string, files: File[]): void;
+}
+
 /** Biggest attachment the computer accepts. */
 export const ATTACH_MAX = 8 * 1024 * 1024;
 
 export interface ComposerProps {
   draft?: SideDraftOptions;
+  /** a new session: same box, sending starts it */
+  starter?: ComposerStarter;
   /** what the session's computer supports (Core's device view); absent for older executors */
   features?: readonly string[];
   /** the model and effort chosen for this session, and where the choice goes */
@@ -61,8 +71,8 @@ export interface ComposerProps {
   onQueueResume?(): Promise<void>;
 }
 
-export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, features, launch, onLaunch, queue=null, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, onQueueSteer, onQueueResume }: ComposerProps) {
-  const mode = draft ? {kind:"send",running:false,outside:false} as const : composerMode(session);
+export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, starter, features, launch, onLaunch, queue=null, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, onQueueSteer, onQueueResume }: ComposerProps) {
+  const mode = draft || starter ? {kind:"send",running:false,outside:false} as const : composerMode(session);
   const review=useReview(), details=draft?undefined:review?.records[session.key];
   const model=draft?.model || details?.model || review?.models[session.engine]?.[0] || session.model?.trim() || "";
   const effort=draft?.effort || details?.effort || "标准";
@@ -71,6 +81,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const [skill,setSkill]=useState("");
   const [editingQueue,setEditingQueue]=useState<{id:string;version:number;text:string}|null>(null);
   const running=session.state==="running"&&!draft;
+  const context=draft||starter?undefined:session.context;
   const [sentAt,setSentAt]=useState(0);
   const active=!draft && (running||(!!review&&sentAt>Date.now()-9000));
   const realQueue = !draft ? (queue?.entries ?? []).filter(entry=>entry.status==="pending"||entry.status==="uncertain") : [];
@@ -112,9 +123,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const canAttach=!!review?.fileUpload || !!features?.includes("attach");
   const launchOptions=!!features?.includes("launchOptions");
   /** a Claude in a NexBot terminal switches at once (/model, /effort); anything else on its next start */
-  const switchesNow=!draft && mode.kind==="send" && !mode.outside && session.engine==="claude";
+  const switchesNow=!draft && !starter && mode.kind==="send" && !mode.outside && session.engine==="claude";
   const pickerOff=!launchOptions && !switchesNow;
-  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : switchesNow || draft ? "" : mode.kind==="stopped" ? "继续会话时生效" : "下次在 NexBot 中继续时生效";
+  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : switchesNow || draft || starter ? "" : mode.kind==="stopped" ? "继续会话时生效" : "下次在 NexBot 中继续时生效";
   function choose(next:LaunchChoice){if(draft)draft.configure(next.model,next.effort);else onLaunch?.(next)}
   function configure(nextModel:string,nextEffort:string) {
     if(draft)draft.configure(nextModel,nextEffort);
@@ -179,7 +190,8 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const goal=extra.goal?.trim();
   const body=[goal?"当前目标："+goal:"",skill,text.trim(),...notes.map(n=>"引用「"+n.quote+"」\n注释："+n.body)].filter(Boolean).join("\n\n");
   const tooLarge=utf8ByteLength(body)>MAX_SEND_TEXT;
-  const canSubmit=!!(body || extra.files.length) && (extra.goal===null || !!goal);
+  // a new session may start without a message: it only opens the CLI in that folder
+  const canSubmit=(starter ? starter.ready : !!(body || extra.files.length)) && (extra.goal===null || !!goal);
   // 排队/引导 only applies where a turn actually runs: a nex_bot terminal session
   const wantsDelivery = !draft && session.liveIn === "nexbot" && !!session.terminal && running;
   // 排队/引导 is offered only where the choice is honoured: the review fixture, or a running nex_bot terminal
@@ -188,6 +200,12 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const pausedNote = !review && queue?.paused && realQueue.length > 0;
   const submit = async () => {
     if(!canSubmit || busy || draft?.busy || tooLarge)return;
+    if(starter){
+      starter.onStart(body, extra.files.map(entry=>entry.file));
+      drafts.delete(key);saveExtras(key,{files:[],goal:null});
+      if(mounted.current){setExtra(getExtras(key));change("");setSkill("");setPanel(null);onNotes?.([])}
+      return;
+    }
     setSending(true);
     if (revisionId) revisionSent.current = true;
     const sent=await run(async()=>{
@@ -229,30 +247,38 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       {draft?.quote && <details className="na-selected-fragment"><summary><MessageSquareText size={14}/>1 个已选文本片段</summary><blockquote>{draft.quote}</blockquote></details>}
       {revision ? <div className="na-revising" role="status"><Pencil size={13}/>正在编辑已发送消息，发送后将作为新消息重发
         <button type="button" aria-label="取消编辑重发" onClick={() => { if (revisionStash.current !== null) drafts.set(key, revisionStash.current); revisionStash.current = null; onCancelRevision?.(); setText(drafts.get(key) ?? ""); }}><X size={12}/>取消</button></div> : null}
-      {review&&details?.queue?.map((entry,i)=><div className="na-queued" key={entry.id}><ListOrdered size={14}/>排队 {i+1} · {entry.text}<button type="button" onClick={()=>void run(()=>review.run("unqueue",session.key,{id:entry.id}))}>撤回</button></div>)}
+      {review&&details?.queue?.map((entry,i)=><div className="na-queued" key={entry.id}>
+        <span className="na-queued-label"><ListOrdered size={13}/>排队 {i+1}</span><span className="na-queued-text" title={entry.text}>{entry.text}</span>
+        <span className="na-queued-actions"><button type="button" className="is-icon" aria-label="撤销" data-tip="撤销" onClick={()=>void run(()=>review.run("unqueue",session.key,{id:entry.id}))}><Undo2 size={14}/></button></span>
+      </div>)}
       {pausedNote && queue ? <div className="na-queued-paused" role="status">队列已暂停{queue.pauseReason === "stopped" ? "（已停止）" : queue.pauseReason === "uncertain" ? "（结果待确认）" : queue.pauseReason === "failed" ? "（有失败条目）" : queue.pauseReason === "device_offline" ? "（电脑离线）" : ""}{onQueueResume ? <button type="button" onClick={()=>void run(onQueueResume)}>继续队列</button> : null}</div> : null}
       {!review&&realQueue.map((entry: CliQueueEntry, i) => editingQueue?.id === entry.id ? (
         <div className="na-queued na-queued-edit" key={entry.id}>
-          <ListOrdered size={14}/>排队 {i+1}
-          <textarea aria-label="编辑排队消息" value={editingQueue.text} rows={2} onChange={(e)=>setEditingQueue({...editingQueue, text:e.target.value})}/>
-          <button type="button" onClick={()=>void run(async()=>{await onQueueEdit?.(entry.id, entry.version, editingQueue.text);setEditingQueue(null)})}>保存</button>
-          <button type="button" onClick={()=>setEditingQueue(null)}>取消</button>
+          <span className="na-queued-label"><ListOrdered size={13}/>排队 {i+1}</span>
+          <textarea aria-label="编辑排队消息" autoFocus value={editingQueue.text} rows={2} onChange={(e)=>setEditingQueue({...editingQueue, text:e.target.value})}/>
+          <span className="na-queued-actions">
+            <button type="button" onClick={()=>setEditingQueue(null)}>取消</button>
+            <button type="button" className="is-primary" onClick={()=>void run(async()=>{await onQueueEdit?.(entry.id, entry.version, editingQueue.text);setEditingQueue(null)})}>保存</button>
+          </span>
         </div>
       ) : (
         <div className="na-queued" key={entry.id}>
-          <ListOrdered size={14}/>排队 {i+1} · {entry.text}
-          {entry.status==="uncertain" ? <small role="status">待确认</small> : null}
-          {entry.status==="failed" && entry.errorCode ? <small role="alert">发送失败</small> : null}
-          {entry.status==="pending" && onQueueEdit ? <button type="button" aria-label={"编辑排队消息 "+(i+1)} onClick={()=>setEditingQueue({id:entry.id,version:entry.version,text:entry.text})}><Pencil size={12}/></button> : null}
-          {entry.status==="pending" && onQueueWithdraw ? <button type="button" onClick={()=>void run(()=>onQueueWithdraw(entry.id, entry.version))}>撤回</button> : null}
-          {entry.status==="pending" && onQueueSteer && running ? <button type="button" onClick={()=>void run(()=>onQueueSteer(entry.id))}><CornerUpRight size={12}/>立即引导</button> : null}
+          <span className="na-queued-label"><ListOrdered size={13}/>排队 {i+1}</span>
+          <span className="na-queued-text" title={entry.text}>{entry.text}</span>
+          {entry.status==="uncertain" ? <small className="na-queued-state" role="status">待确认</small> : null}
+          {entry.status==="failed" && entry.errorCode ? <small className="na-queued-state" data-tone="error" role="alert">发送失败</small> : null}
+          {entry.status==="pending" ? <span className="na-queued-actions">
+            {onQueueSteer && running ? <button type="button" className="is-icon" aria-label="引导" data-tip="引导" onClick={()=>void run(()=>onQueueSteer(entry.id))}><CornerUpRight size={14}/></button> : null}
+            {onQueueEdit ? <button type="button" className="is-icon" aria-label={"编辑排队消息 "+(i+1)} data-tip="编辑" onClick={()=>setEditingQueue({id:entry.id,version:entry.version,text:entry.text})}><Pencil size={13}/></button> : null}
+            {onQueueWithdraw ? <button type="button" className="is-icon" aria-label="撤销" data-tip="撤销" onClick={()=>void run(()=>onQueueWithdraw(entry.id, entry.version))}><Undo2 size={14}/></button> : null}
+          </span> : null}
         </div>
       ))}
       {skill?<button className="na-skill-chip" type="button" onClick={()=>setSkill("")}>{skill} ×</button>:null}
       {notes.length?<button className="na-skill-chip" type="button" title={notes.map(n=>n.quote+" — "+n.body).join("\n")} onClick={()=>setPanel(panel==="notes"?null:"notes")}>{notes.length} 条注释</button>:null}
-      <textarea ref={draftRef} autoFocus={!!draft} readOnly={!!draft && (busy || draft.busy)}
+      <textarea ref={draftRef} autoFocus={!!draft || !!starter} readOnly={!!draft && (busy || draft.busy)}
         aria-label="发送给 Agent 的消息"
-        placeholder={review?"发消息，或输入 / 选择技能":draft?"发消息":"发消息，或输入 / 使用技能"}
+        placeholder={starter?"要做什么？":review?"发消息，或输入 / 选择技能":draft?"发消息":"发消息，或输入 / 使用技能"}
         rows={Math.min(5, Math.max(1, text.split("\n").length))}
         value={text}
         onChange={(event) => {change(event.target.value);if(review)setPanel(/^\/\S*$/.test(event.target.value)?"skill":null)}}
@@ -282,7 +308,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <button type="button" onClick={()=>{setPanel(null);picker.current?.click()}}><Paperclip size={16}/><span>文件</span></button>
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
         </div>}
-        {panel==="context"?<small role="status">当前 Harness 未提供上下文用量</small>:null}
+        {panel==="context"?<ContextDetail usage={context}/>:null}
         {panel==="skill"&&review?review.skills.filter(s=>!text.startsWith("/")||s.startsWith(text)).map(s=><button type="button" key={s} onClick={()=>{setSkill(s);if(text.startsWith("/"))change("");setPanel(null);draftRef.current?.focus()}}>{s}</button>):null}
         {panel==="model"&&review?<><label>模型<select aria-label="模型" value={model} onChange={e=>configure(e.target.value,effort)}>{(review.models[session.engine]??[]).map(m=><option key={m}>{m}</option>)}</select></label><label>推理强度<select aria-label="推理强度" value={effort} onChange={e=>configure(model!,e.target.value)}><option>标准</option><option>高</option></select></label></>:null}
         {panel==="notes"?notes.map(n=><div key={n.id}><b>{n.num}. {n.quote}</b><p>{n.body}</p><button type="button" onClick={()=>onNotes?.(notes.filter(v=>v.id!==n.id))}>移除</button></div>):null}
@@ -291,7 +317,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         <>
           <button type="button" className="na-add-trigger" disabled={busy || draft?.busy} aria-label="添加" title="添加" aria-expanded={panel==="add"} onClick={()=>setPanel(panel==="add"?null:"add")}><Plus size={20}/></button>
           <span className="na-grow"/>
-          <button type="button" className="na-context" aria-label="上下文用量" title="查看上下文用量" aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><CircleDashed size={15}/></button>
+          {draft||starter ? null : <button type="button" className="na-context" aria-label="上下文用量" title={contextSummary(context)} data-level={contextLevel(context)} aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><ContextRing usage={context}/></button>}
           {review ? <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
             <span>{model}</span><span className="na-effort">{effort}</span><ChevronDown size={13}/>
           </button> : session.engine==="zcode" ? null : <CliModelMenu deviceId={session.deviceId} engine={session.engine} live={!!features?.includes("models")}
@@ -307,6 +333,48 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       {mode.kind==="send" && mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}
     </form>
   );
+}
+
+/** Tokens in the unit people read: 8,123 below ten thousand, else 万 with one decimal. */
+export function tokenText(value: number): string {
+  if (value < 10_000) return value.toLocaleString("zh-CN");
+  const wan = value / 10_000;
+  return (wan >= 100 ? Math.round(wan).toString() : wan.toFixed(1).replace(/\.0$/, "")) + " 万";
+}
+export function contextShare(usage: CliContextUsage | undefined): number | null {
+  return usage?.window ? Math.min(1, usage.used / usage.window) : null;
+}
+/** calm below 70%, a warning to 90%, then the session is about to compact */
+export function contextLevel(usage: CliContextUsage | undefined): "none" | "low" | "high" | "full" {
+  const share = contextShare(usage);
+  return share === null ? "none" : share >= 0.9 ? "full" : share >= 0.7 ? "high" : "low";
+}
+export function contextSummary(usage: CliContextUsage | undefined): string {
+  if (!usage) return "上下文用量：暂无记录";
+  const share = contextShare(usage);
+  return share === null ? `上下文已用 ${tokenText(usage.used)}` : `上下文 ${Math.round(share * 100)}% · ${tokenText(usage.used)} / ${tokenText(usage.window!)}`;
+}
+
+/** The share of the window the last request used, as a ring; dashed while nothing is known. */
+function ContextRing({ usage }: { usage: CliContextUsage | undefined }) {
+  const share = contextShare(usage);
+  if (share === null) return <CircleDashed size={15}/>;
+  const r = 6.5, length = 2 * Math.PI * r;
+  return <svg className="na-context-ring" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+    <circle cx="8" cy="8" r={r} fill="none" strokeWidth="2" className="na-context-track"/>
+    <circle cx="8" cy="8" r={r} fill="none" strokeWidth="2" strokeLinecap="round" className="na-context-fill"
+      strokeDasharray={`${Math.max(0.6, share * length)} ${length}`} transform="rotate(-90 8 8)"/>
+  </svg>;
+}
+
+function ContextDetail({ usage }: { usage: CliContextUsage | undefined }) {
+  if (!usage) return <div className="na-context-detail"><b>上下文用量</b><small role="status">还没有记录：会话回复过一次后显示</small></div>;
+  const share = contextShare(usage);
+  return <div className="na-context-detail" data-level={contextLevel(usage)}>
+    <div className="na-context-head"><b>上下文</b>{share === null ? null : <strong>{Math.round(share * 100)}%</strong>}</div>
+    {share === null ? null : <div className="na-context-bar"><span style={{ width: `${Math.max(2, share * 100)}%` }}/></div>}
+    <small>{share === null ? `已用 ${tokenText(usage.used)} tokens` : `已用 ${tokenText(usage.used)} / ${tokenText(usage.window!)} tokens`}</small>
+  </div>;
 }
 
 /** A small preview of an image about to be sent. A data: URL, since the page's CSP refuses blob: images. */

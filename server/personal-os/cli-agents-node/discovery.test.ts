@@ -121,6 +121,19 @@ describe("SessionDiscovery snapshot", () => {
     expect(diffs[0].removes).toEqual([]);
   });
 
+  it("reports how full each session's context is, from Claude's last reply and Codex's token count", async () => {
+    const claudeFile = claudeTranscript(CID(1), "hi", 5000);
+    appendFileSync(claudeFile, JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() - 4000).toISOString(), message: { model: "claude-opus-5-5", usage: { input_tokens: 10, cache_read_input_tokens: 5000, output_tokens: 90 } } }) + "\n");
+    const codexFile = codexRollout(XID(1), "hello", 3000);
+    appendFileSync(codexFile, JSON.stringify({ timestamp: new Date(Date.now() - 2500).toISOString(), type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { total_tokens: 144716 }, model_context_window: 475000 } } }) + "\n");
+    const { discovery } = make();
+    await discovery.start();
+    const rows = new Map(discovery.snapshot().map((row) => [row.engine, row]));
+    expect(rows.get("claude")?.context).toEqual({ used: 5100, window: 200000 });
+    expect(rows.get("codex")?.context).toEqual({ used: 144716, window: 475000 });
+    for (const row of rows.values()) expect(parseCliSessionWire(row)?.context).toEqual(row.context);
+  });
+
   it("resolves transcriptFor by ref", async () => {
     const claudeFile = claudeTranscript(CID(1), "hi");
     const codexFile = codexRollout(XID(1), "hello");

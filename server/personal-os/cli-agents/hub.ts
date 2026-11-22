@@ -34,6 +34,9 @@ import {
   type CliItem,
   type CliLaunchOptions,
   type CliModelCatalog,
+  type CliContextUsage,
+  type CliDirListing,
+  type CliFeature,
   type CliOp,
   type CliOpArgs,
   type CliOpResult,
@@ -184,6 +187,8 @@ export class CliAgentHub {
   private readonly sendVia = new Map<string, CliSendVia>();
   /** `repoRoot` and `forkOf` have no column either (no migration): same lifetime as `sendVia`. */
   private readonly placement = new Map<string, { repoRoot?: string; forkOf?: string; sideOf?: string }>();
+  /** what each session's last request carried; it changes every turn, so it is kept here and not in the table */
+  private readonly contexts = new Map<string, CliContextUsage>();
   private readonly pending = new Map<string, Pending>();
   private readonly busyKeys = new Set<string>();
   private readonly watchers = new Map<string, Set<(message: ServerMessage) => void>>();
@@ -277,6 +282,7 @@ export class CliAgentHub {
     for (const key of [...this.writerUnknown]) if (key.startsWith(deviceId + ":")) this.writerUnknown.delete(key);
     for (const key of [...this.sendVia.keys()]) if (key.startsWith(deviceId + ":")) this.sendVia.delete(key);
     for (const key of [...this.placement.keys()]) if (key.startsWith(deviceId + ":")) this.placement.delete(key);
+    for (const key of [...this.contexts.keys()]) if (key.startsWith(deviceId + ":")) this.contexts.delete(key);
     for (const pending of [...this.pending.values()]) {
       if (pending.deviceId !== deviceId) continue;
       // A write may have reached the device: its outcome is unknown, never "failed".
@@ -410,12 +416,15 @@ export class CliAgentHub {
         const placeChanged = place?.repoRoot !== wire.repoRoot || place?.forkOf !== wire.forkOf || place?.sideOf !== wire.sideOf;
         if (wire.repoRoot || wire.forkOf || wire.sideOf) this.placement.set(key, { ...(wire.repoRoot ? { repoRoot: wire.repoRoot } : {}), ...(wire.forkOf ? { forkOf: wire.forkOf } : {}), ...(wire.sideOf ? { sideOf: wire.sideOf } : {}) });
         else this.placement.delete(key);
+        const context = this.contexts.get(key);
+        const contextChanged = context?.used !== wire.context?.used || context?.window !== wire.context?.window;
+        if (wire.context) this.contexts.set(key, wire.context); else this.contexts.delete(key);
         const values = this.columnsOf(deviceId, wire);
         const previous = existing.get(key);
         if (!previous) {
           this.store.insert("cli_agent_sessions", { key, ...values, hidden: 0, first_seen_at: now(), updated_at: now() });
           upserts.push(key);
-        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged || viaChanged || placeChanged) {
+        } else if (SESSION_COLUMNS.some((column) => (previous[column] ?? null) !== values[column]) || unknownChanged || viaChanged || placeChanged || contextChanged) {
           this.store.run(
             `UPDATE cli_agent_sessions SET ${SESSION_COLUMNS.map((column) => `${column}=?`).join(",")},updated_at=? WHERE key=?`,
             ...SESSION_COLUMNS.map((column) => values[column]), now(), key,
@@ -430,7 +439,7 @@ export class CliAgentHub {
         const key = cliKey(deviceId, ref);
         if (existing.has(key) && !removes.includes(asKey(key))) removes.push(asKey(key));
       }
-      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); this.sendVia.delete(key); this.placement.delete(key); }
+      for (const key of removes) { this.store.run("DELETE FROM cli_agent_sessions WHERE key=?", key); this.writerUnknown.delete(key); this.sendVia.delete(key); this.placement.delete(key); this.contexts.delete(key); }
     });
     for (const key of removes) { this.lastTurns.delete(key); this.resolveRequests(key, "gone"); }
     const views = upserts.map((key) => this.viewOf(key)).filter((view): view is CliSessionView => view !== null);
@@ -856,13 +865,14 @@ export class CliAgentHub {
 
   /** `forkFrom` starts the session from that session's context. An executor that does not list the
    * engine in `forkEngines` would ignore the field and open a blank session, so it is refused here. */
-  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
+  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}, createDir = false): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
     if (forkFrom) {
       const caps = this.caps.get(deviceId);
       if (caps && !caps.forkEngines?.includes(engine)) throw new CliOpError("invalid", FORK_UNSUPPORTED);
     }
+    if (createDir) this.requireFeature(deviceId, "dirs");
     const options = this.launchOptions(deviceId, launch);
-    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}), ...options });
+    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, ...(forkFrom ? { forkFrom } : {}), ...(createDir ? { createDir: true } : {}), ...options });
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
   }
 
@@ -908,6 +918,18 @@ export class CliAgentHub {
       }
     }
     return hits.sort((a, b) => b.at - a.at).map(({ key, snippet }) => ({ key, snippet }));
+  }
+
+  /** The sub-folders of a folder on a computer ("" for its drives and home folder). */
+  async dirs(actor: string, deviceId: string, path: string): Promise<CliDirListing> {
+    this.requireFeature(deviceId, "dirs");
+    return this.op(actor, deviceId, null, "dirs", { path });
+  }
+
+  /** An executor that does not list `feature` would ignore or refuse it: say it needs an update instead. */
+  private requireFeature(deviceId: string, feature: CliFeature): void {
+    const caps = this.caps.get(deviceId);
+    if (caps && !hasCliFeature(caps, feature)) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
   }
 
   /** The model picker rows of one CLI on a computer; an executor without `models` is refused (the page keeps its own list). */
@@ -1057,6 +1079,8 @@ export class CliAgentHub {
     if (place?.forkOf) view.forkOf = place.forkOf;
     if (place?.sideOf) view.sideOf = place.sideOf;
     if (this.writerUnknown.has(key)) view.writerUnknown = true;
+    const context = this.contexts.get(key);
+    if (context) view.context = { ...context };
     return view;
   }
 

@@ -5,6 +5,7 @@ import { Check, ChevronDown, Search } from "lucide-react";
 import { CLI_EFFORTS, CLI_MODELS, type CliEngine, type CliModelCatalog, type CliModelOption } from "../../../shared/cli-agents";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import "../components/model-menu.css";
+import "./cli-model-menu.css";
 import { cliErrorText, fetchModels } from "./api";
 
 /** The model and reasoning effort a session runs with; empty strings leave the CLI's own default. */
@@ -96,12 +97,16 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
       <span>{title}</span>{choice.effort ? <span className="na-effort">{effortLabel(choice.effort)}</span> : null}<ChevronDown size={13}/>
     </button>
     {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); } }}>
-      <div className="model-menu-heading">模型</div>
+      <div className="na-model-head"><span>模型</span>{live && !loading && !error ? <small>来自这台电脑</small> : null}</div>
       {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus/></label> : null}
       <div className="model-menu-list" role="listbox" aria-label="可用模型">
-        {!query ? <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row" disabled={disabled} onClick={() => pick("")}>
-          <span className="model-menu-name">默认</span>{fallback ? <span className="model-menu-tag" title={fallback}>{label(fallback)}</span> : null}{!choice.model ? <Check size={15} className="model-menu-check"/> : null}
-        </button> : null}
+        {!query ? <>
+          <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick("")} title={fallback || undefined}>
+            <span className="na-model-text"><span className="model-menu-name">默认</span><small>{fallback ? label(fallback) : "CLI 自己的默认模型"}</small></span>
+            {!choice.model ? <Check size={15} className="model-menu-check"/> : null}
+          </button>
+          {shown.length ? <div className="na-model-divider" role="presentation"/> : null}
+        </> : null}
         {shown.map((row) => <button type="button" role="option" aria-selected={row.id === choice.model} key={row.id} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick(row.id)} title={row.id}>
           <span className="na-model-text"><span className="model-menu-name">{row.label}</span>{"description" in row && row.description ? <small>{row.description}</small> : null}</span>
           {row.id === choice.model ? <Check size={15} className="model-menu-check"/> : null}
@@ -117,7 +122,7 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
           onChange={(event) => setLevel(Number(event.target.value))} onPointerUp={commitLevel} onKeyUp={commitLevel} onBlur={commitLevel}/>
         <div className="model-menu-stops" aria-hidden="true">{stops.map((stop) => <span key={stop || "default"}>{effortLabel(stop)}</span>)}</div>
       </div> : null}
-      {note ? <div className="model-menu-status" role="status">{note}</div> : null}
+      {note ? <div className="na-model-note" role="status">{note}</div> : null}
     </div>}
   </div>;
 }

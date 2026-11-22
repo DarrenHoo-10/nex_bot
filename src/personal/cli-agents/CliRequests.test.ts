@@ -126,7 +126,7 @@ describe("request cards in the workspace", () => {
     await push({ type: "requests", key: other.key, requests: [permissionRequest({ id: "r3", key: other.key })] });
     await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r2" })] });
     expect(container.querySelectorAll(".cli-request")).toHaveLength(1);
-    expect([...container.querySelectorAll(".cli-row .cli-count")].map((entry) => entry.textContent)).toEqual(["1", "1"]);
+    expect([...container.querySelectorAll(".cli-device .cli-row .cli-count")].map((entry) => entry.textContent)).toEqual(["1", "1"]);
     expect(container.querySelector("[data-testid=cli-waiting]")?.textContent).toBe("等你处理 2");
   });
 

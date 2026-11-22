@@ -9,6 +9,7 @@ import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliLiveIn, type CliSessionState } from "../../../shared/cli-agents.ts";
+import { claudeUsed, claudeWindow } from "./context-usage.ts";
 import { desktopHides, EMPTY_DESKTOP_INDEX, type DesktopIndex, type DesktopSessionState } from "./claude-desktop.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { isPidAlive, processStartTimes, sameProcessStart, type ProcessStartOptions } from "./liveness.ts";
@@ -232,6 +233,8 @@ export interface ClaudeHistoryEntry {
   bornMs?: number;
   /** the session id the transcript itself names as its fork parent (`forkedFrom`), when it does */
   forkedFrom?: string;
+  /** tokens the last main-thread request carried */
+  contextUsed?: number;
 }
 
 /** A claude an SDK runs (`sdk-ts`, `sdk-py`, `sdk-cli`): while it runs it belongs to
@@ -467,6 +470,9 @@ export async function parseTranscriptEdges(
     else if (rec.type === "assistant") {
       const model = text(asRec(rec.message)?.model);
       if (model && model !== "<synthetic>") entry.model = model;
+      // a subagent's request counts against its own context, not the session's
+      const used = rec.isSidechain === true ? 0 : claudeUsed(asRec(rec.message)?.usage);
+      if (used) entry.contextUsed = used;
     }
     if (typeof rec.timestamp === "string") {
       const ts = Date.parse(rec.timestamp);
@@ -602,6 +608,7 @@ function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry 
     result.route = { via: "inbox", configDir: rawConfigDir, pid: live.pid, socketPath: live.messagingSocketPath, sessionId };
   }
   if (entry?.model) result.model = clipUnits(entry.model, CLI_LIMITS.model);
+  if (entry?.contextUsed) result.context = { used: entry.contextUsed, window: claudeWindow(rawConfigDir, entry.model, entry.contextUsed) };
   const version = live?.version ?? entry?.version;
   if (version) result.cliVersion = clipUnits(version, CLI_LIMITS.cliVersion);
   return result;

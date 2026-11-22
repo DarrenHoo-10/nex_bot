@@ -183,6 +183,9 @@ export function isCliKey(value: unknown): value is CliSessionKey {
 // Sessions
 
 /** What a device sends for one session. Never a local file path. */
+/** How full a session's context is: the tokens its last request carried, and the window when known. */
+export interface CliContextUsage { used: number; window?: number }
+
 export interface CliSessionWire {
   engine: CliEngine;
   nativeId: string;
@@ -208,6 +211,8 @@ export interface CliSessionWire {
   sideOf?: string;
   model?: string;
   cliVersion?: string;
+  /** what the last request of the session carried; absent until the CLI wrote one down */
+  context?: CliContextUsage;
   /** epoch ms */
   lastActivityAt: number;
   /** Codex only: who writes the session file could not be determined */
@@ -376,8 +381,9 @@ export interface CliError {
  * model and effort at launch (`model`/`effort` on `start` and `continue`),
  * attachments written to the computer (`attach`) and the models its CLIs offer
  * (`models`). Older executors send none. */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models";
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models"];
+/** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first. */
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs";
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs"];
 
 /** What the page shows when the computer's executor lacks a feature. */
 export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
@@ -505,6 +511,7 @@ export const CLI_OPS = [
   "search",
   "attach",
   "models",
+  "dirs",
 ] as const;
 export type CliOp = (typeof CLI_OPS)[number];
 
@@ -529,6 +536,8 @@ export interface CliOpArgs {
      * the CLI resumes it into a new session id instead of starting blank. A device
      * that does not list the engine in `capability.forkEngines` must not be sent it. */
     forkFrom?: CliSessionRef;
+    /** make `cwd` (and missing parents) first; only sent to executors that list `dirs` */
+    createDir?: boolean;
     /** launch options; only sent to executors that list `launchOptions` */
     model?: string;
     effort?: string;
@@ -550,6 +559,8 @@ export interface CliOpArgs {
   attach: { ref: CliSessionRef; name: string; data: string };
   /** the model picker rows of one CLI on the computer */
   models: { engine: CliEngine };
+  /** the sub-folders of an absolute folder; "" lists the roots (drives and the home folder) */
+  dirs: { path: string };
 }
 
 export interface CliSearchHit {
@@ -590,6 +601,7 @@ export interface CliOpResult {
   search: { hits: CliSearchHit[] };
   attach: { path: string };
   models: CliModelCatalog;
+  dirs: CliDirListing;
 }
 
 export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
@@ -608,6 +620,7 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   search: 10_000,
   attach: 20_000,
   models: 8000,
+  dirs: 8000,
 };
 
 /** Operations that change state: never re-sent after a timeout or a drop.
@@ -934,9 +947,16 @@ function sessionWire(value: unknown): CliSessionWire {
     sideOf: present(o, "sideOf") ? nativeIdOf(o.sideOf) : undefined,
     model: optStr(o, "model", CLI_LIMITS.model),
     cliVersion: optStr(o, "cliVersion", CLI_LIMITS.cliVersion),
+    // a usage this side cannot read is left out rather than dropping the row
+    context: present(o, "context") ? guard(() => contextUsage(rec(o.context))) ?? undefined : undefined,
     lastActivityAt,
     writerUnknown: optBool(o, "writerUnknown"),
   });
+}
+
+const TOKENS_MAX = 100_000_000;
+function contextUsage(o: Rec): CliContextUsage {
+  return pick({ used: int(o.used, 1, TOKENS_MAX), window: optInt(o, "window", 1, TOKENS_MAX) });
 }
 
 function sessionView(value: unknown): CliSessionView {
@@ -1252,6 +1272,7 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
       rows: present(o, "rows") ? rows(o.rows) : undefined,
       worktree,
       forkFrom,
+      createDir: present(o, "createDir") ? bool(o.createDir) || undefined : undefined,
       ...launchOptions(o, engine),
     });
   },
@@ -1270,6 +1291,11 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     return pick({ query, limit: optInt(o, "limit", 1, CLI_SEARCH.maxLimit) });
   },
   models: (o) => ({ engine: oneOf(o.engine, CLI_ENGINES) }),
+  dirs: (o) => {
+    const path = str(o.path, CLI_LIMITS.cwd);
+    if (path && !isAbsoluteCwd(path)) fail();
+    return { path };
+  },
   attach: (o) => {
     const name = str(o.name, CLI_ATTACH_NAME_MAX, 1);
     const data = str(o.data, ATTACH_BASE64_MAX);
@@ -1354,7 +1380,47 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
     return { path };
   },
   models: (o) => modelCatalog(o),
+  dirs: (o) => dirListing(o),
 };
+
+/** One folder's sub-folders on a computer. */
+export interface CliDirListing {
+  /** the folder listed; "" for the roots */
+  path: string;
+  /** one level up; absent at a drive, `/` and the roots */
+  parent?: string;
+  exists: boolean;
+  /** the folder is a Git repository */
+  git?: boolean;
+  entries: Array<{ name: string; path: string; git?: boolean }>;
+  /** more sub-folders than the computer sends */
+  more?: boolean;
+}
+
+export const CLI_DIR_LIMIT = 500;
+
+export function parseCliDirListing(value: unknown): CliDirListing | null {
+  return guard(() => dirListing(rec(value)));
+}
+
+function dirListing(o: Rec): CliDirListing {
+  const path = str(o.path, CLI_LIMITS.cwd);
+  const entries: CliDirListing["entries"] = [];
+  for (const entry of arr(o.entries, CLI_DIR_LIMIT)) {
+    const row = rec(entry);
+    const childPath = str(row.path, CLI_LIMITS.cwd, 1);
+    if (!isAbsoluteCwd(childPath)) continue;
+    entries.push(pick({ name: str(row.name, 255, 1), path: childPath, git: row.git === true ? true : undefined }));
+  }
+  return pick({
+    path,
+    parent: optStr(o, "parent", CLI_LIMITS.cwd, 1),
+    exists: bool(o.exists),
+    git: o.git === true ? true : undefined,
+    entries,
+    more: o.more === true ? true : undefined,
+  });
+}
 
 /** A catalog from the computer (or Core). A row that is no valid model name is left out rather than failing the list. */
 export function parseCliModelCatalog(value: unknown): CliModelCatalog | null {

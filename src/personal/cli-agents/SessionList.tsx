@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, ChevronDown, ChevronRight, Clock3, Ellipsis, Folder, Monitor, Plus, Search, X } from "lucide-react";
+import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, ChevronDown, ChevronRight, Clock3, Ellipsis, Monitor, Plus, Search, X } from "lucide-react";
 import type { CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
-import { AGENT_LABEL, RECENT_MS, askedSession, forkParentKey, foldHistory, matchesTerms, moveProject, orderProjects, projectGroups, rememberProjects, sessionStatusLabel, sessionTone, sessionTitle, treeParents, type DeviceGroup } from "./session-model";
+import { AGENT_LABEL, RECENT_MS, askedSession, projectOf, forkParentKey, foldHistory, matchesTerms, moveProject, orderProjects, projectGroups, rememberProjects, sessionStatusLabel, sessionTone, sessionTitle, treeParents, type DeviceGroup } from "./session-model";
 import { searchSessions } from "./api";
 import { copyText } from "../../lib/copy-text";
 import {HarnessMark} from "./tokendance/HarnessMark";
@@ -41,6 +41,8 @@ export interface SessionListProps {
   onSelect(key: CliSessionKey): void;
   /** `cwd` is the project the new session starts in, when it came from a project's + */
   onNew(deviceId: string, cwd?: string): void;
+  /** the list's own 新建会话 button: a new session on the computer and folder in view */
+  onCreate?(): void;
   reloadSessions(): Promise<void>;
 }
 
@@ -60,7 +62,7 @@ interface PendingFork {
 }
 type Action = "id"|"fork"|"archive"|"delete";
 
-const ORDER_KEY="nexagent.projectOrder", TIME_KEY="nexagent.timeSort";
+const ORDER_KEY="nexagent.projectOrder", TIME_KEY="nexagent.timeSort", ACTIVE_KEY="nexagent.activeFolded";
 type ProjectOrder = Record<string, string[]>;
 function readOrder():ProjectOrder{
   try{const value=JSON.parse(localStorage.getItem(ORDER_KEY)||"{}");return value&&typeof value==="object"&&!Array.isArray(value)?value as ProjectOrder:{}}catch{return {}}
@@ -68,7 +70,7 @@ function readOrder():ProjectOrder{
 function writeOrder(order:ProjectOrder){try{localStorage.setItem(ORDER_KEY,JSON.stringify(order))}catch{/* the order lasts for the page */}}
 function readTimeSort(){try{return localStorage.getItem(TIME_KEY)==="1"}catch{return false}}
 const sameList=(a:readonly string[],b:readonly string[])=>a.length===b.length&&a.every((entry,i)=>entry===b[i]);
-export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAction,onSelect,onNew,reloadSessions}:SessionListProps) {
+export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAction,onSelect,onNew,onCreate,reloadSessions}:SessionListProps) {
   const review=useReview();
   const wbActions = review ? undefined : onWorkbenchAction;
   const [closed,setClosed]=useState<Set<string>>(()=>new Set());
@@ -80,6 +82,9 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   const [contentHits,setContentHits]=useState<ReadonlyMap<CliSessionKey,string>>(()=>new Map());
   /** sessions by time alone: no computers, projects or branches */
   const [byTime,setByTime]=useState(readTimeSort);
+  /** the pinned 进行中 section, folded to its heading */
+  const [activeFolded,setActiveFolded]=useState(()=>{try{return localStorage.getItem(ACTIVE_KEY)==="1"}catch{return false}});
+  function toggleActive(){const next=!activeFolded;setActiveFolded(next);try{localStorage.setItem(ACTIVE_KEY,next?"1":"0")}catch{/* lasts for the page */}}
   const [order,setOrder]=useState<ProjectOrder>(readOrder);
   const [drag,setDrag]=useState<{device:string;key:string}|null>(null);
   const [drop,setDrop]=useState<{key:string;after:boolean}|null>(null);
@@ -207,9 +212,10 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     });
   }
   /** One session row, and under it the conversation line a content search matched. */
-  function row(s:CliSessionView,has:boolean):ReactNode {
+  function row(s:CliSessionView,has:boolean,context?:string):ReactNode {
       const asked=pending?.get(s.key)||0;
       const shown=askedSession(s,asked), tone=sessionTone(shown);
+      const status=["waiting","running","offline"].includes(tone)?sessionStatusLabel(shown):"";
       const snippet=query?contentHits.get(s.key):undefined;
       return <>
         <div className={"cli-row "+(s.key===selectedKey?"is-selected":"")} onContextMenu={e=>{e.preventDefault();trigger.current=e.currentTarget.querySelector(".na-more");setMenu({row:s,x:e.clientX,y:e.clientY})}}>
@@ -226,8 +232,12 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
               }}/>
           </div> : <button type="button" className="cli-row-main" title={label(s)}
             onDoubleClick={()=>edit(s)} onKeyDown={e=>{if(e.key==="F2"){e.preventDefault();edit(s)}}} aria-current={selectedKey===s.key?"true":undefined} onClick={()=>onSelect(s.key)}>
-            <span className={"na-engine "+s.engine} title={AGENT_LABEL[s.engine]}><HarnessMark agentId={s.engine} size="sm"/></span>
-            <span className="cli-row-title">{label(s)}</span>{["waiting","running","offline"].includes(tone)?<span className="cli-chip" data-tone={tone}>{sessionStatusLabel(shown)}</span>:null}{asked>0?<b className="cli-count">{asked}</b>:null}
+            {/* the dot on the CLI's mark is the state: green breathing while it runs, amber while it waits for you */}
+            <span className={"na-engine "+s.engine} data-tone={tone} title={AGENT_LABEL[s.engine]+(status?" · "+status:"")}><HarnessMark agentId={s.engine} size="sm"/></span>
+            <span className="cli-row-title">{label(s)}</span>
+            {status?<span className="na-sr cli-chip" data-tone={tone}>{status}</span>:null}
+            {context?<small className="na-row-context">{context}</small>:null}
+            {asked>0?<b className="cli-count">{asked}</b>:null}
           </button>}
           <button type="button" className="icon-button na-more" title="会话操作" aria-haspopup="menu" aria-expanded={menu?.row.key===s.key} aria-label={label(s)+"的操作"} onClick={e=>{if(menu?.row.key===s.key){setMenu(null);return}trigger.current=e.currentTarget;const b=e.currentTarget.getBoundingClientRect();setMenu({row:s,x:b.right,y:b.bottom})}}><Ellipsis size={15}/></button>
         </div>
@@ -258,7 +268,15 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     if(changed.length)setOrder(current=>{const all={...current,...Object.fromEntries(changed)};writeOrder(all);return all});
   });
   const flat=byTime?groups.flatMap(({agents})=>listed(agents)).filter(s=>found(s,{label:"",root:""})).sort((a,b)=>b.lastActivityAt-a.lastActivityAt):[];
+  /** running or waiting sessions on every computer, pinned above the projects */
+  const active=byTime||archived||query?[]:groups.flatMap(({agents})=>listed(agents)).filter(s=>{
+    const shown=askedSession(s,pending?.get(s.key)||0);
+    return shown.online&&(shown.state==="running"||shown.state==="waiting");
+  }).sort((a,b)=>b.lastActivityAt-a.lastActivityAt);
+  // one computer that is online needs no computer row: its projects are the list
+  const single=groups.length===1&&groups[0].device.online;
   return <nav className="cli-list" aria-label="Agent 会话">
+    {onCreate&&!archived?<button type="button" className="na-new-session" onClick={onCreate}><Plus size={15}/><span>新建会话</span></button>:null}
     <div className="na-nav-tools"><strong>{archived?"已归档":byTime?"按时间":"会话目录"}</strong>
       <span className="na-nav-icons">
         <button type="button" className="icon-button na-nav-icon" aria-pressed={byTime} aria-label="按时间排序" title={byTime?"恢复项目目录":"按时间排序"} onClick={toggleTime}><Clock3 size={16}/></button>
@@ -266,6 +284,15 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       </span>
     </div>
     {searchOpen&&<label className="na-search"><Search size={15}/><input ref={searchRef} aria-label="搜索会话" value={filter} placeholder="搜索会话标题或内容" onChange={e=>setFilter(e.target.value)} onKeyDown={e=>{if(e.key==="Escape"){e.stopPropagation();closeSearch()}}}/>{filter?<button type="button" className="na-search-clear" aria-label="清除搜索" onClick={()=>{setFilter("");searchRef.current?.focus()}}><X size={13}/></button>:null}</label>}
+    {active.length?<section className="na-active" aria-label="进行中">
+      <button type="button" className="na-section-head" aria-expanded={!activeFolded} onClick={toggleActive} title={activeFolded?"展开进行中":"收起进行中"}>
+        {activeFolded?<ChevronRight size={13}/>:<ChevronDown size={13}/>}<span>进行中</span>
+        {/* folded, the heading still says what is moving */}
+        {activeFolded&&active.some(s=>askedSession(s,pending?.get(s.key)||0).state==="waiting")?<i className="na-dot" data-tone="waiting" aria-label="有会话等你处理"/>:null}
+        <small>{active.length}</small>
+      </button>
+      {activeFolded?null:active.map(s=><div key={"active:"+s.key} className="na-node">{row(s,false,projectOf(s,review?.checkouts?.[s.cwd]?.project).label)}</div>)}
+    </section>:null}
     {byTime?<div className="na-flat">{flat.map(s=><div key={s.key} className="na-node">{row(s,false)}</div>)}
       {!flat.length&&!archived?<p className="cli-empty">{query?"没有匹配的会话":"暂无会话"}</p>:null}
     </div>:groups.map(({device,agents})=>{
@@ -275,8 +302,8 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       if(!archived)remembered[device.id]=rememberProjects(grouped,saved);
       const projects=orderProjects(grouped,saved);
       const now=Date.now();
-      return <section className="cli-device" key={device.id}><header>{twist(device.id,device.name)}<Monitor size={15}/><strong>{device.name}</strong><small className={device.online?"na-online":undefined}>{device.online?"在线":"离线"}</small><button className="icon-button" aria-label={"在 "+device.name+" 上新建会话"} onClick={()=>onNew(device.id)}><Plus size={15}/></button></header>
-      {(filter||!closed.has(device.id))&&projects.map(project=>{
+      return <section className="cli-device" key={device.id} data-single={single||undefined}>{single?null:<header>{twist(device.id,device.name)}<Monitor size={15}/><strong>{device.name}</strong><small className={device.online?"na-online":undefined}>{device.online?"在线":"离线"}</small><button className="icon-button" aria-label={"在 "+device.name+" 上新建会话"} onClick={()=>onNew(device.id)}><Plus size={15}/></button></header>}
+      {(single||filter||!closed.has(device.id))&&projects.map(project=>{
         const entries=project.rows;
         const id=JSON.stringify([device.id,project.key]);
         const parents=treeParents(entries,parentOf);
@@ -299,7 +326,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
           <div className="na-folder" draggable={movable} data-dragging={drag?.key===project.key&&drag.device===device.id?"1":undefined}
             onDragStart={movable?e=>{e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",project.label);setDrag({device:device.id,key:project.key})}:undefined}
             onDragEnd={()=>{setDrag(null);setDrop(null)}}>
-            {twist(id,project.label)}<Folder size={15}/><strong title={project.root||project.label}>{project.label}</strong>
+            {twist(id,project.label)}<strong title={project.root||project.label}>{project.label}</strong>
             {!project.scratch&&project.root?<button type="button" className="icon-button na-folder-new" aria-label={"在 "+project.label+" 中新建会话"} title="新建会话" onClick={()=>onNew(device.id,project.root)}><Plus size={14}/></button>:null}
             <small>{visible.length}</small></div>{filter||!closed.has(id)?<div className="na-branch">{sessions(shown,parents,null,0,new Set())}
           {olderCount>0?<button type="button" className="na-older" aria-expanded={open} onClick={()=>toggleEarlier(id)}>{open?<ChevronDown size={13}/>:<ChevronRight size={13}/>}<span>更早 {olderCount}</span></button>:null}

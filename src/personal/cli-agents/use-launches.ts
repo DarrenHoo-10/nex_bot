@@ -4,9 +4,9 @@
 // soon as the session exists. A failure stays on the row with a retry.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CliEngine, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
-import { CliApiError, cliErrorText, sendMessage, startSession } from "./api";
+import { CliApiError, cliErrorText, sendMessage, startSession, uploadAttachment } from "./api";
 import type { LaunchChoice } from "./CliModelMenu";
-import { saveLaunch } from "./composer-additions";
+import { fileReference, saveLaunch, type PickedFile } from "./composer-additions";
 import { useReview } from "./WorkbenchReview";
 
 export interface LaunchRequest {
@@ -15,8 +15,14 @@ export interface LaunchRequest {
   cwd: string;
   /** a new worktree on this branch; absent runs in `cwd` itself */
   branch?: string;
+  /** make `cwd` first: it did not exist when it was picked */
+  createDir?: boolean;
   /** the first message; may be empty */
   message: string;
+  /** files picked in the message box: they go to the computer once the session runs, the message names them */
+  files?: File[];
+  /** the computer takes uploads (`attach`); without it only small text files go inline */
+  attach?: boolean;
   choice: LaunchChoice;
 }
 
@@ -37,7 +43,7 @@ export interface Launch extends LaunchRequest {
 export interface LaunchEcho { text: string; at: number }
 
 /** Ids that make a retry the same request: the device reuses the worktree, Core the message. */
-interface Attempt { requestId: string; clientMessageId: string; sendRequestId: string }
+interface Attempt { requestId: string; clientMessageId: string; sendRequestId: string; files?: PickedFile[] }
 
 const LAUNCH_PREFIX = "launch-";
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -65,6 +71,15 @@ export function launchRow(launch: Launch): CliSessionView {
     hidden: false,
     online: true,
   };
+}
+
+/** What `git worktree add -b` and the device accept as a new branch name. */
+export const BRANCH_RE = /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/;
+export function branchProblem(branch: string): string | null {
+  const name = branch.trim();
+  if (!name) return "需要分支名称";
+  if (name.length > 120 || !BRANCH_RE.test(name) || name.includes("..") || name.includes("//") || name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) return "分支名称不合法";
+  return null;
 }
 
 /** The branch a new worktree gets unless the user names one: `nexagent/` and six random characters. */
@@ -100,20 +115,27 @@ export function useLaunches(sessions: readonly CliSessionView[], onSettled?: () 
           target = await review.run("worktree-start", review.initial, { deviceId: launch.deviceId, engine: launch.engine, cwd: launch.cwd, branch: launch.branch, requestId: attempt.requestId });
           if (!target) throw new Error("未取得新会话");
         } else {
-          target = (await startSession(launch.deviceId, launch.engine, launch.cwd, launch.branch ? { worktreeBranch: launch.branch, requestId: attempt.requestId, ...options } : options)).key;
+          target = (await startSession(launch.deviceId, launch.engine, launch.cwd, launch.branch ? { worktreeBranch: launch.branch, requestId: attempt.requestId, ...options } : { ...(launch.createDir ? { createDir: true } : {}), ...options })).key;
         }
         // the composer of the new session keeps the model and effort it started with
         saveLaunch(target, launch.choice);
         patch(launch.id, { target });
         settled.current?.();
       }
-      const text = launch.message.trim();
-      if (text) {
+      const files = launch.files ?? [];
+      if (launch.message.trim() || files.length) {
         patch(launch.id, { phase: "sending", error: undefined });
-        echoes.current.set(target, { text, at: launch.createdAt });
+        echoes.current.set(target, { text: [launch.message.trim(), ...files.map((file) => (file.type.startsWith("image/") ? "图片：" : "附件：") + file.name)].filter(Boolean).join("\n"), at: launch.createdAt });
+        const key = target;
+        const upload = launch.attach ? (file: File) => uploadAttachment(key, file) : false;
+        if (!attempt.files) attempt.files = files.map((file) => ({ id: crypto.randomUUID(), file }));
         for (let tries = 0; ; tries++) {
           try {
-            await sendMessage(target, text, { delivery: "send", clientMessageId: attempt.clientMessageId, requestId: attempt.sendRequestId });
+            // the session must be listed on the computer before files can go next to it
+            const references: string[] = [];
+            for (const entry of attempt.files) references.push(await fileReference(entry, key, upload));
+            const text = [launch.message.trim(), ...references].filter(Boolean).join("\n\n");
+            await sendMessage(key, text, { delivery: "send", clientMessageId: attempt.clientMessageId, requestId: attempt.sendRequestId });
             break;
           } catch (cause) {
             // the computer lists a just-started session once the CLI is up

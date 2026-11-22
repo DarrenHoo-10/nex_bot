@@ -124,7 +124,20 @@
 .na-compose-pop{position:absolute;left:8px;bottom:calc(100% + 4px);z-index:15;min-width:180px;max-width:90%;max-height:240px;overflow:auto}
 .na-compose-pop label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;padding:4px}
 .na-skill-chip,.na-pin{font-size:11px!important;background:var(--na-soft);color:var(--na-ink);border:1px solid var(--na-line);border-radius:5px;padding:3px 6px}
-.na-queued{width:100%;display:flex;gap:6px;align-items:center;background:var(--na-soft);padding:4px 8px;font-size:12px;overflow-wrap:anywhere}.na-queued button{margin-left:auto}
+/* a queued message: a small card at the top of the box, its actions together on the right */
+.na-queued{box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:34px;margin:0 0 6px;padding:4px 4px 4px 10px;border:1px solid var(--na-line);border-radius:10px;background:var(--na-inset);color:var(--na-ink);font-size:12.5px}
+.na-queued + .na-queued{margin-top:-2px}
+.na-queued-label{display:inline-flex;flex:none;align-items:center;gap:5px;color:var(--na-muted);font-size:11.5px;font-weight:600}
+.na-queued-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.na-queued-state{flex:none;color:var(--na-muted);font-size:11px}.na-queued-state[data-tone="error"]{color:#b4232a}
+.na-queued-actions{display:inline-flex;flex:none;align-items:center;gap:2px;margin-left:auto}
+.na-stage .cli-app .na-queued .na-queued-actions button{display:inline-flex;align-items:center;gap:4px;height:26px;min-height:26px;padding:0 8px;border:0;border-radius:7px;background:transparent;color:var(--na-muted);font-size:12px;cursor:pointer}
+.na-stage .cli-app .na-queued .na-queued-actions button.is-icon{width:26px;padding:0;justify-content:center}
+.na-stage .cli-app .na-queued .na-queued-actions button:hover{background:var(--na-paper);color:var(--na-ink)}
+.na-stage .cli-app .na-queued .na-queued-actions button.is-primary{background:var(--na-accent);color:#fff}
+.na-queued-edit{align-items:flex-start;padding:6px 6px 6px 10px}
+.na-queued-edit .na-queued-label{padding-top:5px}
+.na-stage .cli-app .na-queued-edit textarea{flex:1;min-width:0;min-height:44px;padding:4px 8px;border:1px solid var(--na-line);border-radius:7px;background:var(--na-paper);font-size:12.5px}
 .na-archive-toggle{display:flex;align-items:center;gap:8px;justify-self:start;color:var(--na-muted);font-size:12px;margin:15px 6px 0}
 .na-stage .cli-app .cli-body[data-side="open"]{grid-template-columns:minmax(0,1fr) minmax(285px,30%)}
 .na-side{border-left:1px solid var(--na-line);background:var(--na-inset);display:flex;min-height:0;min-width:0;flex-direction:column}
@@ -205,8 +218,6 @@
 .na-stage .cli-app .na-message-box .cli-composer-actions .na-stop{width:33px;min-width:33px;height:33px;padding:0;border-radius:50%;background:var(--na-ink);color:var(--na-paper)}
 .na-stage .cli-app .na-message-box .cli-composer-actions .na-stop:hover:enabled{background:#963f36;color:#fff}
 .na-message-box .na-model-label{font-size:13px;color:var(--na-ink);padding:0 6px;max-width:16ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.na-stage .cli-app .na-progress{box-sizing:border-box;width:min(940px,calc(100% - clamp(24px,5vw,80px)));margin:4px auto -4px;display:flex;align-items:center;gap:7px;padding:0 14px;color:var(--na-muted);font-size:12px}
-.na-stage .cli-app .na-progress .text-button{display:inline-flex;align-items:center;gap:4px;margin-left:auto;font-size:12px;color:var(--na-accent)}
 
 /* --- tree (batch 2) --- */
 .na-stage .cli-app .na-older{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;min-height:28px;padding:0 6px 0 2px;border:0;border-radius:6px;background:transparent;color:var(--na-muted);font-size:12px;cursor:pointer;text-align:left}
@@ -216,3 +227,71 @@
 /* --- side chats (batch 3) --- */
 .na-stage .cli-app .na-side-count{display:inline-flex;align-items:center;gap:4px;min-width:26px;height:28px;padding:4px 6px;font-variant-numeric:tabular-nums}
 /* --- end side chats --- */
+.na-stage .cli-app .na-launch-reply .na-launch-error{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0;text-align:left}
+.na-stage .cli-app .na-launch-reply .na-launch-error span{flex:1 1 200px}
+.na-stage .cli-app .na-launch-reply .na-launch-error .text-button{display:inline-flex;align-items:center;gap:4px}
+.na-stage .cli-app .na-launch-composer{opacity:.6;pointer-events:none}
+.na-stage .cli-app .na-working{display:grid;justify-items:start;gap:0}
+.na-stage .cli-app .na-working-dots{display:flex;align-items:center;gap:5px;padding:12px 16px;border-radius:14px 14px 14px 5px;background:var(--na-paper);box-shadow:0 1px 3px #17271b14}
+.na-stage .cli-app .na-working-dots>span{width:5px;height:5px;border-radius:50%;background:var(--na-muted);opacity:.45;animation:na-working-bounce 1.2s ease-in-out infinite}
+.na-stage .cli-app .na-working-dots>span:nth-child(2){animation-delay:.15s}.na-stage .cli-app .na-working-dots>span:nth-child(3){animation-delay:.3s}
+@keyframes na-working-bounce{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-4px);opacity:1}}
+@media(prefers-reduced-motion:reduce){.na-stage .cli-app .na-working-dots>span{animation:none;opacity:.75}}
+.na-stage .cli-app .na-working-caption{display:flex;align-items:center;gap:8px;margin:5px 0 0 4px;color:var(--na-muted);font-size:11px}
+.na-stage .cli-app .na-working-caption .text-button{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--na-accent)}
+
+/* Session list: a new-session button on top, what is running pinned above the projects, projects as headings. */
+.na-stage .cli-app .na-new-session{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;min-height:36px;margin:2px 0 6px;padding:0 12px;border:1px solid var(--na-line);border-radius:10px;background:var(--na-paper);color:var(--na-ink);font-size:13px;font-weight:600;box-shadow:0 1px 2px #17271b0d;cursor:pointer}
+.na-stage .cli-app .na-new-session svg{color:var(--na-accent)}
+.na-stage .cli-app .na-new-session:hover{background:color-mix(in srgb,var(--na-soft) 45%,var(--na-paper));border-color:color-mix(in srgb,var(--na-accent) 35%,var(--na-line))}
+.na-stage .cli-app .na-active{display:grid;gap:0;margin:0 0 4px;padding:2px 0 8px;border-bottom:1px solid var(--na-line)}
+.na-section-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px 3px;color:var(--na-muted);font-size:11px;font-weight:650;letter-spacing:.03em}
+.na-section-head small{font-weight:500}
+.na-stage .cli-app .na-active .cli-row{padding-left:4px}
+.na-row-context{flex:none;max-width:42%;margin-left:auto;overflow:hidden;color:var(--na-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.na-sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* the CLI mark stays quiet; the dot carries the state */
+.na-engine{position:relative}
+.na-stage .cli-app .cli-row .na-engine>*{filter:grayscale(1);opacity:.55;transition:filter 130ms ease,opacity 130ms ease}
+.na-stage .cli-app .cli-row:hover .na-engine>*,.na-stage .cli-app .cli-row.is-selected .na-engine>*{filter:none;opacity:1}
+.na-engine[data-tone="running"]::after,.na-engine[data-tone="waiting"]::after{content:"";position:absolute;right:-3px;bottom:-2px;width:8px;height:8px;border-radius:50%;background:#2f9e5f;box-shadow:0 0 0 2px var(--na-nav)}
+.na-engine[data-tone="waiting"]::after{background:#d68a12}
+@media(prefers-reduced-motion:no-preference){.na-engine[data-tone="running"]::after{animation:na-breathe 1.8s ease-in-out infinite}}
+@keyframes na-breathe{0%,100%{box-shadow:0 0 0 2px var(--na-nav),0 0 0 2px #2f9e5f33}50%{box-shadow:0 0 0 2px var(--na-nav),0 0 0 5px #2f9e5f1f}}
+.na-stage .cli-app .cli-row .cli-count{min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#d68a12;color:#fff;font-size:10.5px;line-height:17px;text-align:center}
+
+/* projects are headings; sessions sit flush under them, tree lines only for forks */
+.na-stage .cli-app .cli-device[data-single]>.na-project{margin-left:0}
+.na-folder{min-height:30px;margin-top:6px}
+.na-folder strong{color:var(--na-ink);font-size:12.5px;font-weight:650}
+.na-folder small{font-size:11px}
+.na-folder .na-twist{opacity:.45}.na-folder:hover .na-twist{opacity:1}
+.na-project>.na-branch{margin-left:6px;padding-left:0;border-left:0}
+
+.na-stage .cli-app button.na-section-head{width:100%;gap:5px;justify-content:flex-start;min-height:26px;border:0;border-radius:6px;background:transparent;cursor:pointer;text-align:left}
+.na-stage .cli-app button.na-section-head:hover{background:var(--na-hover);color:var(--na-ink)}
+.na-stage .cli-app button.na-section-head small{margin-left:auto}
+.na-stage .cli-app .na-active:has(> button[aria-expanded="false"]){padding-bottom:4px}
+.na-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2f9e5f}.na-dot[data-tone="waiting"]{background:#d68a12}
+.na-stage .cli-app button.na-section-head{padding:4px 8px 3px;color:var(--na-muted);font-size:11px;font-weight:650;letter-spacing:.03em;line-height:1.4}
+.na-stage .cli-app button.na-section-head svg{flex:none}
+/* the queued card's icon buttons say what they do on hover or keyboard focus, at once */
+.na-stage .cli-app .na-queued .na-queued-actions button[data-tip]{position:relative}
+.na-stage .cli-app .na-queued .na-queued-actions button[data-tip]:hover::after,
+.na-stage .cli-app .na-queued .na-queued-actions button[data-tip]:focus-visible::after{content:attr(data-tip);position:absolute;right:0;bottom:calc(100% + 7px);z-index:5;padding:5px 9px;border-radius:7px;background:#20362b;color:#fff;font-size:12px;font-weight:500;line-height:1.4;white-space:nowrap;box-shadow:0 4px 14px #17271b33;pointer-events:none}
+
+/* context ring: how much of the window the last request used */
+.na-stage .cli-app .na-context .na-context-track{stroke:var(--na-line)}
+.na-stage .cli-app .na-context .na-context-fill{stroke:var(--na-accent);transition:stroke-dasharray 300ms ease}
+.na-stage .cli-app .na-context[data-level="high"] .na-context-fill{stroke:#d68a12}
+.na-stage .cli-app .na-context[data-level="full"] .na-context-fill{stroke:#c2410c}
+.na-message-box .na-compose-pop[data-panel="context"]{min-width:220px}
+.na-context-detail{display:grid;gap:7px;padding:6px 6px 4px;color:var(--na-ink);font-size:12.5px}
+.na-context-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.na-context-head strong{font-size:15px;font-variant-numeric:tabular-nums}
+.na-context-bar{height:6px;overflow:hidden;border-radius:999px;background:var(--na-inset)}
+.na-context-bar span{display:block;height:100%;border-radius:999px;background:var(--na-accent)}
+.na-context-detail[data-level="high"] .na-context-bar span{background:#d68a12}
+.na-context-detail[data-level="full"] .na-context-bar span{background:#c2410c}
+.na-context-detail small{color:var(--na-muted);font-size:11.5px;font-variant-numeric:tabular-nums}
