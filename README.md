@@ -33,14 +33,14 @@ Android 0.2.3 与 Windows 共用账号设置、模型、记忆服务、连接器
 
 ## 下载与安装
 
-飞书可以接入多个应用，每个机器人对应一个助手；连接器里点开应用，可以为每个群设置触发方式（必须 @、话题内免 @、默认应答、全部回复）、会话方式（群聊共享话题独立、整群一个会话、每次 @ 开新话题）和只对该群生效的系统上下文。飞书里的话题对应 NexBot 话题，网页上接收飞书的助手会像金融助手一样显示话题卡片。网页和 Windows 的左上角可切换 NexBot / NexAgent，NexAgent 按电脑 → 项目 → 会话整理 Claude Code、Codex 会话。NexAgent 的项目可拖动排序（新项目排在最前），时钟按钮按时间列出全部会话，放大镜可按标题和会话内容搜索；输入框可选模型和推理强度，支持粘贴图片；发往 Claude 桌面端或终端会话（含跳过权限模式）的消息由该电脑上的客户端送达。模型菜单列出该电脑上 Claude Code / Codex 在终端里可选的模型；新建会话直接在右侧的输入框里写第一条消息，上方可浏览或新建目录、选运行工具和工作树，提交后会话立即出现；侧栏置顶「进行中」，输入框的圆环显示上下文用量。当前发布的客户端为 Windows 0.9.42、Android 0.2.41 和 Mac / iOS 0.2.33。每个工作区都有一个金融助手，在 NexBot 或已连接的 `nex_stock` 中新建对话，会在同一个助手下生成独立话题。
+飞书可以接入多个应用，每个机器人对应一个助手；连接器里点开应用，可以为每个群设置触发方式（必须 @、话题内免 @、默认应答、全部回复）、会话方式（群聊共享话题独立、整群一个会话、每次 @ 开新话题）和只对该群生效的系统上下文。飞书里的话题对应 NexBot 话题，网页上接收飞书的助手会像金融助手一样显示话题卡片。网页和 Windows 的左上角可切换 NexBot / NexAgent，NexAgent 按电脑 → 项目 → 会话整理 Claude Code、Codex 会话。NexAgent 的项目可拖动排序（新项目排在最前），时钟按钮按时间列出全部会话，放大镜可按标题和会话内容搜索；输入框可选模型和推理强度，支持粘贴图片；发往 Claude 桌面端或终端会话（含跳过权限模式）的消息由该电脑上的客户端送达。模型菜单列出该电脑上 Claude Code / Codex 在终端里可选的模型；新建会话直接在右侧的输入框里写第一条消息，上方可浏览或新建目录、选运行工具和工作树，提交后会话立即出现；侧栏置顶「进行中」，输入框的圆环显示上下文用量。当前发布的客户端为 Windows 0.9.42、Android 0.2.41 和 Mac / iOS 0.2.34。每个工作区都有一个金融助手，在 NexBot 或已连接的 `nex_stock` 中新建对话，会在同一个助手下生成独立话题。
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
 | Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.42-preview.1/NexBot-0.9.42-x64-Client-Portable.exe) | 双击运行，免安装 |
 | Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.42-preview.1/nexbot-0.2.41-debug.apk) | 在手机上打开并安装，测试版 |
-| Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.42-preview.1/NexBot-0.2.33-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
-| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.42-preview.1/NexBot-0.2.33-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
+| Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-apple-v0.2.34-preview.1/NexBot-0.2.34-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
+| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-apple-v0.2.34-preview.1/NexBot-0.2.34-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
 | 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.42-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
 各平台安装包、校验值与验证范围见 [0.9.42 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.42-preview.1)。Windows 包尚无发布者数字签名。Mac 应用使用临时签名，尚未公证。Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
