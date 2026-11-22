@@ -40,6 +40,9 @@ async function put(key, body, type, overwrite) {
     const request = https.request(`${origin}/${key}`, { method: "PUT", headers: { ...signed("PUT", key, headers, md5, type), "Content-Length": body.length } }, (response) => { response.resume(); response.on("end", () => resolve(response.statusCode)); response.on("error", reject); });
     request.setTimeout(10 * 60_000, () => request.destroy(new Error(`上传 ${key} 超过 10 分钟没有数据往来`)));
     request.on("error", reject);
+    // OSS answers 409 to a forbidden overwrite before the body is sent and closes the connection; the write then fails
+    // with EPIPE after the response, which must not crash the run (the object is read back and checked either way).
+    request.on("socket", (socket) => socket.on("error", () => {}));
     request.end(body);
   });
   if (status === 409 && !overwrite) return "exists";

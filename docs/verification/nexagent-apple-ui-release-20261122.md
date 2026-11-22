@@ -58,10 +58,6 @@ Windows 0.9.42 and Android 0.2.41 were not rebuilt.
 
 ## Limits
 
-- **Manifest-wide tag and notes.** The update manifest has one `tag` and one `notes` field for the whole manifest. After this Apple-only publish:
-  - the homepage link reads "0.9.42 预览版发布说明" but opens the Apple release page, which links on to `nexbot-v0.9.42-preview.1`;
-  - an outdated Windows or Android client would be shown the Apple notes.
-
-  Downloads, versions and digests are correct for every platform. Fixing this needs a tag and notes per platform entry in `publish-client-update.mjs` and `client-updates.ts`.
+- **Manifest-wide tag and notes (fixed the same day).** Right after this publish, the homepage's 0.9.42 release link opened the Apple release, because the manifest had a single tag and a single notes field. Fixed by [per-platform tags and notes](update-manifest-per-platform-20261122.md).
 - **Not exercised.** Nothing was run against a real Core and nothing was installed on a physical device. The Claude context window is inferred from settings when the transcript does not state it.
 - **No queued messages on Apple.** The Apple apps still have no queued-message UI.
