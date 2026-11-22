@@ -216,7 +216,7 @@ describe('Episode archives', () => {
       // Nothing to separate yet.
       expect(await (await post(app, 'topic', { botId: bot })).json()).toEqual({ marked: false });
       expect(count(app, 'conversation_topic_marks')).toBe(0);
-      expect((await post(app, 'topic', { botId: 'unknown-bot' })).status).toBe(400);
+      expect((await post(app, 'topic', { botId: 'unknown-bot' })).status).toBe(404);
       fake.scripts.push('第一段回答', '第二段回答', '第三段回答');
       await turn(app, bot, 'TOPIC-FIRST：旧话题内容', 'topic-1');
       expect(await (await post(app, 'topic', { botId: bot })).json()).toEqual({ marked: true });

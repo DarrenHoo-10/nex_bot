@@ -41,7 +41,7 @@ locale 检查通过）。上一版见 [0.9.36 发布记录](nexagent-workbench-r
 
 ## 证据
 
-- **自动化**：cli-agents 全量 75 个测试文件 1233 项，其中 `hub.test.ts` 3 项为并行端口抖动，
+- **自动化**：cli-agents 全量 75 个测试文件 1233 项，其中 `server/personal-os/cli-agents/hub.test.ts` 3 项为并行端口抖动，
   单独连跑两次 29/29 通过。新增覆盖：索引解析（早期转录、归档、btw/userFork/forkedFrom、
   lineageDetached、删除标记、残缺条目）、隐藏规则及“绝不消失”的保留条件、删除宽限、侧边栏标题、
   一次性 SDK 过滤、`.git` 布局（主仓库、worktree、子模块、`\\?\`、主目录、缓存时效）、

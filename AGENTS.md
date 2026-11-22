@@ -26,6 +26,17 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    and re-verify on the merged tree. Build everything from that pushed commit. If
    GitHub is unreachable, use the machine's proxy on git/`gh` commands only
    (`git -c http.proxy=…`, `HTTPS_PROXY=… gh`); never change global config.
+   **Before deploying or releasing, run static checks only**: the pre-push hook
+   (lint, typecheck, locale catalogs) on the merged tree; the builds below also
+   compile everything. Do not run test suites first: no `vitest` (full or
+   partial), no Android unit tests, no Apple render or Swift package tests. The
+   repository keeps only core-path tests (`server/personal-os`, `src/personal`,
+   `shared`), and CI runs them after the push; check that run afterwards and fix
+   what it finds, but a deploy or release never waits for it. Write or run a test
+   for a change only while developing it, not as a release step.
+
+   部署和发版前只做静态检查（lint、类型检查、多语言校验），不跑任何测试套件；
+   核心链路的单测由推送后的 CI 运行，发版不等它。
 2. **Core and web UI → Mac Air** (`ssh mac-air`; root `~/nexbot`). Since
    2026-11-14 production Core runs there; Tokyo's Core is retired, so never
    deploy to it. The launchd job `gui/<uid>/cn.nexorai.nexbot-core` runs
@@ -60,15 +71,15 @@ only for a local build to test, say that GitHub and OSS publication were skipped
    user's booted simulator is never used. Delete the simulator and directory afterwards.
 4. **Packages.** Build every platform the change reaches from the pushed commit:
    Windows `pnpm package:client:win`; Android
-   `./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug`
+   `./gradlew --no-daemon :app:assembleDebug`
    in `android/` (JDK 17, Android SDK 36, the machine's debug key, so updates only
    install over builds signed with it); Mac/iOS `apps/apple/scripts/release-preview.sh`
-   on the Mac. Clients update by comparing version numbers, so bump the version
+   on the Mac (it skips its render tests unless `RENDER_TESTS=true`). Clients update by comparing version numbers, so bump the version
    (`electron-builder.client.yml`, `android/app/build.gradle.kts`,
    `apps/apple/project.yml`) for every platform you ship, and never replace the
    bytes of an already published version or asset name. Check each exact artifact,
    not only the source: Windows with `node scripts/smoke-shell-login.mjs --exe=<exe>`,
-   Android's test results and `apksigner` (same certificate as the published build),
+   Android's version and `apksigner` (same certificate as the published build),
    Mac/iOS version, signature and bundle contents.
 5. **Publish.** Create a GitHub pre-release tagged `nexbot-v<windows>-preview.N`
    (Apple-only: `nexbot-apple-v<version>-preview.N`) at the build commit, with a

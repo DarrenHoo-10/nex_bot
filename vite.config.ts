@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { DurationSequencer } from "./scripts/testing/duration-sequencer.ts";
 import { HTML_PREVIEW_CSP, htmlPreviewShell } from './shared/html-preview-shell.mjs';
 
 // The About dialog shows the shipped version; package.json is the one place
@@ -29,23 +28,17 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Only the core path is tested: NexBot Core (with Agent mode), its web UI and the
+    // contracts they share. Everything else was removed on 2026-11-21 (AGENTS.md).
     include: [
-      "evals/**/*.test.ts",
-      "server/**/*.test.ts",
-      "electron/**/*.test.mjs",
-      "src/**/*.test.ts",
+      "server/personal-os/**/*.test.ts",
+      "src/personal/**/*.test.ts",
       "shared/**/*.test.ts",
-      "companion/**/*.test.ts",
-      "enterprise/**/*.test.ts",
-      "scripts/**/*.test.mjs",
-      "scripts/**/*.test.ts",
     ],
     setupFiles: ["server/testing/setup.ts"],
     // the suite spawns fake provider CLIs and a real harness server;
     // parallel files introduce load-sensitive flakes for no win
     fileParallelism: false,
-    // --shard splits the files by recorded CI seconds, not count (docs/ci.md)
-    sequence: { sequencer: DurationSequencer },
     testTimeout: 20_000,
     hookTimeout: 30_000,
   },

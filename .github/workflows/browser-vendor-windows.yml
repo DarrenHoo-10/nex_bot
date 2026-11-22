@@ -9,7 +9,6 @@ on:
     paths:
       - .github/workflows/browser-vendor-windows.yml
       - scripts/build-windows-browser-vendor.mjs
-      - scripts/build-windows-browser-vendor.test.mjs
       - scripts/smoke-browser-bundle.mjs
       - third_party/browser/agent-browser-windows-stdio.patch
 

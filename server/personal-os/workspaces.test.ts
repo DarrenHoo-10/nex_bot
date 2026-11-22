@@ -86,8 +86,8 @@ it("isolates actual model messages, memory, connectors and adversarial foreign o
   const connector = (await f.api("connectors/save", other.token, { name: "Other MCP", url: "https://example.test/mcp", transport: "http", token: "other-private-mcp" })).data;
   expect((await f.api("state", f.owner.token)).data.connectors).toEqual([]);
   expect((await f.api("connectors/delete", f.owner.token, { id: connector.id, version: connector.version })).status).toBe(400);
-  expect((await f.api("agents/input", other.token, { botId: original.id, text: "attack", clientId: "foreign-input" })).status).toBe(400);
-  expect((await f.api("agents/input", f.owner.token, { botId: bot.id, text: "attack", clientId: "foreign-input" })).status).toBe(400);
+  expect((await f.api("agents/input", other.token, { botId: original.id, text: "attack", clientId: "foreign-input" })).status).toBe(404);
+  expect((await f.api("agents/input", f.owner.token, { botId: bot.id, text: "attack", clientId: "foreign-input" })).status).toBe(404);
   f.model.scripts.push({ kind: "openai-text", text: "other-private-reply" });
   const sent = await f.api("agents/input", other.token, { botId: bot.id, text: "other-private-message", clientId: "own-input" });
   expect(sent.status).toBe(202);

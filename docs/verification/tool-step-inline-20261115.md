@@ -25,7 +25,7 @@ Gmail 目录修复之后)。全部验证均使用自有临时 Core 数据、合�
 - `pnpm exec vitest run src/personal/Routines.test.ts src/personal/AgentDesktop.input.test.ts`:
   36 项通过。新增用例:写入长期记忆的步骤点击后就地展开、显示记忆正文文本、
   不出现 `saved` 原始应答、不渲染 `.preview-card`、右侧面板保持关闭、再次点击收起。
-  `Routines.test.ts` 原断言(期待原始 JSON `"command":"test"`)更新为断言
+  `src/personal/Routines.test.ts` 原断言(期待原始 JSON `"command":"test"`)更新为断言
   「执行命令/执行输出」文本渲染且不含原始 JSON。
 - 新增 `node scripts/testing/smoke-personal-tool-steps.mjs`(一次性 fixture:
   vite/esbuild 构建 + 真实 Core + 隐藏 Electron 渲染进程 + 合成模型):
