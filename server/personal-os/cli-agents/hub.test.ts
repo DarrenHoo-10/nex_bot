@@ -833,6 +833,24 @@ describe("search, launch options and attachments", () => {
     expect((await f.call(`cli-agents/search?q=${"x".repeat(201)}`)).status).toBe(400);
   });
 
+  it("lists a computer's CLI models, and refuses an executor that cannot", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "models", { cap: { ...FULL, features: [...FULL.features, "models"] } });
+    const old = await connectDevice(f, "models-old", { cap: FULL });
+    const catalog = { current: "auto/claude-opus-5-5[1m]", models: [{ id: "auto/claude-opus-5-5[1m]", label: "Opus 5.5 · gateway", efforts: ["low", "high"] }, { id: "bad name", label: "x" }] };
+    device.onOp = (message) => message.op === "models" ? { ok: true, result: catalog } : defaultOp(message);
+    const listed = await f.call(`cli-agents/models?deviceId=${device.id}&engine=claude`);
+    expect(listed).toMatchObject({ status: 200, data: { current: "auto/claude-opus-5-5[1m]", models: [{ id: "auto/claude-opus-5-5[1m]", label: "Opus 5.5 · gateway", efforts: ["low", "high"] }] } });
+    expect(device.ops("models").at(-1)!.args).toEqual({ engine: "claude" });
+    expect((await f.call(`cli-agents/models?deviceId=${old.id}&engine=claude`)).status).toBe(400);
+    expect(old.ops("models")).toHaveLength(0);
+    expect((await f.call(`cli-agents/models?deviceId=${device.id}&engine=gpt`)).status).toBe(400);
+    // a model gateways name with a slash is a launch option too
+    device.onOp = (message) => message.op === "start" ? { ok: true, result: { ref: "claude:new9", terminal: "t" } } : defaultOp(message);
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", model: "auto/claude-opus-5-5[1m]" })).status).toBe(200);
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", model: "auto/claude-opus-5-5[1m]" });
+  });
+
   it("passes model and effort to a computer that can take them and refuses an older one", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "launch", { cap: FULL });

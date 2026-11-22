@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { listConnectionModels, modelName, reasoningLabels, resolveReasoning, type Connection, type ReasoningChoice } from "../api";
+import { useAnchoredPopover } from "./anchored-popover";
 import "./model-menu.css";
 
 /** What an assistant uses: a provider, a model there ("" = the provider's default model) and its reasoning effort. */
@@ -35,23 +36,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
       .catch((error: unknown) => setCatalogs((all) => ({ ...all, [provider.id]: { error: error instanceof Error ? error.message : "获取模型失败" } })));
   }, [open, provider, catalogs]);
 
-  useLayoutEffect(() => {
-    const el = panel.current; if (!open || !el) return;
-    el.showPopover();
-    const position = () => {
-      const anchor = (anchorRef?.current ?? trigger.current)?.getBoundingClientRect(); if (!anchor) return;
-      el.style.width = `${Math.min(320, innerWidth - 24)}px`;
-      const below = innerHeight - anchor.bottom - 12, above = anchor.top - 12, down = below >= Math.min(el.scrollHeight, 420) || below >= above;
-      el.style.maxHeight = `${Math.max(120, down ? below : above)}px`;
-      el.style.left = `${Math.max(12, Math.min(anchor.left, innerWidth - el.offsetWidth - 12))}px`;
-      el.style.top = `${down ? anchor.bottom + 6 : Math.max(8, anchor.top - el.offsetHeight - 6)}px`;
-    };
-    position(); const observer = new ResizeObserver(position); observer.observe(el);
-    window.addEventListener("resize", position);
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node) && !el.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener("pointerdown", outside);
-    return () => { observer.disconnect(); window.removeEventListener("resize", position); document.removeEventListener("pointerdown", outside); if (el.isConnected) el.hidePopover(); };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useAnchoredPopover(open, panel, () => anchorRef?.current ?? trigger.current, () => [root.current], () => setOpen(false));
 
   const effective = provider && provider.id === current?.id ? choice.model || provider.defaultModel : "";
   const models = useMemo(() => {

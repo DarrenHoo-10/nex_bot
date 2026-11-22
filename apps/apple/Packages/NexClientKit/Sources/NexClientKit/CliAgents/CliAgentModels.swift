@@ -101,12 +101,15 @@ public struct CliTerminalCapability: Sendable, Hashable, Decodable {
 public struct CliCapability: Sendable, Hashable, Decodable {
     public var engines: [CliEngine]
     public var terminal: CliTerminalCapability
-    public init(engines: [CliEngine], terminal: CliTerminalCapability) { self.engines = engines; self.terminal = terminal }
-    enum CodingKeys: String, CodingKey { case engines, terminal }
+    /// what the executor does beyond the first protocol (`launchOptions`, `models`, …); empty on older ones
+    public var features: [String]
+    public init(engines: [CliEngine], terminal: CliTerminalCapability, features: [String] = []) { self.engines = engines; self.terminal = terminal; self.features = features }
+    enum CodingKeys: String, CodingKey { case engines, terminal, features }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         engines = try c.decode(LossyList<CliEngine>.self, forKey: .engines).values
         terminal = try c.decode(CliTerminalCapability.self, forKey: .terminal)
+        features = (try? c.decodeIfPresent(LossyList<String>.self, forKey: .features))?.values ?? []
     }
 }
 

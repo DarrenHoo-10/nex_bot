@@ -675,6 +675,7 @@ describe("parseCoreCliMessage", () => {
       git: { ref, action: "info" },
       search: { query: "部署 main", limit: 20 },
       attach: { ref, name: "截图.png", data: "aGk=" },
+      models: { engine: "codex" },
     };
     expect(Object.keys(ops).sort()).toEqual([...CLI_OPS].sort());
     for (const [op, args] of Object.entries(ops)) {

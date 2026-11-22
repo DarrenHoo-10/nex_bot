@@ -111,6 +111,7 @@ export class CliAgentRoutes {
           case "/api/cli-agents/sessions/git": return await this.gitInfo(request);
           case "/api/cli-agents/notes": return this.notes(request);
           case "/api/cli-agents/search": return await this.search(request);
+          case "/api/cli-agents/models": return await this.models(request);
           default: return {
             status: 200,
             body: {
@@ -412,6 +413,14 @@ export class CliAgentRoutes {
     return { status: 200, body: { hits } };
   }
 
+  /** `GET /models?deviceId=&engine=`: the rows of that CLI's own model picker on the computer. */
+  private async models(request: CliRouteRequest): Promise<CliRouteResult> {
+    const deviceId = request.search.get("deviceId");
+    const engine = request.search.get("engine");
+    if (!isCliDeviceId(deviceId) || !isCliEngine(engine)) return cliErrorResult("invalid");
+    return { status: 200, body: await this.hub.models(request.sessionId, deviceId, engine) };
+  }
+
   /** `POST /attach?key=&name=` with the file itself as the body. */
   private async attach(request: CliRouteRequest): Promise<CliRouteResult> {
     const key = this.key(request.search.get("key"));
@@ -590,6 +599,7 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/sessions/git",
   "/api/cli-agents/notes",
   "/api/cli-agents/search",
+  "/api/cli-agents/models",
 ]);
 
 /** The delivery a workbench submit carries; absent means the legacy contract. */

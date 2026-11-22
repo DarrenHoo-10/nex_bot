@@ -65,6 +65,7 @@ import { CliLocalStore, type StoredReply } from "./local-store.ts";
 import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
 import { TranscriptReader } from "./reader.ts";
 import { searchSessions, type SearchSource } from "./search.ts";
+import { cliModels } from "./models.ts";
 import { TermStreams, hcErrorCode, type TermStream } from "./streams.ts";
 import { zcodeHomeExists, zcodeHomes, type ZcodeHostChannel } from "./zcode.ts";
 
@@ -1089,6 +1090,8 @@ export class CliAgentBridge {
         return this.opSearch(args as CliOpArgs["search"], budget);
       case "attach":
         return this.opAttach(args as CliOpArgs["attach"]);
+      case "models":
+        return cliModels((args as CliOpArgs["models"]).engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
       default:
         throw new OpFailure("invalid", "this operation is not available on this computer yet");
     }
@@ -1238,25 +1241,28 @@ export class CliAgentBridge {
   private async opStart(args: CliOpArgs["start"], budget: number): Promise<{ ref: CliSessionRef; terminal: string; cwd?: string }> {
     refuseZcodeOptions(args.engine, args);
     const fork = this.forkSource(args);
-    const hc = await this.requireHc();
-    const executable = await this.cliPath(args.engine);
     const size = clampTermSize(args.cols, args.rows);
     const claude = args.engine === "claude";
     const nativeId = claude ? randomUUID() : undefined;
     const known = new Set<string>();
-    if (!claude) {
-      await this.discovery.refresh();
-      for (const row of this.discovery.snapshot()) if (row.engine === "codex") known.add(cliRef("codex", row.nativeId));
-    }
     // A worktree start builds the tree here first; the requestId dedups so a
-    // retried request reuses the tree it already created.
+    // retried request reuses the tree it already created. Checking out a large
+    // repository takes seconds, so the terminal, the CLI and the hooks get ready meanwhile.
+    const tree = args.worktree ? this.git.worktree(args.cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform }) : null;
+    const [hc, executable, hooks] = await Promise.all([
+      this.requireHc(),
+      this.cliPath(args.engine),
+      nativeId ? this.hookLaunch(nativeId) : Promise.resolve(undefined),
+      claude ? Promise.resolve() : this.discovery.refresh().then(() => {
+        for (const row of this.discovery.snapshot()) if (row.engine === "codex") known.add(cliRef("codex", row.nativeId));
+      }),
+    ]);
     let cwd = fork ? fork.row.cwd : args.cwd;
-    if (args.worktree) {
-      const tree = await this.git.worktree(args.cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform });
-      if (tree.source === "failed" || !tree.worktree) throw new OpFailure("invalid", tree.error ?? "无法创建工作树");
-      cwd = tree.worktree;
+    if (tree) {
+      const built = await tree;
+      if (built.source === "failed" || !built.worktree) throw new OpFailure("invalid", built.error ?? "无法创建工作树");
+      cwd = built.worktree;
     }
-    const hooks = nativeId ? await this.hookLaunch(nativeId) : undefined;
     const plan = await planLaunch(
       {
         engine: args.engine,

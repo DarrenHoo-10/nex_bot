@@ -3,11 +3,12 @@
 // when the session cannot be driven from here.
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus } from "lucide-react";
-import { CLI_EFFORTS, CLI_MODELS, MAX_SEND_TEXT, utf8ByteLength, type CliSessionView } from "../../../shared/cli-agents";
+import { MAX_SEND_TEXT, utf8ByteLength, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
 import {fileReference,getExtras,saveExtras,type ComposerExtras} from "./composer-additions";
 import { composerMode } from "./session-model";
+import { CliModelMenu, type LaunchChoice } from "./CliModelMenu";
 import type { CliQueue } from "./api";
 
 // Drafts live as long as the page, one per session.
@@ -32,8 +33,7 @@ export interface SideDraftOptions {
   busy?:boolean;
   configure(model:string,effort:string):void;
 }
-/** The model and reasoning effort a session runs with; empty strings leave the CLI's own default. */
-export interface LaunchChoice { model: string; effort: string }
+export type { LaunchChoice } from "./CliModelMenu";
 
 /** Biggest attachment the computer accepts. */
 export const ATTACH_MAX = 8 * 1024 * 1024;
@@ -109,14 +109,12 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const mounted = useRef(true);
   // outside the review fixture: the CLI's own models and effort levels
   const choice:LaunchChoice=draft?{model:draft.model,effort:draft.effort}:launch??{model:"",effort:""};
-  const models=CLI_MODELS[session.engine]??[], efforts=CLI_EFFORTS[session.engine]??[];
   const canAttach=!!review?.fileUpload || !!features?.includes("attach");
   const launchOptions=!!features?.includes("launchOptions");
   /** a Claude in a NexBot terminal switches at once (/model, /effort); anything else on its next start */
   const switchesNow=!draft && mode.kind==="send" && !mode.outside && session.engine==="claude";
   const pickerOff=!launchOptions && !switchesNow;
   const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : switchesNow || draft ? "" : mode.kind==="stopped" ? "继续会话时生效" : "下次在 NexBot 中继续时生效";
-  const modelName=(id:string)=>models.find(m=>m.id===id)?.label??id;
   function choose(next:LaunchChoice){if(draft)draft.configure(next.model,next.effort);else onLaunch?.(next)}
   function configure(nextModel:string,nextEffort:string) {
     if(draft)draft.configure(nextModel,nextEffort);
@@ -286,17 +284,6 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         </div>}
         {panel==="context"?<small role="status">当前 Harness 未提供上下文用量</small>:null}
         {panel==="skill"&&review?review.skills.filter(s=>!text.startsWith("/")||s.startsWith(text)).map(s=><button type="button" key={s} onClick={()=>{setSkill(s);if(text.startsWith("/"))change("");setPanel(null);draftRef.current?.focus()}}>{s}</button>):null}
-        {panel==="model"&&!review?<div className="na-model-pick">
-          <label>模型<select aria-label="模型" value={choice.model} disabled={pickerOff} onChange={e=>choose({...choice,model:e.target.value})}>
-            <option value="">{session.model?.trim()?"当前（"+session.model.trim()+"）":"默认"}</option>
-            {models.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
-            {choice.model&&!models.some(m=>m.id===choice.model)?<option value={choice.model}>{choice.model}</option>:null}
-          </select></label>
-          {efforts.length?<label>推理强度<select aria-label="推理强度" value={choice.effort} disabled={pickerOff} onChange={e=>choose({...choice,effort:e.target.value})}>
-            <option value="">默认</option>{efforts.map(level=><option key={level} value={level}>{level}</option>)}
-          </select></label>:null}
-          {pickerNote?<small role="status">{pickerNote}</small>:null}
-        </div>:null}
         {panel==="model"&&review?<><label>模型<select aria-label="模型" value={model} onChange={e=>configure(e.target.value,effort)}>{(review.models[session.engine]??[]).map(m=><option key={m}>{m}</option>)}</select></label><label>推理强度<select aria-label="推理强度" value={effort} onChange={e=>configure(model!,e.target.value)}><option>标准</option><option>高</option></select></label></>:null}
         {panel==="notes"?notes.map(n=><div key={n.id}><b>{n.num}. {n.quote}</b><p>{n.body}</p><button type="button" onClick={()=>onNotes?.(notes.filter(v=>v.id!==n.id))}>移除</button></div>):null}
       </div>:null}
@@ -307,9 +294,8 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <button type="button" className="na-context" aria-label="上下文用量" title="查看上下文用量" aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><CircleDashed size={15}/></button>
           {review ? <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
             <span>{model}</span><span className="na-effort">{effort}</span><ChevronDown size={13}/>
-          </button> : <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
-            <span>{choice.model?modelName(choice.model):model||"默认模型"}</span>{choice.effort?<span className="na-effort">{choice.effort}</span>:null}<ChevronDown size={13}/>
-          </button>}
+          </button> : session.engine==="zcode" ? null : <CliModelMenu deviceId={session.deviceId} engine={session.engine} live={!!features?.includes("models")}
+            choice={choice} onChange={choose} running={session.model} disabled={pickerOff} note={pickerNote}/>}
         </>
         {offersDelivery && <div className="na-delivery" role="radiogroup" aria-label="发送方式">
           {([["queue","排队"],["steer","引导"]] as const).map(([value,text])=><button key={value} type="button" role="radio" aria-checked={delivery===value} onClick={()=>setDelivery(value)}>{text}</button>)}

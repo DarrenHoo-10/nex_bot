@@ -39,11 +39,13 @@ export interface SessionPaneProps {
   title?:string;
   /** what the session's computer supports */
   features?: readonly string[];
+  /** the first message of a session just started from NexAgent, until its records hold it */
+  echo?: { text: string; at: number };
 }
 
 const NO_REQUESTS: readonly RequestRecord[] = [];
 
-export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features }: SessionPaneProps) {
+export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features, echo }: SessionPaneProps) {
   const review=useReview();
   const details=review?.records[session.key];
   const heading=details?.title||title?.trim()||sessionTitle(session);
@@ -65,7 +67,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const chooseLaunch = (next: LaunchChoice) => { setLaunch(next); saveLaunch(session.key, next); };
   // From a send until the session answers: a resumed CLI can take a while to
   // print anything, and without this the page looks like nothing happened.
-  const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean; unconfirmed?: boolean } | null>(null);
+  const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean; unconfirmed?: boolean; fresh?: boolean } | null>(() => echo ? { known: new Set(), resuming: false, fresh: true } : null);
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     if (!awaiting) return;
@@ -79,7 +81,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     const timer = setTimeout(() => setSlow(true), 20_000);
     return () => clearTimeout(timer);
   }, [awaiting]);
-  const progress = awaiting ? (awaiting.resuming ? "正在恢复会话…" : awaiting.unconfirmed ? "已发送，等待会话接收…" : "已送达，等待回复…")
+  const progress = awaiting ? (awaiting.fresh ? "正在处理…" : awaiting.resuming ? "正在恢复会话…" : awaiting.unconfirmed ? "已发送，等待会话接收…" : "已送达，等待回复…")
     : session.online && session.state === "running" ? "正在处理…" : "";
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
@@ -155,7 +157,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView echo={echo} onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>

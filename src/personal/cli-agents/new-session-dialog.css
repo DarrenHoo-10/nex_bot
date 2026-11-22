@@ -111,3 +111,12 @@
 .na-worktree-options small{color:var(--launch-muted);font-size:12px}
 .na-worktree-switch{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
 .na-worktree-switch input{width:15px;height:15px;accent-color:#187447}
+.na-launch .na-launch-prompt{flex-direction:column;align-items:stretch;gap:4px;height:auto;padding:8px 10px 6px}
+.na-launch .na-launch-prompt:focus-within{border-color:#58996e;box-shadow:0 0 0 2px #36865d1a}
+.na-launch .na-launch-prompt textarea{box-sizing:border-box;width:100%;min-height:58px;max-height:180px;margin:0;padding:0;border:0;outline:0;background:transparent;box-shadow:none;color:var(--launch-ink);font:inherit;font-size:13.5px;line-height:1.5;resize:vertical}
+.na-launch .na-launch-prompt textarea::placeholder{color:var(--launch-muted)}
+.na-launch .na-launch-model{display:flex;justify-content:flex-end}
+.na-launch .na-launch-model .na-model-button{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:0;border-radius:7px;background:transparent;color:var(--launch-ink);font-size:12.5px;cursor:pointer}
+.na-launch .na-launch-model .na-model-button:hover{background:var(--launch-line)}
+.na-launch .na-launch-model .na-model-button svg{width:13px;height:13px}
+.na-launch .na-launch-model .na-effort{color:var(--launch-muted)}

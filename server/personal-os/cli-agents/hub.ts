@@ -33,6 +33,7 @@ import {
   type CliGitInfo,
   type CliItem,
   type CliLaunchOptions,
+  type CliModelCatalog,
   type CliOp,
   type CliOpArgs,
   type CliOpResult,
@@ -907,6 +908,13 @@ export class CliAgentHub {
       }
     }
     return hits.sort((a, b) => b.at - a.at).map(({ key, snippet }) => ({ key, snippet }));
+  }
+
+  /** The model picker rows of one CLI on a computer; an executor without `models` is refused (the page keeps its own list). */
+  async models(actor: string, deviceId: string, engine: CliEngine): Promise<CliModelCatalog> {
+    const caps = this.caps.get(deviceId);
+    if (caps && !hasCliFeature(caps, "models")) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
+    return this.op(actor, deviceId, null, "models", { engine });
   }
 
   /** Puts a file on the session's computer for the CLI to read; the answer is its absolute path there. */

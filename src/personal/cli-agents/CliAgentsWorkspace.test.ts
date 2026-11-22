@@ -31,6 +31,7 @@ const fixture = vi.hoisted(() => ({
   createNote: vi.fn(),
   updateNote: vi.fn(),
   deleteNote: vi.fn(),
+  fetchModels: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./api")>()), ...fixture }));
@@ -62,6 +63,26 @@ const flush = () => act(async () => { await new Promise((resolve) => setTimeout(
 const text = () => container.textContent ?? "";
 const click = (element: Element | null) => act(async () => { (element as HTMLElement).click(); });
 const button = (label: string) => [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label || entry.getAttribute("aria-label") === label) ?? null;
+/** Opens the model menu and picks the row whose name is `label` ("默认" for the CLI's default). */
+async function pickModel(label: string, scope: ParentNode = container) {
+  const trigger = scope.querySelector<HTMLButtonElement>('button[aria-label="模型设置"]')!;
+  if (trigger.getAttribute("aria-expanded") !== "true") await click(trigger);
+  const row = [...document.querySelectorAll<HTMLButtonElement>('.na-model-menu [role=option]')].find((entry) => entry.querySelector(".model-menu-name")?.textContent === label);
+  expect(row, label).toBeTruthy();
+  expect(row!.disabled).toBe(false);
+  await click(row!);
+}
+/** Opens the model menu and moves the effort slider to `level` (its index among the stops). */
+async function pickEffort(level: number, scope: ParentNode = container) {
+  const trigger = scope.querySelector<HTMLButtonElement>('button[aria-label="模型设置"]')!;
+  if (trigger.getAttribute("aria-expanded") !== "true") await click(trigger);
+  const slider = document.querySelector<HTMLInputElement>('.na-model-menu input[type=range]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, String(level));
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { slider.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true })); });
+}
 
 async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[]; workbench?: unknown[] }, selected?: string) {
   fixture.fetchSnapshot.mockResolvedValue(rows);
@@ -76,7 +97,10 @@ async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: Ret
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} });
+  HTMLElement.prototype.showPopover ??= function () {}; HTMLElement.prototype.hidePopover ??= function () {};
   localStorage.clear();
+  fixture.fetchModels.mockReset();
+  fixture.fetchModels.mockResolvedValue({ models: [] });
   for (const key of ["fetchSnapshot", "fetchSnapshotWithWorkbench", "fetchItems", "fetchQueue", "fetchGit", "startSession", "continueSession", "sendMessage", "stopSession", "resumeQueue", "editQueued", "withdrawQueued", "steerQueued", "branchSession", "renameWorkbenchSession", "archiveWorkbenchSession", "deleteWorkbenchSession", "interruptSession", "openLocal", "hideSession", "fetchNotes", "createNote", "updateNote", "deleteNote"] as const) fixture[key].mockReset();
   fixture.fetchNotes.mockResolvedValue([]);
   fixture.fetchItems.mockResolvedValue({ items: [], more: false });
@@ -204,15 +228,11 @@ describe("session pane", () => {
     fixture.continueSession.mockResolvedValue({ key: "dev1:claude:s9" });
     const capable = device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "attach"] } });
     await mount({ devices: [capable], sessions: [session({ state: "stopped", terminal: undefined })] }, "dev1:claude:s1");
-    await click(container.querySelector('button[aria-label="模型设置"]'));
-    const pick = async (label: string, value: string) => {
-      const select = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
-      expect(select.disabled).toBe(false);
-      await act(async () => { select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
-    };
-    await pick("模型", "opus");
-    await pick("推理强度", "high");
-    expect(container.querySelector('[data-panel="model"] small')?.textContent).toBe("继续会话时生效");
+    await pickModel("Opus");
+    // stops: 默认, low, medium, high, …
+    await pickEffort(3);
+    expect(document.querySelector(".na-model-menu [role=status]")?.textContent).toBe("继续会话时生效");
+    expect(container.querySelector('button[aria-label="模型设置"]')?.textContent).toContain("高");
     const input = container.querySelector("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "继续");
@@ -226,9 +246,7 @@ describe("session pane", () => {
 
   it("switches a Claude running in a NexBot terminal with /model and /effort before the message", async () => {
     await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
-    await click(container.querySelector('button[aria-label="模型设置"]'));
-    const select = container.querySelector<HTMLSelectElement>('select[aria-label="模型"]')!;
-    await act(async () => { select.value = "sonnet"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickModel("Sonnet");
     const input = container.querySelector("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "下一步");
@@ -237,6 +255,36 @@ describe("session pane", () => {
     await click(container.querySelector('button[aria-label="发送"]'));
     await flush();
     expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model sonnet", "下一步"]);
+  });
+
+  it("lists the models the CLI offers on the computer, as NexBot's menu does", async () => {
+    fixture.fetchModels.mockResolvedValue({
+      current: "auto/claude-opus-5-5[1m]",
+      models: [
+        { id: "opus", label: "Opus", efforts: ["low", "medium", "high", "xhigh", "max"] },
+        { id: "auto/claude-opus-5-5[1m]", label: "Claude Opus 5.5 · routing group", description: "via gateway", efforts: ["low", "medium", "high"] },
+      ],
+    });
+    const capable = device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models"] } });
+    await mount({ devices: [capable], sessions: [session()] }, "dev1:claude:s1");
+    expect(fixture.fetchModels).toHaveBeenCalledWith("dev1", "claude");
+    await click(container.querySelector('button[aria-label="模型设置"]'));
+    const rows = [...document.querySelectorAll(".na-model-menu [role=option] .model-menu-name")].map((entry) => entry.textContent);
+    expect(rows).toEqual(["默认", "Opus", "Claude Opus 5.5 · routing group"]);
+    // the default row names what the CLI's settings choose
+    expect(document.querySelector(".na-model-menu [role=option] .model-menu-tag")?.textContent).toBe("Claude Opus 5.5 · routing group");
+    await pickModel("Claude Opus 5.5 · routing group");
+    // that model takes three levels: 默认 and its own
+    await click(container.querySelector('button[aria-label="模型设置"]'));
+    expect([...document.querySelectorAll(".na-model-menu .model-menu-stops span")].map((entry) => entry.textContent)).toEqual(["默认", "低", "中", "高"]);
+    const input = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "继续");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(container.querySelector('button[aria-label="发送"]'));
+    await flush();
+    expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model auto/claude-opus-5-5[1m]", "继续"]);
   });
 
   it("sends a message with Enter and shows Core's error text", async () => {
@@ -368,8 +416,9 @@ it("opens attachable sessions directly in chat without subscribing to terminal o
 });
 
 describe("new session", () => {
-  it("starts a session in an absolute folder and opens it", async () => {
-    fixture.startSession.mockResolvedValue({ key: "dev1:claude:new1" });
+  it("closes at once and shows the new session with its first message while it starts", async () => {
+    let started!: (value: { key: string }) => void;
+    fixture.startSession.mockReturnValue(new Promise((resolve) => { started = resolve; }));
     await mount({ devices: [device()], sessions: [session({ cwd: "D:\\work\\alpha" })] });
     await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
     const input = container.querySelector<HTMLInputElement>(".cli-dialog input")!;
@@ -381,11 +430,69 @@ describe("new session", () => {
     expect(container.querySelector(".cli-dialog [role=alert]")?.textContent).toBe("需要绝对路径");
     expect(container.querySelector<HTMLButtonElement>(".cli-dialog button[type=submit]")!.disabled).toBe(true);
     await click(button("alpha"));
+    const prompt = container.querySelector<HTMLTextAreaElement>('.cli-dialog textarea[aria-label="第一条消息"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "修一下登录页");
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { container.querySelector(".cli-dialog")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    // no waiting on the dialog: the session pane shows the question and that it is being handled
+    expect(container.querySelector("[role=dialog]")).toBeNull();
+    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", "D:\\work\\alpha", {});
+    const pane = container.querySelector("[data-testid=cli-launch]")!;
+    expect(pane.querySelector(".cli-bubble")?.textContent).toBe("修一下登录页");
+    expect(pane.querySelector(".na-progress")?.textContent).toBe("处理中…");
+    expect(container.querySelector(".cli-side")?.textContent).toContain("修一下登录页");
+
+    await act(async () => { started({ key: "dev1:claude:new1" }); });
+    await flush();
+    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:new1", "修一下登录页", expect.objectContaining({ delivery: "send" }));
+    // the device lists the session: its own pane takes over, showing the message until the records hold it
+    socket.open();
+    await act(async () => { socket.push({ type: "list.delta", upserts: [session({ nativeId: "new1", cwd: "D:\\work\\alpha", state: "running" })], removes: [] }); });
+    await flush();
+    expect(container.querySelector("[data-testid=cli-launch]")).toBeNull();
+    expect(container.querySelector("[data-testid=cli-user-echo] .cli-bubble")?.textContent).toBe("修一下登录页");
+    expect(localStorage.getItem("nexbot.cliSelected")).toBe("dev1:claude:new1");
+  });
+
+  it("names a new worktree nexagent/<random> unless the user changes it", async () => {
+    fixture.startSession.mockResolvedValue({ key: "dev1:claude:new2" });
+    await mount({ devices: [device()], sessions: [session({ cwd: "D:\\work\\alpha" })] });
+    await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
+    await click(button("alpha"));
+    await act(async () => { container.querySelector<HTMLInputElement>(".na-worktree-switch input")!.click(); });
+    const branch = container.querySelector<HTMLInputElement>('input[aria-label="分支名称"]')!;
+    expect(branch.value).toMatch(/^nexagent\/[a-z0-9]{6}$/);
+    const typeBranch = async (value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(branch, value);
+      branch.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await typeBranch("nexagent/login fix");
+    expect(container.querySelector(".cli-dialog [role=alert]")?.textContent).toBe("分支名称不合法");
+    expect(container.querySelector<HTMLButtonElement>(".cli-dialog button[type=submit]")!.disabled).toBe(true);
+    await typeBranch("nexagent/login-fix");
     await act(async () => { container.querySelector(".cli-dialog")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();
-    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", "D:\\work\\alpha");
-    expect(container.querySelector("[role=dialog]")).toBeNull();
-    expect(localStorage.getItem("nexbot.cliSelected")).toBe("dev1:claude:new1");
+    expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", "D:\\work\\alpha", expect.objectContaining({ worktreeBranch: "nexagent/login-fix", requestId: expect.any(String) }));
+    // no first message: nothing is sent
+    expect(fixture.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed start on the pane with a retry that reuses the worktree request", async () => {
+    fixture.startSession.mockRejectedValueOnce(new CliApiError("工作树已存在", "invalid", 400, "工作树已存在")).mockResolvedValue({ key: "dev1:claude:new3" });
+    await mount({ devices: [device()], sessions: [session({ cwd: "D:\\work\\alpha" })] });
+    await click(container.querySelector(".cli-device header button[aria-label$='上新建会话']"));
+    await click(button("alpha"));
+    await act(async () => { container.querySelector<HTMLInputElement>(".na-worktree-switch input")!.click(); });
+    await act(async () => { container.querySelector(".cli-dialog")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(container.querySelector("[data-testid=cli-launch] [role=alert]")?.textContent).toContain("工作树已存在");
+    await click(button("重试"));
+    await flush();
+    const [first, second] = fixture.startSession.mock.calls.map((call) => call[3]);
+    expect(second.requestId).toBe(first.requestId);
+    expect(second.worktreeBranch).toBe(first.worktreeBranch);
   });
 
   it("names why a computer cannot start a session", async () => {

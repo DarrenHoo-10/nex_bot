@@ -373,10 +373,11 @@ export interface CliError {
 // Capability (hello.cliAgents)
 
 /** What an executor can do beyond the first protocol: content search (`search`),
- * model and effort at launch (`model`/`effort` on `start` and `continue`), and
- * attachments written to the computer (`attach`). Older executors send none. */
-export type CliFeature = "search" | "launchOptions" | "attach";
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach"];
+ * model and effort at launch (`model`/`effort` on `start` and `continue`),
+ * attachments written to the computer (`attach`) and the models its CLIs offer
+ * (`models`). Older executors send none. */
+export type CliFeature = "search" | "launchOptions" | "attach" | "models";
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models"];
 
 /** What the page shows when the computer's executor lacks a feature. */
 export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
@@ -419,9 +420,30 @@ export const CLI_MODELS: Record<CliEngine, readonly { id: string; label: string 
   zcode: [],
 };
 
-// an alias or full model name (`opus[1m]`, `gpt-6.2-sol`); it starts alphanumeric
-// so it can never read as a flag, and carries nothing a shell or cmd.exe interprets
-export const CLI_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]{0,99}$/;
+// an alias or full model name (`opus[1m]`, `gpt-6.2-sol`, a gateway's `auto/claude-opus-5-5[1m]`);
+// it starts alphanumeric so it can never read as a flag, and carries nothing a shell or cmd.exe interprets
+export const CLI_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/\-[\]]{0,99}$/;
+
+/** One row of a CLI's own model picker, as the computer reads it from the CLI's settings. */
+export interface CliModelOption {
+  /** what `--model` / `-m` takes */
+  id: string;
+  label: string;
+  description?: string;
+  /** effort levels this model takes; absent when the CLI does not say (every level of the engine is offered) */
+  efforts?: string[];
+}
+
+/** What the `models` op answers: the CLI's picker rows in its order, and what it starts with when nothing is chosen. */
+export interface CliModelCatalog {
+  models: CliModelOption[];
+  /** the model the CLI's settings choose (`model` in settings.json / config.toml) */
+  current?: string;
+  /** the effort the CLI's settings choose */
+  currentEffort?: string;
+}
+
+export const CLI_MODEL_LIMITS = { models: 200, label: 120, description: 200 } as const;
 
 export function isCliModel(value: unknown): value is string {
   return typeof value === "string" && CLI_MODEL_RE.test(value);
@@ -482,6 +504,7 @@ export const CLI_OPS = [
   "git",
   "search",
   "attach",
+  "models",
 ] as const;
 export type CliOp = (typeof CLI_OPS)[number];
 
@@ -525,6 +548,8 @@ export interface CliOpArgs {
   search: { query: string; limit?: number };
   /** writes a file next to the session's other attachments; `data` is base64 */
   attach: { ref: CliSessionRef; name: string; data: string };
+  /** the model picker rows of one CLI on the computer */
+  models: { engine: CliEngine };
 }
 
 export interface CliSearchHit {
@@ -564,6 +589,7 @@ export interface CliOpResult {
   git: CliGitInfo;
   search: { hits: CliSearchHit[] };
   attach: { path: string };
+  models: CliModelCatalog;
 }
 
 export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
@@ -581,6 +607,7 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   // the device stops scanning well before this (its own budget is ~8 s)
   search: 10_000,
   attach: 20_000,
+  models: 8000,
 };
 
 /** Operations that change state: never re-sent after a timeout or a drop.
@@ -1242,6 +1269,7 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     if (!query.trim()) fail();
     return pick({ query, limit: optInt(o, "limit", 1, CLI_SEARCH.maxLimit) });
   },
+  models: (o) => ({ engine: oneOf(o.engine, CLI_ENGINES) }),
   attach: (o) => {
     const name = str(o.name, CLI_ATTACH_NAME_MAX, 1);
     const data = str(o.data, ATTACH_BASE64_MAX);
@@ -1325,7 +1353,32 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
     if (!isAbsoluteCwd(path)) fail();
     return { path };
   },
+  models: (o) => modelCatalog(o),
 };
+
+/** A catalog from the computer (or Core). A row that is no valid model name is left out rather than failing the list. */
+export function parseCliModelCatalog(value: unknown): CliModelCatalog | null {
+  return guard(() => modelCatalog(rec(value)));
+}
+
+function modelCatalog(o: Rec): CliModelCatalog {
+  const models: CliModelOption[] = [];
+  const seen = new Set<string>();
+  for (const entry of arr(o.models, CLI_MODEL_LIMITS.models)) {
+    const row = rec(entry);
+    if (!isCliModel(row.id) || seen.has(row.id)) continue;
+    seen.add(row.id);
+    const label = typeof row.label === "string" && row.label.trim() ? row.label.trim().slice(0, CLI_MODEL_LIMITS.label) : row.id;
+    const description = typeof row.description === "string" && row.description.trim() ? row.description.trim().slice(0, CLI_MODEL_LIMITS.description) : undefined;
+    const efforts = Array.isArray(row.efforts) ? [...new Set(row.efforts.filter((level): level is string => typeof level === "string" && level.length <= 32))].slice(0, 16) : undefined;
+    models.push(pick({ id: row.id, label, description, efforts }));
+  }
+  return pick({
+    models,
+    current: isCliModel(o.current) ? o.current : undefined,
+    currentEffort: typeof o.currentEffort === "string" && o.currentEffort.length <= 32 && o.currentEffort ? o.currentEffort : undefined,
+  });
+}
 
 export function parseCliOpArgs<K extends CliOp>(op: K, value: unknown): CliOpArgs[K] | null {
   if (!isCliOp(op)) return null;

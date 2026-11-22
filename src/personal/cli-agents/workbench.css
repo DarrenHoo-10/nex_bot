@@ -187,10 +187,8 @@
 .na-file-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%}.na-file-chip>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .na-file-thumb{width:28px;height:28px;border-radius:5px;object-fit:cover;flex:none}
 .na-file-chip[data-image]{padding:3px 7px 3px 3px}
-.na-model-pick{display:grid;gap:4px;min-width:240px}
-.na-model-pick label{white-space:nowrap}
-.na-model-pick select{min-width:128px}
-.na-model-pick small{padding:2px 4px;color:var(--na-muted);font-size:12px}
+.na-model-row .na-model-text{display:flex;flex-direction:column;gap:1px;min-width:0}
+.na-model-row .na-model-text small{overflow:hidden;color:var(--muted-foreground,#647287);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .na-file-chip button,.na-goal-field button{display:grid;place-items:center;padding:3px;background:transparent;color:var(--na-muted);border:0}
 .na-goal-field{box-sizing:border-box;color:var(--na-accent)}
 .na-goal-field label{display:flex;align-items:center;flex:1;gap:8px;min-width:0;white-space:nowrap}

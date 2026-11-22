@@ -7,6 +7,7 @@ import {
   CLI_ERROR_TEXT,
   isCliErrorCode,
   parseCliKey,
+  parseCliModelCatalog,
   parseCliDeviceView,
   parseCliItems,
   parseCliRequestView,
@@ -17,6 +18,7 @@ import {
   type CliErrorCode,
   type CliItem,
   type CliLaunchOptions,
+  type CliModelCatalog,
   type CliAnswerDecision,
   type CliRequestView,
   type CliSessionKey,
@@ -101,6 +103,26 @@ export const continueSession = (key: CliSessionKey, options: CliLaunchOptions = 
 
 function launchBody(options: CliLaunchOptions): CliLaunchOptions {
   return { ...(options.model ? { model: options.model } : {}), ...(options.effort ? { effort: options.effort } : {}) };
+}
+
+/** A computer's model lists, read again after this long (the CLI's settings may change). */
+const MODELS_TTL_MS = 60_000;
+const modelLists = new Map<string, { at: number; value: Promise<CliModelCatalog> }>();
+
+/** The rows the CLI's own `/model` picker shows on that computer. One request per computer and CLI a minute; a failure is not kept. */
+export function fetchModels(deviceId: string, engine: CliEngine): Promise<CliModelCatalog> {
+  const id = `${deviceId}
+${engine}`;
+  const cached = modelLists.get(id);
+  if (cached && Date.now() - cached.at < MODELS_TTL_MS) return cached.value;
+  const value = call<unknown>(`/models?deviceId=${encodeURIComponent(deviceId)}&engine=${encodeURIComponent(engine)}`, undefined, "GET").then((data) => {
+    const catalog = parseCliModelCatalog(data);
+    if (!catalog) throw new CliApiError("模型列表格式不对");
+    return catalog;
+  });
+  modelLists.set(id, { at: Date.now(), value });
+  value.catch(() => { if (modelLists.get(id)?.value === value) modelLists.delete(id); });
+  return value;
 }
 
 export interface CliSearchHit { key: CliSessionKey; snippet: string }

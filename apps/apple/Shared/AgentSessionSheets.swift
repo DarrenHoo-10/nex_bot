@@ -38,7 +38,8 @@ private struct AgentChip: View {
     }
 }
 
-/// 新建会话: a computer, an engine and an absolute folder on it.
+/// 新建会话: a computer, an engine, an absolute folder (or a new worktree of it), the model and the first message. The sheet
+/// closes at once: the session shows in the list with the message while the computer starts it.
 struct AgentNewSessionSheet: View {
     let model: CliAgentsModel
     let initialDeviceId: String?
@@ -47,8 +48,12 @@ struct AgentNewSessionSheet: View {
     @State private var deviceId = ""
     @State private var engine: CliEngine = .claude
     @State private var cwd = ""
-    @State private var busy = false
-    @State private var error = ""
+    @State private var newTree = false
+    @State private var branch = ""
+    @State private var message = ""
+    @State private var chosenModel = ""
+    @State private var effort = ""
+    @State private var catalog = CliModelCatalog()
 
     private var device: CliDevice? { model.device(deviceId) }
     private var engines: [CliEngine] {
@@ -58,6 +63,13 @@ struct AgentNewSessionSheet: View {
     private var blocker: String? { CliSessions.deviceBlocker(device) }
     private var trimmed: String { cwd.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var cwdValid: Bool { CliSessions.isAbsoluteCwd(trimmed) }
+    private var branchError: String? { newTree ? CliLaunches.branchProblem(branch) : nil }
+    private var text: String { message.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var tooLong: Bool { text.utf8.count > CoreClient.cliMaxSendBytes }
+    private var canChoose: Bool { device?.cliAgents?.features.contains("launchOptions") == true }
+    private var fallbackModel: String { catalog.current ?? "" }
+    private var offered: [String] { CliLaunches.efforts(engine: engine, models: catalog.models, model: chosenModel.isEmpty ? fallbackModel : chosenModel) }
+    private var canStart: Bool { blocker == nil && device != nil && cwdValid && branchError == nil && !tooLong }
 
     var body: some View {
         AgentSheetFrame(title: "新建会话") {
@@ -82,29 +94,127 @@ struct AgentNewSessionSheet: View {
                     OutlineFlow { ForEach(recents, id: \.self) { path in AgentChip(text: CliSessions.folderLabel(path), on: path == trimmed) { cwd = path } } }
                 }
             }
-            if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Theme.danger) }
+            Toggle("新建独立工作树（worktree）", isOn: $newTree)
+                .onChange(of: newTree) { _, on in if on, branch.trimmingCharacters(in: .whitespaces).isEmpty { branch = CliLaunches.randomBranch() } }
+            if newTree {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("分支名称").font(.caption).foregroundStyle(Theme.muted)
+                    TextField("分支名称", text: $branch)
+                        .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                    if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("第一条消息").font(.caption).foregroundStyle(Theme.muted)
+                TextField("要做什么？", text: $message, axis: .vertical)
+                    .lineLimit(2...6).textFieldStyle(.roundedBorder)
+                if tooLong { Text("内容太长").font(.caption).foregroundStyle(Theme.danger) }
+            }
+            if canChoose {
+                HStack(spacing: 10) {
+                    Picker("模型", selection: $chosenModel) {
+                        Text(fallbackModel.isEmpty ? "默认" : "默认（\(label(fallbackModel))）").tag("")
+                        ForEach(catalog.models) { row in Text(row.label).tag(row.id) }
+                    }
+                    .pickerStyle(.menu)
+                    if !offered.isEmpty {
+                        Picker("推理强度", selection: $effort) {
+                            ForEach([""] + offered, id: \.self) { Text(CliLaunches.effortLabel($0)).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
+            }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.buttonStyle(.bordered)
-                Button(busy ? "正在启动…" : "开始") { Task { await start() } }
+                Button("开始") { start() }
                     .buttonStyle(.borderedProminent).tint(Theme.identityAccent)
-                    .disabled(busy || blocker != nil || !cwdValid || device == nil)
+                    .disabled(!canStart)
             }
         }
         .onAppear {
             if deviceId.isEmpty { deviceId = initialDeviceId.flatMap { model.device($0) }?.id ?? model.devices.first { $0.online }?.id ?? model.devices.first?.id ?? "" }
         }
         .onChange(of: deviceId) { _, _ in if !engines.contains(engine), let first = engines.first { engine = first } }
+        .task(id: "\(deviceId)\n\(engine.rawValue)") {
+            chosenModel = ""; effort = ""
+            catalog = await model.models(deviceId: deviceId, engine: engine)
+        }
+        .onChange(of: chosenModel) { _, _ in if !effort.isEmpty, !offered.contains(effort) { effort = "" } }
     }
 
-    private func start() async {
-        busy = true; error = ""
-        do {
-            let key = try await model.startSession(deviceId: deviceId, engine: engine, cwd: trimmed)
-            started(key)
-            dismiss()
-        } catch { self.error = CliErrorText.text(for: error, fallback: "没能启动") }
-        busy = false
+    private func label(_ id: String) -> String { catalog.models.first { $0.id == id }?.label ?? id }
+
+    private func start() {
+        guard canStart else { return }
+        let key = model.launch(CliLaunchRequest(deviceId: deviceId, engine: engine, cwd: trimmed, branch: newTree ? branch.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                                                message: text, model: canChoose ? chosenModel : "", effort: canChoose ? effort : ""))
+        started(key)
+        dismiss()
+    }
+}
+
+/// A session being started: the first message and that it is being handled, or why it did not start.
+struct AgentLaunchDetail: View {
+    let model: CliAgentsModel
+    let launch: CliLaunch
+
+    var body: some View {
+        let row = CliLaunches.row(launch)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    Text([launch.request.engine.label, CliSessions.folderLabel(launch.request.cwd), launch.request.branch ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if case .failed = launch.phase { CliChip(text: "未启动", tone: .stopped) } else { CliChip(text: "运行中", tone: .running) }
+            }
+            .padding(14)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if !launch.request.message.isEmpty { AgentEchoBubble(text: launch.request.message) }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 6)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if case .failed(let reason) = launch.phase {
+                    HStack(spacing: 10) {
+                        Text(reason).font(.footnote).foregroundStyle(Theme.danger)
+                        Spacer()
+                        Button("重试") { model.retryLaunch(launch.id) }.buttonStyle(.bordered)
+                        Button("关闭") { model.dismissLaunch(launch.id) }.buttonStyle(.bordered)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("处理中…").font(.footnote).foregroundStyle(Theme.muted)
+                        Spacer()
+                    }
+                }
+            }
+            .padding(14)
+        }
+    }
+}
+
+/// The user's message, as the transcript shows one.
+struct AgentEchoBubble: View {
+    let text: String
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 40)
+            Text(text).font(.system(size: 14)).textSelection(.enabled)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
     }
 }
 

@@ -92,7 +92,17 @@ function BlockView({ block, engine, translations, onEdit }: { block: Block; engi
   }
 }
 
-export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit }: { onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+/** A message the user sent that the session's records do not hold yet. */
+export function EchoMessage({ text, at }: { text: string; at: number }) {
+  return (
+    <div className="cli-msg is-user" data-testid="cli-user-echo">
+      <div className="na-byline is-user"><span>你</span><time>{new Date(at).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
+      <div className="cli-bubble">{text}</div>
+    </div>
+  );
+}
+
+export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo }: { echo?:{text:string;at:number}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   useEffect(()=>{onItems?.(items)},[items,onItems]);
@@ -218,8 +228,9 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
           return onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}
-        {loading && !items.length ? <div className="cli-empty" role="status">正在读取…</div> : null}
-        {!loading && !error && !items.length ? <div className="cli-empty">暂无记录</div> : null}
+        {echo && !items.some((item) => item.kind === "user") ? <EchoMessage text={echo.text} at={echo.at}/> : null}
+        {loading && !items.length && !echo ? <div className="cli-empty" role="status">正在读取…</div> : null}
+        {!loading && !error && !items.length && !echo ? <div className="cli-empty">暂无记录</div> : null}
         {error ? <div className="cli-notice" data-level="error" role="alert">{error}<button type="button" className="text-button" onClick={() => void loadFirst()}>重试</button></div> : null}
       </div>
     </div>

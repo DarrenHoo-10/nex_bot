@@ -149,7 +149,9 @@ struct AgentSessionsView: View {
                     .frame(width: 300)
                     .glass(RoundedRectangle(cornerRadius: 18, style: .continuous), strong: true, lift: .card)
                 Group {
-                    if let key = model.selectedKey, model.selected != nil {
+                    if let launch = model.selectedLaunch {
+                        AgentLaunchDetail(model: model, launch: launch).id(launch.id)
+                    } else if let key = model.selectedKey, model.selected != nil {
                         AgentSessionDetail(model: model, workspace: workspace, key: key, openAssistant: openAssistant) { model.select($0) }
                             .id(key)
                     } else {
@@ -171,12 +173,22 @@ struct AgentSessionsView: View {
         .padding(.horizontal, 16).padding(.top, 8)
         .background { WorkspaceSurface(kind: .stage) }
         .navigationDestination(item: $pushed) { key in
-            AgentSessionDetail(model: model, workspace: workspace, key: key, openAssistant: openAssistant) { next in
-                model.select(next); pushed = next
+            Group {
+                if let launch = model.launches.first(where: { $0.key == key }) {
+                    AgentLaunchDetail(model: model, launch: launch).id(launch.id)
+                } else {
+                    AgentSessionDetail(model: model, workspace: workspace, key: key, openAssistant: openAssistant) { next in
+                        model.select(next); pushed = next
+                    }
+                    .id(key)
+                }
             }
-            .id(key)
             .background { WorkspaceSurface(kind: .stage) }
             .toolbar(.visible, for: .navigationBar)
+        }
+        // a started session takes the place of its placeholder
+        .onChange(of: model.selectedKey) { _, next in
+            if CliLaunches.isLaunchKey(pushed), pushed != next { pushed = next }
         }
     }
     #endif

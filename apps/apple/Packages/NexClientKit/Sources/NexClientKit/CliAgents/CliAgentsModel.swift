@@ -27,6 +27,10 @@ public final class CliAgentsModel {
     public private(set) var requests = CliRequestStore()
     public private(set) var transcripts: [CliSessionKey: Transcript] = [:]
     public private(set) var supervision: CliSupervision?
+    /// New sessions being started, newest first.
+    public private(set) var launches: [CliLaunch] = []
+    /// The first message of a session started here, until its transcript holds it.
+    public private(set) var echoes: [CliSessionKey: String] = [:]
     public private(set) var link: CliAgentStream.Status = .idle
     /// A first list has arrived.
     public private(set) var loaded = false
@@ -53,6 +57,10 @@ public final class CliAgentsModel {
     @ObservationIgnored private var subscribed: [CliSessionKey: Int] = [:]
     @ObservationIgnored private var terminal: CliTerminalController?
     @ObservationIgnored private let streamFactory: (@MainActor (CliAgentsModel) -> CliAgentStream)?
+    @ObservationIgnored private var launchTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var catalogs: [String: (at: Int, catalog: CliModelCatalog)] = [:]
+    /// How long a send waits between tries while a just-started session is not listed yet.
+    @ObservationIgnored var launchRetryNanos: UInt64 = 500_000_000
 
     public init(client: @escaping @MainActor () -> CoreClient, defaults: UserDefaults = .standard,
                 streamFactory: (@MainActor (CliAgentsModel) -> CliAgentStream)? = nil) {
@@ -65,11 +73,16 @@ public final class CliAgentsModel {
 
     // MARK: Derived
 
-    /// Sessions as shown: one that holds a pending request reads as waiting.
+    /// Sessions as shown: one that holds a pending request reads as waiting. Sessions being started come first; a started
+    /// one keeps its placeholder until its first message is out.
     public var displaySessions: [CliSession] {
         let counts = pendingCounts
-        return sessions.map { CliSessions.asked($0, pending: counts[$0.key] ?? 0) }
+        let starting = Set(launches.compactMap(\.target))
+        return launches.map(CliLaunches.row) + sessions.filter { !starting.contains($0.key) }.map { CliSessions.asked($0, pending: counts[$0.key] ?? 0) }
     }
+
+    /// The launch the selection points at, while it is being started.
+    public var selectedLaunch: CliLaunch? { launches.first { $0.key == selectedKey } }
 
     public var pendingCounts: [CliSessionKey: Int] { requests.counts(now: now) }
     public var groups: [CliDeviceGroup] { CliSessions.group(devices: devices, sessions: displaySessions, showHidden: showHidden) }
@@ -133,6 +146,7 @@ public final class CliAgentsModel {
             devices = snapshot.devices; sessions = snapshot.sessions
             requests.mergePending(snapshot.requests)
             loaded = true; loadError = nil
+            settleLaunches()
             evaluateNotifications()
             scheduleExpiry()
         } catch {
@@ -145,6 +159,8 @@ public final class CliAgentsModel {
 
     public func select(_ key: CliSessionKey?) {
         selectedKey = key
+        // a session still starting has no key that outlives the app
+        if CliLaunches.isLaunchKey(key) { return }
         if let key { defaults.set(key, forKey: Self.selectedKeyDefault) } else { defaults.removeObject(forKey: Self.selectedKeyDefault) }
     }
 
@@ -240,6 +256,100 @@ public final class CliAgentsModel {
         await refresh()
         if selectedKey == key { select(next) }
         return next
+    }
+
+    // MARK: New sessions
+
+    /// Shows a new session at once and starts it in the background: the CLI (in a new worktree when `branch` is set), then the
+    /// first message. The placeholder is selected; the real session takes its place once it is listed.
+    @discardableResult
+    public func launch(_ request: CliLaunchRequest) -> CliSessionKey {
+        let entry = CliLaunches.make(request, now: Self.currentMs())
+        launches.insert(entry, at: 0)
+        select(entry.key)
+        runLaunch(entry.id)
+        return entry.key
+    }
+
+    /// Tries a failed launch again; the worktree request and a started session are reused.
+    public func retryLaunch(_ id: String) { runLaunch(id) }
+
+    /// Drops a failed launch. A session it did start stays in the list.
+    public func dismissLaunch(_ id: String) {
+        guard launchTasks[id] == nil, let entry = launches.first(where: { $0.id == id }) else { return }
+        launches.removeAll { $0.id == id }
+        if selectedKey == entry.key { select(entry.target) }
+    }
+
+    private func updateLaunch(_ id: String, _ change: (inout CliLaunch) -> Void) {
+        guard let at = launches.firstIndex(where: { $0.id == id }) else { return }
+        change(&launches[at])
+    }
+
+    private func runLaunch(_ id: String) {
+        guard launchTasks[id] == nil, launches.contains(where: { $0.id == id }) else { return }
+        launchTasks[id] = Task { [weak self] in
+            await self?.performLaunch(id)
+            self?.launchTasks[id] = nil
+        }
+    }
+
+    private func performLaunch(_ id: String) async {
+        guard let entry = launches.first(where: { $0.id == id }) else { return }
+        let request = entry.request
+        var target = entry.target
+        updateLaunch(id) { $0.phase = .starting }
+        do {
+            if target == nil {
+                let key = try await clientProvider().cliStart(deviceId: request.deviceId, engine: request.engine, cwd: request.cwd, worktreeBranch: request.branch,
+                                                              requestId: entry.requestId, model: request.model, effort: request.effort)
+                target = key
+                updateLaunch(id) { $0.target = key }
+                await refresh()
+            }
+            let text = request.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let target, !text.isEmpty {
+                updateLaunch(id) { $0.phase = .sending }
+                echoes[target] = text
+                var tries = 0
+                while true {
+                    do { try await send(target, text: text); break } catch {
+                        // the computer lists a just-started session once the CLI is up
+                        if tries < 30, CoreError.wrap(error).code == "not_found" { tries += 1; try? await Task.sleep(nanoseconds: launchRetryNanos); continue }
+                        throw error
+                    }
+                }
+            }
+            updateLaunch(id) { $0.phase = .sent }
+            await refresh()
+            settleLaunches()
+        } catch {
+            if let target { echoes[target] = nil }
+            let text = CliErrorText.text(for: error, fallback: target == nil ? "没能启动" : "消息没有发出")
+            updateLaunch(id) { $0.phase = .failed(text) }
+        }
+    }
+
+    /// A launch whose session is listed and whose first message is out is done: the real row takes over.
+    private func settleLaunches() {
+        let listed = Set(sessions.map(\.key))
+        let done = launches.filter { $0.phase == .sent && $0.target.map(listed.contains) == true }
+        guard !done.isEmpty else { return }
+        let ids = Set(done.map(\.id))
+        launches.removeAll { ids.contains($0.id) }
+        if let moved = done.first(where: { $0.key == selectedKey }) { select(moved.target) }
+    }
+
+    /// The rows of the CLI's own `/model` picker on a computer: read from it when its executor can list them (once a minute),
+    /// else the built-in suggestions.
+    public func models(deviceId: String, engine: CliEngine) async -> CliModelCatalog {
+        let fallback = CliModelCatalog(models: CliLaunches.fallbackModels[engine] ?? [])
+        guard device(deviceId)?.cliAgents?.features.contains("models") == true else { return fallback }
+        let id = "\(deviceId)\n\(engine.rawValue)"
+        if let cached = catalogs[id], Self.currentMs() - cached.at < 60_000 { return cached.catalog }
+        guard let catalog = try? await clientProvider().cliModels(deviceId: deviceId, engine: engine) else { return fallback }
+        catalogs[id] = (Self.currentMs(), catalog)
+        return catalog
     }
 
     @discardableResult
@@ -375,6 +485,7 @@ public final class CliAgentsModel {
             // the requests of every session that has some follow this list
             requests.dropOpen()
             loaded = true; loadError = nil
+            settleLaunches()
             evaluateNotifications()
         case .listDelta(let upserts, let removes, let newDevices):
             generation += 1
@@ -385,6 +496,7 @@ public final class CliAgentsModel {
             if !removes.isEmpty { let gone = Set(removes); next.removeAll { gone.contains($0.key) } }
             sessions = next
             if let newDevices { devices = newDevices }
+            settleLaunches()
             evaluateNotifications()
         case .items(let key, let items, let reset, let more):
             guard subscribed[key] != nil else { return }

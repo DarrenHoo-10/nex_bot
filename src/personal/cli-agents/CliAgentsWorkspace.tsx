@@ -10,6 +10,8 @@ import { desktop } from "../api";
 import { answerRequest, cliErrorText, fetchSnapshot, hideSession } from "./api";
 import { ForkDialog, type CliBotChoice } from "./ForkDialog";
 import { NewSessionDialog } from "./NewSessionDialog";
+import { LaunchPane } from "./LaunchPane";
+import { isLaunchKey, launchRow, useLaunches } from "./use-launches";
 import { newRequests, newlyWaiting, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
 import { pendingCounts, pendingViews } from "./requests";
 import { groupSessions, waitingCount } from "./session-model";
@@ -169,6 +171,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     return map;
   }, [tree]);
   const runWorkbenchAction = useCallback(async (action: "fork" | "rename" | "archive" | "restore" | "delete", session: Pick<CliSessionView, "key" | "deviceId" | "engine" | "cwd">, value?: { title?: string; row?: { id?: string; version?: number } }): Promise<{ key?: CliSessionKey }> => {
+    if (isLaunchKey(session.key)) throw new Error("会话还在启动");
     if (action === "fork") {
       // the branch row exists first; the device session binds to it on start
       const created = await branchSession(session.key, value?.title ?? "", crypto.randomUUID());
@@ -199,6 +202,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     return {};
   }, [reload]);
   const [selectedKey, setSelectedKey] = useState<CliSessionKey | null>(readSelected);
+  const launcher = useLaunches(sessions, () => { setReloadToken(token => token + 1); void reload(); });
   const [mobileView, setMobileView] = useState<"list" | "pane">("list");
   const [creating, setCreating] = useState<{ deviceId?: string; cwd?: string } | null>(null);
   const [forking, setForking] = useState<CliSessionView | null>(null);
@@ -206,12 +210,24 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
   const select = useCallback((key: CliSessionKey | null) => {
     didSelect.current=true;
     setSelectedKey(key);
-    writeSelected(key);
+    // a session still starting has no key that outlives the page
+    if (!isLaunchKey(key)) writeSelected(key);
     if (key) setMobileView("pane");
   }, []);
 
   // archived (and the older "hidden") sessions stay in the groups: the list shows them in its archive view
-  const groups = useMemo(() => groupSessions(devices, sessions, true), [devices, sessions]);
+  // sessions still starting show first; a started one keeps its placeholder until its first message is out
+  const listed = useMemo(() => {
+    const starting = new Set(launcher.launches.map((launch) => launch.target).filter(Boolean));
+    return [...launcher.launches.map(launchRow), ...sessions.filter((session) => !starting.has(session.key))];
+  }, [launcher.launches, sessions]);
+  const groups = useMemo(() => groupSessions(devices, listed, true), [devices, listed]);
+  const launching = launcher.launches.find((launch) => launch.key === selectedKey) ?? null;
+  // the real row took over: the pane follows it
+  useEffect(() => {
+    const moved = launcher.done.find((launch) => launch.key === selectedKey);
+    if (moved?.target) select(moved.target);
+  }, [launcher.done, selectedKey, select]);
   const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side" && (review || (listMeta.get(s.key)?.kind!=="side" && !s.sideOf))) ?? null;
   const sideHost = useMemo(() => review ? undefined : { meta: listMeta, refresh: () => { setReloadToken(token => token + 1); void reload(); } }, [review, listMeta, reload]);
   const sideChats=useSideChats(selectedKey,sessions,sideHost);
@@ -313,7 +329,11 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
           <div className="cli-body" data-side={sideChats.selected?"open":undefined}>
             {slotted ? null : <aside className="cli-side glass" aria-busy={!loaded}>{list}</aside>}
             <div className="cli-content glass">
-              {selected ? (
+              {launching ? (
+                <LaunchPane key={launching.id} launch={launching} onBack={() => setMobileView("list")}
+                  onRetry={() => launcher.retry(launching.id)}
+                  onDismiss={() => { launcher.dismiss(launching.id); if (launching.target) select(launching.target); else select(null); }}/>
+              ) : selected ? (
                 <SessionPane
                   key={selected.key}
                   session={selected}
@@ -329,6 +349,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                   onAnswer={(id, decision, answers) => answer(selected.key, id, decision, answers)}
                   onFork={bots?.length && onOpenTopic ? () => setForking(selected) : undefined}
                   features={devices.find(d => d.id===selected.deviceId)?.cliAgents?.features}
+                  echo={launcher.echo(selected.key)}
                 />
               ) : (
                 <div className="cli-placeholder">选择一个会话</div>
@@ -364,7 +385,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
           initialDeviceId={creating.deviceId}
           initialCwd={creating.cwd ?? (selected?.deviceId === creating.deviceId ? selected?.cwd : undefined)}
           onClose={() => setCreating(null)}
-          onStarted={(key) => { setCreating(null); select(key); }}
+          onLaunch={(request) => { setCreating(null); select(launcher.launch(request).key); }}
         />
       ) : null}
       {forking && bots && onOpenTopic ? (

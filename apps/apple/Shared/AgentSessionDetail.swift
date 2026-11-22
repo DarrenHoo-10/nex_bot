@@ -31,7 +31,11 @@ struct AgentSessionDetail: View {
                 Text("会话不存在").foregroundStyle(Theme.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear { model.openSession(key) }
+        .onAppear {
+            model.openSession(key)
+            // a session just started here opens on its conversation, where the first message shows
+            if model.echoes[key] != nil { tab = .chat }
+        }
         .onDisappear { model.closeSession(key) }
         .sheet(isPresented: $forking) {
             if let session {
@@ -180,8 +184,17 @@ private struct AgentTranscript: View {
     var body: some View {
         let t = model.transcript(key)
         let blocks = CliTranscript.group(t.items)
+        let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
         Group {
-            if let error = t.error, t.items.isEmpty {
+            if let echo, blocks.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        AgentEchoBubble(text: echo)
+                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("处理中…").font(.footnote).foregroundStyle(Theme.muted) }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                }
+            } else if let error = t.error, t.items.isEmpty {
                 VStack(spacing: 8) {
                     Text(error).font(.footnote).foregroundStyle(Theme.danger)
                     Button("重试") { model.reloadTranscript(key) }.buttonStyle(.bordered)
@@ -203,6 +216,7 @@ private struct AgentTranscript: View {
                                     .onAppear { Task { await model.loadOlder(key) } }
                             }
                             ForEach(blocks) { block in AgentBlockView(block: block) }
+                            if let echo { AgentEchoBubble(text: echo) }
                             Color.clear.frame(height: 1).id("bottom")
                         }
                         .padding(.horizontal, 14).padding(.vertical, 6)
