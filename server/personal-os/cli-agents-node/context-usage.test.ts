@@ -37,6 +37,17 @@ describe("context usage", () => {
     expect(claudeWindow(dir, "claude-haiku-5-5", 50_000, {})).toBe(600_000);
   });
 
+  it("gives a session the desktop app runs on a [1m] model 1M, whatever the general compaction window", () => {
+    const dir = temp();
+    writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ autoCompactWindow: 272000, env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1050000" }, modelSettings: { "proxy/claude-opus-5-5": { autoCompactWindow: 262144 } } }));
+    resetContextSettings();
+    expect(claudeWindow(dir, "claude-opus-5-5", 240_400, {}, "magpie.claude-opus-5-5[1m]")).toBe(1_000_000);
+    expect(claudeWindow(dir, "claude-opus-5-5", 240_400, {}, "claude-opus-5-5")).toBe(272_000);
+    expect(claudeWindow(dir, "claude-opus-5-5", 240_400, {})).toBe(272_000);
+    // a window set for the launched model itself still wins
+    expect(claudeWindow(dir, "claude-opus-5-5", 50_000, {}, "proxy/claude-opus-5-5[1m]")).toBe(262_144);
+  });
+
   it("keeps the last main-thread request of a transcript, not a subagent's", async () => {
     const file = path.join(temp(), "s1.jsonl");
     const lines = [

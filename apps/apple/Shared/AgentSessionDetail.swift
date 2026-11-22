@@ -433,13 +433,16 @@ private struct AgentComposer: View {
                 .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .onSubmit { if canSend { Task { await send() } } }
             if tooLong { Text("内容太长").font(.caption).foregroundStyle(Theme.danger) }
-            if running {
-                Button("中断") { Task { await interrupt() } }.buttonStyle(.bordered)
-            }
             AgentContextRing(usage: session.context)
-            Button { Task { await send() } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 26)) }
-                .buttonStyle(.plain).foregroundStyle(canSend ? Theme.identityAccent : Theme.offline)
-                .disabled(!canSend).accessibilityLabel("发送")
+            // one button: Stop while a turn runs and the box is empty, Send once there is something to send
+            if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button { Task { await interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 26)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.foreground).accessibilityLabel("停止")
+            } else {
+                Button { Task { await send() } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 26)) }
+                    .buttonStyle(.plain).foregroundStyle(canSend ? Theme.identityAccent : Theme.offline)
+                    .disabled(!canSend).accessibilityLabel("发送")
+            }
         }
     }
 

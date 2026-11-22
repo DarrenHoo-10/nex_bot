@@ -608,7 +608,7 @@ function row(rawConfigDir: string, sessionId: string, entry: ClaudeHistoryEntry 
     result.route = { via: "inbox", configDir: rawConfigDir, pid: live.pid, socketPath: live.messagingSocketPath, sessionId };
   }
   if (entry?.model) result.model = clipUnits(entry.model, CLI_LIMITS.model);
-  if (entry?.contextUsed) result.context = { used: entry.contextUsed, window: claudeWindow(rawConfigDir, entry.model, entry.contextUsed) };
+  if (entry?.contextUsed) result.context = { used: entry.contextUsed, window: claudeWindow(rawConfigDir, entry.model, entry.contextUsed, process.env, sidebar?.model) };
   const version = live?.version ?? entry?.version;
   if (version) result.cliVersion = clipUnits(version, CLI_LIMITS.cliVersion);
   return result;

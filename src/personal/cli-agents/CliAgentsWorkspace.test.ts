@@ -352,12 +352,29 @@ describe("session pane", () => {
     await flush();
     expect(container.querySelector(".cli-composer-error")?.textContent).toContain("电脑离线");
     expect(box.value).toBe("再来一次");
+    // drafts outlive the pane; leave none behind for the next session test
+    await type("");
   });
 
   it("stops a running turn through the workbench contract and pauses the queue", async () => {
     await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
     await click(button("停止"));
     expect(fixture.stopSession).toHaveBeenCalledWith("dev1:claude:s1", expect.any(String));
+  });
+
+  it("shows one button while a turn runs: Stop with an empty box, Send once there is text", async () => {
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
+    const box = container.querySelector("[data-testid=cli-composer]")!;
+    const labels = () => [...box.querySelectorAll(".na-stop, button[type=submit]")].map((el) => el.getAttribute("aria-label"));
+    const typeInto = async (element: HTMLTextAreaElement, value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(element, value);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(labels()).toEqual(["停止"]);
+    await typeInto(box.querySelector("textarea")!, "顺便看一下日志");
+    expect(labels()).toEqual(["发送"]);
+    await typeInto(box.querySelector("textarea")!, "");
+    expect(labels()).toEqual(["停止"]);
   });
 
   it("titles the pane with the name Core keeps, not the CLI's own title", async () => {

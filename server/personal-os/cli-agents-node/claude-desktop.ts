@@ -53,6 +53,8 @@ export interface DesktopSessionState {
   /** the folder the session was started in (a worktree's main checkout) */
   originCwd?: string;
   lastActivityAt?: number;
+  /** the model the app runs the session with, `[1m]` included (the transcript drops the suffix) */
+  model?: string;
 }
 
 export interface DesktopIndex {
@@ -110,6 +112,7 @@ interface Entry {
   cwd?: string;
   originCwd?: string;
   lastActivityAt?: number;
+  model?: string;
 }
 
 type Parsed = { entry: Entry } | { mentions: string[] } | null;
@@ -214,6 +217,7 @@ export function buildIndex(parsed: readonly Parsed[], deleted: ReadonlySet<strin
     if (e.cwd) state.cwd = e.cwd;
     if (e.originCwd) state.originCwd = e.originCwd;
     if (e.lastActivityAt !== undefined) state.lastActivityAt = e.lastActivityAt;
+    if (e.model) state.model = e.model;
     // two entries naming one transcript: the unarchived one wins
     const existing = sessions.get(e.cliId);
     if (!existing || (existing.archived && !e.archived)) sessions.set(e.cliId, state);
@@ -251,6 +255,7 @@ function parseEntry(raw: string): Parsed {
   if (typeof rec.cwd === "string" && rec.cwd) entry.cwd = rec.cwd;
   if (typeof rec.originCwd === "string" && rec.originCwd) entry.originCwd = rec.originCwd;
   if (typeof rec.lastActivityAt === "number" && Number.isFinite(rec.lastActivityAt)) entry.lastActivityAt = rec.lastActivityAt;
+  if (typeof rec.model === "string" && rec.model.trim()) entry.model = rec.model.trim().slice(0, 200);
   return { entry };
 }
 

@@ -192,6 +192,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const tooLarge=utf8ByteLength(body)>MAX_SEND_TEXT;
   // a new session may start without a message: it only opens the CLI in that folder
   const canSubmit=(starter ? starter.ready : !!(body || extra.files.length)) && (extra.goal===null || !!goal);
+  const stopOnly = mode.kind==="send" && mode.running && !sending && !(body || extra.files.length);
   // 排队/引导 only applies where a turn actually runs: a nex_bot terminal session
   const wantsDelivery = !draft && session.liveIn === "nexbot" && !!session.terminal && running;
   // 排队/引导 is offered only where the choice is honoured: the review fixture, or a running nex_bot terminal
@@ -326,8 +327,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         {offersDelivery && <div className="na-delivery" role="radiogroup" aria-label="发送方式">
           {([["queue","排队"],["steer","引导"]] as const).map(([value,text])=><button key={value} type="button" role="radio" aria-checked={delivery===value} onClick={()=>setDelivery(value)}>{text}</button>)}
         </div>}
-        {mode.kind==="send" && mode.running ? <button type="button" className="na-stop" aria-label={review?"中断":"停止"} title={review?"中断":"停止当前运行并暂停队列"} disabled={busy} onClick={() => void run(onInterrupt)}><Square size={12} fill="currentColor" strokeWidth={0}/></button> : null}
-        <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":offersDelivery?(delivery==="queue"?"排队发送":"引导当前任务"):"发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>
+        {/* one button: Stop while a turn runs and the box is empty, Send once there is something to send */}
+        {stopOnly ? <button type="button" className="na-stop" aria-label={review?"中断":"停止"} title={review?"中断":"停止当前运行并暂停队列"} disabled={busy} onClick={() => void run(onInterrupt)}><Square size={12} fill="currentColor" strokeWidth={0}/></button> : null}
+        {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":offersDelivery?(delivery==="queue"?"排队发送":"引导当前任务"):"发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
       </div>
       {tooLarge ? <small role="alert" className="cli-composer-error">内容太长</small> : error ? <small role="alert" className="cli-composer-error">{error}</small> : null}
       {mode.kind==="send" && mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}

@@ -43,17 +43,26 @@ function settings(configDir: string): Rec | null {
 
 const MILLION = 1_000_000, DEFAULT_WINDOW = 200_000;
 
-/** Claude's transcripts do not name the window: the settings' compaction window for the model (or for all), the
- * context cap in the environment, a 1M (`[1m]`) default model, else 200K, or 1M once the session has gone past 200K. */
-export function claudeWindow(configDir: string, model: string | undefined, used: number, env: NodeJS.ProcessEnv = process.env): number {
+const ONE_M = /\[1m\]$/i;
+
+/** Claude's transcripts do not name the window, in this order: the settings' window for the model, a model run with
+ * `[1m]` (the desktop app's own record of the session keeps the suffix the transcript drops), the settings' compaction
+ * window for all models, the context cap in the environment, a 1M (`[1m]`) default model, else 200K, or 1M once the
+ * session has gone past 200K. A general compaction setting is when Claude compacts, not the window of a 1M model. */
+export function claudeWindow(configDir: string, model: string | undefined, used: number, env: NodeJS.ProcessEnv = process.env, launched?: string): number {
   const s = settings(configDir);
-  const perModel = model ? count(rec(rec(s?.modelSettings)?.[model])?.autoCompactWindow) : 0;
-  if (perModel) return perModel;
+  const models = rec(s?.modelSettings);
+  for (const name of [model, launched, launched?.replace(ONE_M, "")]) {
+    const perModel = name ? count(rec(models?.[name])?.autoCompactWindow) : 0;
+    if (perModel) return perModel;
+  }
+  const cap = Number(rec(s?.env)?.CLAUDE_CODE_MAX_CONTEXT_TOKENS ?? env.CLAUDE_CODE_MAX_CONTEXT_TOKENS);
+  const capped = Number.isFinite(cap) && cap > 0 ? Math.round(cap) : 0;
+  if (launched && ONE_M.test(launched)) return capped ? Math.min(MILLION, capped) : MILLION;
   const all = count(s?.autoCompactWindow);
   if (all) return all;
-  const cap = Number(rec(s?.env)?.CLAUDE_CODE_MAX_CONTEXT_TOKENS ?? env.CLAUDE_CODE_MAX_CONTEXT_TOKENS);
-  if (Number.isFinite(cap) && cap > 0) return Math.round(cap);
-  if (typeof s?.model === "string" && /\[1m\]$/i.test(s.model)) return MILLION;
+  if (capped) return capped;
+  if (typeof s?.model === "string" && ONE_M.test(s.model)) return MILLION;
   return used > DEFAULT_WINDOW ? MILLION : DEFAULT_WINDOW;
 }
 
