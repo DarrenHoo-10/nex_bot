@@ -154,39 +154,40 @@ struct AgentNewSessionPage: View {
             .accessibilityLabel("运行工具")
 
             if git {
+                // the "Worktree" checkbox: checked, the session starts in a new worktree on nexagent/<random>
+                Button { if branch == nil { branch = CliLaunches.randomBranch() } else { branch = nil; editingBranch = false } } label: {
+                    AgentPickChip(dashed: branch == nil) {
+                        Image(systemName: branch == nil ? "square" : "checkmark.square.fill")
+                            .foregroundStyle(branch == nil ? Theme.muted : Theme.identityAccent)
+                        Text("Worktree")
+                    }
+                }
+                .buttonStyle(.plain).help("在新的工作树里运行")
+                .accessibilityLabel("Worktree").accessibilityValue(branch == nil ? "未选中" : "已选中")
                 if let current = branch {
-                    HStack(spacing: 0) {
-                        Button { editingBranch = true } label: {
-                            AgentPickChip(active: true) {
-                                Image(systemName: "arrow.triangle.branch").foregroundStyle(Theme.muted)
-                                Text(current.isEmpty ? "分支" : current).font(.system(size: 12, design: .monospaced))
-                            }
+                    Button { editingBranch = true } label: {
+                        AgentPickChip(active: true) {
+                            Image(systemName: "arrow.triangle.branch").foregroundStyle(Theme.muted)
+                            Text(current.isEmpty ? "分支" : current).font(.system(size: 12, design: .monospaced))
                         }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $editingBranch, arrowEdge: .bottom) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("新工作树的分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
-                                TextField("分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
-                                    .textFieldStyle(.roundedBorder).font(.system(size: 13, design: .monospaced)).autocorrectionDisabled()
-                                    #if os(iOS)
-                                    .textInputAutocapitalization(.never)
-                                    #endif
-                                    .onSubmit { editingBranch = false }
-                                if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
-                            }
-                            .padding(14).frame(width: 280)
-                            #if os(iOS)
-                            .presentationCompactAdaptation(.popover)
-                            #endif
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("分支名称")
+                    .popover(isPresented: $editingBranch, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("新工作树的分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                            TextField("分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
+                                .textFieldStyle(.roundedBorder).font(.system(size: 13, design: .monospaced)).autocorrectionDisabled()
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                #endif
+                                .onSubmit { editingBranch = false }
+                            if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
                         }
-                        Button { branch = nil } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.muted).padding(6) }
-                            .buttonStyle(.plain).accessibilityLabel("不新建工作树")
+                        .padding(14).frame(width: 280)
+                        #if os(iOS)
+                        .presentationCompactAdaptation(.popover)
+                        #endif
                     }
-                } else {
-                    Button { branch = CliLaunches.randomBranch(); editingBranch = true } label: {
-                        AgentPickChip(dashed: true) { Image(systemName: "arrow.triangle.branch"); Text("工作树") }
-                    }
-                    .buttonStyle(.plain).help("在新的工作树里运行")
                 }
             }
             Spacer(minLength: 6)

@@ -79,16 +79,25 @@ export interface InboxResult {
   waiting: boolean;
 }
 
-/** Tells the session who is talking and how to ask back; kept short on purpose. */
+/** Tells the session who is talking and how to ask back. The desktop app shows it in its
+ * "message from another session" card above the user's words, so it is one line. */
 export const INBOX_PREAMBLE =
-  "[NexBot 远程消息 / NexBot remote message]\n" +
-  "以下是用户本人通过 NexBot 在另一台设备上发来的话，请在本会话中直接回答。需要用户选择时，请用带编号的纯文本选项（1. 2. 3.）列出，不要使用交互式提问工具。\n" +
-  "The text below is the user's own words, sent from NexBot on another device. Answer it in this session. When the user has to choose, offer numbered plain-text options (1. 2. 3.) instead of interactive question tools.\n" +
-  "---\n";
+  "[NexBot] 用户本人在另一台设备上发来，请在本会话直接回答；需要选择时用 1. 2. 3. 纯文本选项，不用交互式提问工具。\n---\n";
+/** The preamble releases up to 0.9.42 sent; their messages are still in transcripts. */
+const LEGACY_PREAMBLE_HEAD = "[NexBot 远程消息 / NexBot remote message]\n";
 
 /** The wire text of a message: preamble first. */
 export function inboxMessageText(text: string): string {
   return INBOX_PREAMBLE + text;
+}
+
+/** What a peer message this module sent says: the user's words, or Stop; null for any other text. */
+export function inboxWords(body: string): { text: string } | { stop: true } | null {
+  if (body.startsWith(INBOX_STOP.slice(0, INBOX_STOP.indexOf("\n")))) return { stop: true };
+  if (body.startsWith(INBOX_PREAMBLE)) return { text: body.slice(INBOX_PREAMBLE.length) };
+  if (!body.startsWith(LEGACY_PREAMBLE_HEAD)) return null;
+  const rule = body.indexOf("\n---\n");
+  return rule < 0 ? null : { text: body.slice(rule + 5) };
 }
 
 /** Claude Code's permission class: `bypass` for a session that runs tools without asking. */
@@ -296,7 +305,7 @@ export async function sendToInbox(target: InboxTarget, text: string, options: In
   const waiting = options.state === "waiting";
   const file = options.transcript;
   if (!file || before === null) return { delivery: "unconfirmed", waiting };
-  const markers = [messageId, options.stop ? "NexBot remote stop" : "NexBot remote message"];
+  const markers = [messageId, options.stop ? "NexBot remote stop" : "[NexBot] "];
   const deadline = Date.now() + (options.confirmMs ?? CONFIRM_MS);
   let from = before;
   for (;;) {

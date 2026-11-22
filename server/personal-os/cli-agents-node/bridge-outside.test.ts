@@ -175,7 +175,7 @@ describe("Claude inbox", () => {
     const sent = JSON.parse(socket.lines[1]);
     expect(sent).toMatchObject({ type: "user", session_id: CID(1), priority: "next", msgV: 1 });
     expect(sent.message.content).toContain("please continue");
-    expect(sent.message.content).toContain("NexBot remote message");
+    expect(sent.message.content).toContain("[NexBot] ");
     expect(JSON.stringify(reply)).not.toContain(TOKEN);
   });
 

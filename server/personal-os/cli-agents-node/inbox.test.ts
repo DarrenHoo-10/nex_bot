@@ -7,7 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INBOX_PREAMBLE, INBOX_STOP, InboxError, canonicalSocketPath, inboxEnvelope, inboxMessageText, isSlashCommand, keyFileName, permissionClassOf, sendToInbox, transcriptPermissionClass, type InboxTarget } from "./inbox.ts";
+import { INBOX_PREAMBLE, INBOX_STOP, InboxError, canonicalSocketPath, inboxEnvelope, inboxMessageText, inboxWords, isSlashCommand, keyFileName, permissionClassOf, sendToInbox, transcriptPermissionClass, type InboxTarget } from "./inbox.ts";
 
 const SESSION = "11111111-2222-4333-8444-555555555555";
 const TOKEN = "peer-token-" + "a".repeat(24);
@@ -101,8 +101,15 @@ describe("message text", () => {
     const text = inboxMessageText("你好");
     expect(text.startsWith(INBOX_PREAMBLE)).toBe(true);
     expect(text.endsWith("你好")).toBe(true);
-    expect(INBOX_PREAMBLE).toContain("NexBot remote message");
+    expect(INBOX_PREAMBLE.startsWith("[NexBot] ")).toBe(true);
     expect(INBOX_PREAMBLE).toContain("1. 2. 3.");
+  });
+
+  it("reads back the user's words and Stop, including the preamble of earlier releases", () => {
+    expect(inboxWords(inboxMessageText("你好\n第二行"))).toEqual({ text: "你好\n第二行" });
+    expect(inboxWords(INBOX_STOP)).toEqual({ stop: true });
+    expect(inboxWords("[NexBot 远程消息 / NexBot remote message]\n说明\nEnglish\n---\n所以对吗")).toEqual({ text: "所以对吗" });
+    expect(inboxWords("a teammate's own message")).toBeNull();
   });
 
   it("treats anything starting with a slash as a command", () => {
@@ -223,7 +230,7 @@ describe("sendToInbox", () => {
 
   it("ignores transcript lines that were there before the send", async () => {
     const transcript = path.join(root, "t.jsonl");
-    writeFileSync(transcript, '{"type":"queue-operation","operation":"enqueue"}\n{"type":"user","message":"NexBot remote message"}\n');
+    writeFileSync(transcript, '{"type":"queue-operation","operation":"enqueue"}\n{"type":"user","message":"[NexBot] earlier"}\n');
     const inbox = await listen();
     writeKey(inbox.socketPath);
     const result = await sendToInbox(target(inbox.socketPath), "hi", { platform: process.platform, transcript, pollMs: 10, confirmMs: 150 });

@@ -251,10 +251,8 @@
 .na-row-context{flex:none;max-width:42%;margin-left:auto;overflow:hidden;color:var(--na-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .na-sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
-/* the CLI mark stays quiet; the dot carries the state */
+/* the dot on the CLI mark carries the state */
 .na-engine{position:relative}
-.na-stage .cli-app .cli-row .na-engine>*{filter:grayscale(1);opacity:.55;transition:filter 130ms ease,opacity 130ms ease}
-.na-stage .cli-app .cli-row:hover .na-engine>*,.na-stage .cli-app .cli-row.is-selected .na-engine>*{filter:none;opacity:1}
 .na-engine[data-tone="running"]::after,.na-engine[data-tone="waiting"]::after{content:"";position:absolute;right:-3px;bottom:-2px;width:8px;height:8px;border-radius:50%;background:#2f9e5f;box-shadow:0 0 0 2px var(--na-nav)}
 .na-engine[data-tone="waiting"]::after{background:#d68a12}
 @media(prefers-reduced-motion:no-preference){.na-engine[data-tone="running"]::after{animation:na-breathe 1.8s ease-in-out infinite}}

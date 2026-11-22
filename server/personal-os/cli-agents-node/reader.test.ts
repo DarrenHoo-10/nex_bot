@@ -207,6 +207,30 @@ describe("TranscriptReader paging", () => {
     expect(all.map((item) => item.id)).toEqual(Array.from({ length: 130 }, (_, i) => `u-${String(i + 1).padStart(4, "0")}`));
   });
 
+  it("fills a page with distinct items when every tool's result sits next to its call", async () => {
+    // a tool call and its result map to the same item twice; a page of tool-heavy turns
+    // must still hold `limit` items and say that older turns exist
+    const lines: string[] = [];
+    for (let turn = 1; turn <= 3; turn += 1) {
+      lines.push(userLine(turn, `turn ${turn}`));
+      for (let n = 0; n < 30; n += 1) {
+        const id = `t${turn}-${n}`;
+        lines.push(JSON.stringify({ type: "assistant", uuid: `a-${id}`, message: { content: [{ type: "tool_use", id, name: "Bash", input: { command: "ls" } }] } }));
+        lines.push(JSON.stringify({ type: "user", uuid: `r-${id}`, message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] } }));
+      }
+    }
+    const file = path.join(dir, "tools.jsonl");
+    writeFileSync(file, lines.join("\n") + "\n");
+    const { reader } = make(file, "claude");
+    const first = await reader.start();
+    expect(first.items).toHaveLength(40);
+    expect(first.more).toBe(true);
+    const all = await pagedAll(reader, first, 40);
+    expect(all.filter((item) => item.kind === "user").map((item) => item.kind === "user" && item.text)).toEqual(["turn 1", "turn 2", "turn 3"]);
+    expect(new Set(all.map((item) => item.id)).size).toBe(all.length);
+    expect(all).toHaveLength(93);
+  });
+
   it("returns an empty page for an unknown id", async () => {
     const file = path.join(dir, "unknown.jsonl");
     writeFileSync(file, `${userLine(1)}\n`);

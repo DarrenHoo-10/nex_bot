@@ -1,7 +1,7 @@
 // A new session, started from the same message box every session has (attachments, goal mode, skills, model):
 // the folder, CLI and worktree sit in a row above it, and sending starts the session with that message.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, GitBranch, X } from "lucide-react";
+import { ArrowLeft, GitBranch } from "lucide-react";
 import type { CliDeviceView, CliEngine, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import type { LaunchChoice } from "./CliModelMenu";
@@ -94,18 +94,22 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   );
 }
 
-/** A new worktree for the session: off by default, `nexagent/<random>` when turned on, editable. */
+/** A new worktree for the session: a "Worktree" checkbox, off by default. Checked, the session starts in a new
+ * worktree on `nexagent/<random>`; the branch shows beside it and opens to be renamed. */
 function BranchChip({ branch, onChange, problem }: { branch: string | null; onChange(next: string | null): void; problem: string | null }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false), 300);
-  if (branch === null) return <button type="button" className="na-pick-chip" data-empty title="在新的工作树里运行" onClick={() => { onChange(randomBranch()); setOpen(true); }}><GitBranch size={14}/><span>工作树</span></button>;
+  const on = branch !== null;
   return <div className="model-menu-root" ref={root}>
-    <span className="na-pick-chip na-branch-chip" data-invalid={problem ? true : undefined}>
-      <button ref={trigger} type="button" aria-label="分支名称" aria-expanded={open} onClick={() => setOpen(!open)}><GitBranch size={14}/><span>{branch || "分支"}</span></button>
-      <button type="button" aria-label="不新建工作树" title="不新建工作树" onClick={() => { onChange(null); setOpen(false); }}><X size={12}/></button>
+    <span className="na-pick-chip na-branch-chip" data-on={on || undefined} data-invalid={problem ? true : undefined}>
+      <label className="na-worktree-check" title="在新的工作树里运行">
+        <input type="checkbox" checked={on} onChange={(event) => { if (event.target.checked) onChange(randomBranch()); else { onChange(null); setOpen(false); } }}/>
+        <span>Worktree</span>
+      </label>
+      {on ? <button ref={trigger} type="button" aria-label="分支名称" aria-expanded={open} onClick={() => setOpen(!open)}><GitBranch size={13}/><span>{branch || "分支"}</span></button> : null}
     </span>
-    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu na-branch-menu" role="dialog" aria-label="新工作树"
+    {open && on && <div ref={panel} popover="manual" className="model-menu na-model-menu na-branch-menu" role="dialog" aria-label="新工作树"
       onKeyDown={(event) => { if (event.key === "Escape" || event.key === "Enter") { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); } }}>
       <div className="na-model-head"><span>新工作树的分支</span></div>
       <label className="model-menu-search"><GitBranch size={14}/><input autoFocus aria-label="新分支名称" value={branch} spellCheck={false} autoComplete="off" onChange={(event) => onChange(event.target.value)}/></label>

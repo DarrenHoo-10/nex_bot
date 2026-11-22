@@ -21,9 +21,13 @@
 .na-new .na-pick-chip > svg { flex: none; color: var(--nn-muted); }
 .na-new .na-pick-chip em { flex: none; padding: 0 6px; border-radius: 6px; background: var(--nn-soft); color: var(--nn-accent); font-size: 10.5px; font-style: normal; line-height: 17px; }
 .na-stage .cli-app .na-new .na-new-options .na-pick-chip.na-branch-chip { gap: 0; padding: 0 4px 0 0; }
-.na-stage .cli-app .na-new .na-new-options .na-branch-chip button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 28px; height: 28px; padding: 0 6px 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--nn-ink); font-size: 12.5px; }
-.na-stage .cli-app .na-new .na-new-options .na-branch-chip button + button { padding: 0 6px; color: var(--nn-muted); }
+.na-stage .cli-app .na-new .na-new-options .na-branch-chip button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 28px; height: 28px; padding: 0 8px 0 6px; border: 0; border-radius: 999px; background: transparent; color: var(--nn-ink); font-size: 12.5px; }
 .na-stage .cli-app .na-new .na-new-options .na-branch-chip[data-invalid] { border-color: #d65a5a; }
+.na-stage .cli-app .na-new .na-new-options .na-branch-chip:not([data-on]) { border-style: dashed; color: var(--nn-muted); }
+.na-stage .cli-app .na-new .na-new-options .na-branch-chip:not([data-on]):hover { background: var(--nn-hover); }
+.na-new .na-worktree-check { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px 0 10px; font-size: 12.5px; cursor: pointer; user-select: none; }
+.na-new .na-worktree-check input { flex: none; width: 14px; height: 14px; margin: 0; padding: 0; accent-color: var(--nn-accent); cursor: pointer; }
+.na-stage .cli-app .na-new .na-new-options .na-branch-chip[data-on] .na-worktree-check { padding-right: 2px; color: var(--nn-ink); }
 .na-new .na-branch-chip button > span { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
 /* the folder menu */

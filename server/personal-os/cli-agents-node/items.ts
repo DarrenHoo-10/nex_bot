@@ -10,6 +10,7 @@ import {
   type CliItem,
   type CliSessionWire,
 } from "../../../shared/cli-agents.ts";
+import { inboxWords } from "./inbox.ts";
 
 export type ToolItem = Extract<CliItem, { kind: "tool" }>;
 
@@ -73,7 +74,11 @@ export interface ItemContext {
 }
 
 export const COMPACT_TEXT = "上下文已压缩";
+/** Stop pressed in NexBot, as the session's record shows it. */
+export const REMOTE_STOP_TEXT = "你在 NexBot 上按了停止";
 const TOOL_INDEX_MAX = 2000;
+/** a text block made only of `<system-reminder>` sections */
+const SYSTEM_REMINDER_BLOCK = /^\s*(?:<system-reminder>(?:(?!<\/system-reminder>)[\s\S])*<\/system-reminder>\s*)+$/;
 const ID_MAX = 200;
 
 type Rec = Record<string, unknown>;
@@ -256,6 +261,11 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
     if (record.isCompactSummary === true) return { items: [notice(baseId, ts, "info", COMPACT_TEXT)] };
     if (record.isMeta === true) {
       const text = blocksText(message?.content);
+      // A message NexBot sent through the inbox: Claude Code keeps it as a meta record
+      // with the peer's words in `origin.body`; it is the user's own message.
+      const origin = isRec(record.origin) ? record.origin : undefined;
+      const remote = origin?.kind === "peer" && typeof origin.body === "string" ? inboxWords(origin.body) : null;
+      if (remote) return { items: ["stop" in remote ? notice(baseId, ts, "info", REMOTE_STOP_TEXT) : { kind: "user", id: baseId, ts, text: itemText(remote.text) }] };
       return text.trimStart().startsWith("<task-notification>") ? { items: [notice(baseId, ts, "info", text)] } : none;
     }
     return { items: claudeUser(record, message, ctx, baseId, ts) };
@@ -327,7 +337,8 @@ function claudeUser(record: Rec, message: Rec | undefined, ctx: ItemContext, bas
       if (!isRec(block)) continue;
       switch (block.type) {
         case "text":
-          if (typeof block.text === "string") texts.push(block.text);
+          // the desktop app sends its own context (worktree path, dates) as separate reminder blocks
+          if (typeof block.text === "string" && !SYSTEM_REMINDER_BLOCK.test(block.text)) texts.push(block.text);
           break;
         case "image": {
           sawImage = true;

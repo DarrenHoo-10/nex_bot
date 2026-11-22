@@ -558,7 +558,12 @@ describe("new session", () => {
     await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
     const page = await openNew();
     await flush();
-    await click([...page.querySelectorAll("button")].find((button) => button.textContent === "工作树")!);
+    const worktree = [...page.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input")!;
+    expect(worktree.checked).toBe(false);
+    await click(worktree);
+    expect(worktree.checked).toBe(true);
+    expect(page.querySelector("button[aria-label=分支名称]")?.textContent).toMatch(/^nexagent\/[a-z0-9]{6}$/);
+    await click(page.querySelector("button[aria-label=分支名称]"));
     const branch = document.querySelector<HTMLInputElement>("input[aria-label=新分支名称]")!;
     expect(branch.value).toMatch(/^nexagent\/[a-z0-9]{6}$/);
     await typeInto(branch, "nexagent/login fix");
@@ -575,7 +580,7 @@ describe("new session", () => {
     await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
     const page = await openNew();
     await flush();
-    await click([...page.querySelectorAll("button")].find((button) => button.textContent === "工作树")!);
+    await click([...page.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input"));
     await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();
     expect(container.querySelector("[data-testid=cli-launch] [role=alert]")?.textContent).toContain("工作树已存在");

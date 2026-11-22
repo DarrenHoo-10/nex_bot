@@ -366,13 +366,13 @@ export class TranscriptReader {
     }
     let span = Math.max(50, limit * 2);
     let startLine = 0;
-    let found: { item: CliItem; offset: number }[] = [];
+    let unique: { item: CliItem; offset: number }[] = [];
     for (;;) {
       startLine = Math.max(0, endLine - span);
       if (before !== undefined) tools = new Map();
       const ctx = this.ctxFor(tools, true);
       const lines = await this.readLines(startLine, endLine);
-      found = this.mapLines(lines, ctx);
+      let found = this.mapLines(lines, ctx);
       if (before !== undefined) {
         // items of the cut line that come before `before`
         const cutIndex = found.findIndex((entry) => entry.item.id === before);
@@ -382,17 +382,19 @@ export class TranscriptReader {
         const ahead = await this.readLines(endLine, Math.min(this.starts.length, endLine + LOOKAHEAD_LINES));
         this.mapLines(ahead, ctx);
       }
-      if (found.length > limit || startLine === 0) break;
+      // a tool item appears twice when its result is in the window; keep the first slot.
+      // The page is full only by distinct items: counting both slots ended a page early
+      // and reported nothing older.
+      const seen = new Set<string>();
+      unique = found.filter((entry) => {
+        if (seen.has(entry.item.id)) return false;
+        seen.add(entry.item.id);
+        return true;
+      });
+      if (unique.length > limit || startLine === 0) break;
       span *= 2;
       await yieldLoop();
     }
-    // a tool item appears twice when its result is in the window; keep the first slot
-    const seen = new Set<string>();
-    const unique = found.filter((entry) => {
-      if (seen.has(entry.item.id)) return false;
-      seen.add(entry.item.id);
-      return true;
-    });
     const slice = unique.slice(-limit);
     for (const entry of slice) this.remember(entry.item.id, entry.offset);
     return { items: slice.map((entry) => ({ ...entry.item }) as CliItem), more: unique.length > limit };

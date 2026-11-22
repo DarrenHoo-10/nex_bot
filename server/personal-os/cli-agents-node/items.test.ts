@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ITEM_TEXT_MAX, SUMMARY_MAX, TOOL_OUTPUT_MAX, parseCliItem, utf8ByteLength, type CliItem } from "../../../shared/cli-agents.ts";
-import { claudeRecordToItems, codexRecordToItems, summarizeInput, type ItemContext } from "./items.ts";
+import { REMOTE_STOP_TEXT, claudeRecordToItems, codexRecordToItems, summarizeInput, type ItemContext } from "./items.ts";
+import { INBOX_STOP, inboxMessageText } from "./inbox.ts";
 
 const TS = "2026-11-15T10:00:00.000Z";
 const MS = Date.parse(TS);
@@ -35,6 +36,22 @@ describe("claude: user records", () => {
     const { items } = claude({ type: "user", uuid: "u2", timestamp: TS, message: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } });
     expect(items[0]).toMatchObject({ kind: "user", text: "a\n\nb" });
     expect(claude({ type: "user", uuid: "u3", isMeta: true, message: { content: "caveat" } }).items).toEqual([]);
+  });
+
+  it("shows a message NexBot sent through the inbox as the user's, and its Stop as a notice", () => {
+    const peer = (body: string) => ({ type: "user", uuid: "p1", timestamp: TS, isMeta: true, origin: { kind: "peer", body }, message: { content: "Another Claude session sent a message:\n<cross-session-message>" + body + "</cross-session-message>" } });
+    expect(claude(peer(inboxMessageText("所以对吗"))).items).toEqual([{ kind: "user", id: "p1", ts: MS, text: "所以对吗" }]);
+    expect(claude(peer(INBOX_STOP)).items).toEqual([{ kind: "notice", id: "p1", ts: MS, level: "info", text: REMOTE_STOP_TEXT }]);
+    expect(claude(peer("a teammate's own message")).items).toEqual([]);
+  });
+
+  it("leaves out the desktop app's reminder blocks and keeps the user's words", () => {
+    const { items } = claude({ type: "user", uuid: "u9", timestamp: TS, message: { content: [
+      { type: "text", text: "<system-reminder>\nYou are operating in a git worktree.\n</system-reminder>\n<system-reminder>more</system-reminder>" },
+      { type: "text", text: "把这个修复下" },
+      { type: "text", text: "<system-reminder>a</system-reminder> typed between <system-reminder>b</system-reminder>" },
+    ] } });
+    expect(items).toEqual([{ kind: "user", id: "u9", ts: MS, text: "把这个修复下\n\n<system-reminder>a</system-reminder> typed between <system-reminder>b</system-reminder>" }]);
   });
 
   it("records only local image paths, never image data", () => {
