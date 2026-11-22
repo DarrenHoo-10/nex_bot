@@ -225,6 +225,7 @@ struct ModelPickerPopover: View {
     var models: [String]?
     var source: ModelSource?
     var debugPrefix = "mp"
+    var allowCustom = true
     let onSelect: (String) -> Void
     let close: () -> Void
 
@@ -238,7 +239,7 @@ struct ModelPickerPopover: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModelListView(models: options, value: value, emptyLabel: emptyLabel, allowCustom: true, debugPrefix: debugPrefix,
+            ModelListView(models: options, value: value, emptyLabel: emptyLabel, allowCustom: allowCustom, debugPrefix: debugPrefix,
                           onSelect: { onSelect($0) }, onEscape: close)
             if loader.loading { status("正在获取模型…") }
             if let error = loader.error { status(error, danger: true) }
@@ -283,6 +284,7 @@ struct ModelPickerField: View {
     var disabled = false
     var identifier: String?
     var debugPrefix = "mp"
+    var allowCustom = true
     @Binding var isOpen: Bool
     let onChange: (String) -> Void
     @FocusState private var triggerFocused: Bool
@@ -308,7 +310,7 @@ struct ModelPickerField: View {
             .accessibilityLabel(label).accessibilityValue(value.isEmpty ? (emptyLabel ?? "") : value)
             .accessibilityIdentifier(identifier ?? label)
             .popover(isPresented: $isOpen, arrowEdge: .bottom) {
-                ModelPickerPopover(label: label, value: value, emptyLabel: emptyLabel, models: models, source: source, debugPrefix: debugPrefix,
+                ModelPickerPopover(label: label, value: value, emptyLabel: emptyLabel, models: models, source: source, debugPrefix: debugPrefix, allowCustom: allowCustom,
                                    onSelect: { choice in
                                        if !disabled { onChange(choice) }
                                        isOpen = false

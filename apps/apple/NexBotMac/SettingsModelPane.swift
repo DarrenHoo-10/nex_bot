@@ -36,6 +36,8 @@ struct SettingsModelPane: View {
                 ImageModelSection(workspace: workspace, active: active).id("\(workspace.state?.config?.providerID ?? "")|\(workspace.state?.config?.endpoint ?? "")")
             }
             Hairline().padding(.vertical, 28)
+            TranslationModelSection(workspace: workspace, active: active)
+            Hairline().padding(.vertical, 28)
             RetrievalSection(workspace: workspace, active: active)
         }
         .onAppear { if connection == nil { selected = connections.first?.id ?? "new" } }

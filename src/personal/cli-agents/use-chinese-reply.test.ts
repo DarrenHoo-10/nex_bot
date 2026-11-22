@@ -6,6 +6,7 @@ import { isEnglishReply, resetReplyTranslations, splitReply, STABLE_MS } from ".
 
 vi.mock("../AgentDesktop", () => ({ RichText: ({ value }: { value: string }) => createElement("p", { "data-testid": "rich" }, value) }));
 
+import { type CliSessionKey } from "../../../shared/cli-agents";
 import { ReplyText } from "./TranscriptView";
 
 const ENGLISH = "Please restart the server and check the logs again.";
@@ -88,6 +89,26 @@ describe("isEnglishReply", () => {
     expect(isEnglishReply("请运行 npm install 然后重启服务")).toBe(false);
     expect(isEnglishReply("```ts\nconst longVariableName = anotherLongName;\n```")).toBe(false);
     expect(isEnglishReply("OK")).toBe(false);
+  });
+});
+
+describe("Core reply translation", () => {
+  it("shows original before completion and while waiting, then toggles the Core translation", async () => {
+    const fetchTranslation = vi.fn<typeof fetch>();
+    let finish!: (response: Response) => void;
+    fetchTranslation.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetchTranslation);
+    const core = { key: "fixture:claude:session" as CliSessionKey, id: "reply" };
+    await act(async () => { root.render(createElement(ReplyText, { source: ENGLISH, local: false })); });
+    expect(shown()).toBe(ENGLISH);
+    expect(fetchTranslation).not.toHaveBeenCalled();
+    await act(async () => { root.render(createElement(ReplyText, { source: ENGLISH, local: false, core })); });
+    expect(shown()).toBe(ENGLISH);
+    expect(fetchTranslation.mock.calls[0]?.[0]).toBe("/api/cli-agents/translate");
+    await act(async () => finish(Response.json({ translation: "请重启服务器，然后再检查一次日志。" })));
+    expect(shown()).toBe("请重启服务器，然后再检查一次日志。");
+    await act(async () => { container.querySelector("button")!.click(); });
+    expect(shown()).toBe(ENGLISH);
   });
 });
 

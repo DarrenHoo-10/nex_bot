@@ -462,6 +462,14 @@ extension WorkspaceStore {
     }
     /// Lists a saved provider's models with its saved key; saves nothing.
     public func listModels(connectionID: String) async throws -> ModelCatalog { try await act(refresh: false) { try await client.listModels(connectionID: connectionID) } }
+    public func cliTranslationSettings() async throws -> CliTranslationSettings {
+        try await act(refresh: false) { try await client.cliTranslationSettings() }
+    }
+
+    public func saveCliTranslationSettings(_ selection: CliTranslationSelection?, version: Int) async throws -> CliTranslationSettings {
+        try await act(refresh: false) { try await client.saveCliTranslationSettings(selection, version: version) }
+    }
+
     /// Saves which models a provider offers (`nil` = every model). `version` is the one the edit started from.
     @discardableResult
     public func saveModelVisibility(connectionID: String, models: [String]?, version: Int) async throws -> ModelVisibility {

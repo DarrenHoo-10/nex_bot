@@ -116,6 +116,7 @@ struct ModelPickerSheet: View {
     var emptyLabel: String?
     var models: [String]?
     var source: ModelSource?
+    var allowCustom = true
     let onSelect: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var loader = ModelCatalogLoader()
@@ -128,7 +129,7 @@ struct ModelPickerSheet: View {
     }
 
     var body: some View {
-        let rows = filterModels(options, query: query, emptyLabel: emptyLabel, allowCustom: true)
+        let rows = filterModels(options, query: query, emptyLabel: emptyLabel, allowCustom: allowCustom)
         VStack(spacing: 0) {
             HStack {
                 Text(title).font(.headline)
@@ -215,6 +216,7 @@ struct ModelPickerField: View {
     var models: [String]?
     var source: ModelSource?
     var disabled = false
+    var allowCustom = true
     @Binding var isOpen: Bool
     let onChange: (String) -> Void
 
@@ -236,7 +238,7 @@ struct ModelPickerField: View {
             .accessibilityLabel(label).accessibilityValue(value.isEmpty ? (emptyLabel ?? "") : value)
         }
         .sheet(isPresented: $isOpen) {
-            ModelPickerSheet(title: label, value: value, emptyLabel: emptyLabel, models: models, source: source, onSelect: onChange)
+            ModelPickerSheet(title: label, value: value, emptyLabel: emptyLabel, models: models, source: source, allowCustom: allowCustom, onSelect: onChange)
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
     }

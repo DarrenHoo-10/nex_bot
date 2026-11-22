@@ -82,12 +82,17 @@ export async function fetchSnapshot(): Promise<CliSnapshot> {
   return { devices, sessions, requests };
 }
 
-export async function fetchItems(key: CliSessionKey, before?: string): Promise<{ items: CliItem[]; more: boolean }> {
+export async function fetchItems(key: CliSessionKey, before?: string): Promise<{ items: CliItem[]; more: boolean; translationEnabled?: boolean }> {
   const query = `?key=${encodeURIComponent(key)}${before ? `&before=${encodeURIComponent(before)}` : ""}`;
-  const data = await call<{ items?: unknown; more?: unknown }>(`/items${query}`);
+  const data = await call<{ items?: unknown; more?: unknown; translationEnabled?: unknown }>(`/items${query}`);
   const items = parseCliItems(data.items);
   if (!items) throw new CliApiError("记录格式不对");
-  return { items, more: data.more === true };
+  return { items, more: data.more === true, ...(typeof data.translationEnabled === "boolean" ? { translationEnabled: data.translationEnabled } : {}) };
+}
+
+export async function translateReply(key: CliSessionKey, itemId: string, source: string, signal: AbortSignal): Promise<string | undefined> {
+  const result = await call<{ translation?: unknown }>("/translate", { key, itemId, source }, "POST", signal);
+  return typeof result.translation === "string" && result.translation !== source ? result.translation : undefined;
 }
 
 /** `parentId` binds the started session to a pending branch row; `forkFrom` makes it a real context fork of that session (same computer and tool).

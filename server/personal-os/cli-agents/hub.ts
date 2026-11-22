@@ -16,6 +16,7 @@ import {
   CLI_OP_MUTATING,
   CLI_OP_TIMEOUT_MS,
   CORE_ITEM_CACHE,
+  completedCliReplies,
   CORE_STREAM_BUFFER_MAX,
   FRAME_PAYLOAD_MAX,
   PAGE_SIZE,
@@ -1008,6 +1009,25 @@ export class CliAgentHub {
       if (error instanceof CliOpError && (error.code === "device_offline" || error.code === "unknown")) return this.cachedPage(key, before);
       throw error;
     }
+  }
+
+  /** The client names its message and version. Only this workspace's completed
+   * cached assistant output can be sent to the configured translation provider. */
+  translationSource(key: string, itemId: string, source: string): string | null {
+    this.requireKey(key);
+    const session = this.sessionRow(key);
+    if (!session) return null;
+    const row = this.store.get("SELECT body,ts,rowid FROM cli_agent_items WHERE session_key=? AND item_id=?", key, itemId);
+    if (!row) return null;
+    const decode = (body: unknown) => JSON.parse(this.store.decrypt(String(body))) as CliItem;
+    const item = decode(row.body);
+    if (item.kind !== "assistant" || item.text !== source) return null;
+    const following = this.store.all(
+      "SELECT body FROM cli_agent_items WHERE session_key=? AND (ts>? OR (ts=? AND rowid>?)) ORDER BY ts,rowid",
+      key, Number(row.ts), Number(row.ts), Number(row.rowid),
+    ).map(entry => decode(entry.body));
+    const active = session.state === "running" || session.state === "waiting";
+    return completedCliReplies([item, ...following], active).has(item.id) ? item.text : null;
   }
 
   /** The listener gets `items` messages for the session. The first listener

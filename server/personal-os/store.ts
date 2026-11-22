@@ -599,6 +599,17 @@ CREATE TABLE personal_connector_deliveries (
       this.db.exec(cliAgentNotesSchema);
       this.insert("schema_migrations", { version: 56, checksum: hash(cliAgentNotesSchema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=57")) this.transaction(() => {
+      const schema = `CREATE TABLE cli_translation_settings (
+        id INTEGER PRIMARY KEY CHECK(id=1),
+        connection_id TEXT REFERENCES model_connections(id),
+        model TEXT,
+        version INTEGER NOT NULL,
+        CHECK((connection_id IS NULL) = (model IS NULL))
+      ) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 57, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

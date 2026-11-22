@@ -7,6 +7,7 @@ import { ConnectorsPage } from "./ConnectorsPage";
 import { ProviderSettings } from "./ProviderSettings";
 import { MemoryDashboard } from './MemoryDashboard';
 import { ImageModelSettings } from './ImageModelSettings';
+import { TranslationSettings } from './TranslationSettings';
 import { RetrievalSettings } from './RetrievalSettings';
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
@@ -41,6 +42,7 @@ export function SettingsPage({ state, financeBotId, run, category, onCategory, r
           <div className="preferences-panel-heading"><h2>模型</h2></div>
           <ProviderSettings state={state} refresh={refresh} active={category === "model"}/>
           <ImageModelSettings state={state} refresh={refresh} active={category === "model"}/>
+          {category === "model" && <TranslationSettings connections={state.connections ?? []}/>}
           <RetrievalSettings active={category === "model"}/>
         </section>
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="长期记忆" className="preferences-panel">

@@ -123,6 +123,7 @@ struct SettingsModelView: View {
                 }
                 .cardStyle()
                 if let config = workspace.state?.config { ImageModelSection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)") }
+                TranslationModelSection(workspace: workspace)
                 RetrievalSection(workspace: workspace)
             }
         }

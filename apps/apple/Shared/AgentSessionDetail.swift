@@ -72,7 +72,7 @@ struct AgentSessionDetail: View {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
                 } else {
-                    AgentTranscript(model: model, key: key, engine: session.engine, working: session.online && session.state == .running ? "执行中" : nil)
+                    AgentTranscript(model: model, key: key, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -181,12 +181,14 @@ private struct AgentTranscript: View {
     let model: CliAgentsModel
     let key: CliSessionKey
     var engine: CliEngine = .claude
+    var active = false
     /// what the agent is doing while the turn runs; shown as dots under the last message
     var working: String?
 
     var body: some View {
         let t = model.transcript(key)
         let blocks = CliTranscript.group(t.items)
+        let completed = CliTranscript.completedReplies(t.items, active: active)
         let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
         Group {
             if let echo, blocks.isEmpty {
@@ -218,7 +220,11 @@ private struct AgentTranscript: View {
                                     // reading upwards loads earlier records without a tap
                                     .onAppear { Task { await model.loadOlder(key) } }
                             }
-                            ForEach(blocks) { block in AgentBlockView(block: block) }
+                            ForEach(blocks) { block in
+                                AgentBlockView(block: block, translate: t.translationEnabled && completed.contains(block.id) ? { item in
+                                    try await model.translateReply(key, item: item)
+                                } : nil)
+                            }
                             if let echo { AgentEchoBubble(text: echo) }
                             // the agent's name heads the dots only when nothing of this reply is shown yet
                             if let working { AgentWorkingRow(engine: engine, label: working, byline: echo != nil || { if case .user = blocks.last { return true } else { return false } }()) }
@@ -238,6 +244,7 @@ private struct AgentTranscript: View {
 
 private struct AgentBlockView: View {
     let block: CliBlock
+    var translate: ((CliItem) async throws -> String?)?
 
     var body: some View {
         switch block {
@@ -252,11 +259,50 @@ private struct AgentBlockView: View {
                 }
             }
         case .assistant(let item):
-            MarkdownText(source: item.text, fontSize: 14).frame(maxWidth: .infinity, alignment: .leading)
+            AgentReplyText(item: item, translate: translate)
         case .activity(_, let items):
             AgentActivity(items: items)
         case .notice(_, let level, let text):
             Text(text).font(.caption).foregroundStyle(level == .error ? Theme.danger : Theme.muted).frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+}
+
+private struct AgentReplyText: View {
+    let item: CliItem
+    var translate: ((CliItem) async throws -> String?)?
+    @State private var translated: String?
+    @State private var original = false
+    @State private var failed = false
+    @State private var retry = 0
+
+    private struct Request: Equatable {
+        let source: String
+        let attempt: Int
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            MarkdownText(source: original ? item.text : translated ?? item.text, fontSize: 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if translated != nil {
+                Button(original ? "查看中文" : "查看原文") { original.toggle() }
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent)
+            } else if failed {
+                Button("重试翻译") { retry += 1 }
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent)
+            }
+        }
+        .task(id: translate == nil ? nil : Request(source: item.text, attempt: retry)) {
+            translated = nil
+            failed = false
+            guard let translate, item.text.range(of: "[A-Za-z]{3,}", options: .regularExpression) != nil else { return }
+            do {
+                let result = try await translate(item)
+                if !Task.isCancelled { translated = result }
+            } catch {
+                if !Task.isCancelled { failed = true }
+            }
         }
     }
 }

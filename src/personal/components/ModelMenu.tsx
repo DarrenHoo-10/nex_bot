@@ -12,9 +12,9 @@ const formatLabel = (connection: Connection) => connection.provider === "anthrop
  * The chat model menu: the provider on top (switch it in a sub-list), that provider's enabled models, and the
  * 思考强度 slider when the chosen model offers reasoning levels. Every choice saves at once through `onChange`.
  */
-export function ModelMenu({ connections, choice, onChange, disabled, label = "选择模型", open: controlledOpen, onOpenChange, anchorRef, triggerClassName, displayValue, composer = false }: {
+export function ModelMenu({ connections, choice, onChange, disabled, label = "选择模型", open: controlledOpen, onOpenChange, anchorRef, triggerClassName, displayValue, composer = false, selectionOnly = false }: {
   connections: Connection[]; choice: ModelChoice; onChange: (choice: ModelChoice) => void; disabled?: boolean; label?: string;
-  open?: boolean; onOpenChange?: (open: boolean) => void; anchorRef?: RefObject<HTMLElement | null>; triggerClassName?: string; displayValue?: string; composer?: boolean;
+  open?: boolean; onOpenChange?: (open: boolean) => void; anchorRef?: RefObject<HTMLElement | null>; triggerClassName?: string; displayValue?: string; composer?: boolean; selectionOnly?: boolean;
 }) {
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen, setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
@@ -38,14 +38,14 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
 
   useAnchoredPopover(open, panel, () => anchorRef?.current ?? trigger.current, () => [root.current], () => setOpen(false), 320, composer ? "end" : "start");
 
-  const effective = provider && provider.id === current?.id ? choice.model || provider.defaultModel : "";
+  const effective = provider && provider.id === current?.id ? choice.model || (selectionOnly ? "" : provider.defaultModel) : "";
   const models = useMemo(() => {
     if (!provider) return [];
     const listed = provider.models ?? catalogs[provider.id]?.models ?? [];
-    const all = [...new Set([...listed, ...(provider.defaultModel ? [provider.defaultModel] : []), ...(effective ? [effective] : [])])];
+    const all = [...new Set([...listed, ...(provider.defaultModel && (!selectionOnly || provider.models === null) ? [provider.defaultModel] : []), ...(effective && (!selectionOnly || provider.models === null || listed.includes(effective)) ? [effective] : [])])];
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return all.filter((model) => terms.every((term) => model.toLowerCase().includes(term) || modelName(provider, model).toLowerCase().includes(term)));
-  }, [provider, catalogs, effective, query]);
+  }, [provider, catalogs, effective, query, selectionOnly]);
 
   // The slider follows the chosen model on the chosen provider.
   const chosenModel = current ? choice.model || current.defaultModel : "";
@@ -102,7 +102,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
           {provider && catalogs[provider.id]?.error ? <div className="model-menu-status" role="alert">{catalogs[provider.id]?.error}</div> : null}
           {!models.length && !(provider && catalogs[provider.id]?.loading) ? <div className="model-menu-status">没有可用的模型</div> : null}
         </div>
-        {offered.length && provider?.id === current?.id ? <div className="model-menu-effort">
+        {!selectionOnly && offered.length && provider?.id === current?.id ? <div className="model-menu-effort">
           <div className="model-menu-effort-label"><span>推理强度</span><strong>{level < 0 ? "—" : reasoningLabels[stops[levelIndex]]}</strong></div>
           <div className="model-menu-slider" style={{ "--fill": `${(levelIndex / (stops.length - 1)) * 100}%` } as CSSProperties}>
             <input type="range" aria-label={composer ? "推理强度" : "思考强度"} min={0} max={stops.length - 1} step={1} value={levelIndex} disabled={disabled}

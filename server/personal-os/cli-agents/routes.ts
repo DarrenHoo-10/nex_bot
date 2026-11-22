@@ -28,6 +28,7 @@ import type { CoreStore } from "../store.ts";
 import { forkToTopic, type ForkAgents } from "./fork.ts";
 import { CliOpError, type CliAgentHub } from "./hub.ts";
 import { parseSettings, type CliAgentSupervisor } from "./supervisor.ts";
+import { MAX_TRANSLATION_SOURCE, CliTranslation } from "./translation.ts";
 import type { CliAgentWorkbench } from "./workbench.ts";
 
 export interface CliRouteRequest {
@@ -88,11 +89,13 @@ export interface CliRouteExtras {
 }
 
 export class CliAgentRoutes {
+  private readonly translation: CliTranslation;
+
   constructor(
     private readonly hub: CliAgentHub,
     private readonly store: CoreStore,
     private readonly extras: CliRouteExtras = {},
-  ) {}
+  ) { this.translation = new CliTranslation(store); }
 
   /** Null when the path is not an Agent mode route. */
   async handle(request: CliRouteRequest): Promise<CliRouteResult | null> {
@@ -104,6 +107,7 @@ export class CliAgentRoutes {
     try {
       if (get) {
         switch (pathname) {
+          case "/api/cli-agents/translation-settings": return { status: 200, body: this.translation.settings() };
           case "/api/cli-agents/items": return await this.items(request);
           case "/api/cli-agents/requests": return this.requests(request);
           case "/api/cli-agents/queue": return this.queue(request);
@@ -126,6 +130,8 @@ export class CliAgentRoutes {
       const data = request.data ?? {};
       if (put) return this.putSupervision(data);
       switch (pathname) {
+        case "/api/cli-agents/translation-settings": return { status: 200, body: this.translation.saveSettings(data) };
+        case "/api/cli-agents/translate": return await this.translate(data);
         case "/api/cli-agents/start": return await this.start(request, data);
         case "/api/cli-agents/continue": return await this.continueSession(request, data);
         case "/api/cli-agents/send": return await this.send(request, data);
@@ -403,7 +409,24 @@ export class CliAgentRoutes {
     const before = request.search.get("before") ?? undefined;
     if (before !== undefined && (before.length < 1 || before.length > 200)) return cliErrorResult("invalid");
     const page = await this.hub.items(request.sessionId, key, before);
-    return { status: 200, body: { items: page.items, more: page.more } };
+    const translation = this.translation.settings();
+    // An untouched setting keeps the browser's local translation behavior.
+    return { status: 200, body: { ...page, ...(translation.version ? { translationEnabled: translation.available } : {}) } };
+  }
+
+  private async translate(data: Record<string, unknown>): Promise<CliRouteResult> {
+    const key = this.key(data.key);
+    const { itemId, source } = data;
+    if (!key || typeof itemId !== "string" || !itemId || itemId.length > 200 ||
+        typeof source !== "string" || !source) return cliErrorResult("invalid");
+    if (source.length > MAX_TRANSLATION_SOURCE) return { status: 200, body: { translation: null } };
+    const text = this.hub.translationSource(key, itemId, source);
+    if (!text) return { status: 200, body: { translation: null } };
+    try {
+      return { status: 200, body: { translation: await this.translation.translate(text) } };
+    } catch {
+      return { status: 422, body: { error: "翻译失败" } };
+    }
   }
 
   /** `GET /search?q=`: sessions on the online computers whose messages hold every term. */
@@ -579,6 +602,8 @@ export class CliAgentRoutes {
 }
 
 const POST_ROUTES = new Set([
+  "/api/cli-agents/translation-settings",
+  "/api/cli-agents/translate",
   "/api/cli-agents/start",
   "/api/cli-agents/continue",
   "/api/cli-agents/send",
@@ -603,6 +628,7 @@ const POST_ROUTES = new Set([
 ]);
 
 const GET_ROUTES = new Set([
+  "/api/cli-agents/translation-settings",
   "/api/cli-agents",
   "/api/cli-agents/items",
   "/api/cli-agents/requests",

@@ -1,6 +1,7 @@
 // Agent mode hub: capability gating, session list, item cache, operations,
 // terminal stream routing. Everything runs against a disposable Core in a temp
 // directory and simulated devices; nothing touches a real account or device.
+import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -299,6 +300,113 @@ describe("session list", () => {
     await first.closed;
     const second = await connectDevice(f, "resync", { pair: { deviceId: first.id, token: first.token } });
     await until(() => second.msgs.find((m) => m.type === "cli.resync"), "second resync");
+  });
+});
+
+describe("assistant translation", () => {
+  it("saves only a model selection in the current workspace and rejects stale or unavailable choices", async () => {
+    const f = await fixture(), other = await fixture();
+    const route = "cli-agents/translation-settings";
+    const connectionId = f.app.store.saveConnection({
+      name: "MiniMax fixture", provider: "openai", endpoint: "http://127.0.0.1:5000/v1",
+      apiKey: "synthetic-secret", defaultModel: "fixture-model",
+    });
+    f.app.store.saveModelVisibility({ connectionId, models: ["fixture-model"], version: 0 });
+    expect((await f.call(route)).data).toEqual({ selection: null, available: false, version: 0 });
+    const selection = { connectionId, model: "fixture-model" };
+    expect((await f.call(route, { selection, version: 0 }, "bad-token")).status).toBe(401);
+    expect((await f.call(route, { selection: { ...selection, model: "disabled-model" }, version: 0 })).status).toBe(400);
+    const saved = await f.call(route, { selection, version: 0 });
+    expect(saved).toEqual({ status: 200, data: { selection, available: true, version: 1 } });
+    expect((await f.call(route)).data).toEqual(saved.data);
+    expect((await other.call(route)).data).toEqual({ selection: null, available: false, version: 0 });
+    expect((await f.call(route, { selection: null, version: 0 })).status).toBe(400);
+
+    f.app.store.saveModelVisibility({ connectionId, models: [], version: 1 });
+    expect((await f.call(route)).data).toEqual({ selection, available: false, version: 1 });
+    expect((await f.call(route, { selection: null, version: 1 })).data).toEqual({ selection: null, available: false, version: 2 });
+  });
+
+  it("translates completed cached replies through the authenticated Core route and rejects corrupt output", async () => {
+    const requests: Array<{ prompt: string; model: string; effort?: string; key?: string; path?: string }> = [];
+    let corrupt = false;
+    const provider = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const anthropic = request.url === "/anthropic/v1/messages";
+      const content = anthropic ? data.messages[0].content[0].text : data.messages[0].content;
+      const prompt = String(content).split("<source>\n")[1]!.split("\n</source>")[0]!;
+      requests.push({
+        prompt, model: data.model, effort: data.reasoning_effort ?? data.output_config?.effort,
+        key: request.headers.authorization ?? String(request.headers["x-api-key"]), path: request.url,
+      });
+      const markers = prompt.match(/\[\[NEX_\d+\]\]/g) ?? [];
+      const translation = corrupt ? "缺失占位符" : `仅在迁移成功后运行 ${markers[0]}。否则，回滚。`;
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify(anthropic
+        ? { stop_reason: "end_turn", content: [{ type: "thinking", thinking: "private reasoning" }, { type: "text", text: translation }] }
+        : { choices: [{ finish_reason: "stop", message: { content: translation, reasoning_content: "private reasoning" } }] }));
+
+    });
+    await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => { provider.close(() => resolve()); provider.closeAllConnections(); }));
+    const f = await fixture();
+    const endpoint = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
+    const minimax = f.app.store.saveConnection({
+      name: "MiniMax fixture", provider: "openai", endpoint: endpoint + "/v1", apiKey: "minimax-fixture-key", defaultModel: "other-model",
+    });
+    const claude = f.app.store.saveConnection({
+      name: "Anthropic fixture", provider: "anthropic", endpoint: endpoint + "/anthropic", apiKey: "claude-fixture-key", defaultModel: "claude-fixture",
+    });
+    const device = await connectDevice(f, "translation");
+    const key = keyOf(device, "a");
+    device.sessions([wire("a", { state: "running" })], { full: true });
+    await until(() => f.app.cliHub.session(key)?.state === "running", "running");
+    const source = "Only run `pnpm test` if the migration succeeds. Otherwise, roll back.\n\n```sh\necho secret test command\n```";
+    const assistant = item(1, source);
+    const translated = "仅在迁移成功后运行 `pnpm test`。否则，回滚。\n\n```sh\necho secret test command\n```";
+    const itemsRoute = `cli-agents/items?key=${encodeURIComponent(key)}`;
+    expect((await f.call(itemsRoute)).data.translationEnabled).toBeUndefined();
+    expect((await f.call("cli-agents/translation-settings", { version: 0, selection: { connectionId: minimax, model: "MiniMax-M3.1-Flash" } })).status).toBe(200);
+    const page = await f.call(itemsRoute);
+    expect(page.data.translationEnabled).toBe(true);
+    device.send({ type: "cli.items", ref: "claude:a", items: [assistant] });
+    await until(() => f.app.store.get("SELECT body FROM cli_agent_items WHERE session_key=? AND item_id=?", key, assistant.id), "cached");
+    const body = { key, itemId: assistant.id, source };
+    expect((await f.call("cli-agents/translate", body, "bad-token")).status).toBe(401);
+    expect((await f.call("cli-agents/translate", body)).data.translation).toBeNull();
+    expect(requests).toHaveLength(0);
+
+    const ended = { kind: "turn", id: "ended", ts: 1002, phase: "ended" };
+    device.send({ type: "cli.items", ref: "claude:a", items: [ended] });
+    await until(() => f.app.store.get("SELECT body FROM cli_agent_items WHERE session_key=? AND item_id=?", key, ended.id), "turn ended");
+    const results = await Promise.all([f.call("cli-agents/translate", body), f.call("cli-agents/translate", body)]);
+    expect(results.map(result => result.data.translation)).toEqual([translated, translated]);
+    expect((await f.call("cli-agents/translate", body)).data.translation).toBe(translated);
+    expect(requests).toEqual([{
+      prompt: "Only run [[NEX_0]] if the migration succeeds. Otherwise, roll back.",
+      model: "MiniMax-M3.1-Flash", effort: "low", key: "Bearer minimax-fixture-key", path: "/v1/chat/completions",
+    }]);
+    expect((await f.call("cli-agents/translate", { ...body, source: "a spoofed version" })).data.translation).toBeNull();
+    expect(requests).toHaveLength(1);
+
+    expect((await f.call("cli-agents/translation-settings", {
+      version: 1, selection: { connectionId: claude, model: "claude-fixture" },
+    })).status).toBe(200);
+    expect((await f.call("cli-agents/translate", body)).data.translation).toBe(translated);
+    expect(requests.at(-1)).toMatchObject({ model: "claude-fixture", key: "claude-fixture-key", path: "/anthropic/v1/messages" });
+    expect(requests).toHaveLength(2);
+
+    corrupt = true;
+    const next = item(3, "Keep `src/cache.ts` as it is.");
+    device.send({ type: "cli.items", ref: "claude:a", items: [next, { ...ended, id: "ended2", ts: 1004 }] });
+    await until(() => f.app.store.get("SELECT body FROM cli_agent_items WHERE session_key=? AND item_id='ended2'", key), "second turn ended");
+    expect(await f.call("cli-agents/translate", { key, itemId: next.id, source: next.text })).toEqual({ status: 422, data: { error: "翻译失败" } });
+    expect(requests.at(-1)?.prompt).not.toContain("src/cache.ts");
+    expect((await f.call("cli-agents/translation-settings", { version: 2, selection: null })).status).toBe(200);
+    expect((await f.call(itemsRoute)).data.translationEnabled).toBe(false);
+    expect((await f.call("cli-agents/translate", body)).data.translation).toBeNull();
   });
 });
 

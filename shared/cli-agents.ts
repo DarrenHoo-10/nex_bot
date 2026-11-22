@@ -253,6 +253,20 @@ export type CliItem =
 // ---------------------------------------------------------------------------
 // Turn ends and pending requests (design sections 8 and 9)
 
+/** Assistant blocks after an open turn boundary are still streaming. Older
+ * transcript formats can lack markers, so a later user message also closes it. */
+export function completedCliReplies(items: readonly CliItem[], active: boolean): Set<string> {
+  const complete = new Set<string>();
+  let closed = !active;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]!;
+    if (item.kind === "assistant" && closed) complete.add(item.id);
+    if (item.kind === "user") closed = true;
+    if (item.kind === "turn") closed = item.phase !== "aborted";
+  }
+  return complete;
+}
+
 export type CliTurnReason = "end" | "error" | "interrupted";
 export const CLI_TURN_REASONS: readonly CliTurnReason[] = ["end", "error", "interrupted"];
 

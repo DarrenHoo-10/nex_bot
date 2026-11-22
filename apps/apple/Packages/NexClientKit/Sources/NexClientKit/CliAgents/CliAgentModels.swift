@@ -295,12 +295,16 @@ public struct CliSnapshot: Sendable, Decodable {
 public struct CliItemsPage: Sendable, Decodable {
     public var items: [CliItem]
     public var more: Bool
-    public init(items: [CliItem], more: Bool) { self.items = items; self.more = more }
-    enum CodingKeys: String, CodingKey { case items, more }
+    public var translationEnabled: Bool
+    public init(items: [CliItem], more: Bool, translationEnabled: Bool = false) {
+        self.items = items; self.more = more; self.translationEnabled = translationEnabled
+    }
+    enum CodingKeys: String, CodingKey { case items, more, translationEnabled }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         items = (try? c.decodeIfPresent(LossyList<CliItem>.self, forKey: .items))?.values ?? []
         more = (try? c.decodeIfPresent(Bool.self, forKey: .more)) == true
+        translationEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .translationEnabled)) == true
     }
 }
 

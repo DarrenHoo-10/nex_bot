@@ -16,7 +16,41 @@ private struct CliSupervisionBody: Encodable { let settings: Settings
     struct Settings: Encodable { let transientRetry: Bool?; let usageLimit: Bool?; let wakeup: Bool? }
 }
 
+public struct CliTranslationSelection: Codable, Sendable {
+    public let connectionId: String
+    public let model: String
+
+    public init(connectionId: String, model: String) {
+        self.connectionId = connectionId; self.model = model
+    }
+}
+
+public struct CliTranslationSettings: Decodable, Sendable {
+    public let selection: CliTranslationSelection?
+    public let available: Bool
+    public let version: Int
+}
+
 extension CoreClient {
+    public func cliTranslationSettings() async throws -> CliTranslationSettings {
+        try await get(Self.cliBase + "/translation-settings")
+    }
+
+    public func saveCliTranslationSettings(_ selection: CliTranslationSelection?, version: Int) async throws -> CliTranslationSettings {
+        struct Body: Encodable {
+            let selection: CliTranslationSelection?
+            let version: Int
+            enum CodingKeys: String, CodingKey { case selection, version }
+
+            func encode(to encoder: Encoder) throws {
+                var values = encoder.container(keyedBy: CodingKeys.self)
+                try values.encode(selection, forKey: .selection)
+                try values.encode(version, forKey: .version)
+            }
+        }
+        return try await post(Self.cliBase + "/translation-settings", body: Body(selection: selection, version: version))
+    }
+
     static let cliBase = "/api/cli-agents"
     /// Core refuses a message over this many UTF-8 bytes.
     public static let cliMaxSendBytes = 32 * 1024
@@ -30,6 +64,14 @@ extension CoreClient {
         var query = [("key", key)]
         if let before { query.append(("before", before)) }
         return try await get(Self.cliBase + "/items", query: query)
+    }
+
+    public func cliTranslateReply(key: CliSessionKey, itemId: String, source: String) async throws -> String? {
+        struct Body: Encodable { let key: String; let itemId: String; let source: String }
+        struct Result: Decodable, Sendable { let translation: String? }
+        let body = try JSONEncoder().encode(Body(key: key, itemId: itemId, source: source))
+        let result = try await send(request(Self.cliBase + "/translate", query: [], body: body, timeout: 60), as: Result.self)
+        return result.translation
     }
 
     /// `GET /api/cli-agents/requests?key=`: the pending requests of one session.

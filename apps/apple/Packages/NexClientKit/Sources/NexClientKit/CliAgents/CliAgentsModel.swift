@@ -15,6 +15,7 @@ public final class CliAgentsModel {
         public var more = false
         public var loaded = false
         public var loadingOlder = false
+        public var translationEnabled = false
         public var error: String?
         public init() {}
     }
@@ -188,6 +189,7 @@ public final class CliAgentsModel {
             var t = transcript(key)
             // a push that arrived first is newer than this answer
             if !t.loaded { t.items = CliTranscript.merge(t.items, page.items); t.more = page.more; t.loaded = true }
+            t.translationEnabled = page.translationEnabled
             t.error = nil
             transcripts[key] = t
             await fillEarlierTurns(key)
@@ -243,6 +245,10 @@ public final class CliAgentsModel {
         guard !trimmed.isEmpty else { return }
         guard trimmed.utf8.count <= CoreClient.cliMaxSendBytes else { throw CoreError(kind: .http, message: CliErrorText.byCode["too_large"] ?? "内容太长", status: 400, code: "too_large") }
         try await clientProvider().cliSend(key: key, text: trimmed)
+    }
+
+    public func translateReply(_ key: CliSessionKey, item: CliItem) async throws -> String? {
+        try await clientProvider().cliTranslateReply(key: key, itemId: item.id, source: item.text)
     }
 
     public func interrupt(_ key: CliSessionKey) async throws { try await clientProvider().cliInterrupt(key: key) }

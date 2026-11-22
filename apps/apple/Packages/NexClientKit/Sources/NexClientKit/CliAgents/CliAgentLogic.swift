@@ -179,6 +179,17 @@ public enum CliBlock: Sendable, Hashable, Identifiable {
 }
 
 public enum CliTranscript {
+    public static func completedReplies(_ items: [CliItem], active: Bool) -> Set<String> {
+        var ids: Set<String> = []
+        var closed = !active
+        for item in items.reversed() {
+            if item.kind == .assistant, closed { ids.insert(item.id) }
+            if item.kind == .user { closed = true }
+            if item.kind == .turn { closed = item.phase != .aborted }
+        }
+        return ids
+    }
+
     /// An id already shown is replaced in place; a new id goes after the last item that is not newer. `reset` swaps the list.
     public static func merge(_ existing: [CliItem], _ incoming: [CliItem], reset: Bool = false) -> [CliItem] {
         if reset { return dedupe(incoming) }
