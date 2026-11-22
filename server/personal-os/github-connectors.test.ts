@@ -95,6 +95,9 @@ describe("GitHub connectors in isolated Core", () => {
     expect(f.current()).toMatchObject({ provider: "github", account: null, hasToken: true, url: "https://api.github.com" });
     expect((await f.api("connectors/test", { ...f.current() })).status).toBe(200);
     expect(f.current()).toMatchObject({ account: "octocat-fixture", error: null });
+    const directory = await f.app.connectors.execute({ bot_id: f.botId, task_id: "synthetic-task" },
+      { action: "connector.tools", connectorId: f.current().id }, async () => {});
+    expect(directory).toMatchObject({ productCapabilities: [{ name: expect.stringContaining("Webhook") }] });
     const checks = await f.execute("github.pr.checks", { repo: "example/nexbot", number: 7, includeLogTail: true });
     expect(checks).toMatchObject({ isError: false, structured: { head: expect.stringMatching(/^a1b2c3d4/), pending: false, failures: ["unit-test"], logTail: { job: "unit-test", text: expect.stringContaining("expect(2+2).toBe(5)") }, checks: [{ name: "unit-test", state: "failure" }, { name: "build", state: "success" }], statuses: [{ context: "ci/verify", state: "success" }] } });
     expect(String(checks.structured.fingerprint)).toHaveLength(64);
