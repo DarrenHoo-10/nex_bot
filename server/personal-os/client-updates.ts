@@ -9,13 +9,15 @@ import { createHmac } from "node:crypto";
  */
 export const updatePlatforms = ["windows", "android", "mac", "ios"] as const;
 export type UpdatePlatform = typeof updatePlatforms[number];
-export interface ReleaseFile { version: string; file: string; key: string; size: number; sha256: string }
+/** One installer. `tag`, `notes` and `publishedAt` belong to the release that shipped it, which differs per platform after a partial release. */
+export interface ReleaseFile { version: string; file: string; key: string; size: number; sha256: string; tag: string; notes: string; publishedAt: string }
 export interface ReleaseManifest { version: 1; tag: string; publishedAt: string; notes: string; platforms: Partial<Record<UpdatePlatform, ReleaseFile>> }
 export interface ClientUpdate { platform: UpdatePlatform; current: string; available: boolean; version?: string; file?: string; size?: number; sha256?: string; url?: string; notes?: string; tag?: string; publishedAt?: string }
 
 export const manifestKey = "nexbot/releases/manifest.json";
 const releaseKey = /^nexbot\/releases\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const semver = /^\d+\.\d+\.\d+$/;
+const tagPattern = /^[A-Za-z0-9._-]+$/;
 /** OSS refuses to serve .apk/.ipa from its default domain (ApkDownloadForbidden), so Core relays these. */
 export const relayedPlatforms: ReadonlySet<UpdatePlatform> = new Set(["android", "ios"]);
 const installerTypes: Record<string, string> = { android: "application/vnd.android.package-archive", ios: "application/octet-stream" };
@@ -35,15 +37,24 @@ export function parseManifest(value: unknown): ReleaseManifest | undefined {
   const raw = value as Record<string, unknown>;
   if (raw.version !== 1 || typeof raw.tag !== "string" || !raw.platforms || typeof raw.platforms !== "object") return undefined;
   const platforms: ReleaseManifest["platforms"] = {};
+  const notes = typeof raw.notes === "string" ? raw.notes.slice(0, 2000) : "", publishedAt = typeof raw.publishedAt === "string" ? raw.publishedAt : "";
   for (const platform of updatePlatforms) {
     const entry = (raw.platforms as Record<string, unknown>)[platform] as Record<string, unknown> | undefined;
     if (!entry || typeof entry !== "object") continue;
     const { version, file, key, size, sha256 } = entry;
     if (typeof version !== "string" || !semver.test(version) || typeof file !== "string" || typeof key !== "string" || !releaseKey.test(key) || !key.endsWith("/" + file)
       || !Number.isSafeInteger(size) || (size as number) < 1 || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) continue;
-    platforms[platform] = { version, file, key, size: size as number, sha256 };
+    // Entries carried over from an earlier release (written before per-entry fields existed) take their tag from the
+    // key, and the manifest's notes and date only when they came from the manifest's own release.
+    const keyTag = key.split("/")[2];
+    const tag = typeof entry.tag === "string" && tagPattern.test(entry.tag) ? entry.tag : keyTag, own = tag === raw.tag;
+    platforms[platform] = {
+      version, file, key, size: size as number, sha256, tag,
+      notes: typeof entry.notes === "string" ? entry.notes.slice(0, 2000) : own ? notes : "",
+      publishedAt: typeof entry.publishedAt === "string" ? entry.publishedAt : own ? publishedAt : "",
+    };
   }
-  return { version: 1, tag: raw.tag, publishedAt: typeof raw.publishedAt === "string" ? raw.publishedAt : "", notes: typeof raw.notes === "string" ? raw.notes.slice(0, 2000) : "", platforms };
+  return { version: 1, tag: raw.tag, publishedAt, notes, platforms };
 }
 
 export class OssReleaseMirror {
@@ -118,7 +129,7 @@ export class ClientUpdateSource {
     const target = platform as UpdatePlatform, version = String(current).slice(0, 40);
     const manifest = await this.manifest(), entry = manifest?.platforms[target];
     if (!manifest || !entry || !newerVersion(entry.version, version)) return { platform: target, current: version, available: false };
-    return { platform: target, current: version, available: true, version: entry.version, file: entry.file, size: entry.size, sha256: entry.sha256, url: this.url(target, entry, origin), notes: manifest.notes, tag: manifest.tag, publishedAt: manifest.publishedAt };
+    return { platform: target, current: version, available: true, version: entry.version, file: entry.file, size: entry.size, sha256: entry.sha256, url: this.url(target, entry, origin), notes: entry.notes, tag: entry.tag, publishedAt: entry.publishedAt };
   }
   /** The newest mirrored installer per platform, for the public download page. */
   async downloads(origin?: string) {
@@ -127,7 +138,7 @@ export class ClientUpdateSource {
     const result: Partial<Record<UpdatePlatform, { name: string; url: string; size: number; version: string; tag: string; publishedAt: string; sha256: string }>> = {};
     for (const platform of updatePlatforms) {
       const entry = manifest.platforms[platform];
-      if (entry) result[platform] = { name: entry.file, url: this.url(platform, entry, origin), size: entry.size, version: entry.version, tag: manifest.tag, publishedAt: manifest.publishedAt, sha256: entry.sha256 };
+      if (entry) result[platform] = { name: entry.file, url: this.url(platform, entry, origin), size: entry.size, version: entry.version, tag: entry.tag, publishedAt: entry.publishedAt, sha256: entry.sha256 };
     }
     return result;
   }

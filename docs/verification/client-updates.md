@@ -5,8 +5,13 @@ China. `scripts/publish-client-update.mjs` runs where the `OSS_*` variables are
 set (the Core host), uploads each installer under `nexbot/releases/<tag>/`,
 reads every object back and checks its SHA-256, then rewrites
 `nexbot/releases/manifest.json`. A release that carries only some platforms
-keeps the other platforms' entries. Only installers built from a pushed `main`
-commit may be published.
+keeps the other platforms' entries. Each entry records its own release `tag`,
+`notes` and `publishedAt`, so a partial release (for example Apple-only) leaves
+the other platforms' release link and notes intact. For entries written before
+these fields existed, Core takes the tag from the key and uses the manifest's
+notes only when the entry belongs to the manifest's own release.
+`--published-at=<ISO time>` keeps the original date when an existing release is
+re-stamped. Only installers built from a pushed `main` commit may be published.
 
 Core (`server/personal-os/client-updates.ts`) reads the manifest every five
 minutes, keeping the last good copy through an outage, and accepts only

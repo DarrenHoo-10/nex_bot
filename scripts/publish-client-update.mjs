@@ -1,6 +1,7 @@
 // Mirrors client installers to OSS and updates the release manifest that Core's
 // /api/client/update serves. Run where the OSS_* variables are set (the Core host):
-//   node scripts/publish-client-update.mjs --dir=<assets> --tag=<release tag> [--notes=<text>] [--dry-run]
+//   node scripts/publish-client-update.mjs --dir=<assets> --tag=<release tag> [--notes=<text>] [--published-at=<ISO time>] [--dry-run]
+// Each platform entry records its own tag, notes and date, so a partial release leaves the others' intact.
 // Only installers built from a pushed main commit may be published (see AGENTS.md).
 import { createHash, createHmac } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -9,6 +10,8 @@ import path from "node:path";
 
 const arg = (name) => process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const dir = arg("dir"), tag = arg("tag"), notes = arg("notes") ?? "", dryRun = process.argv.includes("--dry-run");
+const publishedAt = arg("published-at") ?? new Date().toISOString();
+if (Number.isNaN(Date.parse(publishedAt))) throw new Error("--published-at 不是有效时间");
 if (!dir || !tag || !/^[A-Za-z0-9._-]+$/.test(tag)) throw new Error("用法：--dir=<安装包目录> --tag=<发布标签> [--notes=<说明>] [--dry-run]");
 const { OSS_ENDPOINT: endpoint, OSS_BUCKET: bucket, OSS_ACCESS_KEY_ID: keyId, OSS_ACCESS_KEY_SECRET: secret } = process.env;
 if (!endpoint || !bucket || !keyId || !secret) throw new Error("缺少 OSS_ENDPOINT / OSS_BUCKET / OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET");
@@ -37,6 +40,9 @@ async function put(key, body, type, overwrite) {
     const request = https.request(`${origin}/${key}`, { method: "PUT", headers: { ...signed("PUT", key, headers, md5, type), "Content-Length": body.length } }, (response) => { response.resume(); response.on("end", () => resolve(response.statusCode)); response.on("error", reject); });
     request.setTimeout(10 * 60_000, () => request.destroy(new Error(`上传 ${key} 超过 10 分钟没有数据往来`)));
     request.on("error", reject);
+    // OSS answers 409 to a forbidden overwrite before the body is sent and closes the connection; the write then fails
+    // with EPIPE after the response, which must not crash the run (the object is read back and checked either way).
+    request.on("socket", (socket) => socket.on("error", () => {}));
     request.end(body);
   });
   if (status === 409 && !overwrite) return "exists";
@@ -54,7 +60,7 @@ for (const name of readdirSync(dir).sort()) {
     if (!match) continue;
     if (files.some((file) => file.platform === platform)) throw new Error(`同一平台有多个安装包：${platform}`);
     const bytes = readFileSync(path.join(dir, name));
-    files.push({ platform, version: match[1], file: name, key: `nexbot/releases/${tag}/${name}`, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), bytes });
+    files.push({ platform, version: match[1], file: name, key: `nexbot/releases/${tag}/${name}`, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), tag, notes, publishedAt, bytes });
   }
 }
 if (!files.length) throw new Error("目录里没有可发布的安装包");
@@ -62,7 +68,12 @@ if (!files.length) throw new Error("目录里没有可发布的安装包");
 let previous = { platforms: {} };
 const current = await get(manifestKey);
 if (current.ok) previous = await current.json(); else { await current.body?.cancel(); if (current.status !== 404) throw new Error(`读取发布清单返回 HTTP ${current.status}`); }
-const manifest = { version: 1, tag, publishedAt: new Date().toISOString(), notes, platforms: { ...previous.platforms } };
+const manifest = { version: 1, tag, publishedAt, notes, platforms: {} };
+// Entries kept from earlier releases keep (or, if written before per-entry fields, gain) their own release's details.
+for (const [platform, entry] of Object.entries(previous.platforms ?? {})) {
+  const keyTag = String(entry.key ?? "").split("/")[2], own = keyTag === previous.tag;
+  manifest.platforms[platform] = { ...entry, tag: entry.tag ?? keyTag, notes: entry.notes ?? (own ? previous.notes ?? "" : ""), publishedAt: entry.publishedAt ?? (own ? previous.publishedAt ?? "" : "") };
+}
 for (const { platform, bytes: _bytes, ...entry } of files) manifest.platforms[platform] = entry;
 for (const file of files) console.log(`${file.platform.padEnd(8)} ${file.version.padEnd(8)} ${file.file} ${file.size} ${file.sha256}`);
 if (dryRun) { console.log(JSON.stringify(manifest, null, 2)); process.exit(0); }
