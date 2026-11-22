@@ -43,8 +43,10 @@ public struct CliLaunchRequest: Sendable, Hashable {
     public var message: String
     public var model: String
     public var effort: String
-    public init(deviceId: String, engine: CliEngine, cwd: String, branch: String? = nil, message: String = "", model: String = "", effort: String = "") {
-        self.deviceId = deviceId; self.engine = engine; self.cwd = cwd; self.branch = branch; self.message = message; self.model = model; self.effort = effort
+    /// make `cwd` first: it did not exist when it was picked
+    public var createDir: Bool
+    public init(deviceId: String, engine: CliEngine, cwd: String, branch: String? = nil, message: String = "", model: String = "", effort: String = "", createDir: Bool = false) {
+        self.deviceId = deviceId; self.engine = engine; self.cwd = cwd; self.branch = branch; self.message = message; self.model = model; self.effort = effort; self.createDir = createDir
     }
 }
 

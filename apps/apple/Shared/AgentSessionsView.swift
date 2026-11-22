@@ -25,19 +25,12 @@ struct CliChip: View {
 }
 
 private enum AgentSheet: Identifiable {
-    case create(deviceId: String?)
     case supervision
-
-    var id: String {
-        switch self {
-        case .create(let deviceId): "create-\(deviceId ?? "")"
-        case .supervision: "supervision"
-        }
-    }
+    var id: String { "supervision" }
 }
 
-/// "Agent 会话": the coding-agent sessions of the person's computers. A list by computer and folder; on the Mac the
-/// open session sits beside it, on the iPhone it is pushed.
+/// "Agent 会话": the coding-agent sessions of the person's computers. A list by computer and project; on the Mac the
+/// open session (or the new-session page) sits beside it, on the iPhone it is pushed.
 struct AgentSessionsView: View {
     let model: CliAgentsModel
     let workspace: WorkspaceStore
@@ -46,6 +39,8 @@ struct AgentSessionsView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var sheet: AgentSheet?
     @State private var errorText = ""
+    /// the new-session page, while it is open
+    @State private var composing: AgentNewTarget?
     #if os(iOS)
     @State private var pushed: CliSessionKey?
     #endif
@@ -58,18 +53,7 @@ struct AgentSessionsView: View {
             .onDisappear { if !model.notificationsOn { model.stop() } }
             #endif
             .onChange(of: scenePhase) { _, phase in sceneChanged(phase) }
-            .sheet(item: $sheet) { sheet in
-                switch sheet {
-                case .create(let deviceId):
-                    AgentNewSessionSheet(model: model, initialDeviceId: deviceId) { started in
-                        #if os(iOS)
-                        pushed = started
-                        #endif
-                    }
-                case .supervision:
-                    AgentSupervisionSheet(model: model)
-                }
-            }
+            .sheet(item: $sheet) { _ in AgentSupervisionSheet(model: model) }
     }
 
     private func sceneChanged(_ phase: ScenePhase) {
@@ -103,9 +87,6 @@ struct AgentSessionsView: View {
             Button { sheet = .supervision } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.plain).foregroundStyle(Theme.muted)
                 .help("自动处理设置").accessibilityLabel("自动处理设置")
-            Button { sheet = .create(deviceId: model.selected?.deviceId) } label: { Label("新建会话", systemImage: "plus") }
-                .buttonStyle(.borderedProminent).tint(Theme.identityAccent)
-                .disabled(model.devices.isEmpty)
         }
     }
 
@@ -124,9 +105,10 @@ struct AgentSessionsView: View {
     private func list(onSelect: @escaping (CliSessionKey) -> Void) -> some View {
         AgentSessionList(
             model: model,
-            selected: model.selectedKey,
-            onSelect: onSelect,
-            onNew: { sheet = .create(deviceId: $0) },
+            selected: composing == nil ? model.selectedKey : nil,
+            onSelect: { key in composing = nil; onSelect(key) },
+            onCreate: { composing = AgentNewTarget(deviceId: model.selected?.deviceId, cwd: model.selected?.cwd) },
+            onNew: { composing = AgentNewTarget(deviceId: $0, cwd: nil) },
             onHide: { session, hidden in
                 Task {
                     do { try await model.setHidden(session.key, hidden) } catch { errorText = CliErrorText.text(for: error) }
@@ -149,7 +131,9 @@ struct AgentSessionsView: View {
                     .frame(width: 300)
                     .glass(RoundedRectangle(cornerRadius: 18, style: .continuous), strong: true, lift: .card)
                 Group {
-                    if let launch = model.selectedLaunch {
+                    if let target = composing {
+                        AgentNewSessionPage(model: model, target: target) { _ in composing = nil }.id(target.id)
+                    } else if let launch = model.selectedLaunch {
                         AgentLaunchDetail(model: model, launch: launch).id(launch.id)
                     } else if let key = model.selectedKey, model.selected != nil {
                         AgentSessionDetail(model: model, workspace: workspace, key: key, openAssistant: openAssistant) { model.select($0) }
@@ -186,6 +170,15 @@ struct AgentSessionsView: View {
             .background { WorkspaceSurface(kind: .stage) }
             .toolbar(.visible, for: .navigationBar)
         }
+        .navigationDestination(item: $composing) { target in
+            AgentNewSessionPage(model: model, target: target) { key in
+                composing = nil
+                // the page leaves first, then the new session is pushed in its place
+                DispatchQueue.main.async { pushed = key }
+            }
+            .background { WorkspaceSurface(kind: .stage) }
+            .toolbar(.visible, for: .navigationBar)
+        }
         // a started session takes the place of its placeholder
         .onChange(of: model.selectedKey) { _, next in
             if CliLaunches.isLaunchKey(pushed), pushed != next { pushed = next }
@@ -194,25 +187,39 @@ struct AgentSessionsView: View {
     #endif
 }
 
-/// Computers, then folders, then sessions.
+/// A new-session button, what is running pinned on top, then computers (only when there are several), projects and sessions.
 struct AgentSessionList: View {
     let model: CliAgentsModel
     let selected: CliSessionKey?
     let onSelect: (CliSessionKey) -> Void
+    let onCreate: () -> Void
     let onNew: (String) -> Void
     let onHide: (CliSession, Bool) -> Void
+    @AppStorage("nexagent.activeFolded") private var activeFolded = false
 
     var body: some View {
         let groups = model.groups
         let pending = model.pendingCounts
+        let active = model.activeSessions
+        // one computer that is online needs no computer row: its projects are the list
+        let single = groups.count == 1 && groups.first?.device.online == true
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                Button(action: onCreate) {
+                    Label("新建会话", systemImage: "plus").font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity).frame(height: 34)
+                        .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.foreground)
+                .disabled(model.devices.isEmpty)
                 if !model.loaded {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 24)
                 } else if groups.isEmpty {
                     Text("还没有电脑接入").font(.footnote).foregroundStyle(Theme.muted).frame(maxWidth: .infinity).padding(.top, 24)
                 }
-                ForEach(groups) { group in device(group, pending: pending) }
+                if !active.isEmpty { pinned(active, pending: pending) }
+                ForEach(groups) { group in device(group, pending: pending, single: single) }
                 if model.hiddenCount > 0 {
                     Button(model.showHidden ? "收起已隐藏" : "已隐藏 \(model.hiddenCount)") { model.showHidden.toggle() }
                         .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.muted)
@@ -222,49 +229,100 @@ struct AgentSessionList: View {
         }
     }
 
-    private func device(_ group: CliDeviceGroup, pending: [CliSessionKey: Int]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle().fill(group.device.online ? Theme.success : Theme.offline).frame(width: 7, height: 7)
-                Text(group.device.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text(group.device.online ? "\(group.count)" : "离线").font(.caption).foregroundStyle(Theme.muted)
-                Spacer()
-                Button { onNew(group.device.id) } label: { Image(systemName: "plus") }
-                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
-                    .accessibilityLabel("在 \(group.device.name) 上新建会话")
+    /// Running or waiting sessions on every computer; folds to its heading, which still counts them and says when one waits.
+    private func pinned(_ active: [CliSession], pending: [CliSessionKey: Int]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button { activeFolded.toggle() } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: activeFolded ? "chevron.right" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                    Text("进行中").font(.system(size: 11, weight: .semibold))
+                    if activeFolded, active.contains(where: { $0.state == .waiting }) {
+                        Circle().fill(Theme.approval).frame(width: 6, height: 6).accessibilityLabel("有会话等你处理")
+                    }
+                    Spacer()
+                    Text("\(active.count)").font(.system(size: 11))
+                }
+                .foregroundStyle(Theme.muted).padding(.horizontal, 6).padding(.vertical, 3).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(activeFolded ? "展开进行中" : "收起进行中")
+            if !activeFolded {
+                ForEach(active) { session in row(session, asked: pending[session.key] ?? 0, context: CliSessions.folderLabel(session.repoRoot ?? session.cwd)) }
+            }
+            Divider().padding(.top, 4)
+        }
+    }
+
+    private func device(_ group: CliDeviceGroup, pending: [CliSessionKey: Int], single: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !single {
+                HStack(spacing: 6) {
+                    Circle().fill(group.device.online ? Theme.success : Theme.offline).frame(width: 7, height: 7)
+                    Text(group.device.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(group.device.online ? "\(group.count)" : "离线").font(.caption).foregroundStyle(Theme.muted)
+                    Spacer()
+                    Button { onNew(group.device.id) } label: { Image(systemName: "plus") }
+                        .buttonStyle(.plain).foregroundStyle(Theme.muted)
+                        .accessibilityLabel("在 \(group.device.name) 上新建会话")
+                }
             }
             ForEach(group.folders) { folder in
-                Text(folder.label).font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.top, 2)
-                ForEach(folder.sessions) { session in row(session, asked: pending[session.key] ?? 0) }
+                HStack(spacing: 6) {
+                    Text(folder.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
+                    Spacer()
+                    Text("\(folder.sessions.count)").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
+                .padding(.horizontal, 6).padding(.top, 8).padding(.bottom, 2)
+                .help(folder.cwd)
+                ForEach(folder.sessions) { session in row(session, asked: pending[session.key] ?? 0, context: nil) }
             }
             if group.count == 0 { Text("暂无会话").font(.caption).foregroundStyle(Theme.muted) }
         }
     }
 
-    private func row(_ session: CliSession, asked: Int) -> some View {
-        HStack(spacing: 6) {
+    private func row(_ session: CliSession, asked: Int, context: String?) -> some View {
+        let tone = CliSessions.tone(session)
+        return HStack(spacing: 8) {
             Button { onSelect(session.key) } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(CliSessions.title(session)).font(.system(size: 13)).foregroundStyle(Theme.foreground).lineLimit(1)
-                    HStack(spacing: 6) {
-                        CliChip(text: CliSessions.statusLabel(session), tone: CliSessions.tone(session))
-                        if asked > 0 {
-                            Text("\(asked)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 1).background(Theme.approval, in: Capsule())
-                                .accessibilityLabel("\(asked) 个请求")
-                        }
-                        Text(session.engine.label).font(.caption2).foregroundStyle(Theme.muted)
+                HStack(spacing: 8) {
+                    // the dot is the state: green breathing while it runs, amber while it waits for you
+                    AgentStateDot(tone: tone)
+                    Text(CliSessions.title(session)).font(.system(size: 13, weight: selected == session.key ? .semibold : .regular))
+                        .foregroundStyle(Theme.foreground).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let context { Text(context).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1) }
+                    if asked > 0 {
+                        Text("\(asked)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 1).background(Theme.approval, in: Capsule())
+                            .accessibilityLabel("\(asked) 个请求")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button { onHide(session, !session.hidden) } label: { Image(systemName: session.hidden ? "eye" : "eye.slash") }
-                .buttonStyle(.plain).foregroundStyle(Theme.muted)
+            .accessibilityLabel("\(CliSessions.title(session))，\(agentName(session.engine))，\(CliSessions.statusLabel(session))")
+            Button { onHide(session, !session.hidden) } label: { Image(systemName: session.hidden ? "eye" : "eye.slash").font(.system(size: 11)) }
+                .buttonStyle(.plain).foregroundStyle(Theme.muted.opacity(0.7))
                 .accessibilityLabel(session.hidden ? "取消隐藏" : "隐藏")
         }
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(selected == session.key ? Theme.wash : .clear, in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(selected == session.key ? Theme.successSoft : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(alignment: .leading) { if selected == session.key { Rectangle().fill(Theme.success).frame(width: 2).padding(.vertical, 4) } }
         .opacity(session.hidden ? 0.55 : 1)
+        .help("\(agentName(session.engine)) · \(CliSessions.statusLabel(session))")
+    }
+}
+
+/// A session's state as a dot; idle and stopped show none (a clear dot keeps titles aligned).
+struct AgentStateDot: View {
+    let tone: CliTone
+    @State private var breathing = false
+    var body: some View {
+        Circle()
+            .fill(tone == .running ? Theme.success : tone == .waiting ? Theme.approval : .clear)
+            .frame(width: 8, height: 8)
+            .overlay(Circle().stroke(tone == .running ? Theme.success.opacity(breathing ? 0 : 0.35) : .clear, lineWidth: breathing ? 6 : 1))
+            .onAppear { if tone == .running { withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) { breathing = true } } }
+            .accessibilityHidden(true)
     }
 }

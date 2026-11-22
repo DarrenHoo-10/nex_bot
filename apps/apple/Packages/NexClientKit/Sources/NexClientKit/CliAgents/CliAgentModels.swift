@@ -28,6 +28,13 @@ struct LossyList<Element: Decodable & Sendable>: Decodable, Sendable {
     }
 }
 
+/// How full a session's context is: the tokens its last request carried, and the window when known.
+public struct CliContextUsage: Sendable, Hashable, Decodable {
+    public var used: Int
+    public var window: Int?
+    public init(used: Int, window: Int? = nil) { self.used = used; self.window = window }
+}
+
 public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public var key: CliSessionKey
     public var deviceId: String
@@ -45,6 +52,10 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public var terminal: String?
     public var model: String?
     public var cliVersion: String?
+    /// The repository's main checkout this session's folder belongs to; absent outside Git.
+    public var repoRoot: String?
+    /// What the last request carried; absent until the CLI wrote one down.
+    public var context: CliContextUsage?
     /// Epoch milliseconds.
     public var lastActivityAt: Int
     public var writerUnknown: Bool
@@ -53,16 +64,16 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public init(key: CliSessionKey, deviceId: String, hidden: Bool = false, online: Bool = true, engine: CliEngine = .claude, nativeId: String,
                 configDir: String = "", cwd: String, title: String = "", gitBranch: String? = nil, state: CliSessionState = .idle,
                 waitingFor: String? = nil, liveIn: CliLiveIn? = nil, terminal: String? = nil, model: String? = nil, cliVersion: String? = nil,
-                lastActivityAt: Int = 0, writerUnknown: Bool = false) {
+                lastActivityAt: Int = 0, writerUnknown: Bool = false, repoRoot: String? = nil, context: CliContextUsage? = nil) {
         self.key = key; self.deviceId = deviceId; self.hidden = hidden; self.online = online; self.engine = engine; self.nativeId = nativeId
         self.configDir = configDir; self.cwd = cwd; self.title = title; self.gitBranch = gitBranch; self.state = state; self.waitingFor = waitingFor
         self.liveIn = liveIn; self.terminal = terminal; self.model = model; self.cliVersion = cliVersion; self.lastActivityAt = lastActivityAt
-        self.writerUnknown = writerUnknown
+        self.writerUnknown = writerUnknown; self.repoRoot = repoRoot; self.context = context
     }
 
     enum CodingKeys: String, CodingKey {
         case key, deviceId, hidden, online, engine, nativeId, configDir, cwd, title, gitBranch, state, waitingFor, liveIn, terminal, model
-        case cliVersion, lastActivityAt, writerUnknown
+        case cliVersion, lastActivityAt, writerUnknown, repoRoot, context
     }
 
     public init(from decoder: Decoder) throws {
@@ -85,6 +96,9 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
         cliVersion = try c.decodeIfPresent(String.self, forKey: .cliVersion)
         lastActivityAt = try c.decode(Int.self, forKey: .lastActivityAt)
         writerUnknown = try c.decodeIfPresent(Bool.self, forKey: .writerUnknown) ?? false
+        repoRoot = try? c.decodeIfPresent(String.self, forKey: .repoRoot)
+        // a usage this side cannot read is left out rather than dropping the row
+        context = try? c.decodeIfPresent(CliContextUsage.self, forKey: .context)
     }
 }
 

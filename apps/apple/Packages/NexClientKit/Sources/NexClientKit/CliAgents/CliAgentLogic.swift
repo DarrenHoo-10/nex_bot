@@ -77,9 +77,11 @@ public enum CliSessions {
             let mine = visible.filter { $0.deviceId == id }.sorted(by: recent)
             var folders: [String: CliFolderGroup] = [:]
             var folderOrder: [String] = []
+            // a worktree sits under the repository it was made from
             for s in mine {
-                if folders[s.cwd] == nil { folders[s.cwd] = CliFolderGroup(cwd: s.cwd, label: folderLabel(s.cwd), sessions: []); folderOrder.append(s.cwd) }
-                folders[s.cwd]?.sessions.append(s)
+                let root = s.repoRoot?.isEmpty == false ? s.repoRoot! : s.cwd
+                if folders[root] == nil { folders[root] = CliFolderGroup(cwd: root, label: folderLabel(root), sessions: []); folderOrder.append(root) }
+                folders[root]?.sessions.append(s)
             }
             let sortedFolders = folderOrder.compactMap { folders[$0] }.sorted { ($0.sessions.first?.lastActivityAt ?? 0) > ($1.sessions.first?.lastActivityAt ?? 0) }
             groups.append(CliDeviceGroup(device: device, folders: sortedFolders, count: mine.count))
@@ -91,6 +93,15 @@ public enum CliSessions {
     }
 
     public static func hiddenCount(_ sessions: [CliSession]) -> Int { sessions.filter(\.hidden).count }
+
+    /// Running or waiting sessions on every computer, newest first: what the list pins above the projects.
+    public static func active(_ sessions: [CliSession], pending: [CliSessionKey: Int] = [:]) -> [CliSession] {
+        sessions.filter { s in
+            guard !s.hidden else { return false }
+            let shown = asked(s, pending: pending[s.key] ?? 0)
+            return shown.online && (shown.state == .running || shown.state == .waiting)
+        }.sorted { $0.lastActivityAt > $1.lastActivityAt }
+    }
 
     /// Most recently used folders on a computer, for the new-session sheet.
     public static func recentCwds(_ sessions: [CliSession], deviceId: String, limit: Int = 8) -> [String] {

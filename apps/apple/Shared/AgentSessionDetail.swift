@@ -72,7 +72,7 @@ struct AgentSessionDetail: View {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
                 } else {
-                    AgentTranscript(model: model, key: key)
+                    AgentTranscript(model: model, key: key, engine: session.engine, working: session.online && session.state == .running ? "执行中" : nil)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -180,6 +180,9 @@ private struct AgentTerminalPane: View {
 private struct AgentTranscript: View {
     let model: CliAgentsModel
     let key: CliSessionKey
+    var engine: CliEngine = .claude
+    /// what the agent is doing while the turn runs; shown as dots under the last message
+    var working: String?
 
     var body: some View {
         let t = model.transcript(key)
@@ -190,7 +193,7 @@ private struct AgentTranscript: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         AgentEchoBubble(text: echo)
-                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("处理中…").font(.footnote).foregroundStyle(Theme.muted) }
+                        AgentWorkingRow(engine: engine, label: working ?? "执行中", byline: true)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 6)
                 }
@@ -217,12 +220,15 @@ private struct AgentTranscript: View {
                             }
                             ForEach(blocks) { block in AgentBlockView(block: block) }
                             if let echo { AgentEchoBubble(text: echo) }
+                            // the agent's name heads the dots only when nothing of this reply is shown yet
+                            if let working { AgentWorkingRow(engine: engine, label: working, byline: echo != nil || { if case .user = blocks.last { return true } else { return false } }()) }
                             Color.clear.frame(height: 1).id("bottom")
                         }
                         .padding(.horizontal, 14).padding(.vertical, 6)
                     }
                     .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                     .onChange(of: blocks.last?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                    .onChange(of: working) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                     .onChange(of: t.items.last?.text.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
@@ -430,6 +436,7 @@ private struct AgentComposer: View {
             if running {
                 Button("中断") { Task { await interrupt() } }.buttonStyle(.bordered)
             }
+            AgentContextRing(usage: session.context)
             Button { Task { await send() } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 26)) }
                 .buttonStyle(.plain).foregroundStyle(canSend ? Theme.identityAccent : Theme.offline)
                 .disabled(!canSend).accessibilityLabel("发送")
@@ -455,5 +462,66 @@ private struct AgentComposer: View {
         do { onKeyChange(try await model.continueSession(session.key)) }
         catch { self.error = CliErrorText.text(for: error, fallback: "没能继续") }
         sending = false
+    }
+}
+
+/// How full the session's context is: a ring that fills with the share of the window the last request used (amber from
+/// 70%, red from 90%); dashed while nothing is known. Tapping shows the numbers.
+struct AgentContextRing: View {
+    let usage: CliContextUsage?
+    @State private var open = false
+
+    private var color: Color {
+        switch CliContext.level(usage) {
+        case .full: Color(hex: 0xC2410C)
+        case .high: Theme.approval
+        default: Theme.success
+        }
+    }
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            ZStack {
+                if let share = CliContext.share(usage) {
+                    Circle().stroke(Theme.border, lineWidth: 2.2)
+                    Circle().trim(from: 0, to: max(0.04, share)).stroke(color, style: StrokeStyle(lineWidth: 2.2, lineCap: .round)).rotationEffect(.degrees(-90))
+                } else {
+                    Circle().stroke(Theme.muted, style: StrokeStyle(lineWidth: 1.4, dash: [2, 2]))
+                }
+            }
+            .frame(width: 16, height: 16).padding(5).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(CliContext.summary(usage))
+        .accessibilityLabel(CliContext.summary(usage))
+        .popover(isPresented: $open, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("上下文").font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    if let share = CliContext.share(usage) { Text("\(Int((share * 100).rounded()))%").font(.system(size: 15, weight: .semibold)).monospacedDigit() }
+                }
+                if let share = CliContext.share(usage) {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Theme.wash)
+                            Capsule().fill(color).frame(width: max(4, geo.size.width * share))
+                        }
+                    }
+                    .frame(height: 6)
+                }
+                Text(detail).font(.caption).foregroundStyle(Theme.muted).monospacedDigit()
+            }
+            .padding(14).frame(width: 240)
+            #if os(iOS)
+            .presentationCompactAdaptation(.popover)
+            #endif
+        }
+    }
+
+    private var detail: String {
+        guard let usage else { return "还没有记录：会话回复过一次后显示" }
+        guard let window = usage.window else { return "已用 \(CliContext.tokens(usage.used)) tokens" }
+        return "已用 \(CliContext.tokens(usage.used)) / \(CliContext.tokens(window)) tokens"
     }
 }

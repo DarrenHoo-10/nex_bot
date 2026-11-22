@@ -302,7 +302,7 @@ public final class CliAgentsModel {
         do {
             if target == nil {
                 let key = try await clientProvider().cliStart(deviceId: request.deviceId, engine: request.engine, cwd: request.cwd, worktreeBranch: request.branch,
-                                                              requestId: entry.requestId, model: request.model, effort: request.effort)
+                                                              requestId: entry.requestId, model: request.model, effort: request.effort, createDir: request.createDir)
                 target = key
                 updateLaunch(id) { $0.target = key }
                 await refresh()
@@ -339,6 +339,18 @@ public final class CliAgentsModel {
         launches.removeAll { ids.contains($0.id) }
         if let moved = done.first(where: { $0.key == selectedKey }) { select(moved.target) }
     }
+
+    /// The sub-folders of a folder on a computer ("" for its drives and home folder). An executor without `dirs` lists nothing and
+    /// takes a typed path as it is.
+    public func dirs(deviceId: String, path: String) async throws -> CliDirListing {
+        guard device(deviceId)?.cliAgents?.features.contains("dirs") == true else {
+            return CliDirListing(path: path, parent: path.isEmpty ? nil : CliPaths.parent(path), exists: true, entries: [])
+        }
+        return try await clientProvider().cliDirs(deviceId: deviceId, path: path)
+    }
+
+    /// Running or waiting sessions on every computer, pinned above the projects.
+    public var activeSessions: [CliSession] { CliSessions.active(displaySessions) }
 
     /// The rows of the CLI's own `/model` picker on a computer: read from it when its executor can list them (once a minute),
     /// else the built-in suggestions.

@@ -6,7 +6,7 @@ import Foundation
 private struct CliKeyBody: Encodable { let key: String }
 private struct CliStartBody: Encodable {
     let deviceId: String; let engine: String; let cwd: String
-    var worktreeBranch: String? = nil; var requestId: String? = nil; var model: String? = nil; var effort: String? = nil
+    var worktreeBranch: String? = nil; var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
 }
 private struct CliSendBody: Encodable { let key: String; let text: String }
 private struct CliHideBody: Encodable { let key: String; let hidden: Bool }
@@ -41,11 +41,16 @@ extension CoreClient {
 
     /// Starts a CLI in `cwd`, or in a new worktree of it on `worktreeBranch` (`requestId` makes a retry reuse that tree). A
     /// worktree of a large repository takes a while to check out: this request waits longer than the others.
-    public func cliStart(deviceId: String, engine: CliEngine, cwd: String, worktreeBranch: String? = nil, requestId: String? = nil, model: String? = nil, effort: String? = nil) async throws -> CliSessionKey {
+    public func cliStart(deviceId: String, engine: CliEngine, cwd: String, worktreeBranch: String? = nil, requestId: String? = nil, model: String? = nil, effort: String? = nil, createDir: Bool = false) async throws -> CliSessionKey {
         let body = CliStartBody(deviceId: deviceId, engine: engine.rawValue, cwd: cwd, worktreeBranch: worktreeBranch, requestId: worktreeBranch == nil ? nil : requestId,
-                                model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil)
+                                model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil, createDir: createDir && worktreeBranch == nil ? true : nil)
         let r: CliKeyResult = try await send(request(Self.cliBase + "/start", query: [], body: JSONEncoder().encode(body), timeout: 45), as: CliKeyResult.self)
         return r.key
+    }
+
+    /// `GET /api/cli-agents/dirs`: the sub-folders of an absolute folder on the computer; "" lists its drives and home folder.
+    public func cliDirs(deviceId: String, path: String) async throws -> CliDirListing {
+        try await get(Self.cliBase + "/dirs", query: [("deviceId", deviceId), ("path", path)])
     }
 
     /// `GET /api/cli-agents/models`: the rows of that CLI's own `/model` picker on the computer.
