@@ -233,6 +233,34 @@ export class AgentModule {
     this.topic(botId,conversationId);
     return this.projectMessages(this.store.all(`SELECT m.*,(SELECT status FROM agent_topic_inputs i WHERE i.message_id=m.id) input_status FROM (SELECT * FROM agent_messages WHERE bot_id=? AND conversation_id=? AND seq<? AND seq>? ORDER BY seq ${after>=0?'ASC':'DESC'} LIMIT ?) m ORDER BY seq`,botId,conversationId,before,after,limit));
   }
+  contextUsage(botId: string, topicId?: string) {
+    if (topicId) this.topic(botId, topicId);
+    else this.ensure(botId);
+    const connection = this.store.botConnection(botId);
+    const selection = this.store.botModelSelection(botId);
+    const model = selection?.selected_model || String(connection?.default_model ?? "");
+    if (!connection || !selection || !model || !connection.credential_ref) {
+      return { usedTokens: null, contextWindow: null };
+    }
+    const { contextWindow } = this.store.modelLimitSettings({ provider: connection.provider_id, endpoint: connection.endpoint, model });
+    const conversationId = topicId ?? this.store.get(
+      "SELECT a.conversation_id FROM assistant_conversations a JOIN conversations c ON c.id=a.conversation_id WHERE a.bot_id=? AND c.status='open'",
+      botId,
+    )?.conversation_id;
+    if (!conversationId) return { usedTokens: null, contextWindow };
+    // input_tokens already includes cache reads and writes. Use the last measured
+    // answer for this model and conversation, including continuations of a topic.
+    const usage = this.store.get(`
+      SELECT m.input_tokens + m.output_tokens AS used_tokens
+      FROM task_runs r JOIN model_invocations m ON m.run_id = r.id
+      WHERE r.bot_id = ? AND r.model_connection_id = ? AND r.model_id = ?
+        AND (r.conversation_id = ? OR r.conversation_id IN
+          (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id = ?))
+        AND m.purpose = 'answer' AND m.status = 'succeeded' AND m.usage_known = 1
+      ORDER BY m.finished_at DESC, m.rowid DESC LIMIT 1
+    `, botId, selection.selected_connection, model, conversationId, conversationId);
+    return { usedTokens: usage?.used_tokens == null ? null : Number(usage.used_tokens), contextWindow };
+  }
   private sendTopic(botId: string, content: string, clientId: string, sessionId: string, options: TopicInputOptions) {
     this.ensure(botId); content=text(content); clientId=text(clientId,200);
     if (options.newConversation && options.conversationId) throw new Error('新话题与已有话题不能同时指定');

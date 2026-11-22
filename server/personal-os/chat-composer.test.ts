@@ -33,6 +33,31 @@ async function fixture(legacyDefault = false) {
   };
   return {app,model,bot,peer,api,root,key,token,restart};
 }
+it("reports the last measured context for the selected model and conversation", async () => {
+  const f = await fixture();
+  f.app.store.saveConfig({ provider: "openai", endpoint: f.model.origin + "/v1", model: "fixture", apiKey: "synthetic", contextWindow: 64000 });
+  const route = `agents/context?bot=${f.bot}`;
+  expect((await f.api(route)).body).toEqual({ usedTokens: null, contextWindow: 64000 });
+  expect((await f.api(route, undefined, "invalid")).status).toBe(401);
+
+  f.model.scripts.push({ kind: "openai-text", text: "fixture reply" });
+  const sent = await f.api("agents/input", { botId: f.bot, text: "hello", clientId: "context-fixture" });
+  expect(sent.status).toBe(202);
+  await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", sent.body.taskId)?.status === "succeeded");
+  const counted = f.app.store.get(`SELECT m.input_tokens + m.output_tokens total FROM model_invocations m
+    JOIN task_runs r ON r.id=m.run_id WHERE r.task_id=? AND m.status='succeeded' AND m.purpose='answer'
+    ORDER BY m.finished_at DESC, m.rowid DESC LIMIT 1`, sent.body.taskId)?.total;
+  expect(Number(counted)).toBeGreaterThan(0);
+  expect((await f.api(route)).body).toEqual({ usedTokens: counted, contextWindow: 64000 });
+  expect((await f.api(`agents/context?bot=${f.peer}`)).body.usedTokens).toBeNull();
+
+  const connection = f.app.store.botModelSelection(f.bot)!.selected_connection;
+  expect((await f.api("bots/model", { id: f.bot, connectionId: connection, model: "second", reasoning: "high", version: 0 })).status).toBe(200);
+  expect((await f.api(route)).body.usedTokens).toBeNull();
+  expect((await f.api("bots/model", { id: f.bot, connectionId: connection, model: "", version: 1 })).status).toBe(200);
+  expect((await f.api(route)).body.usedTokens).toBe(counted);
+}, 60000);
+
 it.each([false, true])("uploads, sends, reads through a real worker and downloads a scoped attachment (legacy=%s)", async (legacyDefault) => {
   const f = await fixture(legacyDefault);
   const file = (await f.api("attachments",{botId:f.bot,name:"报告.md",data:Buffer.from("SYNTHETIC_REPORT_CONTENT").toString("base64")})).body;

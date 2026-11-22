@@ -11,8 +11,8 @@ import { htmlPreviewParts } from "../../shared/html-preview";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
+import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Sparkles, Square, X } from "lucide-react";
+import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
@@ -32,7 +32,7 @@ import { replyLayout } from "./long-reply";
 import { MessageImages } from "./components/MessageImages";
 import { ImageLightbox } from "./components/ImageLightbox";
 import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
-import { ModelMenu, type ModelChoice } from "./components/ModelMenu";
+import type { ModelChoice } from "./components/ModelMenu";
 import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail } from "./components/RoutineOccurrenceDetail";
@@ -651,16 +651,25 @@ export function AgentDesktop() {
   };
   const signOut = () => { void logout().catch(() => setError("退出登录未完成，请重试")); };
   const botLook = lookOf(bot, state.bots);
-  const enabledTools: string[] = (() => { try { return JSON.parse(str(bot?.policy_json) || "{}").tools ?? []; } catch { return []; } })();
   // The assistant's provider, model (or that provider's default model) and reasoning effort.
   const connections = state.connections ?? [];
   const botConnection = connections.find((item) => item.id === str(bot?.selected_connection) && item.enabled) ?? connections.find((item) => item.isDefault);
   const modelChoice: ModelChoice = { connectionId: botConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null };
   const chosenModel = modelChoice.model || botConnection?.defaultModel || str(state.config?.default_model);
   const openForkedTopic = (target: string, conversationId: string) => { setForkBotId(target); select(target); openTopic(conversationId); };
-  const effort = resolveReasoning(modelChoice.reasoning, botConnection?.options[chosenModel]?.reasoning ?? []);
-  const modelLabel = chosenModel ? `${modelName(botConnection, chosenModel)}${effort !== "off" ? ` · ${reasoningLabels[effort]}` : ""}` : "未连接模型";
-  const chooseModel = (choice: ModelChoice) => void run(() => api("bots/model", { id: botId, connectionId: choice.connectionId, model: choice.model, ...(choice.reasoning ? { reasoning: choice.reasoning } : {}), version: Number(bot?.model_selection_version ?? 0) }));
+  const modelLabel = chosenModel ? modelName(botConnection, chosenModel) : "未连接模型";
+  const chooseModel = (choice: ModelChoice) => void run(() => api("bots/model", {
+    id: botId, connectionId: choice.connectionId, model: choice.model,
+    ...(choice.reasoning ? { reasoning: choice.reasoning } : {}),
+    version: Number(bot?.model_selection_version ?? 0),
+  }));
+  const openToolPolicy = () => {
+    if (!bot) return;
+    setDialog(<AgentPolicyEditor bot={bot} close={closeDialog} save={tools => run(async () => {
+      await api("bots/policy", { id: bot.id, version: bot.policy_version, tools });
+      closeDialog();
+    })}/>);
+  };
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   const panelOpen = page === "agent" && detail && !!bot, railClosed = !rail && wide;
   const routines = state.routines.filter((r) => r.bot_id === botId);
@@ -803,7 +812,10 @@ export function AgentDesktop() {
                     </div>)}
             </div>}
             <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={editInput ? "编辑排队消息…" : replyJob ? `回复后台任务：${replyJob.title}` : `给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={chooseModel} onExport={() => void run(downloadTranscript)} onNewTopic={() => finance ? (openTopic(), composerRef.current?.focus()) : void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
+            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={chooseModel} onExport={() => void run(downloadTranscript)} onNewTopic={() => finance ? (openTopic(), composerRef.current?.focus()) : void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}
+              onToolPolicy={openToolPolicy} context={{ botId, conversationId: conversation, connected: connected && !!bot,
+                modelKey: JSON.stringify([botConnection?.id, botConnection?.version, chosenModel]),
+                activityKey: JSON.stringify([rawMessages.at(-1)?.id, tasks.map(task => [task.id, task.status])]) }}>
               {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
               {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
                 ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { if (conversation) await api("agents/cancel",{botId,conversationId:conversation}); else for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
@@ -849,21 +861,6 @@ export function AgentDesktop() {
             <div className="ds-field-label">关于</div>
             <div className="ds-field-card">
               <BotIdentity key={str(bot.id)} bot={bot} refresh={reload}/>
-            </div>
-          </div>
-
-          <div className="ds-field-group">
-            <div className="ds-field-label">能力</div>
-            <div className="ds-field-card ds-kv-list">
-              <div className="ds-kv-row">
-                <span><Zap size={13}/>驱动模型</span>
-                <ModelMenu key={botId} label="驱动模型" triggerClassName="ds-pill-btn inspector-model-trigger" displayValue={modelLabel} connections={connections} choice={modelChoice} disabled={busy || !connected} onChange={chooseModel}/>
-              </div>
-              <div className="ds-kv-row">
-                <span><Shield size={13}/>工具权限</span>
-                <button type="button" className="ds-pill-btn" onClick={() => setDialog(<AgentPolicyEditor bot={bot} close={closeDialog} save={(tools) => run(async () => { await api("bots/policy", { id: bot.id, version: bot.policy_version, tools }); closeDialog(); })}/>)}>已授权 {enabledTools.length} 项 · 配置</button>
-              </div>
-
             </div>
           </div>
 

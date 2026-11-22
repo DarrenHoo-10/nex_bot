@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
-import { listConnectionModels, modelName, reasoningLabels, resolveReasoning, type Connection, type ReasoningChoice } from "../api";
+import { listConnectionModels, modelName, reasoningLabels, reasoningOrder, resolveReasoning, type Connection, type ReasoningChoice, type ReasoningLevel } from "../api";
 import { useAnchoredPopover } from "./anchored-popover";
 import "./model-menu.css";
 
@@ -12,9 +12,9 @@ const formatLabel = (connection: Connection) => connection.provider === "anthrop
  * The chat model menu: the provider on top (switch it in a sub-list), that provider's enabled models, and the
  * 思考强度 slider when the chosen model offers reasoning levels. Every choice saves at once through `onChange`.
  */
-export function ModelMenu({ connections, choice, onChange, disabled, label = "选择模型", open: controlledOpen, onOpenChange, anchorRef, triggerClassName, displayValue }: {
+export function ModelMenu({ connections, choice, onChange, disabled, label = "选择模型", open: controlledOpen, onOpenChange, anchorRef, triggerClassName, displayValue, composer = false }: {
   connections: Connection[]; choice: ModelChoice; onChange: (choice: ModelChoice) => void; disabled?: boolean; label?: string;
-  open?: boolean; onOpenChange?: (open: boolean) => void; anchorRef?: RefObject<HTMLElement | null>; triggerClassName?: string; displayValue?: string;
+  open?: boolean; onOpenChange?: (open: boolean) => void; anchorRef?: RefObject<HTMLElement | null>; triggerClassName?: string; displayValue?: string; composer?: boolean;
 }) {
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen, setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
@@ -36,7 +36,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
       .catch((error: unknown) => setCatalogs((all) => ({ ...all, [provider.id]: { error: error instanceof Error ? error.message : "获取模型失败" } })));
   }, [open, provider, catalogs]);
 
-  useAnchoredPopover(open, panel, () => anchorRef?.current ?? trigger.current, () => [root.current], () => setOpen(false));
+  useAnchoredPopover(open, panel, () => anchorRef?.current ?? trigger.current, () => [root.current], () => setOpen(false), 320, composer ? "end" : "start");
 
   const effective = provider && provider.id === current?.id ? choice.model || provider.defaultModel : "";
   const models = useMemo(() => {
@@ -50,17 +50,24 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
   // The slider follows the chosen model on the chosen provider.
   const chosenModel = current ? choice.model || current.defaultModel : "";
   const offered = current?.options[chosenModel]?.reasoning ?? [];
-  const stops: ReasoningChoice[] = ["off", ...offered];
+  const stops: ReasoningChoice[] = composer ? reasoningOrder : ["off", ...offered];
   const resolved = resolveReasoning(choice.reasoning, offered);
+  const supported = (stop: ReasoningChoice) => stop !== "off" && offered.includes(stop as ReasoningLevel);
   const [level, setLevel] = useState(stops.indexOf(resolved));
-  useEffect(() => { setLevel(stops.indexOf(resolved)); }, [resolved, offered.join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  const commitLevel = () => { const next = stops[level]; if (next && next !== resolved && current) onChange({ connectionId: current.id, model: choice.model, reasoning: next }); };
+  const levelIndex = Math.max(0, Math.min(level, stops.length - 1));
+  useEffect(() => { setLevel(stops.indexOf(resolved)); }, [resolved, offered.join(), disabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  const commitLevel = (index: number) => {
+    if (disabled || !current || !stops[index]) return;
+    const next = composer ? resolveReasoning(stops[index], offered) : stops[index];
+    setLevel(stops.indexOf(next));
+    if (next !== resolved) onChange({ connectionId: current.id, model: choice.model, reasoning: next });
+  };
 
   const pick = (model: string) => {
     if (disabled || !provider) return;
     // Switching provider starts from that provider's own reasoning default; the same provider keeps the choice.
     onChange({ connectionId: provider.id, model, reasoning: provider.id === current?.id ? choice.reasoning : null });
-    setOpen(false); (anchorRef?.current ?? trigger.current)?.focus();
+    if (!composer) { setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); }
   };
 
   return <div className="model-menu-root" ref={root}>
@@ -74,9 +81,16 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
           </button>)}
         </div>
       </> : <>
-        <button type="button" className="model-menu-provider" aria-label={`切换供应商，当前：${provider?.name}`} disabled={usable.length < 2} onClick={() => setPicking(true)}><span>{provider?.name}</span><span className="model-menu-tag">{provider ? formatLabel(provider) : ""}</span>{usable.length > 1 ? <ChevronRight size={15}/> : null}</button>
-        <div className="model-menu-heading">模型</div>
-        {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus/></label> : null}
+        {composer ? <div className="model-menu-compose-heading">
+          <strong>模型</strong>
+          {usable.length > 1 && <button type="button" aria-label={`切换供应商，当前：${provider?.name}`} onClick={() => setPicking(true)}>
+            <span>{provider?.name}</span><ChevronRight size={14}/>
+          </button>}
+        </div> : <>
+          <button type="button" className="model-menu-provider" aria-label={`切换供应商，当前：${provider?.name}`} disabled={usable.length < 2} onClick={() => setPicking(true)}><span>{provider?.name}</span><span className="model-menu-tag">{provider ? formatLabel(provider) : ""}</span>{usable.length > 1 ? <ChevronRight size={15}/> : null}</button>
+          <div className="model-menu-heading">模型</div>
+        </>}
+        {composer || models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus={!composer}/></label> : null}
         <div className="model-menu-list" role="listbox" aria-label="可用模型">
           {models.map((model) => {
             const options = provider?.options[model];
@@ -89,11 +103,27 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
           {!models.length && !(provider && catalogs[provider.id]?.loading) ? <div className="model-menu-status">没有可用的模型</div> : null}
         </div>
         {offered.length && provider?.id === current?.id ? <div className="model-menu-effort">
-          <div className="model-menu-effort-label"><span>思考强度</span><strong>{reasoningLabels[stops[level] ?? "off"]}</strong></div>
-          <input type="range" aria-label="思考强度" min={0} max={stops.length - 1} step={1} value={level} disabled={disabled}
-            aria-valuetext={reasoningLabels[stops[level] ?? "off"]} style={{ ["--fill" as string]: `${stops.length > 1 ? (level / (stops.length - 1)) * 100 : 0}%` }}
-            onChange={(event) => setLevel(Number(event.target.value))} onPointerUp={commitLevel} onKeyUp={commitLevel} onBlur={commitLevel}/>
-          <div className="model-menu-stops" aria-hidden="true">{stops.map((stop) => <span key={stop}>{reasoningLabels[stop]}</span>)}</div>
+          <div className="model-menu-effort-label"><span>推理强度</span><strong>{level < 0 ? "—" : reasoningLabels[stops[levelIndex]]}</strong></div>
+          <div className="model-menu-slider" style={{ "--fill": `${(levelIndex / (stops.length - 1)) * 100}%` } as CSSProperties}>
+            <input type="range" aria-label={composer ? "推理强度" : "思考强度"} min={0} max={stops.length - 1} step={1} value={levelIndex} disabled={disabled}
+              aria-valuetext={level < 0 ? "—" : reasoningLabels[stops[levelIndex]]} onChange={event => setLevel(Number(event.target.value))}
+              onPointerUp={event => commitLevel(Number(event.currentTarget.value))}
+              onKeyDown={event => {
+                if (!composer) return;
+                const forward = ["ArrowRight", "ArrowUp", "PageUp"].includes(event.key);
+                const backward = ["ArrowLeft", "ArrowDown", "PageDown"].includes(event.key);
+                if (!forward && !backward && event.key !== "Home" && event.key !== "End") return;
+                event.preventDefault();
+                const available = stops.map((stop, index) => supported(stop) ? index : -1).filter(index => index >= 0);
+                const next = event.key === "Home" ? available[0] : event.key === "End" ? available.at(-1)
+                  : forward ? available.find(index => index > level) : available.filter(index => index < level).at(-1);
+                if (next !== undefined) commitLevel(next);
+              }}
+              onKeyUp={event => { if (!composer && ["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) commitLevel(Number(event.currentTarget.value)); }}/>
+            <div className="model-menu-slider-lane" aria-hidden="true"><i/><b/></div>
+          </div>
+          <div className="model-menu-stops">{stops.map((stop, index) => <button type="button" key={stop} disabled={disabled || (composer && !supported(stop))} aria-pressed={index === level}
+            onClick={() => commitLevel(index)}><span>{reasoningLabels[stop]}</span></button>)}</div>
         </div> : null}
       </>}
     </div>}

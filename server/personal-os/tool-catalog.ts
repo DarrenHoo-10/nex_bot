@@ -1,3 +1,4 @@
+import { githubMonitorCapability } from "./github-monitor-capability.ts";
 import { toolFields } from "./tool-fields.ts";
 import { htmlRenderDescription } from "../../shared/html-render.ts";
 import { chartPrompt } from "../../shared/chat-chart-format.ts";
@@ -8,7 +9,7 @@ type Entry = { action: string; title: string; fields: string; required: string; 
 // This is the single help catalog. Only brief entries are resident; details are queried.
 export const toolCatalog: Entry[] = [
   {action:'agent.feishuDelivery',title:'管理飞书投递偏好',fields:'operation appId chatId instanceId kinds scenarios audience enabled version',required:'operation',help:'仅在本人的私人对话中管理有权投递的目的地。operation=list 读取现有目的地和当前版本；upsert 修改指定 appId/chatId/instanceId 的 kinds、scenarios、audience、enabled，必须使用读取到的 version。未配置的群没有默认订阅。成功后回读真实结果；版本冲突重新读取。',keywords:'飞书 群 订阅 投递 偏好 复盘 推送 feishu delivery subscription'},
-  { action: "tool.search", title: "查询工具用法", fields: "query offset limit", required: "", help: "query 可为用途关键词、完整 action 或前缀。留空返回目录摘要；非空返回详细参数与规则。offset 默认 0，limit 默认 5、最多 10；按 nextOffset 继续。只展示已授权能力，查询不授权。", keywords: "工具 能力 查询 发现 帮助 tool search" },
+  { action: "tool.search", title: "查询工具用法", fields: "query offset limit", required: "", help: "query 可为用途关键词、完整 action 或前缀。留空返回目录摘要；非空返回详细参数与规则。offset 默认 0，limit 默认 5、最多 10；按 nextOffset 继续。items 仅列已授权工具，productCapabilities 说明匹配的产品功能及使用条件。", keywords: "工具 能力 查询 发现 帮助 tool search" },
   { action: "todo.list", title: "查看待办", fields: "", required: "", help: "读取用户待办面板的持久化事项，返回 id、version、状态、负责人等；不是私有记忆。", brief: "todo.list()：读产品待办，取得 id/version。", keywords: "待办 任务 清单 todo" },
   { action: "todo.save", title: "保存待办", fields: "todoId expectedVersion title description owner date priority steps status", required: "", help: "新建必须有 title，默认 owner=me、date 默认为当天（Asia/Shanghai）、priority=普通、steps=[]。owner 可为 agent.directory 返回的真实 Agent ID；date 为 YYYY-MM-DD；priority 为 高/普通/低；steps=[{text,done}]。修改须先 list，再传 todoId、expectedVersion，未传字段保留。用户要求标为完成时传 status=done；重新打开已完成事项传 status=todo。状态修改必须指定已有 todoId 和 expectedVersion；AI 执行中须先在面板停止。只有工具成功才能确认完成，不代表代码已验收。记录与分配不启动执行。用户说记个 todo 时使用产品待办，不能用私有记忆替代；从当前对话或引用提取内容，确实缺内容才追问。", brief: "todo.save(title?,description?,todoId?,expectedVersion?,status?)：记待办；完成用 status=done，重开用 todo；改前 list 带 id/版本；不能用 memory.write 代替，保存/分配不开工。", keywords: "待办 创建 新增 修改 编辑 记录 todo" },
   { action: "todo.delete", title: "删除待办", fields: "todoId expectedVersion", required: "todoId expectedVersion", help: "只删除用户指定事项。先 todo.list 取得当前版本；正在由 AI 执行时须先在面板停止。版本冲突重新读取，不要盲目重试；工具成功后才确认删除。使用与面板相同的软删除。", brief: "todo.delete(todoId,expectedVersion)：按用户要求删除；改/删前先 list，AI 执行中先在面板停止。", keywords: "待办 删除 移除 todo" },
@@ -82,7 +83,7 @@ export function commonToolPrompt(granted: string[], origin?: TaskOrigin) {
   const allowed = expandedGrants(granted, origin);
   return "通过 broker 调用，action 及参数放在顶层。常用工具：\n" +
     toolCatalog.filter((entry) => entry.brief && allowed.has(entry.action) && !(origin === "owner" && entry.action.startsWith("cli."))).map((entry) => origin === "owner" && entry.action === "agent.delegate" ? OWNER_DELEGATE_BRIEF : entry.brief).join("\n") +
-    "\n其他能力（定时、生图、图表、电脑操作、连接器、记忆整理等）或不熟悉的参数，先 tool.search(query) 查询用途/操作名；空 query 看目录，按 nextOffset 翻页。不得因未加载说明就声称功能不存在。";
+    "\n用户询问 NexBot 是否支持某功能，先按用途调用 tool.search(query)，查看 productCapabilities 和工具说明；空 query 看目录，按 nextOffset 翻页。不得因未加载说明就声称功能不存在。";
 }
 export function searchTools(store: CoreStore, botId: string, args: Record<string, unknown>, origin?: TaskOrigin) {
   const policy = store.get("SELECT p.* FROM bot_policies p JOIN bots b ON b.id=p.bot_id WHERE b.id=? AND b.status='active' AND b.workspace_id=? AND b.owner_user_id=?", botId, store.workspace, store.owner);
@@ -92,6 +93,8 @@ export function searchTools(store: CoreStore, botId: string, args: Record<string
   if (typeof query !== "string" || query.length > 200) throw new Error("工具查询须为不超过200字的文本");
   if (!Number.isSafeInteger(offset) || Number(offset) < 0 || !Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 10) throw new Error("工具查询分页无效");
   const q = query.trim().toLowerCase();
+  const githubMonitorKeywords = ["github", "webhook", "回调", "监视", "pr 通知", "pr通知", "pr 创建", "pr创建", "pull request"];
+  const capabilities = githubMonitorKeywords.some((keyword) => q.includes(keyword)) ? [githubMonitorCapability] : [];
   const exact = toolCatalog.some((entry) => entry.action === q);
   const ranked = toolCatalog.filter((entry) => allowed.has(entry.action)).map((entry) => {
     const words = `${entry.title} ${entry.keywords ?? ""}`.toLowerCase().split(/\s+/);
@@ -111,6 +114,7 @@ export function searchTools(store: CoreStore, botId: string, args: Record<string
     })),
     total: ranked.length,
     nextOffset: Number(offset) + selected.length < ranked.length ? Number(offset) + selected.length : null,
-    ...(!ranked.length ? { hint: "未找到匹配的已授权工具；用较短关键词、操作名前缀，或空 query 查看目录。" } : {}),
+    ...(capabilities.length ? { productCapabilities: capabilities } : {}),
+    ...(!ranked.length && !capabilities.length ? { hint: "未找到匹配的已授权工具；用较短关键词、操作名前缀，或空 query 查看目录。" } : {}),
   };
 }

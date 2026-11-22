@@ -221,7 +221,7 @@
 .rk-workspace .step-dot.failed, .rk-workspace .step-dot.rejected { background: var(--destructive); }
 
 /* ---------- Composer capsule ---------- */
-.rk-workspace .composer-dock { position: relative; flex: none; width: 100%; max-width: 700px; align-self: center; }
+.rk-workspace .composer-dock { position: relative; flex: none; width: 100%; max-width: 740px; align-self: center; }
 .rk-workspace .scroll-pill { position: absolute; left: 50%; top: -50px; z-index: 4; margin: 0; transform: translateX(-50%); width: 36px; height: 36px; border: 1px solid var(--glass-edge); background: var(--glass-strong); box-shadow: var(--shadow-card); }
 .rk-workspace .composer-area { max-width: none; max-height: 52%; padding: 0 10px 14px; border: 0; background: transparent; }
 .rk-workspace .composer-area > :is(.approval, .task-status, .quote-bar, .at-menu) { max-width: none; }
@@ -233,15 +233,25 @@
 
 .rk-workspace .composer.conversation-input {
   display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: 6px;
-  margin: 0; padding: 6px 6px 6px 8px; border-radius: 26px;
+  margin: 0; padding: 8px 8px 7px 10px; border-radius: 23px;
 }
 .rk-workspace .composer.conversation-input:focus-within { border-color: color-mix(in srgb, var(--identity-accent) 55%, var(--glass-edge)); box-shadow: var(--shadow-float), 0 0 0 3px color-mix(in srgb, var(--identity-accent) 10%, transparent); }
 .rk-workspace .composer-toolbar, .rk-workspace .composer-actions { display: contents; }
-.rk-workspace .attachment-drafts { order: -1; flex: 0 0 100%; margin: 0; padding: 4px 6px 2px; }
+.rk-workspace .attachment-drafts { order: -2; flex: 0 0 100%; margin: 0; padding: 4px 6px 2px; }
 .rk-workspace .composer textarea {
-  order: 1; flex: 1 1 0; min-width: 0; width: auto; min-height: 34px; max-height: 160px;
+  order: -1; flex: 0 0 100%; min-width: 0; width: 100%; min-height: clamp(52px, 11dvh, 76px); max-height: 160px;
   padding: 6px 4px; font-size: 14px; line-height: 22px;
 }
+.rk-workspace .composer-model-controls { order: 1; display: flex; align-items: center; gap: 5px; min-width: 0; margin-left: auto; max-width: calc(100% - 80px); }
+.rk-workspace .composer-model-controls .model-menu-root { min-width: 0; }
+.rk-workspace .composer-model-controls :is(.composer-model-trigger, .composer-context-trigger) {
+  display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 9px; box-shadow: none;
+  background: var(--wash); color: var(--foreground); height: 34px; padding: 0 8px; font-size: 12px; min-width: 0; max-width: 100%;
+}
+.rk-workspace .composer-model-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-workspace .composer-model-trigger svg { flex-shrink: 0; }
+.rk-workspace .composer-model-controls :is(.composer-model-trigger, .composer-context-trigger):is(:hover, [aria-expanded="true"]) { background: var(--accent); }
+.rk-workspace .composer-context-trigger { width: 34px; justify-content: center; flex-shrink: 0; }
 .rk-workspace .composer-add { order: 0; width: 34px; height: 34px; flex-basis: 34px; border: 0; background: transparent; color: var(--secondary-foreground); box-shadow: none; }
 .rk-workspace .composer-add:hover, .rk-workspace .composer-add[aria-expanded="true"] { background: var(--wash); color: var(--foreground); }
 .rk-workspace .composer .send { order: 2; width: 34px; height: 34px; flex-basis: 34px; background: var(--foreground); color: var(--background); box-shadow: none; transform: none; }

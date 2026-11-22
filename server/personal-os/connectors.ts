@@ -1,3 +1,4 @@
+import { githubMonitorCapability } from "./github-monitor-capability.ts";
 import { isIP } from "node:net";
 import { RemoteMcpClient, McpHttpError } from "../mcp-http.ts";
 import { id, now, text, type CoreStore, type Row } from "./store.ts";
@@ -194,7 +195,10 @@ export class ConnectorModule {
     if (args.action === "connector.list") return { connectors: this.directory(String(call.bot_id)) };
     const row = connectorAccess(this.store, args);
     const tools = JSON.parse(String(row.tools_json)) as ConnectorTool[];
-    if (args.action === "connector.tools") return { connectorId: row.id, connectorVersion: row.version, tools };
+    if (args.action === "connector.tools") return {
+      connectorId: row.id, connectorVersion: row.version, tools,
+      ...(row.provider === "github" ? { productCapabilities: [githubMonitorCapability] } : {}),
+    };
     if (row.provider === "gmail") {
       const result = await this.oauth.withCredential(row, String(call.task_id), async () => { await authorize(); connectorAccess(this.store, args); }, (provider, credential, signal) => provider.call(String(args.tool), (args.parameters ?? {}) as Record<string, unknown>, credential, signal));
       return { text: JSON.stringify(result), structured: result, isError: false };

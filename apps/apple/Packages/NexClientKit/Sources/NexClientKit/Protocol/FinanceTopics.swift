@@ -31,7 +31,15 @@ public struct TopicInput: Encodable, Sendable, Equatable {
         messageId=editingMessageID; botId = botID; self.text = text; clientId = clientID; conversationId = conversationID; newConversation = conversationID == nil ? true : nil
     }
 }
+public struct ChatContextUsage: Decodable, Sendable {
+    public let usedTokens: Int?
+    public let contextWindow: Int?
+}
+
 extension CoreClient {
+    public func chatContextUsage(botID: String) async throws -> ChatContextUsage {
+        try await get("/api/agents/context", query: [("bot", botID)])
+    }
     public func financeAssistant() async throws -> FinanceAssistant { try await get("/api/agents/finance") }
     public func financeTopics(botID: String) async throws -> [FinanceTopic] { let result: FinanceTopicList = try await get("/api/agents/topics", query: [("bot",botID)]); return result.topics }
     public func topicFeed(botID: String, conversationID: String, before: Int? = nil) async throws -> Feed {
