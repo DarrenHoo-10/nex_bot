@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [NexAgent 新建会话页、侧栏与上下文用量：全平台发布 0.9.42（2026-11-22）](nexagent-ui-release-20261122.md)
 - [NexAgent 模型清单与即时新建会话：全平台发布 0.9.41（2026-11-22）](nexagent-launch-release-20261122.md)
 - [NexAgent 发往跳过权限模式 Claude 会话的消息：全平台发布 0.9.40（2026-11-21）](nexagent-inbox-release-20261121.md)
 - [NexAgent 排序、搜索、模型与图片：全平台发布（2026-11-21）](nexagent-1121-release-20261121.md)
