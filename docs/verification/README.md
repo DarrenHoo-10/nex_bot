@@ -1,5 +1,6 @@
 # Verifying OpenMausBot
 
+- [NexAgent 历史分页、远程消息、上下文窗口与单按钮输入框：全平台发布 0.9.43（2026-11-22）](nexagent-0943-release-20261122.md)
 - [更新清单按平台记录发布标签与说明：Core 部署（2026-11-22）](update-manifest-per-platform-20261122.md)
 - [NexAgent 新建会话页、侧栏与上下文用量：Mac / iPhone 发布 0.2.34（2026-11-22）](nexagent-apple-ui-release-20261122.md)
 - [NexAgent 新建会话页、侧栏与上下文用量：全平台发布 0.9.42（2026-11-22）](nexagent-ui-release-20261122.md)
