@@ -12,7 +12,7 @@ struct QuoteDraft: Equatable {
     }
 }
 
-/// Return sends, Shift-Return inserts a newline. The "＋" button opens the 添加 / 指令 menu (文件, 权限, 模型, 导出对话); permission and model pickers anchor to it; typing `@` offers the other agents.
+/// Return sends, Shift-Return inserts a newline, and typing `@` offers the other agents.
 struct Composer: View {
     let workspace: WorkspaceStore
     @Bindable var conversation: ConversationStore
@@ -47,9 +47,8 @@ struct Composer: View {
             }
         }
     }
-    /// The capsule is one line high and grows with the laid-out text, up to about six lines.
     @State private var contentHeight: CGFloat = 20
-    private var height: CGFloat { min(120, max(20, contentHeight)) }
+    private var height: CGFloat { min(120, max(66, contentHeight)) }
 
     /// Other agents whose name contains the text typed after a trailing `@`.
     private var mentions: [Bot] {
@@ -73,10 +72,17 @@ struct Composer: View {
     }
 
     private var field: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            plusButton
-            textInput.padding(.vertical, 7)
-            sendButton
+        VStack(spacing: 4) {
+            textInput.padding(.horizontal, 4).padding(.top, 5)
+            HStack(spacing: 6) {
+                plusButton
+                Spacer(minLength: 4)
+                ComposerContextControl(workspace: workspace, conversation: conversation, bot: bot)
+                Button { toggle(.models) } label: { ComposerModelLabel(workspace: workspace, bot: bot) }
+                    .buttonStyle(.plain).disabled(controlsDisabled)
+                    .popover(isPresented: modelMenuOpen, arrowEdge: .top) { modelMenu }
+                sendButton
+            }
         }
         .padding(.leading, 8).padding(.trailing, 6).padding(.vertical, 6)
         .glass(RoundedRectangle(cornerRadius: 26, style: .continuous), strong: true)
@@ -115,7 +121,7 @@ struct Composer: View {
             .accessibilityLabel("发送给 Agent 的消息")
     }
 
-    /// ＋ opens 添加 / 指令; permission and model live in that menu only.
+    /// ＋ opens 添加 / 指令.
     private var plusButton: some View {
         Button { toggle(.add) } label: {
             Image(systemName: "plus").font(.system(size: 15, weight: .regular)).foregroundStyle(menu == .add ? Theme.foreground : Theme.muted)
@@ -123,7 +129,7 @@ struct Composer: View {
         }
         .buttonStyle(.plain).disabled(controlsDisabled)
         .help("添加文件或指令").accessibilityLabel("添加文件或指令")
-        .popover(isPresented: anyMenuOpen, arrowEdge: .top) { menuContent }
+        .popover(isPresented: addMenuOpen, arrowEdge: .top) { menuContent }
     }
 
     /// While the agent works and nothing is typed, the send key stops it (web composer).
@@ -157,21 +163,20 @@ struct Composer: View {
     private var menu: ComposerMenuKind? { ui.composerMenu }
     private var controlsDisabled: Bool { conversation.isSending || workspace.connection != .connected || bot == nil }
 
-    /// One popover anchored to ＋ shows whichever menu is open (添加与指令, 权限, 模型).
-    private var anyMenuOpen: Binding<Bool> {
-        Binding(get: { ui.composerMenu != nil }, set: { if !$0 { ui.composerMenu = nil } })
+    private var addMenuOpen: Binding<Bool> {
+        Binding(get: { menu == .add || menu == .permissions }, set: { if !$0, menu != .models { ui.composerMenu = nil } })
+    }
+    private var modelMenuOpen: Binding<Bool> {
+        Binding(get: { menu == .models }, set: { if !$0, menu == .models { close() } })
     }
     private func toggle(_ kind: ComposerMenuKind) { ui.composerMenu = ui.composerMenu == kind ? nil : kind }
     @ViewBuilder private var menuContent: some View {
         switch menu {
         case .add: addMenu
         case .permissions: permissionMenu
-        case .models: modelMenu
-        case nil: EmptyView()
+        case .models, nil: EmptyView()
         }
     }
-    private var config: ModelConfig? { workspace.state?.config }
-    private var defaultModel: String { config?.defaultModel ?? "" }
     /// The assistant's own model; empty while it follows the default.
     private var chatModel: String { bot?.selectedModel ?? "" }
     private func close() { ui.composerMenu = nil; focused = true }
@@ -183,8 +188,6 @@ struct Composer: View {
             .heading("指令"),
             .row(.init(id: "permission", icon: full ? "exclamationmark.shield" : "checkmark.shield", title: "权限", key: "permission", value: mode.title,
                        action: { ui.composerMenu = .permissions })),
-            .row(.init(id: "model", icon: "slider.horizontal.3", title: "模型", key: "model", value: workspace.state?.modelLabel(forBot: bot) ?? (chatModel.isEmpty ? defaultModel : chatModel),
-                       enabled: config != nil, action: { ui.composerMenu = .models })),
             .row(.init(id: "topic", icon: "plus.bubble", title: "新话题", key: "topic",
                        enabled: !conversation.messages.isEmpty, action: { close(); startNewTopic() })),
             .row(.init(id: "export", icon: "arrow.down.to.line", title: "导出对话", key: "export", value: "Markdown",
@@ -197,7 +200,8 @@ struct Composer: View {
             ComposerMenu(label: "选择操作权限", entries: ApprovalMode.allCases.map { option in
                 .row(.init(id: option.rawValue, icon: option == .full ? "exclamationmark.shield" : "checkmark.shield", title: option.title,
                            checked: mode == option, radio: true, action: { close(); setMode(option) }))
-            }, initialID: mode.rawValue, width: 300, close: close)
+            } + [.row(.init(id: "tools", icon: "shield", title: "工具权限",
+                            action: { close(); agentUI.editPolicy(botID) }))], initialID: mode.rawValue, width: 300, close: close)
             let rules = workspace.approvalRules(botID: botID)
             if !rules.isEmpty {
                 Divider()
@@ -229,7 +233,7 @@ struct Composer: View {
     }
 
     private var modelMenu: some View {
-        ChatModelMenu(workspace: workspace, botID: botID, close: close, onError: { menuError = $0 })
+        ChatModelMenu(workspace: workspace, botID: botID, close: close, onError: { menuError = $0 }, composer: true)
     }
 
     private func setModel(_ next: String) {

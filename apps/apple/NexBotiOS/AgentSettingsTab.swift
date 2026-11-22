@@ -1,43 +1,22 @@
 import SwiftUI
 import NexClientKit
 
-/// Agent detail 设置 tab: about (bot身份信息), capabilities, usage, export and archive.
+/// Agent detail 设置 tab: about (bot身份信息), usage, export and archive.
 struct AgentSettingsTab: View {
     let workspace: WorkspaceStore
     let botID: String
     @Environment(Navigation.self) private var nav
-    @Environment(ContactPreferences.self) private var preferences
-    @State private var showPolicy = false
     @State private var confirmArchive = false
     @State private var copied = false
     @State private var archiving = false
     @State private var errorText: String?
-    @State private var showModels = false
 
-    private var bot: Bot? { workspace.bot(botID) }
     private var state: WorkspaceState? { workspace.state }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             group("关于") {
                 IdentityField(workspace: workspace, botID: botID)
-            }
-
-            group("能力") {
-                row("驱动模型") {
-                    // Picks the assistant's model in place; 设置 only when nothing is connected.
-                    Button { if state?.config == nil { nav.openSettings(.model) } else { showModels = true } } label: {
-                        Text(state?.modelLabel(forBot: bot) ?? "未连接模型")
-                            .font(.caption.weight(.medium)).lineLimit(1)
-                            .padding(.horizontal, 10).padding(.vertical, 4)
-                            .background(Theme.secondary, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-                row("工具权限", icon: "shield") {
-                    Button { showPolicy = true } label: { Text(PolicyCatalog.summary(count: bot?.policyTools.count ?? 0)).font(.footnote) }
-                        .buttonStyle(.plain).foregroundStyle(Theme.brand)
-                }
             }
 
             group("用量") {
@@ -66,11 +45,6 @@ struct AgentSettingsTab: View {
                     .disabled(archiving)
             }
         }
-        .sheet(isPresented: $showPolicy) { PolicyEditorSheet(workspace: workspace, botID: botID) }
-        .sheet(isPresented: $showModels) {
-            ChatModelSheet(workspace: workspace, botID: botID, onError: { errorText = $0 })
-                .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
-        }
         .alert("归档这个 Agent？", isPresented: $confirmArchive) {
             Button("取消", role: .cancel) {}
             Button("确认", role: .destructive) { Task { await archive() } }
@@ -80,9 +54,6 @@ struct AgentSettingsTab: View {
         .errorAlert($errorText)
         .debugCommand { command, _ in
             switch command {
-            case "policy": showPolicy = true
-            case "agentmodel": showModels = true
-            case "closemodels": showModels = false
             case "archive": confirmArchive = true
             case "archiveconfirm": Task { await archive() }
             default: break
@@ -98,11 +69,6 @@ struct AgentSettingsTab: View {
             try await workspace.archiveAgent(botID: botID)
             nav.path = []
         } catch { errorText = message(of: error) }
-    }
-
-    private func setModel(_ next: String) {
-        guard next != (bot?.selectedModel ?? "") else { return }
-        Task { do { try await workspace.setAgentModel(botID: botID, model: next) } catch { errorText = message(of: error) } }
     }
 
     private func group<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {

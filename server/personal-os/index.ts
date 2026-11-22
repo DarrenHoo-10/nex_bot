@@ -401,7 +401,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (finance.hasSession(String(session.id))) {
         const botId = agents.finance().botId;
         const route = request.method + " " + url.pathname;
-        const get = ["GET /api/agents/topics", "GET /api/agents/messages", "GET /api/agents/tasks"];
+        const get = ["GET /api/agents/topics", "GET /api/agents/messages", "GET /api/agents/tasks", "GET /api/agents/context"];
         const post = ["POST /api/agents/input", "POST /api/agents/read", "POST /api/agents/cancel", "POST /api/agents/retry", "POST /api/agents/edit", "POST /api/agents/delete-topic"];
         const scopedFinance = ["GET /api/agents/finance", "GET /api/finance/models", "GET /api/finance/alias",
           "GET /api/finance/aliases", "GET /api/finance/alias/context", "POST /api/finance/alias",
@@ -510,6 +510,11 @@ export async function createPersonalApp(options: AppOptions) {
         const botId = text(url.searchParams.get('bot'), 100);
         if (finance.hasBinding() && agents.finance().botId === botId) stockHistory.schedule(String(session.id));
         json(response, 200, {topics: agents.topics(botId)}); return;
+      }
+      if (url.pathname === "/api/agents/context" && request.method === "GET") {
+        const botId = text(url.searchParams.get("bot"), 100);
+        const topicId = url.searchParams.get("conversationId");
+        json(response, 200, agents.contextUsage(botId, topicId ? text(topicId, 100) : undefined)); return;
       }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
