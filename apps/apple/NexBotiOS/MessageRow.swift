@@ -209,7 +209,6 @@ struct MessageRow: View {
             if !files.isEmpty {
                 AttachmentCards(links: files, workspace: workspace, conversation: conversation, messageID: message.id, trailing: true)
             }
-            time.padding(.horizontal, 4)
         }
     }
 

@@ -1,4 +1,5 @@
 import { githubMonitorCapability } from "./github-monitor-capability.ts";
+import type { GithubMonitorModule } from "./github-monitor.ts";
 import { isIP } from "node:net";
 import { RemoteMcpClient, McpHttpError } from "../mcp-http.ts";
 import { id, now, text, type CoreStore, type Row } from "./store.ts";
@@ -47,8 +48,11 @@ export class ConnectorModule {
   private readonly pending = new Set<Promise<unknown>>();
   private closed = false;
   readonly oauth: ConnectorOAuth;
-  constructor(readonly store: CoreStore, readonly changed: () => void, gmail?: GmailConfiguration, github?: GithubConfiguration) {
+  monitors?: GithubMonitorModule;
+  constructor(readonly store: CoreStore, readonly changed: () => void, gmail?: GmailConfiguration, github?: GithubConfiguration, private readonly publicOrigin?: string) {
     this.oauth = new ConnectorOAuth(store, changed, gmail ? new GmailProvider(gmail) : undefined, new GithubProvider(github ?? {}));
+    const catalog = JSON.stringify(this.oauth.github!.tools);
+    store.run("UPDATE personal_connectors SET tools_json=?,version=version+1 WHERE provider='github' AND tools_json!='[]' AND tools_json!=?", catalog, catalog);
   }
   catalog() {
     return [
@@ -204,7 +208,24 @@ export class ConnectorModule {
       return { text: JSON.stringify(result), structured: result, isError: false };
     }
     if (row.provider === "github") {
-      const result = await this.oauth.withCredential(row, String(call.task_id), async () => { await authorize(); connectorAccess(this.store, args); }, (provider, credential, signal) => provider.call(String(args.tool), (args.parameters ?? {}) as Record<string, unknown>, credential, signal));
+      const tool = String(args.tool), params = (args.parameters ?? {}) as Record<string, unknown>;
+      if (tool.startsWith("monitor.")) {
+        await authorize();
+        connectorAccess(this.store, args);
+        if (!this.monitors) throw new Error("监视服务未就绪");
+        let structured: unknown;
+        if (tool === "monitor.create") structured = this.monitors.createForAssistant(String(row.id), String(params.botId ?? call.bot_id), String(params.repo), String(params.delivery ?? "notify"));
+        else if (tool === "monitor.list") structured = this.monitors.listForConnector(String(row.id), params.repo as string | undefined, params.botId as string | undefined);
+        else structured = this.monitors.deliveries(String(row.id), String(params.monitorId));
+        return { structured, text: JSON.stringify(structured), isError: false };
+      }
+      const config = tool === "github.webhook.create" && this.monitors
+        ? this.monitors.webhookConfig(String(row.id), String(params.monitorId), String(params.repo), this.publicOrigin) : undefined;
+      const result = await this.oauth.withCredential(row, String(call.task_id), async () => { await authorize(); connectorAccess(this.store, args); }, async (provider, credential, signal) => {
+        if (config) return (provider as GithubProvider).createWebhook(String(params.repo), params.events as string[], config.url, config.secret, credential, signal);
+        if (tool === "github.webhook.list") return (provider as GithubProvider).listWebhooks(String(params.repo), Number(params.page ?? 1), this.publicOrigin, credential, signal);
+        return provider.call(tool, params, credential, signal);
+      });
       return { text: JSON.stringify(result), structured: result, isError: false };
     }
     let dispatched = false;

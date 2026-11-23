@@ -35,6 +35,7 @@ export const toolCatalog: Entry[] = [
   { action: "routine.list", title: "查看定时任务", fields: "", required: "", help: "查看自己创建的计划及版本；只能管理自己的计划。", keywords: "定时 计划 提醒 日程 routine schedule" },
   { action: "routine.save", title: "保存定时任务", fields: "routineId expectedVersion name prompt scheduleKind taskKind delaySeconds runAt localTime timeZone intervalMinutes", required: "name prompt scheduleKind", help: "scheduleKind=once/daily/interval。once 用 delaySeconds（相对秒数由 Core 计算）或 runAt（UTC 毫秒）；daily 用 localTime HH:mm、timeZone；interval 用 intervalMinutes，最短5分钟。taskKind=reminder/monitor/report/action，过期窗口分别为5分钟/一间隔且最多15分钟/12小时/30分钟。修改带 routineId、expectedVersion，只管理自己的计划。后台独立会话执行，不打断主聊天，只汇报最终结果及必要错误；到期需要的危险操作仍要审批。", keywords: "定时 计划 提醒 日程 每天 监控 报告 routine schedule" },
   { action: "routine.toggle", title: "暂停或恢复计划", fields: "routineId expectedVersion enabled", required: "routineId expectedVersion enabled", help: "enabled=true 恢复，false 暂停。先 routine.list 获取自己的计划与版本。", keywords: "定时 计划 暂停 恢复 routine" },
+  { action: "routine.delete", title: "删除定时任务", fields: "routineId expectedVersion", required: "routineId expectedVersion", help: "先用 routine.list 取得自己的计划 ID 和当前版本。删除后取消待执行的轮次，保留执行历史。", keywords: "删除计划 移除计划 取消定时任务 取消提醒 routine delete schedule" },
   { action: "routine.run", title: "立即运行计划", fields: "routineId", required: "routineId", help: "立即触发自己的一项计划，独立后台运行；危险操作按执行时权限处理。", keywords: "定时 计划 运行 routine" },
   { action: "image.models", title: "查看生图模型", fields: "", required: "", help: "列出已配置生图模型 id/name/model。所有活跃 Agent 均有基础权限，历史拒绝不代表当前权限。未选择模型时引导用户到设置，不索要密钥。", keywords: "图片 生图 绘画 模型 image" },
   { action: "image.generate", title: "生成图片", fields: "prompt modelId size", required: "prompt", help: "仅用户要求或任务明确需要图片时调用。先 image.models，modelId 默认首个已配置模型；size=1024x1024/1536x1024/1024x1536/auto。生成一张图片，自动保存并展示；成功后简短确认，不重复贴图，不编造结果，不索要 API key。", keywords: "图片 生图 绘画 插画 image" },
@@ -99,6 +100,7 @@ export function searchTools(store: CoreStore, botId: string, args: Record<string
   const ranked = toolCatalog.filter((entry) => allowed.has(entry.action)).map((entry) => {
     const words = `${entry.title} ${entry.keywords ?? ""}`.toLowerCase().split(/\s+/);
     const score = !q ? 1 : entry.action === q ? 100 : exact ? 0 : entry.action.startsWith(q) ? 60 :
+      q.includes(entry.title.toLowerCase()) || words.includes(q) ? 50 :
       words.some((word) => word.includes(q) || q.includes(word)) ? 20 : 0;
     return { entry, score };
   }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score);

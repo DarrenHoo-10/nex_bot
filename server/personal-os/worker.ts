@@ -406,9 +406,19 @@ async function main(value: WorkerConfig) {
     const stream = session.agent.streamFunction;
     session.agent.streamFunction = (requestModel, context, options) => stream(requestModel, context, { ...options, cacheRetention: "long" });
   }
+  let hasStreamedText = false;
+  let startsParagraph = false;
   session.subscribe((event) => {
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") send({ type: "delta", text: event.assistantMessageEvent.delta });
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      const delta = event.assistantMessageEvent.delta;
+      if (delta) {
+        send({ type: "delta", text: startsParagraph ? "\n\n" + delta : delta });
+        hasStreamedText = true;
+        startsParagraph = false;
+      }
+    }
     if (event.type === "message_end" && event.message.role === "assistant") {
+      startsParagraph = hasStreamedText;
       send({ type: "snapshot", invokeId: activeInvoke, inputTokens: event.message.usage.input + event.message.usage.cacheRead + event.message.usage.cacheWrite, estimatedTokens: requestEstimate, cacheRead:event.message.usage.cacheRead,cacheWrite:event.message.usage.cacheWrite,outputTokens: event.message.usage.output, modelStatus: event.message.stopReason === "error" ? "failed" : event.message.stopReason === "aborted" ? "cancelled" : "succeeded" });
     }
   });

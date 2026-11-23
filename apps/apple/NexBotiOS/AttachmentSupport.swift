@@ -167,7 +167,7 @@ struct ImageThumbnail: View {
     }
 }
 
-/// What the picture viewer is showing. The X deletes the picture; the backdrop closes.
+/// What the picture viewer is showing. Closing the viewer and deleting the image are separate actions.
 struct ImagePreview: Identifiable {
     let id = UUID()
     let image: UIImage
@@ -187,18 +187,28 @@ struct NativeImageViewer: View {
             Image(uiImage: preview.image).resizable().scaledToFit()
                 .padding(16)
                 .overlay(alignment: .topTrailing) {
-                    Button { remove() } label: {
-                        Group {
-                            if deleting { ProgressView() }
-                            else { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+                    HStack(spacing: 8) {
+                        Button { remove() } label: {
+                            Group {
+                                if deleting { ProgressView() }
+                                else { Image(systemName: "trash").font(.system(size: 13, weight: .semibold)) }
+                            }
+                            .frame(width: 34, height: 34)
+                            .foregroundStyle(.white)
+                            .background(.black.opacity(0.55), in: Circle())
                         }
-                        .frame(width: 34, height: 34)
-                        .foregroundStyle(.white)
-                        .background(.black.opacity(0.55), in: Circle())
+                        .buttonStyle(.plain)
+                        .disabled(deleting)
+                        .accessibilityLabel("删除图片")
+                        Button { dismiss() } label: {
+                            Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+                                .frame(width: 34, height: 34)
+                                .foregroundStyle(.white)
+                                .background(.black.opacity(0.55), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("关闭图片预览")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(deleting)
-                    .accessibilityLabel("删除图片")
                     .offset(x: 6, y: -6)
                 }
             if !errorText.isEmpty {

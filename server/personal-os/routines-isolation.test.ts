@@ -38,6 +38,7 @@ describe("routine scheduling with isolated child execution", () => {
     f.store.run("INSERT INTO routine_occurrences VALUES('legacy-run','legacy',1,?,'succeeded',NULL,?)", at, at);
     f.store.run("INSERT INTO routine_occurrences VALUES('old-pending','legacy',1,?,'pending',NULL,?)", at + 1, at + 1);
     f.store.run("INSERT INTO routine_occurrences VALUES('new-pending','legacy',1,?,'pending',NULL,?)", at + 2, at + 2);
+    f.runtime.closing = true;
     f.store.close();
     const upgraded = new CoreStore(f.store.dir, Buffer.alloc(32, 7), "synthetic-token");
     fixtures.at(-1)!.store = upgraded;
@@ -52,6 +53,7 @@ describe("routine scheduling with isolated child execution", () => {
     const { id } = f.routines.save({ botId: f.bot, name: "existing", prompt: "work", scheduleKind: "interval", intervalMinutes: 5 });
     const migration = f.store.get("SELECT * FROM schema_migrations WHERE version=36");
     f.store.db.exec("ALTER TABLE agent_routines DROP COLUMN deleted_at; DELETE FROM schema_migrations WHERE version=37;");
+    f.runtime.closing = true;
     f.store.close();
     const upgraded = new CoreStore(f.store.dir, Buffer.alloc(32, 7), "synthetic-token");
     fixtures.at(-1)!.store = upgraded;

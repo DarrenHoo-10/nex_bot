@@ -1689,6 +1689,7 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
 .job-marker .a2a-contact { padding: 2px 9px; }
 .message.job-report .message-body { flex: 1; min-width: 0; max-width: 680px; }
 .job-card {
+  --job-accent: #438ece;
   padding: 12px 15px;
   border: 1px solid var(--border, var(--bt-border));
   border-radius: 14px;
@@ -1697,15 +1698,59 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
   font-size: 13px;
 }
-.job-card.question { border-color: color-mix(in srgb, var(--identity-accent, #4d6bfe) 40%, transparent); }
-.job-card.blocked, .job-card.failed { border-color: color-mix(in srgb, var(--destructive, #dc2626) 35%, transparent); }
-.job-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.job-card[data-tone="1"] { --job-accent: #369f96; }
+.job-card[data-tone="2"] { --job-accent: #9472cf; }
+.job-card[data-tone="3"] { --job-accent: #cc9141; }
+.job-card > header {
+  display: flex; align-items: center; justify-content: flex-start; gap: 10px;
+  height: auto; min-height: 0; margin: 0 0 10px; padding: 0; border: 0; background: transparent;
+}
+.job-card > header .job-card-title {
+  flex: 0 1 auto; min-width: 0; padding: 3px 8px; border-radius: 6px;
+  background: color-mix(in srgb, var(--job-accent) 16%, var(--card, white));
+  color: inherit; font-size: 14px; font-weight: 650; line-height: 1.5;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.job-card > header .job-card-title:hover {
+  background: color-mix(in srgb, var(--job-accent) 23%, var(--card, white));
+}
+.job-card > header .job-stage {
+  display: inline-flex; align-items: center; gap: 5px; margin-inline-start: auto;
+  padding: 0; background: transparent; color: var(--job-status-ink, var(--muted-foreground, #647287));
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.job-card > header .job-stage::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor;
+}
+.job-stage.running { --job-status-ink: light-dark(#3767a3, #9ec1ee); }
+.job-stage:is(.approval, .question, .review) { --job-status-ink: light-dark(#925b1e, #efba80); }
+.job-stage:is(.blocked, .failed) { --job-status-ink: light-dark(#a64643, #f2a5a1); }
+.job-stage.done { --job-status-ink: light-dark(#327663, #91cdb9); }
 .job-card-title, .job-entry-title, .jobs-popover-title { border: 0; background: transparent; padding: 0; color: inherit; font-weight: 600; text-align: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .job-card-title:hover, .job-entry-title:hover, .jobs-popover-title:hover { color: var(--identity-accent, #4d6bfe); }
 .job-stage { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--identity-accent, #4d6bfe) 12%, transparent); color: var(--identity-accent, #4d6bfe); font-size: 11px; }
 .job-stage.blocked, .job-stage.failed { background: color-mix(in srgb, var(--destructive, #dc2626) 12%, transparent); color: var(--destructive, #dc2626); }
 .job-stage.done, .job-stage.dropped, .job-stage.stopped { background: color-mix(in srgb, var(--muted-foreground, #647287) 12%, transparent); color: var(--muted-foreground, #647287); }
 .job-card .actions { display: flex; gap: 8px; margin-top: 10px; }
+.rk-workspace .job-response-actions {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px;
+}
+.rk-workspace .job-response-actions button {
+  display: inline-grid; place-items: center; min-width: 84px; min-height: 44px;
+  padding: 0 22px; border: 1px solid #3a3640; border-radius: 12px;
+  background: #221e29; color: #f6f4f8; box-shadow: none;
+  font-size: 15px; font-weight: 600; line-height: 1.25;
+}
+.rk-workspace .job-response-actions .job-reply {
+  background: #fff; color: #18151d; border-color: rgb(30 24 38 / 10%);
+}
+@media (hover: hover) {
+  .rk-workspace .job-response-actions button:hover:enabled { background: #322d39; }
+  .rk-workspace .job-response-actions .job-reply:hover:enabled { background: #f7f6f8; }
+}
+.rk-workspace .job-response-actions button:active:enabled { background: #19161f; }
+.rk-workspace .job-response-actions .job-reply:active:enabled { background: #ecebef; }
+.rk-workspace .job-response-actions button:focus-visible { outline: 2px solid var(--identity-accent, #227b79); outline-offset: 3px; }
 .job-question { margin: 8px 0 0; font-weight: 600; }
 .job-card-detail { margin-top: 6px; font-size: 12px; color: var(--muted-foreground, #647287); }
 .job-card-detail summary { cursor: pointer; width: fit-content; }

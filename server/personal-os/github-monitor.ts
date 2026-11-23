@@ -76,6 +76,28 @@ export class GithubMonitorModule {
     const view = this.view(this.monitorRow(monitorId));
     return { ...view, ...(webhookSecret ? { webhookSecret, webhookPath: `/hooks/github/${monitorId}` } : {}) };
   }
+  listForConnector(connectorId: string, repo?: string, botId?: string) {
+    return this.list().filter(monitor => monitor.connectorId === connectorId &&
+      (!botId || monitor.botId === botId) && (!repo || monitor.repos.some(r => r.toLowerCase() === repo.toLowerCase())));
+  }
+  createForAssistant(connectorId: string, botId: string, repo: string, delivery: string) {
+    const existing = this.listForConnector(connectorId, repo, botId).find(monitor =>
+      monitor.enabled && monitor.webhookConfigured && monitor.delivery === delivery && monitor.repos.length === 1);
+    if (existing) return { monitorId: existing.id, created: false };
+    const monitor = this.save({ connectorId, botId, repos: [repo], delivery, enableWebhook: true, name: repo });
+    return { monitorId: monitor.id, created: true };
+  }
+  webhookConfig(connectorId: string, monitorId: string, repo: string, origin?: string) {
+    const row = this.monitorRow(monitorId);
+    if (row.connector_id !== connectorId || !row.enabled || !row.secret_enc ||
+      !this.view(row).repos.some(r => r.toLowerCase() === repo.toLowerCase())) throw new Error("监视未启用 Webhook 或未绑定该连接器及仓库");
+    if (!origin) throw new Error("Core 尚未配置公网 HTTPS 地址");
+    return { url: new URL(`/hooks/github/${monitorId}`, origin).href, secret: this.store.decrypt(String(row.secret_enc)) };
+  }
+  deliveries(connectorId: string, monitorId: string) {
+    if (this.monitorRow(monitorId).connector_id !== connectorId) throw new Error("监视不属于此连接器");
+    return this.store.all("SELECT kind,summary,delivered_at AS recordedAt FROM personal_connector_deliveries WHERE monitor_id=? ORDER BY delivered_at DESC,rowid DESC LIMIT 50", monitorId);
+  }
   toggle(data: Record<string, unknown>) {
     const row = this.monitorRow(text(data.id, 100));
     if (row.version !== data.version || typeof data.enabled !== "boolean") throw new Error("监视配置已修改，请刷新后重试");
@@ -243,7 +265,14 @@ export class GithubMonitorModule {
     if (!object(payload)) return { accepted: false, reason: "bad payload" };
     const repo = clipped(object(payload.repository) ? payload.repository.full_name : "", 250);
     const repos: string[] = JSON.parse(String(monitor.repos_json)), muted: string[] = JSON.parse(String(monitor.muted_repos_json));
-    if (!repos.includes(repo) || muted.includes(repo)) return { accepted: true, reason: "repo not watched" };
+    if (!repos.some(r => r.toLowerCase() === repo.toLowerCase()) || muted.some(r => r.toLowerCase() === repo.toLowerCase())) return { accepted: true, reason: "repo not watched" };
+    const receipt = (outcome: string) => {
+      const kind = `webhook.${clipped(event, 64)}`;
+      const fingerprint = "webhook:" + sha256(deliveryId || raw.toString("utf8"));
+      const summary = JSON.stringify({ repo, deliveryId: clipped(deliveryId, 100), hookId: Number(request.headers["x-github-hook-id"]) || null, outcome });
+      this.store.run("INSERT OR IGNORE INTO personal_connector_deliveries(monitor_id,fingerprint,kind,summary,delivered_at) VALUES(?,?,?,?,?)", monitor.id, fingerprint, kind, summary, now());
+    };
+    if (event === "ping") { receipt("received"); return { accepted: true }; }
     const action = clipped(payload.action, 60);
     const pull = object(payload.pull_request) ? payload.pull_request : null;
     const branch = clipped(pull && object(pull.head) ? pull.head.ref : object(payload.check_suite) ? payload.check_suite.head_branch : "", 250);
@@ -271,6 +300,7 @@ export class GithubMonitorModule {
     }
     if (!item) return { accepted: true, reason: "event not mapped" };
     this.deliver(monitor, item);
+    receipt("processed");
     this.changed();
     return { accepted: true };
   }

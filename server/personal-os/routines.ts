@@ -58,12 +58,18 @@ export class RoutineModule {
       } else {
         const routineId = text(args.routineId, 100);
         if (!this.store.get("SELECT id FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=? AND bot_id=?", routineId, botId)) throw new Error("例行任务不属于当前 Agent");
-        if (call.tool_name === "routine.toggle") {
-          if (typeof args.enabled !== "boolean") throw new Error("启用状态无效");
-          this.toggle(routineId, Number(args.expectedVersion), args.enabled);
-        } else if (call.tool_name === "routine.run") this.runNow(routineId, String(call.id));
-        else throw new Error("未知的例行任务能力");
-        value = { routine: this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", routineId) };
+        if (call.tool_name === "routine.delete") {
+          if (!Number.isSafeInteger(args.expectedVersion)) throw new Error("请提供定时任务的当前版本");
+          this.remove(routineId, Number(args.expectedVersion));
+          value = { routineId, deleted: true };
+        } else {
+          if (call.tool_name === "routine.toggle") {
+            if (typeof args.enabled !== "boolean") throw new Error("启用状态无效");
+            this.toggle(routineId, Number(args.expectedVersion), args.enabled);
+          } else if (call.tool_name === "routine.run") this.runNow(routineId, String(call.id));
+          else throw new Error("未知的例行任务能力");
+          value = { routine: this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", routineId) };
+        }
       }
       const receiptValue = value as { routine?: Row };
       this.store.insert("routine_tool_receipts", { call_id: call.id, argument_hash: call.argument_hash, result_json: JSON.stringify(value), created_at: now() });

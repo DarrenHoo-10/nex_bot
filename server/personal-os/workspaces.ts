@@ -77,6 +77,13 @@ export async function createWorkspaceService(options: AppOptions) {
     primary.setRequestRouter(async (request, response) => {
       if (closing) throw new IdentityError(503, "服务正在重启，请稍后重试");
       const route = new URL(request.url ?? "/", primary.origin).pathname;
+      const monitorId = request.method === "POST" && /^\/hooks\/github\/([0-9a-f-]{36})$/i.exec(route)?.[1];
+      if (monitorId) {
+        const target = apps().find(app => app.store.get("SELECT 1 FROM personal_connector_monitors WHERE id=?", monitorId));
+        if (!target || target === primary) return false;
+        await target.handleRequest(request, response);
+        return true;
+      }
       const scanToken = feishuScanToken(route);
       if (scanToken) {
         const target = apps().find(app => app.feishu.registrationTarget(scanToken));

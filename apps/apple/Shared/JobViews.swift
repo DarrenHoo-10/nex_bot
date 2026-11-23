@@ -37,36 +37,47 @@ struct JobReportCard<Media: View>: View {
 
     private var job: Job? { message.jobID.flatMap { workspace.state?.job($0) } }
     private var latest: Bool { job?.latestReport?.messageID == message.id }
-    private var tint: Color {
-        switch message.jobState {
-        case "blocked", "failed": Theme.danger
-        case "question": Theme.identityAccent
-        default: Theme.border
-        }
+    private var threadColor: Color {
+        let palette: [UInt32] = [0x438ece, 0x369f96, 0x9472cf, 0xcc9141]
+        let digit = message.jobID?.first?.hexDigitValue ?? 0
+        return Color(hex: palette[digit % palette.count])
     }
-
-    var body: some View {
+    private var report: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Button(action: open) {
-                    Text(job?.title ?? message.jobTitle).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
+                    Text(job?.title ?? message.jobTitle)
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.foreground)
+                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(threadColor.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
                 }.buttonStyle(.plain).accessibilityHint("查看执行详情")
                 if let job {
-                    Text(job.stageText).font(.system(size: 11)).foregroundStyle(stageInk(job.stage))
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(stageInk(job.stage).opacity(0.12), in: Capsule())
+                    Spacer(minLength: 0)
+                    HStack(spacing: 5) {
+                        Circle().frame(width: 5, height: 5).accessibilityHidden(true)
+                        Text(job.stageText).font(.system(size: 11.5, weight: .semibold))
+                    }
+                    .foregroundStyle(statusInk(job.stage)).fixedSize()
                 }
             }
             media()
             let body = AttachmentLink.stripped(message.jobReportBody).trimmingCharacters(in: .whitespacesAndNewlines)
             if !body.isEmpty { MarkdownText(source: body) }
-            if latest, let job { actions(job) }
+            if latest, let job, job.stage == "review", job.todoID != nil { actions(job) }
             if let error { Text(error).font(.caption).foregroundStyle(Theme.danger).textSelection(.enabled) }
         }
         .padding(.horizontal, 15).padding(.vertical, 12)
         .frame(maxWidth: 560, alignment: .leading)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(tint.opacity(message.jobState == "ready" || message.jobState == "dropped" ? 1 : 0.45)))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.border))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            report
+            if latest, let job, job.isStoppable { actions(job) }
+        }
         .alert("继续修改", isPresented: $revising) {
             TextField("告诉 AI 要调整什么", text: $feedback)
             Button("取消", role: .cancel) { feedback = "" }
@@ -75,25 +86,33 @@ struct JobReportCard<Media: View>: View {
         }
     }
 
+    private func statusInk(_ stage: String) -> Color {
+        switch stage {
+        case "running": Theme.dynamic(light: 0x3767a3, dark: 0x9ec1ee)
+        case "approval", "question", "review": Theme.dynamic(light: 0x925b1e, dark: 0xefba80)
+        case "blocked", "failed": Theme.dynamic(light: 0xa64643, dark: 0xf2a5a1)
+        case "done": Theme.dynamic(light: 0x327663, dark: 0x91cdb9)
+        default: Theme.muted
+        }
+    }
+
     @ViewBuilder private func actions(_ job: Job) -> some View {
-        HStack(spacing: 8) {
-            if job.stage == "question" { Button("回复") { reply(job) }.buttonStyle(RoutineButtonStyle(primary: true)) }
+        HStack(spacing: 10) {
+            if job.stage == "question" {
+                Button("回复") { reply(job) }
+                    .buttonStyle(JobResponseButtonStyle(primary: true))
+            }
             if job.stage == "review", job.todoID != nil {
                 Button("验收") { run { try await workspace.acceptJob(job) } }.buttonStyle(RoutineButtonStyle(primary: true))
                 Button("修改") { revising = true }.buttonStyle(RoutineButtonStyle())
             }
-            if job.isStoppable { Button("停止") { run { try await workspace.stopJob(job.id) } }.buttonStyle(RoutineButtonStyle()) }
+            if job.isStoppable {
+                Button("停止") { run { try await workspace.stopJob(job.id) } }
+                    .buttonStyle(JobResponseButtonStyle(primary: false))
+            }
             if busy { ProgressView().controlSize(.small) }
         }
         .disabled(busy)
-    }
-
-    private func stageInk(_ stage: String) -> Color {
-        switch stage {
-        case "blocked", "failed": Theme.danger
-        case "done", "dropped", "stopped": Theme.muted
-        default: Theme.identityAccent
-        }
     }
 
     private func run(_ action: @escaping () async throws -> Void) {
@@ -102,6 +121,25 @@ struct JobReportCard<Media: View>: View {
             defer { busy = false }
             do { try await action() } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
         }
+    }
+}
+
+private struct JobResponseButtonStyle: ButtonStyle {
+    let primary: Bool
+    @Environment(\.isEnabled) private var enabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let surface = primary ? (configuration.isPressed ? 0xecebef : 0xffffff) : (configuration.isPressed ? 0x19161f : 0x221e29)
+        configuration.label
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Color(hex: primary ? 0x18151d : 0xf6f4f8))
+            .padding(.horizontal, 22)
+            .frame(minWidth: 84, minHeight: 44)
+            .background(Color(hex: UInt32(surface)), in: shape)
+            .overlay { shape.strokeBorder(primary ? Color.black.opacity(0.10) : Color(hex: 0x3a3640)) }
+            .contentShape(shape)
+            .opacity(enabled ? 1 : 0.5)
     }
 }
 
