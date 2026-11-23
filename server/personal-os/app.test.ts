@@ -138,7 +138,8 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   }, 60_000);
   it("upgrades an untouched previous default policy, preserves identical user-edited restrictions and freezes the shipped migration", async () => {
     const f = await fixture(), untouched = String(f.bots[1].id), edited = String(f.bots[2].id);
-    const tools = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", untouched)?.policy_json)).tools.filter((tool: string) => tool !== "device.exec");
+    // a default from before migration 8: no device.exec, and none of the tools added since (routine.delete)
+    const tools = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", untouched)?.policy_json)).tools.filter((tool: string) => tool !== "device.exec" && tool !== "routine.delete");
     f.app.agents.updatePolicy({ id: edited, version: 1, tools });
     f.app.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools }), untouched);
     const previousHash = f.app.store.get("SELECT checksum FROM schema_migrations WHERE version=7")?.checksum;
