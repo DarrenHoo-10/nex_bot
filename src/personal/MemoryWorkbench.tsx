@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useState } from "react";
 import { api, str, type RecordRow } from "./api";
 import { Confirm } from "./panels";
@@ -7,7 +8,7 @@ type Fact = { ref: string; refs: string[]; text: string; scope: string; sourceCl
 export function MemoryWorkbench({ botId, bots }: { botId: string; bots: RecordRow[] }) {
   const [query, setQuery] = useState(""), [facts, setFacts] = useState<Fact[]>([]), [answers, setAnswers] = useState<Array<{ text: string; scope: string; refs: string[] }>>([]);
   const [status, setStatus] = useState(""), [pending, setPending] = useState(false), [plan, setPlan] = useState<Plan>(), [content, setContent] = useState<Record<string, string>>({});
-  const perform = async (work: () => Promise<void>) => { setPending(true); try { await work(); } catch (error) { setStatus(error instanceof Error ? error.message : "记忆操作失败"); } finally { setPending(false); } };
+  const perform = async (work: () => Promise<void>) => { setPending(true); try { await work(); } catch (error) { setStatus(userErrorText(error, "记忆操作失败")); } finally { setPending(false); } };
   return <section className="memory-workbench"><h2>查找与综合</h2><form onSubmit={(event) => { event.preventDefault(); void perform(async () => {
     const result = await api<{ status: string; facts: Fact[] }>("memory/recall", { botId, query }); setFacts(result.facts); setAnswers([]); setStatus(result.status === "available" ? "检索完成" : result.status === "pending" ? "记忆正在同步" : "语义记忆暂不可用");
   }); }}><label className="field">问题或主题<input value={query} onChange={(event) => setQuery(event.target.value)} required maxLength={200} placeholder="例如：我之前确定了哪些项目约束？"/></label><div className="actions"><button disabled={pending}>查找</button><button type="button" disabled={pending || !query.trim()} onClick={() => void perform(async () => { const result = await api<{ answers: typeof answers }>("memory/reflect", { botId, query }); setAnswers(result.answers); setStatus(result.answers.length ? "综合完成" : "没有足够的记忆证据"); })}>综合记忆</button></div><small>只检索当前 Agent 的私有记忆与共享记忆。综合会调用你配置的模型。</small></form>

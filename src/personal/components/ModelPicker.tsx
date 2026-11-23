@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, ChevronDown, Search, Square } from 'lucide-react';
 import './model-picker.css';
@@ -73,7 +74,7 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
     if (!loader.current || loading) return;
     const request = ++generation.current; setLoading(true); setError('');
     try { const result = await loader.current(); if (request === generation.current) setCatalog(result); }
-    catch (error) { if (request === generation.current) setError(error instanceof Error ? error.message : '获取模型失败'); }
+    catch (error) { if (request === generation.current) setError(userErrorText(error, '获取模型失败')); }
     finally { if (request === generation.current) setLoading(false); }
   };
   useEffect(() => { if (open && models == null && !catalog && !loading && !error) void load(); }, [open, models, catalog, loading, error]); // eslint-disable-line react-hooks/exhaustive-deps

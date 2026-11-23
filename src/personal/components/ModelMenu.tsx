@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { listConnectionModels, modelName, reasoningLabels, reasoningOrder, resolveReasoning, type Connection, type ReasoningChoice, type ReasoningLevel } from "../api";
@@ -33,7 +34,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
     setCatalogs((all) => ({ ...all, [provider.id]: { loading: true } }));
     listConnectionModels(provider.id)
       .then((result) => setCatalogs((all) => ({ ...all, [provider.id]: { models: result.models } })))
-      .catch((error: unknown) => setCatalogs((all) => ({ ...all, [provider.id]: { error: error instanceof Error ? error.message : "获取模型失败" } })));
+      .catch((error: unknown) => setCatalogs((all) => ({ ...all, [provider.id]: { error: userErrorText(error, "获取模型失败") } })));
   }, [open, provider, catalogs]);
 
   useAnchoredPopover(open, panel, () => anchorRef?.current ?? trigger.current, () => [root.current], () => setOpen(false), 320, composer ? "end" : "start");

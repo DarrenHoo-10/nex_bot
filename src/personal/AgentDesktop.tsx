@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { AssistantActionDialog } from "./components/AssistantActions";
 import { TopicBubble, topicTimeline, type FinanceTopic } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
@@ -166,7 +167,7 @@ export function AgentDesktop() {
       setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), { ...uploaded, mime: uploaded.mime || item.file.type, previewUrl }]);
     } catch (error) {
       if (item.controller.signal.aborted) return;
-      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: error instanceof Error ? error.message : "上传失败，请重试" } : entry));
+      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: userErrorText(error, "上传失败，请重试") } : entry));
     }
   };
   const upload = async (files: FileList | readonly File[] | null) => {
@@ -287,7 +288,7 @@ export function AgentDesktop() {
     localStorage.setItem("nexbot.dark", dark ? "1" : "0");
   }, [dark]);
 
-  useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);if (!selected.current && result.botId) setBotId(result.botId);}}).catch((error:Error)=>setError(error.message));return()=>{stopped=true;};},[]);
+  useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);if (!selected.current && result.botId) setBotId(result.botId);}}).catch((error:Error)=>setError(userErrorText(error)));return()=>{stopped=true;};},[]);
   const reload = useCallback(async () => {
     if (destination.current !== draftKey || selected.current !== botId) return;
     const request = ++serial.current, current = selected.current;
@@ -355,7 +356,7 @@ export function AgentDesktop() {
           const retry = !feedRetry.current;
           feedRetry.current = true;
           loaded.current = undefined;
-          if (retry) setTimeout(() => void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }), 0);
+          if (retry) setTimeout(() => void reload().catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }), 0);
           return;
         }
         history = [...history, ...feed.messages];
@@ -386,9 +387,9 @@ export function AgentDesktop() {
   }, [offline, finance, topicMode, conversation, draftKey, botId]);
   useEffect(() => {
     // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
-    if (!selected.current) void reload().catch((e: Error) => setError(e.message));
+    if (!selected.current) void reload().catch((e: Error) => setError(userErrorText(e)));
     const events = new EventSource("/api/events"); let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }); }, 150); };
+    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }); }, 150); };
     const change = (event: MessageEvent) => {
       const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
       // A reconnect can report reset. Drop the incremental cursor and refetch,
@@ -427,11 +428,11 @@ export function AgentDesktop() {
     if (botId) {
       if (switched) setHistoryLoading(true);
       localStorage.setItem("nexbot.selectedAgent", botId);
-      void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); });
+      void reload().catch((e: Error) => { setError(userErrorText(e)); setHistoryLoading(false); });
     }
   }, [botId, reload]);
-  const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); }, []);
-  const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
+  const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(userErrorText(e))); }, []);
+  const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(userErrorText(e, "操作失败")); } finally { setBusy(false); } };
   const changeDraft = (value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); };
   const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
   const deleteMessageImage = async (messageId: string, image: MessageImage) => {
@@ -580,13 +581,13 @@ export function AgentDesktop() {
     const message=scroll.current?.querySelector<HTMLElement>('[data-search-match="true"]');
     if(message){message.scrollIntoView({block:'center'});scrolledTarget.current=focusedMessage;}
   },[focusedMessage,messages,page]);
-  const latestMessages=()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});};
+  const latestMessages=()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(userErrorText(e));setHistoryLoading(false);});};
   const openSearchResult=(match:ConversationMatch)=>{
     setTopicId(undefined);
     ++serial.current;
     historyTarget.current={botId:match.botId,id:match.id};scrolledTarget.current='';setFocusedMessage(match.id);loaded.current=undefined;stickToBottom.current=false;
     setMessages([]);setStreaming([]);setHistoryLoading(true);setError('');setPage('agent');setSidebarOpen(false);
-    if(selected.current===match.botId && !conversation)void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});
+    if(selected.current===match.botId && !conversation)void reload().catch((e:Error)=>{setError(userErrorText(e));setHistoryLoading(false);});
     else setBotId(match.botId);
   };
   const closeDialog = () => setDialog(null), select = (target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
@@ -715,7 +716,7 @@ export function AgentDesktop() {
       </header>
       {page === "agent" && bot ? <button type="button" aria-label="助手详情" aria-pressed={panelOpen} title={panelOpen ? "收起 Agent 资料" : "展开 Agent 资料"} className="panel-handle glass" onClick={() => setDetail(!detail)}>{panelOpen ? <ChevronRight size={15}/> : <ChevronLeft size={15}/>}</button> : null}
 
-      {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(e.message))}>立即更新</button></div> : null}
+      {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(userErrorText(e)))}>立即更新</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ProviderSettings state={state} refresh={reload} active={modelChooserOpen}/>}</div> : null}
 

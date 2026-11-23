@@ -62,6 +62,10 @@ let socket: FakeSocket;
 let stream: CliStream;
 
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+const typeText = (box: HTMLTextAreaElement, value: string) => act(async () => {
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, value);
+  box.dispatchEvent(new Event("input", { bubbles: true }));
+});
 const text = () => container.textContent ?? "";
 const click = (element: Element | null) => act(async () => { (element as HTMLElement).click(); });
 const button = (label: string) => [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label || entry.getAttribute("aria-label") === label) ?? null;
@@ -394,17 +398,21 @@ describe("session pane", () => {
     expect(box.querySelector('button[aria-label="添加"]')).not.toBeNull();
     expect(box.querySelector('button[aria-label="上下文用量"]')).not.toBeNull();
     expect(box.querySelector('button[aria-label="模型设置"]')?.textContent).toBe("claude-opus");
-    // running: a segmented switch and a stop button, no native select
+    // running with an empty box: only the stop button, no native select, no delivery switch
     expect(box.querySelector("select")).toBeNull();
+    expect(box.querySelector("[role=radiogroup]")).toBeNull();
+    expect(box.querySelector(".na-stop")?.getAttribute("aria-label")).toBe("停止");
+    // a message typed while the agent works chooses between queueing and steering
+    await typeText(box.querySelector("textarea")!, "再加个暂停键");
     const radios = [...box.querySelectorAll('[role=radiogroup][aria-label="发送方式"] [role=radio]')];
     expect(radios.map((el) => [el.textContent, el.getAttribute("aria-checked")])).toEqual([["排队", "true"], ["引导", "false"]]);
     await click(radios[1]);
     expect(radios[1].getAttribute("aria-checked")).toBe("true");
-    expect(box.querySelector(".na-stop")?.getAttribute("aria-label")).toBe("停止");
   });
 
   it("keeps the delivery switch away from sessions that ignore it", async () => {
     await mount({ devices: [device()], sessions: [session({ state: "running", liveIn: "terminal", terminal: undefined, sendVia: "inbox" })] }, "dev1:claude:s1");
+    await typeText(container.querySelector("textarea")!, "还在吗");
     expect(container.querySelector("[role=radiogroup]")).toBeNull();
   });
 
@@ -413,6 +421,83 @@ describe("session pane", () => {
     await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
     await flush();
     expect(text()).not.toContain("队列已暂停");
+  });
+
+  it("shows a sent message at once and empties the box before Core answers", async () => {
+    let answer!: (value: unknown) => void;
+    fixture.sendMessage.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+    const box = container.querySelector("textarea") as HTMLTextAreaElement;
+    await typeText(box, "做个贪吃蛇");
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    expect(box.value).toBe("");
+    expect(container.querySelector("[data-testid=cli-user-echo] .cli-bubble")?.textContent).toBe("做个贪吃蛇");
+    expect(container.querySelector("[data-testid=cli-working]")).not.toBeNull();
+    expect(container.querySelector(".na-busy-icon")).toBeNull();
+    await act(async () => { answer({ status: "sent" }); });
+    await flush();
+  });
+
+  it("puts a message that failed to send back in the box", async () => {
+    fixture.sendMessage.mockRejectedValue(new Error("offline"));
+    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+    const box = container.querySelector("textarea") as HTMLTextAreaElement;
+    await typeText(box, "做个贪吃蛇");
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await flush();
+    expect(box.value).toBe("做个贪吃蛇");
+    expect(container.querySelector("[data-testid=cli-user-echo]")).toBeNull();
+    expect(container.querySelector("[data-testid=cli-working]")).toBeNull();
+  });
+
+  it("offers edit-and-resend only for a fresh message nothing answered", async () => {
+    const now = Date.now();
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [
+      { kind: "user", id: "u2", ts: now - 60_000, text: "太久了" },
+      { kind: "user", id: "u1", ts: now - 5_000, text: "已经答过" },
+      { kind: "assistant", id: "a1", ts: now - 4_000, text: "好的" },
+      { kind: "user", id: "u3", ts: now - 2_000, text: "刚发的" },
+    ] });
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
+    await flush();
+    const users = [...container.querySelectorAll("[data-testid=cli-user]")];
+    expect(users.map((user) => [user.querySelector(".cli-bubble")?.textContent, !!user.querySelector(".na-edit-resend")]))
+      .toEqual([["太久了", false], ["已经答过", false], ["刚发的", true]]);
+    // no "你 · time" line over the user's own messages
+    expect(container.querySelector(".na-byline.is-user")).toBeNull();
+  });
+
+  it("edit-and-resend takes the message out of the conversation and back into the box", async () => {
+    const now = Date.now();
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [{ kind: "user", id: "u1", ts: now - 2_000, text: "做个贪吃蛇" }] });
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
+    await flush();
+    await click(container.querySelector(".na-edit-resend")!);
+    expect(container.querySelector("[data-testid=cli-user]")).toBeNull();
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("做个贪吃蛇");
+    expect(container.querySelector(".na-revising")).toBeNull();
+    // clearing the box drops the edit: the message is back in place
+    await typeText(container.querySelector("textarea")!, "");
+    expect(container.querySelector("[data-testid=cli-user] .cli-bubble")?.textContent).toBe("做个贪吃蛇");
+  });
+
+  it("shows a centred dialog when a model call fails while the page is open, not for old failures", async () => {
+    const now = Date.now();
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [
+      { kind: "user", id: "u0", ts: now - 600_000, text: "旧的" },
+      { kind: "notice", id: "old", ts: now - 590_000, level: "error", text: "API Error: 529 overloaded" },
+    ] });
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
+    await flush();
+    expect(document.querySelector(".na-failure")).toBeNull();
+    await act(async () => { socket.open(); socket.push({ type: "items", key: "dev1:claude:s1", items: [{ kind: "notice", id: "new", ts: Date.now(), level: "error", text: "API Error: Request rejected (429) · credits are used up" }] }); });
+    await flush();
+    const dialog = document.querySelector("[role=alertdialog].na-failure")!;
+    expect(dialog.textContent).toContain("模型调用失败");
+    expect(dialog.textContent).toContain("模型服务的额度已用完");
+    expect(dialog.textContent).not.toContain("Qoder");
+    await click(dialog.querySelector("button")!);
+    expect(document.querySelector(".na-failure")).toBeNull();
   });
 
   it("says a sent message was delivered until the session answers", async () => {
@@ -425,7 +510,9 @@ describe("session pane", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await flush();
-    expect(container.querySelector(".na-working-caption")?.textContent).toBe("已送达，等待回复…");
+    // only the dots: no delivery wording under them
+    expect(container.querySelector("[data-testid=cli-working] .na-working-dots")).not.toBeNull();
+    expect(container.querySelector("[data-testid=cli-working]")?.textContent).not.toContain("已送达");
   });
 
   it("names the agent once per reply and shows its work as dots in the conversation", async () => {
@@ -444,7 +531,7 @@ describe("session pane", () => {
     const working = container.querySelector("[data-testid=cli-transcript] [data-testid=cli-working]")!;
     expect(working.querySelector(".na-byline")).toBeNull();
     expect(working.querySelectorAll(".na-working-dots > span")).toHaveLength(3);
-    expect(working.querySelector(".na-working-caption")?.textContent).toBe("执行中");
+    expect(working.textContent).toBe("");
   });
 
   it("does not claim delivery when the computer could not see the message arrive", async () => {
@@ -457,7 +544,7 @@ describe("session pane", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await flush();
-    expect(container.querySelector(".na-working-caption")?.textContent).toBe("已发送，等待会话接收…");
+    expect(container.querySelector("[data-testid=cli-working] .na-working-dots")).not.toBeNull();
     expect(container.querySelector("[data-testid=cli-composer-note]")?.textContent).toBe("已发送，未确认");
   });
 
@@ -529,7 +616,7 @@ describe("new session", () => {
     expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", ALPHA, {});
     const pane = container.querySelector("[data-testid=cli-launch]")!;
     expect(pane.querySelector(".cli-bubble")?.textContent).toBe("修一下登录页");
-    expect(pane.querySelector("[data-testid=cli-working] .na-working-caption")?.textContent).toBe("执行中");
+    expect(pane.querySelector("[data-testid=cli-working] .na-working-dots")).not.toBeNull();
 
     await act(async () => { started({ key: "dev1:claude:new1" }); });
     await flush();

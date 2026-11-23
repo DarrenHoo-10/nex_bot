@@ -239,16 +239,42 @@ public enum CliTranscript {
         var blocks: [CliBlock] = []
         for item in items {
             switch item.kind {
-            case .user: blocks.append(.user(item))
+            // a `/model` switch and other commands leave bookkeeping records, not the user's words
+            case .user: if !isCommandRecord(item.text) { blocks.append(.user(item)) }
             case .assistant: blocks.append(.assistant(item))
             case .tool, .thinking:
                 if case .activity(let id, let run)? = blocks.last { blocks[blocks.count - 1] = .activity(id: id, items: run + [item]) }
                 else { blocks.append(.activity(id: item.id, items: [item])) }
-            case .notice: blocks.append(.notice(id: item.id, level: item.level, text: item.text))
+            case .notice:
+                if item.level == .error, let reason = modelFailureReason(item.text) { blocks.append(.notice(id: item.id, level: .error, text: "模型调用失败：" + reason)) }
+                else { blocks.append(.notice(id: item.id, level: item.level, text: item.text)) }
             case .turn: if item.phase == .aborted { blocks.append(.notice(id: item.id, level: .info, text: "已中断")) }
             }
         }
         return blocks
+    }
+
+    /// A user record that is only a CLI command's bookkeeping (same rule as the web client).
+    public static func isCommandRecord(_ text: String) -> Bool {
+        text.range(of: #"^\s*(?:<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat)>[\s\S]*?</\1>\s*)+$"#, options: .regularExpression) != nil
+    }
+
+    /// Why a model call failed, in a few words, for an error the CLI recorded ("API Error: …"); nil for any other notice.
+    /// The provider's raw wording is never shown (same rule as the web client).
+    public static func modelFailureReason(_ text: String) -> String? {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        func has(_ pattern: String) -> Bool { raw.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil }
+        guard has(#"^(api error|api_error)\b|request rejected|overloaded_error|rate_limit_error|authentication_error|invalid_request_error|\bHTTP (4|5)\d\d\b"#) else { return nil }
+        var status = 0
+        if let match = raw.range(of: #"\b[1-5]\d\d\b"#, options: .regularExpression) { status = Int(raw[match]) ?? 0 }
+        if has("credit|quota|usage limit|billing|balance|insufficient|余额|额度") { return "模型服务的额度已用完" }
+        if status == 429 || has("rate.?limit|too many requests") { return "模型服务请求太频繁，被限流了" }
+        if status == 401 || status == 403 || has("authentication|api key|unauthori[sz]ed|forbidden|permission") { return "模型服务的密钥无效或没有权限" }
+        if has("context|too long|maximum.*tokens|prompt is too long") { return "对话内容超出了模型的上下文长度" }
+        if status == 404 || has("model.*not.*(found|exist|available)") { return "找不到这个模型，请换一个模型" }
+        if status == 529 || status >= 500 || has("overloaded|unavailable|internal server") { return "模型服务暂时不可用" }
+        if has("timeout|timed out|ECONN|ENOTFOUND|network|fetch failed|socket") { return "连接不上模型服务" }
+        return "模型服务返回了错误"
     }
 
     /// First line of a tool's input, cut for a one-line summary.

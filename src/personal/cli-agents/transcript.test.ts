@@ -75,6 +75,20 @@ describe("prependItems", () => {
 });
 
 describe("groupItems", () => {
+  it("leaves out command bookkeeping and words a model failure plainly", () => {
+    const blocks = groupItems([
+      userItem("c1", 1, "<command-name>/model</command-name>\n<command-args>sonnet</command-args>"),
+      userItem("c2", 2, "<local-command-stdout>Set model to Sonnet 5.5</local-command-stdout>"),
+      userItem("u1", 3, "帮我做一个贪吃蛇"),
+      { kind: "notice", id: "e1", ts: 4, level: "error", text: "API Error: Request rejected (429) · Qoder: usage limit reached: the account's credits are used up (0 / 0 credits)" },
+      { kind: "notice", id: "e2", ts: 5, level: "error", text: "电脑离线" },
+    ]);
+    expect(blocks.map((block) => block.id)).toEqual(["u1", "e1", "e2"]);
+    expect(blocks[1]).toEqual({ kind: "notice", id: "e1", level: "error", text: "模型调用失败：模型服务的额度已用完", failure: true });
+    expect(blocks[2]).toMatchObject({ text: "电脑离线" });
+    expect(blocks[2]).not.toHaveProperty("failure");
+  });
+
   it("merges adjacent tool and thinking items into one activity block", () => {
     const blocks = groupItems([userItem("u1", 1), thinking("k1", 2), toolItem("t1", 3), assistantItem("a1", 4), toolItem("t2", 5)]);
     expect(blocks.map((block) => block.kind)).toEqual(["user", "activity", "assistant", "activity"]);

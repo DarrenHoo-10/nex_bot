@@ -6,6 +6,7 @@ import {
   ITEM_TEXT_MAX,
   SUMMARY_MAX,
   TOOL_OUTPUT_MAX,
+  isCliCommandRecord,
   truncateUtf8,
   type CliItem,
   type CliSessionWire,
@@ -360,6 +361,8 @@ function claudeUser(record: Rec, message: Rec | undefined, ctx: ItemContext, bas
     }
   }
 
+  // `/model` and other commands: their bookkeeping records are not the user's words
+  if (texts.length > 0 && texts.every(isCliCommandRecord)) texts.length = 0;
   let text = texts.join("\n\n");
   const extracted = extractImagePaths(text);
   text = extracted.text;

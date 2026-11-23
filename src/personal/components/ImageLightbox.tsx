@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, X } from "lucide-react";
@@ -58,7 +59,7 @@ export function ImageLightbox({ src, alt, deleteLabel = "删除图片", onClose,
       await onDelete();
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error && failure.message ? failure.message : "删除失败，请重试");
+      setError(userErrorText(failure, "删除失败，请重试"));
       setDeleting(false);
     }
   };

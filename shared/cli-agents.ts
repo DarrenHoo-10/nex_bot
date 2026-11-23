@@ -1720,3 +1720,26 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
     }
   });
 }
+
+/** A user record that is only a CLI command's bookkeeping (`/model`, `/compact`…): the command
+ * line, its arguments, its local output or the caveat Claude Code writes before them. */
+const CLI_COMMAND_RECORD = /^\s*(?:<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat)>[\s\S]*?<\/\1>\s*)+$/;
+export function isCliCommandRecord(text: string): boolean {
+  return CLI_COMMAND_RECORD.test(text);
+}
+
+/** Why a model call failed, in a few words, for an error the CLI recorded ("API Error: …").
+ * Null for any other notice. The provider's raw wording is never shown. */
+export function modelFailureReason(text: string): string | null {
+  const raw = text.trim();
+  if (!/^(api error|api_error)\b|request rejected|overloaded_error|rate_limit_error|authentication_error|invalid_request_error|\bHTTP (4|5)\d\d\b/i.test(raw)) return null;
+  const status = Number(/\((\d{3})\)|HTTP (\d{3})|\b(\d{3})\b/.exec(raw)?.slice(1).find(Boolean) ?? 0);
+  if (/credit|quota|usage limit|billing|balance|insufficient|余额|额度/i.test(raw)) return "模型服务的额度已用完";
+  if (status === 429 || /rate.?limit|too many requests/i.test(raw)) return "模型服务请求太频繁，被限流了";
+  if (status === 401 || status === 403 || /authentication|api key|unauthori[sz]ed|forbidden|permission/i.test(raw)) return "模型服务的密钥无效或没有权限";
+  if (/context|too long|maximum.*tokens|prompt is too long/i.test(raw)) return "对话内容超出了模型的上下文长度";
+  if (status === 404 || /model.*not.*(found|exist|available)/i.test(raw)) return "找不到这个模型，请换一个模型";
+  if (status === 529 || status >= 500 || /overloaded|unavailable|internal server/i.test(raw)) return "模型服务暂时不可用";
+  if (/timeout|timed out|ECONN|ENOTFOUND|network|fetch failed|socket/i.test(raw)) return "连接不上模型服务";
+  return "模型服务返回了错误";
+}

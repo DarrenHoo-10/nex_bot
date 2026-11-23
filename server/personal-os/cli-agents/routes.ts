@@ -424,7 +424,9 @@ export class CliAgentRoutes {
     if (!text) return { status: 200, body: { translation: null } };
     try {
       return { status: 200, body: { translation: await this.translation.translate(text) } };
-    } catch {
+    } catch (error) {
+      // the reason stays in Core's log (no text, no key): "翻译失败" alone hid a wrong address for days
+      console.warn("[translation] failed:", error instanceof Error ? error.message : String(error));
       return { status: 422, body: { error: "翻译失败" } };
     }
   }

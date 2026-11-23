@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { api, statuses, str, toolLabels, type PreviewItem, type RecordRow, type RoutineOccurrenceDetail as Detail, type ToolStep } from "../api";
@@ -21,7 +22,7 @@ export function RunTranscript({ messages, steps, renderContent }: { messages: Re
     const controller = new AbortController();
     void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`, undefined, controller.signal).then((item) => {
       if (!controller.signal.aborted) setPreview(item);
-    }).catch((failure: unknown) => { if (!controller.signal.aborted) setPreviewError(failure instanceof Error ? failure.message : "加载失败"); });
+    }).catch((failure: unknown) => { if (!controller.signal.aborted) setPreviewError(userErrorText(failure, "加载失败")); });
     return () => controller.abort();
   }, [step]);
   return <>
@@ -53,7 +54,7 @@ export function RoutineOccurrenceDetail({ id, close, renderContent }: { id: stri
         setDetail(next); setError("");
         poll = active.has(occurrenceStatus(next.occurrence));
       } catch (failure) {
-        if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "加载失败");
+        if (!controller.signal.aborted) setError(userErrorText(failure, "加载失败"));
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);

@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { api } from './api';
 import { FinanceChannelSettings } from './FinanceChannelSettings';
@@ -13,7 +14,7 @@ export function FeishuDeliverySettings({revision,onSharedAvailable}:{revision:un
     setApps(nextApps);setDestinations(nextDestinations);setSubscriptions(nextSubscriptions);onSharedAvailable(nextApps.length>0);
   },[onSharedAvailable]);
   useEffect(()=>{void reload().catch(()=>{});},[reload,revision]);
-  const act=async(operation:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await operation();await reload();}catch(e){setError(e instanceof Error?e.message:'操作失败');}finally{setBusy(false);}};
+  const act=async(operation:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await operation();await reload();}catch(e){setError(userErrorText(e, '操作失败'));}finally{setBusy(false);}};
   const selected=appId||apps[0]?.appId||'';
   function save(event:FormEvent<HTMLFormElement>){event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));const destination=destinations.find(d=>d.app_id===selected&&d.chat_id===values.chatId);
     void act(async()=>{await api('feishu/subscriptions',{appId:selected,chatId:editing?.chat_id??values.chatId,instanceId:editing?.instance_id??values.instanceId,kinds:String(values.kinds).split(/[,，]/).map(s=>s.trim()).filter(Boolean),scenarios:values.scenario==='all'?['all']:['proactive'],audience:destination?.chat_type==='group'?'public':'private',enabled:true,...(editing?{version:editing.version}:{})});setEditing(null);});

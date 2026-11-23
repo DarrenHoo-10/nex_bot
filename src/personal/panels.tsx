@@ -1,4 +1,5 @@
 ﻿import { useEffect, useId, useState, type ReactNode } from "react";
+import { userErrorText } from "../lib/http-errors";
 import { AccountControls, useAccount } from "./auth";
 import { Cpu, Info, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
 import { AboutSettings } from "./AboutSettings";
@@ -129,7 +130,7 @@ export function Devices({ state, run, setDialog, closeDialog }: { state: State; 
   }, [status?.sessionId]);
   const update = async (work: () => Promise<LocalDeviceState>) => {
     setPending(true); setError("");
-    try { setLocal(await work()); } catch (e) { setError((e instanceof Error ? e.message : "操作失败").replace(/^Error invoking remote method '[^']+': Error: /, "")); }
+    try { setLocal(await work()); } catch (e) { setError((userErrorText(e, "操作失败")).replace(/^Error invoking remote method '[^']+': Error: /, "")); }
     finally { setPending(false); }
   };
   const visible = sessions.filter(session => !session.revoked_at && session.expires_at > clock).sort((a, b) => Number(b.session_id === currentId) - Number(a.session_id === currentId));

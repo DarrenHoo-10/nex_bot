@@ -6,7 +6,7 @@ import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDa
 import { MAX_SEND_TEXT, utf8ByteLength, type CliContextUsage, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
-import {fileReference,getExtras,saveExtras,type ComposerExtras} from "./composer-additions";
+import {fileReference,getExtras,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
 import { composerMode } from "./session-model";
 import { CliModelMenu, type LaunchChoice } from "./CliModelMenu";
 import type { CliQueue } from "./api";
@@ -106,10 +106,8 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
     const current=getExtras(key);
     changeExtra({...current,files:[...current.files,...files.map(file=>({id:crypto.randomUUID(),file}))]});
   }
-  // edit-and-resend: the original text loads in place; cancelling restores the
-  // draft the user had, sending leaves the box empty like any send
-  const revisionStash = useRef<string | null>(null);
-  const revisionSent = useRef(false);
+  // edit-and-resend: the message's words (and its files, when this page sent it) come back
+  // into the box like any draft; emptying the box drops the edit
   const revisionId = revision?.messageId ?? null;
   const [text, setText] = useState(() => revision?.text ?? drafts.get(key) ?? "");
   const [sending,setSending]=useState(false);
@@ -138,32 +136,24 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   }, []);
 
   useEffect(() => {
-    if (revisionId && revision) {
-      if (revisionStash.current === null) revisionStash.current = drafts.get(key) ?? "";
-      revisionSent.current = false;
-      setText(revision.text);
-    } else if (!revisionId) {
-      if (revisionSent.current) {
-        revisionStash.current = null;
-        revisionSent.current = false;
-        return;
-      }
-      if (revisionStash.current !== null) {
-        const restore = revisionStash.current;
-        revisionStash.current = null;
-        if (!drafts.get(key) && restore) { drafts.set(key, restore); setText(restore); }
-      }
-    }
-  }, [revisionId, revision, key]);
+    if (!revisionId || !revision) return;
+    const restored = recallSent(key, revision.text);
+    const words = restored ? restored.body : revision.text;
+    if (words) drafts.set(key, words); else drafts.delete(key);
+    saveExtras(key, { ...getExtras(key), files: restored ? restored.files : [] });
+    setText(words); setExtra(getExtras(key)); setError(""); setNote("");
+    draftRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revisionId, key]);
 
-  // another session: its own draft, no stale error. An active revision holds
-  // the box; when it clears, the draft (restored on cancel, emptied on send) applies.
+  // another session: its own draft, no stale error
   useEffect(() => {
     if (revisionId) return;
     setText(drafts.get(key) ?? "");setExtra(getExtras(key));
     setError("");
     setNote("");
-  }, [key, revisionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   const change = (value: string) => {
     setText(value);
@@ -171,6 +161,8 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
     else drafts.delete(key);
     if (error) setError("");
     if (note) setNote("");
+    // an edit whose words were all deleted is dropped: the message goes back in place
+    if (!value && revisionId && !getExtras(key).files.length) onCancelRevision?.();
   };
 
   const run = async (action: () => Promise<unknown>) => {
@@ -195,8 +187,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const stopOnly = mode.kind==="send" && mode.running && !sending && !(body || extra.files.length);
   // 排队/引导 only applies where a turn actually runs: a nex_bot terminal session
   const wantsDelivery = !draft && session.liveIn === "nexbot" && !!session.terminal && running;
-  // 排队/引导 is offered only where the choice is honoured: the review fixture, or a running nex_bot terminal
-  const offersDelivery = active && (!!review || wantsDelivery);
+  // 排队/引导 is offered only where the choice is honoured (the review fixture, or a running nex_bot
+  // terminal), and only for a message about to go while the agent is busy
+  const offersDelivery = active && (!!review || wantsDelivery) && !!(body || extra.files.length) && !revision;
   // the paused note matters only while something waits in the queue
   const pausedNote = !review && queue?.paused && realQueue.length > 0;
   const submit = async () => {
@@ -207,26 +200,43 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       if(mounted.current){setExtra(getExtras(key));change("");setSkill("");setPanel(null);onNotes?.([])}
       return;
     }
-    setSending(true);
-    if (revisionId) revisionSent.current = true;
-    const sent=await run(async()=>{
+    // The box empties at once and the message shows in the conversation (SessionPane);
+    // only a failure puts it back.
+    const kept={text,files:extra.files,goal:extra.goal,skill,notes,choice:delivery};
+    drafts.delete(key);saveExtras(key,{files:[],goal:extra.goal});
+    setText("");setExtra(getExtras(key));setSkill("");setPanel(null);if(notes.length)onNotes?.([]);
+    setError("");setNote("");
+    // uploads take a while: the button shows it, typing stays open
+    const uploads=kept.files.length>0;
+    if(uploads)setSending(true);
+    let result:unknown;
+    try {
       const references=[];
       // the computer keeps the file and the message names its path, which the CLI reads (images too)
       const upload=review?.fileUpload ? true : features?.includes("attach") ? (file:File)=>uploadAttachment(session.key,file) : false;
-      for(const file of extra.files)references.push(await fileReference(file,session.key,upload));
+      for(const entry of kept.files)references.push(await fileReference(entry,session.key,upload));
       const value=[body,...references].filter(Boolean).join("\n\n");
       if(utf8ByteLength(value)>MAX_SEND_TEXT)throw Error("消息和附件内容超过可发送长度");
-      if(active&&review)return review.run(delivery,session.key,{text:value});
-      return wantsDelivery ? onSend(value, delivery as "queue"|"steer") : onSend(value);
-    });
-    if(mounted.current)setSending(false);
-    if (!sent) return;
-    const sameDraft=(drafts.get(key) ?? "")===text;
-    if(sameDraft)drafts.delete(key);
-    saveExtras(key,{files:[],goal:extra.goal});
-    if (!mounted.current) { if(notes.length)onNotes?.([]); return; }
-    setExtra(getExtras(key));if(sameDraft){change("");setPanel(null)}setSkill("");onNotes?.([]);if(!active)setSentAt(Date.now());
-    setNote(deliveryNote(sent.result));
+      rememberSent(session.key, body, kept.files);
+      // a resend replaces the message the agent is on: it goes now, never into the queue
+      result = active&&review&&!revision ? await review.run(kept.choice,session.key,{text:value})
+        : wantsDelivery&&!revision ? await onSend(value, kept.choice as "queue"|"steer") : await onSend(value);
+    } catch (cause) {
+      // the message goes back in the box, unless something new was typed meanwhile
+      if (!drafts.get(key) && !getExtras(key).files.length) {
+        if (kept.text) drafts.set(key, kept.text);
+        saveExtras(key,{files:kept.files,goal:kept.goal});
+        if (kept.notes.length) onNotes?.(kept.notes);
+        if (mounted.current) { setText(kept.text); setExtra(getExtras(key)); setSkill(kept.skill); }
+      }
+      if (mounted.current) setError(cliErrorText(cause));
+      return;
+    } finally {
+      if (uploads && mounted.current) setSending(false);
+    }
+    if (!mounted.current) return;
+    if(!active)setSentAt(Date.now());
+    setNote(deliveryNote(result));
   };
 
   if (mode.kind === "blocked") {
@@ -246,8 +256,6 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       {!!extra.files.length && <div className="na-file-list">{extra.files.map(entry=><span key={entry.id} className="na-file-chip" data-image={entry.file.type.startsWith("image/")||undefined}>{entry.file.type.startsWith("image/")?<FileThumb file={entry.file}/>:<Paperclip size={14}/>}<span title={entry.file.name}>{entry.file.name}</span><button type="button" disabled={busy} aria-label={"移除 "+entry.file.name} onClick={()=>changeExtra({...extra,files:extra.files.filter(f=>f.id!==entry.id)})}><X size={12}/></button></span>)}</div>}
       {extra.goal!==null && <div className="na-goal-field"><Target size={15}/><label>目标<input autoFocus ref={goalField} aria-label="会话目标" placeholder="想持续完成什么？" value={extra.goal} disabled={busy} onChange={e=>changeExtra({...extra,goal:e.target.value})}/></label><button type="button" disabled={busy} aria-label="退出目标模式" onClick={()=>changeExtra({...extra,goal:null})}><X size={13}/></button></div>}
       {draft?.quote && <details className="na-selected-fragment"><summary><MessageSquareText size={14}/>1 个已选文本片段</summary><blockquote>{draft.quote}</blockquote></details>}
-      {revision ? <div className="na-revising" role="status"><Pencil size={13}/>正在编辑已发送消息，发送后将作为新消息重发
-        <button type="button" aria-label="取消编辑重发" onClick={() => { if (revisionStash.current !== null) drafts.set(key, revisionStash.current); revisionStash.current = null; onCancelRevision?.(); setText(drafts.get(key) ?? ""); }}><X size={12}/>取消</button></div> : null}
       {review&&details?.queue?.map((entry,i)=><div className="na-queued" key={entry.id}>
         <span className="na-queued-label"><ListOrdered size={13}/>排队 {i+1}</span><span className="na-queued-text" title={entry.text}>{entry.text}</span>
         <span className="na-queued-actions"><button type="button" className="is-icon" aria-label="撤销" data-tip="撤销" onClick={()=>void run(()=>review.run("unqueue",session.key,{id:entry.id}))}><Undo2 size={14}/></button></span>

@@ -3,8 +3,9 @@
 // queues or steers, stopping pauses the outbox in Core, and edit-and-resend
 // records the revised message.
 import { useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, List, MessageSquare, Share2, SquareTerminal } from "lucide-react";
-import type { CliItem, CliAnswerDecision, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
+import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
+import { modelFailureReason, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { ModelFailureDialog } from "./ModelFailureDialog";
 import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
 import { useNotes } from "./use-notes";
@@ -12,7 +13,7 @@ import {getLaunch,saveLaunch,transferGoal} from "./composer-additions";
 import { Composer, type LaunchChoice } from "./Composer";
 import { cardState, type RequestRecord } from "./requests";
 import { RequestCard } from "./RequestCard";
-import { askedSession, canAttach, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
+import { askedSession, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
 import type { CliStream } from "./stream";
 import { SessionInfoCard } from "./SessionInfoCard";
 import { TranscriptView } from "./TranscriptView";
@@ -45,6 +46,29 @@ export interface SessionPaneProps {
 
 const NO_REQUESTS: readonly RequestRecord[] = [];
 
+/** A message sent from this page that the session's records do not hold yet. */
+export interface PendingSend { id: string; text: string; at: number; known: ReadonlySet<string> }
+
+const plain = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/** Drops each pending message once the records hold it: a user item that was not there at its
+ * send with the same text, or (once the agent has answered after it) the earliest such item.
+ * The same list when nothing settled. */
+export function settlePending(list: readonly PendingSend[], items: readonly CliItem[]): PendingSend[] {
+  if (!list.length) return list as PendingSend[];
+  const claimed = new Set<string>();
+  const next = list.filter((entry) => {
+    const fresh = items.filter((item): item is Extract<CliItem, { kind: "user" }> => item.kind === "user" && !entry.known.has(item.id) && !claimed.has(item.id));
+    const text = plain(entry.text);
+    const answered = items.some((item) => item.kind !== "user" && item.kind !== "turn" && !entry.known.has(item.id));
+    const hit = fresh.find((item) => plain(item.text) === text) ?? (answered ? fresh[0] : undefined);
+    if (!hit) return true;
+    claimed.add(hit.id);
+    return false;
+  });
+  return next.length === list.length ? list as PendingSend[] : next;
+}
+
 export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features, echo }: SessionPaneProps) {
   const review=useReview();
   const details=review?.records[session.key];
@@ -61,6 +85,36 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const resumedKey = useRef<CliSessionKey|null>(null);
   const queue = useCliQueue(stream, session.key);
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
+  // A message being edited leaves the conversation; its resend takes its place.
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => readHidden(session.key));
+  const hide = (id: string, on: boolean) => setHidden((current) => {
+    const next = new Set(current);
+    if (on) next.add(id); else next.delete(id);
+    saveHidden(session.key, next);
+    return next;
+  });
+  const edit = (messageId: string, text: string) => { if (revision && revision.messageId !== messageId) hide(revision.messageId, false); hide(messageId, true); setRevision({ messageId, text }); };
+  const cancelEdit = () => { if (revision) hide(revision.messageId, false); setRevision(null); };
+  // A model call that failed for good, as it arrives: a dialog, and the turn stays where it stopped.
+  const [failure, setFailure] = useState<string | null>(null);
+  const failuresSeen = useRef<Set<string> | null>(null);
+  const openedAt = useRef(Date.now());
+  useEffect(() => {
+    const failures = items.flatMap((item) => {
+      if (item.kind !== "notice" || item.level !== "error") return [];
+      const reason = modelFailureReason(item.text);
+      return reason ? [{ id: item.id, ts: item.ts, reason }] : [];
+    });
+    if (failuresSeen.current === null) {
+      if (!items.length) return;
+      // what the records already held when the page opened is history, not news
+      failuresSeen.current = new Set(failures.filter((entry) => entry.ts < openedAt.current - 5_000).map((entry) => entry.id));
+    }
+    const seen = failuresSeen.current;
+    const fresh = failures.filter((entry) => !seen.has(entry.id));
+    for (const entry of fresh) seen.add(entry.id);
+    if (fresh.length) setFailure(fresh[fresh.length - 1].reason);
+  }, [items]);
   const [launch, setLaunch] = useState<LaunchChoice>(() => getLaunch(session.key));
   /** what this page last told the running CLI, so a send only switches when the choice changed */
   const applied = useRef<string>(JSON.stringify({ model: "", effort: "" }));
@@ -68,35 +122,36 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   // From a send until the session answers: a resumed CLI can take a while to
   // print anything, and without this the page looks like nothing happened.
   const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean; unconfirmed?: boolean; fresh?: boolean } | null>(() => echo ? { known: new Set(), resuming: false, fresh: true } : null);
-  const [slow, setSlow] = useState(false);
   useEffect(() => {
     if (!awaiting) return;
     if (session.state === "waiting" || !session.online) { setAwaiting(null); return; }
     // the device clock may differ from this one: a reply is an item that was not there at send time
     if (items.some((item) => item.kind !== "user" && item.kind !== "turn" && !awaiting.known.has(item.id))) setAwaiting(null);
   }, [awaiting, items, session.state, session.online]);
-  useEffect(() => {
-    setSlow(false);
-    if (!awaiting) return;
-    const timer = setTimeout(() => setSlow(true), 20_000);
-    return () => clearTimeout(timer);
-  }, [awaiting]);
-  const progress = awaiting ? (awaiting.fresh ? "执行中" : awaiting.resuming ? "正在恢复会话…" : awaiting.unconfirmed ? "已发送，等待会话接收…" : "已送达，等待回复…")
+  // Messages sent from this page show at once, before the session's records hold them.
+  const [echoes, setEchoes] = useState<PendingSend[]>([]);
+  useEffect(() => { setEchoes((list) => settlePending(list, items)); }, [items]);
+  const dropPending = (id: string) => setEchoes((list) => list.filter((entry) => entry.id !== id));
+  const progress = awaiting ? (awaiting.fresh ? "执行中" : awaiting.resuming ? "正在恢复会话" : "等待回复")
     : session.online && session.state === "running" ? "执行中" : "";
-  const working = progress && !compact ? {
-    label: progress,
-    action: slow && onTerminalOpen && canAttach(session) ? <button type="button" className="text-button" onClick={onTerminalOpen}><SquareTerminal size={12}/>打开远程终端</button> : undefined,
-  } : undefined;
+  const working = progress && !compact ? { label: progress } : undefined;
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
     const known = new Set(items.map((item) => item.id));
+    // the message and the dots show before any request leaves
+    const echoId = crypto.randomUUID();
+    if (!compact) setEchoes((list) => [...list, { id: echoId, text, at: Date.now(), known }]);
+    setAwaiting({ known, resuming: session.state === "stopped" && !resumedKey.current });
+    try { return await deliver(text, known, delivery, echoId); }
+    catch (cause) { dropPending(echoId); setAwaiting(null); throw cause; }
+  }
+
+  async function deliver(text:string, known:ReadonlySet<string>, delivery:"send"|"queue"|"steer"|undefined, echoId:string) {
     const options = { ...(launch.model ? { model: launch.model } : {}), ...(launch.effort ? { effort: launch.effort } : {}) };
     if(session.state==="stopped" && !resumedKey.current){
-      setAwaiting({ known, resuming: true });
       // the chosen model and effort start the CLI (an older executor only takes a plain continue)
       const launchOptions = !review && features?.includes("launchOptions") && Object.keys(options).length ? options : undefined;
-      try { resumedKey.current=(await continueSession(session.key, launchOptions)).key; }
-      catch (cause) { setAwaiting(null); throw cause; }
+      resumedKey.current=(await continueSession(session.key, launchOptions)).key;
       applied.current = JSON.stringify(launch);
     }
     const key=resumedKey.current??session.key;
@@ -108,23 +163,25 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       }
       applied.current = JSON.stringify(launch);
     }
+    // an edited message replaces the one the agent is still on: that turn stops first
+    if(revision && !review && session.state==="running"){
+      try { await interruptSession(key); } catch { /* the resend still goes */ }
+    }
     let result: unknown;
     if(review&&details?.quote&&!details.quoteSent){
       result=await review.run("quoted-send",key,{text});
     } else {
       // the workbench contract: ids make a double click one message, a revision
       // keeps the link to the original, and the delivery follows the selector
-      try {
-        result=await sendMessage(key, text, {
-          delivery: delivery ?? "send",
-          clientMessageId: crypto.randomUUID(),
-          requestId: crypto.randomUUID(),
-          ...(revision ? { revisesMessageId: revision.messageId } : {}),
-        });
-      } catch (cause) { setAwaiting(null); throw cause; }
+      result=await sendMessage(key, text, {
+        delivery: delivery ?? "send",
+        clientMessageId: crypto.randomUUID(),
+        requestId: crypto.randomUUID(),
+        ...(revision ? { revisesMessageId: revision.messageId } : {}),
+      });
       // a queued entry is not delivered yet: the queue strip shows it instead
       const outcome = result as { queued?: boolean; status?: string; delivery?: string };
-      if (outcome.queued && outcome.status !== "uncertain") setAwaiting(null);
+      if (outcome.queued && outcome.status !== "uncertain") { dropPending(echoId); setAwaiting(null); }
       else setAwaiting({ known, resuming: false, unconfirmed: outcome.delivery === "unconfirmed" });
     }
     if(revision)setRevision(null);
@@ -161,7 +218,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} pending={echoes} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
@@ -174,12 +231,23 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
         onInterrupt={() => review ? interruptSession(session.key) : stop()}
         queue={queue}
         revision={revision}
-        onCancelRevision={() => setRevision(null)}
+        onCancelRevision={cancelEdit}
         onQueueWithdraw={async (entryId, version) => { await withdrawQueued(entryId, version); }}
         onQueueEdit={async (entryId, version, text) => { await editQueued(entryId, version, text); }}
         onQueueSteer={async (entryId) => { await steerQueued(entryId); }}
         onQueueResume={async () => { await resume(); }}
       />
+      {failure && !compact ? <ModelFailureDialog reason={failure} onClose={() => setFailure(null)}/> : null}
     </section>
   );
+}
+
+const hiddenKey = (key: string) => "nexagent.hidden." + key;
+function readHidden(key: string): ReadonlySet<string> {
+  try { const value = JSON.parse(sessionStorage.getItem(hiddenKey(key)) || "[]"); return new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []); }
+  catch { return new Set(); }
+}
+function saveHidden(key: string, ids: ReadonlySet<string>) {
+  try { if (ids.size) sessionStorage.setItem(hiddenKey(key), JSON.stringify([...ids].slice(-200))); else sessionStorage.removeItem(hiddenKey(key)); }
+  catch { /* lasts for the page */ }
 }

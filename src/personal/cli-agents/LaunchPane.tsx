@@ -20,7 +20,7 @@ export function LaunchPane({ launch, onBack, onRetry, onDismiss }: { launch: Lau
       </header>
       <div className="cli-pane-body na-conversation-body">
         <div className="cli-transcript"><div className="cli-transcript-list">
-          {launch.message ? <EchoMessage text={launch.message} at={launch.createdAt}/> : null}
+          {launch.message ? <EchoMessage text={launch.message}/> : null}
           {failed ? <div className="cli-msg is-assistant na-launch-reply" data-testid="cli-launch-reply">
             <div className="na-byline"><HarnessMark agentId={launch.engine}/><b>{AGENT_LABEL[launch.engine]}</b></div>
             <div className="cli-notice na-launch-error" data-level="error" role="alert">

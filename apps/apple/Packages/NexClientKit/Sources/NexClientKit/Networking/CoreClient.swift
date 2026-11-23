@@ -89,7 +89,8 @@ public struct CoreClient: Sendable {
 
     static func httpError(status: Int, data: Data) -> CoreError {
         let body = try? JSONDecoder().decode(JSONValue.self, from: data)
-        let message = body?["error"]?.stringValue ?? (status == 401 ? "登录已失效" : "无法连接 Core")
+        // a proxy's HTML page (Core restarting) has no `error`: the status says what happened
+        let message = body?["error"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? CoreError.statusText(status)
         return CoreError(kind: .http, message: message, status: status, code: body?["code"]?.stringValue)
     }
 

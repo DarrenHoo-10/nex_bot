@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, MoreHorizontal, Plug, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { api, type ConnectorView, type State } from "./api";
@@ -118,7 +119,7 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   const action = async (key: string, operation: () => Promise<unknown>, success?: string) => {
     setBusy(key); setError(""); setNotice("");
     try { const result = await operation() as { warning?: string } | undefined; await refresh(); if (result?.warning || success) setNotice(result?.warning ?? success ?? ""); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : "操作失败，请重试"); await refresh().catch(() => {}); }
+    catch (failure) { setError(userErrorText(failure, "操作失败，请重试")); await refresh().catch(() => {}); }
     finally { setBusy(""); }
   };
   const save = (event: FormEvent<HTMLFormElement>) => {

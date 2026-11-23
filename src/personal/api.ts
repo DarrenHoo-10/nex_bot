@@ -1,3 +1,4 @@
+import { httpErrorText, isTechnicalMessage, readJson, responseErrorText, safeFetch } from "../lib/http-errors";
 import type { ConnectorCatalogEntry, ConnectorView, ConnectorMonitorView } from "../../shared/personal-connectors";
 export type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors";
 export interface FeishuAppView { id: string; appId: string; brand: string; status: string; error: string | null; ownerBound: boolean; botId: string; botName: string; enabled: boolean; version: number; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null; name?: string | null; avatarUrl?: string | null; groupCount?: number }
@@ -110,20 +111,26 @@ export const desktop = (window as unknown as { nex?: Bridge }).nex;
 /** NexAgent runs in plain browsers, the Windows client (its UI keeps the Core origin and session, so the stream connects directly) and the Android app (native socket relay). */
 export const agentModeAvailable = !desktop || desktop.mode === "client" || desktop.platform === "android";
 export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {
-  const response = await fetch("/api/models/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
+  const response = await safeFetch("/api/models/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
   if (response.status === 404 && desktop?.listModels && settings.apiKey.trim()) return desktop.listModels(settings);
   if (response.status === 404) throw new Error(desktop?.listModels ? "当前版本暂不能用已保存的 Key 查询模型。请在上方重新填写 Key 后获取，无需先保存。" : "当前服务暂不支持获取模型列表，请手动填写模型 ID");
-  const result = await response.json();
+  const result = await readJson<{ models: string[]; hasMore: boolean; error?: string }>(response);
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event("nex-session-expired"));
-    throw new Error(result.error || "获取模型列表失败");
+    throw new Error(result?.error && !isTechnicalMessage(result.error) ? result.error : response.status === 400 ? "获取模型列表失败，请检查服务地址和 Key" : httpErrorText(response.status));
   }
+  if (!result) throw new Error(httpErrorText(502));
   return result;
 }
 export async function api<T>(url: string, data?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch("/api/" + url, data === undefined ? (signal ? { signal } : undefined) : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data), signal });
-  const result = await response.json() as T & { error?: string; code?: string };
-  if (!response.ok) { if (!url.startsWith("auth/") && (response.status === 401 || result.code === "identity_unavailable")) window.dispatchEvent(new Event("nex-session-expired")); throw new Error(result.error ?? "连接失败"); }
+  const response = await safeFetch("/api/" + url, data === undefined ? (signal ? { signal } : undefined) : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data), signal });
+  // a proxy answers a restart or an outage with an HTML page: never parse that as the reply
+  const result = await readJson<T & { error?: string; code?: string }>(response);
+  if (!response.ok) {
+    if (!url.startsWith("auth/") && (response.status === 401 || result?.code === "identity_unavailable")) window.dispatchEvent(new Event("nex-session-expired"));
+    throw new Error(responseErrorText(response.status, result));
+  }
+  if (result === null) throw new Error(httpErrorText(502));
   return result;
 }
 export const statuses: Record<string, string> = { queued: "排队中", running: "执行中", awaiting_approval: "等你批准", paused: "已暂停", needs_reconciliation: "需核对结果", cancelling: "取消中", succeeded: "已完成", failed: "失败", cancelled: "已取消", rejected: "已拒绝", bound: "已配对", revoked: "已撤销", pending: "待执行", skipped: "已错过" };

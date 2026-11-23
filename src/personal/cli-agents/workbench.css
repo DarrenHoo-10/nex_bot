@@ -145,7 +145,7 @@
 .na-stage .na-side .cli-pane-head{min-height:54px;padding:8px 12px}.na-side .cli-pane-title strong{font-size:15px!important}.na-stage .na-side .cli-transcript{padding:12px}.na-stage .na-side .cli-composer{width:calc(100% - 16px);margin:6px 8px 10px}
 @media(hover:none){.na-more{opacity:1}}
 @media(max-width:1150px){.na-stage .cli-app .cli-body[data-side="open"]{grid-template-columns:1fr}.na-side{position:absolute;z-index:12;right:0;top:0;bottom:0;width:min(365px,96%);box-shadow:-6px 0 18px #1c252317}}
-@media(max-width:720px){.na-stage .cli-app .cli-main{margin:0;border:0;border-radius:0}.na-stage .cli-app .cli-main>header{padding:0 10px}.na-stage .cli-app .cli-pane-head{padding:8px 12px;gap:4px;flex-wrap:wrap}.na-stage .cli-app .cli-pane-title{flex:1 1 calc(100% - 42px)}.na-stage .cli-app .cli-tabs button{padding:3px 7px}.na-resize,.na-fixture-label{display:none}.na-stage .cli-app .cli-side{border:0;padding:10px}.na-stage .cli-app .cli-composer{width:calc(100% - 20px);margin:8px auto 10px}.na-stage .cli-app .cli-pane-title strong{font-size:17px}.na-stage .cli-app .cli-main>header .header-actions{gap:3px}.na-stage .cli-app .cli-transcript{padding:18px 15px}}
+@media(max-width:720px){.na-stage .cli-app .cli-main{margin:0;border:0;border-radius:0}.na-stage .cli-app .cli-main>header{padding:0 10px}.na-stage .cli-app .cli-pane-head{padding:8px 12px;gap:4px;flex-wrap:nowrap}.na-stage .cli-app .cli-pane-title{flex:1 1 0;min-width:0}.na-stage .cli-app .cli-pane-head>:not(.cli-pane-title){flex:none}.na-stage .cli-app .cli-tabs button{padding:3px 7px}.na-resize,.na-fixture-label{display:none}.na-stage .cli-app .cli-side{border:0;padding:10px}.na-stage .cli-app .cli-composer{width:calc(100% - 20px);margin:8px auto 10px}.na-stage .cli-app .cli-pane-title strong{font-size:17px}.na-stage .cli-app .cli-main>header .header-actions{gap:3px}.na-stage .cli-app .cli-transcript{padding:18px 15px}}
 .na-tree-label{display:flex;align-items:center;gap:6px;min-height:26px;color:var(--na-muted);font-size:12px}
 .na-tree-label>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .na-project [data-group]>.na-branch{margin-left:7px;padding-left:2px}
@@ -237,8 +237,6 @@
 .na-stage .cli-app .na-working-dots>span:nth-child(2){animation-delay:.15s}.na-stage .cli-app .na-working-dots>span:nth-child(3){animation-delay:.3s}
 @keyframes na-working-bounce{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-4px);opacity:1}}
 @media(prefers-reduced-motion:reduce){.na-stage .cli-app .na-working-dots>span{animation:none;opacity:.75}}
-.na-stage .cli-app .na-working-caption{display:flex;align-items:center;gap:8px;margin:5px 0 0 4px;color:var(--na-muted);font-size:11px}
-.na-stage .cli-app .na-working-caption .text-button{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--na-accent)}
 
 /* Session list: a new-session button on top, what is running pinned above the projects, projects as headings. */
 .na-stage .cli-app .na-new-session{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;min-height:36px;margin:2px 0 6px;padding:0 12px;border:1px solid var(--na-line);border-radius:10px;background:var(--na-paper);color:var(--na-ink);font-size:13px;font-weight:600;box-shadow:0 1px 2px #17271b0d;cursor:pointer}
@@ -293,3 +291,13 @@
 .na-context-detail[data-level="high"] .na-context-bar span{background:#d68a12}
 .na-context-detail[data-level="full"] .na-context-bar span{background:#c2410c}
 .na-context-detail small{color:var(--na-muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+/* model call failed: a small centred notice in the NexAgent dialog style */
+.modal-backdrop.na-failure-backdrop{padding:24px}
+.modal.na-dialog.na-failure{width:min(340px,calc(100vw - 48px));padding:26px 24px 20px;border-radius:16px;justify-items:center;text-align:center;gap:8px;background:#fff;color:#20362b;box-shadow:0 18px 60px #17271b2e}
+.na-failure .na-failure-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:50%;background:#fbecea;color:#a33730;margin-bottom:4px}
+.na-failure h3{font-size:16px;font-weight:650;letter-spacing:-.2px}
+.na-failure p{font-size:14px;line-height:1.6;color:#20362b}
+.na-failure small{font-size:12px;color:#52685a}
+.na-failure footer{width:100%;justify-content:stretch;margin-top:10px}
+.na-dialog.na-failure footer button.primary{flex:1;justify-content:center;text-align:center;min-height:38px;border-radius:10px;background:#176643;color:#fff;font-weight:550}
+.na-dialog.na-failure footer button.primary:hover{background:#145a3b}

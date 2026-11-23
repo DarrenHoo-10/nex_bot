@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useState } from "react";
 import { api, modelName, type Connection } from "./api";
 import { ModelMenu, type ModelChoice } from "./components/ModelMenu";
@@ -21,7 +22,7 @@ export function TranslationSettings({ connections }: { connections: Connection[]
   useEffect(() => {
     const controller = new AbortController();
     void api<Settings>(route, undefined, controller.signal).then(setSettings, (failure: Error) => {
-      if (!controller.signal.aborted) setError(failure.message);
+      if (!controller.signal.aborted) setError(userErrorText(failure));
     });
     return () => controller.abort();
   }, [attempt]);
@@ -33,7 +34,7 @@ export function TranslationSettings({ connections }: { connections: Connection[]
     try {
       setSettings(await api<Settings>(route, { selection, version: settings.version }));
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "保存失败");
+      setError(userErrorText(failure, "保存失败"));
       try { setSettings(await api<Settings>(route)); } catch { /* keep the original error */ }
     } finally {
       setBusy(false);

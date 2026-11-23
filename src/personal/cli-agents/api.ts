@@ -27,6 +27,8 @@ import {
   type CliSessionView,
 } from "../../../shared/cli-agents";
 
+import { httpErrorText, isTechnicalMessage, readJson, userErrorText } from "../../lib/http-errors";
+
 export class CliApiError extends Error {
   /** `detail` is the wording Core sent in the response, which may be the device's own message. */
   constructor(message: string, readonly code?: CliErrorCode, readonly status = 0, readonly detail?: string) {
@@ -39,9 +41,9 @@ export class CliApiError extends Error {
 export function cliErrorText(error: unknown, fallback = "操作失败"): string {
   if (error instanceof CliApiError) {
     if (error.code) return error.detail?.trim() || CLI_ERROR_TEXT[error.code];
-    return error.message || fallback;
+    return error.message && !isTechnicalMessage(error.message) ? error.message : fallback;
   }
-  return error instanceof Error && error.message ? error.message : fallback;
+  return userErrorText(error, fallback);
 }
 
 /** `body` is sent as JSON, except a Blob, which goes as it is (an attachment). */
@@ -57,16 +59,16 @@ async function call<T>(path: string, body?: unknown, method = "POST", signal?: A
   } catch (error) {
     // an aborted search is the caller's own doing, not a connection failure
     if (signal?.aborted) throw error;
-    throw new CliApiError("连接失败");
+    throw new CliApiError(httpErrorText(0));
   }
-  let data: unknown = null;
-  try { data = await response.json(); } catch { /* empty or not JSON */ }
+  // empty, or a proxy's HTML page while Core restarts
+  const data: unknown = await readJson(response);
   const record = (data && typeof data === "object" ? data : {}) as { error?: unknown; code?: unknown };
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event("nex-session-expired"));
     const code = isCliErrorCode(record.code) ? record.code : undefined;
-    const detail = typeof record.error === "string" && record.error ? record.error : undefined;
-    throw new CliApiError(detail ?? "连接失败", code, response.status, detail);
+    const detail = typeof record.error === "string" && record.error && !isTechnicalMessage(record.error) ? record.error : undefined;
+    throw new CliApiError(detail ?? httpErrorText(response.status), code, response.status, detail);
   }
   return data as T;
 }

@@ -1,6 +1,6 @@
 // Pure helpers for the conversation view: merging item pages and pushes by id,
 // and grouping the flat item list into what the view renders.
-import type { CliItem } from "../../../shared/cli-agents";
+import { isCliCommandRecord, modelFailureReason, type CliItem } from "../../../shared/cli-agents";
 
 type ToolItem = Extract<CliItem, { kind: "tool" }>;
 type ThinkingItem = Extract<CliItem, { kind: "thinking" }>;
@@ -69,7 +69,7 @@ export type Block =
   | { kind: "user"; id: string; item: Extract<CliItem, { kind: "user" }> }
   | { kind: "assistant"; id: string; item: Extract<CliItem, { kind: "assistant" }> }
   | { kind: "activity"; id: string; items: ActivityItem[] }
-  | { kind: "notice"; id: string; level: "info" | "error"; text: string };
+  | { kind: "notice"; id: string; level: "info" | "error"; text: string; /** a model call that failed for good */ failure?: boolean };
 
 /** One block per user or assistant message, one per notice, and one block for
  * each run of adjacent tool calls and thinking. Turn markers only matter when
@@ -79,6 +79,8 @@ export function groupItems(items: readonly CliItem[]): Block[] {
   for (const item of items) {
     switch (item.kind) {
       case "user":
+        // a `/model` switch and other commands leave bookkeeping records, not the user's words
+        if (isCliCommandRecord(item.text)) break;
         blocks.push({ kind: "user", id: item.id, item });
         break;
       case "assistant":
@@ -91,9 +93,13 @@ export function groupItems(items: readonly CliItem[]): Block[] {
         else blocks.push({ kind: "activity", id: item.id, items: [item] });
         break;
       }
-      case "notice":
-        blocks.push({ kind: "notice", id: item.id, level: item.level, text: item.text });
+      case "notice": {
+        const reason = item.level === "error" ? modelFailureReason(item.text) : null;
+        blocks.push(reason
+          ? { kind: "notice", id: item.id, level: "error", text: "模型调用失败：" + reason, failure: true }
+          : { kind: "notice", id: item.id, level: item.level, text: item.text });
         break;
+      }
       case "turn":
         if (item.phase === "aborted") blocks.push({ kind: "notice", id: item.id, level: "info", text: "已中断" });
         break;

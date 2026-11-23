@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 
@@ -31,7 +32,7 @@ export function useModelSelection(route: string, scope: Record<string, unknown>,
       }
     } catch (error) {
       draft.current = confirmed.current.models;
-      if (alive.current) { setSelection(draft.current); setError(`未保存：${error instanceof Error ? error.message : '请重新选择'}`); }
+      if (alive.current) { setSelection(draft.current); setError(`未保存：${userErrorText(error, '请重新选择')}`); }
     } finally {
       saving.current = false;
       if (alive.current) { setBusy(false); void refresh().catch(() => {}); }

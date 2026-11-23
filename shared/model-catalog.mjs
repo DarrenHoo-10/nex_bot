@@ -1,3 +1,11 @@
+/** The base an OpenAI-format request path goes under. Such a base normally ends in /v1 (as with the
+ * OpenAI SDK); an address saved as a bare host (https://api.example.com) gets it added, the way the
+ * Anthropic paths already add a missing /v1. An address with any path stays as it is. */
+export function openAiBase(endpoint) {
+  const trimmed = String(endpoint).replace(/\/+$/, "");
+  try { return new URL(trimmed).pathname.replace(/\/+$/, "") === "" ? trimmed + "/v1" : trimmed; } catch { return trimmed; }
+}
+
 export function catalogSettings(input, saved) {
   if (!input || !["openai", "anthropic"].includes(input.provider)) throw new Error("请选择 API 协议");
   let url;
@@ -13,7 +21,7 @@ export function catalogSettings(input, saved) {
 
 export async function fetchModelCatalog(input, fetcher = fetch) {
   const { provider, endpoint, apiKey } = catalogSettings(input);
-  const address = endpoint + (provider === "anthropic" && !endpoint.endsWith("/v1") ? "/v1/models" : "/models");
+  const address = provider === "anthropic" ? endpoint + (endpoint.endsWith("/v1") ? "/models" : "/v1/models") : openAiBase(endpoint) + "/models";
   const headers = provider === "anthropic" ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" } : { Authorization: `Bearer ${apiKey}` };
   // Anthropic-style lists give each model a display_name; some proxies rewrite the id and keep the real name there.
   const models = new Set(), seen = new Set(), names = {};

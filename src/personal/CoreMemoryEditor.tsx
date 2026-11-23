@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import { api, str, type RecordRow } from "./api";
@@ -26,11 +27,11 @@ function ScopeForm({ botId, scope, title, entry, onSaved }: { botId: string; sco
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     let about: string[], topics: CoreTopic[];
-    try { about = parseAbout(String(form.get("about") ?? "")); topics = parseTopics(String(form.get("topics") ?? "")); } catch (failure) { setError(failure instanceof Error ? failure.message : "格式无效"); return; }
+    try { about = parseAbout(String(form.get("about") ?? "")); topics = parseTopics(String(form.get("topics") ?? "")); } catch (failure) { setError(userErrorText(failure, "格式无效")); return; }
     setPending(true); setSaved(false); setError("");
     void api<CoreView>("memory/core", { botId, scope, about, topics, version: entry.version })
       .then((view) => { setSaved(true); onSaved(view); })
-      .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : "保存失败"))
+      .catch((failure: unknown) => setError(userErrorText(failure, "保存失败")))
       .finally(() => setPending(false));
   }}>
     <fieldset disabled={pending}>
@@ -54,7 +55,7 @@ export function CoreMemoryEditor({ bots, active }: { bots: RecordRow[]; active: 
     if (!active || !selected) return;
     let current = true;
     setView(undefined);
-    void api<CoreView>(`memory/core?botId=${encodeURIComponent(selected)}`).then((result) => { if (current) { setView(result); setError(""); } }).catch((failure: unknown) => { if (current) setError(failure instanceof Error ? failure.message : "读取失败"); });
+    void api<CoreView>(`memory/core?botId=${encodeURIComponent(selected)}`).then((result) => { if (current) { setView(result); setError(""); } }).catch((failure: unknown) => { if (current) setError(userErrorText(failure, "读取失败")); });
     return () => { current = false; };
   }, [active, selected]);
   if (!bots.length) return null;

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // The composer over the real outbox: the queue list with its in-place edit,
-// withdraw and steer-now, the paused banner, and edit-and-resend loading the
-// original text with a working cancel. All through mocked Core answers.
+// withdraw and steer-now, the paused banner, and edit-and-resend refilling the
+// box like a plain draft. All through mocked Core answers.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -98,23 +98,25 @@ describe("the real queue under the composer", () => {
 });
 
 describe("edit-and-resend", () => {
-  it("loads the original text and sends it as a revision of that message", async () => {
+  it("puts the words back like a plain draft and sends them at once, not into the queue", async () => {
     const onSend = vi.fn(async () => ({}));
     await show({ onSend, revision: { messageId: "u9", text: "原来的问题" } });
     expect(area().value).toBe("原来的问题");
-    // the session runs, so the resend goes out with the delivery selector's choice
+    // no banner, no cancel button, no queue/steer choice for a resend
+    expect(container.querySelector(".na-revising")).toBeNull();
+    expect(buttons("取消编辑重发")).toHaveLength(0);
+    expect(container.querySelector("[role=radiogroup]")).toBeNull();
     await act(async () => { sendButton().click(); });
-    expect(onSend).toHaveBeenCalledWith("原来的问题", "queue");
+    expect(onSend).toHaveBeenCalledWith("原来的问题");
   });
 
-  it("cancel restores the draft the user had", async () => {
+  it("emptying the box drops the edit", async () => {
     const onCancelRevision = vi.fn();
     await show({ onCancelRevision, revision: { messageId: "u9", text: "原来的问题" } });
-    await act(async () => { buttons("取消编辑重发")[0].click(); });
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(area(), "");
+      area().dispatchEvent(new Event("input", { bubbles: true }));
+    });
     expect(onCancelRevision).toHaveBeenCalled();
-    await show({ onCancelRevision, revision: null });
-    // a fresh mount without a revision reads the draft map; the restore path is
-    // covered by the SessionPane flow, here we only assert the callback fired
-    expect(container.querySelector(".na-revising")).toBeNull();
   });
 });

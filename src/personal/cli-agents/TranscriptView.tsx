@@ -1,6 +1,6 @@
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { completedCliReplies, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
@@ -13,6 +13,24 @@ import { ToolActivityDisclosure } from "../vendor/rakazo/ToolActivityDisclosure"
 import { cliErrorText, fetchItems, translateReply } from "./api";
 import type { CliStream } from "./stream";
 import { activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
+
+const NO_PENDING: readonly { id: string; text: string }[] = [];
+const NO_HIDDEN: ReadonlySet<string> = new Set();
+
+/** Leaves out messages being edited or already resent, and the "interrupted" line their resend caused. */
+export function withoutHidden(blocks: readonly Block[], hidden: ReadonlySet<string>): Block[] {
+  if (!hidden.size) return blocks as Block[];
+  const out: Block[] = [];
+  let afterHidden = false;
+  for (const block of blocks) {
+    if (hidden.has(block.id)) { afterHidden = true; continue; }
+    const interrupted = (block.kind === "user" && block.item.text.trim() === "[Request interrupted by user]") || (block.kind === "notice" && block.text === "已中断");
+    if (afterHidden && interrupted) continue;
+    afterHidden = false;
+    out.push(block);
+  }
+  return out;
+}
 
 /** Earlier turns load on their own until this many user messages are in view. */
 const MIN_TURNS_IN_VIEW = 3;
@@ -89,14 +107,14 @@ export function ReplyText({ source, supplied, local = true, core }: { source: st
 }
 
 function BlockView({ block, engine, translations, onEdit, byline = true, local, core }: { block: Block; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; local: boolean; core?: CoreReply }) {
+  // onEdit is passed only for a message that may still be revised
   switch (block.kind) {
     case "user":
       if(block.item.text.trim()==="[Request interrupted by user]")return <div className="cli-notice">你已中断本次请求</div>;
       return (
         <div className="cli-msg is-user" data-testid="cli-user">
-          <div className="na-byline is-user"><span>你</span><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
           <div className="cli-bubble">{block.item.text}</div>
-          <div className="na-user-actions">{onEdit ? <button type="button" className="text-button na-edit-resend" aria-label="编辑并重发这条消息" title="编辑并重发" onClick={()=>onEdit(block.item.id, block.item.text)}>编辑并重发</button> : null}</div>
+          {onEdit ? <div className="na-user-actions"><button type="button" className="text-button na-edit-resend" aria-label="编辑并重发这条消息" title="编辑并重发" onClick={()=>onEdit(block.item.id, block.item.text)}>编辑并重发</button></div> : null}
           {block.item.queued ? <small>排队中</small> : null}
         </div>
       );
@@ -114,14 +132,13 @@ function BlockView({ block, engine, translations, onEdit, byline = true, local, 
   }
 }
 
-/** The agent is working on the turn: NexBot's three dots in the conversation, with what is happening under them.
+/** The agent is working on the turn: NexBot's three dots in the conversation; what is happening is only read out.
  * The agent's name heads it only when nothing of this reply is shown yet. */
-export function WorkingRow({ engine, label, byline, action }: { engine?: CliEngine; label: string; byline: boolean; action?: ReactNode }) {
+export function WorkingRow({ engine, label, byline }: { engine?: CliEngine; label: string; byline: boolean }) {
   return (
     <div className="cli-msg is-assistant na-working" data-testid="cli-working">
       {byline ? <div className="na-byline"><HarnessMark agentId={engine ?? "claude"}/><b>{engine ? AGENT_LABEL[engine] : "助手"}</b></div> : null}
       <div className="na-working-dots" role="status" aria-label={label}><span aria-hidden="true"/><span aria-hidden="true"/><span aria-hidden="true"/></div>
-      <small className="na-working-caption">{label}{action}</small>
     </div>
   );
 }
@@ -137,17 +154,36 @@ export function replyHeads(blocks: readonly Block[]): { heads: Set<string>; repl
   return { heads, replying };
 }
 
+/** How long after sending a message may still be edited and resent, while nothing answered it. */
+export const EDIT_WINDOW_MS = 30_000;
+
+/** The user messages that may still be edited: nothing of the agent follows them and they are under EDIT_WINDOW_MS old.
+ * `next` is when the earliest of them stops being editable. */
+export function editableMessages(blocks: readonly Block[], now: number): { ids: Set<string>; next: number | null } {
+  const ids = new Set<string>();
+  let next: number | null = null;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block.kind === "assistant" || block.kind === "activity") break;
+    if (block.kind !== "user") continue;
+    const until = block.item.ts + EDIT_WINDOW_MS;
+    if (until <= now) break;
+    ids.add(block.id);
+    next = next === null ? until : Math.min(next, until);
+  }
+  return { ids, next };
+}
+
 /** A message the user sent that the session's records do not hold yet. */
-export function EchoMessage({ text, at }: { text: string; at: number }) {
+export function EchoMessage({ text }: { text: string }) {
   return (
     <div className="cli-msg is-user" data-testid="cli-user-echo">
-      <div className="na-byline is-user"><span>你</span><time>{new Date(at).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div>
       <div className="cli-bubble">{text}</div>
     </div>
   );
 }
 
-export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo,working,active = false }: { active?:boolean; echo?:{text:string;at:number}; working?:{label:string;action?:ReactNode}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState<boolean | null>();
@@ -220,7 +256,7 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
       return;
     }
     followBottomGrowth(scroller, followingRef.current);
-  }, [items, !!working]);
+  }, [items, !!working, pending.length]);
 
   useBottomFollowResize(scrollRef, listRef, followingRef, sessionKey);
 
@@ -266,10 +302,19 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
   }, [items, more, loading, loadingOlder, error, loadOlder]);
 
   const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
-  const blocks = useMemo(() => groupItems(details?.history?.length?mergeItems(details.history,items):items), [items,details?.history]);
+  const blocks = useMemo(() => withoutHidden(groupItems(details?.history?.length?mergeItems(details.history,items):items), hidden), [items,details?.history,hidden]);
   const { heads, replying } = useMemo(() => replyHeads(blocks), [blocks]);
   const completed = useMemo(() => completedCliReplies(items, active), [items, active]);
   const echoShown = !!echo && !items.some((item) => item.kind === "user");
+  // edit-and-resend: only a message nothing answered yet, and only for a short while
+  const [now, setNow] = useState(() => Date.now());
+  const editable = useMemo(() => onEdit ? editableMessages(blocks, now) : { ids: new Set<string>(), next: null }, [blocks, now, onEdit]);
+  useEffect(() => {
+    if (editable.next === null) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, editable.next - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [editable.next]);
+  useEffect(() => { setNow(Date.now()); }, [items]);
   return (
     <div className="cli-transcript" ref={scrollRef} onScroll={onScroll} data-testid="cli-transcript">
       <div className="cli-transcript-list" ref={listRef}>
@@ -277,12 +322,13 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
         {blocks.map(block => {
           const complete = block.kind === "assistant" && completed.has(block.id);
           const core = translationEnabled && complete ? { key: sessionKey, id: block.id } : undefined;
-          const message = <BlockView key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={onEdit} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
+          const message = <BlockView key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={editable.ids.has(block.id) ? onEdit : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
           return onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}
-        {echoShown && echo ? <EchoMessage text={echo.text} at={echo.at}/> : null}
-        {working ? <WorkingRow engine={engine} label={working.label} action={working.action} byline={echoShown || !replying}/> : null}
+        {echoShown && echo ? <EchoMessage text={echo.text}/> : null}
+        {pending.map((entry) => <EchoMessage key={entry.id} text={entry.text}/>)}
+        {working ? <WorkingRow engine={engine} label={working.label} byline={echoShown || pending.length > 0 || !replying}/> : null}
         {loading && !items.length && !echo ? <div className="cli-empty" role="status">正在读取…</div> : null}
         {!loading && !error && !items.length && !echo ? <div className="cli-empty">暂无记录</div> : null}
         {error ? <div className="cli-notice" data-level="error" role="alert">{error}<button type="button" className="text-button" onClick={() => void loadFirst()}>重试</button></div> : null}

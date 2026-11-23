@@ -3,6 +3,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 
 import { fromAnthropic, toAnthropic } from "../memory-gateway.ts";
 import { text, type CoreStore } from "../store.ts";
+import { openAiBase } from "../../../shared/model-catalog.mjs";
 
 interface Selection { connectionId: string; model: string }
 interface TranslationModel extends Selection {
@@ -264,12 +265,12 @@ export class CliTranslation {
       path = new URL(endpoint).pathname.endsWith("/v1") ? "/messages" : "/v1/messages";
       headers = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
     }
-    const response = await fetch(endpoint + path, {
+    const response = await fetch((provider === "anthropic" ? endpoint : openAiBase(endpoint)) + path, {
       method: "POST", signal, redirect: "error", headers, body: JSON.stringify(body),
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error("translation provider failed");
+      throw new Error(`translation provider failed (HTTP ${response.status})`);
     }
     const raw = await response.json() as Record<string, unknown>;
     if (provider === "anthropic" && raw.stop_reason !== "end_turn") throw new Error("translation incomplete");

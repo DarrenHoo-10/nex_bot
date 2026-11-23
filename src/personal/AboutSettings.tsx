@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useRef, useState } from "react";
 import { desktop, type ClientUpdateState } from "./api";
 
@@ -24,7 +25,7 @@ export function AboutSettings() {
         if (state) setUpdate(state);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message.replace(/^Error invoking remote method '[^']+': Error: /, "") : "检查更新失败");
+      setError(userErrorText(cause instanceof Error ? new Error(cause.message.replace(/^Error invoking remote method '[^']+': Error: /, "")) : cause, "检查更新失败"));
       if (!install) setUpdate(state => ({ ...state, status: "error" }));
     } finally { operation.current = false; setPending(false); }
   };

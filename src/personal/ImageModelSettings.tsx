@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listConnectionModels, type Connection, type State } from './api';
 import { ModelSelection } from './components/ModelPicker';
@@ -30,7 +31,7 @@ function ProviderImageModels({ connection, refresh, active }: { connection: Conn
   const load = async () => {
     if (loading) return; setLoading(true); setError('');
     try { const result = await listConnectionModels(connection.id); if (alive.current) { setModels(result.models); setNotice(result.hasMore ? '模型列表未全部返回' : ''); } }
-    catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : '获取失败'); }
+    catch (failure) { if (alive.current) setError(userErrorText(failure, '获取失败')); }
     finally { if (alive.current) setLoading(false); }
   };
   useEffect(() => { if (active && !loaded.current) { loaded.current = true; void load(); } }, [active]); // eslint-disable-line react-hooks/exhaustive-deps

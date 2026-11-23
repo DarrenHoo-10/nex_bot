@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, ChevronDown, ChevronRight, Clock3, Ellipsis, Monitor, Plus, Search, X } from "lucide-react";
@@ -154,7 +155,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       setForking({parent:row,title,known,key});
       void reloadSessions();
     } catch(cause){
-      setError((cause as Error).message);
+      setError(userErrorText(cause));
       forkPending.current=false;
       setForking(null);
     }
@@ -176,7 +177,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       }
       setEditing(null);
       setError("");
-    } catch(cause){setError((cause as Error).message)}
+    } catch(cause){setError(userErrorText(cause))}
     finally{saving.current=false}
   }
   async function submit(){
@@ -187,7 +188,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       else if(action==="archive")await wbActions!.archive(row,ownRow(row.key),true);
       else if(action==="delete")await wbActions!.remove(row,ownRow(row.key));
       dismissDialog();
-    } catch(e){setError((e as Error).message)}finally{setBusy(false)}
+    } catch(e){setError(userErrorText(e))}finally{setBusy(false)}
   }
   /** A row's tree parent: the workbench parent, else the session it was forked from (Core's `forkOf`). */
   const parentOf=(s:CliSessionView)=>meta(s.key)?.parent||forkParentKey(s);

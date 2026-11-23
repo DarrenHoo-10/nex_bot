@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useState } from "react";
 import { X } from "lucide-react";
 import { str, type RecordRow } from "../api";
@@ -31,7 +32,7 @@ export function RoutineDetail({ routine, latest, close, showResult, disable, rem
       <div className="routine-row-actions"><button type="button" disabled={pending} onClick={() => { setConfirm(undefined); setError(""); }}>取消</button><button type="button" className={confirm === "remove" ? "routine-danger" : ""} disabled={pending} onClick={async () => {
         setPending(true); setError("");
         try { await (confirm === "remove" ? remove() : disable()); }
-        catch (failure) { setError(failure instanceof Error ? failure.message : "操作未完成，请重试"); }
+        catch (failure) { setError(userErrorText(failure, "操作未完成，请重试")); }
         finally { setPending(false); }
       }}>{pending ? "处理中…" : confirm === "remove" ? "确认删除" : "确认关闭"}</button></div>
     </section> : <div className="routine-plan-actions routine-row-actions">

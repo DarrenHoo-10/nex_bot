@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Ellipsis } from "lucide-react";
@@ -31,7 +32,7 @@ export function AssistantActionDialog({botId,action,close,updated}:{botId:string
   const locked=useRef(false), request=useRef(crypto.randomUUID());
   const [preview,setPreview]=useState<Preview>(),[error,setError]=useState(""),[busy,setBusy]=useState(false);
   useEffect(()=>{const controller=new AbortController();
-    api<Preview>("bots/lifecycle/preview",{botId,action},controller.signal).then(setPreview).catch(e=>{if(!controller.signal.aborted)setError(e.message);});return()=>controller.abort();
+    api<Preview>("bots/lifecycle/preview",{botId,action},controller.signal).then(setPreview).catch(e=>{if(!controller.signal.aborted)setError(userErrorText(e));});return()=>controller.abort();
   },[botId,action]);
   const reset=action==="reset_memory",label=reset?"重置记忆":"删除助手";
   async function submit(){
@@ -39,7 +40,7 @@ export function AssistantActionDialog({botId,action,close,updated}:{botId:string
     locked.current=true;setBusy(true);setError("");
     try{await api<Operation>("bots/lifecycle/execute",{previewId:preview.previewId,requestId:request.current});
       await updated();close();
-    }catch(e){setError(e instanceof Error?e.message:"操作失败");}finally{locked.current=false;setBusy(false);}
+    }catch(e){setError(userErrorText(e, "操作失败"));}finally{locked.current=false;setBusy(false);}
   }
   return <>
     <h2>{preview?(reset?"重置「"+preview.name+"」的记忆？":"永久删除「"+preview.name+"」？"):label}</h2>

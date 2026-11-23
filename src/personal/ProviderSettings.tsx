@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Box, Check, Eye, EyeOff, MoreHorizontal, Pencil, Plus, Search, Star } from "lucide-react";
 import { api, listConnectionModels, modelName, reasoningLabels, reasoningOrder, type Connection, type ReasoningLevel, type State } from "./api";
@@ -6,7 +7,7 @@ import "./components/model-picker.css";
 import "./provider-settings.css";
 
 const formats = [{ value: "openai", label: "OpenAI 兼容 (/chat/completions)" }, { value: "anthropic", label: "Anthropic Messages (/v1/messages)" }];
-const errorText = (error: unknown) => error instanceof Error ? error.message : "操作失败";
+const errorText = (error: unknown) => userErrorText(error, "操作失败");
 
 /**
  * 设置 → 模型: providers ("供应商") on the left, the chosen one on the right with its address, key, default model and

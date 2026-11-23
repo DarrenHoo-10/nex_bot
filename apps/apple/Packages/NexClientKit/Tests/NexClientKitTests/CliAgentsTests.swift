@@ -29,6 +29,27 @@ final class CliAgentsTests: XCTestCase {
 
     // MARK: Models
 
+    func testTranscriptHidesCommandRecordsAndWordsModelFailures() {
+        let items = [
+            CliItem(id: "c1", ts: 1, kind: .user, text: "<command-name>/model</command-name>\n  <command-args>sonnet</command-args>"),
+            CliItem(id: "c2", ts: 2, kind: .user, text: "<local-command-stdout>Set model to Sonnet 5.5</local-command-stdout>"),
+            CliItem(id: "u1", ts: 3, kind: .user, text: "帮我做一个贪吃蛇"),
+            CliItem(id: "e1", ts: 4, kind: .notice, text: "API Error: Request rejected (429) · Qoder: usage limit reached: the account's credits are used up (0 / 0 credits)", level: .error),
+            CliItem(id: "e2", ts: 5, kind: .notice, text: "电脑离线", level: .error),
+        ]
+        let blocks = CliTranscript.group(items)
+        XCTAssertEqual(blocks.map(\.id), ["u1", "e1", "e2"])
+        XCTAssertEqual(blocks[1], .notice(id: "e1", level: .error, text: "模型调用失败：模型服务的额度已用完"))
+        XCTAssertEqual(blocks[2], .notice(id: "e2", level: .error, text: "电脑离线"))
+        XCTAssertFalse(CliTranscript.isCommandRecord("what does <command-name> mean?"))
+        XCTAssertEqual(CliTranscript.modelFailureReason("API Error: 529 {\"type\":\"overloaded_error\"}"), "模型服务暂时不可用")
+    }
+
+    func testHTTPStatusWordingWithoutServerText() {
+        XCTAssertEqual(CoreClient.httpError(status: 502, data: Data("<html><h1>502 Bad Gateway</h1></html>".utf8)).message, "服务暂时不可用，可能正在更新，请稍后重试")
+        XCTAssertEqual(CoreClient.httpError(status: 400, data: Data(#"{"error":"名称不能为空"}"#.utf8)).message, "名称不能为空")
+    }
+
     func testSnapshotDropsMalformedRows() throws {
         let snapshot = try decode(CliSnapshot.self, [
             "devices": [["id": "d1", "name": "办公室", "online": true, "cliAgents": ["engines": ["claude", "gemini"], "terminal": ["name": "herdr-core", "version": "1", "ready": true]]],

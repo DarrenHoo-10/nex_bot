@@ -59,3 +59,22 @@ export async function fileReference(entry:PickedFile,key:string,upload:boolean|(
   const reference="附件："+file.name+"\n"+result.path;
   deliveredFiles.set(file,reference);return reference;
 }
+
+/** Files of messages sent from this page, so edit-and-resend puts them back in the box. */
+const sentFiles: { key: string; body: string; files: PickedFile[] }[] = [];
+const plain = (text: string) => text.replace(/\s+/g, " ").trim();
+export function rememberSent(key: string, body: string, files: PickedFile[]) {
+  if (!files.length) return;
+  sentFiles.push({ key, body, files });
+  if (sentFiles.length > 40) sentFiles.shift();
+}
+/** The typed words and files of a message this page sent, found by its recorded text. */
+export function recallSent(key: string, text: string): { body: string; files: PickedFile[] } | null {
+  const recorded = plain(text);
+  for (let i = sentFiles.length - 1; i >= 0; i--) {
+    const entry = sentFiles[i];
+    if (entry.key !== key || !entry.files.every((picked) => recorded.includes(picked.file.name))) continue;
+    if (!entry.body || recorded.startsWith(plain(entry.body))) return { body: entry.body, files: entry.files };
+  }
+  return null;
+}

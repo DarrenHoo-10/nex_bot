@@ -9,6 +9,27 @@ enum AgentDrafts {
 
 private enum AgentTab: Hashable { case terminal, chat }
 
+/// A message sent from this screen that the session's records do not hold yet: it shows at once, with the dots under it.
+struct AgentPendingSend: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+    /// the items the transcript held when it was sent
+    let known: Set<String>
+
+    /// Still waiting: no new user item with its text, and nothing of the agent after it.
+    func waiting(in items: [CliItem]) -> Bool {
+        let plain = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !items.contains { item in
+            guard !known.contains(item.id) else { return false }
+            switch item.kind {
+            case .user: return item.text.trimmingCharacters(in: .whitespacesAndNewlines) == plain
+            case .turn: return false
+            default: return true
+            }
+        }
+    }
+}
+
 /// One session: terminal or transcript, the cards of what it asks for, and the composer.
 struct AgentSessionDetail: View {
     let model: CliAgentsModel
@@ -20,6 +41,11 @@ struct AgentSessionDetail: View {
     @State private var tab: AgentTab = .terminal
     @State private var forking = false
     @State private var actionError = ""
+    @State private var pending: [AgentPendingSend] = []
+    /// A model call that failed for good while this screen was open.
+    @State private var failure: String?
+    @State private var failuresSeen: Set<String>?
+    @State private var openedAt = Date()
 
     private var session: CliSession? { model.sessions.first { $0.key == key } }
 
@@ -37,6 +63,13 @@ struct AgentSessionDetail: View {
             if model.echoes[key] != nil { tab = .chat }
         }
         .onDisappear { model.closeSession(key) }
+        .onChange(of: key) { _, _ in pending = []; failuresSeen = nil; openedAt = Date() }
+        .onChange(of: model.transcript(key).items) { _, items in noteFailures(items) }
+        .alert("模型调用失败", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+            Button("知道了", role: .cancel) { failure = nil }
+        } message: {
+            Text((failure ?? "") + "\n任务已停在这里")
+        }
         .sheet(isPresented: $forking) {
             if let session {
                 AgentForkSheet(model: model, workspace: workspace, session: session) { botId in
@@ -72,11 +105,11 @@ struct AgentSessionDetail: View {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
                 } else {
-                    AgentTranscript(model: model, key: key, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil)
+                    AgentTranscript(model: model, key: key, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            AgentComposer(model: model, session: session) { next in onKeyChange(next) }
+            AgentComposer(model: model, session: session, pending: $pending) { next in onKeyChange(next) }
         }
     }
 
@@ -114,6 +147,22 @@ struct AgentSessionDetail: View {
             } label: { Image(systemName: "ellipsis.circle") }
         }
         #endif
+    }
+
+    /// What the records already held when the screen opened is history; a failure arriving later opens the alert.
+    private func noteFailures(_ items: [CliItem]) {
+        let failures = items.compactMap { item -> (id: String, ts: Int, reason: String)? in
+            guard item.kind == .notice, item.level == .error, let reason = CliTranscript.modelFailureReason(item.text) else { return nil }
+            return (item.id, item.ts, reason)
+        }
+        if failuresSeen == nil {
+            guard !items.isEmpty else { return }
+            let opened = Int(openedAt.timeIntervalSince1970 * 1000) - 5_000
+            failuresSeen = Set(failures.filter { $0.ts < opened }.map(\.id))
+        }
+        let fresh = failures.filter { !(failuresSeen?.contains($0.id) ?? false) }
+        for entry in fresh { failuresSeen?.insert(entry.id) }
+        if let last = fresh.last { failure = last.reason }
     }
 
     private func openLocal() async {
@@ -184,17 +233,22 @@ private struct AgentTranscript: View {
     var active = false
     /// what the agent is doing while the turn runs; shown as dots under the last message
     var working: String?
+    /// messages sent from here that the records do not hold yet
+    var pending: [AgentPendingSend] = []
 
     var body: some View {
         let t = model.transcript(key)
+        let sent = pending.filter { $0.waiting(in: t.items) }
+        let working = self.working ?? (sent.isEmpty ? nil : "等待回复")
         let blocks = CliTranscript.group(t.items)
         let completed = CliTranscript.completedReplies(t.items, active: active)
         let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
         Group {
-            if let echo, blocks.isEmpty {
+            if blocks.isEmpty && (echo != nil || !sent.isEmpty) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        AgentEchoBubble(text: echo)
+                        if let echo { AgentEchoBubble(text: echo) }
+                        ForEach(sent) { AgentEchoBubble(text: $0.text) }
                         AgentWorkingRow(engine: engine, label: working ?? "执行中", byline: true)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 6)
@@ -226,8 +280,9 @@ private struct AgentTranscript: View {
                                 } : nil)
                             }
                             if let echo { AgentEchoBubble(text: echo) }
+                            ForEach(sent) { AgentEchoBubble(text: $0.text) }
                             // the agent's name heads the dots only when nothing of this reply is shown yet
-                            if let working { AgentWorkingRow(engine: engine, label: working, byline: echo != nil || { if case .user = blocks.last { return true } else { return false } }()) }
+                            if let working { AgentWorkingRow(engine: engine, label: working, byline: echo != nil || !sent.isEmpty || { if case .user = blocks.last { return true } else { return false } }()) }
                             Color.clear.frame(height: 1).id("bottom")
                         }
                         .padding(.horizontal, 14).padding(.vertical, 6)
@@ -235,6 +290,7 @@ private struct AgentTranscript: View {
                     .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                     .onChange(of: blocks.last?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                     .onChange(of: working) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                    .onChange(of: sent.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                     .onChange(of: t.items.last?.text.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
@@ -442,6 +498,7 @@ private struct AgentRequestCard: View {
 private struct AgentComposer: View {
     let model: CliAgentsModel
     let session: CliSession
+    @Binding var pending: [AgentPendingSend]
     let onKeyChange: (CliSessionKey) -> Void
     @State private var draft = ""
     @State private var sending = false
@@ -492,13 +549,19 @@ private struct AgentComposer: View {
         }
     }
 
+    /// The box empties and the message shows in the conversation at once; a failure puts it back.
     private func send() async {
-        sending = true; error = ""
+        let text = draft
+        let entry = AgentPendingSend(text: text, known: Set(model.transcript(session.key).items.map(\.id)))
+        draft = ""; error = ""
+        pending.append(entry)
         do {
-            try await model.send(session.key, text: draft)
-            draft = ""
-        } catch { self.error = CliErrorText.text(for: error, fallback: "没能发送") }
-        sending = false
+            try await model.send(session.key, text: text)
+        } catch {
+            pending.removeAll { $0.id == entry.id }
+            if draft.isEmpty { draft = text }
+            self.error = CliErrorText.text(for: error, fallback: "没能发送")
+        }
     }
 
     private func interrupt() async {

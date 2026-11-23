@@ -11,6 +11,7 @@ import { toolFields } from "./tool-fields.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
 import { CONTEXT_OVERHEAD, OUTPUT_TRUNCATED, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryTarget, entryText, episodeStart, foldBlocked, foldable, historySource, hygieneScope, imageCandidates, rangeTarget, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, type SourceItem } from './context-tools.ts';
 import { applyRequestPrompt } from './request-prompt.ts';
+import { openAiBase } from '../../shared/model-catalog.mjs';
 
 let session: AgentSession | undefined;
 const replies = new Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
@@ -354,7 +355,7 @@ async function main(value: WorkerConfig) {
   for (const input of config.inputs) project(input, false);
   const runtime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const api = config.provider === "anthropic" ? "anthropic-messages" : "openai-completions";
-  runtime.registerProvider("nex", { name: "NexBot API", apiKey: config.apiKey, baseUrl: config.endpoint, api,
+  runtime.registerProvider("nex", { name: "NexBot API", apiKey: config.apiKey, baseUrl: config.provider === "anthropic" ? config.endpoint : openAiBase(config.endpoint), api,
     // Reasoning is declared only for a model whose provider settings offer levels; otherwise nothing is sent, so a
     // service without reasoning support never receives reasoning_effort or thinking.
     models: [{ id: config.model, name: config.model, api, reasoning: !!config.reasoning && config.reasoning !== "off", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: config.contextWindow, maxTokens: config.maxOutputTokens }] });

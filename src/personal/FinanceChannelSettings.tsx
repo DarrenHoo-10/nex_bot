@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 
@@ -16,7 +17,7 @@ export function FinanceChannelSettings({appId}: {appId: string}) {
 
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal).catch(e => { if (!controller.signal.aborted) setError(String(e.message ?? e)); });
+    void load(controller.signal).catch(e => { if (!controller.signal.aborted) setError(userErrorText(e)); });
     return () => controller.abort();
   }, [load]);
 
@@ -27,7 +28,7 @@ export function FinanceChannelSettings({appId}: {appId: string}) {
       const next = await api<Channel>("finance/channel", {appId, expectedVersion:channel.version, owner});
       setChannel(next);
     } catch (e) {
-      const reason = e instanceof Error ? e.message : "通道切换失败";
+      const reason = userErrorText(e, "通道切换失败");
       setError(reason.includes("FINANCE_STOCK_RECEIVER_STILL_RUNNING")
         ? "原飞书连接仍在运行。保持暂停，重启承载旧接收器的 Stock 进程后，再交给 NexBot。"
         : reason);

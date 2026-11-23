@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { MoreHorizontal, Plus } from "lucide-react";
@@ -80,7 +81,7 @@ export function FeishuCard({ state, financeBotId, refresh, onOpenApp }: { state:
   const action = async (key: string, operation: () => Promise<unknown>) => {
     setBusy(key); setError("");
     try { await operation(); await refresh(); }
-    catch (e) { setError(e instanceof Error ? e.message : "操作失败"); await refresh().catch(() => {}); }
+    catch (e) { setError(userErrorText(e, "操作失败")); await refresh().catch(() => {}); }
     finally { setBusy(""); }
   };
   const saveManual = (event: FormEvent<HTMLFormElement>) => {

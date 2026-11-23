@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { FeishuAvatar, FeishuStatus } from "./FeishuCard";
@@ -42,7 +43,7 @@ function GroupSettings({ app, group, saved, cancel }: { app: FeishuAppView; grou
   const save = async () => {
     setBusy(true); setError("");
     try { saved(await api<FeishuGroupView>("feishu/groups/save", { id: app.id, chatId: group.chatId, version: group.version, ...draft })); }
-    catch (e) { setError(e instanceof Error ? e.message : "保存失败"); }
+    catch (e) { setError(userErrorText(e, "保存失败")); }
     finally { setBusy(false); }
   };
   return <div className="feishu-group-body">
@@ -64,12 +65,12 @@ export function FeishuAppDetail({ app, refresh }: { app: FeishuAppView; refresh(
   const [error, setError] = useState(""), [open, setOpen] = useState(""), [busy, setBusy] = useState("");
   const load = useCallback(async () => {
     try { const result = await api<{ groups: FeishuGroupView[]; error: string | null }>(`feishu/groups?id=${encodeURIComponent(app.id)}`); setGroups(result.groups); setError(result.error ?? ""); }
-    catch (e) { setError(e instanceof Error ? e.message : "读取群列表失败"); setGroups(current => current ?? []); }
+    catch (e) { setError(userErrorText(e, "读取群列表失败")); setGroups(current => current ?? []); }
   }, [app.id]);
   useEffect(() => { void load(); }, [load, app.status]);
   const act = async (key: string, operation: () => Promise<unknown>) => {
     setBusy(key); setError("");
-    try { await operation(); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(""); }
+    try { await operation(); await refresh(); } catch (e) { setError(userErrorText(e, "操作失败")); } finally { setBusy(""); }
   };
   const banner = app.status === "error" ? <div className="feishu-banner is-error"><span>{app.error || "连接异常"}</span><button type="button" disabled={!!busy} onClick={() => void act("reconnect", async () => { await api("feishu/toggle", { id: app.id, version: app.version, enabled: false }); await api("feishu/toggle", { id: app.id, version: app.version + 1, enabled: true }); })}>重新连接</button></div>
     : app.status === "busy" ? <div className="feishu-banner is-busy"><span>另一个程序正在使用这个应用的长连接</span></div>

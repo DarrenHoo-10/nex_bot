@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { BrandMark } from "./components/BrandMark";
 import { LogOut } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
@@ -71,7 +72,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
       }
       setStatus(result);
     }
-    catch (e) { if (current === generation.current) { setStatus(undefined); setError(e instanceof Error ? e.message : "无法验证登录，请重试"); } }
+    catch (e) { if (current === generation.current) { setStatus(undefined); setError(userErrorText(e, "无法验证登录，请重试")); } }
     finally { if (current === generation.current && !returningToLogin.current) setLoading(false); }
   }, []);
   useEffect(() => {
@@ -111,7 +112,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
         await desktop?.rememberLogin?.(session);
         if (!desktop) { history.replaceState(null, "", `${location.pathname}${location.search}#workspace`); setHome(false); }
         await refresh();
-      } catch (e) { setError(e instanceof Error ? e.message : "登录失败，请重试"); const password = form.elements.namedItem("password") as HTMLInputElement; password.value = ""; }
+      } catch (e) { setError(userErrorText(e, "登录失败，请重试")); const password = form.elements.namedItem("password") as HTMLInputElement; password.value = ""; }
       finally { setBusy(false); }
     })();
   }}><label className="field">邮箱<input name="email" type="email" required maxLength={254} autoComplete="username" disabled={busy} placeholder="输入你的邮箱"/></label><label className="field">密码<input name="password" type="password" required maxLength={4096} autoComplete="current-password" disabled={busy} placeholder="输入密码"/></label><button className="primary" disabled={busy}>{busy ? "正在登录…" : "登录"}</button></form>}{error ? <p className="login-error" role="alert">{error}</p> : null}<div className="login-signup">没有账号？<a href={registerUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => { if (desktop?.openExternal) { event.preventDefault(); void desktop.openExternal(event.currentTarget.href).catch(() => setError("无法打开注册页，请稍后重试")); } }}>去注册</a></div></section>;
