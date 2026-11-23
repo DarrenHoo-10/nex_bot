@@ -142,6 +142,8 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 4, checksum: hash(lifecycle), applied_at: now() });
       });
     }
+    // Preserve the policy sets and checksums used by historical migrations.
+    const preDeleteActions = basicActions.filter(action => action !== "routine.delete");
     if (!this.get("SELECT version FROM schema_migrations WHERE version=5")) {
       const clientSql = readFileSync(new URL("./client-schema.sql", import.meta.url), "utf8");
       this.transaction(() => {
@@ -162,7 +164,7 @@ export class CoreStore {
         for (const policy of this.all("SELECT * FROM bot_policies")) {
           const tools = (JSON.parse(String(policy.policy_json)) as { tools?: string[] }).tools ?? [];
           const normalized = [...new Set(tools)].sort().join(",");
-          if ([previous, [...previous, "device.list", "device.read", "device.exec"]].some((p) => [...p].sort().join(",") === normalized)) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...JSON.parse(String(policy.policy_json)), tools: [...tools, ...basicActions.filter((a) => a.startsWith("routine."))] }), policy.bot_id);
+          if ([previous, [...previous, "device.list", "device.read", "device.exec"]].some((p) => [...p].sort().join(",") === normalized)) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...JSON.parse(String(policy.policy_json)), tools: [...tools, ...preDeleteActions.filter((a) => a.startsWith("routine."))] }), policy.bot_id);
         }
         this.insert("schema_migrations", { version: 5, checksum: hash(clientSql), applied_at: now() });
       });
@@ -176,14 +178,14 @@ export class CoreStore {
         for (const policy of this.all("SELECT * FROM bot_policies WHERE version=1")) {
           const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
           if ([...new Set(value.tools ?? [])].sort().join(",") !== legacyTools.join(",")) continue;
-          this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools!, ...basicActions.filter((action) => action.startsWith("routine."))] }), policy.bot_id);
+          this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools!, ...preDeleteActions.filter((action) => action.startsWith("routine."))] }), policy.bot_id);
         }
-        this.insert("schema_migrations", { version: 6, checksum: hash(JSON.stringify({ legacyTools, added: basicActions.filter((action) => action.startsWith("routine.")), uneditedVersion: 1 })), applied_at: now() });
+        this.insert("schema_migrations", { version: 6, checksum: hash(JSON.stringify({ legacyTools, added: preDeleteActions.filter((action) => action.startsWith("routine.")), uneditedVersion: 1 })), applied_at: now() });
       });
     }
     if (!this.get("SELECT version FROM schema_migrations WHERE version=7")) {
       // Freeze the shipped migration; later defaults must not change its hash.
-      const version7Actions = basicActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action));
+      const version7Actions = preDeleteActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action));
       const oldBasic = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "routine.list", "routine.save", "routine.toggle", "routine.run"];
       const legacy = ["memory.search", "memory.read", "memory.write", "agent.delegate", "device.read", "device.list", "device.exec", "routine.list", "routine.save", "routine.toggle", "routine.run"];
       const standardSets = [oldBasic, [...oldBasic, "device.list", "device.read", "device.exec"], legacy].map((tools) => [...tools].sort().join(","));
@@ -198,8 +200,8 @@ export class CoreStore {
       });
     }
     if (!this.get("SELECT version FROM schema_migrations WHERE version=8")) {
-      const previous = basicActions.filter((action) => action !== "device.exec").sort().join(",");
-      const legacyPrevious = basicActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action)).sort().join(",");
+      const previous = preDeleteActions.filter((action) => action !== "device.exec").sort().join(",");
+      const legacyPrevious = preDeleteActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action)).sort().join(",");
       this.transaction(() => {
         for (const policy of this.all("SELECT * FROM bot_policies")) {
           if (this.get("SELECT id FROM audit_records WHERE action='agent.policy.update' AND entity_id=?", policy.bot_id)) continue;
@@ -242,7 +244,7 @@ export class CoreStore {
       this.db.exec(schema);
       for (const policy of this.all("SELECT * FROM bot_policies")) {
         const value = JSON.parse(String(policy.policy_json));
-        if ([...new Set(value.tools ?? [])].sort().join(",") === basicActions.filter((a) => a !== "attachment.read").sort().join(",")) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools, "attachment.read"] }), policy.bot_id);
+        if ([...new Set(value.tools ?? [])].sort().join(",") === preDeleteActions.filter((a) => a !== "attachment.read").sort().join(",")) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools, "attachment.read"] }), policy.bot_id);
       }
       this.insert("schema_migrations", { version: 13, checksum: hash(schema), applied_at: now() });
     });
@@ -287,10 +289,10 @@ export class CoreStore {
       const schema = 'CREATE TABLE image_models(id TEXT PRIMARY KEY,name TEXT NOT NULL,endpoint TEXT NOT NULL,model TEXT NOT NULL,ciphertext TEXT NOT NULL,version INTEGER NOT NULL) STRICT;';
       this.db.exec(schema);
       for (const operation of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TRIGGER sync_image_models_${operation} AFTER ${operation} ON image_models BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
-      const oldDefault = basicActions.filter(action => !action.startsWith('image.')).sort().join(',');
+      const oldDefault = preDeleteActions.filter(action => !action.startsWith('image.')).sort().join(',');
       for (const policy of this.all('SELECT * FROM bot_policies')) {
         const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
-        if ([...new Set(value.tools ?? [])].sort().join(',') === oldDefault) this.run('UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?', JSON.stringify({ ...value, tools: basicActions }), policy.bot_id);
+        if ([...new Set(value.tools ?? [])].sort().join(',') === oldDefault) this.run('UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?', JSON.stringify({ ...value, tools: preDeleteActions }), policy.bot_id);
       }
       this.insert('schema_migrations', { version: 19, checksum: hash(schema), applied_at: now() });
     });

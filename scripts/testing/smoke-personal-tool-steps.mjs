@@ -134,6 +134,28 @@ try {
   assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
   await screenshot("html-preview-wide-mobile");
   cases.push("html-preview-spans-wide-desktop", "html-preview-fits-mobile");
+  // Keep the final model turn pending while checking the live transcript.
+  const finalTurn = Promise.withResolvers();
+  const lookup = (id, text) => ({ kind: "openai-tool", text, calls: [{ id, name: "broker", args: JSON.stringify({ action: "tool.search", query: "memory" }) }] });
+  model.scripts.push(lookup("first", "先检查资料。"), lookup("second", "再核对记录。"), { kind: "openai-text", text: "核对完成。", waitFor: finalTurn.promise });
+  try {
+    const picture = path.join(root, "fixture.png");
+    writeFileSync(picture, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQaPgPAAJjAaB56d6tAAAAAElFTkSuQmCC", "base64"));
+    const dom = await command("DOM.getDocument");
+    const input = await command("DOM.querySelector", { nodeId: dom.root.nodeId, selector: 'input[aria-label="上传附件"]' });
+    await command("DOM.setFileInputFiles", { nodeId: input.nodeId, files: [picture] });
+    await until(() => evaluate("!!document.querySelector('.attachment-thumb-tile')"), "uploaded test image");
+    await send("请核对这张图片。");
+    await until(() => evaluate("document.querySelector('.streaming .markdown p:nth-child(2)')?.textContent === '再核对记录。'"), "separate live paragraphs");
+    assert.equal(await evaluate("document.querySelector('.streaming .markdown p').textContent"), "先检查资料。");
+    assert.equal(await evaluate("!!document.querySelector('.message.user time')"), false);
+    assert.equal(await evaluate("!!document.querySelector('.message.assistant time')"), true);
+    await click(".message.user .message-image");
+    await click('[aria-label="关闭图片预览"]');
+    await until(() => evaluate("!document.querySelector('.image-lightbox') && !!document.querySelector('.message.user .message-image img')"), "close preserves the in-use attachment");
+    cases.push("multi-turn-progress-paragraphs", "user-message-without-time", "close-active-message-image");
+  } finally { finalTurn.resolve(); }
+  await until(() => evaluate("document.querySelector('.transcript').textContent.includes('核对完成。')"), "final reply committed");
   assert.deepEqual(exceptions, []);
   writeFileSync(path.join(evidence, "result.json"), JSON.stringify({ ok: true, cases, exceptions, coreOrigin: core.origin }, null, 2));
   console.log(JSON.stringify({ ok: true, cases, evidence }, null, 2));

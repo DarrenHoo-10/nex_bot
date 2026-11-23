@@ -441,8 +441,8 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     });
     await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 250)); });
   }
-  const cardButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button")].map(button => button.textContent);
-  const cardButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button")].find(button => button.textContent === label)!;
+  const cardButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button, .job-card + .job-response-actions button")].map(button => button.textContent);
+  const cardButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button, .job-card + .job-response-actions button")].find(button => button.textContent === label)!;
 
   it("shows the hand-off as a marker and the report as a card whose actions follow the job's current stage", async () => {
     const latest = { id: "r1", state: "question", summary: "已整理 12 个文件", question: "要保留截图吗？", messageId: "report-msg", createdAt: 2 };
@@ -455,6 +455,8 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(container.querySelector(".job-card-body")?.textContent).toContain("要保留截图吗？");
     expect(container.querySelector(".job-card-body")?.textContent).not.toContain("后台任务「");
     expect(cardButtons()).toEqual(["回复", "停止"]);
+    expect(cardButton("回复").childElementCount).toBe(0);
+    expect(cardButton("停止").childElementCount).toBe(0);
     await show([job({ stage: "running", latestReport: latest })], [report("question")]);
     expect(cardButtons()).toEqual(["停止"]);
     await act(async () => cardButton("停止").click());

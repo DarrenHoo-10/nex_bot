@@ -260,7 +260,7 @@ struct AttachmentThumbnail: View {
     }
 }
 
-/// What the in-window picture viewer is showing. The X deletes the picture; the backdrop closes.
+/// What the in-window picture viewer is showing. Closing the viewer and deleting the image are separate actions.
 struct ChatImagePreview: Identifiable {
     let id = UUID()
     let image: NSImage
@@ -281,18 +281,28 @@ struct ChatImageViewer: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(32)
                 .overlay(alignment: .topTrailing) {
-                    Button(action: remove) {
-                        Group {
-                            if deleting { ProgressView().controlSize(.small) }
-                            else { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+                    HStack(spacing: 8) {
+                        Button(action: remove) {
+                            Group {
+                                if deleting { ProgressView().controlSize(.small) }
+                                else { Image(systemName: "trash").font(.system(size: 13, weight: .semibold)) }
+                            }
+                            .frame(width: 34, height: 34)
+                            .foregroundStyle(.white)
+                            .background(.black.opacity(0.55), in: Circle())
                         }
-                        .frame(width: 34, height: 34)
-                        .foregroundStyle(.white)
-                        .background(.black.opacity(0.55), in: Circle())
+                        .buttonStyle(.plain)
+                        .disabled(deleting)
+                        .help("删除图片").accessibilityLabel("删除图片")
+                        Button { onClose() } label: {
+                            Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+                                .frame(width: 34, height: 34)
+                                .foregroundStyle(.white)
+                                .background(.black.opacity(0.55), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("关闭图片预览")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(deleting)
-                    .help("删除图片").accessibilityLabel("删除图片")
                     .offset(x: -10, y: 10)
                 }
             if !error.isEmpty {

@@ -47,13 +47,14 @@
   display: block; max-width: calc(100vw - 48px); max-height: calc(100dvh - 48px);
   object-fit: contain; border-radius: 10px; box-shadow: 0 18px 48px rgb(0 0 0 / 24%);
 }
-.rk-workspace .image-lightbox-delete {
-  position: absolute; top: 8px; right: 8px; display: grid; place-items: center;
+.rk-workspace .image-lightbox-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 8px; }
+.rk-workspace .image-lightbox-actions button {
+  display: grid; place-items: center;
   width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%;
   background: rgb(0 0 0 / 55%); color: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
 }
-.rk-workspace .image-lightbox-delete:hover:not(:disabled) { background: rgb(0 0 0 / 78%); }
-.rk-workspace .image-lightbox-delete:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.rk-workspace .image-lightbox-actions button:hover:not(:disabled) { background: rgb(0 0 0 / 78%); }
+.rk-workspace .image-lightbox-actions button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .rk-workspace .image-lightbox-delete:disabled svg { animation: nex-image-spin 900ms linear infinite; }
 .rk-workspace .image-lightbox-error {
   position: fixed; z-index: 150; left: 50%; bottom: 28px; transform: translateX(-50%);

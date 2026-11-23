@@ -87,7 +87,7 @@ export function JobChat({ id, botName, avatar, back, renderContent }: { id: stri
               {entry.role === "assistant" ? avatar : null}
               <div className="message-body">
                 <div className="bubble">{renderContent(entry.content)}{entry.question ? <p className="job-question">{entry.question}</p> : null}</div>
-                <div className="message-meta"><time>{entry.pending ? "发送中…" : clock(entry.at)}</time></div>
+                {entry.pending || entry.role !== "user" ? <div className="message-meta">{entry.pending ? "发送中…" : <time>{clock(entry.at)}</time>}</div> : null}
               </div>
             </article>)}
         {working ? <article className="message assistant">

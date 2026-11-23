@@ -670,8 +670,10 @@ private fun MessageBlock(
                 horizontalArrangement = if (user) Arrangement.End else Arrangement.Start,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(timeLabel(message.createdAt), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(9.dp))
+                if (!user) {
+                    Text(timeLabel(message.createdAt), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(9.dp))
+                }
                 TextAction("引用") { onQuote(Copy.senderLabel(message, bot?.name ?: "Agent", null), message.content) }
                 Spacer(Modifier.width(9.dp))
                 TextAction("复制") { onCopy(message.content) }

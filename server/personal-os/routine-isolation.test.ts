@@ -39,6 +39,28 @@ afterEach(async () => {
 });
 
 describe('Routine execution isolation in disposable Core fixtures', () => {
+  it('lets a scheduled assistant discover and retire its own plan, with a replayable receipt', async () => {
+    const { app, bot, fake } = await fixture();
+    const draft = { name: '合成巡检', prompt: '结束后清理计划', scheduleKind: 'interval', intervalMinutes: 5 };
+    const own = app.routines.save({ ...draft, botId: bot }).id;
+    const peer = app.routines.save({ ...draft, botId: app.store.createBot('其他助手') }).id;
+    const args = { action: 'routine.delete', routineId: own, expectedVersion: 1 };
+    const tool = (id: string, input: Record<string, unknown>) => ({
+      kind: 'openai-tool' as const, calls: [{ id, name: 'broker', args: JSON.stringify(input) }],
+    });
+    fake.scripts.push(tool('discover', { action: 'tool.search', query: '删除定时任务' }),
+      tool('list', { action: 'routine.list' }), tool('delete-own', args), { kind: 'openai-text', text: '清理完成' });
+    app.routines.runNow(own, 'self-cleanup');
+    const run = app.store.get('SELECT task_id FROM routine_occurrences WHERE routine_id=?', own)!;
+    await wait(() => task(app, String(run.task_id)).status === 'succeeded', app);
+    const lookup = app.store.get("SELECT result_json FROM tool_calls WHERE task_id=? AND tool_name='tool.search'", run.task_id)!;
+    expect(JSON.parse(String(lookup.result_json)).items[0].action).toBe('routine.delete');
+    const call = app.store.get("SELECT * FROM tool_calls WHERE task_id=? AND tool_name='routine.delete'", run.task_id)!;
+    expect(app.routines.list().map(row => row.id)).toEqual([peer]);
+    expect(app.routines.tool(call, args)).toEqual({ routineId: own, deleted: true });
+    expect(() => app.routines.tool({ ...call, id: 'cross-bot' }, { ...args, routineId: peer })).toThrow('不属于');
+  }, 40_000);
+
   it('deletes through the authenticated API without reviving tool receipts or interrupting active work', async () => {
     const f = await fixture(), { app, bot, fake } = f;
     const draft = { name: '删除验证计划', prompt: '保留执行结果', scheduleKind: 'interval', intervalMinutes: 5 };

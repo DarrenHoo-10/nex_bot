@@ -176,10 +176,12 @@ try {
   await command("Emulation.setDeviceMetricsOverride", {width:1440,height:960,deviceScaleFactor:1,mobile:false});
   await click('.message-image');
   await until(()=>evaluate("!!document.querySelector('.image-lightbox')"),"image lightbox");
-  if(await evaluate("[...document.querySelectorAll('.image-lightbox button')].map(b=>b.getAttribute('aria-label')).join('|')")!=="删除图片")throw new Error("Lightbox exposes extra controls");
+  await click('[aria-label="关闭图片预览"]');
+  await until(()=>evaluate("!document.querySelector('.image-lightbox') && !!document.querySelector('.message-image')"),"closing preserves image");
+  await click('.message-image');
   await click('.image-lightbox-delete');
   await until(()=>evaluate("!document.querySelector('.message-image')"),"image deleted from message",15000);
-  cases.push("image-lightbox-x-deletes-generated-image");
+  cases.push("image-lightbox-close-preserves-image-and-trash-deletes");
   const htmlProbeRequests = [];
   ws.on('message', raw => { const event = JSON.parse(raw); if (event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('static-html-probe')) htmlProbeRequests.push(event.params.request.url); });
   await command('Network.enable');

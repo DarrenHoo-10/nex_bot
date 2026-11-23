@@ -4,7 +4,7 @@ const fixtureFetch = globalThis.fetch;
 
 export type FakeScript = (
   | { kind: "openai-text"; text: string }
-  | { kind: "openai-tool"; calls: Array<{ id: string; name: string; args: string }>; usage?: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens: number } } }
+  | { kind: "openai-tool"; text?: string; calls: Array<{ id: string; name: string; args: string }>; usage?: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens: number } } }
   | { kind: "openai-error"; status: number; message: string }
   | { kind: "anthropic-text"; text: string }
   | { kind: "anthropic-tool"; id: string; name: string; args: string }
@@ -50,7 +50,7 @@ function openaiText(text: string): string {
   ]);
 }
 
-function openaiTool(calls: Array<{ id: string; name: string; args: string }>, usage?: Extract<FakeScript, { kind: "openai-tool" }>['usage']): string {
+function openaiTool(calls: Array<{ id: string; name: string; args: string }>, usage?: Extract<FakeScript, { kind: "openai-tool" }>['usage'], text?: string): string {
   return sse([
     {
       id: "chatcmpl-p0-tool",
@@ -59,6 +59,7 @@ function openaiTool(calls: Array<{ id: string; name: string; args: string }>, us
         index: 0,
         delta: {
           role: "assistant",
+          ...(text ? { content: text } : {}),
           tool_calls: calls.map((call, index) => ({
             index,
             id: call.id,
@@ -196,7 +197,7 @@ export function startFakeModel(probeFetch: typeof fetch = fixtureFetch): Promise
       return;
     }
     if (script.kind === "openai-tool") {
-      write(res, 200, "text/event-stream", openaiTool(script.calls, script.usage));
+      write(res, 200, "text/event-stream", openaiTool(script.calls, script.usage, script.text));
       return;
     }
     if (script.kind === "anthropic-text") {

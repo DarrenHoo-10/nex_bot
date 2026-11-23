@@ -673,7 +673,7 @@ private struct MessageRow: View {
     /// Short time plus the hover actions 引用 and 复制.
     private var meta: some View {
         HStack(spacing: 10) {
-            if let at = message.createdAt { Text(TimeFormat.formatShortTime(at)).font(.system(size: 10.5).monospacedDigit()).help(TimeFormat.formatTime(at)) }
+            if !message.isFromUser, let at = message.createdAt { Text(TimeFormat.formatShortTime(at)).font(.system(size: 10.5).monospacedDigit()).help(TimeFormat.formatTime(at)) }
             if canAct { actions.opacity(actionsVisible ? 1 : 0) }
         }
         .font(.system(size: 10.5)).foregroundStyle(Theme.muted)

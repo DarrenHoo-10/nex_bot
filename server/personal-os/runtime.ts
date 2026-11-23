@@ -106,7 +106,7 @@ export class TaskRuntime {
         store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id=?", task.id);
       }
       for (const call of store.all("SELECT * FROM tool_calls WHERE status='executing'")) {
-        const recoverable = [...jobActions, "agent.feishuDelivery", "html.render", "tool.search","memory.search", "memory.read", "memory.write", "memory.core.update", "memory.topic", "agent.directory", "agent.delegate", "agent.create", "agent.update", "device.inventory", "device.info", "device.read", "device.list", "skill.list", "skill.read", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "connector.list", "connector.tools", "attachment.read"].includes(String(call.tool_name));
+        const recoverable = [...jobActions, "agent.feishuDelivery", "html.render", "tool.search","memory.search", "memory.read", "memory.write", "memory.core.update", "memory.topic", "agent.directory", "agent.delegate", "agent.create", "agent.update", "device.inventory", "device.info", "device.read", "device.list", "skill.list", "skill.read", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "routine.delete", "connector.list", "connector.tools", "attachment.read"].includes(String(call.tool_name));
         store.run("UPDATE tool_calls SET status=? WHERE id=?", recoverable ? "ready" : "unknown", call.id);
         if (!recoverable) store.run("UPDATE tasks SET status='needs_reconciliation' WHERE id=?", call.task_id);
       }
