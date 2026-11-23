@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [GitHub 监视与 Webhook 原子工具](github-webhook-tools.md)
+
 - [NexAgent 会话翻译：全平台发布 0.9.44（2026-11-22）](nexagent-translation-release-20261122.md)
 - [NexAgent 会话翻译配置与验证](nexagent-translation.md)
 - [NexAgent 历史分页、远程消息、上下文窗口与单按钮输入框：全平台发布 0.9.43（2026-11-22）](nexagent-0943-release-20261122.md)

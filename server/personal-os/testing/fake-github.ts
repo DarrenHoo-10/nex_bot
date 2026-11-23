@@ -10,6 +10,7 @@ export async function startFakeGithub() {
     slowDown: false, apiStatus: 200, api401: 0, echoToken: false, malformed: false, revokeStatus: 200, checkConclusion: "failure", rateLimited: false, retryAfter: 120, rateWaitCount: 0, logBody: "2026-11-15T10:00:01 合成测试：unit-test 失败于 expect(2+2).toBe(5)\n使用合成日志验证日志尾部裁剪。",
   };
   const requests: Array<{ method: string; path: string; query: string; authorization: string }> = [];
+  const hooks: Array<{ id: number; events: string[]; active: boolean; config: { url: string; secret: string } }> = [];
   const codes = new Map<string, { redirect: string }>();
   const tokens = new Map<string, string>();
   let exchanges = 0, deviceStarts = 0, devicePolls = 0, revocations = 0;
@@ -61,6 +62,19 @@ export async function startFakeGithub() {
     const echo = state.echoToken ? accessToken : "";
     const route = url.pathname.slice("/api/v3/".length);
     const ok = (value: unknown) => json(response, 200, value);
+    if (route === "repos/example/nexbot/hooks") {
+      if (request.method === "POST") {
+        let body = "";
+        for await (const chunk of request) body += String(chunk);
+        const data = JSON.parse(body);
+        hooks.push({ ...data, id: hooks.length + 1 });
+        json(response, 201, { id: hooks.length }); return;
+      }
+      ok(hooks); return;
+    }
+    if (route === "repos/example/nexbot/hooks/1/pings" && request.method === "POST") {
+      response.writeHead(204); response.end(); return;
+    }
     if (request.method === "DELETE" && route.startsWith("applications/")) {
       revocations++;
       const basic = Buffer.from((request.headers.authorization ?? "").replace(/^Basic /, ""), "base64").toString("utf8");
@@ -104,7 +118,7 @@ export async function startFakeGithub() {
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Fixture address unavailable");
   const origin = `http://127.0.0.1:${address.port}`;
   return {
-    origin, state, requests, get exchanges() { return exchanges; }, get deviceStarts() { return deviceStarts; }, get devicePolls() { return devicePolls; }, get revocations() { return revocations; },
+    origin, state, requests, hooks, get exchanges() { return exchanges; }, get deviceStarts() { return deviceStarts; }, get devicePolls() { return devicePolls; }, get revocations() { return revocations; },
     configuration: { clientId: "fixture-github-client", clientSecret: "synthetic-github-secret", fixtureOrigin: origin },
     async close() { await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); },
   };

@@ -95,7 +95,7 @@ export async function createPersonalApp(options: AppOptions) {
   };
   const runtime = new TaskRuntime(store, changed);
   runtime.memory.retrieval.config.defaults = options.retrieval ?? {};
-  const connectors = new ConnectorModule(store, changed, options.gmail, options.github);
+  const connectors = new ConnectorModule(store, changed, options.gmail, options.github, options.publicOrigin);
   runtime.connectorExecutor = (call, args, authorize) => finance.handles(args) ? finance.execute(call, args, authorize, runtime.isTopicTask(String(call.task_id))?.audience === "public" ? "public" : "private") : feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
@@ -118,6 +118,7 @@ export async function createPersonalApp(options: AppOptions) {
 
   const agents = new AgentModule(store, runtime);
   const monitors = new GithubMonitorModule(store, changed, connectors.oauth, agents);
+  connectors.monitors = monitors;
   const lifecycle = new AssistantLifecycle(store,runtime,ids=>feishu?.detachDeleted(ids));
   const stockHistory=new StockHistory(store,agents,runtime,finance);
   finance.onHistorySession=(sessionId)=>stockHistory.schedule(sessionId);
