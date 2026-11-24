@@ -186,7 +186,10 @@ export function codexWriter(home: string, threadId: string, options: CodexWriter
       if (pid === null) return statSync(lock).mtimeMs > now - 10 * 60_000 ? "yes" : "unknown";
       return isPidAlive(pid) ? "yes" : "no";
     }
-  } catch {
+  } catch (error) {
+    // On Windows Codex holds this file with an exclusive handle. A stale lock
+    // can be read, but reading a held one fails with a sharing violation (EBUSY).
+    if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EBUSY") return "yes";
     return "unknown";
   }
   try {
@@ -198,14 +201,10 @@ export function codexWriter(home: string, threadId: string, options: CodexWriter
 }
 
 function lockPid(file: string): number | null {
-  try {
-    // owner pid is a small JSON or plain number; anything else is "no pid"
-    const text = readSmall(file);
-    const json = /"pid"\s*:\s*(\d+)/.exec(text) ?? /^\s*(\d+)\s*$/.exec(text);
-    return json ? Number(json[1]) : null;
-  } catch {
-    return null;
-  }
+  // owner pid is a small JSON or plain number; anything else is "no pid"
+  const text = readSmall(file);
+  const json = /"pid"\s*:\s*(\d+)/.exec(text) ?? /^\s*(\d+)\s*$/.exec(text);
+  return json ? Number(json[1]) : null;
 }
 
 function readSmall(file: string): string {

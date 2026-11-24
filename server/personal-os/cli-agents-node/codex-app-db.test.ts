@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -92,6 +92,33 @@ describe("latestDb", () => {
 });
 
 describe("CodexAppDb.scan", () => {
+  it("reports an App-only turn as running and clears it when the history ends it", async () => {
+    makeState(5, [{ id: ID }]);
+    const startedAt = NOW - 1000;
+    makeHistory(1, ID, [{ id: "turn-1", status: "inProgress", startedAt, completedAt: null }], []);
+    const scanner = new CodexScanner(home, { writer: () => "no" });
+    expect((await scanner.scan({ now: NOW }))[0]).toMatchObject({ state: "running", liveIn: "desktop" });
+    expect((await scanner.scan({ now: NOW + 120_000 }))[0].state).toBe("idle");
+    const history = new DatabaseSync(path.join(home, "thread_history_1.sqlite"));
+    history.prepare("UPDATE thread_turns SET status = 'completed', completed_at = ? WHERE thread_id = ?").run(NOW, ID);
+    history.close();
+    expect((await scanner.scan({ now: NOW }))[0].state).toBe("idle");
+  });
+
+  it("uses history when a large rollout record displaces the turn marker", async () => {
+    const dir = path.join(home, "sessions", "2026", "11", "10");
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `rollout-2026-11-10T11-58-00-${ID}.jsonl`);
+    writeFileSync(file, [
+      { type: "session_meta", payload: { id: ID, cwd: "D:/app", originator: "Codex Desktop" } },
+      { type: "event_msg", payload: { type: "task_started" } },
+      { type: "response_item", payload: { output: "a".repeat(128 * 1024) } },
+    ].map((item) => JSON.stringify(item)).join("\n") + "\n");
+    makeHistory(1, ID, [{ id: "turn-1", status: "inProgress", startedAt: NOW - 1000, completedAt: null }], []);
+    const scanner = new CodexScanner(home, { writer: () => "yes" });
+    expect((await scanner.scan({ now: NOW }))[0]).toMatchObject({ state: "running", liveIn: "desktop" });
+  });
+
   it("lists chats without a rollout file as idle desktop sessions", async () => {
     makeState(5, [
       { id: ID, title: "Old title", name: "Renamed chat", cwd: "D:/app", git_branch: "main", model: "gpt-5" },

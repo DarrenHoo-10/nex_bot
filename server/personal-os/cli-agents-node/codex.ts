@@ -203,8 +203,8 @@ async function parseHead(file: string, size: number): Promise<HeadInfo> {
 interface TailInfo {
   size: number;
   mtimeMs: number;
-  /** a turn started and has not ended */
-  open: boolean;
+  /** undefined when the tail contains neither a start nor an end */
+  open?: boolean;
   lastTimestamp?: number;
   model?: string;
   context?: CliContextUsage;
@@ -214,7 +214,7 @@ const TURN_START = new Set(["task_started", "turn_started"]);
 const TURN_END = new Set(["task_complete", "turn_complete", "turn_aborted"]);
 
 async function parseTail(file: string, size: number, mtimeMs: number): Promise<TailInfo> {
-  const info: TailInfo = { size, mtimeMs, open: false };
+  const info: TailInfo = { size, mtimeMs };
   let handle;
   try {
     handle = await open(file, "r");
@@ -309,17 +309,23 @@ export class CodexScanner {
       }
     }
     const chosen = [...byId.values()].sort((a, b) => b.file.mtimeMs - a.file.mtimeMs).slice(0, this.options.maxSessions ?? MAX_SESSIONS);
-    const rows: LocalSession[] = [];
+    const rollouts: Array<(typeof chosen)[number] & { tail: TailInfo }> = [];
+    for (const entry of chosen) rollouts.push({ ...entry, tail: await this.tail(entry.file) });
+    const appChats = (await this.appDb.scan(now)).filter((chat) => !byId.has(chat.nativeId));
+    const activeTurns = await this.appDb.activeTurns([
+      ...rollouts.filter(({ tail }) => tail.open === undefined).map(({ meta }) => meta.id),
+      ...appChats.map((chat) => chat.nativeId),
+    ]);
     const writer = this.options.writer ?? ((home, id, at) => codexWriter(home, id, { now: at }));
-    for (const { file, head, meta } of chosen) {
-      const tail = await this.tail(file);
-      rows.push(this.row(file, head, meta, tail, now, writer));
-    }
+    const rows = rollouts.map(({ file, head, meta, tail }) => this.row(file, head, meta, tail, activeTurns.has(meta.id), now, writer));
     // chats that exist only in the App's database
     const limit = this.options.maxSessions ?? MAX_SESSIONS;
-    for (const chat of await this.appDb.scan(now)) {
+    for (const chat of appChats) {
       if (rows.length >= limit) break;
-      if (!byId.has(chat.nativeId)) rows.push(chat);
+      const startedAt = activeTurns.get(chat.nativeId);
+      const recent = startedAt !== undefined && now - startedAt <= RUNNING_WINDOW_MS;
+      const running = activeTurns.has(chat.nativeId) && (recent || writer(this.home, chat.nativeId, now) === "yes");
+      rows.push(running ? { ...chat, state: "running", lastActivityAt: Math.max(chat.lastActivityAt, startedAt ?? 0) } : chat);
     }
     return rows;
   }
@@ -332,15 +338,17 @@ export class CodexScanner {
     head: HeadInfo,
     meta: CodexMeta,
     tail: TailInfo,
+    historyActive: boolean,
     now: number,
     writer: (home: string, threadId: string, now: number) => CodexWriter,
   ): LocalSession {
     let state: LocalSession["state"];
     let writerUnknown = false;
-    if (tail.open && now - file.mtimeMs <= RUNNING_WINDOW_MS) state = "running";
+    const open = tail.open ?? historyActive;
+    if (open && now - file.mtimeMs <= RUNNING_WINDOW_MS) state = "running";
     else {
       const who = writer(this.home, meta.id, now);
-      if (who === "yes") state = "idle";
+      if (who === "yes") state = open ? "running" : "idle";
       else {
         state = "stopped";
         writerUnknown = who === "unknown";
@@ -383,6 +391,9 @@ export class CodexScanner {
     const cached = this.tails.get(f.file);
     if (cached && cached.size === f.size && cached.mtimeMs === f.mtimeMs) return cached;
     const info = await parseTail(f.file, f.size, f.mtimeMs);
+    // With overlapping reads a large tool result can displace the last marker
+    // from the tail, without changing the turn state seen in the earlier scan.
+    if (info.open === undefined && cached && f.size >= cached.size && f.size - cached.size < TAIL_BYTES) info.open = cached.open;
     this.tails.set(f.file, info);
     return info;
   }

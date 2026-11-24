@@ -195,9 +195,9 @@ describe("CodexScanner state", () => {
     expect(row.liveIn).toBe("terminal");
   });
 
-  it("falls back to the writer when the open turn is stale, and unknown marks writerUnknown", async () => {
+  it("keeps a quiet open turn running while the writer still holds it", async () => {
     rollout(ID(1), open(ID(1)), { ageMs: 120_000 });
-    expect((await scan(new CodexScanner(home, writerOf("yes"))))[0]).toMatchObject({ state: "idle", liveIn: "terminal" });
+    expect((await scan(new CodexScanner(home, writerOf("yes"))))[0]).toMatchObject({ state: "running", liveIn: "terminal" });
     const stopped = (await scan(new CodexScanner(home, writerOf("no"))))[0];
     expect(stopped.state).toBe("stopped");
     expect(stopped.liveIn).toBeUndefined();

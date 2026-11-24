@@ -205,6 +205,33 @@ export class CodexAppDb {
     }
   }
 
+  /** Latest in-progress turns, looked up through the per-thread history index. */
+  async activeTurns(threadIds: readonly string[]): Promise<Map<string, number | undefined>> {
+    const active = new Map<string, number | undefined>();
+    if (!threadIds.length) return active;
+    const file = await latestDb(this.home, "thread_history");
+    if (!file) return active;
+    try {
+      const db = openReadOnly(file);
+      try {
+        const columns = columnsOf(db, "thread_turns");
+        if (!columns.has("thread_id") || !columns.has("status")) return active;
+        const order = columns.has("rollout_ordinal") ? "rollout_ordinal" : "rowid";
+        const started = columns.has("started_at") ? "started_at" : "NULL AS started_at";
+        const latest = db.prepare(`SELECT status, ${started} FROM thread_turns WHERE thread_id = ? ORDER BY ${order} DESC LIMIT 1`);
+        for (const id of threadIds) {
+          const turn = latest.get(id);
+          if (turn?.status === "inProgress") active.set(id, epochMs(turn.started_at));
+        }
+      } finally {
+        db.close();
+      }
+    } catch {
+      // The rollout still provides state when the history database is unavailable.
+    }
+    return active;
+  }
+
   /** A cheap value that changes when the chat gets new turns or items. */
   async marker(threadId: string): Promise<string> {
     const file = await latestDb(this.home, "thread_history");
