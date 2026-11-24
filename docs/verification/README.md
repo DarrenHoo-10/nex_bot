@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 翻译回退与 Token 用量简写 · 全平台发布 0.9.47（2026-11-25）](nexagent-jev-release-20261125.md)
+
 - [GitHub 监视与 Webhook 原子工具](github-webhook-tools.md)
 
 - [NexAgent 权限确认卡与默认完全访问：开发验证（2026-11-24）](nexagent-permission-prompts-20261124.md)
