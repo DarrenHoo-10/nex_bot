@@ -35,8 +35,9 @@ device runtime and the matching UI; it does not run another Agent or Core.
   keep it running and the next check retries.
   Network requests time out after 15 seconds, so remote login revocation is not
   instantaneous. Explicit local logout stops execution immediately.
-- Core logins last at most 7 days (`SESSION_MAX_MS`), never beyond the upstream
-  account session. Within 30 minutes of expiry the same check calls
+- New NexBot logins use the user center's dedicated 90-day session. Existing
+  logins retain the expiration set when they were issued. Core caps a login at
+  the upstream account session's expiration. Within 30 minutes of expiry the same check calls
   `/api/auth/refresh`, saves the rotated token to `connection.bin` and updates the
   window cookie; the device identity and executor stay up. A failed refresh keeps
   the current token and retries at most once a minute until it expires.

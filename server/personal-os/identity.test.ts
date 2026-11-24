@@ -18,13 +18,16 @@ afterEach(async () => {
 });
 async function fixture(extra: { trustProxy?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-login-fixture-")), provider = await startFakeIdentity(), key = randomBytes(32);
+  provider.state.nexbotSessions = true;
+  provider.state.maxAge = 120 * 86400;
   const app = await createPersonalApp({ dir: root, key, token: "synthetic-bootstrap", memoryRuntime: false, identity: { fixtureOrigin: provider.origin }, ...extra });
   const f = { app, provider, root, key }; fixtures.push(f); return f;
 }
 async function request(app: Awaited<ReturnType<typeof createPersonalApp>>, route: string, data?: unknown, headers: Record<string, string> = {}) {
   const response = await fetch(app.origin + "/api/" + route, { headers: { ...headers, ...(data === undefined ? {} : { "Content-Type": "application/json" }) }, ...(data === undefined ? {} : { method: "POST", body: JSON.stringify(data) }) });
   const result = await response.json() as { token: string; sessionId: string; coreId: string; expiresAt: number; transactionId: string; bindingToken: string; stepId: string; taskId: string };
-  return { status: response.status, body: result, cookie: response.headers.get("set-cookie")?.split(";", 1)[0] };
+  const cookie = response.headers.get("set-cookie");
+  return { status: response.status, body: result, cookie: cookie?.split(";", 1)[0], maxAge: Number(cookie?.match(/Max-Age=(\d+)/)?.[1]) };
 }
 async function bootstrap(app: Awaited<ReturnType<typeof createPersonalApp>>) { const result = await request(app, "session", { token: "synthetic-bootstrap" }); return { Cookie: result.cookie! }; }
 async function login(app: Awaited<ReturnType<typeof createPersonalApp>>, headers: Record<string, string> = {}, account = "owner@example.test", password = " synthetic password ") {
@@ -54,8 +57,22 @@ describe("mandatory built-in account login", () => {
     expect(app.store.get("SELECT COUNT(*) n FROM external_identities")!.n).toBe(1);
     expect(app.store.get("SELECT protocol FROM user_sessions WHERE id=?", owner.body.sessionId)!.protocol).toBe("native-v1");
     expect(owner.body.expiresAt - Date.now()).toBeLessThanOrEqual(SESSION_MAX_MS);
-    // The fake upstream session lasts 30 days, so the Core cap is what applies.
     expect(owner.body.expiresAt - Date.now()).toBeGreaterThan(SESSION_MAX_MS - 60_000);
+    expect(owner.maxAge).toBeGreaterThanOrEqual(90 * 86400 - 2);
+    expect(owner.maxAge).toBeLessThanOrEqual(90 * 86400);
+  });
+  it("retains the older issuer's expiration when the NexBot-specific endpoint is unavailable", async () => {
+    const { app, provider } = await fixture();
+    provider.state.nexbotSessions = false;
+    provider.state.maxAge = 7 * 86400;
+    const owner = await login(app, await bootstrap(app));
+    expect(owner.status).toBe(200);
+    expect(owner.maxAge).toBeLessThanOrEqual(7 * 86400);
+    const headers = { Authorization: `Bearer ${owner.body.token}` };
+    staleCache();
+    expect((await request(app, "auth/status", undefined, headers)).body).toMatchObject({ authenticated: true });
+    expect((await request(app, "auth/logout", {}, headers)).status).toBe(200);
+    expect(provider.state.logoutCount).toBe(1);
   });
   it("binds identity by immutable subject and rejects another account without replacing the owner", async () => {
     const { app, provider } = await fixture(); await login(app, await bootstrap(app));

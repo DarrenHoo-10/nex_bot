@@ -4,7 +4,7 @@ import { ClientIdentity } from "./clients.ts";
 import { identityBase, IdentityError, NexUserProvider, NEX_USER_ORIGIN, type UpstreamSession } from "./identity-provider.ts";
 
 /** Longest a Core login lives without a refresh; the upstream session can end it sooner. */
-export const SESSION_MAX_MS = 7 * 24 * 60 * 60_000;
+export const SESSION_MAX_MS = 90 * 24 * 60 * 60_000;
 
 interface LoginSecret { account: string; name: string; nonce: string; version: number; purpose: "login" | "link"; operator?: string }
 export class CoreIdentity {
@@ -195,8 +195,7 @@ export class CoreIdentity {
   }
   /**
    * Extend one already-authenticated client session without asking for the
-   * password again. This is what lets a phone keep working past the eight-hour
-   * local session without storing a password.
+   * password again. The device can rotate its login without storing a password.
    *
    * The presented bearer is rotated, so a copy taken from a backup stops
    * working the next time the real device refreshes. The upstream session is
