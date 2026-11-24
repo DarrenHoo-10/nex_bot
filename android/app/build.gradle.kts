@@ -7,8 +7,8 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-val appVersionName = "0.2.46"
-val appVersionCode = 246
+val appVersionName = "0.2.47"
+val appVersionCode = 247
 
 val buildWorkspaceUi by tasks.registering(Exec::class) {
     workingDir(rootProject.projectDir.parentFile)
