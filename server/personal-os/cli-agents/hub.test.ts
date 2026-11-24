@@ -7,7 +7,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
 import { WebSocket } from "ws";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPersonalApp, type AppOptions } from "../index.ts";
 import { CoreStore } from "../store.ts";
 import { CliAgentHub, type CliLink, type StreamSink } from "./hub.ts";
@@ -328,6 +328,8 @@ describe("assistant translation", () => {
   });
 
   it("translates completed cached replies through the authenticated Core route and rejects corrupt output", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "");
+    cleanups.push(() => { vi.unstubAllEnvs(); });
     const requests: Array<{ prompt: string; model: string; effort?: string; key?: string; path?: string }> = [];
     let corrupt = false;
     const provider = createServer(async (request, response) => {
@@ -407,6 +409,92 @@ describe("assistant translation", () => {
     expect((await f.call("cli-agents/translation-settings", { version: 2, selection: null })).status).toBe(200);
     expect((await f.call(itemsRoute)).data.translationEnabled).toBe(false);
     expect((await f.call("cli-agents/translate", body)).data.translation).toBeNull();
+  });
+
+  it("judges only eligible prose and keeps the session usable while Jev is pending", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "jev translation");
+    const key = keyOf(device, "a");
+    device.sessions([wire("a", { state: "running" })], { full: true });
+    await until(() => f.app.cliHub.session(key)?.state === "running", "running");
+    const connectionId = f.app.store.saveConnection({
+      name: "Translation fixture", provider: "openai", endpoint: "https://translation.example/v1",
+      apiKey: "translation-fixture-key", defaultModel: "fixture-model",
+    });
+    expect((await f.call("cli-agents/translation-settings", { version: 0, selection: { connectionId, model: "fixture-model" } })).status).toBe(200);
+    vi.stubEnv("TYPESAFE_API_KEY", "jev-fixture-key");
+    vi.stubEnv("NEX_TRANSLATION_JEV_CORE_ID", String(f.app.store.get("SELECT core_id FROM workspaces")?.core_id));
+    vi.stubEnv("NEX_TRANSLATION_JEV_PROXY", "");
+    cleanups.push(() => { vi.unstubAllEnvs(); });
+
+    const originalFetch = globalThis.fetch;
+    const judgeRequests: Array<{ model: string; state: { paragraphs: Record<string, string> } }> = [];
+    const prompts: string[] = [];
+    const respondToJudge: Array<(response: Response) => void> = [];
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input) === "https://api.typesafe.ai/v1/systemone") {
+        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer jev-fixture-key");
+        judgeRequests.push(JSON.parse(String(init?.body)));
+        return await new Promise<Response>(resolve => { respondToJudge.push(resolve); });
+      }
+      if (String(input) === "https://translation.example/v1/chat/completions") {
+        const { messages } = JSON.parse(String(init?.body));
+        prompts.push(messages[0].content.split("<source>\n")[1].split("\n</source>")[0]);
+        const content = prompts.at(-1) === "Perhaps a heading" ? "可能是个标题。" : "修复完成。测试通过。见 [[NEX_0]]。";
+        return Response.json({ choices: [{ finish_reason: "stop", message: { content } }] });
+      }
+      return originalFetch(input, init);
+    });
+    cleanups.push(() => { fetch.mockRestore(); });
+
+    const chinese = item(1, "全中文段落。\n\n```sh\necho sensitive fixture\n```");
+    const paragraphs = [
+      "修复完成。Tests pass. See `src/cache.ts`.", "已修复 React 页面。", "Perhaps a heading",
+      "```sh\necho sensitive fixture\n```", "2026-11-25 10:00 private log line", "| internal header |\n| --- |\n| private row |",
+    ];
+    const mixed = item(2, paragraphs.join("\n\n"));
+    device.send({ type: "cli.items", ref: "claude:a", items: [chinese, mixed] });
+    await until(() => f.app.store.get("SELECT 1 FROM cli_agent_items WHERE session_key=? AND item_id=?", key, mixed.id), "cached original");
+    const translate = (reply: typeof mixed) => f.call("cli-agents/translate", { key, itemId: reply.id, source: reply.text });
+    expect((await translate(mixed)).data.translation).toBeNull();
+    expect(judgeRequests).toHaveLength(0);
+
+    const ended = { kind: "turn", id: "ended-jev", ts: 1003, phase: "ended" };
+    device.send({ type: "cli.items", ref: "claude:a", items: [ended] });
+    await until(() => f.app.store.get("SELECT 1 FROM cli_agent_items WHERE session_key=? AND item_id=?", key, ended.id), "turn ended");
+    expect((await translate(chinese)).data.translation).toBeNull();
+    expect(judgeRequests).toHaveLength(0);
+
+    const translation = translate(mixed);
+    cleanups.push(async () => {
+      for (const respond of respondToJudge) respond(Response.error());
+      await translation.catch(() => undefined);
+    });
+    await until(() => judgeRequests.length === 1, "Jev request started");
+    expect(judgeRequests[0]).toMatchObject({ model: "jev-1.14.0", state: { paragraphs: {
+      p1: "修复完成。Tests pass. See .", p2: "已修复 React 页面。", p3: "Perhaps a heading",
+    } } });
+    expect(Object.keys(judgeRequests[0]!.state.paragraphs)).toHaveLength(3);
+    expect(prompts).toHaveLength(0);
+    device.onOp = message => message.op === "read"
+      ? { ok: true, result: { items: [chinese, mixed, ended], more: false } }
+      : defaultOp(message);
+    const page = await f.call(`cli-agents/items?key=${encodeURIComponent(key)}`);
+    expect(page.data.items).toContainEqual(expect.objectContaining({ id: mixed.id, text: mixed.text }));
+    device.sessions([wire("a")], { full: true });
+    await until(() => f.app.cliHub.session(key)?.state === "idle", "ready for the next turn");
+    expect((await f.call("cli-agents/send", { key, text: "Next prompt" })).status).toBe(200);
+
+    respondToJudge[0]!(Response.json({ answers: { p1: { type: "noul", noul: 0.7 }, p2: { type: "noul", noul: 0.1 } } }));
+    expect((await translation).data.translation).toBe([...paragraphs.slice(0, 2), "可能是个标题。", ...paragraphs.slice(3)].join("\n\n"));
+    expect(prompts).toEqual(["Perhaps a heading"]);
+    const retry = translate(mixed);
+    await until(() => judgeRequests.length === 2, "Jev retry started");
+    respondToJudge[1]!(Response.json({ answers: {
+      p1: { type: "noul", noul: 0.7 }, p2: { type: "noul", noul: 0.1 }, p3: { type: "noul", noul: 0.69 },
+    } }));
+    expect((await retry).data.translation).toBe(["修复完成。测试通过。见 `src/cache.ts`。", ...paragraphs.slice(1)].join("\n\n"));
+    expect(prompts).toEqual(["Perhaps a heading", "修复完成。Tests pass. See [[NEX_0]]."]);
   });
 });
 

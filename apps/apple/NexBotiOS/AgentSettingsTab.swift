@@ -22,8 +22,8 @@ struct AgentSettingsTab: View {
             group("用量") {
                 let usage = state?.usage(botID: botID)
                 row("累计调用") { Text("\(usage?.calls ?? 0) 次").font(.footnote) }
-                row("输入 Token") { Text((usage?.inputTokens ?? 0).formatted()).font(.footnote) }
-                row("输出 Token") { Text((usage?.outputTokens ?? 0).formatted()).font(.footnote) }
+                row("输入 Token") { Text(usage?.compactInputTokens ?? "0").font(.footnote) }
+                row("输出 Token") { Text(usage?.compactOutputTokens ?? "0").font(.footnote) }
             }
 
             VStack(alignment: .leading, spacing: 12) {

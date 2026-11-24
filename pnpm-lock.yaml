@@ -113,6 +113,9 @@ importers:
       tar:
         specifier: 7.5.22
         version: 7.5.22
+      undici:
+        specifier: 7.29.0
+        version: 7.29.0
       yaml:
         specifier: ^2.9.0
         version: 2.9.0

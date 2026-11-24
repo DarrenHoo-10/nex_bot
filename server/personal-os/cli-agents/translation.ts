@@ -4,6 +4,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { fromAnthropic, toAnthropic } from "../memory-gateway.ts";
 import { text, type CoreStore } from "../store.ts";
 import { openAiBase } from "../../../shared/model-catalog.mjs";
+import { jevAvailable, tryJevTranslationFilter } from "./translation-jev.ts";
 
 interface Selection { connectionId: string; model: string }
 interface TranslationModel extends Selection {
@@ -30,15 +31,16 @@ const PROMPT = [
 const LITERAL_LINE = /^(?:\s*\||\s*(?:diff --git |index [0-9a-f]+\.\.|[+-]{3} |@@ |[+-](?=\S)|[$%]\s+|(?:INFO|WARN|ERROR|DEBUG|TRACE)(?:\s|:)|\d{4}-\d{2}-\d{2}[ T]\d\d:))/;
 const INLINE = /(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)|\]\((?:[^()\r\n]|\([^()\r\n]*\))*\)|\]\[[^\]\r\n]*\]|<\/?[A-Za-z][^>\r\n]*>|https?:\/\/[^\s<>()]+|(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|(?<![\w:/])\/)[\w@.~-][^\s`"'<>),;]*|[\w@.-]+(?:[\\/][\w@.-]+)+|\b[\w-]+\.(?:tsx?|jsx?|mjs|cjs|json|md|css|html?|py|rs|go|java|kt|swift|sh|ya?ml|toml|lock|sql|txt|log)\b|(?<![\w-])--[A-Za-z][\w-]*|\b(?:[0-9a-f]{7,40}|[A-Z][A-Z_0-9]{2,})\b|\*{1,3}|_{1,3}|~~|!\[|\[|\]|\r?\n[ \t]*(?:>[ \t]*)*/g;
 
-interface Part { text: string; translate: boolean }
+interface Part { text: string; prose?: string }
+const NO_TRANSLATION = { translation: null, cacheable: true };
 interface MarkdownNode {
   type: string;
   position?: { start: { offset?: number }; end: { offset?: number } };
   children?: readonly MarkdownNode[];
 }
 
-function proseBlock(source: string): boolean {
-  const prose = source.replace(INLINE, "");
+function legacyTranslationFilter(text: string): boolean {
+  const prose = text.replace(INLINE, "");
   if (!/[a-z]{3,}/i.test(prose)) return false;
   // A Chinese paragraph with a stray identifier is already readable. A long
   // English clause in the same paragraph still needs translating.
@@ -48,7 +50,12 @@ function proseBlock(source: string): boolean {
 function translationParts(source: string): Part[] {
   const parts: Part[] = [];
   let cursor = 0;
-  const add = (text: string, translate = false) => { if (text) parts.push({ text, translate }); };
+  const add = (text: string) => { if (text) parts.push({ text }); };
+  function addCandidate(text: string) {
+    if (!text) return;
+    const prose = text.replace(INLINE, " ").replace(/\s+/g, " ").trim();
+    parts.push({ text, prose });
+  }
   function addProse(text: string) {
     const protectedSpans = [...text.matchAll(INLINE)];
     let consumed = 0;
@@ -59,14 +66,13 @@ function translationParts(source: string): Part[] {
         return !protectedSpans.some(span => offset >= span.index && offset < span.index + span[0].length);
       });
       if (!candidate || candidate.index < CHUNK_SIZE / 2) { add(text); return; }
-      const portion = text.slice(0, candidate.index);
-      add(portion, proseBlock(portion));
+      addCandidate(text.slice(0, candidate.index));
       add(candidate[0]);
       const advance = candidate.index + candidate[0].length;
       consumed += advance;
       text = text.slice(advance);
     }
-    add(text, proseBlock(text));
+    addCandidate(text);
   }
   function visit(node: MarkdownNode) {
     if (node.type === "paragraph" || node.type === "heading") {
@@ -137,6 +143,12 @@ export class CliTranslation {
 
   constructor(private readonly store: CoreStore) {}
 
+  private jevKey() {
+    const key = process.env.TYPESAFE_API_KEY?.trim();
+    const coreId = process.env.NEX_TRANSLATION_JEV_CORE_ID?.trim();
+    if (key && coreId && coreId === this.store.get("SELECT core_id FROM workspaces WHERE id=?", this.store.workspace)?.core_id) return key;
+  }
+
   private readSettings() {
     const row = this.store.get("SELECT connection_id,model,version FROM cli_translation_settings WHERE id=1");
     const selection: Selection | null = row?.connection_id && row.model ? { connectionId: String(row.connection_id), model: String(row.model) } : null;
@@ -192,7 +204,8 @@ export class CliTranslation {
   translate(source: string): Promise<string | null> {
     const model = this.currentModel();
     if (!model) return Promise.resolve(null);
-    const key = createHash("sha256").update(JSON.stringify([model, source])).digest("hex");
+    const jevKey = jevAvailable() ? this.jevKey() : undefined;
+    const key = createHash("sha256").update(JSON.stringify([model, !!jevKey, source])).digest("hex");
     if (this.cache.has(key)) return Promise.resolve(this.cache.get(key) ?? null);
     const existing = this.pending.get(key);
     if (existing) return existing;
@@ -201,11 +214,13 @@ export class CliTranslation {
     const result = new Promise<string | null>((resolve, reject) => {
       this.queue.push(() => {
         this.active++;
-        void this.translateSource(source, model, signal).then(value => {
+        void this.translateSource(source, model, signal, jevKey).then(({ translation, cacheable }) => {
           if (!this.stillSelected(model)) { resolve(null); return; }
-          this.cache.set(key, value);
-          if (this.cache.size > MAX_CACHED) this.cache.delete(this.cache.keys().next().value!);
-          resolve(value);
+          if (cacheable) {
+            this.cache.set(key, translation);
+            if (this.cache.size > MAX_CACHED) this.cache.delete(this.cache.keys().next().value!);
+          }
+          resolve(translation);
         }, reject).finally(() => {
           this.active--;
           this.pending.delete(key);
@@ -222,12 +237,18 @@ export class CliTranslation {
     if (this.active < CONCURRENCY) this.queue.shift()?.();
   }
 
-  private async translateSource(source: string, model: TranslationModel, signal: AbortSignal): Promise<string | null> {
+  private async translateSource(source: string, model: TranslationModel, signal: AbortSignal, jevKey?: string) {
     // Prevent a literal marker in the source colliding with a generated marker.
-    if (/\[\[NEX_/.test(source)) return null;
+    if (/\[\[NEX_/.test(source)) return NO_TRANSLATION;
     const parts = translationParts(source);
-    const prose = parts.filter(part => part.translate);
-    if (!prose.length) return null;
+    // Keep obviously non-English paragraphs local after removing protected spans.
+    const candidates = parts.flatMap(({ prose }) => prose && /[a-z]{3,}/i.test(prose) ? [prose] : []);
+    if (!this.stillSelected(model)) return NO_TRANSLATION;
+    const approved = jevKey && candidates.length ? await tryJevTranslationFilter(candidates, jevKey, signal) : undefined;
+    const cacheable = !jevKey || !candidates.length || approved !== undefined;
+    const prose = parts.filter(part => part.prose !== undefined &&
+      (approved ? approved.has(part.prose) : legacyTranslationFilter(part.text)));
+    if (!prose.length) return { translation: null, cacheable };
     for (let start = 0; start < prose.length;) {
       let end = start;
       let length = 0;
@@ -237,14 +258,14 @@ export class CliTranslation {
       }
       const batch = prose.slice(start, end);
       const masked = maskParts(batch);
-      if (!this.stillSelected(model)) return null;
+      if (!this.stillSelected(model)) return NO_TRANSLATION;
       const output = await this.complete(masked.text, model, signal);
       const restored = masked.restore(output);
       batch.forEach((part, index) => { part.text = restored[index]!; });
       start = end;
     }
     const result = parts.map(part => part.text).join("");
-    return result === source ? null : result;
+    return { translation: result === source ? null : result, cacheable };
   }
 
   private async complete(source: string, selection: TranslationModel, signal: AbortSignal): Promise<string> {
