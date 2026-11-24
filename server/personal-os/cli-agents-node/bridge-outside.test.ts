@@ -288,7 +288,7 @@ class FakeDaemon {
   }
 }
 
-function codexRollout(id: string): void {
+function codexRollout(id: string, originator = "codex-tui", cliVersion = "0.99.0"): void {
   const day = new Date(Date.now() - 3_600_000);
   const folder = path.join(codexHome, "sessions", String(day.getUTCFullYear()), String(day.getUTCMonth() + 1).padStart(2, "0"), String(day.getUTCDate()).padStart(2, "0"));
   mkdirSync(folder, { recursive: true });
@@ -297,7 +297,7 @@ function codexRollout(id: string): void {
   writeFileSync(
     file,
     [
-      JSON.stringify({ timestamp: at, type: "session_meta", payload: { id, cwd: workDir, originator: "codex-tui", source: "cli", cli_version: "0.99.0" } }),
+      JSON.stringify({ timestamp: at, type: "session_meta", payload: { id, cwd: workDir, originator, source: "cli", cli_version: cliVersion } }),
       JSON.stringify({ timestamp: at, type: "event_msg", payload: { type: "user_message", message: "earlier" } }),
     ].join("\n") + "\n",
   );
@@ -374,6 +374,31 @@ describe("Codex shared daemon", () => {
 // Codex App chats that live only in the database
 
 describe("Codex App chats", () => {
+  it("queues once in a matching active App chat and keeps other routes unchanged", async () => {
+    codexRollout(XID(1), "Codex Desktop", "0.171.0-alpha.13");
+    codexRollout(XID(2), "Codex Desktop", "0.163.0");
+    codexRollout(XID(3), "codex-tui", "0.171.0-alpha.13");
+    const queued: unknown[] = [];
+    const t = setup({
+      discovery: { codex: { writer: () => "yes" } },
+      codexDesktopQueue: {
+        refresh: async () => {},
+        supports: (version) => version === "0.171.0-alpha.13",
+        send: async (input) => { queued.push(input); },
+      },
+    });
+    await t.start();
+    const rows = Object.fromEntries(t.bridge.sessions().map((row) => [row.nativeId, row]));
+    expect(rows[XID(1)]).toMatchObject({ sendVia: "inbox", liveIn: "desktop" });
+    expect(rows[XID(2)].sendVia).toBeUndefined();
+    expect(rows[XID(3)].sendVia).toBeUndefined();
+    const ref = `codex:${XID(1)}` as const;
+    expect(await t.call("send", { ref, text: "-keep going" })).toMatchObject({
+      ok: true, result: { started: false, delivery: "unconfirmed" },
+    });
+    expect(queued).toEqual([{ home: codexHome, threadId: XID(1), version: "0.171.0-alpha.13", text: "-keep going" }]);
+  });
+
   function makeDb(): { addItem: (id: string, text: string, ordinal: number) => void } {
     const state = new DatabaseSync(path.join(codexHome, "state_5.sqlite"));
     state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, title TEXT, name TEXT, archived INTEGER, recency_at_ms INTEGER, originator TEXT, source TEXT)");

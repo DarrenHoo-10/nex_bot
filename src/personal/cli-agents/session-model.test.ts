@@ -79,6 +79,7 @@ describe("what the composer offers", () => {
     expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "running", sendVia: "inbox" }))).toEqual({ kind: "send", running: true, outside: true });
     expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "waiting", sendVia: "inbox" }))).toEqual({ kind: "send", running: true, outside: true });
     expect(composerMode(session({ liveIn: "desktop", terminal: undefined, state: "running", sendVia: "daemon" }))).toEqual({ kind: "send", running: false, outside: true });
+    expect(composerMode(session({ engine: "codex", liveIn: "desktop", terminal: undefined, state: "running", sendVia: "inbox" }))).toEqual({ kind: "send", running: false, outside: true });
     expect(sendsOutside(session({ sendVia: "terminal" }))).toBe(false);
     expect(sendsOutside(session())).toBe(false);
   });

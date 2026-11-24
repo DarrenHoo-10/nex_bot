@@ -207,6 +207,11 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliSessions.composerMode(unknown), .blocked(hint: "可能在电脑上打开"))
         unknown.state = .stopped
         XCTAssertEqual(CliSessions.composerMode(unknown), .stopped(hint: "可能在电脑上打开"))
+        var codexApp = cliSession(state: .running, liveIn: .desktop, terminal: nil)
+        codexApp.engine = .codex
+        codexApp.sendVia = "inbox"
+        XCTAssertEqual(CliSessions.composerMode(codexApp), .send(running: false))
+        XCTAssertFalse(CliSessions.canAttach(codexApp))
     }
 
     func testDeviceBlockerAndRecentFolders() {

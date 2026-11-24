@@ -56,6 +56,7 @@ export interface SessionDiscoveryOptions {
     threads(home: string): ReadonlySet<string> | undefined;
     refresh(home: string): Promise<void>;
   };
+  codexDesktopQueue?: { refresh(): Promise<void>; supports(version: string): boolean };
   onChange?: (diff: SessionsDiff) => void;
   onError?: (error: unknown) => void;
   liveMs?: number;
@@ -217,6 +218,7 @@ export class SessionDiscovery {
     if (this.liveBusy) return this.liveBusy;
     const run = (async () => {
       await Promise.all([
+        this.options.codexDesktopQueue?.refresh(),
         ...this.claudeDirs.map(async (dir) => {
           try {
             this.live.set(dir, await scanLive(dir, this.options.claudeLive));
@@ -373,6 +375,14 @@ export class SessionDiscovery {
         if (next.state === "stopped") next.state = "idle";
         delete next.writerUnknown;
         merged.set(ref, next);
+      }
+    }
+    const desktopQueue = this.options.codexDesktopQueue;
+    if (desktopQueue) {
+      for (const [ref, row] of merged) {
+        if (row.engine !== "codex" || row.sendVia || row.liveIn !== "desktop" || row.state === "stopped") continue;
+        if (!row.transcript || !row.cliVersion || !desktopQueue.supports(row.cliVersion)) continue;
+        merged.set(ref, { ...row, sendVia: "inbox", route: { via: "codexQueue", home: row.configDir, threadId: row.nativeId, version: row.cliVersion } });
       }
     }
     if (terminals) {

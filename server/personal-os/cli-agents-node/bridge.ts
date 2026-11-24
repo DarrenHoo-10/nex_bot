@@ -42,7 +42,8 @@ import {
   type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
-import { CodexDaemons, DaemonError, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
+import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
+import { CodexDesktopQueue } from "./codex-desktop-queue.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
 import { harnessFor } from "./harness.ts";
 import { HookError, HookServer, TurnTracker, locateHookPlugin, platformPlugin } from "./hooks.ts";
@@ -63,7 +64,7 @@ import {
   type HcState,
   type HcTerminal,
 } from "./hc.ts";
-import { LaunchError, PENDING_NATIVE_ID, clearCliCache, cliVersion, launchEnv, planLaunch, resolveCli, terminalName } from "./launch.ts";
+import { LaunchError, PENDING_NATIVE_ID, clearCliCache, cliVersion, codexHasNoDaemonFlag, launchEnv, planLaunch, resolveCli, terminalName, validateCwd } from "./launch.ts";
 import { CliLocalStore, type StoredReply } from "./local-store.ts";
 import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
 import { TranscriptReader } from "./reader.ts";
@@ -131,6 +132,9 @@ export interface CliAgentBridgeOptions {
   log?: (level: "debug" | "info" | "warn" | "error", message: string) => void;
   /** How long a new Codex terminal may wait for its session file. Default 10 minutes. */
   codexClaimMs?: number;
+  prepareCodexThread?: typeof prepareCodexThread;
+  codexHasNoDaemonFlag?: typeof codexHasNoDaemonFlag;
+  codexDesktopQueue?: Pick<CodexDesktopQueue, "refresh" | "supports" | "send">;
   /** After continuing a Codex session without a lock file: how long an immediate exit counts as "open elsewhere". Default 5 s. */
   settleMs?: number;
   /** How long start/continue wait for the new session to show up in the list. Default 5 s. */
@@ -246,6 +250,7 @@ export class CliAgentBridge {
   private readonly fallbackTimers = new Map<string, NodeJS.Timeout>();
   private readonly codexTails = new Map<string, TranscriptReader>();
   private readonly codexDaemons: CodexDaemons;
+  private readonly codexDesktopQueue: Pick<CodexDesktopQueue, "refresh" | "supports" | "send"> | undefined;
   private readonly screens: ScreenPrompts;
   private screenTimer: NodeJS.Timeout | null = null;
   private readonly git: DeviceGit;
@@ -262,6 +267,7 @@ export class CliAgentBridge {
       log: (level, message) => this.log(level, `codex daemon: ${message}`),
       ...options.codexDaemon,
     });
+    this.codexDesktopQueue = options.codexDesktopQueue ?? (options.codexHomes ? undefined : new CodexDesktopQueue({ platform: this.platform, env: options.env, homedir: options.homedir }));
     this.screens = new ScreenPrompts({
       terminals: () => this.screenTerminals(),
       reported: (ref) => (this.hooks?.pendingFor(ref) ?? 0) > 0 || (ref.startsWith("codex:") && this.codexDaemons.hasPendingFor(ref.slice(ref.indexOf(":") + 1))),
@@ -285,6 +291,7 @@ export class CliAgentBridge {
       // the real machine only when the Claude directories are the default ones: tests that name their own stay hermetic
       ...(options.claudeDirs ? {} : { repoRoots: new RepoRoots({ platform: this.platform, ...(options.homedir ? { home: options.homedir } : {}) }) }),
       codexDaemon: { threads: (home) => this.codexDaemons.threads(home), refresh: (home) => this.codexDaemons.refresh(home) },
+      ...(this.codexDesktopQueue ? { codexDesktopQueue: this.codexDesktopQueue } : {}),
       ...options.discovery,
       nexbotTerminals: () => this.nexbotTerminals(),
       onChange: (diff) => this.onDiscovery(diff),
@@ -1327,7 +1334,8 @@ export class CliAgentBridge {
     }
     const size = clampTermSize(args.cols, args.rows);
     const claude = args.engine === "claude";
-    const nativeId = claude ? randomUUID() : undefined;
+    let nativeId: string | undefined = claude ? randomUUID() : undefined;
+    const newCodex = args.engine === "codex" && !fork;
     const known = new Set<string>();
     // A worktree start builds the tree here first; the requestId dedups so a
     // retried request reuses the tree it already created. Checking out a large
@@ -1337,7 +1345,7 @@ export class CliAgentBridge {
       this.requireHc(),
       this.cliPath(args.engine),
       nativeId ? this.hookLaunch(nativeId) : Promise.resolve(undefined),
-      claude ? Promise.resolve() : this.discovery.refresh().then(() => {
+      claude || newCodex ? Promise.resolve() : this.discovery.refresh().then(() => {
         for (const row of this.discovery.snapshot()) if (row.engine === "codex") known.add(cliRef("codex", row.nativeId));
       }),
     ]);
@@ -1347,10 +1355,21 @@ export class CliAgentBridge {
       if (built.source === "failed" || !built.worktree) throw new OpFailure("invalid", built.error ?? "无法创建工作树");
       cwd = built.worktree;
     }
+    const launchContext = { platform: this.platform, env: this.options.env, homedir: this.options.homedir };
+    let noDaemon = false;
+    let codexHome: string | undefined;
+    if (newCodex) {
+      cwd = await validateCwd(cwd, launchContext);
+      codexHome = this.launchEnvironment("codex", undefined).CODEX_HOME ?? path.join(this.options.homedir ?? os.homedir(), ".codex");
+      [nativeId, noDaemon] = await Promise.all([
+        (this.options.prepareCodexThread ?? prepareCodexThread)({ executable, home: codexHome, cwd }, launchContext),
+        (this.options.codexHasNoDaemonFlag ?? codexHasNoDaemonFlag)(executable, launchContext),
+      ]);
+    }
     const plan = await planLaunch(
       {
         engine: args.engine,
-        mode: fork ? "fork" : "new",
+        mode: fork ? "fork" : newCodex ? "resume" : "new",
         nativeId,
         ...(fork ? { forkFrom: fork.nativeId } : {}),
         key: randomBytes(4).toString("hex"),
@@ -1361,6 +1380,8 @@ export class CliAgentBridge {
       },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
+    if (noDaemon) plan.argv.push("--no-daemon");
+    if (codexHome) plan.env.CODEX_HOME = codexHome;
     // the fork reads the parent from the config home the parent lives in
     if (fork) plan.env = { ...plan.env, ...this.launchEnvironment(args.engine, fork.row.configDir) };
     const launchedAt = Date.now();
@@ -1368,7 +1389,7 @@ export class CliAgentBridge {
     this.register(terminal, args.engine, nativeId ?? null, plan.cwd);
     this.discovery.reapply({ flush: true });
     if (nativeId) {
-      const ref = cliRef("claude", nativeId);
+      const ref = cliRef(args.engine, nativeId);
       await this.awaitRow(ref, budget - 1000);
       return { ref, terminal: terminal.address, cwd: plan.cwd };
     }
@@ -1471,6 +1492,10 @@ export class CliAgentBridge {
    * Codex daemon, or a ZCode session the host channel has attached. */
   private async sendOutside(args: CliOpArgs["send"], row: CliSessionWire): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
     const route = this.discovery.routeFor(args.ref);
+    if (route?.via === "codexQueue" && row.sendVia === "inbox" && this.codexDesktopQueue) {
+      await this.codexDesktopQueue.send({ home: route.home, threadId: route.threadId, version: route.version, text: args.text });
+      return { turn: 0, started: false, delivery: "unconfirmed" };
+    }
     if (!route || route.via !== row.sendVia) throw new OpFailure("not_in_terminal");
     if (route.via === "inbox") {
       if (row.state === "stopped") throw new OpFailure("stopped");
@@ -1487,6 +1512,7 @@ export class CliAgentBridge {
       const result = await this.options.zcodeHost.submit(route.sessionId, args.text);
       return { turn: 0, started: result.accepted === true };
     }
+    if (route.via !== "daemon") throw new OpFailure("not_in_terminal");
     const sent = await this.codexDaemons.send(route.home, route.threadId, args.text);
     return { turn: 0, started: !sent.steered };
   }

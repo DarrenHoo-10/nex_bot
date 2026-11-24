@@ -50,6 +50,7 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public var waitingFor: String?
     public var liveIn: CliLiveIn?
     public var terminal: String?
+    public var sendVia: String?
     public var model: String?
     public var cliVersion: String?
     /// The repository's main checkout this session's folder belongs to; absent outside Git.
@@ -64,16 +65,16 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
     public init(key: CliSessionKey, deviceId: String, hidden: Bool = false, online: Bool = true, engine: CliEngine = .claude, nativeId: String,
                 configDir: String = "", cwd: String, title: String = "", gitBranch: String? = nil, state: CliSessionState = .idle,
                 waitingFor: String? = nil, liveIn: CliLiveIn? = nil, terminal: String? = nil, model: String? = nil, cliVersion: String? = nil,
-                lastActivityAt: Int = 0, writerUnknown: Bool = false, repoRoot: String? = nil, context: CliContextUsage? = nil) {
+                lastActivityAt: Int = 0, writerUnknown: Bool = false, repoRoot: String? = nil, context: CliContextUsage? = nil, sendVia: String? = nil) {
         self.key = key; self.deviceId = deviceId; self.hidden = hidden; self.online = online; self.engine = engine; self.nativeId = nativeId
         self.configDir = configDir; self.cwd = cwd; self.title = title; self.gitBranch = gitBranch; self.state = state; self.waitingFor = waitingFor
         self.liveIn = liveIn; self.terminal = terminal; self.model = model; self.cliVersion = cliVersion; self.lastActivityAt = lastActivityAt
-        self.writerUnknown = writerUnknown; self.repoRoot = repoRoot; self.context = context
+        self.writerUnknown = writerUnknown; self.repoRoot = repoRoot; self.context = context; self.sendVia = sendVia
     }
 
     enum CodingKeys: String, CodingKey {
         case key, deviceId, hidden, online, engine, nativeId, configDir, cwd, title, gitBranch, state, waitingFor, liveIn, terminal, model
-        case cliVersion, lastActivityAt, writerUnknown, repoRoot, context
+        case cliVersion, lastActivityAt, writerUnknown, repoRoot, context, sendVia
     }
 
     public init(from decoder: Decoder) throws {
@@ -92,6 +93,7 @@ public struct CliSession: Sendable, Hashable, Identifiable, Decodable {
         waitingFor = try c.decodeIfPresent(String.self, forKey: .waitingFor)
         liveIn = try c.decodeIfPresent(CliLiveIn.self, forKey: .liveIn)
         terminal = try c.decodeIfPresent(String.self, forKey: .terminal)
+        sendVia = try? c.decodeIfPresent(String.self, forKey: .sendVia)
         model = try c.decodeIfPresent(String.self, forKey: .model)
         cliVersion = try c.decodeIfPresent(String.self, forKey: .cliVersion)
         lastActivityAt = try c.decode(Int.self, forKey: .lastActivityAt)

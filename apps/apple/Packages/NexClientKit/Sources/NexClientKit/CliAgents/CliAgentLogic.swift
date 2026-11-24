@@ -139,6 +139,7 @@ public enum CliSessions {
         if !s.online { return .blocked(hint: "电脑离线") }
         if s.state == .stopped { return .stopped(hint: s.writerUnknown ? "可能在电脑上打开" : nil) }
         if s.liveIn == .nexbot && s.terminal != nil { return .send(running: s.state == .running) }
+        if s.engine == .codex && (s.sendVia == "inbox" || s.sendVia == "daemon") { return .send(running: false) }
         if s.liveIn == .desktop && s.engine == .claude { return .blocked(hint: "在 Claude 桌面应用中打开") }
         return .blocked(hint: s.writerUnknown ? "可能在电脑上打开" : "在电脑上运行")
     }

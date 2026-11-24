@@ -258,7 +258,7 @@ export function composerMode(session: CliSessionView): ComposerMode {
   if (session.state === "stopped") return { kind: "stopped", hint: session.writerUnknown ? "可能在电脑上打开" : undefined };
   if (session.liveIn === "nexbot" && session.terminal) return { kind: "send", running: session.state === "running" };
   // A Claude's inbox takes Stop (a message at priority now); the Codex daemon has no stop path.
-  if (sendsOutside(session)) return { kind: "send", running: session.sendVia === "inbox" && (session.state === "running" || session.state === "waiting"), outside: true };
+  if (sendsOutside(session)) return { kind: "send", running: session.engine === "claude" && session.sendVia === "inbox" && (session.state === "running" || session.state === "waiting"), outside: true };
   if (session.liveIn === "desktop" && session.engine === "claude") return { kind: "blocked", hint: "在 Claude 桌面应用中打开" };
   return { kind: "blocked", hint: session.writerUnknown ? "可能在电脑上打开" : "在电脑上运行" };
 }

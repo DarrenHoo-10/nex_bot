@@ -57,6 +57,7 @@ const codex: HarnessAdapter = {
     // a thread loaded in a shared app-server daemon takes messages and steers
     // the running turn; there is no interrupt path through the daemon
     if (session.sendVia === "daemon") return { sendVia: "daemon", steer: true, interrupt: false, terminal: false, fork: "copy" };
+    if (session.sendVia === "inbox") return { sendVia: "inbox", steer: false, interrupt: false, terminal: false, fork: "copy" };
     return none();
   },
 };

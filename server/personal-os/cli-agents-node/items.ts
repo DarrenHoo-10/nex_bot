@@ -20,6 +20,7 @@ export type ToolItem = Extract<CliItem, { kind: "tool" }>;
 export type SendRoute =
   | { via: "inbox"; configDir: string; pid: number; socketPath: string; sessionId: string }
   | { via: "daemon"; home: string; threadId: string }
+  | { via: "codexQueue"; home: string; threadId: string; version: string }
   | { via: "host"; home: string; sessionId: string };
 
 /** A Codex chat that exists only in the App's database (no rollout file). */

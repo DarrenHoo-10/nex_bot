@@ -95,6 +95,11 @@ function setup(extra: Partial<CliAgentBridgeOptions> = {}, options: { writer?: "
     discovery: { claudeLive: { isAlive: () => true, start: { platform: "linux", run } }, codex: { writer: () => options.writer ?? "no" }, coalesceMs: 0, liveMs: 50, historyMs: 100 },
     resolveCli: async (engine) => `/fake/bin/${engine}`,
     cliVersion: async () => "9.9.9",
+    codexHasNoDaemonFlag: async () => true,
+    prepareCodexThread: async ({ cwd }) => {
+      codexRollout(XID(9), "", 0, cwd);
+      return XID(9);
+    },
     homedir: path.join(root, "home"),
     launcher: async (plan) => void launched.push(plan),
     hasWindowsTerminal: false,
@@ -416,6 +421,21 @@ describe("start", () => {
 });
 
 describe("Codex session mapping", () => {
+  it("returns the saved native ID for a new chat before it has a first message", async () => {
+    const t = setup();
+    await t.start();
+    const reply = await t.call("start", { engine: "codex", cwd: workDir, model: "gpt-6.2", permissions: "ask" });
+    expect(reply.ok).toBe(true);
+    const result = reply.result as { ref: string; terminal: string };
+    expect(result.ref).toBe(`codex:${XID(9)}`);
+    expect(hc.terminals.get(result.terminal)).toMatchObject({
+      argv: ["/fake/bin/codex", "resume", XID(9), "-m", "gpt-6.2", "--no-daemon"],
+      labels: { "nexbot.native": XID(9) },
+    });
+    expect(t.sessions()).toContainEqual(expect.objectContaining({ nativeId: XID(9), terminal: result.terminal }));
+    expect(await t.call("send", { ref: `codex:${XID(9)}`, text: "the first message" })).toMatchObject({ ok: true });
+  });
+
   it("claims the new rollout in the same directory, not an older session or another directory", async () => {
     codexRollout(XID(1), "old session in the same directory", 3_600_000);
     const other = path.join(root, "other");
@@ -428,11 +448,11 @@ describe("Codex session mapping", () => {
         codexRollout(XID(2), "the new one", 0, params.cwd);
       }, 60);
     };
-    const reply = await t.call("start", { engine: "codex", cwd: workDir });
+    const reply = await t.call("start", { engine: "codex", cwd: workDir, forkFrom: `codex:${XID(1)}` });
     expect(reply.ok).toBe(true);
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(2)}`);
-    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1), "--dangerously-bypass-approvals-and-sandbox"]);
     expect(hc.terminals.get(result.terminal)!.labels).toMatchObject({ "nexbot.engine": "codex", "nexbot.native": "pending" });
     const rows = Object.fromEntries(t.sessions().map((row) => [row.nativeId, row]));
     expect(rows[XID(2)]).toMatchObject({ liveIn: "nexbot", terminal: result.terminal });
@@ -441,9 +461,10 @@ describe("Codex session mapping", () => {
   });
 
   it("answers with a provisional ref when no session file shows up and claims it later", async () => {
+    codexRollout(XID(1), "fork source");
     const t = setup();
     await t.start();
-    const reply = await t.call("start", { engine: "codex", cwd: workDir }, "late", 4000);
+    const reply = await t.call("start", { engine: "codex", cwd: workDir, forkFrom: `codex:${XID(1)}` }, "late", 4000);
     expect(reply.ok).toBe(true);
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toMatch(/^codex:pending-[0-9a-f]{8}$/);
@@ -454,9 +475,10 @@ describe("Codex session mapping", () => {
   }, 20_000);
 
   it("stops waiting for a file after the claim window", async () => {
+    codexRollout(XID(1), "fork source");
     const t = setup({ codexClaimMs: 100 });
     await t.start();
-    await t.call("start", { engine: "codex", cwd: workDir }, "short", 4000);
+    await t.call("start", { engine: "codex", cwd: workDir, forkFrom: `codex:${XID(1)}` }, "short", 4000);
     await new Promise((resolve) => setTimeout(resolve, 200));
     codexRollout(XID(4), "too late", 0);
     await t.bridge.refreshSessions();

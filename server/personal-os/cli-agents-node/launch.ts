@@ -147,17 +147,28 @@ export async function resolveCli(engine: CliEngine, options: PlatformOptions & {
 /** The CLI's own `--version`, first line, or null when it cannot answer in 5 s.
  * `.cmd`/`.bat` shims go through `cmd.exe /d /s /c`, as Node refuses to spawn them directly. */
 export async function cliVersion(file: string, options: PlatformOptions & { timeoutMs?: number } = {}): Promise<string | null> {
+  const output = await cliOutput(file, ["--version"], options);
+  return output?.split(/\r?\n/).find((text) => text.trim())?.trim().slice(0, 200) ?? null;
+}
+
+/** The terminal uses a private backend when the CLI supports the switch. Older builds use private backends by default. */
+export async function codexHasNoDaemonFlag(file: string, options: PlatformOptions = {}): Promise<boolean> {
+  const help = await cliOutput(file, ["resume", "--help"], options);
+  return /(?:^|\s)--no-daemon(?:\s|$)/.test(help ?? "");
+}
+
+function cliOutput(file: string, cliArgs: string[], options: PlatformOptions & { timeoutMs?: number }): Promise<string | null> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const timeout = options.timeoutMs ?? VERSION_TIMEOUT_MS;
   let command = file;
-  let args = ["--version"];
+  let args = cliArgs;
   let verbatim = false;
   if (isWindows(platform) && isCmdScript(file)) {
-    if (CMD_UNSAFE_PATH.test(file)) return null;
+    if (CMD_UNSAFE_PATH.test(file)) return Promise.resolve(null);
     command = envValue(env, "ComSpec", platform) ?? "cmd.exe";
     // /s strips the outer pair of quotes, leaving the quoted path intact.
-    args = ["/d", "/s", "/c", `""${file}" --version"`];
+    args = ["/d", "/s", "/c", `""${file}" ${cliArgs.join(" ")}"`];
     verbatim = true;
   }
   return new Promise<string | null>((resolve) => {
@@ -170,8 +181,7 @@ export async function cliVersion(file: string, options: PlatformOptions & { time
           resolve(null);
           return;
         }
-        const line = String(stdout).split(/\r?\n/).find((text) => text.trim());
-        resolve(line ? line.trim().slice(0, 200) : null);
+        resolve(String(stdout));
       },
     );
   });

@@ -173,67 +173,114 @@ export interface ProxyConnectorOptions {
 
 /** A peer that speaks to the daemon through `codex app-server proxy`, with CODEX_HOME set to `home`. */
 export function proxyConnector(options: ProxyConnectorOptions): DaemonConnector {
-  return async (home) => {
-    const file = await options.codexPath();
-    if (!file) throw new DaemonError("cli_missing", "未找到 Codex");
-    const platform = options.platform ?? process.platform;
-    const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), CODEX_HOME: home };
-    let command = file;
-    let args = ["app-server", "proxy"];
-    let verbatim = false;
-    if (platform === "win32" && CMD_SCRIPT.test(file)) {
-      if (CMD_UNSAFE.test(file)) throw new DaemonError("cli_missing", "Codex 路径不可用");
-      command = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
-      args = ["/d", "/s", "/c", `""${file}" app-server proxy"`];
-      verbatim = true;
-    }
-    const child: ChildProcess = (options.spawnFn ?? spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: verbatim });
-    return new Promise<DaemonPeer>((resolve, reject) => {
-      const lines: Array<(line: string) => void> = [];
-      const closers: Array<() => void> = [];
-      let buffer = "";
-      let done = false;
-      const closed = (): void => {
-        if (done) return;
-        done = true;
-        for (const listener of closers) listener();
-      };
-      child.once("error", (error) => {
-        if (!done) reject(new DaemonError("stopped", clipUnits(String(error.message), 200)));
-        closed();
-      });
-      child.once("close", closed);
-      child.stdin?.on("error", () => {});
-      child.stderr?.on("data", () => {});
-      child.stdout?.setEncoding("utf8");
-      child.stdout?.on("data", (chunk: string) => {
-        buffer += chunk;
-        let at = buffer.indexOf("\n");
-        while (at >= 0) {
-          const line = buffer.slice(0, at);
-          buffer = buffer.slice(at + 1);
-          for (const listener of lines) listener(line);
-          at = buffer.indexOf("\n");
-        }
-        if (buffer.length > LINE_MAX) child.kill();
-      });
-      child.once("spawn", () =>
-        resolve({
-          send: (line) => {
-            if (done || !child.stdin || child.stdin.destroyed) return false;
-            child.stdin.write(line + "\n");
-            return true;
-          },
-          close: () => {
-            child.kill();
-          },
-          onLine: (listener) => void lines.push(listener),
-          onClose: (listener) => void closers.push(listener),
-        }),
-      );
-    });
-  };
+  return (home) => connectCodexProcess(options, home, "proxy");
 }
+
+async function connectCodexProcess(
+  options: ProxyConnectorOptions,
+  home: string,
+  mode: "proxy" | "stdio",
+  cwd?: string,
+): Promise<DaemonPeer> {
+  const file = await options.codexPath();
+  if (!file) throw new DaemonError("cli_missing", "未找到 Codex");
+  const platform = options.platform ?? process.platform;
+  const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env) };
+  if (platform === "win32") {
+    for (const key of Object.keys(env)) if (key.toUpperCase() === "CODEX_HOME") delete env[key];
+  }
+  env.CODEX_HOME = home;
+  let command = file;
+  const subcommand = mode === "proxy" ? "proxy" : "--stdio";
+  let args = ["app-server", subcommand];
+  let verbatim = false;
+  if (platform === "win32" && CMD_SCRIPT.test(file)) {
+    if (CMD_UNSAFE.test(file)) throw new DaemonError("cli_missing", "Codex 路径不可用");
+    command = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
+    args = ["/d", "/s", "/c", `""${file}" app-server ${subcommand}"`];
+    verbatim = true;
+  }
+  const child: ChildProcess = (options.spawnFn ?? spawn)(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: verbatim });
+  return new Promise<DaemonPeer>((resolve, reject) => {
+    const lines: Array<(line: string) => void> = [];
+    const closers: Array<() => void> = [];
+    let buffer = "";
+    let done = false;
+    const closed = (): void => {
+      if (done) return;
+      done = true;
+      for (const listener of closers) listener();
+    };
+    child.once("error", (error) => {
+      if (!done) reject(new DaemonError("stopped", clipUnits(String(error.message), 200)));
+      closed();
+    });
+    child.once("close", closed);
+    child.stdin?.on("error", () => {});
+    child.stderr?.on("data", () => {});
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      buffer += chunk;
+      let at = buffer.indexOf("\n");
+      while (at >= 0) {
+        const line = buffer.slice(0, at);
+        buffer = buffer.slice(at + 1);
+        for (const listener of lines) listener(line);
+        at = buffer.indexOf("\n");
+      }
+      if (buffer.length > LINE_MAX) child.kill();
+    });
+    child.once("spawn", () =>
+      resolve({
+        send: (line) => {
+          if (done || !child.stdin || child.stdin.destroyed) return false;
+          child.stdin.write(line + "\n");
+          return true;
+        },
+        close: () => {
+          if (mode === "proxy") child.kill();
+          else {
+            child.stdin?.end();
+            const kill = setTimeout(() => child.kill(), 1500);
+            kill.unref();
+            child.once("close", () => clearTimeout(kill));
+          }
+        },
+        onLine: (listener) => void lines.push(listener),
+        onClose: (listener) => {
+          if (done) listener();
+          else closers.push(listener);
+        },
+      }),
+    );
+  });
+}
+
+/** Give a new CLI chat a durable ID before the terminal waits for its first message. */
+export async function prepareCodexThread(
+  input: { executable: string; home: string; cwd: string },
+  options: Pick<ProxyConnectorOptions, "platform" | "env"> = {},
+): Promise<string> {
+  const peer = await connectCodexProcess({ ...options, codexPath: async () => input.executable }, input.home, "stdio", input.cwd);
+  const rpc = new Rpc(peer, { notification() {}, request() {}, closed() {} });
+  const closed = new Promise<void>((resolve) => peer.onClose(resolve));
+  try {
+    const timeout = 6_000;
+    await rpc.request("initialize", { clientInfo: { name: "nexbot", title: "NexBot", version: "1" }, capabilities: null }, timeout);
+    rpc.notify("initialized");
+    const result = await rpc.request("thread/start", { cwd: input.cwd }, timeout);
+    const id = rec(result.thread)?.id;
+    if (!isCliNativeId(id)) throw new DaemonError("unknown", "Codex 没有返回会话 ID");
+    // Codex lazily creates the rollout. Naming the blank thread persists it without submitting a turn.
+    await rpc.request("thread/name/set", { threadId: id, name: CODEX_NEW_THREAD_NAME }, timeout);
+    return id;
+  } finally {
+    rpc.close();
+    await closed;
+  }
+}
+
+export const CODEX_NEW_THREAD_NAME = "NexAgent 新会话";
 
 /** True when `<home>/app-server-control/` holds anything: a control socket a TUI may be using. */
 export async function controlSocketExists(home: string): Promise<boolean> {

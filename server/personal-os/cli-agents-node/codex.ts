@@ -8,6 +8,7 @@ import path from "node:path";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliContextUsage, type CliLiveIn } from "../../../shared/cli-agents.ts";
 import { codexContext } from "./context-usage.ts";
 import { CodexAppDb } from "./codex-app-db.ts";
+import { CODEX_NEW_THREAD_NAME } from "./codex-daemon.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { codexWriter, type CodexWriter } from "./liveness.ts";
 
@@ -354,7 +355,8 @@ export class CodexScanner {
         writerUnknown = who === "unknown";
       }
     }
-    const title = this.names.get(meta.id) ?? head.firstUser ?? "";
+    const name = this.names.get(meta.id);
+    const title = name === CODEX_NEW_THREAD_NAME ? head.firstUser ?? name : name ?? head.firstUser ?? "";
     const row: LocalSession = {
       engine: "codex",
       nativeId: meta.id,
