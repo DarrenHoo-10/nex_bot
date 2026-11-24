@@ -463,6 +463,27 @@ export interface CliModelOption {
   efforts?: string[];
 }
 
+export const CLI_REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export function cliReasoningChoice(value?: string): typeof CLI_REASONING_LEVELS[number] {
+  if (value === "minimal") return "low";
+  if (value === "ultra") return "max";
+  return CLI_REASONING_LEVELS.find((level) => level === value) ?? "high";
+}
+
+export function cliModelEfforts(engine: CliEngine, models: readonly CliModelOption[], model: string): readonly string[] {
+  return models.find((row) => row.id === model)?.efforts ?? CLI_EFFORTS[engine];
+}
+
+/** Prefer high, then the closest available level (lower on a tie). */
+export function resolveCliEffort(engine: CliEngine, offered: readonly string[], preferred = "high"): string | undefined {
+  if (offered.includes(preferred)) return preferred;
+  const order = CLI_EFFORTS[engine];
+  const at = order.indexOf(order.includes(preferred) ? preferred : "high");
+  return order.filter((level) => offered.includes(level)).sort((a, b) =>
+    Math.abs(order.indexOf(a) - at) - Math.abs(order.indexOf(b) - at))[0];
+}
+
 /** What the `models` op answers: the CLI's picker rows in its order, and what it starts with when nothing is chosen. */
 export interface CliModelCatalog {
   models: CliModelOption[];

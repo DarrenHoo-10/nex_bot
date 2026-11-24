@@ -1,4 +1,5 @@
 /* oxlint-disable unicorn/no-useless-spread -- the copies are deliberate: listeners and entries remove themselves while a loop runs over the collection */
+import { privateCliImageLinks } from "../../../shared/cli-images.ts";
 // Agent mode hub: what Core knows about terminal coding-agent sessions on the
 // user's devices. Devices push session rows and transcript items over the DCP
 // link (`cli.*`); browsers read them through the stream (stream.ts) and the
@@ -174,6 +175,18 @@ export type CoreAnswerHandler = (request: CliRequestView, decision: "allow" | "d
  * native session key, so a browser that just subscribed gets the queue too. */
 export interface WorkbenchSink {
   queueForSessionKey(key: string): CliQueueView | null;
+}
+
+function privateImageItem(item: CliItem): CliItem {
+  if ("text" in item) {
+    const text = privateCliImageLinks(item.text);
+    return text === item.text ? item : { ...item, text };
+  }
+  if (item.kind === "tool") return {
+    ...item, input: privateCliImageLinks(item.input),
+    ...(item.output === undefined ? {} : { output: privateCliImageLinks(item.output) }),
+  };
+  return item;
 }
 
 export class CliAgentHub {
@@ -470,8 +483,9 @@ export class CliAgentHub {
   private onItems(deviceId: string, message: Extract<DeviceCliMessage, { type: "cli.items" }>) {
     const key = cliKey(deviceId, message.ref);
     if (!this.sessionRow(key)) return;
-    this.cacheItems(key, message.items, message.reset === true);
-    this.notify(key, { type: "items", key: asKey(key), items: message.items, ...(message.reset ? { reset: true } : {}), ...(message.more ? { more: true } : {}) });
+    const items = message.items.map(privateImageItem);
+    this.cacheItems(key, items, message.reset === true);
+    this.notify(key, { type: "items", key: asKey(key), items, ...(message.reset ? { reset: true } : {}), ...(message.more ? { more: true } : {}) });
   }
 
   /** Items are encrypted at rest; the cache keeps the newest CORE_ITEM_CACHE per session. */
@@ -916,7 +930,7 @@ export class CliAgentHub {
     const devices = [...this.caps.entries()].filter(([, caps]) => hasCliFeature(caps, "search")).map(([deviceId]) => deviceId);
     const answers = await Promise.allSettled(devices.map(async (deviceId) => {
       const result = await this.op(actor, deviceId, null, "search", { query, ...(limit ? { limit } : {}) });
-      return result.hits.map((hit) => ({ key: asKey(cliKey(deviceId, hit.ref)), snippet: hit.snippet }));
+      return result.hits.map((hit) => ({ key: asKey(cliKey(deviceId, hit.ref)), snippet: privateCliImageLinks(hit.snippet) }));
     }));
     const hits: Array<{ key: CliSessionKey; snippet: string; at: number }> = [];
     const seen = new Set<string>();
@@ -1014,8 +1028,9 @@ export class CliAgentHub {
     const parsed = this.requireKey(key);
     try {
       const result = await this.op(actor, parsed.deviceId, key, "read", { ref: parsed.ref, ...(before ? { before } : {}), limit: PAGE_SIZE });
-      if (this.sessionRow(key)) this.cacheItems(key, result.items, false);
-      return result;
+      const items = result.items.map(privateImageItem);
+      if (this.sessionRow(key)) this.cacheItems(key, items, false);
+      return { ...result, items };
     } catch (error) {
       if (error instanceof CliOpError && (error.code === "device_offline" || error.code === "unknown")) return this.cachedPage(key, before);
       throw error;

@@ -2,6 +2,7 @@
 // from the stream. Older pages load on request and keep the reader's place.
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { completedCliReplies, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
+import { CLI_IMAGE_PREFIX } from "../../../shared/cli-images";
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
 import {HarnessMark} from "./tokendance/HarnessMark";
@@ -147,7 +148,7 @@ function BlockView({ block, engine, translations, onEdit, byline = true, local, 
       if(block.item.text.trim()==="[Request interrupted by user]")return <div className="cli-notice">你已中断本次请求</div>;
       return (
         <div className="cli-msg is-user" data-testid="cli-user">
-          <div className="cli-bubble">{block.item.text}</div>
+          <div className="cli-bubble">{block.item.text.includes(CLI_IMAGE_PREFIX) ? <Suspense fallback={null}><RichText value={block.item.text}/></Suspense> : block.item.text}</div>
           {onEdit ? <div className="na-user-actions"><button type="button" className="text-button na-edit-resend" aria-label="编辑并重发这条消息" title="编辑并重发" onClick={()=>onEdit(block.item.id, block.item.text)}>编辑并重发</button></div> : null}
           {block.item.queued ? <small>排队中</small> : null}
         </div>

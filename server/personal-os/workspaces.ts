@@ -10,6 +10,7 @@ import { feishuScanToken } from "./feishu/module.ts";
 import { GOOGLE_CALLBACK } from "./gmail-provider.ts";
 import { GITHUB_CALLBACK } from "./github-provider.ts";
 import { CLI_STREAM_PATH } from "./upgrade.ts";
+import { cliImageId } from "../../shared/cli-images.ts";
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
 
@@ -97,6 +98,11 @@ export async function createWorkspaceService(options: AppOptions) {
         await target.handleRequest(request, response); return true;
       }
       // All password challenges belong to the endpoint, regardless of old cookies.
+      const fileId = request.method === "GET" ? cliImageId(route) : undefined;
+      if (fileId && new URL(request.url!, primary.origin).searchParams.has("ticket")) {
+        const target = apps().find((app) => app.store.get("SELECT id FROM cli_agent_images WHERE id=? AND published=1", fileId));
+        if (target && target !== primary) { await target.handleRequest(request, response); return true; }
+      }
       if (["/api/auth/start", "/api/auth/respond"].includes(route) || !route.startsWith("/api/")) return false;
       let token = request.headers.authorization?.replace(/^Bearer /, "") ?? request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("nex="))?.slice(4) ?? "";
       if (route === "/api/session" && request.method === "POST") token = String((await requestBody(request)).token ?? "");

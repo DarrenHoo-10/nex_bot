@@ -540,9 +540,55 @@ extension WorkspaceStore {
     public func saveImageModelSelection(connectionID: String, models: [String], version: Int) async throws -> ModelVisibility {
         try await act { try await client.saveImageModelSelection(connectionID: connectionID, models: models, version: version) }
     }
+    private func newerModelReceipt(_ botID: String, version: Int) -> AgentModelReceipt? {
+        guard let saved = savedAgentModels[botID], saved.model_selection_version > version,
+              state?.connections.contains(where: { $0.id == saved.selected_connection && $0.enabled }) == true else { return nil }
+        return saved
+    }
+
+    public func isSavingAgentModel(_ botID: String) -> Bool { pendingAgentModels[botID] != nil }
+
+    public func agentModelChoice(_ botID: String) -> AgentModelChoice? {
+        guard let bot = bot(botID) else { return nil }
+        return pendingAgentModels[botID] ?? newerModelReceipt(botID, version: bot.modelSelectionVersion)?.choice
+            ?? AgentModelChoice(connectionID: state?.connection(forBot: bot)?.id ?? "", model: bot.selectedModel ?? "", reasoning: bot.selectedReasoning)
+    }
+
     /// Chooses an assistant's provider, model (`""` = that provider's default) and effort (`nil` keeps the stored one).
     public func setAgentModel(botID: String, connectionID: String, model: String, reasoning: String?) async throws {
-        guard let b = bot(botID) else { throw CoreError(kind: .unsupported, message: "Agent 不存在") }
-        try await act { try await client.updateModel(id: botID, connectionID: connectionID, model: model, reasoning: reasoning, version: b.modelSelectionVersion) }
+        let bot = try currentBot(botID)
+        try await act { try await client.updateModel(id: botID, connectionID: connectionID, model: model, reasoning: reasoning, version: bot.modelSelectionVersion) }
+    }
+
+    /// Show each choice immediately and use the confirmed version for the next write.
+    public func chooseAgentModel(_ botID: String, _ choice: AgentModelChoice, onError: @escaping (String) -> Void) {
+        guard let bot = bot(botID) else { return }
+        let saving = isSavingAgentModel(botID)
+        pendingAgentModels[botID] = choice
+        guard !saving else { return }
+        let version = newerModelReceipt(botID, version: bot.modelSelectionVersion)?.model_selection_version ?? bot.modelSelectionVersion
+        Task {
+            defer { pendingAgentModels[botID] = nil }
+            var expected = version
+            var next = choice
+            do {
+                while true {
+                    if let saved = try await act(refresh: false, {
+                        try await client.saveAgentModelSelection(id: botID, connectionID: next.connectionID, model: next.model, reasoning: next.reasoning, version: expected)
+                    }) {
+                        expected = saved.model_selection_version
+                        savedAgentModels[botID] = saved
+                    } else {
+                        await refresh()
+                        guard let latest = self.bot(botID) else { return }
+                        expected = latest.modelSelectionVersion
+                    }
+                    guard let pending = pendingAgentModels[botID], pending != next else { return }
+                    next = pending
+                }
+            } catch {
+                onError((error as? CoreError)?.message ?? error.localizedDescription)
+            }
+        }
     }
 }

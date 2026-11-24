@@ -30,7 +30,7 @@ struct Composer: View {
     private var botName: String { bot?.name ?? "Agent" }
     private var quote: QuoteDraft? { agentUI.quotes[botID] }
     private var hasModel: Bool { workspace.state?.config != nil }
-    private var canSend: Bool { conversation.canSend && hasModel && bot != nil }
+    private var canSend: Bool { conversation.canSend && hasModel && !workspace.isSavingAgentModel(botID) && bot != nil }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
     private var showStop: Bool {
         !tasks.isEmpty && conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && conversation.attachments.isEmpty

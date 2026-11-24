@@ -77,6 +77,16 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const [workspaceOpen,setWorkspaceOpen]=useState(false);
   const workspaceId=useId();
   const workspaceToggle=useRef<HTMLButtonElement>(null);
+  const workspaceLayer=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    if(!workspaceOpen)return;
+    const closeOutside=(event:MouseEvent)=>{
+      const clicked=event.composedPath();
+      if(!clicked.some(target=>target===workspaceLayer.current||target===workspaceToggle.current))setWorkspaceOpen(false);
+    };
+    document.addEventListener("click",closeOutside,true);
+    return ()=>document.removeEventListener("click",closeOutside,true);
+  },[workspaceOpen]);
   // Core keeps the notes; the isolated review fixture keeps them in the tab
   const {notes,update:updateNotes,error:noteError,dismissError:dismissNoteError}=useNotes(session.key,!review);
   const [items,setItems]=useState<CliItem[]>([]);
@@ -220,7 +230,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
         <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} pending={echoes} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
-        {!compact && <div id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
+        {!compact && <div ref={workspaceLayer} id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
         </div>}

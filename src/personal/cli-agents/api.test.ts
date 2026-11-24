@@ -121,12 +121,12 @@ describe("search, launch options and attachments", () => {
     ]);
   });
 
-  it("uploads the file itself with its type and returns the path on the computer", async () => {
-    const fetchMock = capture({ path: "C:\\Temp\\nexbot-attachments\\claude-abc\\1a2b3c4d-shot.png" });
+  it("uploads images to the Core media endpoint and receives a private path", async () => {
+    const fetchMock = capture({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" });
     const file = new File([new Uint8Array([1, 2, 3])], "截图 1.png", { type: "image/png" });
-    expect(await uploadAttachment(key, file)).toEqual({ path: "C:\\Temp\\nexbot-attachments\\claude-abc\\1a2b3c4d-shot.png" });
+    expect(await uploadAttachment(key, file)).toEqual({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe(`/api/cli-agents/attach?key=${encodeURIComponent(key)}&name=${encodeURIComponent("截图 1.png")}`);
+    expect(url).toBe(`/api/cli-agents/images?key=${encodeURIComponent(key)}&name=${encodeURIComponent("截图 1.png")}`);
     expect(init).toMatchObject({ method: "POST", headers: { "Content-Type": "image/png" } });
     expect(init?.body).toBe(file);
   });

@@ -1,6 +1,10 @@
 import { hash, id, now, text, type CoreStore } from "./store.ts";
 
 export const attachmentLimit = 5 * 1024 * 1024;
+export const attachmentQuota = 200 * 1024 * 1024;
+export function attachmentMime(bytes: Buffer): string {
+  return bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? "image/png" : bytes[0] === 255 && bytes[1] === 216 ? "image/jpeg" : bytes.subarray(0, 4).toString() === "%PDF" ? "application/pdf" : bytes.subarray(0,4).toString() === "RIFF" && bytes.subarray(8,12).toString() === "WEBP" ? "image/webp" : "application/octet-stream";
+}
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled", "rejected"]);
 
 /** Remove one attachment's inline image/link reference from a message body. */
@@ -28,8 +32,8 @@ export class ChatFiles {
     const bytes = Buffer.from(encoded, "base64");
     if (!bytes.length || bytes.length > attachmentLimit) throw new Error("文件不能超过 5 MB");
     this.store.run("DELETE FROM chat_attachments WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND message_id IS NULL AND created_at<? AND NOT EXISTS(SELECT 1 FROM transcript t JOIN conversations c ON c.id=t.conversation_id WHERE c.bot_id=chat_attachments.bot_id AND t.source_key LIKE 'image:%' AND instr(t.content,'/api/attachments/'||chat_attachments.id)>0)", now() - 86400_000);
-    if (Number(this.store.get("SELECT COALESCE(SUM(size),0) n FROM chat_attachments")?.n) + bytes.length > 200 * 1024 * 1024) throw new Error("附件空间已满");
-    const mime = bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? "image/png" : bytes[0] === 255 && bytes[1] === 216 ? "image/jpeg" : bytes.subarray(0, 4).toString() === "%PDF" ? "application/pdf" : bytes.subarray(0,4).toString() === "RIFF" && bytes.subarray(8,12).toString() === "WEBP" ? "image/webp" : "application/octet-stream";
+    this.checkQuota(bytes.length);
+    const mime = attachmentMime(bytes);
     const file = { id: id(), botId, name, mime, size: bytes.length };
     this.store.insert("chat_attachments", { id: file.id, bot_id: botId, session_id: sessionId, name, mime, size: bytes.length, ciphertext: this.store.encrypt(encoded), created_at: now(), message_id: null });
     return file;
@@ -62,15 +66,34 @@ export class ChatFiles {
     const core = this.store.get('SELECT core_id FROM workspaces')!.core_id;
     return `nexbot/attachments/v1/${hash(String(core))}/${text(fileId, 100)}.enc`;
   }
+  checkQuota(size: number) {
+    const total = this.store.get("SELECT (SELECT COALESCE(SUM(size),0) FROM chat_attachments) + (SELECT COALESCE(SUM(size),0) FROM cli_agent_images) AS n");
+    if (Number(total?.n) + size > attachmentQuota) throw new Error("附件空间已满");
+  }
+
+  async writeObject(fileId: string, ciphertext: string) {
+    const objects = this.store.attachmentObjects;
+    if (!objects) throw new Error("附件存储不可用");
+    const key = this.objectKey(fileId), digest = hash(ciphertext);
+    await objects.put(key, ciphertext);
+    if (hash(await objects.get(key)) !== digest) throw new Error("附件上传校验失败");
+    return { key, digest };
+  }
+
+  async readObject(fileId: string, key: unknown, digest: unknown) {
+    if (key !== this.objectKey(fileId) || !this.store.attachmentObjects) throw new Error("附件存储不可用");
+    const ciphertext = await this.store.attachmentObjects.get(key);
+    if (hash(ciphertext) !== digest) throw new Error("附件完整性校验失败");
+    return ciphertext;
+  }
   persist(fileId: string): Promise<void> {
     const pending = this.store.attachmentJobs.get(fileId); if (pending) return pending;
     const objects = this.store.attachmentObjects; if (!objects) return Promise.resolve();
     const job = (async () => {
       const row = this.store.get('SELECT ciphertext FROM chat_attachments WHERE id=?', fileId);
       if (!row || !row.ciphertext) return;
-      const ciphertext = String(row.ciphertext), key = this.objectKey(fileId), digest = hash(ciphertext);
-      await objects.put(key, ciphertext);
-      if (hash(await objects.get(key)) !== digest) throw new Error('附件上传校验失败');
+      const ciphertext = String(row.ciphertext);
+      const { key, digest } = await this.writeObject(fileId, ciphertext);
       this.store.transaction(() => {
         if (this.store.get('SELECT ciphertext FROM chat_attachments WHERE id=?', fileId)?.ciphertext !== ciphertext) return;
         this.store.run('INSERT INTO attachment_objects VALUES(?,?,?) ON CONFLICT(attachment_id) DO UPDATE SET object_key=excluded.object_key,ciphertext_hash=excluded.ciphertext_hash', fileId, key, digest);
@@ -90,9 +113,7 @@ export class ChatFiles {
     let row = this.authorize(fileId, botId), ciphertext = String(row.ciphertext);
     if (!ciphertext) {
       const object = this.store.get('SELECT * FROM attachment_objects WHERE attachment_id=?', fileId);
-      if (!object || object.object_key !== this.objectKey(fileId) || !this.store.attachmentObjects) throw new Error('附件存储不可用');
-      ciphertext = await this.store.attachmentObjects.get(String(object.object_key));
-      if (hash(ciphertext) !== object.ciphertext_hash) throw new Error('附件完整性校验失败');
+      ciphertext = await this.readObject(fileId, object?.object_key, object?.ciphertext_hash);
       row = this.authorize(fileId, botId);
     }
     return { row, bytes: Buffer.from(this.store.decrypt(ciphertext), 'base64') };

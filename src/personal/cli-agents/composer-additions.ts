@@ -1,9 +1,12 @@
-import {MAX_SEND_TEXT} from "../../../shared/cli-agents";
+import {MAX_SEND_TEXT, type CliSessionKey} from "../../../shared/cli-agents";
+import {cliImageId, cliImageReference} from "../../../shared/cli-images";
+import {uploadAttachment} from "./api";
 
 export interface PickedFile {id:string; file:File}
 export interface ComposerExtras {files:PickedFile[];goal:string|null}
 const extras=new Map<string,ComposerExtras>();
-const deliveredFiles=new WeakMap<File,string>();
+const deliveredFiles=new WeakMap<File,{key:string;reference:string}>();
+export const isPickedImage = (file: File) => file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
 const goalKey=(key:string)=>"nexagent.goal."+key;
 export function getExtras(key:string):ComposerExtras {
   const saved=extras.get(key);
@@ -33,14 +36,14 @@ export function transferGoal(from:string,to:string){
 }
 /** What a message says about an attached file. `upload` is true for the review fixture's endpoint, a
  * function that puts the file on the session's computer, or false where only small text files go inline. */
-export async function fileReference(entry:PickedFile,key:string,upload:boolean|((file:File)=>Promise<{path:string}>)):Promise<string>{
+export async function fileReference(entry:PickedFile,key:CliSessionKey,upload:boolean|((file:File)=>Promise<{path:string}>)):Promise<string>{
   const {file}=entry;
   const cached=deliveredFiles.get(file);
-  if(cached)return cached;
-  if(typeof upload==="function"){
-    const {path}=await upload(file);
-    const reference=(file.type.startsWith("image/")?"图片：":"附件：")+file.name+"\n"+path;
-    deliveredFiles.set(file,reference);return reference;
+  if(cached?.key===key)return cached.reference;
+  if(typeof upload==="function" || (upload===false && isPickedImage(file))){
+    const {path}=await (typeof upload==="function" ? upload(file) : uploadAttachment(key,file));
+    const reference=cliImageId(path) ? cliImageReference(file.name,path) : "附件："+file.name+"\n"+path;
+    deliveredFiles.set(file,{key,reference});return reference;
   }
   if(!upload){
     if(file.size<=MAX_SEND_TEXT){
@@ -57,7 +60,7 @@ export async function fileReference(entry:PickedFile,key:string,upload:boolean|(
   const result=await response.json();
   if(!response.ok || typeof result.path!=="string")throw Error(result.error||"附件未能送达");
   const reference="附件："+file.name+"\n"+result.path;
-  deliveredFiles.set(file,reference);return reference;
+  deliveredFiles.set(file,{key,reference});return reference;
 }
 
 /** Files of messages sent from this page, so edit-and-resend puts them back in the box. */

@@ -309,6 +309,17 @@ public final class CliAgentsModel {
         try await clientProvider().cliSend(key: key, text: trimmed)
     }
 
+    public func imageMessage(_ key: CliSessionKey, text: String, images: [CliImageUpload]) async throws -> String {
+        guard images.count <= ChatAttachment.maxCount else { throw CoreError(kind: .http, message: "最多添加 5 张图片", status: 400) }
+        var lines = [text.trimmingCharacters(in: .whitespacesAndNewlines)]
+        for image in images { lines.append(try await clientProvider().cliUploadImage(key: key, image: image)) }
+        return lines.filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    public func downloadImage(_ path: String) async throws -> Data {
+        try await clientProvider().cliDownloadImage(path)
+    }
+
     public func translateReply(_ key: CliSessionKey, item: CliItem) async throws -> String? {
         let scope = cacheScope()
         let cacheKey = "translation:zh:v1:" + key + ":" + item.id + ":" + LocalContentCache.digest(item.text)
@@ -327,8 +338,8 @@ public final class CliAgentsModel {
 
     /// Resumes a stopped session. The new key is selected.
     @discardableResult
-    public func continueSession(_ key: CliSessionKey) async throws -> CliSessionKey {
-        let next = try await clientProvider().cliContinue(key: key)
+    public func continueSession(_ key: CliSessionKey, effort: String? = nil, model: String? = nil) async throws -> CliSessionKey {
+        let next = try await clientProvider().cliContinue(key: key, effort: effort, model: model)
         await refresh()
         if selectedKey == key { select(next) }
         return next
@@ -385,12 +396,17 @@ public final class CliAgentsModel {
                 await refresh()
             }
             let text = request.message.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let target, !text.isEmpty {
+            if let target, !text.isEmpty || !request.images.isEmpty {
                 updateLaunch(id) { $0.phase = .sending }
-                echoes[target] = text
+                echoes[target] = ([text] + request.images.map { "图片：" + $0.name }).filter { !$0.isEmpty }.joined(separator: "\n")
+                var outgoing: String?
                 var tries = 0
                 while true {
-                    do { try await send(target, text: text); break } catch {
+                    do {
+                        if outgoing == nil { outgoing = try await imageMessage(target, text: text, images: request.images) }
+                        try await send(target, text: outgoing ?? text)
+                        break
+                    } catch {
                         // the computer lists a just-started session once the CLI is up
                         if tries < 30, CoreError.wrap(error).code == "not_found" { tries += 1; try? await Task.sleep(nanoseconds: launchRetryNanos); continue }
                         throw error

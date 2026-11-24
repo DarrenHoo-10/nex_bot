@@ -55,15 +55,14 @@ describe("设置 → 模型: providers", () => {
     expect(fixture.api).toHaveBeenLastCalledWith("connections/save", expect.objectContaining({ id: "default", version: 3, defaultModel: "grok-4.7-build-fast" }));
   });
 
-  it("edits a model's image input, limits and reasoning levels, starting from the catalog", async () => {
+  it("edits a model's image input and limits", async () => {
     await mount([connection()]);
     await act(async () => button("编辑 claude-sonnet-5-5").click());
     const checks = () => Object.fromEntries([...container.querySelectorAll<HTMLLabelElement>(".provider-model-checks label")].map(label => [label.textContent, label.querySelector("input")!.checked]));
-    expect(checks()).toEqual({ "支持图片输入": true, "低": true, "中": true, "高": true, "很高": false, "最高": false });
-    await act(async () => [...container.querySelectorAll<HTMLLabelElement>(".provider-model-checks label")].find(label => label.textContent === "最高")!.querySelector("input")!.click());
+    expect(checks()).toEqual({ "支持图片输入": true });
     await type(container.querySelector<HTMLInputElement>(".provider-model-limits input")!, "500000");
     await act(async () => container.querySelector<HTMLFormElement>(".provider-model-editor")!.requestSubmit());
-    expect(fixture.api).toHaveBeenCalledWith("connections/model", { connectionId: "default", model: "claude-sonnet-5-5", version: 0, imageInput: true, reasoning: ["low", "medium", "high", "max"], contextWindow: "500000", maxOutputTokens: null });
+    expect(fixture.api).toHaveBeenCalledWith("connections/model", { connectionId: "default", model: "claude-sonnet-5-5", version: 0, imageInput: true, contextWindow: "500000", maxOutputTokens: null });
   });
 
   it("keeps the default provider enabled and undeletable", async () => {
@@ -123,7 +122,7 @@ describe("Chat model menu", () => {
     const onChange = await open({ connectionId: "default", model: "", reasoning: null });
     expect(document.querySelector(".model-menu-provider")?.textContent).toBe("CPAAnthropic");
     expect(rows()).toEqual(["claude-opus-5-5", "claude-sonnet-5-5", "grok-4.7-build-fast"]);
-    expect(document.querySelector(".model-menu-effort")).toBeNull();
+    expect(document.querySelector(".model-menu-stops [aria-pressed=true]")?.textContent).toBe("高");
     await act(async () => document.querySelector<HTMLButtonElement>(".model-menu-provider")!.click());
     await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".model-menu-row")].find(row => row.textContent?.startsWith("智谱"))!.click());
     expect(rows()).toEqual(["glm-5.3视觉", "glm-5.3-air"]);
@@ -131,14 +130,13 @@ describe("Chat model menu", () => {
     expect(onChange).toHaveBeenCalledWith({ connectionId: "zhipu", model: "glm-5.3-air", reasoning: null });
   });
 
-  it("offers only the model's reasoning levels and saves the slider when released", async () => {
+  it("shows the five levels for a model with legacy capability settings", async () => {
     const onChange = await open({ connectionId: "zhipu", model: "glm-5.3", reasoning: "max" });
-    expect([...document.querySelectorAll(".model-menu-stops span")].map(stop => stop.textContent)).toEqual(["关闭", "低", "高"]);
-    expect(document.querySelector(".model-menu-effort-label strong")?.textContent).toBe("高");
-    const slider = document.querySelector<HTMLInputElement>('input[aria-label="思考强度"]')!;
-    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "1"); slider.dispatchEvent(new Event("input", { bubbles: true })); });
-    expect(onChange).not.toHaveBeenCalled();
-    await act(async () => { slider.dispatchEvent(new Event("pointerup", { bubbles: true })); });
+    expect(document.querySelector<HTMLInputElement>('input[type="range"]')?.step).toBe("any");
+    const levels = [...document.querySelectorAll<HTMLButtonElement>(".model-menu-stops button")];
+    expect(levels.map(stop => stop.textContent)).toEqual(["低", "中", "高", "很高", "最高"]);
+    expect(levels.find(stop => stop.getAttribute("aria-pressed") === "true")?.textContent).toBe("最高");
+    await act(async () => { levels[0].click(); });
     expect(onChange).toHaveBeenCalledWith({ connectionId: "zhipu", model: "glm-5.3", reasoning: "low" });
   });
 });

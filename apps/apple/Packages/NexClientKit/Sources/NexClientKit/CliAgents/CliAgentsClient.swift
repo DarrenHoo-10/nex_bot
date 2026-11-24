@@ -4,12 +4,14 @@ import Foundation
 // `code` is Core's machine-readable code; `CliErrorText.text(for:)` turns one into the line to show.
 
 private struct CliKeyBody: Encodable { let key: String }
+private struct CliContinueBody: Encodable { let key: String; let effort: String?; let model: String? }
 private struct CliStartBody: Encodable {
     let deviceId: String; let engine: String; let cwd: String
     var worktreeBranch: String? = nil; var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
     var permissions: String? = nil
 }
 private struct CliSendBody: Encodable { let key: String; let text: String }
+private struct CliImageResult: Decodable, Sendable { let path: String }
 private struct CliHideBody: Encodable { let key: String; let hidden: Bool }
 private struct CliAnswerBody: Encodable { let id: String; let decision: CliDecision; let answers: [String: String]?; var always: Bool? = nil }
 private struct CliForkBody: Encodable { let key: String; let botId: String; let itemId: String? }
@@ -105,14 +107,38 @@ extension CoreClient {
     }
 
     /// Resumes a stopped session in a nex_bot terminal. The resumed session may have a new key.
-    public func cliContinue(key: CliSessionKey) async throws -> CliSessionKey {
-        let r: CliKeyResult = try await post(Self.cliBase + "/continue", body: CliKeyBody(key: key))
+    public func cliContinue(key: CliSessionKey, effort: String? = nil, model: String? = nil) async throws -> CliSessionKey {
+        let r: CliKeyResult = try await post(Self.cliBase + "/continue", body: CliContinueBody(key: key, effort: effort, model: model))
         return r.key
     }
 
     public func cliSend(key: CliSessionKey, text: String) async throws {
         let r: CliSendResult = try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text))
         _ = r
+    }
+
+    public func cliUploadImage(key: CliSessionKey, image: CliImageUpload) async throws -> String {
+        guard !image.data.isEmpty, image.data.count <= ChatAttachment.maxBytes else {
+            throw CoreError(kind: .http, message: "图片不能超过 5 MB", status: 413)
+        }
+        var upload = try request(Self.cliBase + "/images", query: [("key", key), ("name", String(image.name.suffix(200)))],
+                                 body: image.data, timeout: 120)
+        upload.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let result: CliImageResult = try await send(upload, as: CliImageResult.self)
+        guard Self.cliImageID(result.path) != nil else { throw CoreError(kind: .unsupported, message: "Core 版本过旧，升级后可发送图片") }
+        let name = String(image.name.map { "[]\\\r\n".contains($0) ? "_" : $0 })
+        return "![\(name)](\(result.path))"
+    }
+
+    public func cliDownloadImage(_ path: String) async throws -> Data {
+        guard Self.cliImageID(path) != nil else { throw CoreError(kind: .http, message: "图片不存在", status: 404) }
+        return try await getData(path).0
+    }
+
+    private static func cliImageID(_ path: String) -> UUID? {
+        let prefix = cliBase + "/images/"
+        guard path.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(path.dropFirst(prefix.count)))
     }
 
     public func cliInterrupt(key: CliSessionKey) async throws {

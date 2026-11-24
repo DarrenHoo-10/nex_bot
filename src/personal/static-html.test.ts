@@ -49,6 +49,12 @@ describe("static message HTML", () => {
     expect(html).toContain('disabled=""');
     expect(html).not.toContain("password");
   });
+  it("keeps only the authenticated path for a NexAgent image", () => {
+    const path = "/api/cli-agents/images/12345678-0000-4000-8000-000000000000";
+    const html = render(`<img src="${path}" alt="照片"><img src="${path}?ticket=anything" alt="不保留链接">`);
+    expect(html).toContain(`src="${path}"`);
+    expect(html).not.toContain("ticket=");
+  });
   it("handles partial markup during streaming", () => {
     const source = '<table><tr><td><b>中文</b></td></tr></table>';
     for (let i = 0; i <= source.length; i++) expect(() => render(source.slice(0, i))).not.toThrow();

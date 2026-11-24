@@ -1,8 +1,6 @@
 import SwiftUI
 import NexClientKit
 
-/// The chat model menu (web `ModelMenu`): the assistant's provider on top (switch it in a sub-list), that provider's
-/// enabled models, and the 思考强度 slider when the chosen model offers reasoning levels. Every choice saves at once.
 struct ChatModelMenu: View {
     let workspace: WorkspaceStore
     let botID: String
@@ -14,18 +12,18 @@ struct ChatModelMenu: View {
     @State private var picking = false
     @State private var catalogs: [String: [String]] = [:]
     @State private var loadError = ""
-    @State private var level = 0.0
-    @State private var saving = false
 
     private var state: WorkspaceState? { workspace.state }
-    private var bot: Bot? { workspace.bot(botID) }
+    private var choice: AgentModelChoice? { workspace.agentModelChoice(botID) }
     private var usable: [ModelConnection] { (state?.connections ?? []).filter(\.usable) }
-    private var current: ModelConnection? { state?.connection(forBot: bot) }
+    private var current: ModelConnection? { usable.first { $0.id == choice?.connectionID } ?? usable.first(where: \.isDefault) ?? usable.first }
     private var viewed: ModelConnection? { usable.first { $0.id == viewedID } ?? current }
-    private var chosenModel: String { state?.modelChoice(forBot: bot).model ?? "" }
-    private var offered: [ReasoningLevel] { current?.options[chosenModel]?.reasoning ?? [] }
-    private var stops: [String] { composer ? ReasoningLevel.allCases.map(\.rawValue) : ["off"] + offered.map(\.rawValue) }
-    private var resolved: String { ReasoningLevel.resolve(bot?.selectedReasoning, offered: offered) }
+    private var chosenModel: String {
+        if let model = choice?.model, !model.isEmpty { return model }
+        return current?.defaultModel ?? ""
+    }
+    private var offered: [ReasoningLevel] { chosenModel.isEmpty ? [] : ReasoningLevel.defaults }
+    private var resolved: String { ReasoningLevel.chatLevel(choice?.reasoning).rawValue }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,17 +46,15 @@ struct ChatModelMenu: View {
             } else {
                 providerButton(title: viewed?.name ?? "", tag: viewed?.formatTag, chevron: usable.count > 1) { if usable.count > 1 { picking = true } }
                 Text("模型").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
+                if !offered.isEmpty && viewed?.id == current?.id { effort }
                 ModelListView(models: models, value: viewed?.id == current?.id ? chosenModel : "", emptyLabel: nil, allowCustom: false, debugPrefix: "cm",
                               names: viewed?.names ?? [:], onSelect: { pick($0) }, onEscape: close)
                 if !loadError.isEmpty { Text(loadError).font(.system(size: 11)).foregroundStyle(Theme.danger).padding(.horizontal, 12).padding(.vertical, 6) }
-                if !offered.isEmpty && viewed?.id == current?.id { effort }
             }
         }
         .frame(width: 320).padding(.vertical, 4)
         .accessibilityElement(children: .contain).accessibilityLabel("模型")
-        .onAppear { viewedID = current?.id ?? ""; level = Double(stops.firstIndex(of: resolved) ?? 0) }
-        .onChange(of: stops) { level = Double(stops.firstIndex(of: resolved) ?? 0) }
-        .onChange(of: resolved) { level = Double(stops.firstIndex(of: resolved) ?? 0) }
+        .onAppear { viewedID = current?.id ?? "" }
         .task(id: viewed?.id) { await loadCatalog() }
     }
 
@@ -71,9 +67,9 @@ struct ChatModelMenu: View {
     }
 
     private var effort: some View {
-        ChatReasoningSlider(level: $level, stops: stops, available: composer ? Set(offered.map(\.rawValue)) : nil,
-                            tint: composer ? .blue : Theme.brand, commit: commitLevel)
-            .padding(.horizontal, 12).padding(.vertical, 8).disabled(saving)
+        ChatEffortChoices(levels: offered.map(\.rawValue), selection: resolved,
+                          label: ReasoningLevel.label, tint: composer ? .blue : Theme.brand, choose: commitLevel)
+            .padding(.horizontal, 12).padding(.vertical, 6)
     }
 
     private func providerButton(title: String, tag text: String? = nil, chevron: Bool = false, back: Bool = false, action: @escaping () -> Void) -> some View {
@@ -105,29 +101,15 @@ struct ChatModelMenu: View {
     }
 
     private func pick(_ model: String) {
-        guard !saving, let viewed else { return }
+        guard let viewed else { return }
         if !composer { close() }
         if viewed.id == current?.id && model == chosenModel { return }
-        // The effort stays as stored for that provider (nil keeps it).
-        saving = true
-        Task {
-            defer { saving = false }
-            do { try await workspace.setAgentModel(botID: botID, connectionID: viewed.id, model: model, reasoning: nil) }
-            catch { onError(mbFallbackMessage(error)) }
-        }
+        workspace.chooseAgentModel(botID, .init(connectionID: viewed.id, model: model,
+                                                 reasoning: viewed.id == current?.id ? choice?.reasoning : nil), onError: onError)
     }
 
-    private func commitLevel() {
-        guard !saving, let current else { return }
-        let stop = stops[min(stops.count - 1, max(0, Int(level.rounded())))]
-        let next = composer ? ReasoningLevel.resolve(stop, offered: offered) : stop
-        level = Double(stops.firstIndex(of: next) ?? 0)
-        guard next != resolved else { return }
-        saving = true
-        Task {
-            defer { saving = false; level = Double(stops.firstIndex(of: resolved) ?? 0) }
-            do { try await workspace.setAgentModel(botID: botID, connectionID: current.id, model: bot?.selectedModel ?? "", reasoning: next) }
-            catch { onError(mbFallbackMessage(error)) }
-        }
+    private func commitLevel(_ next: String) {
+        guard let current, next != resolved else { return }
+        workspace.chooseAgentModel(botID, .init(connectionID: current.id, model: choice?.model ?? "", reasoning: next), onError: onError)
     }
 }

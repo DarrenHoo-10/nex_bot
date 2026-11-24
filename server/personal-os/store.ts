@@ -24,7 +24,7 @@ import { todoSchema } from "./todo-schema.ts";
 import { cliAgentNotesSchema, cliAgentRequestSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./cli-agents/schema.ts";
 import { jobSchema } from "./job-schema.ts";
 import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
-import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
+import { reasoningLevels, parseReasoningChoice, parseReasoningLevels, resolveReasoning } from "./reasoning.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
@@ -612,6 +612,15 @@ CREATE TABLE personal_connector_deliveries (
       this.db.exec(schema);
       this.insert("schema_migrations", { version: 57, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=58")) this.transaction(() => {
+      const schema = `CREATE TABLE cli_agent_images (
+        id TEXT PRIMARY KEY, device_id TEXT NOT NULL, origin TEXT NOT NULL, mime TEXT NOT NULL,
+        size INTEGER NOT NULL, ciphertext TEXT NOT NULL, object_key TEXT, ciphertext_hash TEXT,
+        created_at INTEGER NOT NULL, published INTEGER NOT NULL DEFAULT 0
+      ) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 58, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -796,17 +805,18 @@ CREATE TABLE personal_connector_deliveries (
     const secret = row?.credential_ref ? this.get("SELECT ciphertext FROM secrets WHERE id=?", row.credential_ref) : undefined;
     return row && secret ? { provider: String(row.provider_id), endpoint: String(row.endpoint), apiKey: this.decrypt(String(secret.ciphertext)) } : undefined;
   }
-  /** A model's settings on a provider: image input (null: not set) and the reasoning levels it offers. */
+  /** A model's image input setting and the reasoning levels shared by all models. */
   modelOptions(connectionId: string, model: string) {
-    const row = this.get("SELECT image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=? AND model=?", connectionId, model);
-    return { imageInput: row?.image_input == null ? null : !!row.image_input, reasoning: row ? parseReasoningLevels(JSON.parse(String(row.reasoning_levels_json))) : [] as ReasoningLevel[], version: Number(row?.version ?? 0) };
+    const row = this.get("SELECT image_input,version FROM model_options WHERE connection_id=? AND model=?", connectionId, model);
+    return { imageInput: row?.image_input == null ? true : !!row.image_input, reasoning: [...reasoningLevels], version: Number(row?.version ?? 0) };
   }
   saveModelOptions(value: Record<string, unknown>) {
     const row = this.connection(text(value.connectionId, 100));
     if (!row) throw new Error("供应商不存在或已删除");
     const model = text(value.model, 200), previous = this.modelOptions(String(row.id), model);
     if (value.version !== previous.version) throw new Error("模型设置已在其他设备修改，请刷新后再试");
-    const reasoning = value.reasoning === undefined ? previous.reasoning : parseReasoningLevels(value.reasoning);
+    if (value.reasoning !== undefined) parseReasoningLevels(value.reasoning);
+    const reasoning = previous.reasoning;
     const imageInput = value.imageInput === undefined ? previous.imageInput : value.imageInput === null ? null : !!value.imageInput;
     // The model's context window and output ceiling may be set here too (null: automatic); its budget is kept.
     const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model });
@@ -842,7 +852,7 @@ CREATE TABLE personal_connector_deliveries (
   connections() {
     return this.connectionRows().map((row) => {
       const visibility = this.modelVisibility(String(row.id));
-      const options = Object.fromEntries(this.all("SELECT model,image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=?", row.id).map((option) => [String(option.model), { imageInput: option.image_input == null ? null : !!option.image_input, reasoning: parseReasoningLevels(JSON.parse(String(option.reasoning_levels_json))), version: Number(option.version) }]));
+      const options = Object.fromEntries(this.all("SELECT model,image_input,version FROM model_options WHERE connection_id=?", row.id).map((option) => [String(option.model), { imageInput: option.image_input == null ? null : !!option.image_input, reasoning: reasoningLevels, version: Number(option.version) }]));
       const names = Object.fromEntries(this.all("SELECT model,display_name FROM model_display_names WHERE provider=? AND endpoint=?", row.provider_id, String(row.endpoint).replace(/\/+$/, "")).map((item) => [String(item.model), String(item.display_name)]));
       return { id: String(row.id), name: String(row.display_name), names, ...(row.provider_id === "openai" ? { imageModels: this.imageModelSelection(String(row.id)) } : {}), provider: String(row.provider_id), endpoint: String(row.endpoint), defaultModel: String(row.default_model), enabled: !!row.enabled, isDefault: !!row.is_default, configured: !!(row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref)), version: Number(row.version), models: visibility.models, modelsVersion: visibility.version, options };
     });
@@ -891,8 +901,10 @@ CREATE TABLE personal_connector_deliveries (
     const scope = modelLimitScope({ provider: usable.provider_id, endpoint: usable.endpoint, model });
     const limits = this.modelLimitSettings(scope);
     validateModelLimits(limits);
-    const reasoning = resolveReasoning(selection?.reasoning == null ? null : String(selection.reasoning), this.modelOptions(String(usable.id), model).reasoning);
-    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(usable.version), connectionId: String(usable.id), reasoning };
+    const { imageInput, reasoning: offered } = this.modelOptions(String(usable.id), model);
+    const savedReasoning = selection?.reasoning;
+    const reasoning = resolveReasoning(savedReasoning == null || savedReasoning === "off" ? null : String(savedReasoning), offered);
+    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(usable.version), connectionId: String(usable.id), reasoning, imageInput };
   }
   /** Resolve a turn override through the same owned provider/configuration entry points as normal chat. No secret is persisted. */
   resolveInputModel(botId:string,value:unknown){
@@ -907,7 +919,6 @@ CREATE TABLE personal_connector_deliveries (
     if(enabled&&!enabled.includes(model.model))throw new Error('此模型未在本人连接中启用');
     if(input.provider!==undefined&&input.provider!==model.provider||input.endpoint!==undefined&&input.endpoint!==model.endpoint)throw new Error('单轮模型连接已变化');
     const reasoning=input.reasoning===undefined?model.reasoning:parseReasoningChoice(input.reasoning)!;
-    if(reasoning!=='off'&&!this.modelOptions(connectionId,model.model).reasoning.includes(reasoning))throw new Error('此模型不支持指定的思考强度');
     return {connectionId,model:model.model,reasoning,provider:model.provider,endpoint:model.endpoint};
   }
   taskModelConfig(taskId:string){

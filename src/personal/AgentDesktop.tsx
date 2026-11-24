@@ -11,6 +11,7 @@ import type { ComponentProps } from "react";
 import { ChatChart } from "./components/ChatChart";
 import { HtmlPreview } from "./components/HtmlPreview";
 import { htmlPreviewParts } from "../../shared/html-preview";
+import { cliImageId } from "../../shared/cli-images";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
@@ -89,6 +90,9 @@ function AttachmentImage({ id, alt }: { id: string; alt: string }) {
   return <img ref={image} className="generated-chat-image" src={source} alt={alt} loading="lazy"/>;
 }
 function MarkdownImage({ src, alt }: ComponentProps<'img'> & ExtraProps) {
+  if (typeof src === "string" && cliImageId(src)) {
+    return <img className="generated-chat-image" src={src} alt={alt ?? "图片"} loading="lazy"/>;
+  }
   const id = typeof src === "string" ? /^\/api\/attachments\/([a-zA-Z0-9-]+)$/.exec(src)?.[1] : undefined;
   return id ? <AttachmentImage id={id} alt={alt ?? "生成图片"}/> : <span>{alt ?? "图片"}</span>;
 }

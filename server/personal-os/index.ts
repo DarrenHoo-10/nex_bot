@@ -13,6 +13,8 @@ import { DeviceGateway } from "./devices.ts";
 import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
 import { CliAgentWorkbench } from "./cli-agents/workbench.ts";
 import { CliAgentRoutes, readCliAttachment } from "./cli-agents/routes.ts";
+import { CliImages } from "./cli-agents/images.ts";
+import { cliImageId } from "../../shared/cli-images.ts";
 import { CliAgentSupervisor } from "./cli-agents/supervisor.ts";
 import { assistantModelCaller, createTriage } from "./cli-agents/triage.ts";
 import { cliToolExecutor } from "./cli-agents/tools.ts";
@@ -168,8 +170,9 @@ export async function createPersonalApp(options: AppOptions) {
   const cliSupervisor = new CliAgentSupervisor(cliHub, store);
   cliSupervisor.triage = createTriage(assistantModelCaller(store, (botId) => runtime.tidyModel(botId)));
   runtime.cliExecutor = cliToolExecutor(cliHub, store);
-  const cliWorkbench = new CliAgentWorkbench(cliHub, store);
-  const cliRoutes = new CliAgentRoutes(cliHub, store, { agents, supervisor: cliSupervisor, workbench: cliWorkbench });
+  const cliImages = new CliImages(store, options.key);
+  const cliWorkbench = new CliAgentWorkbench(cliHub, store, cliImages);
+  const cliRoutes = new CliAgentRoutes(cliHub, store, { agents, supervisor: cliSupervisor, workbench: cliWorkbench, images: cliImages });
   // The Host a browser may address, and the Origin its pages then carry. Shared by the HTTP routes and the stream socket.
   const hostAllowed = (host: string | undefined) => {
     if (!host) return false;
@@ -299,6 +302,18 @@ export async function createPersonalApp(options: AppOptions) {
     if (mutating && request.headers.origin && request.headers.origin !== requestOrigin) { json(response, 403, { error: "Invalid origin" }); return; }
     const cookieValue = (name: string) => request.headers.cookie?.split(";").map((v) => v.trim()).find((v) => v.startsWith(name + "="))?.slice(name.length + 1) ?? "";
     const token = request.headers.authorization?.replace(/^Bearer /, "") ?? cookieValue("nex");
+    const imageId = request.method === "GET" ? cliImageId(url.pathname) : undefined;
+    const imageTicket = url.searchParams.get("ticket");
+    async function serveCliImage(fileId: string, authorized: () => Promise<boolean>) {
+      response.setHeader("Cache-Control", "private, no-store");
+      if (!await authorized()) { json(response, 401, { error: "Unauthorized" }); return; }
+      const image = await cliImages.read(fileId);
+      if (!await authorized()) { json(response, 401, { error: "Unauthorized" }); return; }
+      if (!image) { json(response, 404, { error: "图片不存在" }); return; }
+      response.writeHead(200, { "Content-Type": image.mime, "Content-Length": image.bytes.length });
+      response.end(image.bytes);
+    }
+    if (imageId && imageTicket) { await serveCliImage(imageId, async () => cliImages.validTicket(imageId, imageTicket)); return; }
     if (url.pathname === "/api/finance/exchange" && request.method === "POST") {
       if (request.headers.origin || request.headers["sec-fetch-site"]) throw new IdentityError(403, "金融会话交换仅供服务端使用");
       const exchange = await finance.exchange(request.headers.authorization, await body(request), () => agents.finance().botId);
@@ -412,6 +427,10 @@ export async function createPersonalApp(options: AppOptions) {
         const allowed = get.includes(route) ? url.searchParams.get("bot") === botId : post.includes(route) ? (await body(request)).botId === botId :
           route === "POST /api/bots/model" ? (await body(request)).id === botId : scopedFinance.includes(route);
         if (!allowed) throw new IdentityError(403, "此委托只可访问本人的金融助手");
+      }
+      if (imageId) {
+        await serveCliImage(imageId, async () => (await authenticate(token))?.user_id === store.owner);
+        return;
       }
       const targetBot = url.searchParams.get("botId") ?? url.searchParams.get("bot");
       if(targetBot && store.get("SELECT 1 FROM bots WHERE id=? AND status='deleted'",targetBot)) throw new IdentityError(404,"助手不存在");
@@ -594,13 +613,13 @@ export async function createPersonalApp(options: AppOptions) {
         }
         json(response, 200, { kind: "file", path: targetPath, title: path.basename(targetPath), exists: false, content: "未在当前授权共享目录或最近读取记录中找到该文件。可在「设备网络」中配置后端允许读取的目录或让 Agent 调用 device.read 读取。" }); return;
       }
-      if (url.pathname === "/api/cli-agents/attach" && request.method === "POST") {
+      if ((url.pathname === "/api/cli-agents/attach" || url.pathname === "/api/cli-agents/images") && request.method === "POST") {
         // the file itself is the body, not JSON: read it here, bounded, before the JSON reader could
         if (request.headers["sec-fetch-site"] === "cross-site") { json(response, 403, { error: "Invalid request" }); return; }
         const bytes = await readCliAttachment(request, request.headers["content-length"]);
         if (!bytes) { json(response, 413, { error: "附件不能超过 8 MB", code: "too_large" }); return; }
         if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
-        const result = await cliRoutes.handle({ method: "POST", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner, bytes });
+        const result = await cliRoutes.handle({ method: "POST", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner, bytes, imageOrigin: options.publicOrigin ?? requestOrigin });
         if (result) { json(response, result.status, result.body); return; }
       }
       if (!mutating) { json(response, 404, { error: "Not found" }); return; }

@@ -5,22 +5,47 @@ import Foundation
 /// A reasoning level a model offers. "off" (关闭) is always available and is not a level.
 public enum ReasoningLevel: String, CaseIterable, Sendable, Hashable, Codable {
     case low, medium, high, xhigh, max
+    public static let defaults: [ReasoningLevel] = allCases
+    public static func chatLevel(_ stored: String?) -> ReasoningLevel { stored.flatMap(Self.init(rawValue:)) ?? .high }
     public var label: String {
         switch self { case .low: "低"; case .medium: "中"; case .high: "高"; case .xhigh: "很高"; case .max: "最高" }
     }
     /// The label of a stored choice: a level, or "off".
     public static func label(_ choice: String) -> String { ReasoningLevel(rawValue: choice)?.label ?? "关闭" }
     /// Same rule as Core (`reasoning.ts`): the choice when offered, else the nearest offered level (lower on a tie);
-    /// `medium` is aimed for when nothing was chosen. A model offering no levels is "off".
+    /// Aim for `high` when nothing was chosen. A model offering no levels is "off".
     public static func resolve(_ choice: String?, offered: [ReasoningLevel]) -> String {
         guard !offered.isEmpty, choice != "off" else { return "off" }
-        let wanted = choice.flatMap(ReasoningLevel.init(rawValue:)) ?? .medium
+        let wanted = choice.flatMap(ReasoningLevel.init(rawValue:)) ?? .high
         if offered.contains(wanted) { return wanted.rawValue }
         let order = ReasoningLevel.allCases, at = order.firstIndex(of: wanted)!
         return offered.sorted {
             let a = abs(order.firstIndex(of: $0)! - at), b = abs(order.firstIndex(of: $1)! - at)
             return a != b ? a < b : order.firstIndex(of: $0)! < order.firstIndex(of: $1)!
         }[0].rawValue
+    }
+}
+
+public struct AgentModelChoice: Equatable, Sendable {
+    public let connectionID: String
+    public let model: String
+    public let reasoning: String?
+
+    public init(connectionID: String, model: String, reasoning: String?) {
+        self.connectionID = connectionID
+        self.model = model
+        self.reasoning = reasoning
+    }
+}
+
+struct AgentModelReceipt: Decodable, Sendable {
+    let selected_connection: String
+    let selected_model: String
+    let selected_reasoning: String?
+    let model_selection_version: Int
+
+    var choice: AgentModelChoice {
+        .init(connectionID: selected_connection, model: selected_model, reasoning: selected_reasoning)
     }
 }
 
@@ -88,8 +113,7 @@ extension WorkspaceState {
     public func modelChoice(forBot bot: Bot?) -> (connection: ModelConnection?, model: String, reasoning: String) {
         let connection = connection(forBot: bot)
         let model = bot?.selectedModel ?? connection?.defaultModel ?? config?.defaultModel ?? ""
-        let offered = connection?.options[model]?.reasoning ?? []
-        return (connection, model, ReasoningLevel.resolve(bot?.selectedReasoning, offered: offered))
+        return (connection, model, model.isEmpty ? "off" : ReasoningLevel.chatLevel(bot?.selectedReasoning).rawValue)
     }
     /// The label menus show: "model · 高", or just the model when reasoning is off.
     public func modelLabel(forBot bot: Bot?) -> String {
@@ -128,6 +152,7 @@ struct ConnectionVisibilityBody: Encodable {
     }
 }
 struct BotChoiceBody: Encodable { let id: String; let connectionId: String; let model: String; let reasoning: String?; let version: Int }
+struct BotChoiceSaved: Decodable, Sendable { let selection: AgentModelReceipt? }
 
 extension CoreClient {
     /// `POST /api/connections/save` (owner only): adds (no `id`) or edits a provider. An empty key keeps the saved one.
@@ -155,6 +180,11 @@ extension CoreClient {
     }
     /// `POST /api/bots/model` with a provider: model `""` is the provider's default model; `reasoning == nil` keeps the stored effort.
     public func updateModel(id: String, connectionID: String, model: String, reasoning: String?, version: Int) async throws {
-        try await post("/api/bots/model", body: BotChoiceBody(id: id, connectionId: connectionID, model: model, reasoning: reasoning, version: version))
+        _ = try await saveAgentModelSelection(id: id, connectionID: connectionID, model: model, reasoning: reasoning, version: version)
+    }
+
+    func saveAgentModelSelection(id: String, connectionID: String, model: String, reasoning: String?, version: Int) async throws -> AgentModelReceipt? {
+        let result: BotChoiceSaved = try await post("/api/bots/model", body: BotChoiceBody(id: id, connectionId: connectionID, model: model, reasoning: reasoning, version: version))
+        return result.selection
     }
 }

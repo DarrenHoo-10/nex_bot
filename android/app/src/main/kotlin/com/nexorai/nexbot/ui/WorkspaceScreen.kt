@@ -151,10 +151,11 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                 if (uri.scheme == "data") return null
                 val path = uri.path.orEmpty()
                 // Image previews come from Core with the native token; storage URLs never reach the page.
-                if (request.method == "GET" && "https://${uri.host}" == origin &&
-                    (WorkspaceTransport.isAttachmentPreview(path, uri.query) || WorkspaceTransport.isGroupAvatar(path, uri.query))) {
+                if (request.method == "GET" && uri.scheme == "https" && "https://${uri.host}" == origin &&
+                    (WorkspaceTransport.isAttachmentPreview(path, uri.query) || WorkspaceTransport.isGroupAvatar(path, uri.query) ||
+                     WorkspaceTransport.isCliImagePreview(path, uri.query))) {
                     return try {
-                        val reply = transport.request("$path?${uri.query}", "GET", "")
+                        val reply = transport.request(path + uri.encodedQuery?.let { "?$it" }.orEmpty(), "GET", "")
                         val mime = reply.contentType.substringBefore(';').trim()
                         if (reply.status == 200 && mime.startsWith("image/")) response(200, mime, ByteArrayInputStream(reply.body))
                         else response(404, "text/plain", ByteArrayInputStream(ByteArray(0)))

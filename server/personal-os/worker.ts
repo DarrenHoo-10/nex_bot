@@ -356,9 +356,9 @@ async function main(value: WorkerConfig) {
   const runtime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const api = config.provider === "anthropic" ? "anthropic-messages" : "openai-completions";
   runtime.registerProvider("nex", { name: "NexBot API", apiKey: config.apiKey, baseUrl: config.provider === "anthropic" ? config.endpoint : openAiBase(config.endpoint), api,
-    // Reasoning is declared only for a model whose provider settings offer levels; otherwise nothing is sent, so a
-    // service without reasoning support never receives reasoning_effort or thinking.
-    models: [{ id: config.model, name: config.model, api, reasoning: !!config.reasoning && config.reasoning !== "off", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: config.contextWindow, maxTokens: config.maxOutputTokens }] });
+    models: [{ id: config.model, name: config.model, api, reasoning: !!config.reasoning && config.reasoning !== "off",
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" }, input: config.imageInput === false ? ["text"] : ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: config.contextWindow, maxTokens: config.maxOutputTokens }] });
   const model = runtime.getModel("nex", config.model);
   if (!model) throw new Error("Model registration failed");
   const broker = defineTool({ name: "broker", label: "Core Broker", description: brokerDescription,
@@ -404,7 +404,12 @@ async function main(value: WorkerConfig) {
   // The SDK reads this from the request options (or, only as a fallback, from PI_CACHE_RETENTION); other protocols have no marker to set.
   if (config.provider === "anthropic") {
     const stream = session.agent.streamFunction;
-    session.agent.streamFunction = (requestModel, context, options) => stream(requestModel, context, { ...options, cacheRetention: "long" });
+    // The SDK's budget-based Anthropic requests use the high budget for both extended levels.
+    const extendedBudget = config.reasoning === "max" ? 32768 : config.reasoning === "xhigh" ? 24576 : undefined;
+    session.agent.streamFunction = (requestModel, context, options) => stream(requestModel, context, {
+      ...options, cacheRetention: "long",
+      ...(extendedBudget && { thinkingBudgets: { ...options?.thinkingBudgets, high: extendedBudget } }),
+    });
   }
   let hasStreamedText = false;
   let startsParagraph = false;

@@ -10,6 +10,11 @@ import UIKit
 @MainActor
 enum AgentDrafts {
     static var texts: [CliSessionKey: String] = [:]
+    static var images: [CliSessionKey: [CliImageUpload]] = [:]
+    static var models: [CliSessionKey: String] = [:]
+    static var appliedModels: [CliSessionKey: String] = [:]
+    static var efforts: [CliSessionKey: String] = [:]
+    static var appliedEfforts: [CliSessionKey: String] = [:]
 }
 
 private enum AgentTab: Hashable { case terminal, chat }
@@ -53,6 +58,8 @@ struct AgentSessionDetail: View {
     @State private var failure: String?
     @State private var failuresSeen: Set<String>?
     @State private var openedAt = Date()
+    @State private var expandedActivity: String?
+    @State private var activityBounds: AgentActivityBounds.Region?
 
     private var session: CliSession? { model.sessions.first { $0.key == key } }
 
@@ -125,7 +132,7 @@ struct AgentSessionDetail: View {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
                 } else {
-                    AgentTranscript(model: model, key: key, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending,
+                    AgentTranscript(model: model, key: key, expandedActivity: $expandedActivity, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending,
                                     branch: workspace.bots.isEmpty ? nil : { itemId in
                                         forkItemId = itemId
                                         forking = true
@@ -135,6 +142,13 @@ struct AgentSessionDetail: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             AgentComposer(model: model, session: session, pending: $pending) { next in onKeyChange(next) }
         }
+        .contentShape(Rectangle())
+        .onPreferenceChange(AgentActivityBounds.self) { activityBounds = $0 }
+        .simultaneousGesture(SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+            if let activityBounds, activityBounds.id == expandedActivity, !activityBounds.rect.contains(tap.location) {
+                expandedActivity = nil
+            }
+        })
     }
 
     private func header(_ session: CliSession, attach: Bool, shown: AgentTab) -> some View {
@@ -253,6 +267,7 @@ private struct AgentTerminalPane: View {
 private struct AgentTranscript: View {
     let model: CliAgentsModel
     let key: CliSessionKey
+    @Binding var expandedActivity: String?
     var engine: CliEngine = .claude
     var active = false
     /// what the agent is doing while the turn runs; shown as dots under the last message
@@ -300,7 +315,7 @@ private struct AgentTranscript: View {
                                     .onAppear { Task { await model.loadOlder(key) } }
                             }
                             ForEach(blocks) { block in
-                                AgentBlockView(block: block, translate: t.translationEnabled && completed.contains(block.id) ? { item in
+                                AgentBlockView(block: block, expandedActivity: $expandedActivity, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) ? { item in
                                     try await model.translateReply(key, item: item)
                                 } : nil, branch: completed.contains(block.id) ? branch : nil)
                             }
@@ -325,6 +340,8 @@ private struct AgentTranscript: View {
 
 private struct AgentBlockView: View {
     let block: CliBlock
+    @Binding var expandedActivity: String?
+    let loadImage: (String) async throws -> Data
     var translate: ((CliItem) async throws -> String?)?
     var branch: ((String) -> Void)?
 
@@ -334,7 +351,7 @@ private struct AgentBlockView: View {
             HStack {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(item.text).font(.system(size: 14)).textSelection(.enabled)
+                    AgentImageMessage(text: item.text, load: loadImage)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     if item.queued { Text("排队中").font(.caption2).foregroundStyle(Theme.muted) }
@@ -342,8 +359,11 @@ private struct AgentBlockView: View {
             }
         case .assistant(let item):
             AgentReplyText(item: item, translate: translate, branch: branch)
-        case .activity(_, let items):
-            AgentActivity(items: items)
+        case .activity(let id, let items):
+            AgentActivity(id: id, items: items, open: Binding(get: { expandedActivity == id }, set: { open in
+                if open { expandedActivity = id }
+                else if expandedActivity == id { expandedActivity = nil }
+            }))
         case .notice(_, let level, let text):
             Text(text).font(.caption).foregroundStyle(level == .error ? Theme.danger : Theme.muted).frame(maxWidth: .infinity, alignment: .center)
         }
@@ -407,9 +427,16 @@ private struct AgentReplyText: View {
     }
 }
 
+private struct AgentActivityBounds: PreferenceKey {
+    struct Region: Equatable { let id: String; let rect: CGRect }
+    static let defaultValue: Region? = nil
+    static func reduce(value: inout Region?, nextValue: () -> Region?) { value = nextValue() ?? value }
+}
+
 private struct AgentActivity: View {
+    let id: String
     let items: [CliItem]
-    @State private var open = false
+    @Binding var open: Bool
 
     var body: some View {
         let tools = items.filter { $0.kind == .tool }
@@ -426,6 +453,13 @@ private struct AgentActivity: View {
         } label: {
             (Text(tools.isEmpty ? "思考" : "\(tools.count) 项操作") + (failed > 0 ? Text(" · \(failed) 项失败").foregroundStyle(Theme.danger) : Text("")))
                 .font(.system(size: 12)).foregroundStyle(Theme.muted)
+        }
+        .background {
+            if open {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: AgentActivityBounds.self, value: .init(id: id, rect: geometry.frame(in: .global)))
+                }
+            }
         }
     }
 }
@@ -562,16 +596,42 @@ private struct AgentComposer: View {
     @State private var draft = ""
     @State private var sending = false
     @State private var error = ""
+    @State private var images: [CliImageUpload] = []
+    @State private var showingEffort = false
+    @State private var effort: String?
+    @State private var chosenModel = ""
+    @State private var showingModels = false
+    @State private var catalog = CliModelCatalog(models: [])
+
+    private var canSetOnResume: Bool { model.device(session.deviceId)?.cliAgents?.features.contains("launchOptions") == true }
+    private var canSetOnSend: Bool { session.engine == .claude && session.liveIn == .nexbot && session.terminal != nil }
+    private var effortLevels: [String] { CliLaunches.efforts[session.engine] == nil ? [] : CliLaunches.reasoningLevels }
+    private var selectedEffort: String { CliLaunches.reasoningChoice(effort) }
+    private var offered: [String] {
+        let effectiveModel = chosenModel.isEmpty ? session.model ?? catalog.current ?? "" : chosenModel
+        return CliLaunches.efforts(engine: session.engine, models: catalog.models, model: effectiveModel)
+    }
+    private var resolvedEffort: String? {
+        CliLaunches.resolveEffort(engine: session.engine, offered: offered, preferred: selectedEffort)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if !error.isEmpty { Text(error).font(.caption).foregroundStyle(Theme.danger) }
+            AgentImageDrafts(images: $images)
             switch CliSessions.composerMode(session) {
-            case .send(let running): sendRow(running: running)
+            case .send(let running):
+                sendRow(running: running)
             case .stopped(let hint):
                 HStack {
+                    #if os(iOS)
+                    if hint == nil && canSetOnResume { modelAdd }
+                    #endif
                     Text(hint ?? "会话已停止").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
+                    #if os(macOS)
+                    if hint == nil && canSetOnResume && !effortLevels.isEmpty { effortButton }
+                    #endif
                     Button(sending ? "正在继续…" : "继续") { Task { await resume() } }
                         .buttonStyle(.borderedProminent).tint(Theme.identityAccent).disabled(hint != nil || sending)
                 }
@@ -580,15 +640,37 @@ private struct AgentComposer: View {
             }
         }
         .padding(14)
-        .onAppear { draft = AgentDrafts.texts[session.key] ?? "" }
+        .onAppear {
+            draft = AgentDrafts.texts[session.key] ?? ""
+            effort = AgentDrafts.efforts[session.key]
+            chosenModel = AgentDrafts.models[session.key] ?? ""
+            images = AgentDrafts.images[session.key] ?? []
+        }
         .onChange(of: draft) { _, text in AgentDrafts.texts[session.key] = text }
+        .onChange(of: images) { _, value in AgentDrafts.images[session.key] = value.isEmpty ? nil : value }
+        .task(id: canSetOnResume || canSetOnSend) {
+            guard canSetOnResume || canSetOnSend else { return }
+            let options = await model.models(deviceId: session.deviceId, engine: session.engine)
+            if !Task.isCancelled { catalog = options }
+        }
+        #if os(iOS)
+        .onChange(of: chosenModel) { _, name in AgentDrafts.models[session.key] = name }
+        .sheet(isPresented: $showingModels) {
+            AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort, chooseEffort: setEffort)
+        }
+        #endif
     }
 
     private var tooLong: Bool { draft.utf8.count > CoreClient.cliMaxSendBytes }
-    private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !tooLong && !sending }
+    private var canSend: Bool { (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && !tooLong && !sending }
 
     private func sendRow(running: Bool) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
+            #if os(iOS)
+            modelAdd
+            #else
+            AgentComposerAdd(images: $images, error: $error)
+            #endif
             TextField("发消息", text: $draft, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain)
                 .padding(.horizontal, 12).padding(.vertical, 8)
@@ -596,8 +678,11 @@ private struct AgentComposer: View {
                 .onSubmit { if canSend { Task { await send() } } }
             if tooLong { Text("内容太长").font(.caption).foregroundStyle(Theme.danger) }
             AgentContextRing(usage: session.context)
+            #if os(macOS)
+            if canSetOnSend && !effortLevels.isEmpty { effortButton }
+            #endif
             // one button: Stop while a turn runs and the box is empty, Send once there is something to send
-            if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty {
                 Button { Task { await interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 26)) }
                     .buttonStyle(.plain).foregroundStyle(Theme.foreground).accessibilityLabel("停止")
             } else {
@@ -608,17 +693,72 @@ private struct AgentComposer: View {
         }
     }
 
+    #if os(iOS)
+    private var modelAdd: some View {
+        AgentComposerAdd(images: $images, error: $error, openModels: canSetOnResume || canSetOnSend ? { showingModels = true } : nil)
+    }
+    #endif
+
+    private func setEffort(_ level: String) {
+        effort = level
+        AgentDrafts.efforts[session.key] = level
+    }
+
+    private var effortButton: some View {
+        Button { showingEffort.toggle() } label: {
+            HStack(spacing: 4) {
+                Text(CliLaunches.effortLabel(selectedEffort))
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+            }
+            .font(.footnote)
+            .padding(.horizontal, 8).frame(height: 34)
+            .background(Theme.wash, in: RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("思考强度")
+        .accessibilityValue(CliLaunches.effortLabel(selectedEffort))
+        .popover(isPresented: $showingEffort, arrowEdge: .bottom) {
+            ChatEffortChoices(levels: effortLevels, selection: selectedEffort, label: CliLaunches.effortLabel, tint: Theme.identityAccent, choose: setEffort)
+            .padding(12).frame(width: 305)
+            #if os(iOS)
+            .presentationCompactAdaptation(.popover)
+            #endif
+        }
+    }
+
     /// The box empties and the message shows in the conversation at once; a failure puts it back.
     private func send() async {
         let text = draft
-        let entry = AgentPendingSend(text: text, known: Set(model.transcript(session.key).items.map(\.id)))
-        draft = ""; error = ""
-        pending.append(entry)
+        let submittedImages = images
+        var entry: AgentPendingSend?
+        sending = true; error = ""
+        defer { sending = false }
         do {
-            try await model.send(session.key, text: text)
+            let message = try await model.imageMessage(session.key, text: text, images: submittedImages)
+            if canSetOnSend {
+                let applied = AgentDrafts.appliedModels[session.key]
+                let wanted = chosenModel.isEmpty ? (applied == nil ? nil : catalog.current) : chosenModel
+                if let wanted, wanted != applied {
+                    try await model.send(session.key, text: "/model " + wanted)
+                    AgentDrafts.appliedModels[session.key] = wanted
+                    AgentDrafts.appliedEfforts[session.key] = nil
+                }
+            }
+            if canSetOnSend, let level = resolvedEffort, AgentDrafts.appliedEfforts[session.key] != level {
+                try await model.send(session.key, text: "/effort " + level)
+                AgentDrafts.appliedEfforts[session.key] = level
+            }
+            let echo = AgentPendingSend(text: message, known: Set(model.transcript(session.key).items.map(\.id)))
+            pending.append(echo)
+            entry = echo
+            if draft == text { draft = "" }
+            try await model.send(session.key, text: message)
+            images.removeAll { submittedImages.contains($0) }
         } catch {
-            pending.removeAll { $0.id == entry.id }
-            if draft.isEmpty { draft = text }
+            if let entry {
+                pending.removeAll { $0.id == entry.id }
+                if draft.isEmpty { draft = text }
+            }
             self.error = CliErrorText.text(for: error, fallback: "没能发送")
         }
     }
@@ -630,7 +770,17 @@ private struct AgentComposer: View {
 
     private func resume() async {
         sending = true; error = ""
-        do { onKeyChange(try await model.continueSession(session.key)) }
+        do {
+            let level = canSetOnResume ? resolvedEffort : nil
+            let requestedModel = canSetOnResume && !chosenModel.isEmpty ? chosenModel : nil
+            let next = try await model.continueSession(session.key, effort: level, model: requestedModel)
+            AgentDrafts.efforts[next] = effort
+            AgentDrafts.appliedEfforts[next] = level
+            AgentDrafts.models[next] = requestedModel
+            AgentDrafts.appliedModels[next] = requestedModel
+            AgentDrafts.images[next] = images.isEmpty ? nil : images
+            onKeyChange(next)
+        }
         catch { self.error = CliErrorText.text(for: error, fallback: "没能继续") }
         sending = false
     }

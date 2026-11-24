@@ -30,6 +30,7 @@ import { CliOpError, type CliAgentHub } from "./hub.ts";
 import { parseSettings, type CliAgentSupervisor } from "./supervisor.ts";
 import { MAX_TRANSLATION_SOURCE, CliTranslation } from "./translation.ts";
 import type { CliAgentWorkbench } from "./workbench.ts";
+import type { CliImages } from "./images.ts";
 
 export interface CliRouteRequest {
   method: string;
@@ -43,6 +44,7 @@ export interface CliRouteRequest {
   data?: Record<string, unknown>;
   /** the raw body of `POST /api/cli-agents/attach` (index.ts reads it instead of JSON) */
   bytes?: Uint8Array;
+  imageOrigin?: string;
 }
 
 export interface CliRouteResult {
@@ -86,6 +88,7 @@ export interface CliRouteExtras {
   supervisor?: CliAgentSupervisor;
   /** the workbench queue: present when Core runs the workbench contracts */
   workbench?: CliAgentWorkbench;
+  images?: CliImages;
 }
 
 export class CliAgentRoutes {
@@ -153,6 +156,7 @@ export class CliAgentRoutes {
         case "/api/cli-agents/notes/update": return this.updateNote(data);
         case "/api/cli-agents/notes/delete": return this.deleteNote(data);
         case "/api/cli-agents/attach": return await this.attach(request);
+        case "/api/cli-agents/images": return await this.uploadImage(request);
         default: return this.hide(data);
       }
     } catch (error) {
@@ -471,6 +475,14 @@ export class CliAgentRoutes {
     return { status: 200, body: await this.hub.attach(request.sessionId, key, name, bytes) };
   }
 
+  private async uploadImage(request: CliRouteRequest): Promise<CliRouteResult> {
+    const key = this.key(request.search.get("key"));
+    if (!key || !request.bytes || !request.imageOrigin || !this.extras.images) return cliErrorResult("invalid");
+    const session = this.hub.session(key);
+    if (!session) return cliErrorResult("not_found");
+    return { status: 200, body: await this.extras.images.upload(session.deviceId, request.imageOrigin, Buffer.from(request.bytes)) };
+  }
+
   /** `model` / `effort` / `permissions` of a start or continue body; null when one is malformed. */
   private launchOptions(data: Record<string, unknown>, engine: CliEngine): CliLaunchOptions | null {
     const { model, effort, permissions } = data;
@@ -567,7 +579,9 @@ export class CliAgentRoutes {
       });
       return { status: 200, body: { ...result, messageId: result.messageId } };
     }
-    const result = await this.hub.send(request.sessionId, key, text);
+    const deviceId = parseCliKey(key)!.deviceId;
+    this.extras.images?.publish(text, deviceId);
+    const result = await this.hub.send(request.sessionId, key, this.extras.images?.delivery(text, deviceId) ?? text);
     return {
       status: 200,
       body: {
@@ -634,6 +648,7 @@ const POST_ROUTES = new Set([
   "/api/cli-agents/notes/update",
   "/api/cli-agents/notes/delete",
   "/api/cli-agents/attach",
+  "/api/cli-agents/images",
 ]);
 
 const GET_ROUTES = new Set([

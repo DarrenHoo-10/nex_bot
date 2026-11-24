@@ -78,16 +78,11 @@ async function pickModel(label: string, scope: ParentNode = container) {
   expect(row!.disabled).toBe(false);
   await click(row!);
 }
-/** Opens the model menu and moves the effort slider to `level` (its index among the stops). */
-async function pickEffort(level: number, scope: ParentNode = container) {
-  const trigger = scope.querySelector<HTMLButtonElement>('button[aria-label="模型设置"]')!;
+async function pickEffort(label: string) {
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="模型设置"]')!;
   if (trigger.getAttribute("aria-expanded") !== "true") await click(trigger);
-  const slider = document.querySelector<HTMLInputElement>('.na-model-menu input[type=range]')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, String(level));
-    slider.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await act(async () => { slider.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true })); });
+  const button = [...document.querySelectorAll(".na-model-menu .model-menu-stops button")].find((entry) => entry.textContent === label);
+  await click(button ?? null);
 }
 
 async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[]; workbench?: unknown[] }, selected?: string) {
@@ -258,10 +253,10 @@ describe("session pane", () => {
     const capable = device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "attach"] } });
     await mount({ devices: [capable], sessions: [session({ state: "stopped", terminal: undefined })] }, "dev1:claude:s1");
     await pickModel("Opus");
-    // stops: 默认, low, medium, high, …
-    await pickEffort(3);
+    expect(document.querySelector(".na-model-menu .model-menu-stops [aria-pressed=true]")?.textContent).toBe("高");
+    await pickEffort("中");
     expect(document.querySelector(".na-model-menu .na-model-note")?.textContent).toBe("继续会话时生效");
-    expect(container.querySelector('button[aria-label="模型设置"]')?.textContent).toContain("高");
+    expect(container.querySelector('button[aria-label="模型设置"]')?.textContent).toContain("中");
     const input = container.querySelector("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "继续");
@@ -269,8 +264,8 @@ describe("session pane", () => {
     });
     await click(container.querySelector('button[aria-label="发送"]'));
     await flush();
-    expect(fixture.continueSession).toHaveBeenCalledWith("dev1:claude:s1", { model: "opus", effort: "high" });
-    expect(JSON.parse(localStorage.getItem("nexagent.launch.dev1:claude:s9")!)).toEqual({ model: "opus", effort: "high" });
+    expect(fixture.continueSession).toHaveBeenCalledWith("dev1:claude:s1", { model: "opus", effort: "medium" });
+    expect(JSON.parse(localStorage.getItem("nexagent.launch.dev1:claude:s9")!)).toEqual({ model: "opus", effort: "medium" });
   });
 
   it("switches a Claude running in a NexBot terminal with /model and /effort before the message", async () => {
@@ -283,7 +278,7 @@ describe("session pane", () => {
     });
     await click(container.querySelector('button[aria-label="发送"]'));
     await flush();
-    expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model sonnet", "下一步"]);
+    expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model sonnet", "/effort high", "下一步"]);
   });
 
   it("shows how full the context is as a ring, with the numbers when opened", async () => {
@@ -322,9 +317,7 @@ describe("session pane", () => {
     // the default row names what the CLI's settings choose
     expect(document.querySelector(".na-model-menu [role=option] small")?.textContent).toBe("Claude Opus 5.5 · routing group");
     await pickModel("Claude Opus 5.5 · routing group");
-    // that model takes three levels: 默认 and its own
-    await click(container.querySelector('button[aria-label="模型设置"]'));
-    expect([...document.querySelectorAll(".na-model-menu .model-menu-stops span")].map((entry) => entry.textContent)).toEqual(["默认", "低", "中", "高"]);
+    expect([...document.querySelectorAll(".na-model-menu .model-menu-stops button")].map((entry) => entry.textContent)).toEqual(["低", "中", "高", "很高", "最高"]);
     const input = container.querySelector("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "继续");
@@ -332,7 +325,7 @@ describe("session pane", () => {
     });
     await click(container.querySelector('button[aria-label="发送"]'));
     await flush();
-    expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model auto/claude-opus-5-5[1m]", "继续"]);
+    expect(fixture.sendMessage.mock.calls.map((call) => call[1])).toEqual(["/model auto/claude-opus-5-5[1m]", "/effort high", "继续"]);
   });
 
   it("sends a message with Enter and shows Core's error text", async () => {
@@ -397,7 +390,7 @@ describe("session pane", () => {
     expect(box.querySelector("textarea")?.getAttribute("placeholder")).toBe("发消息，或输入 / 使用技能");
     expect(box.querySelector('button[aria-label="添加"]')).not.toBeNull();
     expect(box.querySelector('button[aria-label="上下文用量"]')).not.toBeNull();
-    expect(box.querySelector('button[aria-label="模型设置"]')?.textContent).toBe("claude-opus");
+    expect(box.querySelector('button[aria-label="模型设置"]')?.querySelector('span')?.textContent).toBe("claude-opus");
     // running with an empty box: only the stop button, no native select, no delivery switch
     expect(box.querySelector("select")).toBeNull();
     expect(box.querySelector("[role=radiogroup]")).toBeNull();
@@ -695,10 +688,10 @@ describe("new session", () => {
     expect(second.worktreeBranch).toBe(first.worktreeBranch);
   });
 
-  it("is the same message box: files picked with + go to the computer once the session runs", async () => {
+  it("is the same message box: images picked with + go to Core once the session runs", async () => {
     fixture.startSession.mockResolvedValue({ key: "dev1:claude:new5" });
     fixture.uploadAttachment.mockReset();
-    fixture.uploadAttachment.mockResolvedValue({ path: "D:/work/alpha/.nexbot/shot.png" });
+    fixture.uploadAttachment.mockResolvedValue({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" });
     await mount({ devices: [device({ cliAgents: { ...device().cliAgents!, features: ["launchOptions", "models", "dirs", "attach"] } })], sessions: [session({ cwd: ALPHA })] });
     const page = await openNew();
     expect(page.querySelector("[data-testid=cli-composer] .na-add-trigger")).toBeTruthy();
@@ -710,7 +703,7 @@ describe("new session", () => {
     await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();
     expect(fixture.uploadAttachment).toHaveBeenCalledWith("dev1:claude:new5", expect.any(File));
-    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:new5", "看看这张图\n\n图片：shot.png\nD:/work/alpha/.nexbot/shot.png", expect.objectContaining({ delivery: "send" }));
+    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:new5", "看看这张图\n\n![shot.png](/api/cli-agents/images/12345678-0000-4000-8000-000000000000)", expect.objectContaining({ delivery: "send" }));
   });
 
   it("names why a computer cannot start a session", async () => {

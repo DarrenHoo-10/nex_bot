@@ -1,7 +1,7 @@
 import { userErrorText } from "../lib/http-errors";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Box, Check, Eye, EyeOff, MoreHorizontal, Pencil, Plus, Search, Star } from "lucide-react";
-import { api, listConnectionModels, modelName, reasoningLabels, reasoningOrder, type Connection, type ReasoningLevel, type State } from "./api";
+import { api, listConnectionModels, modelName, type Connection, type State } from "./api";
 import { useModelSelection } from "./useModelSelection";
 import "./components/model-picker.css";
 import "./provider-settings.css";
@@ -157,13 +157,19 @@ function ProviderModels({ connection, refresh, active }: { connection: Connectio
     <ul className="provider-model-rows" aria-label="模型">
       {rows.map((model) => {
         const options = connection.options[model], on = enabled.has(model), isDefault = model === connection.defaultModel;
-        const levels = options?.reasoning ?? [];
+        const name = nameOf(model);
         return <li key={model} className={on ? "" : "off"}>
           <div className="provider-model-row">
-            <span className="provider-model-label"><span className="provider-model-name" title={model}>{nameOf(model)}</span>{nameOf(model) !== model ? <small className="provider-model-id" title={model}>{model}</small> : null}</span>
-            {isDefault ? <span className="provider-tag accent">默认</span> : null}
-            {options?.imageInput ? <span className="provider-tag">视觉</span> : null}
-            {levels.length ? <span className="provider-tag" title={levels.map((level) => reasoningLabels[level]).join("、")}>推理 {reasoningLabels[levels[0]]}{levels.length > 1 ? `–${reasoningLabels[levels[levels.length - 1]]}` : ""}</span> : null}
+            <div className="provider-model-info">
+              <div className="provider-model-label">
+                <span className="provider-model-name" title={name}>{name}</span>
+                {name !== model ? <small className="provider-model-id" title={model}>{model}</small> : null}
+              </div>
+              {isDefault || options?.imageInput !== false ? <div className="provider-model-tags">
+                {isDefault ? <span className="provider-tag accent">默认</span> : null}
+                {options?.imageInput !== false ? <span className="provider-tag">视觉</span> : null}
+              </div> : null}
+            </div>
             <span className="provider-model-tools">
               {!isDefault ? <button type="button" aria-label={`设为默认模型：${model}`} title="设为默认模型" onClick={() => void setDefault(model)}><Star size={15}/></button> : null}
               <button type="button" aria-label={`编辑 ${model}`} aria-expanded={editing === model} title="编辑" onClick={() => setEditing(editing === model ? "" : model)}><Pencil size={15}/></button>
@@ -178,13 +184,12 @@ function ProviderModels({ connection, refresh, active }: { connection: Connectio
   </div>;
 }
 
-/** One model's settings: context window, output ceiling, image input and the reasoning levels it offers. */
+/** One model's context window, output ceiling and image input settings. */
 function ModelEditor({ connection, model, refresh, close }: { connection: Connection; model: string; refresh: () => Promise<void>; close: () => void }) {
   const stored = connection.options[model];
   const [limits, setLimits] = useState<{ contextWindow: number; maxOutputTokens: number; manual: { contextWindow: number | null; maxOutputTokens: number | null }; automatic: { contextWindow: number; maxOutputTokens: number }; capabilities: { reasoning: boolean; imageInput: boolean } | null }>();
   const [contextWindow, setContextWindow] = useState(""), [maxOutput, setMaxOutput] = useState("");
-  const [imageInput, setImageInput] = useState<boolean>(stored?.imageInput ?? false);
-  const [levels, setLevels] = useState<ReasoningLevel[]>(stored?.reasoning ?? []);
+  const [imageInput, setImageInput] = useState<boolean>(stored?.imageInput ?? true);
   const [pending, setPending] = useState(false), [error, setError] = useState("");
   useEffect(() => {
     let current = true;
@@ -193,15 +198,13 @@ function ModelEditor({ connection, model, refresh, close }: { connection: Connec
       setLimits(result);
       setContextWindow(result.manual.contextWindow == null ? "" : String(result.manual.contextWindow));
       setMaxOutput(result.manual.maxOutputTokens == null ? "" : String(result.manual.maxOutputTokens));
-      // A model never configured starts from what the catalog says it can do.
-      if (!stored && result.capabilities) { setImageInput(result.capabilities.imageInput); if (result.capabilities.reasoning) setLevels(["low", "medium", "high"]); }
     }).catch((failure: unknown) => { if (current) setError(errorText(failure)); });
     return () => { current = false; };
   }, [connection.provider, connection.endpoint, model]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = async (event: FormEvent) => {
     event.preventDefault(); setPending(true); setError("");
     try {
-      await api("connections/model", { connectionId: connection.id, model, version: stored?.version ?? 0, imageInput, reasoning: levels, contextWindow: contextWindow.trim() || null, maxOutputTokens: maxOutput.trim() || null });
+      await api("connections/model", { connectionId: connection.id, model, version: stored?.version ?? 0, imageInput, contextWindow: contextWindow.trim() || null, maxOutputTokens: maxOutput.trim() || null });
       await refresh(); close();
     } catch (failure) { setError(errorText(failure)); } finally { setPending(false); }
   };
@@ -213,8 +216,6 @@ function ModelEditor({ connection, model, refresh, close }: { connection: Connec
       </div>
       <div className="provider-model-checks">
         <label><input type="checkbox" checked={imageInput} onChange={(event) => setImageInput(event.target.checked)}/>支持图片输入</label>
-        <span className="provider-model-checks-label">推理档位</span>
-        {reasoningOrder.map((level) => <label key={level}><input type="checkbox" checked={levels.includes(level)} onChange={(event) => setLevels(event.target.checked ? reasoningOrder.filter((item) => item === level || levels.includes(item)) : levels.filter((item) => item !== level))}/>{reasoningLabels[level]}</label>)}
       </div>
       {error ? <p role="alert" className="model-error">{error}</p> : null}
       <div className="provider-model-editor-actions"><button type="button" onClick={close}>取消</button><button type="submit" className="primary">{pending ? "保存中…" : "保存"}</button></div>

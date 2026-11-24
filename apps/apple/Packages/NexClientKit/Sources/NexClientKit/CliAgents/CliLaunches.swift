@@ -36,6 +36,14 @@ public struct CliModelCatalog: Sendable, Hashable, Decodable {
 public enum CliPermissionMode: String, Sendable, Hashable, CaseIterable { case full, ask }
 
 /// What a new session is started with; empty model and effort leave the CLI's own defaults.
+public struct CliImageUpload: Sendable, Hashable, Identifiable {
+    public let id = UUID()
+    public let name: String
+    public let data: Data
+
+    public init(name: String, data: Data) { self.name = name; self.data = data }
+}
+
 public struct CliLaunchRequest: Sendable, Hashable {
     public var deviceId: String
     public var engine: CliEngine
@@ -50,10 +58,12 @@ public struct CliLaunchRequest: Sendable, Hashable {
     public var createDir: Bool
     /// nil leaves the computer's default (full access); only sent to computers that list `permissions`
     public var permissions: CliPermissionMode?
+    public var images: [CliImageUpload]
     public init(deviceId: String, engine: CliEngine, cwd: String, branch: String? = nil, message: String = "", model: String = "", effort: String = "", createDir: Bool = false,
-                permissions: CliPermissionMode? = nil) {
+                permissions: CliPermissionMode? = nil, images: [CliImageUpload] = []) {
         self.deviceId = deviceId; self.engine = engine; self.cwd = cwd; self.branch = branch; self.message = message; self.model = model; self.effort = effort; self.createDir = createDir
         self.permissions = permissions
+        self.images = images
     }
 }
 
@@ -82,12 +92,30 @@ public enum CliLaunches {
         .claude: [CliModelOption(id: "fable", label: "Fable"), CliModelOption(id: "opus", label: "Opus"), CliModelOption(id: "sonnet", label: "Sonnet"), CliModelOption(id: "haiku", label: "Haiku")],
         .codex: ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"].map { CliModelOption(id: $0, label: $0) },
     ]
+    public static let reasoningLevels = ["low", "medium", "high", "xhigh", "max"]
+
+    public static func reasoningChoice(_ value: String?) -> String {
+        if value == "minimal" { return "low" }
+        if value == "ultra" { return "max" }
+        return reasoningLevels.first { $0 == value } ?? "high"
+    }
+
     public static let effortLabels: [String: String] = ["": "默认", "minimal": "极低", "low": "低", "medium": "中", "high": "高", "xhigh": "很高", "max": "最高", "ultra": "超高"]
     public static func effortLabel(_ level: String) -> String { effortLabels[level] ?? level }
 
     /// Effort levels `model` takes: what the CLI says for it, else every level of the engine.
     public static func efforts(engine: CliEngine, models: [CliModelOption], model: String) -> [String] {
         models.first { $0.id == model }?.efforts ?? efforts[engine] ?? []
+    }
+
+    public static func resolveEffort(engine: CliEngine, offered: [String], preferred: String = "high") -> String? {
+        if offered.contains(preferred) { return preferred }
+        let order = efforts[engine] ?? []
+        guard let high = order.firstIndex(of: "high") else { return nil }
+        let wanted = order.firstIndex(of: preferred) ?? high
+        return order.indices.filter { offered.contains(order[$0]) }
+            .sorted { (abs($0 - wanted), $0) < (abs($1 - wanted), $1) }
+            .first.map { order[$0] }
     }
 
     /// `nexagent/` and six random characters.

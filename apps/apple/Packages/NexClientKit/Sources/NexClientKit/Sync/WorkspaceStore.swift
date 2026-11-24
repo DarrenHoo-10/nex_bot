@@ -51,6 +51,8 @@ public final class WorkspaceStore {
     public private(set) var currentSessionID: String?
     /// The signed-in NexorAI account (display name), loaded when the store starts; nil until then or if unavailable.
     public private(set) var account: AccountStatus?
+    var pendingAgentModels: [String: AgentModelChoice] = [:]
+    var savedAgentModels: [String: AgentModelReceipt] = [:]
     /// Called once when the session ends (expired, revoked, identity unavailable).
     @ObservationIgnored private var memoryEpochs: [String: Int] = [:]
     @ObservationIgnored public var onSessionEnded: (@MainActor (SessionEnd) -> Void)?

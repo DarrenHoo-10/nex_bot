@@ -5,6 +5,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.util.Base64
 
 /** The bundled workspace can call only the signed-in Core's API, never a supplied host. */
 class WorkspaceTransport(private val origin: String, private val token: () -> String?, private val http: OkHttpClient = CoreClient.defaultHttp()) {
@@ -26,6 +27,7 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         val query = path.substringAfter('?', "")
         val preview = method == "GET" && isAttachmentPreview(route, query)
         val avatar = method == "GET" && isGroupAvatar(route, query)
+        val cliPreview = method == "GET" && isCliImagePreview(route, query)
         val now = System.currentTimeMillis()
         val old = if (preview || avatar) synchronized(this) {
             if (assetToken != bearer) { assets.clear(); assetToken = bearer }
@@ -34,9 +36,19 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         if (avatar && old != null) return old.reply
         val builder = Request.Builder().url(origin.trimEnd('/') + path).header("Authorization", "Bearer $bearer")
         if (preview && old?.etag != null) builder.header("If-None-Match", old.etag)
-        if (method == "GET") builder.get() else builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        when {
+            method == "GET" -> builder.get()
+            route == "/api/cli-agents/images" -> {
+                val maxBytes = 5 * 1024 * 1024
+                require(body.length <= ((maxBytes + 2) / 3) * 4) { "图片不能超过 5 MB" }
+                val bytes = Base64.getDecoder().decode(body)
+                require(bytes.size in 1..maxBytes) { "图片不能超过 5 MB" }
+                builder.post(bytes.toRequestBody("application/octet-stream".toMediaType()))
+            }
+            else -> builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        }
         http.newCall(builder.build()).execute().use { response ->
-            if ((preview || avatar) && token() != bearer) throw IOException("登录已失效")
+            if ((preview || avatar || cliPreview) && token() != bearer) throw IOException("登录已失效")
             if (preview && response.code == 304 && old != null) return old.reply
             val source = response.body?.source() ?: return Reply(response.code, ByteArray(0))
             val limit = 32L * 1024 * 1024
@@ -56,6 +68,8 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
 
     companion object {
         private val attachmentPreview = Regex("^/api/attachments/[a-zA-Z0-9-]+$")
+        private val cliImagePreview = Regex("^/api/cli-agents/images/[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
+        fun isCliImagePreview(path: String, query: String?) = query.isNullOrEmpty() && cliImagePreview.matches(path)
         /** Core-served image previews, fetched with the native token for <img> tags. */
         fun isAttachmentPreview(path: String, query: String?) = attachmentPreview.matches(path) && query == "preview=1"
         private val groupAvatarQuery = Regex("^id=[a-zA-Z0-9-]+&chat=[a-zA-Z0-9_-]+&v=[a-f0-9]{16}$")

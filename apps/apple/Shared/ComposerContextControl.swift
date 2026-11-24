@@ -6,11 +6,14 @@ struct ComposerModelLabel: View {
     let bot: Bot?
 
     var body: some View {
-        let choice = workspace.state?.modelChoice(forBot: bot)
-        let model = choice?.model ?? ""
-        let name = model.isEmpty ? "未连接模型" : (choice?.connection?.displayName(model) ?? model)
+        let choice = bot.flatMap { workspace.agentModelChoice($0.id) }
+        let connection = workspace.state?.connections.first { $0.id == choice?.connectionID }
+        let model = (choice?.model.isEmpty == false ? choice?.model : connection?.defaultModel) ?? workspace.state?.config?.defaultModel ?? ""
+        let name = model.isEmpty ? "未连接模型" : (connection?.displayName(model) ?? model)
+        let effort = ReasoningLevel.chatLevel(choice?.reasoning).label
         HStack(spacing: 5) {
             Text(name).lineLimit(1).truncationMode(.tail)
+            if !model.isEmpty { Text(effort).foregroundStyle(Theme.muted).fixedSize() }
             Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
         }
         .font(.system(size: 12))
@@ -18,53 +21,76 @@ struct ComposerModelLabel: View {
         .padding(.horizontal, 8).frame(height: 34)
         .background(Theme.wash, in: RoundedRectangle(cornerRadius: 9))
         .accessibilityLabel("选择模型")
-        .accessibilityValue(name)
+        .accessibilityValue(model.isEmpty ? name : "\(name) · \(effort)")
     }
 }
 
-struct ChatReasoningSlider: View {
-    @Binding var level: Double
-    let stops: [String]
-    let available: Set<String>?
+struct ChatEffortChoices: View {
+    let levels: [String]
+    let selection: String?
+    let label: (String) -> String
     let tint: Color
-    let commit: () -> Void
+    let choose: (String) -> Void
+    @State private var preview: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var index: Int { min(stops.count - 1, max(0, Int(level.rounded()))) }
+    private var selected: Int? { selection.flatMap { levels.firstIndex(of: $0) } }
+    private var position: Double { min(Double(max(0, levels.count - 1)), max(0, preview ?? Double(selected ?? 0))) }
+    private var active: Int? { preview == nil ? selected : Int(position.rounded()) }
+    private var valueLabel: String { active.flatMap { levels.indices.contains($0) ? label(levels[$0]) : nil } ?? "默认" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Divider()
+        VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text("推理强度").foregroundStyle(Theme.muted)
+                Text("思考强度").foregroundStyle(Theme.muted)
                 Spacer()
-                Text(ReasoningLevel.label(stops[index])).fontWeight(.semibold)
-            }.font(.footnote)
-            Slider(value: $level, in: 0...Double(stops.count - 1), step: 1) { editing in
-                if !editing { commit() }
+                Text(valueLabel).fontWeight(.semibold)
+            }.font(.caption)
+            if levels.count > 1 {
+                Slider(value: Binding(get: { position }, set: { preview = $0 }), in: 0...Double(levels.count - 1)) { editing in
+                    if !editing, preview != nil { commit(Int(position.rounded())) }
+                }
+                .tint(tint)
+                .accessibilityLabel("思考强度")
+                .accessibilityValue(valueLabel)
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: commit((active ?? 0) + 1)
+                    case .decrement: commit((active ?? 0) - 1)
+                    @unknown default: break
+                    }
+                }
+                .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow], phases: [.down, .repeat]) { press in
+                    commit((active ?? 0) + (press.key == .leftArrow || press.key == .downArrow ? -1 : 1))
+                    return .handled
+                }
             }
-            .tint(tint)
-            .accessibilityLabel("推理强度").accessibilityValue(ReasoningLevel.label(stops[index]))
-            HStack(spacing: 2) {
-                ForEach(stops.indices, id: \.self) { stop in
-                    Button {
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.17)) { level = Double(stop) }
-                        commit()
-                    } label: {
-                        Text(ReasoningLevel.label(stops[stop])).font(.caption2)
-                            .foregroundStyle(stop == index ? tint : Theme.muted)
-                            .frame(maxWidth: .infinity, minHeight: 25)
+            HStack(spacing: 3) {
+                ForEach(Array(levels.enumerated()), id: \.element) { index, level in
+                    Button { commit(index) } label: {
+                        Text(label(level)).font(.caption)
+                            .fontWeight(index == active ? .semibold : .regular)
+                            .foregroundStyle(index == active ? tint : Theme.muted)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .frame(maxWidth: .infinity, minHeight: 28)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .opacity(available?.contains(stops[stop]) == false ? 0.48 : 1)
-                    .disabled(available?.contains(stops[stop]) == false)
-                    .accessibilityAddTraits(stop == index ? .isSelected : [])
+                    .accessibilityAddTraits(index == active ? .isSelected : [])
                 }
             }
         }
+        .accessibilityElement(children: .contain)
     }
 
+    private func commit(_ index: Int) {
+        guard !levels.isEmpty else { return }
+        let next = levels[min(levels.count - 1, max(0, index))]
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+            preview = nil
+            if next != selection { choose(next) }
+        }
+    }
 }
 
 struct ComposerContextControl: View {

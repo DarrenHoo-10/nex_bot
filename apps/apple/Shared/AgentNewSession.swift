@@ -49,6 +49,11 @@ struct AgentNewSessionPage: View {
     @State private var chosenModel = ""
     @State private var effort = ""
     @State private var permissions: CliPermissionMode = .full
+    @State private var images: [CliImageUpload] = []
+    @State private var imageError = ""
+    #if os(iOS)
+    @State private var showingModels = false
+    #endif
     @State private var catalog = CliModelCatalog()
     @State private var browsing = false
     @State private var editingBranch = false
@@ -64,6 +69,9 @@ struct AgentNewSessionPage: View {
     private var canChoosePermissions: Bool { device?.cliAgents?.features.contains("permissions") == true }
     private var fallbackModel: String { catalog.current ?? "" }
     private var offered: [String] { CliLaunches.efforts(engine: engine, models: catalog.models, model: chosenModel.isEmpty ? fallbackModel : chosenModel) }
+    private var effortLevels: [String] { CliLaunches.efforts[engine] == nil ? [] : CliLaunches.reasoningLevels }
+    private var selectedEffort: String { CliLaunches.reasoningChoice(effort) }
+    private var resolvedEffort: String? { CliLaunches.resolveEffort(engine: engine, offered: offered, preferred: selectedEffort) }
     private var ready: Bool { blocker == nil && device != nil && engines.contains(engine) && dir != nil && branchError == nil && !tooLong }
     private var status: String? { blocker ?? branchError ?? (tooLong ? "内容太长" : nil) ?? (dir == nil ? "先选择工作目录" : nil) }
 
@@ -94,7 +102,6 @@ struct AgentNewSessionPage: View {
             catalog = await model.models(deviceId: deviceId, engine: engine)
         }
         .task(id: dir) { await checkGit() }
-        .onChange(of: chosenModel) { _, _ in if !effort.isEmpty, !offered.contains(effort) { effort = "" } }
     }
 
     private func setUp() {
@@ -218,23 +225,33 @@ struct AgentNewSessionPage: View {
                 .focused($focused)
                 .disabled(blocker != nil)
                 .onSubmit(start)
+            AgentImageDrafts(images: $images)
+            if !imageError.isEmpty { Text(imageError).font(.caption).foregroundStyle(Theme.danger) }
+            #if os(macOS)
+            if canChoose && !effortLevels.isEmpty {
+                ChatEffortChoices(levels: effortLevels, selection: selectedEffort, label: CliLaunches.effortLabel,
+                                  tint: Theme.identityAccent, choose: { effort = $0 })
+            }
+            #endif
             HStack(spacing: 8) {
+                #if os(iOS)
+                AgentComposerAdd(images: $images, error: $imageError, openModels: canChoose ? { showingModels = true } : nil)
+                    .sheet(isPresented: $showingModels) {
+                    AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort) { effort = $0 }
+                }
+                #else
+                AgentComposerAdd(images: $images, error: $imageError)
+                #endif
                 Spacer()
+                #if os(macOS)
                 if canChoose {
                     // compact like the session's own model button: the name of the choice, the list on click
                     Menu {
                         Button { chosenModel = "" } label: { menuLabel(fallbackModel.isEmpty ? "默认" : "默认（\(label(fallbackModel))）", on: chosenModel.isEmpty) }
                         ForEach(catalog.models) { row in Button { chosenModel = row.id } label: { menuLabel(row.label, on: chosenModel == row.id) } }
-                        if !offered.isEmpty {
-                            Divider()
-                            Menu("推理强度") {
-                                ForEach([""] + offered, id: \.self) { level in Button { effort = level } label: { menuLabel(CliLaunches.effortLabel(level), on: effort == level) } }
-                            }
-                        }
                     } label: {
                         HStack(spacing: 4) {
                             Text(chosenModel.isEmpty ? (fallbackModel.isEmpty ? "默认模型" : label(fallbackModel)) : label(chosenModel)).lineLimit(1)
-                            if !effort.isEmpty { Text(CliLaunches.effortLabel(effort)).foregroundStyle(Theme.muted) }
                             Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
                         }
                         .font(.system(size: 12.5)).foregroundStyle(Theme.foreground)
@@ -243,6 +260,7 @@ struct AgentNewSessionPage: View {
                     .menuStyle(.button).buttonStyle(.plain).fixedSize()
                     .accessibilityLabel("模型设置")
                 }
+                #endif
                 Button(action: start) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)) }
                     .buttonStyle(.plain).foregroundStyle(ready ? Theme.identityAccent : Theme.offline)
                     .disabled(!ready).accessibilityLabel("开始会话")
@@ -263,11 +281,51 @@ struct AgentNewSessionPage: View {
     private func start() {
         guard ready, let dir else { return }
         let key = model.launch(CliLaunchRequest(deviceId: deviceId, engine: engine, cwd: dir.path, branch: branch?.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                message: text, model: canChoose ? chosenModel : "", effort: canChoose ? effort : "", createDir: dir.create,
-                                                permissions: canChoosePermissions ? permissions : nil))
+                                                message: text, model: canChoose ? chosenModel : "", effort: canChoose ? resolvedEffort ?? "" : "", createDir: dir.create,
+                                                permissions: canChoosePermissions ? permissions : nil, images: images))
         started(key)
     }
 }
+
+#if os(iOS)
+struct AgentComposerModelOptions: View {
+    let catalog: CliModelCatalog
+    @Binding var model: String
+    let levels: [String]
+    let selection: String?
+    let chooseEffort: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !levels.isEmpty {
+                    ChatEffortChoices(levels: levels, selection: selection, label: CliLaunches.effortLabel,
+                                      tint: Theme.identityAccent, choose: chooseEffort)
+                }
+                row("", title: "默认模型")
+                ForEach(catalog.models) { option in row(option.id, title: option.label) }
+            }
+            .navigationTitle("模型").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func row(_ id: String, title: String) -> some View {
+        Button { model = id } label: {
+            HStack {
+                Text(title).foregroundStyle(Theme.foreground)
+                Spacer()
+                if model == id { Image(systemName: "checkmark").foregroundStyle(Theme.identityAccent) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(model == id ? .isSelected : [])
+    }
+}
+#endif
 
 /// Browse a computer's folders: up, breadcrumbs, into a folder, search, a typed path or a new folder name.
 struct AgentDirectoryBrowser: View {

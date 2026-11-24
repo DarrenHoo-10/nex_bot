@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useId, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from "react";
-import { Check, Download, MessageSquarePlus, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Check, Cpu, Download, MessageSquarePlus, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
 
 import type { Connection } from "../api";
 import { ModelMenu, type ModelChoice } from "./ModelMenu";
 import { ComposerContext } from "./ComposerContext";
+import { useCompactComposer } from "./use-compact-composer";
 
 type Props = {
   mode: string; disabled: boolean; uploading: boolean; canExport: boolean;
@@ -15,6 +16,7 @@ type Props = {
 };
 
 export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, onNewTopic, children, connections, choice, modelLabel, approvalRules = [], onRevokeRule, context, onToolPolicy }: Props) {
+  const compact = useCompactComposer();
   const [menu, setMenu] = useState<"add" | "permissions" | "models" | "context" | null>(null);
   const root = useRef<HTMLDivElement>(null), add = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null), id = useId();
@@ -66,13 +68,14 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
       <div className="composer-menu-heading" role="presentation">添加</div>
       <button type="button" role="menuitem" disabled={disabled || uploading} onClick={() => { close(); onFile(); }}><Paperclip size={18}/><span>文件</span><small>file</small></button>
       <div className="composer-menu-heading" role="presentation">指令</div>
+      {compact && <button type="button" role="menuitem" disabled={disabled} onClick={() => { add.current?.focus(); setMenu("models"); }}><Cpu size={18}/><span>模型</span></button>}
       <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("permissions")}><ModeIcon size={18}/><span>权限</span><small>permission</small><span className="menu-value">{full ? "完全权限" : "标准权限"}</span></button>
       {onNewTopic && <button type="button" role="menuitem" disabled={disabled || !canExport} onClick={() => { close(); onNewTopic(); }}><MessageSquarePlus size={18}/><span>新话题</span><small>topic</small></button>}
       <button type="button" role="menuitem" disabled={disabled || !canExport} onClick={() => { close(); onExport(); }}><Download size={18}/><span>导出对话</span><small>export</small><span className="menu-value">Markdown</span></button>
     </div>}
     <div className="composer-model-controls">
       <ComposerContext {...context} open={menu === "context"} onOpenChange={open => setMenu(current => open ? "context" : current === "context" ? null : current)}/>
-      <ModelMenu composer label="选择模型" triggerClassName="composer-model-trigger" displayValue={modelLabel} connections={connections} choice={choice}
+      <ModelMenu composer label="选择模型" anchorRef={compact ? add : undefined} triggerClassName="composer-model-trigger" displayValue={modelLabel} connections={connections} choice={choice}
         onChange={onModel} disabled={disabled} open={menu === "models"} onOpenChange={open => setMenu(current => open ? "models" : current === "models" ? null : current)}/>
     </div>
     {children}

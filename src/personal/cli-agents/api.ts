@@ -27,6 +27,7 @@ import {
   type CliSessionKey,
   type CliSessionView,
 } from "../../../shared/cli-agents";
+import { cliImageId } from "../../../shared/cli-images";
 
 import { httpErrorText, isTechnicalMessage, readJson, userErrorText } from "../../lib/http-errors";
 
@@ -171,13 +172,15 @@ export async function searchSessions(query: string, signal?: AbortSignal): Promi
   return hits;
 }
 
-/** Copies a file to the session's computer; the answer is the absolute path the CLI can read it at. */
+/** Images are stored in Core. Other files use the existing device attachment route. */
 export async function uploadAttachment(key: CliSessionKey, file: File): Promise<{ path: string }> {
-  if (file.size > CLI_ATTACH_MAX_BYTES) throw new CliApiError("附件不能超过 8 MB", "too_large", 413);
+  const image = file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
+  if (file.size > (image ? 5 * 1024 * 1024 : CLI_ATTACH_MAX_BYTES)) throw new CliApiError(image ? "图片不能超过 5 MB" : "附件不能超过 8 MB", "too_large", 413);
   // Core takes a name of up to 200 units; the end keeps the extension
   const name = (file.name || "file").slice(-CLI_ATTACH_NAME_MAX);
-  const data = await call<{ path?: unknown }>(`/attach?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, file);
+  const data = await call<{ path?: unknown }>(`/${image ? "images" : "attach"}?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, file);
   if (typeof data.path !== "string" || !data.path) throw new CliApiError("附件上传结果格式不对");
+  if (image && !cliImageId(data.path)) throw new CliApiError("Core 版本过旧，升级后可发送图片");
   return { path: data.path };
 }
 /** `delivery` and `waiting` come only from a session outside nex_bot's terminals; the

@@ -32,11 +32,5 @@
 .model-menu.na-model-menu .na-model-divider { height: 1px; margin: 4px 8px; background: var(--mm-line); }
 .model-menu.na-model-menu .model-menu-status { padding: 10px; color: var(--mm-muted); font-size: 12px; }
 
-.model-menu.na-model-menu .model-menu-effort { margin-top: 6px; padding: 12px 10px 6px; border-top: 1px solid var(--mm-line); }
-.model-menu.na-model-menu .model-menu-effort-label { justify-content: space-between; margin-bottom: 10px; color: var(--mm-muted); font-size: 12px; }
-.model-menu.na-model-menu .model-menu-effort-label strong { color: var(--mm-ink); font-size: 12.5px; font-weight: 600; }
-.model-menu.na-model-menu .model-menu-effort input[type="range"]::-webkit-slider-runnable-track { background: linear-gradient(90deg, #5fb383, var(--mm-accent)) 0 0 / var(--fill, 0%) 100% no-repeat, var(--mm-hover); }
-.model-menu.na-model-menu .model-menu-effort input[type="range"]::-moz-range-progress { background: var(--mm-accent); }
-.model-menu.na-model-menu .model-menu-effort input[type="range"]::-webkit-slider-thumb { box-shadow: 0 0 0 1px var(--mm-line), 0 1px 4px rgba(23, 39, 27, .25); }
-.model-menu.na-model-menu .model-menu-stops { margin-top: 6px; color: var(--mm-muted); font-size: 11px; }
+.model-menu.na-model-menu .model-menu-effort { --effort-wash: var(--mm-hover); --effort-paper: var(--mm-paper); --effort-accent: var(--mm-accent); }
 .model-menu.na-model-menu .na-model-note { margin: 6px 4px 2px; padding: 8px 8px 4px; border-top: 1px solid var(--mm-line); color: var(--mm-muted); font-size: 11.5px; }

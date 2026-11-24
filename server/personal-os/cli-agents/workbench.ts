@@ -22,6 +22,7 @@ import {
 } from "../../../shared/cli-agents.ts";
 import { id, now, type CoreStore, type Row } from "../store.ts";
 import { CliOpError, TrackedOpError, type CliAgentHub, type CliTurnEvent } from "./hub.ts";
+import type { CliImages } from "./images.ts";
 
 export interface WorkbenchSubmitInput {
   text: string;
@@ -122,6 +123,7 @@ export class CliAgentWorkbench {
   constructor(
     private readonly hub: CliAgentHub,
     private readonly store: CoreStore,
+    private readonly images?: CliImages,
   ) {
     hub.workbench = { queueForSessionKey: (key) => this.queueForSessionKey(key) };
     this.detach.add(hub.onTurnEnd((event) => this.onTurnEnd(event)));
@@ -428,7 +430,10 @@ export class CliAgentWorkbench {
     }
     // The entry is recorded before anything leaves Core, so a crash between the
     // two leaves a pending row instead of a message nobody can account for.
-    const entryId = this.insertEntry(workbenchId, key, input, { status: "pending" });
+    const entryId = this.store.transaction(() => {
+      this.images?.publish(input.text, session.deviceId);
+      return this.insertEntry(workbenchId, key, input, { status: "pending" });
+    });
     if (input.delivery === "queue") {
       this.pump(workbenchId);
       return this.submitResult(this.entryRow(entryId), null);
@@ -476,8 +481,9 @@ export class CliAgentWorkbench {
    * "this began a turn" answer, which the consumer uses to wait or advance. */
   private async dispatch(actor: string, key: string, deviceId: string, op: "send" | "steer", entryId: string, outcome?: DispatchOutcome): Promise<DispatchFailure | null> {
     const ref = parseCliKey(key)?.ref ?? "";
-    const text = this.entryText(this.entryRow(entryId));
     try {
+      const message = this.entryText(this.entryRow(entryId));
+      const text = this.images?.delivery(message, deviceId) ?? message;
       const { result, opId } = await this.hub.opTracked(actor, deviceId, key, op, { ref, text });
       this.lastDispatchStarted = (result as { started?: boolean }).started === true;
       const { delivery, waiting } = result as { delivery?: unknown; waiting?: unknown };
@@ -542,11 +548,15 @@ export class CliAgentWorkbench {
   editEntry(input: WorkbenchEntryInput, text: string): CliQueueEntryView {
     const row = this.entryRow(input.entryId);
     if (String(row.status) !== "pending") throw new CliOpError("conflict", "条目已投递，可编辑后重发");
-    const changes = Number(this.store.run(
-      "UPDATE cli_agent_outbox SET body=?,version=version+1,updated_at=? WHERE id=? AND status='pending' AND version=?",
-      this.store.encrypt(JSON.stringify({ text })), now(), input.entryId, input.expectedVersion,
-    ).changes);
-    if (!changes) throw this.staleEntry(input.entryId);
+    this.store.transaction(() => {
+      const changes = Number(this.store.run(
+        "UPDATE cli_agent_outbox SET body=?,version=version+1,updated_at=? WHERE id=? AND status='pending' AND version=?",
+        this.store.encrypt(JSON.stringify({ text })), now(), input.entryId, input.expectedVersion,
+      ).changes);
+      if (!changes) throw this.staleEntry(input.entryId);
+      const deviceId = parseCliKey(String(row.session_key))?.deviceId;
+      if (deviceId) this.images?.publish(text, deviceId);
+    });
     this.pushQueue(String(row.workbench_id));
     return this.entryView(this.entryRow(input.entryId));
   }

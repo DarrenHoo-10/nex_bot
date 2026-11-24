@@ -1,8 +1,9 @@
 // The model and effort menu of an Agent session: the same menu as NexBot's chat
 // composer, listing the rows the CLI's own `/model` picker shows on that computer.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
-import { CLI_EFFORTS, CLI_MODELS, type CliEngine, type CliModelCatalog, type CliModelOption } from "../../../shared/cli-agents";
+import { CLI_MODELS, CLI_REASONING_LEVELS, cliReasoningChoice, type CliEngine, type CliModelCatalog } from "../../../shared/cli-agents";
+import { EffortChoices } from "../components/EffortChoices";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import "../components/model-menu.css";
 import "./cli-model-menu.css";
@@ -17,11 +18,6 @@ const effortLabel = (level: string) => EFFORT_LABEL[level] ?? level;
 /** The built-in suggestions, for a computer whose executor cannot list its CLI's models. */
 export function fallbackCatalog(engine: CliEngine): CliModelCatalog {
   return { models: CLI_MODELS[engine].map((row) => ({ ...row })) };
-}
-
-/** Effort levels `model` takes: what the CLI says for it, else every level of the engine. */
-export function effortsFor(engine: CliEngine, models: readonly CliModelOption[], model: string): readonly string[] {
-  return models.find((row) => row.id === model)?.efforts ?? CLI_EFFORTS[engine] ?? [];
 }
 
 /** The catalog for a computer and CLI: read from the computer when it can list it, else the built-in one. */
@@ -58,17 +54,23 @@ export interface CliModelMenuProps {
   /** a line under the list: when the choice takes effect, or why it cannot be made */
   note?: string;
   triggerClassName?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
-export function CliModelMenu({ deviceId, engine, live, choice, onChange, running, disabled, note, triggerClassName = "na-model-button" }: CliModelMenuProps) {
-  const [open, setOpen] = useState(false);
+export function CliModelMenu({ deviceId, engine, live, choice, onChange, running, disabled, note, triggerClassName = "na-model-button", open: controlledOpen, onOpenChange, anchorRef }: CliModelMenuProps) {
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
   const [query, setQuery] = useState("");
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   // the trigger names the chosen model, so the list is read before the menu opens
   const { catalog, loading, error } = useModelCatalog(deviceId, engine, live);
   const models = catalog.models;
   useEffect(() => { if (!open) setQuery(""); }, [open]);
-  useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false));
+  const anchor = () => anchorRef?.current ?? trigger.current;
+  useAnchoredPopover(open, panel, anchor, () => [root.current, anchorRef?.current], () => setOpen(false));
 
   const label = (id: string) => models.find((row) => row.id === id)?.label ?? id;
   const fallback = running?.trim() || catalog.current || "";
@@ -82,28 +84,24 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
       return terms.every((term) => search.includes(term));
     });
   }, [open, models, choice.model, query]);
-  const offered = effortsFor(engine, models, choice.model || fallback);
-  const stops = ["", ...offered];
-  const resolved = stops.includes(choice.effort) ? choice.effort : "";
-  const [level, setLevel] = useState(stops.indexOf(resolved));
-  useEffect(() => { setLevel(stops.indexOf(resolved)); }, [resolved, offered.join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  const commitLevel = () => { const next = stops[level]; if (next !== undefined && next !== choice.effort) onChange({ ...choice, effort: next }); };
+  const selectedEffort = cliReasoningChoice(choice.effort);
+  const commitLevel = (next: string) => {
+    if (!disabled && next !== choice.effort) onChange({ ...choice, effort: next });
+  };
 
   const pick = (model: string) => {
-    if (disabled) return;
-    // an effort the new model does not take falls back to the CLI's default
-    const efforts = effortsFor(engine, models, model || fallback);
-    onChange({ model, effort: choice.effort && !efforts.includes(choice.effort) ? "" : choice.effort });
-    setOpen(false); trigger.current?.focus();
+    if (disabled || model === choice.model) return;
+    onChange({ model, effort: selectedEffort });
   };
 
   const title = choice.model ? label(choice.model) : fallback ? label(fallback) : "默认模型";
   return <div className="model-menu-root" ref={root}>
-    <button ref={trigger} type="button" className={triggerClassName} aria-label="模型设置" aria-haspopup="dialog" aria-expanded={open} title={choice.model || fallback || undefined} onClick={() => setOpen(!open)}>
-      <span>{title}</span>{choice.effort ? <span className="na-effort">{effortLabel(choice.effort)}</span> : null}<ChevronDown size={13}/>
-    </button>
-    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); } }}>
+    {!anchorRef && <button ref={trigger} type="button" className={triggerClassName} aria-label="模型设置" aria-haspopup="dialog" aria-expanded={open} title={choice.model || fallback || undefined} onClick={() => setOpen(!open)}>
+      <span>{title}</span>{engine !== "zcode" && <span className="na-effort">{effortLabel(selectedEffort)}</span>}<ChevronDown size={13}/>
+    </button>}
+    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); anchor()?.focus(); } }}>
       <div className="na-model-head"><span>模型</span>{live && !loading && !error ? <small>来自这台电脑</small> : null}</div>
+      {engine !== "zcode" && <EffortChoices levels={CLI_REASONING_LEVELS} value={selectedEffort} label={effortLabel} onChange={commitLevel} disabled={disabled}/>}
       {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)}/></label> : null}
       <div className="model-menu-list" role="listbox" aria-label="可用模型">
         {!query ? <>
@@ -121,13 +119,6 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
         {error ? <div className="model-menu-status" role="alert">{error}</div> : null}
         {!shown.length && query ? <div className="model-menu-status">没有匹配的模型</div> : null}
       </div>
-      {offered.length ? <div className="model-menu-effort">
-        <div className="model-menu-effort-label"><span>推理强度</span><strong>{effortLabel(stops[level] ?? "")}</strong></div>
-        <input type="range" aria-label="推理强度" min={0} max={stops.length - 1} step={1} value={Math.max(0, level)} disabled={disabled}
-          aria-valuetext={effortLabel(stops[level] ?? "")} style={{ ["--fill" as string]: `${stops.length > 1 ? (Math.max(0, level) / (stops.length - 1)) * 100 : 0}%` }}
-          onChange={(event) => setLevel(Number(event.target.value))} onPointerUp={commitLevel} onKeyUp={commitLevel} onBlur={commitLevel}/>
-        <div className="model-menu-stops" aria-hidden="true">{stops.map((stop) => <span key={stop || "default"}>{effortLabel(stop)}</span>)}</div>
-      </div> : null}
       {note ? <div className="na-model-note" role="status">{note}</div> : null}
     </div>}
   </div>;

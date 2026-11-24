@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliApiError } from "./api";
 
-const uploadAttachment = vi.hoisted(() => vi.fn(async (_key: string, file: File) => ({ path: "C:\\Temp\\nexbot-attachments\\claude-s1\\ab12cd34-" + file.name })));
+const uploadAttachment = vi.hoisted(() => vi.fn(async () => ({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" })));
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), uploadAttachment }));
 import { Composer, deliveryNote, OUTSIDE_NOTE, UNCONFIRMED_NOTE, WAITING_NOTE } from "./Composer";
 import { session } from "./fixtures";
@@ -138,7 +138,7 @@ describe("images", () => {
   };
   const png = () => new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
 
-  it("takes a pasted screenshot, puts it on the computer and names its path in the message", async () => {
+  it("sends a pasted screenshot as a private Core link", async () => {
     const onSend = vi.fn(async (_text: string) => ({ turn: 1 }));
     const row = session({ nativeId: "s1" });
     await act(async () => { root.render(createElement(Composer, { session: row, onSend, onInterrupt: async () => ({}), features: ["attach"] })); });
@@ -148,13 +148,15 @@ describe("images", () => {
     await type("看看这个报错");
     await submit();
     expect(uploadAttachment).toHaveBeenCalledWith(row.key, expect.objectContaining({ name: "shot.png" }));
-    expect(onSend.mock.calls[0][0]).toBe("看看这个报错\n\n图片：shot.png\nC:\\Temp\\nexbot-attachments\\claude-s1\\ab12cd34-shot.png");
+    expect(onSend.mock.calls[0][0]).toBe("看看这个报错\n\n![shot.png](/api/cli-agents/images/12345678-0000-4000-8000-000000000000)");
   });
 
-  it("says the computer needs an update when its executor cannot take files", async () => {
-    await act(async () => { root.render(createElement(Composer, { session: session({ nativeId: "s2" }), onSend: async () => ({}), onInterrupt: async () => ({}), features: [] })); });
+  it("sends an image even when the execution device cannot upload files", async () => {
+    const onSend = vi.fn(async (_text: string) => ({ turn: 1 }));
+    await act(async () => { root.render(createElement(Composer, { session: session({ nativeId: "s2" }), onSend, onInterrupt: async () => ({}), features: [] })); });
     await paste(png());
-    expect(container.querySelector(".na-file-chip")).toBeNull();
-    expect(container.querySelector(".cli-composer-error")?.textContent).toBe("电脑端版本过旧，升级后可发送图片");
+    expect(container.querySelector(".na-file-chip")).toBeTruthy();
+    await submit();
+    expect(onSend.mock.calls[0][0]).toBe("![shot.png](/api/cli-agents/images/12345678-0000-4000-8000-000000000000)");
   });
 });

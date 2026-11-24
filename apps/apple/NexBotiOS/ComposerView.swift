@@ -39,7 +39,7 @@ struct ComposerView: View {
     @State private var revokingRule = false
 
     private var hasModel: Bool { workspace.state?.config != nil }
-    private var canSend: Bool { conversation.canSend && hasModel }
+    private var canSend: Bool { conversation.canSend && hasModel && !workspace.isSavingAgentModel(botID) }
     private var bot: Bot? { workspace.bot(botID) }
     /// The assistant's own model; empty while it follows the default.
     private var chatModel: String { bot?.selectedModel ?? "" }
@@ -89,8 +89,6 @@ struct ComposerView: View {
                 .accessibilityLabel("添加文件或指令")
                 Spacer(minLength: 4)
                 ComposerContextControl(workspace: workspace, conversation: conversation, bot: bot)
-                Button { menu = nil; showModels = true } label: { ComposerModelLabel(workspace: workspace, bot: bot) }
-                    .buttonStyle(.plain).disabled(bot == nil || conversation.isSending)
                 // While the agent works and nothing is typed, the send key stops it (web composer).
                 if showStop {
                     Button { Task { await stopAll() } } label: {
@@ -241,6 +239,7 @@ struct ComposerView: View {
             menuRow("photo", "照片", "photo", disabled: conversation.isUploadingAttachments) { menu = nil; showPhotos = true }
             pasteRow
             heading("指令")
+            menuRow("cpu", "模型", "model", disabled: bot == nil || conversation.isSending) { menu = nil; showModels = true }
             menuRow(mode == .full ? "exclamationmark.shield" : "checkmark.shield", "权限", "permission", value: mode.title, disabled: bot == nil) { menu = .permissions }
             menuRow("plus.bubble", "新话题", "topic", disabled: conversation.messages.isEmpty || bot == nil) { menu = nil; Task { await startNewTopic() } }
             menuRow("square.and.arrow.down", "导出对话", "export", value: exporting ? "导出中…" : "Markdown", disabled: conversation.messages.isEmpty || exporting) { menu = nil; Task { await export() } }

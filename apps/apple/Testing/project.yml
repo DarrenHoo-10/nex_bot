@@ -41,6 +41,8 @@ targetTemplates:
       - path: ../Shared/WorkspaceSurface.swift
       - path: ../Shared/AgentSessionsView.swift
       - path: ../Shared/AgentSessionDetail.swift
+      - path: ../Shared/AgentImages.swift
+      - path: ../Shared/ComposerContextControl.swift
       - path: ../Shared/AgentSessionSheets.swift
       - path: ../Shared/AgentNewSession.swift
       - path: ../Shared/AgentNotifier.swift

@@ -2,13 +2,14 @@
 // (and interrupt while running), continue a stopped session, or a plain hint
 // when the session cannot be driven from here.
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2 } from "lucide-react";
+import { ArrowUp, Cpu, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2 } from "lucide-react";
 import { MAX_SEND_TEXT, utf8ByteLength, type CliContextUsage, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
-import {fileReference,getExtras,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
+import {fileReference,getExtras,isPickedImage,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
 import { composerMode } from "./session-model";
 import { CliModelMenu, type LaunchChoice } from "./CliModelMenu";
+import { useCompactComposer } from "../components/use-compact-composer";
 import type { CliQueue } from "./api";
 
 // Drafts live as long as the page, one per session.
@@ -77,6 +78,8 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const model=draft?.model || details?.model || review?.models[session.engine]?.[0] || session.model?.trim() || "";
   const effort=draft?.effort || details?.effort || "标准";
   const [panel,setPanel]=useState<"add"|"skill"|"model"|"notes"|"context"|null>(null);
+  const compact = useCompactComposer();
+  const addTrigger = useRef<HTMLButtonElement>(null);
   const [delivery,setDelivery]=useState("queue");
   const [skill,setSkill]=useState("");
   const [editingQueue,setEditingQueue]=useState<{id:string;version:number;text:string}|null>(null);
@@ -103,7 +106,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   function addFiles(files:File[]){
     if(!files.length)return;
     if(files.some(file=>file.size>ATTACH_MAX)){setError("单个附件不能超过 8 MB");return}
+    if(files.some(file=>isPickedImage(file) && file.size>5*1024*1024)){setError("图片不能超过 5 MB");return}
     const current=getExtras(key);
+    if([...current.files.map(entry=>entry.file), ...files].filter(isPickedImage).length>5){setError("最多添加 5 张图片");return}
     changeExtra({...current,files:[...current.files,...files.map(file=>({id:crypto.randomUUID(),file}))]});
   }
   // edit-and-resend: the message's words (and its files, when this page sent it) come back
@@ -118,12 +123,12 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const mounted = useRef(true);
   // outside the review fixture: the CLI's own models and effort levels
   const choice:LaunchChoice=draft?{model:draft.model,effort:draft.effort}:launch??{model:"",effort:""};
-  const canAttach=!!review?.fileUpload || !!features?.includes("attach");
   const launchOptions=!!features?.includes("launchOptions");
   /** a Claude in a NexBot terminal switches at once (/model, /effort); anything else on its next start */
   const switchesNow=!draft && !starter && mode.kind==="send" && !mode.outside && session.engine==="claude";
   const pickerOff=!launchOptions && !switchesNow;
-  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : switchesNow || draft || starter ? "" : mode.kind==="stopped" ? "继续会话时生效" : "下次在 NexBot 中继续时生效";
+  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : draft || starter ? "" : switchesNow ? "下条消息生效" : mode.kind==="stopped" ? "继续会话时生效" : "下次在 NexBot 中继续时生效";
+  const canOpenModelMenu = !!review || session.engine !== "zcode";
   function choose(next:LaunchChoice){if(draft)draft.configure(next.model,next.effort);else onLaunch?.(next)}
   function configure(nextModel:string,nextEffort:string) {
     if(draft)draft.configure(nextModel,nextEffort);
@@ -212,7 +217,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
     let result:unknown;
     try {
       const references=[];
-      // the computer keeps the file and the message names its path, which the CLI reads (images too)
+      // Images use Core storage even when the executor cannot upload device files.
       const upload=review?.fileUpload ? true : features?.includes("attach") ? (file:File)=>uploadAttachment(session.key,file) : false;
       for(const entry of kept.files)references.push(await fileReference(entry,session.key,upload));
       const value=[body,...references].filter(Boolean).join("\n\n");
@@ -297,7 +302,6 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           const images = imageFilesFromClipboard(event.clipboardData);
           if (!images.length) return;
           event.preventDefault();
-          if (!canAttach) { setError("电脑端版本过旧，升级后可发送图片"); return; }
           addFiles(images);
         }}
         onKeyDown={(event) => {
@@ -308,13 +312,14 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           }
         }}
       />
-      {panel?<div className="na-compose-pop" data-panel={panel}>
+      {panel && (panel !== "model" || review) ? <div className="na-compose-pop" data-panel={panel}>
         {panel==="add" && <div className="na-add-menu" role="group" onKeyDown={event=>{
           if(event.key!=="ArrowDown" && event.key!=="ArrowUp")return;
           event.preventDefault();const buttons=Array.from(event.currentTarget.querySelectorAll("button"));const at=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[(at+(event.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length]?.focus();
         }} aria-label="添加到消息">
-          <button type="button" disabled={!canAttach} title={!canAttach ? "电脑端版本过旧，升级后可发送图片" : undefined} onClick={()=>{setPanel(null);imagePicker.current?.click()}}><ImagePlus size={16}/><span>图片</span></button>
+          <button type="button" onClick={()=>{setPanel(null);imagePicker.current?.click()}}><ImagePlus size={16}/><span>图片</span></button>
           <button type="button" onClick={()=>{setPanel(null);picker.current?.click()}}><Paperclip size={16}/><span>文件</span></button>
+          {compact && canOpenModelMenu && <button type="button" onClick={()=>{addTrigger.current?.focus();setPanel("model")}}><Cpu size={16}/><span>模型</span></button>}
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
         </div>}
         {panel==="context"?<ContextDetail usage={context}/>:null}
@@ -324,12 +329,13 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       </div>:null}
       <div className="cli-composer-actions">
         <>
-          <button type="button" className="na-add-trigger" disabled={busy || draft?.busy} aria-label="添加" title="添加" aria-expanded={panel==="add"} onClick={()=>setPanel(panel==="add"?null:"add")}><Plus size={20}/></button>
+          <button ref={addTrigger} type="button" className="na-add-trigger" disabled={busy || draft?.busy} aria-label="添加" title="添加" aria-expanded={panel==="add"} onClick={()=>setPanel(panel==="add"?null:"add")}><Plus size={20}/></button>
           <span className="na-grow"/>
           {draft||starter ? null : <button type="button" className="na-context" aria-label="上下文用量" title={contextSummary(context)} data-level={contextLevel(context)} aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><ContextRing usage={context}/></button>}
-          {review ? <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
+          {review ? !compact && <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
             <span>{model}</span><span className="na-effort">{effort}</span><ChevronDown size={13}/>
-          </button> : session.engine==="zcode" ? null : <CliModelMenu deviceId={session.deviceId} engine={session.engine} live={!!features?.includes("models")}
+          </button> : !canOpenModelMenu ? null : <CliModelMenu deviceId={session.deviceId} engine={session.engine} live={!!features?.includes("models")}
+            anchorRef={compact ? addTrigger : undefined} open={panel === "model"} onOpenChange={open => setPanel(current => open ? "model" : current === "model" ? null : current)}
             choice={choice} onChange={choose} running={session.model} disabled={pickerOff} note={pickerNote}/>}
         </>
         {offersDelivery && <div className="na-delivery" role="radiogroup" aria-label="发送方式">

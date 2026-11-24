@@ -43,11 +43,12 @@ export const modelName = (connection: Connection | undefined, model: string) => 
 export type ReasoningLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningChoice = ReasoningLevel | "off";
 export const reasoningOrder: ReasoningLevel[] = ["low", "medium", "high", "xhigh", "max"];
+export const defaultReasoningLevels: readonly ReasoningLevel[] = reasoningOrder;
 export const reasoningLabels: Record<ReasoningChoice, string> = { off: "关闭", low: "低", medium: "中", high: "高", xhigh: "很高", max: "最高" };
-/** Same rule as Core: the choice when offered, else the nearest offered level (lower on a tie); medium when unset. */
+/** Same rule as Core: use the nearest offered level (lower on a tie), aiming for high when unset. */
 export function resolveReasoning(choice: string | null | undefined, offered: readonly ReasoningLevel[]): ReasoningChoice {
   if (!offered.length || choice === "off") return "off";
-  const wanted = (reasoningOrder as string[]).includes(String(choice)) ? choice as ReasoningLevel : "medium";
+  const wanted = (reasoningOrder as string[]).includes(String(choice)) ? choice as ReasoningLevel : "high";
   if (offered.includes(wanted)) return wanted;
   const at = reasoningOrder.indexOf(wanted);
   return [...offered].sort((a, b) => Math.abs(reasoningOrder.indexOf(a) - at) - Math.abs(reasoningOrder.indexOf(b) - at) || reasoningOrder.indexOf(a) - reasoningOrder.indexOf(b))[0];

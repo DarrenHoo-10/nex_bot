@@ -42,6 +42,19 @@ it("sends settings JSON to the native transport and preserves conflict errors", 
   expect(response.ok).toBe(false);
   expect(await response.json()).toEqual({ error: "版本冲突" });
 });
+it("relays a NexAgent image as bytes through the Android bridge", async () => {
+  connectNative();
+  const path = "/api/cli-agents/images?key=device%3Aclaude%3Asession";
+  const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+  const pending = host.fetch(path, { method: "POST", body: blob });
+  await vi.waitFor(() => expect(native.request).toHaveBeenCalledTimes(1));
+  const [id, route, method, body] = native.request.mock.calls[0];
+  expect([route, method, body]).toEqual([path, "POST", "iVBORw=="]);
+  host.__nexReply(id, { status: 200, body: '{"path":"/api/cli-agents/images/12345678-0000-4000-8000-000000000000"}' });
+  expect((await pending).ok).toBe(true);
+  await expect(host.fetch("/api/config", { method: "POST", body: blob })).rejects.toThrow();
+});
+
 it("keeps authenticated preview bytes intact for the local cache", async () => {
   connectNative();
   const path = "/api/attachments/image-1?preview=1";

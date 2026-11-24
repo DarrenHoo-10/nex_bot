@@ -23,10 +23,12 @@ import {
   PAGE_SIZE,
   base64DecodedLength,
   clampTermSize,
+  cliModelEfforts,
   cliRef,
   parseCliOpResult,
   parseCliRef,
   parseCoreCliMessage,
+  resolveCliEffort,
   utf8ByteLength,
   type CliAgentsCapability,
   type CliEngine,
@@ -1275,6 +1277,17 @@ export class CliAgentBridge {
     return env;
   }
 
+  private async launchOptions(engine: CliEngine, args: CliLaunchOptions, configDir?: string, sessionModel?: string, fallback?: CliPermissionMode) {
+    let effort = args.effort;
+    if (engine !== "zcode") {
+      const env = { ...(this.options.env ?? process.env), ...this.launchEnvironment(engine, configDir) };
+      const catalog = await cliModels(engine, { platform: this.platform, env, homedir: this.options.homedir });
+      const model = args.model ?? sessionModel ?? catalog.current ?? "";
+      effort = resolveCliEffort(engine, cliModelEfforts(engine, catalog.models, model), effort);
+    }
+    return { ...launchOptionsOf(args, fallback), ...(effort === undefined ? {} : { effort }) };
+  }
+
   /** Runs the planned terminal; a taken name gets one retry with a fresh one. */
   private async runTerminal(
     hc: HcLike,
@@ -1341,10 +1354,11 @@ export class CliAgentBridge {
     // retried request reuses the tree it already created. Checking out a large
     // repository takes seconds, so the terminal, the CLI and the hooks get ready meanwhile.
     const tree = args.worktree ? this.git.worktree(args.cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform }) : null;
-    const [hc, executable, hooks] = await Promise.all([
+    const [hc, executable, hooks, launchOptions] = await Promise.all([
       this.requireHc(),
       this.cliPath(args.engine),
       nativeId ? this.hookLaunch(nativeId) : Promise.resolve(undefined),
+      this.launchOptions(args.engine, args, fork?.row.configDir, fork?.row.model, "full"),
       claude || newCodex ? Promise.resolve() : this.discovery.refresh().then(() => {
         for (const row of this.discovery.snapshot()) if (row.engine === "codex") known.add(cliRef("codex", row.nativeId));
       }),
@@ -1376,7 +1390,7 @@ export class CliAgentBridge {
         cwd,
         executable,
         ...(hooks ? { hooks } : {}),
-        ...launchOptionsOf(args, "full"),
+        ...launchOptions,
       },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
@@ -1429,11 +1443,14 @@ export class CliAgentBridge {
     const writer = this.otherWriter(row);
     if (writer === "yes") throw new OpFailure("open_elsewhere");
 
-    const executable = await this.cliPath(parsed.engine);
     const size = clampTermSize(undefined, undefined);
-    const hooks = parsed.engine === "claude" ? await this.hookLaunch(parsed.nativeId) : undefined;
+    const [executable, hooks, launchOptions] = await Promise.all([
+      this.cliPath(parsed.engine),
+      parsed.engine === "claude" ? this.hookLaunch(parsed.nativeId) : Promise.resolve(undefined),
+      this.launchOptions(parsed.engine, args, row.configDir, row.model),
+    ]);
     const plan = await planLaunch(
-      { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable, ...(hooks ? { hooks } : {}), ...launchOptionsOf(args) },
+      { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable, ...(hooks ? { hooks } : {}), ...launchOptions },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
     plan.env = { ...plan.env, ...this.launchEnvironment(parsed.engine, row.configDir) };
