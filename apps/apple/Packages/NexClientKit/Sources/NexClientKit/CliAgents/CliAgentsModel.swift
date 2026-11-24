@@ -475,8 +475,8 @@ public final class CliAgentsModel {
         return e.code == "not_found" ? "请求已处理或已过期" : CliErrorText.text(for: e, fallback: "操作失败")
     }
 
-    public func fork(_ key: CliSessionKey, botId: String) async throws -> CliForkResult {
-        try await clientProvider().cliFork(key: key, botId: botId)
+    public func fork(_ key: CliSessionKey, botId: String, itemId: String? = nil) async throws -> CliForkResult {
+        try await clientProvider().cliFork(key: key, botId: botId, itemId: itemId)
     }
 
     public nonisolated static func forkErrorText(_ error: Error) -> String {

@@ -12,7 +12,7 @@ private struct CliStartBody: Encodable {
 private struct CliSendBody: Encodable { let key: String; let text: String }
 private struct CliHideBody: Encodable { let key: String; let hidden: Bool }
 private struct CliAnswerBody: Encodable { let id: String; let decision: CliDecision; let answers: [String: String]?; var always: Bool? = nil }
-private struct CliForkBody: Encodable { let key: String; let botId: String }
+private struct CliForkBody: Encodable { let key: String; let botId: String; let itemId: String? }
 private struct CliSupervisionBody: Encodable { let settings: Settings
     struct Settings: Encodable { let transientRetry: Bool?; let usageLimit: Bool?; let wakeup: Bool? }
 }
@@ -133,8 +133,9 @@ extension CoreClient {
     }
 
     /// Hands the session's record over to an assistant. Returns where it landed.
-    public func cliFork(key: CliSessionKey, botId: String) async throws -> CliForkResult {
-        try await post(Self.cliBase + "/fork", body: CliForkBody(key: key, botId: botId))
+    public func cliFork(key: CliSessionKey, botId: String, itemId: String? = nil) async throws -> CliForkResult {
+        let route = itemId == nil ? "/fork" : "/fork-message"
+        return try await post(Self.cliBase + route, body: CliForkBody(key: key, botId: botId, itemId: itemId))
     }
 
     public func cliSupervision() async throws -> CliSupervision { try await get(Self.cliBase + "/supervision") }

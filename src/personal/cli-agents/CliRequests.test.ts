@@ -309,6 +309,69 @@ describe("hand over to an assistant", () => {
     expect(container.querySelector("[role=dialog]")).toBeNull();
   });
 
+  it("copies a reply and branches from the reply whose icon was pressed", async () => {
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [
+      { id: "a1", kind: "assistant", ts: 1, text: "Earlier reply" },
+      { id: "a2", kind: "assistant", ts: 2, text: "Later reply" },
+    ] });
+    fixture.forkSession.mockResolvedValue({ botId: "bot1", conversationId: "conv9" });
+    const onOpenTopic = vi.fn();
+    const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    try {
+      await open(undefined, { bots, onOpenTopic });
+      const first = container.querySelector('[data-testid="cli-assistant"]')!;
+      const copy = first.querySelector('button[title="复制"]');
+      const branch = first.querySelector('button[title="分支到新聊天"]');
+      expect(copy?.textContent).toBe("");
+      expect(branch?.textContent).toBe("");
+      await click(copy);
+      expect(write).toHaveBeenCalledWith("Earlier reply");
+      await click(branch);
+      const dialog = container.querySelector('[role="dialog"][aria-label="分支到新聊天"]')!;
+      await submit(dialog);
+      expect(fixture.forkSession).toHaveBeenCalledWith(KEY, "bot1", "a1");
+      expect(onOpenTopic).toHaveBeenCalledWith("bot1", "conv9");
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("dismisses the selection menu when the highlight clears and copies only the selected text", async () => {
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [
+      { id: "a1", kind: "assistant", ts: 1, text: "Part of the reply" },
+    ] });
+    await open();
+    await flush();
+    const paragraph = container.querySelector('[data-testid="cli-assistant"] p')!;
+    const selection = window.getSelection()!;
+    const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const menu = () => document.querySelector(".na-note-editor");
+    const select = () => act(async () => {
+      const range = document.createRange();
+      range.setStart(paragraph.firstChild!, 0);
+      range.setEnd(paragraph.firstChild!, 4);
+      range.getBoundingClientRect = () => new DOMRect(10, 20, 30, 10);
+      selection.addRange(range);
+      paragraph.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    try {
+      await select();
+      expect(menu()?.textContent).toContain("添加注释");
+      await act(async () => {
+        selection.removeAllRanges();
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      expect(menu()).toBeNull();
+      await select();
+      await click([...menu()!.querySelectorAll("button")].find(button => button.textContent === "复制") ?? null);
+      expect(write).toHaveBeenCalledWith("Part");
+      expect(menu()).toBeNull();
+    } finally {
+      selection.removeAllRanges();
+      write.mockRestore();
+    }
+  });
+
   it("keeps the dialog open with Core's text when the fork fails", async () => {
     fixture.forkSession.mockRejectedValueOnce(new CliApiError("x", "device_offline", 502));
     const onOpenTopic = vi.fn();

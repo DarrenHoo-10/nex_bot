@@ -1,4 +1,5 @@
 import { userErrorText } from "../../lib/http-errors";
+import { copyText } from "../../lib/copy-text";
 import {useEffect,useId,useRef,useState,type ReactNode} from "react";
 import {createPortal} from "react-dom";
 import type {Note} from "./WorkbenchReview";
@@ -44,12 +45,53 @@ export function AnnotatedMessage({id,notes,onNotes,onSide,children}:{onSide?(quo
     setError("");setBody(found?.body||"");setEdit({note:found||{id:crypto.randomUUID(),message:id,start,end:start+quote.length,quote,body:"",num:Math.max(0,...notes.map(n=>n.num))+1},x:box.left,y:box.bottom+5,writing:false});
   }
   const editor=useRef<HTMLDivElement>(null);
-  useEffect(()=>{if(!edit)return;const outside=(e:PointerEvent)=>{if(!editor.current?.contains(e.target as Node))setEdit(null)};const esc=(e:KeyboardEvent)=>{if(e.key==="Escape")setEdit(null)};document.addEventListener("keydown",esc);document.addEventListener("pointerdown",outside);return()=>{document.removeEventListener("keydown",esc);document.removeEventListener("pointerdown",outside)}},[edit]);
+  useEffect(() => {
+    if (!edit) return;
+    const outside = (event: PointerEvent) => {
+      if (!editor.current?.contains(event.target as Node)) setEdit(null);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setEdit(null); };
+    const selectionChanged = () => {
+      const selection = document.getSelection();
+      if (!selection?.rangeCount || selection.isCollapsed || selection.toString() !== edit.note.quote) {
+        setEdit(null);
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      if (!content.current?.contains(range.startContainer) || !content.current.contains(range.endContainer)) setEdit(null);
+    };
+    document.addEventListener("keydown", escape);
+    document.addEventListener("pointerdown", outside);
+    if (!edit.writing) {
+      document.addEventListener("selectionchange", selectionChanged);
+      selectionChanged();
+    }
+    return () => {
+      document.removeEventListener("keydown", escape);
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("selectionchange", selectionChanged);
+    };
+  }, [edit]);
+
+  async function copySelection(quote: string) {
+    setPending(true);
+    setError("");
+    try {
+      if (await copyText(quote) === "copied") {
+        setEdit(null);
+        document.getSelection()?.removeAllRanges();
+      } else {
+        setError("复制失败");
+      }
+    } finally {
+      setPending(false);
+    }
+  }
   function save(){if(!edit||!body.trim())return;onNotes([...notes.filter(n=>n.id!==edit.note.id),{...edit.note,body:body.trim()}]);setEdit(null);getSelection()?.removeAllRanges()}
   return <div className="na-annotated"><style>{`::highlight(${highlightKey}){background:#c1e8bd;color:#123b21}`}</style><div ref={content} onMouseUp={select} onContextMenu={e=>{if(getSelection()?.toString()){e.preventDefault();select()}}}>{children}</div>
     {own.map(n=><button className="na-pin" key={n.id} title={n.quote+" — "+n.body} onClick={e=>{const box=e.currentTarget.getBoundingClientRect();setBody(n.body);setEdit({note:n,x:box.left,y:box.bottom,writing:true})}}>注 {n.num}</button>)}
-    {edit&&createPortal(<div ref={editor} className="na-note-editor" style={{left:Math.max(6,Math.min(edit.x,innerWidth-285)),top:Math.max(6,Math.min(edit.y,innerHeight-210))}}>
-      {edit.writing?<><blockquote>{edit.note.quote}</blockquote><textarea autoFocus aria-label="注释内容" value={body} onChange={e=>setBody(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey){e.preventDefault();save()}}}/><footer>{own.some(n=>n.id===edit.note.id)?<button className="na-delete-note" onClick={()=>{onNotes(notes.filter(n=>n.id!==edit.note.id));setEdit(null);getSelection()?.removeAllRanges()}}>删除</button>:null}<button onClick={()=>setEdit(null)}>取消</button><button className="na-save-note" disabled={!body.trim()} onClick={save}>保存</button></footer></>:<><button disabled={pending} onClick={()=>setEdit({...edit,writing:true})}>添加注释</button>{onSide?<button disabled={pending} onClick={async()=>{setPending(true);setError("");try{await onSide(edit.note.quote,id);setEdit(null);getSelection()?.removeAllRanges()}catch(e){setError(userErrorText(e))}finally{setPending(false)}}}>{pending?"正在打开…":"发起侧边会话"}</button>:null}{error?<small role="alert">{error}</small>:null}</>}
+    {edit&&createPortal(<div ref={editor} className="na-note-editor" onPointerDown={event => { if (!edit.writing) event.preventDefault(); }} style={{left:Math.max(6,Math.min(edit.x,innerWidth-285)),top:Math.max(6,Math.min(edit.y,innerHeight-210))}}>
+      {edit.writing?<><blockquote>{edit.note.quote}</blockquote><textarea autoFocus aria-label="注释内容" value={body} onChange={e=>setBody(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey){e.preventDefault();save()}}}/><footer>{own.some(n=>n.id===edit.note.id)?<button className="na-delete-note" onClick={()=>{onNotes(notes.filter(n=>n.id!==edit.note.id));setEdit(null);getSelection()?.removeAllRanges()}}>删除</button>:null}<button onClick={()=>setEdit(null)}>取消</button><button className="na-save-note" disabled={!body.trim()} onClick={save}>保存</button></footer></>:<><button type="button" disabled={pending} onClick={()=>void copySelection(edit.note.quote)}>复制</button><button disabled={pending} onClick={()=>setEdit({...edit,writing:true})}>添加注释</button>{onSide?<button disabled={pending} onClick={async()=>{setPending(true);setError("");try{await onSide(edit.note.quote,id);setEdit(null);getSelection()?.removeAllRanges()}catch(e){setError(userErrorText(e))}finally{setPending(false)}}}>{pending?"正在打开…":"发起侧边会话"}</button>:null}{error?<small role="alert">{error}</small>:null}</>}
     </div>,document.body)}
   </div>;
 }

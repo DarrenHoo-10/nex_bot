@@ -260,7 +260,7 @@ export class TaskRuntime {
     const entries=this.scopedProjection(taskId,this.projection.load(runtimeId)),history:NonNullable<WorkerConfig['history']>=[];
     if(!entries?.length){
       let remaining=Math.min(20000,Math.floor(model.contextWindow*.25));
-      const rows=this.store.all("SELECT m.id,m.role,m.content,m.task_id FROM agent_messages m WHERE m.bot_id=? AND m.conversation_id=? AND (m.task_id!=? OR m.task_id IS NULL AND m.source_key LIKE 'stock-history:%') AND m.content!='[已遗忘]' ORDER BY m.seq DESC",task.bot_id,task.conversation_id,taskId);
+      const rows=this.store.all("SELECT m.id,m.role,m.content,m.task_id FROM agent_messages m WHERE m.bot_id=? AND m.conversation_id=? AND (m.task_id!=? OR m.task_id IS NULL AND (m.source_key LIKE 'stock-history:%' OR m.source_key LIKE 'cli-fork-context:%')) AND m.content!='[已遗忘]' ORDER BY m.seq DESC",task.bot_id,task.conversation_id,taskId);
       const groups=new Map<string,Row[]>();for(const row of rows){const key=String(row.task_id);groups.set(key,[...(groups.get(key)??[]),row]);}
       for(const group of groups.values()){const size=tokens(group);if(size>remaining)break;remaining-=size;history.unshift(...group.reverse().map(row=>({ref:'message:'+row.id,role:String(row.role),content:String(row.content)})));}
     }

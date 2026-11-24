@@ -60,7 +60,7 @@ export function summarizeForTopic(items: readonly CliItem[], limit = FORK_SUMMAR
 
 /** The slice of the agent module a fork needs. */
 export interface ForkAgents {
-  createTopic(botId: string, options: { title: string; audience: "private" | "public"; sourceContext?: Record<string, unknown> }): { conversationId: string };
+  createTopic(botId: string, options: { title: string; audience: "private" | "public"; sourceContext?: Record<string, unknown>; branchContext?: string }): { conversationId: string };
   send(
     botId: string,
     content: string,
@@ -75,12 +75,37 @@ export interface ForkResult {
   conversationId: string;
 }
 
-export async function forkToTopic(hub: CliAgentHub, agents: ForkAgents, actor: string, key: string, botId: string): Promise<ForkResult> {
+export async function forkToTopic(hub: CliAgentHub, agents: ForkAgents, actor: string, key: string, botId: string, itemId?: string): Promise<ForkResult> {
   const session = hub.session(key);
   if (!session) throw new CliOpError("not_found");
   // up to a few pages, newest first, until the digest has all it can hold
   let items: CliItem[] = [];
   let before: string | undefined;
+  if (itemId !== undefined) {
+    const reply = hub.cachedReply(key, itemId);
+    if (reply) {
+      items = [reply];
+    } else {
+      // An older message may be visible on a client after it has left Core's cache.
+      // Walk the device's pages without retaining messages after the branch point.
+      const cursors = new Set<string>();
+      do {
+        const result = await hub.items(actor, key, before);
+        const index = result.items.findIndex(item => item.id === itemId);
+        if (index !== -1) {
+          if (result.items[index].kind !== "assistant") break;
+          items = result.items.slice(0, index + 1);
+          break;
+        }
+        const next = result.items[0]?.id;
+        if (!result.more || !next || cursors.has(next)) break;
+        cursors.add(next);
+        before = next;
+      } while (before !== undefined);
+      if (!items.length) throw new CliOpError("not_found", "找不到这条回复");
+    }
+    before = items[0].id;
+  }
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await hub.items(actor, key, before);
     items = [...result.items, ...items];
@@ -90,9 +115,15 @@ export async function forkToTopic(hub: CliAgentHub, agents: ForkAgents, actor: s
   const summary = summarizeForTopic(items);
   if (!summary) throw new CliOpError("not_found", "no transcript to hand over");
   const title = session.title.trim() || session.cwd;
-  const sourceContext = { kind: "cli-agent", key, engine: session.engine, title: cut(title, 200), cwd: cut(session.cwd, 1000) };
-  const topic = agents.createTopic(botId, { title: cut(`Agent：${title}`, 120), audience: "private", sourceContext });
-  const content = `这是从 Agent 会话「${cut(title, 200)}」（${cut(session.cwd, 1000)}）分出来的对话摘要，最新的在前。原会话保持不动，请接着处理。\n\n${summary}`;
+  const sourceContext = { kind: "cli-agent", key, engine: session.engine, title: cut(title, 200), cwd: cut(session.cwd, 1000), ...(itemId ? { itemId } : {}) };
+  const topicOptions = { title: cut(`Agent：${title}`, 120), audience: "private" as const, sourceContext };
+  const context = `这是从 Agent 会话「${cut(title, 200)}」（${cut(session.cwd, 1000)}）分出来的对话摘要，最新的在前。`;
+  if (itemId !== undefined) {
+    const topic = agents.createTopic(botId, { ...topicOptions, branchContext: `${context}\n\n${summary}` });
+    return { botId, conversationId: topic.conversationId };
+  }
+  const topic = agents.createTopic(botId, topicOptions);
+  const content = `${context}原会话保持不动，请接着处理。\n\n${summary}`;
   const sent = agents.send(botId, content, `cli-fork:${randomUUID()}`, actor, { conversationId: topic.conversationId, audience: "private", sourceContext });
   return { botId, conversationId: sent.conversationId };
 }

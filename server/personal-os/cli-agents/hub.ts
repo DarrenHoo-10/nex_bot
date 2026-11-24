@@ -1022,6 +1022,13 @@ export class CliAgentHub {
     }
   }
 
+  cachedReply(key: string, itemId: string): Extract<CliItem, { kind: "assistant" }> | undefined {
+    const row = this.store.get("SELECT body FROM cli_agent_items WHERE session_key=? AND item_id=?", key, itemId);
+    if (!row) return undefined;
+    const item = JSON.parse(this.store.decrypt(String(row.body))) as CliItem;
+    return item.kind === "assistant" ? item : undefined;
+  }
+
   /** The client names its message and version. Only this workspace's completed
    * cached assistant output can be sent to the configured translation provider. */
   translationSource(key: string, itemId: string, source: string): string | null {

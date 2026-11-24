@@ -180,6 +180,62 @@ public enum CliBlock: Sendable, Hashable, Identifiable {
 }
 
 public enum CliTranscript {
+    public static func backgroundTaskTitle(_ item: CliItem) -> String? {
+        let name = item.name.lowercased().split(separator: ".").last.map(String.init) ?? ""
+        guard item.kind == .tool, item.status != .error,
+              ["bash", "shell", "exec_command", "shell_command"].contains(name) else { return nil }
+        let fields = (try? JSONSerialization.jsonObject(with: Data(item.input.utf8))) as? [String: Any] ?? [:]
+        let detached = item.output?.range(of: #"running in (?:the )?background with (?:task )?id|process running with session id"#,
+                                         options: [.regularExpression, .caseInsensitive]) != nil
+        guard detached || item.status == .running && fields["run_in_background"] as? Bool == true else { return nil }
+        let description = shortTaskTitle(fields["description"] as? String ?? "")
+        if !description.isEmpty { return description }
+        let command = (fields["command"] ?? fields["cmd"] ?? item.input) as? String ?? ""
+        let invocation = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"^(?:cd|chdir|pushd|set-location)\s+(?:/d\s+)?(?:"[^"]*"|'[^']*'|[^;&\r\n]+?)\s*(?:&&|;|\r?\n)\s*"#,
+                                  with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"^(?:\w+=(?:"[^"]*"|'[^']*'|\S*)\s+)*"#, with: "", options: .regularExpression)
+        guard let pattern = try? NSRegularExpression(pattern: #""([^"]*)"|'([^']*)'|([^\s;&|]+)"#) else { return "后台任务" }
+        var tokens = pattern.matches(in: invocation, range: NSRange(invocation.startIndex..., in: invocation)).compactMap { match in
+            (1...3).compactMap { Range(match.range(at: $0), in: invocation) }.first.map { String(invocation[$0]) }
+        }
+        func executable(_ token: String?) -> String {
+            let name = token?.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
+            return name.replacingOccurrences(of: #"\.(?:cmd|bat|exe)$"#, with: "", options: [.regularExpression, .caseInsensitive])
+        }
+        if executable(tokens.first).lowercased() == "corepack" { tokens.removeFirst() }
+        let program = executable(tokens.first)
+        if !tokens.isEmpty { tokens.removeFirst() }
+        let lower = program.lowercased()
+        let packageManager = ["npm", "pnpm", "yarn", "bun"].contains(lower)
+        let runsTool = ["npx", "bunx"].contains(lower) || packageManager && ["exec", "x"].contains(tokens.first ?? "")
+        if packageManager, ["exec", "run", "x"].contains(tokens.first ?? "") { tokens.removeFirst() }
+        let next = tokens.first.flatMap { $0.hasPrefix("-") ? nil : $0 }
+        let task = runsTool ? executable(next) : program
+        if task.lowercased() == "vite" {
+            switch runsTool ? tokens.dropFirst().first : next {
+            case "build": return "Vite 构建"
+            case "preview": return "Vite 预览服务器"
+            default: return "Vite 开发服务器"
+            }
+        }
+        if runsTool, !task.isEmpty { return task.range(of: #"^[\w@.+-]+$"#, options: .regularExpression) == nil ? "后台任务" : shortTaskTitle(task) }
+        guard program.range(of: #"^[\w.+-]+$"#, options: .regularExpression) != nil else { return "后台任务" }
+        if packageManager, let next, next.range(of: #"^[\w:@.+-]+$"#, options: .regularExpression) != nil {
+            return shortTaskTitle("\(program) \(next)")
+        }
+        if ["node", "python", "python3", "deno", "ruby"].contains(lower),
+           let next, next.range(of: #"\.[a-z0-9]+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return shortTaskTitle(executable(next))
+        }
+        return shortTaskTitle(program)
+    }
+
+    private static func shortTaskTitle(_ title: String) -> String {
+        let clean = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return clean.count > 36 ? String(clean.prefix(35)) + "…" : clean
+    }
+
     public static func completedReplies(_ items: [CliItem], active: Bool) -> Set<String> {
         var ids: Set<String> = []
         var closed = !active

@@ -139,6 +139,7 @@ export class CliAgentRoutes {
         case "/api/cli-agents/open-local": return await this.openLocal(request, data);
         case "/api/cli-agents/answer": return await this.answer(request, data);
         case "/api/cli-agents/fork": return await this.fork(request, data);
+        case "/api/cli-agents/fork-message": return await this.fork(request, data, true);
         case "/api/cli-agents/queue/edit": return await this.queueEdit(data);
         case "/api/cli-agents/queue/withdraw": return await this.queueWithdraw(data);
         case "/api/cli-agents/queue/steer": return await this.queueSteer(data);
@@ -383,15 +384,17 @@ export class CliAgentRoutes {
     return { status: 200, body: supervisor.overview() };
   }
 
-  private async fork(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
+  private async fork(request: CliRouteRequest, data: Record<string, unknown>, anchored = false): Promise<CliRouteResult> {
     const key = this.key(data.key);
     const { botId } = data;
+    const itemId = anchored ? data.itemId : undefined;
     if (!key || typeof botId !== "string" || botId.length < 1 || botId.length > 100) return cliErrorResult("invalid");
+    if (anchored && (typeof itemId !== "string" || itemId.length < 1 || itemId.length > 200)) return cliErrorResult("invalid");
     const agents = this.extras.agents;
     if (!agents) return cliErrorResult("not_found");
     this.store.audit("cli.fork", "cli_session", key, { sessionId: request.sessionId, botId });
     try {
-      const forked = await forkToTopic(this.hub, agents, request.sessionId, key, botId);
+      const forked = await forkToTopic(this.hub, agents, request.sessionId, key, botId, typeof itemId === "string" ? itemId : undefined);
       return { status: 200, body: forked };
     } catch (error) {
       if (error instanceof CliOpError) throw error;
@@ -617,6 +620,7 @@ const POST_ROUTES = new Set([
   "/api/cli-agents/hide",
   "/api/cli-agents/answer",
   "/api/cli-agents/fork",
+  "/api/cli-agents/fork-message",
   "/api/cli-agents/queue/edit",
   "/api/cli-agents/queue/withdraw",
   "/api/cli-agents/queue/steer",

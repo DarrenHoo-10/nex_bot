@@ -27,6 +27,8 @@
 .na-info-card ul{list-style:none;margin:2px 0 6px;padding:0 0 0 22px}.na-info-card li{font-size:12px;padding:4px 0;overflow-wrap:anywhere}
 .na-activity-group summary b{font-weight:500;flex:1}.na-activity-group[open] summary>svg:last-child{transform:rotate(180deg)}
 .na-activity-group li{display:flex;align-items:baseline;gap:6px}.na-activity-group li>svg{flex:none;align-self:flex-start;margin-top:2px}.na-activity-group li span{flex:1}
+.na-activity-group[data-compact] li span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.na-activity-group[data-compact] li small{flex:none;white-space:nowrap}
 .na-activity-group li[data-state="已完成"] span{color:var(--na-muted);text-decoration:line-through}.na-activity-group li[data-state="进行中"] svg{fill:var(--na-accent);color:var(--na-accent)}
 .na-info-card footer button{display:flex;align-items:center;gap:7px;background:var(--na-inset);color:var(--na-ink);padding:7px 9px;border:0;border-radius:7px}.na-info-card footer button:disabled{opacity:.55;cursor:default}
 .na-stage .cli-app .na-side .cli-term {

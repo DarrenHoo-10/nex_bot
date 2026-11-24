@@ -138,14 +138,16 @@ struct AgentForkSheet: View {
     let model: CliAgentsModel
     let workspace: WorkspaceStore
     let session: CliSession
-    let done: (String) -> Void
+    var itemId: String? = nil
+    let done: (CliForkResult) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var botId = ""
     @State private var busy = false
     @State private var error = ""
 
     var body: some View {
-        AgentSheetFrame(title: "交给助手") {
+        let title = itemId == nil ? "交给助手" : "分支到新聊天"
+        AgentSheetFrame(title: title) {
             Text(CliSessions.title(session)).font(.system(size: 13)).foregroundStyle(Theme.muted).lineLimit(2)
             OutlineFlow {
                 ForEach(workspace.bots, id: \.id) { bot in AgentChip(text: bot.name, on: bot.id == botId) { botId = bot.id } }
@@ -154,7 +156,7 @@ struct AgentForkSheet: View {
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.buttonStyle(.bordered)
-                Button(busy ? "正在交接…" : "交给助手") { Task { await fork() } }
+                Button(busy ? "正在创建…" : title) { Task { await fork() } }
                     .buttonStyle(.borderedProminent).tint(Theme.identityAccent).disabled(busy || botId.isEmpty)
             }
         }
@@ -166,9 +168,12 @@ struct AgentForkSheet: View {
     private func fork() async {
         busy = true; error = ""
         do {
-            let result = try await model.fork(session.key, botId: botId)
-            done(result.botId)
-        } catch { self.error = CliAgentsModel.forkErrorText(error) }
+            let result = try await model.fork(session.key, botId: botId, itemId: itemId)
+            done(result)
+        } catch {
+            self.error = itemId == nil ? CliAgentsModel.forkErrorText(error)
+                : CoreError.wrap(error).code == "not_found" ? "找不到这条回复" : CliErrorText.text(for: error, fallback: "没能创建分支")
+        }
         busy = false
     }
 }
