@@ -81,7 +81,7 @@ targets:
       - path: ../NexBotMac/ApprovalCard.swift
       - path: ../NexBotMac/ChatModelMenu.swift
       - path: ../NexBotMac/ModelPicker.swift
-      - path: ../NexBotMac/FormErrors.swift
+      - path: ../NexBotMac/ViewSupport.swift
   RenderiOS:
     templates: [host]
     platform: iOS
