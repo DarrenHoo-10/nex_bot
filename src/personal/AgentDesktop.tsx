@@ -32,7 +32,7 @@ import { replyLayout } from "./long-reply";
 import { MessageImages } from "./components/MessageImages";
 import { ImageLightbox } from "./components/ImageLightbox";
 import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
-import type { ModelChoice } from "./components/ModelMenu";
+import { useModelChoice } from "./components/use-model-choice";
 import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail } from "./components/RoutineOccurrenceDetail";
@@ -118,6 +118,13 @@ export function AgentDesktop() {
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [financeBotId,setFinanceBotId]=useState<string>();
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
+  const bot = state?.bots.find((entry) => entry.id === botId);
+  const connections = state?.connections ?? [];
+  const defaultConnection = connections.find((item) => item.isDefault);
+  const selectedConnection = connections.find((item) => item.id === str(bot?.selected_connection) && item.enabled) ?? defaultConnection;
+  const modelSelection = useModelChoice(botId, bot, {
+    connectionId: selectedConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null,
+  }, connections);
   // topics are the finance assistant's; a session handed to another assistant opens one there too
   const [forkBotId, setForkBotId] = useState<string>();
   const finance = Boolean((financeBotId && financeBotId === botId) || (forkBotId && forkBotId === botId));
@@ -431,15 +438,15 @@ export function AgentDesktop() {
     }
   }, [botId, reload]);
   const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); }, []);
-  const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
-  const changeDraft = (value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); };
-  const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
-  const deleteMessageImage = async (messageId: string, image: MessageImage) => {
+  const run = useCallback(async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } }, [reload]);
+  const changeDraft = useCallback((value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); }, [draftKey]);
+  const copyText = useCallback(async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); }, []);
+  const deleteMessageImage = useCallback(async (messageId: string, image: MessageImage) => {
     await api("agents/messages/image/delete", { botId, messageId, attachmentId: image.id });
     loaded.current = undefined;
     await reload();
-  };
-  const openTopic = (id?: string) => {
+  }, [botId, reload]);
+  const openTopic = useCallback((id?: string) => {
     if (id === conversation && !historyTarget.current) return;
     ++serial.current;
     historyTarget.current = undefined;
@@ -448,9 +455,9 @@ export function AgentDesktop() {
     setMessages([]); setStreaming([]); setEditInput(undefined);
     setTopicId(id);
     stickToBottom.current = true;
-  };
+  }, [conversation]);
   const send = (event: FormEvent) => {
-    event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || !state?.bots.some((agent) => agent.id === target)) return;
+    event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || modelSelection.isSaving() || !bot) return;
     if (editInput && attachments.length) { setError("编辑排队消息时请先移除附件"); return; }
     if (replyJob) { sendJobReply(raw, target, replyJob); return; }
     const replyConversation = conversation ?? (focusedMessage ? topics.find(t => t.conversationId === rawMessages.find(m => m.id === focusedMessage)?.conversation_id)?.conversationId : undefined);
@@ -515,9 +522,10 @@ export function AgentDesktop() {
     });
   };
   // The chat's working state and its stop key follow the main chat only: background jobs, routines and delegated children have their own.
-  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status)) && (!topicMode || (conversation ? topic?.activeTask?.id === t.id : !topics.some(item => item.activeTask?.id === t.id)))) ?? [];
+  const tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status)) && (!topicMode || (conversation ? topic?.activeTask?.id === t.id : !topics.some(item => item.activeTask?.id === t.id)))) ?? [];
   const botJobs = state?.jobs?.filter((job) => job.botId === botId) ?? [], openJobs = botJobs.filter(openJob);
-  const jobById = new Map((state?.jobs ?? []).map((job) => [job.id, job]));
+  const workspaceJobs = state?.jobs;
+  const jobById = useMemo(() => new Map((workspaceJobs ?? []).map((job) => [job.id, job])), [workspaceJobs]);
   useEffect(() => {
     const previous = previousTask.current;
     previousTask.current = tasks[0] ? { botId, taskId: str(tasks[0].id) } : undefined;
@@ -580,7 +588,7 @@ export function AgentDesktop() {
     const message=scroll.current?.querySelector<HTMLElement>('[data-search-match="true"]');
     if(message){message.scrollIntoView({block:'center'});scrolledTarget.current=focusedMessage;}
   },[focusedMessage,messages,page]);
-  const latestMessages=()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});};
+  const latestMessages=useCallback(()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});}, [reload]);
   const openSearchResult=(match:ConversationMatch)=>{
     setTopicId(undefined);
     ++serial.current;
@@ -589,7 +597,8 @@ export function AgentDesktop() {
     if(selected.current===match.botId && !conversation)void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});
     else setBotId(match.botId);
   };
-  const closeDialog = () => setDialog(null), select = (target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
+  const closeDialog = useCallback(() => setDialog(null), []);
+  const select = useCallback((target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); }, [latestMessages]);
   const assistantAction=(id:string,action:"reset_memory"|"delete")=>setDialog(<AssistantActionDialog botId={id} action={action} updated={reload} close={closeDialog}/>);
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) { await reload(); select(result.id); } closeDialog(); })}/>);
@@ -597,10 +606,10 @@ export function AgentDesktop() {
   const viewRoutine = (routine: RecordRow) => setDialog(<RoutineDetail routine={routine} latest={state?.occurrences.find((o) => o.routine_id === routine.id)} close={closeDialog} showResult={(id) => openOccurrence(id)} disable={async () => { await api("routines/toggle", { id: routine.id, version: routine.version, enabled: false }); await reload(); closeDialog(); }} remove={async () => { await api("routines/delete", { id: routine.id, version: routine.version }); await reload(); closeDialog(); }}/>);
   const openOccurrence = (id: string) => setDialog(<RoutineOccurrenceDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>);
   // A job opens as its own conversation in place of the main chat; on a narrow window the profile drawer closes for it.
-  const openJobDetail = (id: string) => { setJobsOpen(false); setJobView(id); if (!wide) setDetail(false); };
-  const stopJob = (job: Job) => void run(() => api("jobs/stop", { jobId: job.id }));
+  const openJobDetail = useCallback((id: string) => { setJobsOpen(false); setJobView(id); if (!wide) setDetail(false); }, [wide]);
+  const stopJob = useCallback((job: Job) => void run(() => api("jobs/stop", { jobId: job.id })), [run]);
   // The card's acceptance and revision are the todo panel's own versioned actions.
-  const jobActions: JobCardActions = {
+  const jobActions = useMemo<JobCardActions>(() => ({
     open: openJobDetail,
     reply: (job) => { setQuote(undefined); setReplyJob({ id: job.id, title: job.title }); composerRef.current?.focus(); },
     stop: stopJob,
@@ -608,7 +617,29 @@ export function AgentDesktop() {
     retry: (job) => void run(() => api("jobs/input", { jobId: job.id, text: "再试一次", clientId: crypto.randomUUID() })),
     accept: (job) => void run(() => api("todos/action", { id: job.todoId, version: job.todoVersion, action: "complete" })),
     revise: (job) => setDialog(<Editor title="继续修改" onClose={closeDialog} fields={[{ name: "feedback", label: "告诉 AI 要调整什么", multiline: true, required: true }]} onSubmit={(data) => run(async () => { await api("todos/action", { id: job.todoId, version: job.todoVersion, action: "start", clientId: crypto.randomUUID(), feedback: data.feedback }); closeDialog(); })}/>),
-  };
+  }), [openJobDetail, stopJob, run, closeDialog]);
+  const bots = state?.bots;
+  const showingChat = page === "agent" && !!bot && !jobView;
+  // Composer-only changes, including a model choice, can reuse the history subtree.
+  const historyRows = useMemo(() => {
+    if (!showingChat || !bots) return null;
+    const detach = () => setFollowing(false);
+    const quoteMessage = (message: RecordRow) => {
+      const author = senderLabel(message, bot, bots), parsed = parseMessageMedia(str(message.content));
+      setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") });
+      composerRef.current?.focus();
+    };
+    return messages.map((m, idx) => {
+      const prev = messages[idx - 1], next = messages[idx + 1], curDay = formatDay(m.created_at);
+      const prevDay = prev ? formatDay(prev.created_at) : "";
+      const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
+      return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
+        {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
+        {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} bot={bot} bots={bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onDeleteImage={deleteMessageImage} onDetach={detach} onQuote={quoteMessage}/>}
+        {conversation && m.input_status === "pending" ? <button type="button" onClick={() => { setEditInput(str(m.id)); changeDraft(str(m.content)); }}>编辑排队消息</button> : null}
+      </div>;
+    });
+  }, [showingChat, bots, bot, messages, conversation, focusedMessage, jobById, jobActions, busy, copiedId, select, openTopic, changeDraft, copyText, openFilePreview, deleteMessageImage, setFollowing]);
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
@@ -652,17 +683,11 @@ export function AgentDesktop() {
   const signOut = () => { void logout().catch(() => setError("退出登录未完成，请重试")); };
   const botLook = lookOf(bot, state.bots);
   // The assistant's provider, model (or that provider's default model) and reasoning effort.
-  const connections = state.connections ?? [];
-  const botConnection = connections.find((item) => item.id === str(bot?.selected_connection) && item.enabled) ?? connections.find((item) => item.isDefault);
-  const modelChoice: ModelChoice = { connectionId: botConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null };
+  const modelChoice = modelSelection.choice;
+  const botConnection = connections.find((item) => item.id === modelChoice.connectionId) ?? defaultConnection;
   const chosenModel = modelChoice.model || botConnection?.defaultModel || str(state.config?.default_model);
   const openForkedTopic = (target: string, conversationId: string) => { setForkBotId(target); select(target); openTopic(conversationId); };
   const modelLabel = chosenModel ? modelName(botConnection, chosenModel) : "未连接模型";
-  const chooseModel = (choice: ModelChoice) => void run(() => api("bots/model", {
-    id: botId, connectionId: choice.connectionId, model: choice.model,
-    ...(choice.reasoning ? { reasoning: choice.reasoning } : {}),
-    version: Number(bot?.model_selection_version ?? 0),
-  }));
   const openToolPolicy = () => {
     if (!bot) return;
     setDialog(<AgentPolicyEditor bot={bot} close={closeDialog} save={tools => run(async () => {
@@ -717,6 +742,7 @@ export function AgentDesktop() {
 
       {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(e.message))}>立即更新</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
+      {page === "agent" && modelSelection.error ? <div role="alert" className="error-banner">{modelSelection.error}<button onClick={modelSelection.dismissError} aria-label="关闭模型错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ProviderSettings state={state} refresh={reload} active={modelChooserOpen}/>}</div> : null}
 
       {page === "agent" && !bot ? <div className="welcome">
@@ -741,16 +767,7 @@ export function AgentDesktop() {
               <button type="button" onClick={() => editMemory()}><Sparkles size={13}/>添加长期记忆</button>
               {peers.length ? <button type="button" onClick={() => { changeDraft(`@${peers[0].name} `); composerRef.current?.focus(); }}><AtSign size={13}/>让 {peers[0].name} 协作</button> : null}
             </div>
-          </div> : messages.map((m, idx) => {
-            const prev = messages[idx - 1], next = messages[idx + 1], curDay = formatDay(m.created_at);
-            const prevDay = prev ? formatDay(prev.created_at) : "";
-            const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
-            return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
-              {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} bot={bot} bots={state.bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>}
-              {conversation && m.input_status === "pending" ? <button type="button" onClick={() => { setEditInput(str(m.id)); changeDraft(str(m.content)); }}>编辑排队消息</button> : null}
-            </div>;
-          })}
+          </div> : historyRows}
           {liveStreaming.map((s) => {
             const link = state.delegations.find((d) => d.child_task_id === s.taskId), peer = state.bots.find((b) => b.id === link?.sender_bot_id);
             return <article className={`message assistant streaming ${link ? "a2a-reply" : ""}`} key={s.taskId}>
@@ -812,14 +829,14 @@ export function AgentDesktop() {
                     </div>)}
             </div>}
             <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={editInput ? "编辑排队消息…" : replyJob ? `回复后台任务：${replyJob.title}` : `给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={chooseModel} onExport={() => void run(downloadTranscript)} onNewTopic={() => finance ? (openTopic(), composerRef.current?.focus()) : void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}
+            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={modelSelection.choose} onExport={() => void run(downloadTranscript)} onNewTopic={() => finance ? (openTopic(), composerRef.current?.focus()) : void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}
               onToolPolicy={openToolPolicy} context={{ botId, conversationId: conversation, connected: connected && !!bot,
                 modelKey: JSON.stringify([botConnection?.id, botConnection?.version, chosenModel]),
                 activityKey: JSON.stringify([rawMessages.at(-1)?.id, tasks.map(task => [task.id, task.status])]) }}>
               {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
               {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
                 ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { if (conversation) await api("agents/cancel",{botId,conversationId:conversation}); else for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
-                : <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
+                : <button className="send" aria-label="发送消息" disabled={busy || modelSelection.saving || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
             </ComposerControls>
           </form>
         </div>

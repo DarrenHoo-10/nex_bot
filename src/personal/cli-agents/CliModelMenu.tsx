@@ -37,8 +37,9 @@ export function useModelCatalog(deviceId: string, engine: CliEngine, live: boole
     return () => { current = false; };
   }, [deviceId, engine, live, active, id]);
   const mine = state.id === id ? state : { id };
+  const fallback = useMemo(() => fallbackCatalog(engine), [engine]);
   return {
-    catalog: live && mine.catalog ? mine.catalog : fallbackCatalog(engine),
+    catalog: live && mine.catalog ? mine.catalog : fallback,
     loading: live && active && !mine.catalog && !mine.error,
     error: live ? mine.error ?? "" : "",
   };
@@ -66,16 +67,21 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
   // the trigger names the chosen model, so the list is read before the menu opens
   const { catalog, loading, error } = useModelCatalog(deviceId, engine, live);
   const models = catalog.models;
-  useEffect(() => { if (open) setQuery(""); }, [open]);
+  useEffect(() => { if (!open) setQuery(""); }, [open]);
   useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false));
 
   const label = (id: string) => models.find((row) => row.id === id)?.label ?? id;
   const fallback = running?.trim() || catalog.current || "";
   const shown = useMemo(() => {
+    if (!open) return [];
     const listed = choice.model && !models.some((row) => row.id === choice.model) ? [...models, { id: choice.model, label: choice.model }] : models;
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    return listed.filter((row) => terms.every((term) => `${row.id} ${row.label} ${row.description ?? ""}`.toLowerCase().includes(term)));
-  }, [models, choice.model, query]);
+    if (!terms.length) return listed;
+    return listed.filter((row) => {
+      const search = `${row.id} ${row.label} ${row.description ?? ""}`.toLowerCase();
+      return terms.every((term) => search.includes(term));
+    });
+  }, [open, models, choice.model, query]);
   const offered = effortsFor(engine, models, choice.model || fallback);
   const stops = ["", ...offered];
   const resolved = stops.includes(choice.effort) ? choice.effort : "";
@@ -98,7 +104,7 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
     </button>
     {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); } }}>
       <div className="na-model-head"><span>模型</span>{live && !loading && !error ? <small>来自这台电脑</small> : null}</div>
-      {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus/></label> : null}
+      {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)}/></label> : null}
       <div className="model-menu-list" role="listbox" aria-label="可用模型">
         {!query ? <>
           <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick("")} title={fallback || undefined}>

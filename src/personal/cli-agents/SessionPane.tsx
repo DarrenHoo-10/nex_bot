@@ -2,7 +2,7 @@
 // the workbench contracts: sends carry idempotency ids, a running session
 // queues or steers, stopping pauses the outbox in Core, and edit-and-resend
 // records the revised message.
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowLeft, List, MessageSquare, Share2, SquareTerminal } from "lucide-react";
 import type { CliItem, CliAnswerDecision, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
@@ -61,6 +61,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const resumedKey = useRef<CliSessionKey|null>(null);
   const queue = useCliQueue(stream, session.key);
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
+  const editMessage = useCallback((messageId: string, text: string) => setRevision({ messageId, text }), []);
   const [launch, setLaunch] = useState<LaunchChoice>(() => getLaunch(session.key));
   /** what this page last told the running CLI, so a send only switches when the choice changed */
   const applied = useRef<string>(JSON.stringify({ model: "", effort: "" }));
@@ -83,10 +84,11 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   }, [awaiting]);
   const progress = awaiting ? (awaiting.fresh ? "执行中" : awaiting.resuming ? "正在恢复会话…" : awaiting.unconfirmed ? "已发送，等待会话接收…" : "已送达，等待回复…")
     : session.online && session.state === "running" ? "执行中" : "";
-  const working = progress && !compact ? {
+  const showTerminal = slow && canAttach(session);
+  const working = useMemo(() => progress && !compact ? {
     label: progress,
-    action: slow && onTerminalOpen && canAttach(session) ? <button type="button" className="text-button" onClick={onTerminalOpen}><SquareTerminal size={12}/>打开远程终端</button> : undefined,
-  } : undefined;
+    action: showTerminal && onTerminalOpen ? <button type="button" className="text-button" onClick={onTerminalOpen}><SquareTerminal size={12}/>打开远程终端</button> : undefined,
+  } : undefined, [progress, compact, showTerminal, onTerminalOpen]);
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
     const known = new Set(items.map((item) => item.id));
@@ -161,7 +163,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:(messageId, text) => setRevision({ messageId, text })} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onEdit={compact?undefined:editMessage} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>

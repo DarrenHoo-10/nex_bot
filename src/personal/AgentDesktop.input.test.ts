@@ -103,6 +103,36 @@ it("opens the authenticated Feishu settings from a Stock management link", async
 });
 
 describe("Personal composer (Web, Electron and Android WebView)", () => {
+  it("updates the selected model before Core confirms it, then rolls back a rejected choice", async () => {
+    HTMLElement.prototype.showPopover ??= function () {};
+    HTMLElement.prototype.hidePopover ??= function () {};
+    state.config = { default_model: "fixture-a" };
+    state.connections = [{
+      id: "default", name: "Fixture", provider: "openai", endpoint: "http://127.0.0.1/v1", defaultModel: "fixture-a",
+      enabled: true, isDefault: true, configured: true, version: 1, models: ["fixture-a", "fixture-b"], modelsVersion: 0, options: {},
+    }];
+    let rejectSave: (error: Error) => void;
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route === "state") return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
+      if (route === "bots/model") return new Promise((_resolve, reject) => { rejectSave = reject; });
+      return {};
+    });
+    await act(async () => { root.render(createElement(AgentDesktop, { key: "model-choice-pending" })); });
+    await type("下一条消息");
+    const trigger = container.querySelector<HTMLButtonElement>(".composer-model-trigger")!;
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')!;
+    await act(async () => { trigger.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('.model-menu-row[title="fixture-b"]')!.click(); });
+    expect(trigger.textContent).toContain("fixture-b");
+    expect(send.disabled).toBe(true);
+    expect(fixture.api).toHaveBeenCalledWith("bots/model", expect.objectContaining({ model: "fixture-b", version: 0 }));
+    await act(async () => { rejectSave(new Error("模型已在其他设备更新")); });
+    expect(trigger.textContent).toContain("fixture-a");
+    expect(send.disabled).toBe(false);
+    expect(container.querySelector(".error-banner")?.textContent).toContain("模型已在其他设备更新");
+  });
+
   it("reuses unchanged rich history while typing, sending and syncing", async () => {
     const content = "## 已有结果\n\n| 项目 | 状态 |\n| --- | --- |\n| 设备 | 在线 |";
     const history = [{ id: "rich-history", role: "assistant", kind: "message", content, created_at: 1, seq: 1 }];

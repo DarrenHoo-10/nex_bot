@@ -77,16 +77,19 @@ export class AgentModule {
   }
   updateModel(data: Record<string, unknown>) {
     const botId = text(data.id, 100), model = data.model === "" ? "" : text(data.model, 200);
-    this.store.transaction(() => {
+    const selection = this.store.transaction(() => {
       this.ensure(botId);
       if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active'", botId)) throw new Error("助手已归档");
       if (this.store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", botId)) throw new Error("请等待当前任务结束或停止任务后切换模型");
       // With connectionId the assistant may switch provider; without it (older clients) the provider must not have changed.
       const saved = this.store.saveBotModel(botId, { ...data, model });
       this.store.modelConfig(botId);
-      this.store.audit("agent.model.update", "bot", botId, { model, connectionId: this.store.botModelSelection(botId)?.selected_connection, reasoning: saved.reasoning });
+      const selection = this.store.botModelSelection(botId);
+      this.store.audit("agent.model.update", "bot", botId, { model, connectionId: selection?.selected_connection, reasoning: saved.reasoning });
+      return selection;
     });
     this.runtime.changed();
+    return selection;
   }
   updateAppearance(data: Record<string, unknown>) {
     const botId = text(data.id, 100), appearance = parseAppearance(data.appearance), version = Number(data.version);
