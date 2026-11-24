@@ -1,10 +1,18 @@
 # OpenMausBot agent notes
 
-Before claiming a server or conversation change works, follow
-[`docs/verification/README.md`](docs/verification/README.md). Always launch an
-isolated fixture; never verify mutations against the user's live app or data.
+When release verification exercises a server or conversation change, follow
+[`docs/verification/README.md`](docs/verification/README.md). Verify mutations
+only in an isolated fixture.
 
-More specific `AGENTS.md` files override this note within their directories.
+More specific `AGENTS.md` files override this note within their directories
+except for the commit, push, and release rules below.
+
+## Commits, pushes, and release checks
+
+- 提交和推送代码时只做静态检查，运行 pre-push 的 lint、类型检查和多语言校验。
+  严禁在此阶段构建、打包或手动运行测试。推送后由 CI 自动运行核心链路测试。
+- 构建、打包和手动测试只在用户明确要求的发布准备阶段执行，该阶段无需另行审批。
+  此规则也适用于在 Mac 上直接执行或通过 SSH 执行的命令。严禁在日常开发或提交推送时自行发起 Mac 构建或测试。
 
 ## Production deploys and releases
 
@@ -17,26 +25,20 @@ any other branch, a worktree branch, or uncommitted files. Merge the change into
 
 ## Shipping a change
 
-When asked to deploy, release or package, run the whole chain below and report
-what you could not verify. Do not wait to be reminded of a step. If the user asks
-only for a local build to test, say that GitHub and OSS publication were skipped.
+For a user-requested release, follow the steps below and report any verification
+limits.
 
 1. **Source.** Merge into `main` and push. Re-check `origin/main` right before
-   pushing; if it moved, merge it in (never rewrite pushed history), then rebuild
-   and re-verify on the merged tree. Build everything from that pushed commit. If
-   GitHub is unreachable, use the machine's proxy on git/`gh` commands only
-   (`git -c http.proxy=…`, `HTTPS_PROXY=… gh`); never change global config.
-   **Before deploying or releasing, run static checks only**: the pre-push hook
-   (lint, typecheck, locale catalogs) on the merged tree; the builds below also
-   compile everything. Do not run test suites first: no `vitest` (full or
-   partial), no Android unit tests, no Apple render or Swift package tests. The
-   repository keeps only core-path tests (`server/personal-os`, `src/personal`,
-   `shared`), and CI runs them after the push; check that run afterwards and fix
-   what it finds, but a deploy or release never waits for it. Write or run a test
-   for a change only while developing it, not as a release step.
-
-   部署和发版前只做静态检查（lint、类型检查、多语言校验），不跑任何测试套件；
-   核心链路的单测由推送后的 CI 运行，发版不等它。
+   pushing. If it moved, integrate it without rewriting pushed history, then
+   rerun the static checks on the merged tree. Build release artifacts from the
+   pushed commit. If GitHub is unreachable, use the machine's proxy on git/`gh`
+   commands only (`git -c http.proxy=…`, `HTTPS_PROXY=… gh`). Never change global
+   config.
+   Use the static-only pre-push hook (lint, typecheck, locale catalogs). CI runs
+   the core-path tests in `server/personal-os`, `src/personal`, and `shared` after
+   the push. Check that run afterwards and fix what it finds. The release does
+   not wait for CI. Perform artifact checks during release preparation as
+   described below.
 2. **Core and web UI → Mac Air** (`ssh mac-air`; root `~/nexbot`). Since
    2026-11-14 production Core runs there; Tokyo's Core is retired, so never
    deploy to it. The launchd job `gui/<uid>/cn.nexorai.nexbot-core` runs
@@ -59,11 +61,11 @@ only for a local build to test, say that GitHub and OSS publication were skipped
 3. **Every client the change touches.** Web UI code is shared by Web, Windows
    (loaded from Core, and bundled in the installer) and Android (bundled in the
    APK). macOS and iOS are native SwiftUI in `apps/apple`: when a UI behaviour
-   changes, change and verify its Apple equivalent in the same task. Never answer
-   "no Xcode here": Apple code is built and tested on the user's Mac over SSH
-   (`ssh mac-air`). Copy sources into a fresh temporary directory there, convert
-   CRLF to LF (a Windows checkout breaks bash scripts), and never touch the user's
-   existing checkouts. Release builds come from a fresh `git clone` of the pushed
+   changes, update its Apple equivalent in the same task. During release
+   preparation, use `ssh mac-air` for Apple builds and tests. Copy sources into a
+   fresh temporary directory there, convert CRLF to LF (a Windows checkout
+   breaks bash scripts), and never touch the user's existing checkouts.
+   Release builds come from a fresh `git clone` of the pushed
    commit on the Mac (it reaches GitHub directly): run
    `corepack pnpm install --frozen-lockfile` and `node scripts/build-nexbot-icons.mjs`
    (the icon files are generated, not tracked), create a dedicated simulator with
