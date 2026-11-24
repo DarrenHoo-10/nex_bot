@@ -18,6 +18,9 @@
 .na-stage .cli-app .cli-main{grid-column:2;background:var(--na-paper);margin:8px 8px 8px 0;border:1px solid var(--na-line);border-radius:15px;overflow:hidden;box-shadow:0 1px 3px #111a1410}
 .na-stage .cli-app .cli-main>header{color:var(--na-ink);background:var(--na-paper);display:flex;min-height:43px;height:43px;gap:8px;padding:0 18px;border:0}
 .na-stage .cli-app .na-workspace-status{justify-content:flex-start}
+.na-stage .cli-app .na-directory-brand{display:inline-flex;align-items:center;gap:7px;padding:4px;border:0;border-radius:8px;background:transparent;color:var(--na-ink);margin-inline-end:auto;min-height:36px}
+.na-stage .cli-app .na-directory-brand strong{font-size:18px;font-weight:700;letter-spacing:-.5px}
+.na-stage .cli-app .na-directory-brand:hover{background:var(--na-hover)}
 .na-fixture-label{color:var(--na-muted);font-size:11px}
 .na-stage .cli-app .cli-body{padding:0;gap:0;position:relative;min-width:0}
 .na-stage .cli-app .cli-content{border:0;border-radius:0;background:var(--na-canvas)}
@@ -232,7 +235,6 @@
 /* --- end side chats --- */
 .na-stage .cli-app .na-launch-reply .na-launch-error{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0;text-align:left}
 .na-stage .cli-app .na-launch-reply .na-launch-error span{flex:1 1 200px}
-.na-stage .cli-app .na-launch-reply .na-launch-error .text-button{display:inline-flex;align-items:center;gap:4px}
 .na-stage .cli-app .na-launch-composer{opacity:.6;pointer-events:none}
 .na-stage .cli-app .na-working{display:grid;justify-items:start;gap:0}
 .na-stage .cli-app .na-working-dots{display:flex;align-items:center;gap:5px;padding:12px 16px;border-radius:14px 14px 14px 5px;background:var(--na-paper);box-shadow:0 1px 3px #17271b14}

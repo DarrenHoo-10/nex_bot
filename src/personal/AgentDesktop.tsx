@@ -15,7 +15,7 @@ import { cliImageId } from "../../shared/cli-images";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Sparkles, Square, X } from "lucide-react";
+import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, PanelRight, Sparkles, Square, X } from "lucide-react";
 import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
 import { usePersistentPreview } from "./use-persistent-preview";
@@ -43,6 +43,8 @@ import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail } from "./components/RoutineOccurrenceDetail";
 import { JobChat } from "./components/JobChat";
+import { AssistantSwitcher } from "./components/AssistantSwitcher";
+import { ConversationActionButton } from "./components/ConversationActionButton";
 import { JobReportCard, type JobCardActions } from "./components/JobReportCard";
 import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
@@ -241,6 +243,13 @@ export function AgentDesktop() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [focusedMessage,setFocusedMessage]=useState("");
   const messages = useMemo(() => topicMode && !conversation && !focusedMessage ? topicTimeline(rawMessages,topics) : rawMessages, [topicMode, conversation, focusedMessage, rawMessages, topics]);
+  const lastJobReply = useMemo(() => {
+    const replies = new Map<string, number>();
+    messages.forEach((message, index) => {
+      if (message.role === "user" && message.job_id) replies.set(str(message.job_id), index);
+    });
+    return replies;
+  }, [messages]);
   const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), transcriptInner = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
   // Set once Core has accepted the send. Cleared only when a later reload publishes
@@ -689,11 +698,11 @@ export function AgentDesktop() {
       const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
       return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
         {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-        {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} bot={bot} bots={bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onDeleteImage={deleteMessageImage} onDetach={detach} onQuote={quoteMessage}/>}
+        {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} hasJobReply={(lastJobReply.get(str(m.job_id)) ?? -1) > idx} bot={bot} bots={bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onDeleteImage={deleteMessageImage} onDetach={detach} onQuote={quoteMessage}/>}
         {conversation && m.input_status === "pending" ? <button type="button" onClick={() => { setEditInput(str(m.id)); changeDraft(str(m.content)); }}>编辑排队消息</button> : null}
       </div>;
     });
-  }, [showingChat, bots, bot, messages, conversation, focusedMessage, jobById, jobActions, busy, copiedId, select, openTopic, changeDraft, copyText, openFilePreview, deleteMessageImage, setFollowing]);
+  }, [showingChat, bots, bot, messages, lastJobReply, conversation, focusedMessage, jobById, jobActions, busy, copiedId, select, openTopic, changeDraft, copyText, openFilePreview, deleteMessageImage, setFollowing]);
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
@@ -783,24 +792,24 @@ export function AgentDesktop() {
       <header>
         <div className="header-side"><button className="icon-button mobile-menu" aria-label="展开联系人列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={19}/></button></div>
         {page === "agent" && bot
-          ? <button type="button" className="contact-heading clickable who glass" inert={panelOpen} title="打开 Agent 资料" onClick={() => setDetail(true)}>
+          ? <AssistantSwitcher key={botId} assistants={state.bots} activeId={botId} onSelect={select}>
               <Avatar bot={bot} allBots={state.bots} size={30} state={avatarState} animate/>
               <strong>{bot.name}</strong>
-              <span className={tasks.length ? "active-phrase" : ""}>{tasks.length ? `${taskPhrase(tasks[0])}${tasks.length > 1 ? ` · ${tasks.length} 项工作正在进行` : ""}` : companionLabels[avatarState]}</span>
-            </button>
+            </AssistantSwitcher>
           : <div className="contact-heading who"><strong>{page === "settings" ? "设置" : "你的 Agent"}</strong></div>}
         <div className="header-actions">
-          {page === "agent" && bot && openJobs.length > 0 ? <div className="jobs-pill-anchor">
+          {page === "agent" && bot && !jobView && openJobs.length > 0 ? <div className="jobs-pill-anchor">
             <button type="button" className="jobs-pill glass" aria-expanded={jobsOpen} aria-haspopup="dialog" onClick={() => setJobsOpen((open) => !open)}>{openJobs.length} 项后台任务</button>
             {jobsOpen ? <div className="jobs-popover glass" role="dialog" aria-label="后台任务" onKeyDown={(event) => { if (event.key === "Escape") setJobsOpen(false); }}>
               {openJobs.map((job) => <div className="jobs-popover-row" key={job.id}><button type="button" className="jobs-popover-title" onClick={() => openJobDetail(job.id)}>{job.title}</button><span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span></div>)}
             </div> : null}
           </div> : null}
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
-          {page === "agent" && bot && messages.length > 0 ? <button type="button" className="bt-round glass" title="复制对话记录" aria-label="复制对话记录" onClick={() => exportTranscript()}>{exported ? <Check size={16}/> : <Share2 size={16}/>}</button> : null}
+          {page === "agent" && bot ? <button type="button" className="bt-round glass assistant-inspector-toggle"
+            aria-label={panelOpen ? "收起助手详情" : "助手详情"} title={panelOpen ? "收起助手详情" : "打开助手详情"}
+            aria-expanded={panelOpen} aria-controls="assistant-inspector" onClick={() => setDetail(!detail)}><PanelRight size={18} aria-hidden="true"/></button> : null}
         </div>
       </header>
-      {page === "agent" && bot ? <button type="button" aria-label="助手详情" aria-pressed={panelOpen} title={panelOpen ? "收起 Agent 资料" : "展开 Agent 资料"} className="panel-handle glass" onClick={() => setDetail(!detail)}>{panelOpen ? <ChevronRight size={15}/> : <ChevronLeft size={15}/>}</button> : null}
 
       {update?.status === "ready" && updater.installUpdate && !(page === "settings" && settingsCategory === "about") ? <div role="status" className="update-banner">{desktop ? `新版本 ${update.version} 已就绪` : "网页有新版本"}<button type="button" onClick={() => void updater.installUpdate?.().catch((e: Error) => setError(userErrorText(e)))}>{desktop ? "立即更新" : "刷新页面"}</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
@@ -853,7 +862,7 @@ export function AgentDesktop() {
         <div className="composer-dock">
           {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" aria-label="回到底部" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ArrowDown size={22} strokeWidth={1.5} aria-hidden="true"/></button> : null}
         <div className="composer-area">
-          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准{(() => { const job = botJobs.find((item) => item.taskId === a.task_id); return job ? ` · 后台任务「${job.title}」` : ""; })()}</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
+          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准{(() => { const job = botJobs.find((item) => item.taskId === a.task_id); return job ? ` · 后台任务「${job.title}」` : ""; })()}</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><ConversationActionButton disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</ConversationActionButton><ConversationActionButton disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</ConversationActionButton><ConversationActionButton tone="dark" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</ConversationActionButton></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
           {replyJob ? <div className="quote-bar reply-job-bar"><div><strong>回复后台任务：{replyJob.title}</strong></div><button type="button" aria-label="取消回复" onClick={() => setReplyJob(undefined)}><X size={14}/></button></div> : null}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
@@ -906,7 +915,7 @@ export function AgentDesktop() {
       </> : <SettingsPage state={state} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
     </main>
 
-    {page === "agent" && bot ? <aside className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="收起助手详情" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
+    {page === "agent" && bot ? <aside id="assistant-inspector" className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="关闭助手详情面板" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
       <div className="profile-top">
         <button type="button" className="profile-avatar-button" title="更换头像" aria-label={`更换 ${bot.name} 的头像`} onClick={editAvatar}><span className="hero-halo"><Avatar bot={bot} allBots={state.bots} size={96} state={avatarState} animate/></span></button>
         <strong>{bot.name}</strong>
@@ -986,7 +995,7 @@ function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]
 function JobMarker({ message, job, open }: { message: RecordRow; job?: Job; open: (id: string) => void }) {
   return <div className="a2a-marker job-marker"><span>已交给后台</span><button type="button" className="a2a-contact" aria-label={`查看后台任务：${job?.title ?? str(message.job_title)}`} onClick={() => open(str(message.job_id))}><span>{job?.title ?? str(message.job_title)}</span></button><time title={message.created_at ? new Date(Number(message.created_at)).toLocaleString("zh-CN") : undefined}>{formatTime(message.created_at)}</time></div>;
 }
-function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; jobs: Map<string, Job>; jobActions: JobCardActions; busy: boolean; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
+function AgentMessage({ message: m, hasJobReply, bot, bots, jobs, jobActions, busy, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; hasJobReply: boolean; bot?: RecordRow; bots: RecordRow[]; jobs: Map<string, Job>; jobActions: JobCardActions; busy: boolean; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
   const [stepDetail, setStepDetail] = useState<{ id: string; loading?: boolean; item?: PreviewItem }>();
   const toggleStep = (step: ToolStep) => {
     if (step.tool_name === "device.read" && step.summary) { onPreviewFile(step.summary); return; }
@@ -998,7 +1007,7 @@ function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, c
   const direction = str(m.a2a_direction), peer = bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id));
   const jobId = str(m.job_id), job = jobId ? jobs.get(jobId) : undefined;
   if (jobId && str(m.source_key).startsWith("job-start:")) return <JobMarker message={m} job={job} open={jobActions.open}/>;
-  if (jobId && m.job_state) return <article className="message assistant job-report group-end" data-message-id={str(m.id)}><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><JobReportCard message={m} job={job} busy={busy} actions={jobActions} renderContent={(value) => <RichText value={value} onPreviewFile={onPreviewFile}/>} onDeleteImage={(image) => onDeleteImage(str(m.id), image)}/><div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time></div></div></article>;
+  if (jobId && m.job_state) return <article className="message assistant job-report group-end" data-message-id={str(m.id)}><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><JobReportCard message={m} job={job} hasReply={hasJobReply} busy={busy} actions={jobActions} renderContent={(value) => <RichText value={value} onPreviewFile={onPreviewFile}/>} onDeleteImage={(image) => onDeleteImage(str(m.id), image)}/><div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time></div></div></article>;
   if (direction === "sent" || direction === "returned") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "received") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;

@@ -102,6 +102,42 @@ it("opens the authenticated Feishu settings from a Stock management link", async
   }
 });
 
+it("opens assistant details from its own button and switches assistants only after selection", async () => {
+  HTMLElement.prototype.showPopover ??= function () {};
+  HTMLElement.prototype.hidePopover ??= function () {};
+  vi.stubGlobal("innerHeight", 800);
+  state = { ...state, bots: [...state.bots, { id: "second", name: "Second" }, { id: "third", name: "Third" }, { id: "fourth", name: "Fourth" }, { id: "other", name: "Other" }] };
+  await act(async () => { root.render(createElement(AgentDesktop, { key: "assistant-switch" })); });
+  const details = container.querySelector<HTMLButtonElement>(".assistant-inspector-toggle")!;
+  const inspectorWasOpen = details.getAttribute("aria-expanded") === "true";
+  await act(async () => details.click());
+  expect(details.getAttribute("aria-expanded")).toBe(String(!inspectorWasOpen));
+  expect(container.querySelector('main > header [aria-label="复制对话记录"], .panel-handle')).toBeNull();
+
+  const title = () => container.querySelector<HTMLButtonElement>(".assistant-switch-trigger")!;
+  await act(async () => title().click());
+  const list = container.querySelector<HTMLDivElement>('[role="listbox"][aria-label="切换助手"]')!;
+  const selected = () => list.querySelector("[data-centered]")?.textContent;
+  const key = (value: string) => act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true })); });
+  expect(selected()).toBe("Fixture");
+  expect(list.scrollTop).toBeGreaterThan(0);
+  expect(list.style.getPropertyValue("--assistant-visible-rows")).toBe("5");
+  vi.stubGlobal("innerHeight", 160);
+  await act(async () => window.dispatchEvent(new Event("resize")));
+  expect(list.style.getPropertyValue("--assistant-visible-rows")).toBe("3");
+  expect(list.querySelectorAll('[role="option"]:not([aria-hidden])')).toHaveLength(5);
+  await key("ArrowUp");
+  expect(selected()).toBe("Other");
+  expect(title().textContent).toContain("Fixture");
+  await key("ArrowDown");
+  expect(selected()).toBe("Fixture");
+  await key("ArrowUp");
+  await key("Enter");
+  expect(container.querySelector(".assistant-switch-panel")).toBeNull();
+  expect(title().textContent).toContain("Other");
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("agents/messages?bot=other"))).toBe(true);
+});
+
 describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("updates the selected model before Core confirms it, then rolls back a rejected choice", async () => {
     HTMLElement.prototype.showPopover ??= function () {};
@@ -172,6 +208,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise((resolve) => setTimeout(resolve, 200)); });
     const buttons = [...container.querySelectorAll<HTMLButtonElement>(".approval .actions button")];
     expect(buttons.map((button) => button.textContent)).toEqual(["允许一次", "始终允许", "拒绝"]);
+    expect(buttons.every((button) => button.classList.contains("conversation-action"))).toBe(true);
     expect(buttons[1].title).toContain("Fixture device");
     await act(async () => { buttons[1].click(); });
     expect(fixture.api).toHaveBeenCalledWith("approvals", { id: "approval", hash: "digest", allow: true, remember: true });
@@ -461,7 +498,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
 
 describe("Background jobs in the chat (Web, Electron and Android WebView)", () => {
   const job = (overrides: Record<string, unknown> = {}) => ({ id: "job-1", botId: "agent", title: "整理下载文件夹", stage: "running", taskId: "job-task", originTaskId: "owner-task", todoId: null, todoVersion: null, todoStatus: null, progress: null, latestReport: null, createdAt: 1, endedAt: null, ...overrides });
-  const report = (state: string, extra: Record<string, unknown> = {}) => ({ id: "report-msg", role: state === "blocked" || state === "failed" ? "system" : "assistant", kind: state === "question" ? "request" : state === "ready" ? "result" : "error", content: `后台任务「整理下载文件夹」\n已整理 12 个文件${state === "question" ? "\n\n要保留截图吗？" : ""}`, source_key: "job-report:r1", job_id: "job-1", job_title: "整理下载文件夹", job_state: state, created_at: 2, seq: 2, ...extra });
+  const report = (state: string, extra: Record<string, unknown> = {}) => ({ id: "report-msg", task_id: "job-task", role: state === "blocked" || state === "failed" ? "system" : "assistant", kind: state === "question" ? "request" : state === "ready" ? "result" : "error", content: `后台任务「整理下载文件夹」\n已整理 12 个文件${state === "question" ? "\n\n要保留截图吗？" : ""}`, source_key: "job-report:r1", job_id: "job-1", job_title: "整理下载文件夹", job_state: state, created_at: 2, seq: 2, ...extra });
   async function show(jobs: unknown[], messages: unknown[], tasks: State["tasks"] = []) {
     state = { ...state, jobs, tasks } as State;
     fixture.api.mockImplementation(async (route: string) => {
@@ -487,10 +524,13 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(cardButtons()).toEqual(["回复", "停止"]);
     expect(cardButton("回复").childElementCount).toBe(0);
     expect(cardButton("停止").childElementCount).toBe(0);
-    await show([job({ stage: "running", latestReport: latest })], [report("question")]);
-    expect(cardButtons()).toEqual(["停止"]);
+    expect(cardButton("回复").dataset.size).toBe("compact");
+    expect(cardButton("停止").dataset.size).toBe("compact");
+    expect(cardButton("停止").dataset.tone).toBe("dark");
     await act(async () => cardButton("停止").click());
     expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-1" });
+    await show([job({ stage: "running", taskId: "next-round", latestReport: latest })], [report("question")]);
+    expect(cardButtons()).toEqual([]);
     await show([job({ stage: "done", endedAt: 3, latestReport: { ...latest, state: "ready", question: null } })], [report("ready")]);
     expect(cardButtons()).toEqual([]);
     // A failed job is retried or opened, not stopped; its card leads with the first sentence and folds the rest.
@@ -535,11 +575,20 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(fixture.api).toHaveBeenCalledWith("jobs/input", expect.objectContaining({ jobId: "job-1", text: "保留", clientId: expect.any(String) }));
     expect(fixture.api.mock.calls.some(([route]) => route === "agents/input")).toBe(false);
     expect(container.querySelector(".reply-job-bar")).toBeNull();
+    expect(cardButtons()).toEqual([]);
+    // A saved reply hides the old controls even if the job snapshot still shows the previous round.
+    const clientId = fixture.api.mock.calls.findLast(([route]) => route === "jobs/input")?.[1].clientId;
+    const savedReply = { id: "reply", role: "user", job_id: "job-1", content: "保留", source_key: `job-input:job-1:${clientId}`, created_at: 3, seq: 3 };
+    await show([job({ stage: "question", latestReport: latest })], [report("question"), savedReply]);
+    expect(cardButtons()).toEqual([]);
+    const nextReport = report("question", { id: "next-report", task_id: "next-round", created_at: 4, seq: 4 });
+    await show([job({ stage: "question", taskId: "next-round", latestReport: { ...latest, messageId: nextReport.id } })], [report("question"), savedReply, nextReport]);
+    expect(cardButtons()).toEqual(["回复", "停止"]);
     // A refused reply (a stopped job) restores the draft and the reply target.
     fixture.api.mockImplementation(async (route: string) => {
       if (route === "jobs/input") throw new Error("后台任务已停止，不能再补充");
       if (route === "state") return state;
-      if (route.startsWith("agents/messages")) return { sync, messages: [report("question")], streaming: [], hasMore: false };
+      if (route.startsWith("agents/messages")) return { sync, messages: [report("question"), savedReply, nextReport], streaming: [], hasMore: false };
       return {};
     });
     await act(async () => cardButton("回复").click());
@@ -547,6 +596,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
     expect(composer().value).toBe("再补充");
     expect(container.querySelector(".reply-job-bar")).not.toBeNull();
+    expect(cardButtons()).toEqual(["回复", "停止"]);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("已停止");
     // Cancelling the reply returns to the main chat.
     await act(async () => container.querySelector<HTMLButtonElement>('.reply-job-bar button[aria-label="取消回复"]')!.click());
@@ -575,9 +625,11 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     await act(async () => container.querySelector<HTMLButtonElement>(".jobs-popover-title")!.click());
     expect(fixture.api).toHaveBeenCalledWith("jobs/detail?id=job-1", undefined, expect.any(AbortSignal));
     expect(container.querySelector(".job-chat-bar")).not.toBeNull();
+    expect(container.querySelector(".jobs-pill-anchor")).toBeNull();
     expect(container.querySelector('textarea[aria-label="发送给子代理的消息"]')).not.toBeNull();
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>(".job-chat-back")!.click());
+    expect(container.querySelector(".jobs-pill")?.textContent).toBe("2 项后台任务");
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).not.toBeNull();
     expect(container.querySelector('.contact-item[data-working="true"]')).not.toBeNull();
   });

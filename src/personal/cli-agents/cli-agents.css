@@ -151,7 +151,6 @@
 .cli-app .cli-request-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .cli-app .cli-request-detail > summary { cursor: pointer; font-size: 11.5px; color: var(--muted-foreground); }
 .cli-app .cli-request-detail > pre { margin: 6px 0 0; max-height: 200px; overflow: auto; padding: 7px 9px; border-radius: 8px; font-size: 11px; background: var(--secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
-.cli-app .cli-request-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; font-size: 12px; border-radius: 9px; }
 .cli-app .cli-ask { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .cli-app .cli-ask legend { display: grid; gap: 2px; padding: 0 0 4px; font-size: 12.5px; }
 .cli-app .cli-ask legend small { color: var(--muted-foreground); font-size: 11px; }

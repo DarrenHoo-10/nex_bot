@@ -44,27 +44,14 @@ struct ApprovalCard: View {
                 .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             HStack(spacing: 8) {
-                Button { decide(true) } label: {
-                    Text("允许一次").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.primaryForeground)
-                        .padding(.horizontal, 14).frame(height: 28)
-                        .background(Theme.primary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
+                Button("允许一次") { decide(true) }.buttonStyle(ConversationActionButtonStyle())
                 if approval.rememberLabel != nil {
-                    Button { decide(true, remember: true) } label: {
-                        Text("始终允许").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.foreground)
-                            .padding(.horizontal, 12).frame(height: 28)
-                            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    }
+                    Button("始终允许") { decide(true, remember: true) }.buttonStyle(ConversationActionButtonStyle())
                 }
-                Button { decide(false) } label: {
-                    Text("拒绝").font(.system(size: 11)).foregroundStyle(Theme.foreground)
-                        .padding(.horizontal, 12).frame(height: 28)
-                        .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-                if busy { ProgressView().controlSize(.small) }
+                Button("拒绝") { decide(false) }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
             }
-            .buttonStyle(.plain)
             .disabled(busy)
+            if busy { ProgressView().controlSize(.small) }
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
         }
         .padding(14)
@@ -79,7 +66,7 @@ struct ApprovalCard: View {
         busy = true; error = nil
         Task {
             do { try await workspace.decide(approval, allow: allow, remember: remember) }
-            catch { self.error = message(of: error) }
+            catch { self.error = CoreError.wrap(error).message }
             busy = false
         }
     }

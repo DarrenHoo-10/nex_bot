@@ -532,12 +532,12 @@ private struct AgentRequestCard: View {
             if open {
                 HStack {
                     Spacer()
-                    Button(busy == .deny ? "正在拒绝…" : "拒绝") { submit(.deny) }.buttonStyle(.bordered)
+                    Button(busy == .deny ? "正在拒绝…" : "拒绝") { submit(.deny) }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
                     if request.offersAlways {
-                        Button(busyAlways ? "正在允许…" : "本会话总是允许") { submit(.allow, always: true) }.buttonStyle(.bordered)
+                        Button(busyAlways ? "正在允许…" : "本会话总是允许") { submit(.allow, always: true) }.buttonStyle(ConversationActionButtonStyle())
                     }
                     Button(busy == .allow && !busyAlways ? (request.kind == .question ? "正在提交…" : "正在允许…") : (request.kind == .question ? "提交" : "允许")) { submit(.allow) }
-                        .buttonStyle(.borderedProminent).tint(Theme.identityAccent)
+                        .buttonStyle(ConversationActionButtonStyle())
                         .disabled(request.kind == .question && !CliRequestStore.answersComplete(request.questions, selection))
                 }
                 .disabled(busy != nil)

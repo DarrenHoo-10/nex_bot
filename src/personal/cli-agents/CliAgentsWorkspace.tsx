@@ -7,6 +7,7 @@ import { WorkbenchProvider, useReview } from "./WorkbenchReview";
 import "./workbench.css";
 import type { CliAnswerDecision, CliDeviceView, CliRequestView, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { desktop } from "../api";
+import { BrandMark } from "../components/BrandMark";
 import { answerRequest, cliErrorText, fetchSnapshot, hideSession } from "./api";
 import { ForkDialog, type CliBotChoice } from "./ForkDialog";
 import { NewSessionComposer } from "./NewSessionComposer";
@@ -236,6 +237,10 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     if (moved?.target) select(moved.target);
   }, [launcher.done, selectedKey, select]);
   const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side" && (review || (listMeta.get(s.key)?.kind!=="side" && !s.sideOf))) ?? null;
+  const openComposer = () => {
+    if (!sidebarList && creating) setMobileView("pane");
+    else create({ deviceId: selected?.deviceId, cwd: selected?.cwd });
+  };
   const sideHost = useMemo(() => review ? undefined : { meta: listMeta, refresh: () => { setReloadToken(token => token + 1); void reload(); } }, [review, listMeta, reload]);
   const sideChats=useSideChats(selectedKey,sessions,sideHost);
   /** Side chats start a new session on the session's computer, so it must run there (the preview fixture only has Claude). */
@@ -309,22 +314,23 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
         onSelect={select}
         reloadSessions={reload}
         onNew={(deviceId, cwd) => create({ deviceId, cwd })}
-        onCreate={() => create({ deviceId: selected?.deviceId, cwd: selected?.cwd })}
+        onCreate={openComposer}
       />
     </>
   );
   // the list is rendered in exactly one place: the app sidebar on wide screens, its own column otherwise
   const slotted = typeof sidebar === "function" && sidebarList;
-  const sidebarNode = typeof sidebar === "function" ? sidebar({ list: slotted ? list : null, onCreate: () => create({ deviceId: selected?.deviceId, cwd: selected?.cwd }) }) : sidebar;
+  const sidebarNode = typeof sidebar === "function" ? sidebar({ list: slotted ? list : null, onCreate: openComposer }) : sidebar;
   const linkText = status === "connecting" ? "正在连接" : status === "reconnecting" ? "正在重新连接" : status === "closed" ? "连接已断开" : "";
+  const showDirectoryHeader = !sidebarList && mobileView === "list";
   return (
     <div className="workspace-stage na-stage" data-shell={desktop?.mode === "client" ? "1" : "0"} data-dark={dark ? "1" : "0"}>
       <div className="app rk-workspace cli-app" data-dark={dark ? "1" : "0"} data-theme="studio" data-left={collapsed ? "closed" : "open"} data-right="closed" data-page="cli" data-mobile={mobileView} style={{"--na-width":railWidth+"px"} as import("react").CSSProperties} data-list={slotted ? "sidebar" : undefined}>
         {sidebarNode}
         {!collapsed&&slotted?<div className="na-resize" role="separator" aria-label="调整会话栏宽度" aria-orientation="vertical" aria-valuenow={railWidth} tabIndex={0} onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);e.preventDefault()}} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))resize(e.clientX)}} onKeyDown={e=>{if(e.key==="ArrowRight"||e.key==="ArrowLeft"){e.preventDefault();resize(railWidth+(e.key==="ArrowRight"?12:-12))}}}/>:null}
         <main className="cli-main">
-          {(!sidebarList || linkText || waiting > 0) && <header className="na-workspace-status">
-            {!sidebarList && <button type="button" className="bt-round mobile-menu" aria-label="打开导航" onClick={onNavigation}><PanelLeftOpen size={19}/></button>}
+          {(showDirectoryHeader || linkText || waiting > 0) && <header className="na-workspace-status">
+            {showDirectoryHeader && <button type="button" className="na-directory-brand" aria-label="NexAgent，打开应用导航" onClick={onNavigation}><BrandMark agent size={23}/><strong>NexAgent</strong></button>}
             {linkText && <span className="cli-link-state" role="status">{linkText}</span>}
             {waiting > 0 && <span className="cli-chip" data-tone="waiting" data-testid="cli-waiting">等你处理 {waiting}</span>}
           </header>}
@@ -335,7 +341,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
             </div>
           ) : null}
           <div className="cli-body" data-side={sideChats.selected?"open":undefined}>
-            {slotted ? null : <aside className="cli-side glass" aria-busy={!loaded}>{list}</aside>}
+            {slotted ? null : <aside className="cli-side glass" aria-label="会话目录" aria-busy={!loaded}>{list}</aside>}
             <div className="cli-content glass">
               {creating ? (
                 <NewSessionComposer
@@ -345,7 +351,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                   initialCwd={creating.cwd}
                   recents={recentFor}
                   source={dirSource}
-                  onBack={() => { setCreating(null); setMobileView("list"); }}
+                  onShowDirectory={() => setMobileView("list")}
                   onLaunch={(request) => select(launcher.launch(request).key)}
                 />
               ) : launching ? (

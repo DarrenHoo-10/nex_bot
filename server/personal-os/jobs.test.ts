@@ -656,6 +656,38 @@ describe('Background jobs: review fixes', () => {
     expect(view(app, job.jobId).stage).toBe('stopped');
   }, 60_000);
 
+  it('shows a business error for upstream 500s in new and saved job rounds', async () => {
+    const f = await fixture({ provider: 'anthropic' }), { app, bot, model } = f;
+    const upstreamDetail = 'write tcp 192.0.2.10:1234: use of closed network connection';
+    await model.lane('连接异常验证', { kind: 'anthropic-error', status: 500, message: upstreamDetail });
+    const job = app.jobs.start({ botId: bot, title: '连接异常验证', prompt: '执行任务', sourceKey: 'provider-500' });
+    await wait(() => reportMessages(app, job.jobId).length === 1 && idle(app), () => app);
+
+    const businessError = '模型连接异常';
+    expect(task(app, job.taskId).result_summary).toBe(businessError);
+    expect(reportMessages(app, job.jobId)[0].content).toBe(`后台任务「连接异常验证」\n${businessError}`);
+    expect(app.store.get('SELECT status FROM model_invocations')?.status).toBe('failed');
+
+    const oldDetail = '500 ' + JSON.stringify({ type: 'error', error: { type: 'api_error', message: upstreamDetail } });
+    app.store.run('UPDATE tasks SET result_summary=? WHERE id=?', oldDetail, job.taskId);
+    app.store.run('UPDATE agent_job_reports SET summary=? WHERE task_id=?', oldDetail, job.taskId);
+    app.store.run("UPDATE transcript SET content=? WHERE task_id=? AND role='system'", oldDetail, job.taskId);
+    app.store.message(String(task(app, job.taskId).conversation_id), job.taskId, 'assistant', oldDetail, 'answer:synthetic-quoted-error');
+
+    const response = await f.request(`jobs/detail?id=${job.jobId}`);
+    expect(response.status).toBe(200);
+    const detail = await response.json();
+    expect(detail).toMatchObject({
+      job: { stage: 'failed', latestReport: { summary: businessError } },
+      task: { status: 'failed', result_summary: businessError },
+      reports: [{ summary: businessError }],
+      messages: expect.arrayContaining([
+        expect.objectContaining({ role: 'system', content: businessError }),
+        expect.objectContaining({ role: 'assistant', content: oldDetail }),
+      ]),
+    });
+  }, 60_000);
+
   it('publishes a job round\'s generated image with its report and binds the attachment to it', async () => {
     const f = await fixture(), { app, bot } = f;
     app.runtime.authorizeTask = async () => false;

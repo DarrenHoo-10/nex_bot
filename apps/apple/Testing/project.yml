@@ -38,13 +38,15 @@ targetTemplates:
       - path: ../Shared/MarkdownText.swift
       - path: ../Shared/RoutineOccurrenceDetailView.swift
       - path: ../Shared/JobViews.swift
+      - path: ../Shared/ConversationActionButtonStyle.swift
       - path: ../Shared/WorkspaceSurface.swift
       - path: ../Shared/AgentSessionsView.swift
       - path: ../Shared/AgentSessionDetail.swift
       - path: ../Shared/AgentImages.swift
-      - path: ../Shared/ComposerContextControl.swift
+      - path: ../Shared/FinanceTopicsView.swift
       - path: ../Shared/AgentSessionSheets.swift
       - path: ../Shared/AgentNewSession.swift
+      - path: ../Shared/ComposerContextControl.swift
       - path: ../Shared/AgentNotifier.swift
       - path: ../Shared/CliTerminalView.swift
       - path: ../Shared/Assets.xcassets
@@ -75,9 +77,17 @@ targets:
   RenderMac:
     templates: [host]
     platform: macOS
+    sources:
+      - path: ../NexBotMac/ApprovalCard.swift
+      - path: ../NexBotMac/ChatModelMenu.swift
+      - path: ../NexBotMac/ModelPicker.swift
   RenderiOS:
     templates: [host]
     platform: iOS
+    sources:
+      - path: ../NexBotiOS/ApprovalCard.swift
+      - path: ../NexBotiOS/ChatModelSheet.swift
+      - path: ../NexBotiOS/Support.swift
     settings:
       base:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES

@@ -53,6 +53,7 @@ struct AgentNewSessionPage: View {
     @State private var imageError = ""
     #if os(iOS)
     @State private var showingModels = false
+    @Environment(\.dismiss) private var dismiss
     #endif
     @State private var catalog = CliModelCatalog()
     @State private var browsing = false
@@ -94,6 +95,13 @@ struct AgentNewSessionPage: View {
         #if os(iOS)
         .navigationTitle("新建会话")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden()
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { dismiss() } label: { Image(systemName: "sidebar.left") }
+                    .accessibilityLabel("打开会话目录")
+            }
+        }
         #endif
         .onAppear(perform: setUp)
         .onChange(of: deviceId) { _, _ in if !engines.contains(engine), let first = engines.first { engine = first } }

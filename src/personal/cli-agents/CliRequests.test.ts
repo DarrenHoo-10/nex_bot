@@ -106,6 +106,8 @@ describe("request cards in the workspace", () => {
     expect(card.textContent).toContain("Bash");
     expect(card.textContent).toContain("rm -rf build");
     expect(card.getAttribute("data-state")).toBe("pending");
+    expect([...card.querySelectorAll(".conversation-action")].map((button) => [button.textContent, button.getAttribute("data-tone")]))
+      .toEqual([["拒绝", "dark"], ["允许", "light"]]);
     expect(container.querySelector(".cli-row .cli-count")?.textContent).toBe("1");
     expect(container.querySelector(".cli-row .cli-chip")?.textContent).toBe("等你处理");
     expect(container.querySelector("[data-testid=cli-waiting]")?.textContent).toBe("等你处理 1");

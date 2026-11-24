@@ -85,12 +85,12 @@ async function pickEffort(label: string) {
   await click(button ?? null);
 }
 
-async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[]; workbench?: unknown[] }, selected?: string) {
+async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[]; workbench?: unknown[] }, selected?: string, navigation?: { sidebarList: boolean; onNavigation: () => void }) {
   fixture.fetchSnapshot.mockResolvedValue(rows);
   fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ ...rows, workbench: rows.workbench ?? [], queues: [] });
   if (selected) localStorage.setItem("nexbot.cliSelected", selected);
   await act(async () => {
-    root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div", { "data-testid": "sidebar" }), dark: false, collapsed: false, onNavigation: () => {}, stream }));
+    root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div", { "data-testid": "sidebar" }), dark: false, collapsed: false, onNavigation: () => {}, stream, ...navigation }));
   });
   await flush();
 }
@@ -124,6 +124,36 @@ afterEach(async () => {
 });
 
 describe("session list", () => {
+  it("opens the mobile directory from the new-session title without a separate navigation row or losing the draft", async () => {
+    const onNavigation = vi.fn();
+    await mount({ devices: [device()], sessions: [session({ state: "idle" })] }, undefined, { sidebarList: false, onNavigation });
+    await act(async () => socket.open());
+    const app = container.querySelector(".cli-app")!;
+    const brand = () => container.querySelector(".na-workspace-status button");
+    expect(brand()?.textContent).toBe("NexAgent");
+    await click(brand());
+    expect(onNavigation).toHaveBeenCalledTimes(1);
+
+    await click(button("新建会话"));
+    expect(app.getAttribute("data-mobile")).toBe("pane");
+    expect(container.querySelector(".na-workspace-status")).toBeNull();
+    const header = container.querySelector("[data-testid=cli-new-session] .cli-pane-head")!;
+    const draft = container.querySelector<HTMLTextAreaElement>("[data-testid=cli-new-session] textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(draft, "保留新会话草稿");
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(header.querySelector('button[aria-label="打开会话目录"]'));
+    expect(app.getAttribute("data-mobile")).toBe("list");
+    expect(brand()?.textContent).toBe("NexAgent");
+    expect(onNavigation).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".cli-side .na-new-session")?.textContent).toBe("新建会话");
+    await click(button("新建会话"));
+    expect(app.getAttribute("data-mobile")).toBe("pane");
+    expect(container.querySelector("[data-testid=cli-new-session] textarea")).toBe(draft);
+    expect(draft.value).toBe("保留新会话草稿");
+  });
+
   it("folds the pinned 进行中 section to its heading and remembers it", async () => {
     await mount({ devices: [device()], sessions: [session({ nativeId: "r1", title: "在跑", state: "running" }), session({ nativeId: "w1", title: "等我", state: "waiting" })] });
     const head = () => container.querySelector<HTMLButtonElement>(".na-active .na-section-head")!;

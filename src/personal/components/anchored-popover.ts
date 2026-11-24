@@ -4,7 +4,7 @@ import { useLayoutEffect, useRef, type RefObject } from "react";
  * Shows `panel` (a `popover="manual"` element) next to its anchor while `open`: below it when there is room,
  * otherwise above, kept inside the window. A pointer down outside `inside()` and the panel calls `close`.
  */
-export function useAnchoredPopover(open: boolean, panel: RefObject<HTMLElement | null>, anchor: () => HTMLElement | null | undefined, inside: () => readonly (Node | null | undefined)[], close: () => void, width = 320, align: "start" | "end" = "start"): void {
+export function useAnchoredPopover(open: boolean, panel: RefObject<HTMLElement | null>, anchor: () => HTMLElement | null | undefined, inside: () => readonly (Node | null | undefined)[], close: () => void, width: number | "content" = 320, align: "start" | "end" = "start"): void {
   const latest = useRef({ anchor, inside, close });
   latest.current = { anchor, inside, close };
   useLayoutEffect(() => {
@@ -12,7 +12,7 @@ export function useAnchoredPopover(open: boolean, panel: RefObject<HTMLElement |
     el.showPopover();
     const position = () => {
       const box = latest.current.anchor()?.getBoundingClientRect(); if (!box) return;
-      el.style.width = `${Math.min(width, innerWidth - 24)}px`;
+      if (width !== "content") el.style.width = `${Math.min(width, innerWidth - 24)}px`;
       const below = innerHeight - box.bottom - 12, above = box.top - 12, down = below >= Math.min(el.scrollHeight, 420) || below >= above;
       el.style.maxHeight = `${Math.max(120, down ? below : above)}px`;
       const left = align === "end" ? box.right - el.offsetWidth : box.left;
