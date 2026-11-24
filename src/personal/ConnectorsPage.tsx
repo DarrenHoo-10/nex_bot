@@ -1,10 +1,10 @@
 import { userErrorText } from "../lib/http-errors";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, MoreHorizontal, Plug, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { api, type ConnectorView, type State } from "./api";
 import type { ConnectorMonitorView, MonitorCiMode } from "../../shared/personal-connectors";
-import { FeishuCard, FeishuStatus } from "./FeishuCard";
-import { FeishuAppDetail } from "./FeishuAppDetail";
+import { FeishuCard, FeishuLogo, FeishuStatus } from "./FeishuCard";
+import { FeishuAppDetail, type FeishuGroupCache } from "./FeishuAppDetail";
 import { GmailConnect } from "./GmailConnect";
 import { GithubConnect } from "./GithubConnect";
 import gmailIcon from "./assets/gmail.png";
@@ -37,7 +37,8 @@ const ready = (item: ConnectorView) => item.enabled && !!item.checkedAt && !item
 const connectionStatus = (item: ConnectorView) => !item.enabled ? "已停用" : item.provider === "gmail" && !item.hasToken ? "需要重新授权" : item.provider === "github" && !item.hasToken ? "需要重新授权" : item.error ? "连接异常" : item.checkedAt ? item.provider === "mcp" ? "连接测试通过" : "已连接" : "等待测试";
 const ConnectorIcon = ({ gmail = false, github = false }: { gmail?: boolean; github?: boolean }) => <span className={`connector-icon ${gmail ? "is-gmail" : github ? "is-github" : ""}`} aria-hidden="true">{gmail ? <img src={gmailIcon} alt="" width="48" height="48"/> : github ? <img src={githubMark} alt="" width="48" height="48"/> : <Plug size={24}/>}</span>;
 
-export function ConnectorsPage({ state, financeBotId, refresh }: { state: State; financeBotId?: string; refresh(): Promise<void> }) {
+export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Promise<void> }) {
+  const groupsCache = useMemo<FeishuGroupCache>(() => new Map(), [state.sync.coreId, state.sync.bootId, state.sync.privacyEpoch]);
   const [view, setView] = useState<"catalog" | "gmail" | "github" | "mcp" | "feishu">(() => typeof location !== "undefined" && new URLSearchParams(location.search).get("settings") === "feishu" ? "feishu" : "catalog");
   const [feishuAppId, setFeishuAppId] = useState("");
   const [editing, setEditing] = useState<ConnectorView | "new" | null>(null);
@@ -93,8 +94,8 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   // Gmail 与 GitHub 各自成组；其余全部是通用 MCP 连接器。
   const accounts = (state.connectors ?? []).filter((item) => item.provider === "gmail");
   const githubAccounts = (state.connectors ?? []).filter((item) => item.provider === "github");
-  const connections = (state.connectors ?? []).filter((item) => item.provider === "mcp");
   const feishuApps = state.feishu?.apps ?? [];
+  const connections = (state.connectors ?? []).filter((item) => item.provider === "mcp" && item.kind !== "feishu" && !feishuApps.some((app) => app.id === item.id));
   const feishuApp = feishuApps.find((app) => app.id === feishuAppId);
   const feishuIssues = feishuApps.filter((app) => app.status === "error" || app.status === "busy").length;
   const showFeishu = `飞书 feishu lark ${feishuApps.map((app) => `${app.name ?? ""} ${app.appId}`).join(" ")}`.toLowerCase().includes(search.trim().toLowerCase());
@@ -168,13 +169,13 @@ export function ConnectorsPage({ state, financeBotId, refresh }: { state: State;
   return <div className="connectors-page" ref={page}>
     {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation">{view === "feishu" && feishuApp ? <button className="connector-back" onClick={() => setFeishuAppId("")}><ChevronLeft size={20}/>飞书</button> : <button className="connector-back" onClick={() => { setView("catalog"); setFeishuAppId(""); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button>}</div>}
     {error && <div className="connector-feedback is-error" role="alert">{error}</div>}{notice && <div className="connector-feedback" role="status"><Check size={16}/>{notice}</div>}
-    {view === "feishu" && (feishuApp ? <FeishuAppDetail key={feishuApp.id} app={feishuApp} refresh={refresh}/> : <FeishuCard state={state} financeBotId={financeBotId} refresh={refresh} onOpenApp={setFeishuAppId}/>)}
+    {view === "feishu" && (feishuApp ? <FeishuAppDetail key={feishuApp.id} app={feishuApp} bots={state.bots} cache={groupsCache} refresh={refresh}/> : <FeishuCard state={state} refresh={refresh} onOpenApp={setFeishuAppId}/>)}
     {view === "catalog" && <section className="connector-catalog" aria-label="连接器列表">
       <label className="connector-search"><Search size={16}/><input aria-label="搜索连接器" placeholder="搜索连接器" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
       <div className="connector-catalog-rows">
         {showGmail && <div className="connector-catalog-item"><button className="connector-catalog-row" data-connector="gmail" onClick={() => openDetail("gmail")}><ConnectorIcon gmail/><span className="connector-catalog-copy"><strong>Gmail</strong><span>搜索、读取邮件与会话。</span></span>{(accounts.length > 0 || !gmailAvailable) && <span className={`connector-catalog-state ${accounts.length ? "is-added" : ""}`}>{accounts.length ? <><Check size={17}/>已添加</> : "暂不可用"}</span>}</button>{!accounts.length && gmailAvailable && <GmailConnect available={!busy} label="连接" variant="subtle" connected={connected}/>}</div>}
         {showGithub && <div className="connector-catalog-item"><button className="connector-catalog-row" data-connector="github" onClick={() => openDetail("github")}><ConnectorIcon github/><span className="connector-catalog-copy"><strong>GitHub</strong><span>仓库、PR、CI 与 issue。</span></span>{githubAccounts.length > 0 && <span className="connector-catalog-state is-added"><Check size={17}/>已添加</span>}</button>{!githubAccounts.length && <GithubConnect available={githubAvailable && !busy} label="连接" variant="subtle" connected={githubConnected}/>}</div>}
-        {showFeishu && <button className="connector-catalog-row" data-connector="feishu" onClick={() => openDetail("feishu")}><span className="connector-icon feishu-icon" aria-hidden="true">飞</span><span className="connector-catalog-copy"><strong>飞书</strong><span>{feishuApps.length ? `${feishuApps.length} 个应用 · ${[...new Set(feishuApps.map((app) => app.botName))].join("、")}` : "接收和回复飞书消息"}</span></span>{feishuApps.length > 0 && (feishuIssues ? <span className="connector-catalog-state is-error">{feishuIssues} 个异常</span> : feishuApps.some((app) => app.status === "connected") ? <span className="connector-catalog-state is-added"><Check size={17}/>已连接</span> : <span className="connector-catalog-state"><FeishuStatus status={feishuApps[0].status}/></span>)}</button>}
+        {showFeishu && <button className="connector-catalog-row" data-connector="feishu" onClick={() => openDetail("feishu")}><FeishuLogo/><span className="connector-catalog-copy"><strong>飞书</strong><span>{feishuApps.length ? `${feishuApps.length} 个应用 · ${[...new Set(feishuApps.map((app) => app.botName))].join("、")}` : "接收和回复飞书消息"}</span></span>{feishuApps.length > 0 && (feishuIssues ? <span className="connector-catalog-state is-error">{feishuIssues} 个异常</span> : feishuApps.some((app) => app.status === "connected") ? <span className="connector-catalog-state is-added"><Check size={17}/>已连接</span> : <span className="connector-catalog-state"><FeishuStatus status={feishuApps[0].status}/></span>)}</button>}
         {otherConnections.map((item) => <button className="connector-catalog-row" data-connector={item.id} key={item.id} onClick={() => openDetail("mcp", item.id)}><ConnectorIcon/><span className="connector-catalog-copy"><strong>{item.name}</strong><span>MCP 连接器</span></span><span className={`connector-catalog-state ${ready(item) ? "is-added" : ""}`}>{ready(item) && <Check size={17}/>}<span>{connectionStatus(item)}</span></span></button>)}
         {!showGmail && !showGithub && !showFeishu && !otherConnections.length && <p className="connector-no-results">没有匹配的连接器</p>}
       </div>

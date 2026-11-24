@@ -48,6 +48,8 @@ export function ensureFeishuDeliverySchema(store: CoreStore) {
     if (store.get("SELECT name FROM sqlite_master WHERE type='table' AND name='personal_feishu_apps'")) {
       add("personal_feishu_apps", "bot_name", "TEXT");
       add("personal_feishu_apps", "bot_avatar", "TEXT");
+      add("personal_feishu_apps", "profile_revision", "INTEGER NOT NULL DEFAULT 0");
+      add("personal_feishu_apps", "profile_status", "TEXT");
     }
     // Per-group reply mode and owner-written context. kind/name/members mirror Feishu's chat info.
     store.db.exec(`CREATE TABLE IF NOT EXISTS feishu_group_settings(app_id TEXT NOT NULL,chat_id TEXT NOT NULL,
@@ -57,6 +59,7 @@ export function ensureFeishuDeliverySchema(store: CoreStore) {
       context TEXT NOT NULL DEFAULT '',conversation_id TEXT,in_group INTEGER NOT NULL DEFAULT 1,
       version INTEGER NOT NULL DEFAULT 1,refreshed_at INTEGER,updated_at INTEGER NOT NULL,
       PRIMARY KEY(app_id,chat_id)) STRICT;`);
+    add("feishu_group_settings", "avatar_url", "TEXT");
     // Legacy attempted POSTs have no trustworthy start time. Never infer it from queue creation.
     store.run("UPDATE feishu_delivery_parts SET state='needs_reconciliation',error='legacy_unknown_post_time' WHERE post_tracking_version=0 AND attempts>0 AND operation='send' AND state IN ('pending','sending')");
     store.run("UPDATE feishu_delivery_parts SET post_tracking_version=1 WHERE post_tracking_version=0 AND (attempts=0 OR operation='patch')");

@@ -32,13 +32,12 @@ struct SettingsFeishuCard: View {
             if manual { FeishuManualSheet(workspace: workspace, botID: botID, close: { manual = false }) }
         }
         .task(id: feishu?.needsPolling == true) { await poll() }
-        .onChange(of: apps.count) { old, new in if new > old { adding = false } }
+        .onChange(of: apps.count) { old, new in if new > old { adding = false; selectedBotID = "" } }
     }
 
     @ViewBuilder private var list: some View {
         HStack(alignment: .center, spacing: 12) {
-            Text("飞").font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
-                .frame(width: 38, height: 38).background(Color(hex: 0x3370FF), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            FeishuLogo(size: 38)
             VStack(alignment: .leading, spacing: 4) {
                 Text("飞书").font(.system(size: 16, weight: .bold))
                 Text(apps.isEmpty ? (job?.isRunning == true ? "等待扫码" : "未连接") : "\(apps.count) 个应用").font(.system(size: 11)).foregroundStyle(Theme.muted)
@@ -73,6 +72,7 @@ struct SettingsFeishuCard: View {
                                 if app.brand == "lark" { Text("Lark").font(.system(size: 10)).foregroundStyle(Theme.muted).padding(.horizontal, 6).padding(.vertical, 1).background(Theme.secondary, in: Capsule()) }
                             }
                             Text("\(app.appID) · 接收助手 \(app.botName) · \(app.groupCount) 个群").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                            if let status = app.profileStatusLabel { Text(status).font(.system(size: 11)).foregroundStyle(Theme.muted) }
                             if app.status == "error", let appError = app.error { Text(appError).font(.system(size: 11)).foregroundStyle(Theme.danger) }
                         }
                         Spacer(minLength: 8)
@@ -113,14 +113,8 @@ struct SettingsFeishuCard: View {
                     .foregroundStyle(Theme.muted).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            HStack(spacing: 14) {
-                FeishuAvatar(app: app, size: 56)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(app.displayName).font(.system(size: 18, weight: .bold))
-                    Text("\(app.appID) · \(app.brand == "lark" ? "Lark" : "飞书") · 接收助手 \(app.botName)").font(.system(size: 11)).foregroundStyle(Theme.muted).textSelection(.enabled)
-                }
-                Spacer()
-                Text(app.statusLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(app.statusTint)
+            FeishuAppOverview(workspace: workspace, app: app, busy: busy) { botID in
+                perform { try await workspace.changeFeishuReceiver(appID: app.id, botID: botID) }
             }
             if app.status == "error" { MBBanner(text: app.error ?? "连接异常", isError: true) }
             else if app.status == "busy" { MBBanner(text: "另一个程序正在使用这个应用的长连接", isError: true) }
@@ -150,13 +144,13 @@ struct SettingsFeishuCard: View {
         } else {
             VStack(alignment: .leading, spacing: 12) {
                 if let job, job.stage == "error", let jobError = job.error { MBBanner(text: jobError, isError: true) }
-                MBSelect(label: "接收助手", selection: Binding(get: { botID }, set: { selectedBotID = $0 }), options: workspace.bots.map { ($0.id, $0.name) })
+                MBSelect(label: "接收助手", selection: Binding(get: { botID }, set: { selectedBotID = $0 }), options: [("", "请选择助手")] + workspace.bots.map { ($0.id, $0.name) })
                 HStack(spacing: 8) {
-                    MBButton(title: "扫码连接飞书", kind: .primary, busy: busy, enabled: !botID.isEmpty) {
+                    MBButton(title: "扫码创建应用", kind: .primary, busy: busy, enabled: !botID.isEmpty) {
                         perform { try await workspace.startFeishuRegister(botID: botID) }
                     }
-                    MBButton(title: "使用已有应用", enabled: !busy) { error = nil; notice = nil; manual = true }
-                    if !apps.isEmpty { MBButton(title: "取消", enabled: !busy) { adding = false } }
+                    MBButton(title: "使用已有应用", enabled: !busy && !botID.isEmpty) { error = nil; notice = nil; manual = true }
+                    if !apps.isEmpty { MBButton(title: "取消", enabled: !busy) { adding = false; selectedBotID = "" } }
                 }
             }
         }

@@ -6,6 +6,13 @@ export type GraphicAvatarId = typeof graphicAvatarIds[number];
 export const qAvatarIds = ['blue-maid','orange-flower','white-dragon','purple-cat','gold-bat'] as const;
 export type QAvatarId = typeof qAvatarIds[number];
 export type Appearance = { kind: "companion"; shape: typeof companionShapes[number]; color: typeof companionColors[number] } | { kind: "portrait"; id: typeof portraitIds[number] } | { kind: "graphic"; id: GraphicAvatarId } | {kind:'q';id:QAvatarId};
+export function defaultAppearance(botId = "", firstId = ""): Appearance {
+  if (!botId || botId === firstId) return { kind: "graphic", id: "secretary-01" };
+  let seed = 0;
+  for (const ch of botId) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+  return { kind: "companion", shape: companionShapes[seed % 4], color: companionColors[Math.floor(seed / 4) % 5] };
+}
+
 export function parseAppearance(value: unknown): Appearance {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("头像配置无效");
   const data = value as Record<string, unknown>;

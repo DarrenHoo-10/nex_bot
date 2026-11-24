@@ -31,6 +31,8 @@ targets:
     sources:
       - NexBotMac
       - Shared
+      - path: ../../public/feishu-logo.png
+        buildPhase: resources
       - path: ../../public/companions
         type: folder
         buildPhase: resources
@@ -76,6 +78,8 @@ targets:
     sources:
       - NexBotiOS
       - Shared
+      - path: ../../public/feishu-logo.png
+        buildPhase: resources
       - path: ../../public/companions
         type: folder
         buildPhase: resources

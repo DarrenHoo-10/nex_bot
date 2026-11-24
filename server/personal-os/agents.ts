@@ -15,6 +15,7 @@ export type PublishedMessage = { botId: string; messageId: string; conversationI
 const visibleInbox = "(SELECT m.*,m.rowid AS rowid FROM agent_messages m WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=m.conversation_id AND c.status='deleted'))";
 export class AgentModule {
   beforeTopicInput?: (botId:string,conversationId:string)=>void;
+  onProfileChanged?: (botId: string) => void;
   onPublished?: (botId: string, event: PublishedMessage) => void;
   /** Background jobs; set by the app once the job module exists. */
   jobs?: JobModule;
@@ -67,8 +68,10 @@ export class AgentModule {
     if (expertise !== undefined && (!Array.isArray(expertise) || expertise.length > 20 || expertise.some((item) => typeof item !== "string" || !item.trim() || item.length > 80))) throw new Error("专长标签无效");
     this.store.transaction(() => {
       this.ensure(botId);
+      const previousName = this.store.get("SELECT name FROM bots WHERE id=?", botId)?.name;
       if (!Number.isSafeInteger(version) || version < 1 || this.store.run("UPDATE bots SET name=?,instructions=?,version=version+1 WHERE id=? AND version=? AND status='active'", name, instructions, botId, version).changes !== 1) throw new Error("Agent 已被更新，请刷新");
       if (Array.isArray(expertise)) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify([...new Set(expertise.map((item: string) => item.trim()))]), botId);
+      if (previousName !== name) this.onProfileChanged?.(botId);
       this.store.audit("agent.profile.update", "bot", botId, { version: version + 1 });
     });
     // Identity metadata does not change permissions, task IDs or inbox history.
@@ -93,10 +96,11 @@ export class AgentModule {
     this.store.transaction(() => {
       this.ensure(botId);
       if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active'", botId)) throw new Error("Agent 已归档");
-      const current = this.store.get("SELECT version FROM bot_appearance WHERE bot_id=?", botId);
+      const current = this.store.get("SELECT appearance_json,version FROM bot_appearance WHERE bot_id=?", botId);
       if (!Number.isSafeInteger(version) || version < 0 || Number(current?.version ?? 0) !== version) throw new Error("头像已在其他设备更新，请关闭后重新打开");
       if (current) this.store.run("UPDATE bot_appearance SET appearance_json=?,version=version+1 WHERE bot_id=?", JSON.stringify(appearance), botId);
       else this.store.insert("bot_appearance", { bot_id: botId, appearance_json: JSON.stringify(appearance), version: 1 });
+      if (current?.appearance_json !== JSON.stringify(appearance)) this.onProfileChanged?.(botId);
       this.store.audit("agent.appearance.update", "bot", botId, { version: version + 1 });
     });
     this.runtime.changed();
@@ -394,6 +398,7 @@ export class AgentModule {
         const nextInstructions = args.instructions !== undefined ? optionalText(args.instructions, 8000) : String(current.instructions ?? "");
         const expertise = Array.isArray(args.expertise) ? [...new Set(args.expertise.map((item) => text(item, 80)))] : undefined;
         this.store.run("UPDATE bots SET name=?,instructions=?,version=version+1 WHERE id=?", nextName, nextInstructions, targetId);
+        if (nextName !== current.name) this.onProfileChanged?.(targetId);
         if (expertise !== undefined) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify(expertise), targetId);
         const result = { updated: true, botId: targetId, name: nextName, instructions: nextInstructions, version: Number(current.version) + 1, ...(expertise !== undefined ? { expertise } : {}) };
         this.store.audit("steward.agent.update", "tool_call", String(call.id), { byBotId: call.bot_id, botId: targetId, result });

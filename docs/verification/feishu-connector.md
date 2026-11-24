@@ -19,9 +19,11 @@ Chrome screenshots at 1280- and 390-pixel viewport widths both produced a
 246-pixel QR with 33 modules and a four-module quiet zone. Independent jsQR and
 ZXing decoders read the short link. The fixture redirected to the original
 2,328-character SDK URL. This check stops before a user approves the application.
-Web and native Apple settings prefer the workspace finance role and preserve an
-explicit receiver selection. Tenant authorization and live message delivery need
-an application owner and are outside this isolated check.
+Web and Apple settings require an explicit receiver for both QR registration and
+existing app credentials. The receiver for an already connected app can be changed
+without replacing its credentials. Existing Feishu threads retain their assistant
+and new threads use the updated receiver. Tenant authorization and live message
+delivery need an application owner and are outside this isolated check.
 
 ## What P1 covers
 

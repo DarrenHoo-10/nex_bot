@@ -7,9 +7,26 @@ import { api, type FeishuAppView, type FeishuState, type State } from "./api";
 
 export const feishuStatusText: Record<string, string> = { idle: "未连接", preparing: "正在生成二维码", qr: "等待扫码", connected: "已连接", busy: "已在其他位置连接", disabled: "已停用", error: "连接异常" };
 
-export function FeishuAvatar({ app, large = false }: { app: FeishuAppView; large?: boolean }) {
+export function FeishuLogo() {
+  return <span className="connector-icon feishu-icon" aria-hidden="true"><img src="./feishu-logo.png" alt=""/></span>;
+}
+
+export function FeishuAvatar({ app }: { app: FeishuAppView }) {
   const name = app.name || app.botName || "飞";
-  return <span className={`feishu-avatar ${large ? "is-large" : ""}`} aria-hidden="true">{[...name][0]}</span>;
+  const [failedUrl, setFailedUrl] = useState("");
+  const url = app.avatarUrl;
+  return <span className="feishu-avatar" aria-hidden="true">{url && failedUrl !== url
+    ? <img src={url} alt="" referrerPolicy="no-referrer" onError={() => setFailedUrl(url)}/> : [...name][0]}</span>;
+}
+
+const profileLabels: Record<string, string> = {
+  pending: "正在同步应用资料",
+  publication: "应用资料待在飞书发布",
+  unsupported: "此应用需在飞书修改资料",
+  error: "应用资料同步失败",
+};
+export function FeishuProfileStatus({ status }: { status?: string | null }) {
+  return status && profileLabels[status] ? <small>{profileLabels[status]}</small> : null;
 }
 
 export function FeishuStatus({ status }: { status: string }) {
@@ -34,6 +51,7 @@ function AppRow({ app, busy, open, act, userAuth }: { app: FeishuAppView; busy: 
         <FeishuAvatar app={app}/>
         <span className="feishu-app-copy"><strong>{app.name || app.botName || app.appId}{app.brand === "lark" && <span className="feishu-tag">Lark</span>}</strong>
           <small>{app.appId} · 接收助手 {app.botName} · {app.groupCount ?? 0} 个群</small>
+          <FeishuProfileStatus status={app.profileStatus}/>
           {app.status === "error" && app.error && <small className="is-error">{app.error}</small>}</span>
         <FeishuStatus status={app.status}/>
       </button>
@@ -59,7 +77,7 @@ function AppRow({ app, busy, open, act, userAuth }: { app: FeishuAppView; busy: 
 }
 
 /** 飞书：应用列表、添加应用（扫码新建或已有应用）、共享应用与投递。 */
-export function FeishuCard({ state, financeBotId, refresh, onOpenApp }: { state: Pick<State, "bots" | "feishu">; financeBotId?: string; refresh(): Promise<void>; onOpenApp?(id: string): void }) {
+export function FeishuCard({ state, refresh, onOpenApp }: { state: Pick<State, "bots" | "feishu">; refresh(): Promise<void>; onOpenApp?(id: string): void }) {
   const feishu = state.feishu ?? { apps: [] };
   const apps = feishu.apps;
   const job = feishu.job;
@@ -67,9 +85,7 @@ export function FeishuCard({ state, financeBotId, refresh, onOpenApp }: { state:
     ? window.location.origin + job.scanPath : job?.url;
   const [sharedAvailable, setSharedAvailable] = useState(false);
   const [selectedBotId, setBotId] = useState("");
-  const botId = String((state.bots.find(bot => bot.id === selectedBotId)
-    ?? state.bots.find(bot => bot.id === financeBotId)
-    ?? state.bots[0])?.id ?? "");
+  const botId = state.bots.some(bot => bot.id === selectedBotId) ? selectedBotId : "";
   const [adding, setAdding] = useState(false);
   const [manual, setManual] = useState(false);
   const [busy, setBusy] = useState("");
@@ -77,7 +93,7 @@ export function FeishuCard({ state, financeBotId, refresh, onOpenApp }: { state:
   const scanning = job?.stage === "qr" || job?.stage === "preparing";
   const showAdd = !apps.length || adding || scanning || job?.stage === "error";
   const previousCount = useRef(apps.length);
-  useEffect(() => { if (apps.length > previousCount.current) { setAdding(false); setManual(false); } previousCount.current = apps.length; }, [apps.length]);
+  useEffect(() => { if (apps.length > previousCount.current) { setAdding(false); setManual(false); setBotId(""); } previousCount.current = apps.length; }, [apps.length]);
   const action = async (key: string, operation: () => Promise<unknown>) => {
     setBusy(key); setError("");
     try { await operation(); await refresh(); }
@@ -86,6 +102,7 @@ export function FeishuCard({ state, financeBotId, refresh, onOpenApp }: { state:
   };
   const saveManual = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!botId) return;
     const values = Object.fromEntries(new FormData(event.currentTarget));
     void action("save", () => api("feishu/save", { ...values, botId }));
   };
@@ -94,12 +111,12 @@ export function FeishuCard({ state, financeBotId, refresh, onOpenApp }: { state:
     <span>用飞书「扫一扫」扫码并确认。</span><a href={job.url} target="_blank" rel="noreferrer">打开飞书授权页</a><button disabled={!!busy} onClick={() => void action("cancel", () => api("feishu/register/cancel", {}))}>取消</button>
   </div> : job?.stage === "preparing" ? <p className="muted">正在生成二维码…</p> : <>
     {job?.stage === "error" && <p className="connector-feedback is-error">{job.error}</p>}
-    <label className="field">接收助手<select value={botId} onChange={(event) => setBotId(event.target.value)}>{state.bots.map((bot) => <option key={String(bot.id)} value={String(bot.id)}>{String(bot.name)}</option>)}</select></label>
-    {manual ? <form onSubmit={saveManual}><label className="field">App ID<input name="appId" required placeholder="cli_xxx"/></label><label className="field">App Secret<input name="appSecret" type="password" required autoComplete="new-password"/></label><label className="field">品牌<select name="brand" defaultValue="feishu"><option value="feishu">飞书</option><option value="lark">Lark</option></select></label><div className="actions"><button className="primary" disabled={!!busy || !botId}>保存并连接</button><button type="button" onClick={() => setManual(false)}>返回扫码</button></div></form>
-      : <div className="actions"><button className="primary" disabled={!!busy || !botId} onClick={() => void action("register", () => api("feishu/register/start", { botId }))}>扫码连接飞书</button><button disabled={!!busy} onClick={() => setManual(true)}>使用已有应用</button>{apps.length > 0 && !scanning && <button type="button" onClick={() => { setAdding(false); setManual(false); }}>取消</button>}</div>}
+    <label className="field">接收助手<select value={botId} disabled={!!busy || manual} onChange={(event) => setBotId(event.target.value)}><option value="">请选择助手</option>{state.bots.map((bot) => <option key={String(bot.id)} value={String(bot.id)}>{String(bot.name)}</option>)}</select></label>
+    {manual ? <form onSubmit={saveManual}><label className="field">App ID<input name="appId" required placeholder="cli_xxx"/></label><label className="field">App Secret<input name="appSecret" type="password" required autoComplete="new-password"/></label><label className="field">品牌<select name="brand" defaultValue="feishu"><option value="feishu">飞书</option><option value="lark">Lark</option></select></label><div className="actions"><button className="primary" disabled={!!busy || !botId}>保存并连接</button><button type="button" onClick={() => setManual(false)}>返回</button></div></form>
+      : <div className="actions"><button className="primary" disabled={!!busy || !botId} onClick={() => void action("register", () => api("feishu/register/start", { botId }))}>扫码创建应用</button><button disabled={!!busy || !botId} onClick={() => setManual(true)}>使用已有应用</button>{apps.length > 0 && !scanning && <button type="button" onClick={() => { setAdding(false); setManual(false); setBotId(""); }}>取消</button>}</div>}
   </>;
   return <section className="connector-detail connector-profile feishu-page" aria-label="飞书">
-    <div className="connector-profile-heading"><span className="connector-icon feishu-icon" aria-hidden="true">飞</span><div><h2 className="connector-profile-title" tabIndex={-1}>飞书</h2><span>{apps.length ? `${apps.length} 个应用` : "未连接"}</span></div>
+    <div className="connector-profile-heading"><FeishuLogo/><div><h2 className="connector-profile-title" tabIndex={-1}>飞书</h2><span>{apps.length ? `${apps.length} 个应用` : "未连接"}</span></div>
       {apps.length > 0 && !showAdd && <button type="button" className="feishu-add" onClick={() => setAdding(true)}><Plus size={16}/>添加飞书应用</button>}</div>
     {error && <p className="connector-feedback is-error" role="alert">{error}</p>}
     {showAdd && !(sharedAvailable && !apps.length && !adding) && <div className="connector-surface feishu-add-form">{addForm}</div>}

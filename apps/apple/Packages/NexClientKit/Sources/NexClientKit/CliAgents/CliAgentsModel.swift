@@ -27,6 +27,7 @@ public final class CliAgentsModel {
     public private(set) var sessions: [CliSession] = []
     public private(set) var requests = CliRequestStore()
     public private(set) var transcripts: [CliSessionKey: Transcript] = [:]
+    @ObservationIgnored private var closedTranscripts: [CliSessionKey: Date] = [:]
     public private(set) var supervision: CliSupervision?
     /// New sessions being started, newest first.
     public private(set) var launches: [CliLaunch] = []
@@ -123,6 +124,8 @@ public final class CliAgentsModel {
         expiryTask?.cancel(); expiryTask = nil
         let stream = stream
         self.stream = nil
+        closedTranscripts.removeAll()
+        transcripts.removeAll()
         Task { await stream?.stop() }
         link = .idle
     }
@@ -167,6 +170,7 @@ public final class CliAgentsModel {
 
     /// The session view appeared: follow its transcript and requests.
     public func openSession(_ key: CliSessionKey) {
+        if let closed = closedTranscripts.removeValue(forKey: key), Date().timeIntervalSince(closed) >= 300 { transcripts[key] = nil }
         subscribed[key, default: 0] += 1
         if subscribed[key] == 1, let stream { Task { await stream.subscribeSession(key) } }
         if transcript(key).loaded == false { Task { await loadTranscript(key) } }
@@ -177,7 +181,15 @@ public final class CliAgentsModel {
         guard let count = subscribed[key] else { return }
         if count <= 1 {
             subscribed[key] = nil
-            transcripts[key] = nil
+            if var cached = transcripts[key], cached.loaded {
+                if cached.items.count > 200 { cached.items = Array(cached.items.suffix(200)); cached.more = true }
+                transcripts[key] = cached
+                closedTranscripts[key] = Date()
+                if closedTranscripts.count > 8, let oldest = closedTranscripts.min(by: { $0.value < $1.value })?.key {
+                    closedTranscripts.removeValue(forKey: oldest)
+                    transcripts.removeValue(forKey: oldest)
+                }
+            } else { transcripts[key] = nil }
             if let stream { Task { await stream.unsubscribeSession(key) } }
         } else { subscribed[key] = count - 1 }
     }

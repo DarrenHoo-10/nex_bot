@@ -8,6 +8,7 @@ export interface ConnectorTool {
 export interface ConnectorView {
   id: string;
   provider: "mcp" | "gmail" | "github";
+  kind?: "mcp" | "feishu";
   name: string;
   account: string | null;
   url: string;

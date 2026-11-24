@@ -98,7 +98,7 @@ final class FeishuTests: XCTestCase {
         let list = try await store.feishuGroups(appID: "f1")
         XCTAssertNil(list.error)
         XCTAssertEqual(list.groups.map(\.chatID), ["oc_1", "oc_2"])
-        XCTAssertEqual(list.groups[0].summary, "普通群 · 5 人 · 未接入")
+        XCTAssertEqual(list.groups[0].summary, "普通群 · 5 人 · 未开放")
         XCTAssertEqual(list.groups[1].summary, "话题群 · 必须 @ · 每个话题一个会话 · 已设上下文")
         XCTAssertTrue(list.groups[1].isTopicGroup)
         let saved = try await store.saveFeishuGroup(appID: "f1", group: list.groups[0], trigger: "ambient", session: "chat-topic", context: "先给结论")

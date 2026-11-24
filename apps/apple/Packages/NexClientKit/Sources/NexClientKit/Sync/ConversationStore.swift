@@ -195,6 +195,7 @@ public final class ConversationStore {
     /// Deletes one image from a sent message. Text and other attachments stay; an image-only message disappears.
     public func deleteImage(_ link: AttachmentLink, messageID: String) async throws {
         try await workspace.client.deleteMessageImage(bot: botID, messageID: messageID, attachmentID: link.id)
+        workspace.clearLocalAssets()
         await workspace.refresh()
     }
 

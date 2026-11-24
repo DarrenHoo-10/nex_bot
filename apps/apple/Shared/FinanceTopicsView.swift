@@ -84,7 +84,7 @@ struct FinanceTopicsView: View {
     @ViewBuilder private func topicCard(_ topic:FinanceTopic) -> some View {
         VStack(alignment:.leading,spacing:8) {
             HStack {
-                Button { guard !sending && pending == nil else{return};selected=topic.id;editingMessageID=nil;taskRows=[] } label: { Text(topic.title).font(.headline).multilineTextAlignment(.leading) }.buttonStyle(.plain)
+                Button { guard !sending && pending == nil else{return};selectTopic(topic.id) } label: { Text(topic.title).font(.headline).multilineTextAlignment(.leading) }.buttonStyle(.plain)
                 Spacer()
                 if topic.unread > 0 { Text("\(topic.unread) 未读").font(.caption).foregroundStyle(.tint) }
                 if topic.activeTask != nil { ProgressView().controlSize(.small) }
@@ -111,11 +111,18 @@ struct FinanceTopicsView: View {
                 }
             }
             if selected == topic.id && !streaming.isEmpty { MarkdownText(source:streaming) }
-            Button(selected == topic.id ? "正在回复此话题" : "回复话题") { selected=topic.id;editingMessageID=nil;taskRows=[] }.disabled(sending || pending != nil)
+            Button(selected == topic.id ? "正在回复此话题" : "回复话题") { selectTopic(topic.id) }.disabled(sending || pending != nil)
         }
         .padding(14).frame(maxWidth:.infinity,alignment:.leading)
         .background(.quaternary,in:RoundedRectangle(cornerRadius:14))
     }
+    private func selectTopic(_ id: String) {
+        guard selected != id else { return }
+        selected = id; editingMessageID = nil; taskRows = []; streaming = ""
+        messages = workspace.cachedTopicMessages(botID: botID, topicID: id)
+        generation += 1
+    }
+
     private func reload() async {
         guard workspace.connection == .connected else{return}
         let epoch=generation
@@ -129,11 +136,21 @@ struct FinanceTopicsView: View {
         guard let id=selected,workspace.connection == .connected else{return}
         let epoch=generation
         do {
-            let feed=try await workspace.client.topicFeed(botID:botID,conversationID:id)
-            guard epoch==generation,id==selected,workspace.connection == .connected,!Task.isCancelled else{return}
+            var history = workspace.cachedTopicMessages(botID: botID, topicID: id)
+            var feed = try await workspace.client.topicFeed(botID: botID, conversationID: id, after: history.last?.seq)
+            while true {
+                guard epoch == generation, id == selected, workspace.connection == .connected,
+                      workspace.sync?.sameGeneration(as: feed.sync) == true, !Task.isCancelled else { return }
+                let last = history.last?.seq ?? 0
+                history += feed.messages.filter { $0.seq > last }
+                guard feed.hasMore, let after = history.last?.seq, after > last else { break }
+                feed = try await workspace.client.topicFeed(botID: botID, conversationID: id, after: after)
+            }
             let tasks=try await workspace.client.topicTasks(botID:botID,conversationID:id)
-            guard epoch==generation,id==selected,workspace.connection == .connected,!Task.isCancelled else{return}
-            messages=feed.messages;taskRows=tasks;streaming=feed.streaming.map(\.text).joined(separator:"\n")
+            guard epoch==generation,id==selected,workspace.connection == .connected,
+                  workspace.sync?.sameGeneration(as: feed.sync) == true,!Task.isCancelled else{return}
+            messages=history;taskRows=tasks;streaming=feed.streaming.map(\.text).joined(separator:"\n")
+            workspace.rememberTopicMessages(history, botID: botID, topicID: id, generation: feed.sync)
             if scenePhase == .active, let seq=messages.last?.seq,seq > (readSeq[id] ?? 0) {readSeq[id]=seq;try await workspace.client.readTopic(botID:botID,conversationID:id,seq:seq)}
         } catch {if epoch==generation,id==selected {errorText=error.localizedDescription}}
     }
@@ -150,7 +167,7 @@ struct FinanceTopicsView: View {
     }
     private func loadOlder(_ id:String) async {
         guard let before=messages.first?.seq else{return}
-        do{let feed=try await workspace.client.topicFeed(botID:botID,conversationID:id,before:before);guard selected==id,workspace.connection == .connected else{return};let existing=Set(messages.map(\.id));messages=feed.messages.filter{!existing.contains($0.id)}+messages}catch{errorText=error.localizedDescription}
+        do{let feed=try await workspace.client.topicFeed(botID:botID,conversationID:id,before:before);guard selected==id,workspace.connection == .connected,workspace.sync?.sameGeneration(as: feed.sync) == true else{return};let existing=Set(messages.map(\.id));messages=feed.messages.filter{!existing.contains($0.id)}+messages;workspace.rememberTopicMessages(messages, botID: botID, topicID: id, generation: feed.sync)}catch{errorText=error.localizedDescription}
     }
     private func retry(_ id:String,taskID:String) async {
         let clientID=taskRetryIDs[taskID] ?? UUID().uuidString;taskRetryIDs[taskID]=clientID

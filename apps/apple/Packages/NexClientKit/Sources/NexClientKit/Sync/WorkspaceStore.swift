@@ -52,12 +52,53 @@ public final class WorkspaceStore {
     @ObservationIgnored private var memoryEpochs: [String: Int] = [:]
     @ObservationIgnored public var onSessionEnded: (@MainActor (SessionEnd) -> Void)?
 
+    @ObservationIgnored private var topicWindows: [String: [AgentMessage]] = [:]
+    @ObservationIgnored private var recentTopicKeys: [String] = []
+
+    public func cachedTopicMessages(botID: String, topicID: String) -> [AgentMessage] {
+        topicWindows[botID + ":" + topicID] ?? []
+    }
+
+    public func rememberTopicMessages(_ messages: [AgentMessage], botID: String, topicID: String, generation: SyncIdentity) {
+        guard sync?.sameGeneration(as: generation) == true else { return }
+        let key = botID + ":" + topicID
+        topicWindows[key] = Array(messages.suffix(250))
+        recentTopicKeys.removeAll { $0 == key }
+        recentTopicKeys.append(key)
+        if recentTopicKeys.count > 12 { topicWindows.removeValue(forKey: recentTopicKeys.removeFirst()) }
+    }
+
+    @ObservationIgnored var feishuGroupLists: [String: (expires: Date, value: FeishuGroupList)] = [:]
+
+    @ObservationIgnored private var assetEpoch = 0
+    @ObservationIgnored private var localAssets: [String: (expires: Date, data: Data, filename: String)] = [:]
+
+    func cachedAsset(_ key: String, load: () async throws -> (data: Data, filename: String)) async throws -> (data: Data, filename: String) {
+        let now = Date()
+        if let cached = localAssets[key], cached.expires > now { return (cached.data, cached.filename) }
+        let epoch = assetEpoch
+        let result = try await load()
+        guard assetEpoch == epoch else { throw CancellationError() }
+        if result.data.count <= 2 * 1024 * 1024 {
+            localAssets = localAssets.filter { $0.value.expires > now }
+            if localAssets.count >= 16, let oldest = localAssets.min(by: { $0.value.expires < $1.value.expires })?.key {
+                localAssets.removeValue(forKey: oldest)
+            }
+            localAssets[key] = (Date().addingTimeInterval(300), result.data, result.filename)
+        }
+        return result
+    }
+
+    func clearLocalAssets() {
+        assetEpoch += 1
+        localAssets.removeAll()
+        feishuGroupLists.removeAll()
+    }
+
     public var bots: [Bot] { state?.bots ?? [] }
 
     public func feishuReceiverID(selection: String) -> String {
-        if bots.contains(where: { $0.id == selection }) { return selection }
-        if let financeBotID, bots.contains(where: { $0.id == financeBotID }) { return financeBotID }
-        return bots.first?.id ?? ""
+        bots.contains(where: { $0.id == selection }) ? selection : ""
     }
     public var approvals: [Approval] { state?.approvals ?? [] }
     public func approvalRules(botID: String) -> [ApprovalRule] { state?.approvalRules.filter { $0.botID == botID } ?? [] }
@@ -288,6 +329,8 @@ public final class WorkspaceStore {
     func clearContent() {
         serial += 1
         state = nil; sync = nil; sessions = []; financeBotID = nil
+        clearLocalAssets()
+        topicWindows.removeAll(); recentTopicKeys.removeAll()
         for c in conversations.values { c.reset() }
     }
 
@@ -346,7 +389,11 @@ public final class WorkspaceStore {
             conversations[id]?.focusedMessageID = nil
         }
         memoryEpochs = nextEpochs
-        if let old = sync, !old.sameGeneration(as: next.sync) { for c in conversations.values { c.reset() } }
+        if let old = sync, !old.sameGeneration(as: next.sync) {
+            clearLocalAssets()
+            topicWindows.removeAll(); recentTopicKeys.removeAll()
+            for c in conversations.values { c.reset() }
+        }
         if let current, let conv {
             if !next.bots.contains(where: { $0.id == current }) {
                 state = next; sync = next.sync; connection = .connected

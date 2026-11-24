@@ -150,16 +150,17 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                 if (uri.scheme == "data") return null
                 val path = uri.path.orEmpty()
                 // Image previews come from Core with the native token; storage URLs never reach the page.
-                if (request.method == "GET" && "https://${uri.host}" == origin && WorkspaceTransport.isAttachmentPreview(path, uri.query)) {
+                if (request.method == "GET" && "https://${uri.host}" == origin &&
+                    (WorkspaceTransport.isAttachmentPreview(path, uri.query) || WorkspaceTransport.isGroupAvatar(path, uri.query))) {
                     return try {
-                        val reply = transport.request("$path?preview=1", "GET", "")
+                        val reply = transport.request("$path?${uri.query}", "GET", "")
                         val mime = reply.contentType.substringBefore(';').trim()
                         if (reply.status == 200 && mime.startsWith("image/")) response(200, mime, ByteArrayInputStream(reply.body))
                         else response(404, "text/plain", ByteArrayInputStream(ByteArray(0)))
                     } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
                 }
                 if (uri.scheme != "https" || "https://${uri.host}" != origin || request.method != "GET" ||
-                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path == "/html-preview.html" || path.startsWith("/assets/") || (path.startsWith("/companions/") && path.endsWith(".png")))) {
+                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path == "/html-preview.html" || path == "/feishu-logo.png" || path.startsWith("/assets/") || (path.startsWith("/companions/") && path.endsWith(".png")))) {
                     return response(403, "text/plain", ByteArrayInputStream(ByteArray(0)))
                 }
                 return try {
@@ -288,6 +289,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         if (!active || streams[id]?.isActive == true) return
         streams[id] = scope.launch {
             var cursor: String? = null
+            var assetGeneration: Triple<String, String, Long>? = null
             while (isActive) {
                 try {
                     repository.workspaceEvents(cursor).collect { frame ->
@@ -295,6 +297,9 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                         when (frame) {
                             is LiveFrame.Change -> {
                                 cursor = frame.cursor.toString()
+                                val generation = Triple(frame.coreId, frame.bootId, frame.privacyEpoch)
+                                if (frame.reset || (assetGeneration != null && assetGeneration != generation)) transport.clearAssets()
+                                assetGeneration = generation
                                 event(id, "change", JSONObject().put("cursor", frame.cursor).put("privacyEpoch", frame.privacyEpoch)
                                     .put("coreId", frame.coreId).put("bootId", frame.bootId).put("reset", frame.reset).toString())
                             }
@@ -315,7 +320,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     // The page hears about each ended socket before it is paused, then reconnects on resume ('online' skips its backoff).
     fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = true); web.onPause(); web.pauseTimers() }
     fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('online'))", null) }
-    fun close() { closed = true; cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = false); bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
+    fun close() { closed = true; transport.clearAssets(); cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = false); bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
 }
 
 internal fun openWorkspaceExternal(context: Context, url: String) {

@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPersonalApp } from "./index.ts";
 import { startFakeFeishu, messageEvent, cardActionEvent } from "./testing/fake-feishu.ts";
 import { reportBody } from "./feishu/module.ts";
@@ -27,17 +27,24 @@ async function startReachable<T extends { origin: string; close(): Promise<void>
   }
 }
 
-async function fixture() {
+async function fixture(profileAssets = false) {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-feishu-fixture-")), key = randomBytes(32), token = "synthetic-owner";
   cleanup.push(async () => { if (path.dirname(root).toLowerCase() !== os.tmpdir().toLowerCase() || !path.basename(root).startsWith("nex-feishu-fixture-")) throw new Error("Unsafe cleanup"); rmSync(root, { recursive: true, force: true }); });
   const fake = await startReachable(() => startFakeFeishu()), model = await startFakeModel();
   cleanup.push(() => fake.close(), () => model.close());
-  const proxyFetch: typeof fetch = (input, init) => fetch(String(input).replaceAll("https://open.feishu.cn", fake.origin).replaceAll("https://accounts.feishu.cn", fake.origin), init);
-  const app = await startReachable(() => createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, feishu: { registerApp: fake.registerApp, transport: fake.createTransport, fetchImpl: proxyFetch } }));
+  const proxyFetch: typeof fetch = (input, init) => fetch(String(input).replaceAll("https://open.feishu.cn", fake.origin).replaceAll("https://accounts.feishu.cn", fake.origin).replaceAll("https://s1-imfile.feishucdn.com", fake.origin), init);
+  if (profileAssets) {
+    mkdirSync(path.join(root, "feishu-avatars"));
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVm0AAAAASUVORK5CYII=", "base64");
+    writeFileSync(path.join(root, "feishu-avatars", "graphic-secretary-01.png"), png);
+    writeFileSync(path.join(root, "feishu-avatars", "portrait-fox.png"), png);
+  }
+  const app = await startReachable(() => createPersonalApp({ dir: root, key, token, identity: false, memoryRuntime: false, ...(profileAssets ? { uiDir: root, publicOrigin: "https://nexbot.example.test" } : {}), feishu: { registerApp: fake.registerApp, transport: fake.createTransport, fetchImpl: proxyFetch } }));
   cleanup.push(() => app.close());
   app.store.saveConfig({ provider: "openai", endpoint: model.origin + "/v1", model: "fixture", apiKey: "synthetic-only" });
   app.store.createBot("秘书");
   const bot = app.store.all("SELECT * FROM bots ORDER BY created_at")[0];
+  if (profileAssets) app.agents.ensure(String(bot.id));
   async function api(route: string, data?: unknown) {
     const response = await fetch(app.origin + "/api/" + route, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(data ? { method: "POST", body: JSON.stringify(data) } : {}) });
     return { status: response.status, body: await response.json() as Record<string, unknown> & { feishu?: { job?: { stage?: string; url?: string; error?: string }; userAuth?: { stage?: string; url?: string; error?: string }; apps: Array<{ id: string; appId: string; brand: string; status: string; ownerBound: boolean; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null; botName: string; version: number }> } } };
@@ -47,10 +54,87 @@ async function fixture() {
     expect((await api("feishu/register/start", { botId: bot.id })).status).toBe(200);
     await until(() => fake.sent !== undefined && app.store.get("SELECT connection FROM personal_feishu_apps")?.connection === "connected");
   }
-  return { app, fake, model, bot, api, state, connectFake };
+  return { app, fake, model, bot, api, state, connectFake, token };
 }
 
 describe("feishu connector in disposable Core", () => {
+  it("reuses a group's list and avatar for five minutes, then refreshes both", async () => {
+    const f = await fixture();
+    await f.connectFake();
+    const [app] = (await f.state()).apps;
+    const route = "feishu/groups?id=" + app.id;
+    const calls = (path: string) => f.fake.apiCalls.filter(call => call.path === path).length;
+    const group = { chatId: "oc_cached", name: "开发协作", avatar: "https://s1-imfile.feishucdn.com/fixture-avatar/first.png" };
+    f.fake.setChats([group]);
+    const results = await Promise.all([f.api(route), f.api(route)]);
+    expect(calls("/open-apis/im/v1/chats")).toBe(1);
+    const original = (results[0].body.groups as { avatarUrl: string }[])[0].avatarUrl;
+    const requestAvatar = (asset: string) => fetch(f.app.origin + asset, { headers: { Authorization: `Bearer ${f.token}` } });
+    expect((await fetch(f.app.origin + original)).status).toBe(401);
+    const downloads = await Promise.all([requestAvatar(original), requestAvatar(original)]);
+    for (const download of downloads) {
+      expect(download.status).toBe(200);
+      expect(download.headers.get("Cache-Control")).toBe("private, max-age=300");
+      expect((await download.arrayBuffer()).byteLength).toBeGreaterThan(0);
+    }
+    expect(calls("/fixture-avatar/first.png")).toBe(1);
+    const wallClock = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => wallClock() + 299_000);
+    try {
+      f.fake.setChats([{ ...group, avatar: "https://s1-imfile.feishucdn.com/fixture-avatar/second.png" }]);
+      await f.api(route);
+      expect(calls("/open-apis/im/v1/chats")).toBe(1);
+      await (await requestAvatar(original)).arrayBuffer();
+      expect(calls("/fixture-avatar/first.png")).toBe(1);
+      clock.mockImplementation(() => wallClock() + 301_000);
+      const fresh = (await f.api(route)).body.groups as { avatarUrl: string }[];
+      expect(calls("/open-apis/im/v1/chats")).toBe(2);
+      expect(fresh[0].avatarUrl).not.toBe(original);
+      expect((await requestAvatar(original)).status).toBe(404);
+      expect((await requestAvatar(fresh[0].avatarUrl)).status).toBe(200);
+      expect(calls("/fixture-avatar/second.png")).toBe(1);
+    } finally { clock.mockRestore(); }
+  }, 30_000);
+
+  it("keeps native Feishu connectors out of generic management and syncs the explicitly selected profile", async () => {
+    const f = await fixture(true);
+    const missing = await f.api("feishu/register/start", { botId: "" });
+    expect(missing.status).toBe(400);
+    await f.connectFake();
+    expect(f.fake.registrationPresets[0]).toMatchObject({
+      name: "秘书", avatar: "https://nexbot.example.test/feishu-avatars/graphic-secretary-01.png",
+    });
+    const [app] = (await f.state()).apps;
+    expect((await f.api("state")).body.connectors).toContainEqual(expect.objectContaining({ id: app.id, kind: "feishu" }));
+    expect((await f.api("connectors/delete", { id: app.id, version: app.version })).status).toBe(400);
+    expect((await f.state()).apps).toHaveLength(1);
+
+    expect((await f.api("bots/update", { id: f.bot.id, version: f.bot.version, name: "开发助手" })).status).toBe(200);
+    expect((await f.api("bots/appearance", { id: f.bot.id, version: 0, appearance: { kind: "portrait", id: "fox" } })).status).toBe(200);
+    const profilePath = "/open-apis/application/v7/applications/cli_fake/base";
+    await until(() => f.app.store.get("SELECT profile_status FROM personal_feishu_apps")?.profile_status === "publication");
+    expect(f.fake.apiCalls.filter(call => call.path === profilePath).at(-1)).toMatchObject({
+      method: "PATCH", body: { i18ns: [{ i18n_key: "zh_cn", name: "开发助手" }], avatar_url: "https://s1-imfile.feishucdn.com/fixture-avatar.png" },
+    });
+    expect(f.fake.apiCalls.some(call => call.path.endsWith("/app_avatar/upload") && String(call.body.raw).includes('name="avatar"'))).toBe(true);
+
+    const message = (messageId: string, parentId?: string) => messageEvent({
+      messageId, parentId, chatId: "oc_profile", senderOpenId: "ou_owner", content: JSON.stringify({ text: messageId }),
+    });
+    const receiverOf = (messageId: string) => f.app.store.get("SELECT t.bot_id FROM personal_feishu_messages m JOIN tasks t ON t.id=m.task_id WHERE m.message_id=?", messageId)?.bot_id;
+    f.model.scripts.push(...["旧话题", "继续", "新话题"].map(text => ({ kind: "openai-text" as const, text })));
+    f.fake.deliver("cli_fake", message("om_original_receiver"));
+    await until(() => receiverOf("om_original_receiver") === f.bot.id);
+
+    const newBot = f.app.store.createBot("第二助手");
+    expect((await f.api("feishu/receiver", { id: app.id, version: app.version, botId: newBot })).status).toBe(200);
+    expect((await f.state()).apps[0]).toMatchObject({ id: app.id, botName: "第二助手", ownerBound: true });
+    expect((await f.api("feishu/receiver", { id: app.id, version: app.version, botId: f.bot.id })).status).toBe(400);
+    f.fake.deliver("cli_fake", message("om_old_topic_reply", "om_original_receiver"));
+    f.fake.deliver("cli_fake", message("om_new_receiver"));
+    await until(() => receiverOf("om_old_topic_reply") === f.bot.id && receiverOf("om_new_receiver") === newBot);
+  }, 30_000);
+
   it("scans, connects, and carries one p2p turn to Feishu and back", async () => {
     const f = await fixture();
     await f.connectFake();

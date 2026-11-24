@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import type { RegisterAppOptions } from "../feishu/transport.ts";
 
 export interface FakeTransportEntry { handlers: { onMessage(event: unknown): void; onCardAction(event: unknown): Promise<unknown> } }
 
@@ -24,12 +25,13 @@ export function cardActionEvent(input: { openId: string; value: Record<string, u
 export interface FakeFeishu {
   origin: string;
   close(): Promise<void>;
-  registerApp(options: { onQRCodeReady(info: { url: string; expireIn: number }): void; signal?: AbortSignal }): Promise<{ client_id: string; client_secret: string; user_info?: { open_id?: string; tenant_brand?: string } }>;
+  registerApp(options: RegisterAppOptions): Promise<{ client_id: string; client_secret: string; user_info?: { open_id?: string; tenant_brand?: string } }>;
   createTransport(app: { appId: string }, handlers: FakeTransportEntry["handlers"]): Promise<{ close(): Promise<void> }>;
   deliver(appId: string, event: unknown): void;
   card(appId: string, event: unknown): Promise<unknown>;
   sent: Array<{ path: string; body: Record<string, unknown> }>;
   /** 通用工具打到的 OpenAPI 调用（bot/user 身份都会记录）。 */
+  registrationPresets: Array<RegisterAppOptions["appPreset"]>;
   apiCalls: Array<{ method: string; path: string; authorization: string; body: Record<string, unknown> }>;
   setOnlineInstances(count: number): void;
   failRegister(message: string): void;
@@ -38,7 +40,7 @@ export interface FakeFeishu {
   /** 设备码轮询在前 N 次返回 authorization_pending。 */
   setPendingPolls(count: number): void;
   /** Groups the bot is in, served by the chat list and chat info endpoints. */
-  setChats(chats: Array<{ chatId: string; name: string; mode?: "group" | "topic"; members?: number }>): void;
+  setChats(chats: Array<{ chatId: string; name: string; mode?: "group" | "topic"; members?: number; avatar?: string }>): void;
   /** App id returned by the next scan registrations, in order. */
   queueAppIds(...ids: string[]): void;
 }
@@ -47,11 +49,12 @@ export interface FakeFeishu {
 export async function startFakeFeishu(): Promise<FakeFeishu> {
   const sent: FakeFeishu["sent"] = [];
   const apiCalls: FakeFeishu["apiCalls"] = [];
+  const registrationPresets: FakeFeishu["registrationPresets"] = [];
   const transports = new Map<string, FakeTransportEntry>();
   let online = 0, tokenRequests = 0, userAccess = 0, polls = 0, pendingPolls = 0;
   let registerFailure = "";
   let userOpenId = "ou_owner";
-  let chats: Array<{ chatId: string; name: string; mode?: "group" | "topic"; members?: number }> = [];
+  let chats: Parameters<FakeFeishu["setChats"]>[0] = [];
   const appIds: string[] = [];
   const server: Server = createServer((request, response) => { void (async () => {
     const url = new URL(request.url ?? "/", "http://fixture");
@@ -85,7 +88,18 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
     if (url.pathname === "/open-apis/auth/v3/tenant_access_token/internal") { tokenRequests += 1; json({ code: 0, msg: "ok", tenant_access_token: `tenant-${tokenRequests}`, expire: 7200 }); return; }
     if (url.pathname === "/open-apis/event/v1/connection") { json({ code: 0, msg: "ok", online_instance_cnt: online }); return; }
     if (url.pathname === "/open-apis/bot/v3/info") { json({ code: 0, msg: "ok", bot: { open_id: "ou_fake_bot", app_name: "假机器人", avatar_url: "https://example.invalid/bot.png", activate_status: 2 } }); return; }
-    if (url.pathname === "/open-apis/im/v1/chats") { json({ code: 0, data: { items: chats.map((c) => ({ chat_id: c.chatId, name: c.name })), has_more: false, page_token: "" } }); return; }
+    if (url.pathname === "/open-apis/im/v1/chats") {
+      apiCalls.push({ method: "GET", path: url.pathname, authorization: request.headers.authorization ?? "", body: {} });
+      json({ code: 0, data: { items: chats.map((c) => ({ chat_id: c.chatId, name: c.name, avatar: c.avatar })), has_more: false } });
+      return;
+    }
+    if (/^\/fixture-avatar\/[a-z]+\.png$/.test(url.pathname)) {
+      apiCalls.push({ method: "GET", path: url.pathname, authorization: request.headers.authorization ?? "", body: {} });
+      const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVm0AAAAASUVORK5CYII=", "base64");
+      response.writeHead(200, { "Content-Type": "image/png", "Content-Length": bytes.length });
+      response.end(bytes);
+      return;
+    }
     const chatInfo = /^\/open-apis\/im\/v1\/chats\/([^/]+)$/.exec(url.pathname);
     if (chatInfo && request.method === "GET") {
       const chat = chats.find((c) => c.chatId === decodeURIComponent(chatInfo[1]));
@@ -106,6 +120,11 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
     if (request.method === "PATCH" && /^\/open-apis\/im\/v1\/messages\/[^/]+$/.test(url.pathname)) {
       sent.push({path:"patch",body:payload});json({code:0,data:{}});return;
     }
+    if (url.pathname === "/open-apis/application/v7/app_avatar/upload") {
+      apiCalls.push({ method: request.method!, path: url.pathname, authorization: request.headers.authorization ?? "", body: payload });
+      json({ url: "https://s1-imfile.feishucdn.com/fixture-avatar.png" });
+      return;
+    }
     if (url.pathname.startsWith("/open-apis/")) {
       apiCalls.push({ method: request.method ?? "GET", path: url.pathname, authorization: String(request.headers.authorization ?? ""), body: payload });
       json({ code: 0, msg: "success", data: { path: url.pathname, method: request.method, ...(payload && Object.keys(payload).length ? { body: payload } : {}) } });
@@ -119,7 +138,9 @@ export async function startFakeFeishu(): Promise<FakeFeishu> {
   return {
     origin, sent, apiCalls,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    registrationPresets,
     async registerApp(options) {
+      registrationPresets.push(options.appPreset);
       options.onQRCodeReady({ url: `${origin}/fake-qr?scan=1`, expireIn: 300 });
       if (registerFailure) throw new Error(registerFailure);
       return { client_id: appIds.shift() ?? "cli_fake", client_secret: "fake-secret", user_info: { open_id: "ou_owner", tenant_brand: "feishu" } };

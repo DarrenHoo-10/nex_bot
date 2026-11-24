@@ -141,8 +141,10 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.memory.personal.tree.notify = (botId, taskId, text, key) => agents.publish(botId, "system", "activity", text, key, taskId);
   feishu = new FeishuModule(store, changed, agents, runtime, {
     ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
+    profileAssets: options.uiDir ? { uiDir: options.uiDir, publicOrigin: options.publicOrigin } : options.feishu?.profileAssets,
     ownershipAllowed: options.feishu?.ownershipAllowed ?? ((appId: string) => finance.mayUseChannel(appId)),
   });
+  agents.onProfileChanged = botId => feishu.queueProfile(botId);
   finance.startReports(report => feishu.ingestReport(report));
   if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
   agents.onPublished = (botId, publication) => {
@@ -287,7 +289,7 @@ export async function createPersonalApp(options: AppOptions) {
       response.writeHead(410, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("二维码已失效，请回到 NexBot 重新生成。"); return;
     }
-    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.feishucdn.com https://*.larksuitecdn.com https://*.feishu.cn https://*.larksuite.com; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     if (url.pathname === '/html-preview.html' && request.method === 'GET') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_PREVIEW_CSP + "; sandbox allow-scripts; frame-ancestors 'self'" });
       response.end(htmlPreviewShell()); return;
@@ -449,11 +451,18 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname.startsWith("/api/connectors/") && session.user_id !== store.owner) { json(response, 403, { error: "此账号没有管理连接器的权限" }); return; }
       if (url.pathname === "/api/connectors/oauth/status" && request.method === "GET") { json(response, 200, connectors.oauth.status(text(url.searchParams.get("id"), 100), String(session.id))); return; }
       if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
-        const { row, bytes } = await files.file(text(url.pathname.slice("/api/attachments/".length), 100));
+        const attachmentId = text(url.pathname.slice("/api/attachments/".length), 100);
+        const attachment = files.authorize(attachmentId);
+        const isImage = url.searchParams.get("preview") === "1" && ["image/png", "image/jpeg", "image/webp"].includes(String(attachment.mime));
+        // Revalidate against workspace and message authorization before reusing browser-stored bytes.
+        const etag = `"${attachment.id}"`;
+        const cache = { "Cache-Control": "private, no-cache", "ETag": etag, "Vary": "Cookie, Authorization" };
+        if (isImage && request.headers["if-none-match"] === etag) { response.writeHead(304, cache); response.end(); return; }
+        const { row, bytes } = await files.file(attachmentId);
         if (!await authenticate(token)) { json(response, 401, { error: 'Unauthorized' }); return; }
         files.authorize(String(row.id));
         const preview = url.searchParams.get('preview') === '1' && ['image/png', 'image/jpeg', 'image/webp'].includes(String(row.mime));
-        response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
+        response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", ...(preview ? cache : { "Cache-Control": "no-store" }), "Content-Length": bytes.length }); response.end(bytes); return;
       }
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
@@ -482,6 +491,13 @@ export async function createPersonalApp(options: AppOptions) {
       if(url.pathname === "/api/feishu/deliveries" && request.method === "GET") {
         if(session.user_id!==store.owner){json(response,403,{error:"仅主人可查看投递对账"});return;}
         json(response,200,{parts:feishu.deliveries()});return;
+      }
+      if (url.pathname === "/api/feishu/group-avatar" && request.method === "GET") {
+        const image = await feishu.groupAvatar(Object.fromEntries(url.searchParams));
+        if (!image) { json(response, 404, { error: "群头像不可用" }); return; }
+        if (!await authenticate(token)) { json(response, 401, { error: "Unauthorized" }); return; }
+        response.writeHead(200, { "Content-Type": image.mime, "Content-Length": image.bytes.length, "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff", "Vary": "Cookie, Authorization" });
+        response.end(image.bytes); return;
       }
       if(url.pathname === "/api/feishu/groups" && request.method === "GET") {json(response,200,await feishu.groups({id:url.searchParams.get("id")??""}));return;}
       if(url.pathname === "/api/feishu/accounts" && request.method === "GET") {json(response,200,await feishuAccounts?.("list",{}) ?? []);return;}
@@ -640,6 +656,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/feishu/bind/start") { json(response, 200, feishu.bindStart(data)); return; }
       if (url.pathname === "/api/feishu/user-auth/start") { json(response, 200, feishu.startUserAuth(data)); return; }
       if (url.pathname === "/api/feishu/user-auth/cancel") { feishu.cancelUserAuth(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/feishu/receiver") { json(response, 200, feishu.changeReceiver(data)); return; }
       if (url.pathname === "/api/feishu/groups/save") { json(response, 200, feishu.saveGroup(data)); return; }
       if (url.pathname === "/api/feishu/toggle") { json(response, 200, await feishu.toggle(data)); return; }
       if (url.pathname === "/api/feishu/delete") { json(response, 200, await feishu.remove(data)); return; }
@@ -789,7 +806,8 @@ export async function createPersonalApp(options: AppOptions) {
     if (!file.startsWith(root + path.sep) || !existsSync(file) || !statSync(file).isFile()) { response.writeHead(404); response.end(); return; }
     const types: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" };
     // Vite names everything under /assets/ by content hash, so those files can be cached indefinitely; the HTML entry must always revalidate.
-    const cacheControl = url.pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache";
+    const cacheControl = url.pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable"
+      : /^(?:\/companions\/|\/feishu-avatars\/|\/feishu-logo\.png$)/.test(url.pathname) ? "public, max-age=300" : "no-cache";
     response.writeHead(200, { "Content-Type": types[path.extname(file)] ?? "application/octet-stream", "Cache-Control": cacheControl }); response.end(readFileSync(file));
   }
   const listen = (port: number) => new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, options.host ?? "127.0.0.1", () => { server.off("error", reject); resolve(); }); });

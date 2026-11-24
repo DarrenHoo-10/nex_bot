@@ -16,6 +16,14 @@ import { activityStats, groupItems, mergeItems, oldestId, prependItems, resetIte
 
 const NO_PENDING: readonly { id: string; text: string }[] = [];
 const NO_HIDDEN: ReadonlySet<string> = new Set();
+type CachedTranscript = { items: CliItem[]; more: boolean; translationEnabled: boolean | null; refreshedAt: number };
+// The stream belongs to one mounted, authenticated workspace generation.
+const transcriptCache = new WeakMap<CliStream, Map<CliSessionKey, CachedTranscript>>();
+const localTranscripts = (stream: CliStream) => {
+  let cache = transcriptCache.get(stream);
+  if (!cache) { cache = new Map(); transcriptCache.set(stream, cache); }
+  return cache;
+};
 
 /** Leaves out messages being edited or already resent, and the "interrupted" line their resend caused. */
 export function withoutHidden(blocks: readonly Block[], hidden: ReadonlySet<string>): Block[] {
@@ -198,6 +206,9 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
   const anchorRef = useRef<{ height: number; top: number } | null>(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const latestTranscript = useRef({ sessionKey, items, more, translationEnabled });
+  latestTranscript.current = { sessionKey, items, more, translationEnabled };
+  const fetchedAt = useRef(0);
   const generation = useRef(0);
 
   const loadFirst = useCallback(async () => {
@@ -211,6 +222,7 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
       setItems((current) => mergeItems(current, page.items));
       setMore(page.more);
       setTranslationEnabled(page.translationEnabled ?? null);
+      fetchedAt.current = Date.now();
     } catch (cause) {
       if (generation.current === mine) setError(cliErrorText(cause, "记录读取失败"));
     } finally {
@@ -219,12 +231,17 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
   }, [sessionKey]);
 
   useEffect(() => {
-    setItems([]);
-    setTranslationEnabled(undefined);
-    setMore(false);
+    const cache = localTranscripts(stream);
+    const cached = cache.get(sessionKey);
+    fetchedAt.current = cached?.refreshedAt ?? 0;
+    setItems(cached?.items ?? []);
+    setTranslationEnabled(cached?.translationEnabled);
+    setMore(cached?.more ?? false);
+    setError("");
     followingRef.current = true;
     anchorRef.current = null;
-    void loadFirst();
+    if (cached && Date.now() - fetchedAt.current < 30_000) setLoading(false);
+    else void loadFirst();
     const release = stream.subscribeSession(sessionKey);
     const off = stream.on((event) => {
       if (event.type !== "message" || event.message.type !== "items" || event.message.key !== sessionKey) return;
@@ -238,6 +255,13 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
       });
     });
     return () => {
+      const last = latestTranscript.current;
+      if (last.sessionKey === sessionKey && last.translationEnabled !== undefined && fetchedAt.current) {
+        cache.delete(sessionKey);
+        cache.set(sessionKey, { items: last.items.slice(-200), more: last.more || last.items.length > 200,
+          translationEnabled: last.translationEnabled, refreshedAt: fetchedAt.current });
+        if (cache.size > 8) cache.delete(cache.keys().next().value!);
+      }
       generation.current++;
       off();
       release();

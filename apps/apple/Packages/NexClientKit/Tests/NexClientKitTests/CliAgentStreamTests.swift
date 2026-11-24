@@ -614,8 +614,11 @@ final class CliAgentsModelTests: XCTestCase {
         XCTAssertTrue(r.model.transcript("unwatched").items.isEmpty)
         r.model.closeSession("k")
         await eventually { r.socket.sentTypes().contains("unsub.session") }
-        XCTAssertTrue(r.model.transcript("k").items.isEmpty)
+        XCTAssertEqual(r.model.transcript("k").items.map(\.id), ["0", "1", "2"])
+        r.model.openSession("k")
+        XCTAssertEqual(r.model.transcript("k").items.map(\.id), ["0", "1", "2"])
         r.model.stop()
+        XCTAssertTrue(r.model.transcript("k").items.isEmpty)
     }
 
     func testHideRevertsOnError() async {

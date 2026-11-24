@@ -278,8 +278,19 @@ export function AgentDesktop() {
     new Uint8Array(blob).set(bytes);
     void uploadRef.current([new File([blob], image.name.trim() || "截图.png", { type: image.type })]);
   }), []);
-  const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
-  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; pendingSend.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
+  type HistoryWindow = { botId: string; key: string; messages: RecordRow[]; sync: State["sync"]; olderEnd?: boolean };
+  const loaded = useRef<HistoryWindow | undefined>(undefined);
+  const localHistory = useRef(new Map<string, HistoryWindow>());
+  const historySync = useRef<State["sync"] | undefined>(undefined);
+  const sameHistory = (first: State["sync"] | undefined, second: State["sync"]) =>
+    first?.coreId === second.coreId && first.bootId === second.bootId && first.privacyEpoch === second.privacyEpoch;
+  const rememberHistory = (window: HistoryWindow) => {
+    const recent = localHistory.current;
+    recent.delete(window.key);
+    recent.set(window.key, { ...window, messages: window.messages.slice(-250), olderEnd: window.messages.length <= 250 && window.olderEnd });
+    if (recent.size > 12) recent.delete(recent.keys().next().value!);
+  };
+  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; localHistory.current.clear(); historySync.current = undefined; pendingSend.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
   selected.current = botId; pageRef.current = page;
 
@@ -304,7 +315,8 @@ export function AgentDesktop() {
     const base = `agents/messages?bot=${encodeURIComponent(current)}${scope}${target?`&around=${encodeURIComponent(target.id)}`:""}`;
     // Over a slow link every round trip is visible, so the first page of messages is requested together with the state
     // and checked against the state's sync identity afterwards.
-    const guess = !target && !conversation && loaded.current?.botId === current ? loaded.current : undefined;
+    const visible = loaded.current?.key === draftKey ? loaded.current : undefined;
+    const guess = !target ? (visible ?? localHistory.current.get(draftKey)) : undefined;
     const early = current ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
     early?.catch(() => undefined);
     const [next, topicList] = await Promise.all([
@@ -312,6 +324,13 @@ export function AgentDesktop() {
       topicMode ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`).catch((error:Error)=>({topics:[],error})) : undefined,
     ]);
     if (request !== serial.current) return;
+    if (historySync.current && !sameHistory(historySync.current, next.sync)) {
+      localHistory.current.clear();
+      loaded.current = undefined;
+      setMessages([]);
+      setStreaming([]);
+    }
+    historySync.current = next.sync;
     if (current && !next.bots.some(bot=>bot.id===current)) {
       const replacement=next.bots.find(bot=>bot.replaces_id===current);
       if(finance)setFinanceBotId(replacement ? str(replacement.id) : undefined);
@@ -321,6 +340,7 @@ export function AgentDesktop() {
     }
     if(topicList && "error" in topicList)throw topicList.error;
     if (conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
+      localHistory.current.delete(draftKey);
       loaded.current = undefined; setMessages([]); setStreaming([]);
       setTopics(topicList?.topics ?? []); setTopicId(undefined); setError("");
       return;
@@ -335,7 +355,7 @@ export function AgentDesktop() {
       // Commit task state with its feed below, so the typing indicator cannot
       // disappear a network round trip before the final reply arrives.
       const cached = guess;
-      const same = cached?.botId === current && cached.sync.privacyEpoch === next.sync.privacyEpoch && cached.sync.coreId === next.sync.coreId && cached.sync.bootId === next.sync.bootId;
+      const same = cached?.key === draftKey && sameHistory(cached.sync, next.sync);
       let history = same ? cached.messages : [];
       let feed: Feed;
       // The prefetch can be served before this state snapshot. After a send, read the
@@ -350,12 +370,15 @@ export function AgentDesktop() {
         historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;
         feed=await api<Feed>(`agents/messages?bot=${encodeURIComponent(current)}`);
       }
+      const firstPageCount = feed.messages.length;
       while (true) {
         if (request !== serial.current || selected.current !== current) return;
-        if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) {
+        if (!sameHistory(feed.sync, next.sync)) {
           const retry = !feedRetry.current;
           feedRetry.current = true;
           loaded.current = undefined;
+          localHistory.current.clear();
+          setMessages([]); setStreaming([]);
           if (retry) setTimeout(() => void reload().catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }), 0);
           return;
         }
@@ -364,14 +387,10 @@ export function AgentDesktop() {
         feed = await api<Feed>(`${base}&after=${history.at(-1)!.seq}`);
       }
       if (request !== serial.current || selected.current !== current) return;
-      if (conversation) {
-        const prior = loaded.current;
-        if (prior?.botId === current && prior.sync.privacyEpoch === feed.sync.privacyEpoch && prior.sync.bootId === feed.sync.bootId && history.length) {
-          history = [...prior.messages.filter(row => Number(row.seq) < Number(history[0].seq)), ...history];
-        }
-        if (feed.messages.length < 200) setOlderEnd(true);
-      }
-      loaded.current = { botId: current, messages: history, sync: feed.sync };
+      const olderEnd = conversation ? (same ? cached.olderEnd : firstPageCount < 200) : undefined;
+      if (conversation) setOlderEnd(!!olderEnd);
+      loaded.current = { botId: current, key: draftKey, messages: history, sync: feed.sync, olderEnd };
+      if (!target) rememberHistory(loaded.current);
       feedRetry.current = false;
       setMessages((shown) => withPendingOptimistic(history, shown));
       setTopics(topicList?.topics ?? []);
@@ -392,9 +411,14 @@ export function AgentDesktop() {
     const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }); }, 150); };
     const change = (event: MessageEvent) => {
       const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
-      // A reconnect can report reset. Drop the incremental cursor and refetch,
-      // but leave the rows on screen until the next page arrives.
-      if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) loaded.current = undefined;
+      const generationChanged = historySync.current && !sameHistory(historySync.current, value);
+      if (value.reset || generationChanged) {
+        ++serial.current;
+        loaded.current = undefined;
+        localHistory.current.clear();
+        historySync.current = undefined;
+        if (generationChanged) { setMessages([]); setStreaming([]); }
+      }
       refresh();
     };
     const expired = () => { offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
@@ -409,7 +433,9 @@ export function AgentDesktop() {
     const switched = loadedBot.current !== draftKey;
     loadedBot.current = draftKey;
     if (switched) {
-      loaded.current = undefined; setEditInput(undefined); setOlderEnd(false);
+      const entry = historyTarget.current ? undefined : localHistory.current.get(draftKey);
+      const cached = entry && historySync.current && sameHistory(entry.sync, historySync.current) ? entry : undefined;
+      loaded.current = cached; setEditInput(undefined); setOlderEnd(!!cached?.olderEnd);
       stickToBottom.current = !historyTarget.current;
       setShowScrollPill(false);
       setQuote(undefined);
@@ -418,7 +444,7 @@ export function AgentDesktop() {
       setJobView(undefined);
       setMemoryNotice("");
       setPreview(undefined);
-      setMessages([]);
+      setMessages(cached?.messages ?? []);
       setStreaming([]);
       setDraft(drafts.current.get(draftKey) ?? "");
       setAttachments(attachmentDrafts.current.get(draftKey) ?? []);
@@ -426,7 +452,7 @@ export function AgentDesktop() {
       setDraftPreview(undefined);
     }
     if (botId) {
-      if (switched) setHistoryLoading(true);
+      if (switched) setHistoryLoading(!loaded.current);
       localStorage.setItem("nexbot.selectedAgent", botId);
       void reload().catch((e: Error) => { setError(userErrorText(e)); setHistoryLoading(false); });
     }
@@ -438,6 +464,7 @@ export function AgentDesktop() {
   const deleteMessageImage = async (messageId: string, image: MessageImage) => {
     await api("agents/messages/image/delete", { botId, messageId, attachmentId: image.id });
     loaded.current = undefined;
+    localHistory.current.delete(draftKey);
     await reload();
   };
   const openTopic = (id?: string) => {
@@ -616,9 +643,12 @@ export function AgentDesktop() {
     const result = await api<{ messages: RecordRow[]; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${snapshot.messages[0].seq}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
     const current = loaded.current;
     if (destination.current !== draftKey || !current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
-    if (conversation && result.messages.length < 200) setOlderEnd(true);
+    const olderEnd = !!conversation && result.messages.length < 200;
+    if (olderEnd) setOlderEnd(true);
     const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];
-    loaded.current = { ...current, messages: merged };
+    const window = { ...current, messages: merged, olderEnd };
+    loaded.current = window;
+    if (!historyTarget.current) rememberHistory(window);
     setMessages((shown) => withPendingOptimistic(merged, shown));
   };
   if (!state) return <div className="boot"><BrandMark size={44}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接页</button> : null}</div>;
@@ -685,7 +715,7 @@ export function AgentDesktop() {
   const renderSidebar = (agent?: AgentSidebarSlot) => <ContactSidebar agent={agent} onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
   const sidebarNode = renderSidebar();
 
-  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.bootId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 
   if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 
@@ -825,7 +855,7 @@ export function AgentDesktop() {
           </form>
         </div>
         </div>
-      </> : <SettingsPage state={state} financeBotId={financeBotId} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
+      </> : <SettingsPage state={state} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
     </main>
 
     {page === "agent" && bot ? <aside className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="收起助手详情" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>

@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
+import { buildFeishuAvatars } from "./build-feishu-avatars.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { shell: htmlPreviewShell } = await import('./build-html-preview.mjs');
 const output = path.join(root, "dist-personal");
@@ -36,6 +37,7 @@ const serverOutput = path.join(output, "server");
 mkdirSync(path.join(serverOutput, "core"), { recursive: true });
 if (process.platform === "win32") await import("./build-personal-computer.mjs");
 await viteBuild({ configFile: false, root, plugins: [react()], build: { outDir: path.join(serverOutput, "ui"), emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
+await buildFeishuAvatars(root, path.join(serverOutput, "ui"));
 copyFileSync(path.join(serverOutput, "ui", "personal.html"), path.join(serverOutput, "ui", "index.html"));
 writeFileSync(path.join(serverOutput, "ui", "html-preview.html"), htmlPreviewShell);
 // The Feishu SDK reads its own package.json relative to its CommonJS entry at load time.

@@ -37,6 +37,7 @@ public struct FeishuAppView: RowBacked {
     public var userExpiresAt: Date? { dateFromMilliseconds(row.double("userExpiresAt")) }
     /// The bot's own name in Feishu (from `/bot/v3/info`); nil until the app has connected once.
     public var name: String? { row.string("name").flatMap { $0.isEmpty ? nil : $0 } }
+    public var profileStatus: String? { row.string("profileStatus") }
     public var avatarURL: URL? { row.string("avatarUrl").flatMap(URL.init(string:)) }
     public var groupCount: Int { row.int("groupCount") ?? 0 }
     public var displayName: String { name ?? (botName.isEmpty ? appID : botName) }
@@ -72,6 +73,7 @@ public struct FeishuState: Codable, Sendable, Hashable {
 
 /// One Feishu group the app's bot is in, with its reply mode and the owner's context (`GET /api/feishu/groups`).
 public struct FeishuGroup: RowBacked {
+    public var avatarPath: String? { row.string("avatarUrl") }
     public let row: Row
     public init(row: Row) { self.row = row }
     public var id: String { chatID }
@@ -100,10 +102,13 @@ public struct FeishuGroup: RowBacked {
     ]
     public static let contextLimit = 2000
 
-    public var summary: String {
+    public var summary: String { summary(showConnection: true) }
+
+    public func summary(showConnection: Bool) -> String {
         var parts = [isTopicGroup ? "话题群" : "普通群"]
         if let members { parts.append("\(members) 人") }
-        if !claimed { parts.append("未接入") } else {
+        if !claimed && showConnection { parts.append("未开放") }
+        if claimed {
             parts.append(Self.triggers.first { $0.id == trigger }?.title ?? trigger)
             parts.append(isTopicGroup ? "每个话题一个会话" : Self.sessions.first { $0.id == session }?.title ?? session)
             if !context.isEmpty { parts.append("已设上下文") }
@@ -111,4 +116,4 @@ public struct FeishuGroup: RowBacked {
         return parts.joined(separator: " · ")
     }
 }
-public struct FeishuGroupList: Decodable, Sendable { public let groups: [FeishuGroup]; public let error: String? }
+public struct FeishuGroupList: Decodable, Sendable { public let groups: [FeishuGroup]; public let error: String?; public let cacheForMs: Int? }

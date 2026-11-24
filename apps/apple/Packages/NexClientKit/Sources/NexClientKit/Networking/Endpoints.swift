@@ -296,6 +296,7 @@ struct FeishuBotBody: Encodable { let botId: String }
 struct TopicBody: Encodable { let botId: String }
 struct FeishuIDBody: Encodable { let id: String }
 struct FeishuSaveBody: Encodable { let appId: String; let appSecret: String; let brand: String; let botId: String }
+struct FeishuReceiverBody: Encodable { let id: String; let version: Int; let botId: String }
 struct FeishuToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
 struct FeishuGroupBody: Encodable { let id: String; let chatId: String; let trigger: String; let session: String; let context: String; let version: Int }
 struct EmptyPost: Encodable {}
@@ -413,6 +414,9 @@ extension CoreClient {
     public func feishuBindStart(id: String) async throws -> String { try await post("/api/feishu/bind/start", body: FeishuIDBody(id: id), as: BindCodeResult.self).code }
     public func feishuUserAuthStart(id: String) async throws { try await post("/api/feishu/user-auth/start", body: FeishuIDBody(id: id)) }
     public func feishuUserAuthCancel() async throws { try await post("/api/feishu/user-auth/cancel", body: EmptyPost()) }
+    public func feishuChangeReceiver(id: String, version: Int, botID: String) async throws {
+        try await post("/api/feishu/receiver", body: FeishuReceiverBody(id: id, version: version, botId: botID))
+    }
     public func feishuToggle(id: String, version: Int, enabled: Bool) async throws {
         try await post("/api/feishu/toggle", body: FeishuToggleBody(id: id, version: version, enabled: enabled))
     }

@@ -60,7 +60,17 @@ extension WorkspaceStore {
     }
     /// Downloads a sent attachment (`AttachmentLink.id`). The suggested file name comes from Core.
     public func downloadAttachment(id: String) async throws -> (data: Data, filename: String) {
-        try await act(refresh: false) { try await client.downloadAttachment(id: id) }
+        try await cachedAsset("attachment:" + id) {
+            try await self.act(refresh: false) { try await self.client.downloadAttachment(id: id) }
+        }
+    }
+
+    public func feishuGroupAvatar(path: String) async throws -> Data {
+        guard path.hasPrefix("/api/feishu/group-avatar?") else { throw CoreError.invalidOrigin("头像地址无效") }
+        return try await cachedAsset(path) {
+            let result = try await self.client.getData(path, timeout: 15)
+            return (data: result.data, filename: "")
+        }.data
     }
     /// Archives the agent. The store then selects the first remaining agent.
     public func archiveAgent(botID: String) async throws {
@@ -172,6 +182,10 @@ extension WorkspaceStore {
         try await act { try await client.feishuUserAuthStart(id: app.id) }
     }
     public func cancelFeishuUserAuth() async throws { try await act { try await client.feishuUserAuthCancel() } }
+    public func changeFeishuReceiver(appID: String, botID: String) async throws {
+        let app = try feishuApp(appID)
+        try await act { try await client.feishuChangeReceiver(id: app.id, version: app.version, botID: botID) }
+    }
     public func setFeishuEnabled(appID: String, _ enabled: Bool) async throws {
         let app = try feishuApp(appID)
         try await act { try await client.feishuToggle(id: app.id, version: app.version, enabled: enabled) }
@@ -182,11 +196,23 @@ extension WorkspaceStore {
     }
     public func feishuGroups(appID: String) async throws -> FeishuGroupList {
         let app = try feishuApp(appID)
-        return try await client.feishuGroups(id: app.id)
+        let key = app.id + ":" + app.status
+        if let cached = feishuGroupLists[key], cached.expires > Date() { return cached.value }
+        let generation = sync
+        let result = try await act(refresh: false) { try await client.feishuGroups(id: app.id) }
+        if result.error == nil, let current = sync, generation?.sameGeneration(as: current) == true {
+            if feishuGroupLists.count >= 12, let oldest = feishuGroupLists.min(by: { $0.value.expires < $1.value.expires })?.key {
+                feishuGroupLists.removeValue(forKey: oldest)
+            }
+            feishuGroupLists[key] = (Date().addingTimeInterval(min(300, Double(result.cacheForMs ?? 300_000) / 1000)), result)
+        }
+        return result
     }
     public func saveFeishuGroup(appID: String, group: FeishuGroup, trigger: String, session: String, context: String) async throws -> FeishuGroup {
         let app = try feishuApp(appID)
-        return try await act { try await client.feishuSaveGroup(id: app.id, chatID: group.chatID, trigger: trigger, session: session, context: context, version: group.version) }
+        let saved = try await act { try await client.feishuSaveGroup(id: app.id, chatID: group.chatID, trigger: trigger, session: session, context: context, version: group.version) }
+        feishuGroupLists = feishuGroupLists.filter { !$0.key.hasPrefix(app.id + ":") }
+        return saved
     }
 
     public func startConnectorAuthorization(provider: String = "gmail", connectorID: String? = nil) async throws -> ConnectorOAuthAttempt {

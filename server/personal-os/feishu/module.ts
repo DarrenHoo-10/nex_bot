@@ -1,4 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { defaultAppearance, parseAppearance } from "../../../shared/personal-appearance.ts";
 import { now, text, id, hash, canonical, type CoreStore, type Row } from "../store.ts";
 import type { AgentModule } from "../agents.ts";
 import type { TaskRuntime } from "../runtime.ts";
@@ -80,6 +84,19 @@ function splitChunks(text: string, limit = 3500, max = 5): string[] {
   return parts;
 }
 
+const groupCacheMs = 5 * 60_000;
+const maxGroupAvatarBytes = 512 * 1024;
+type GroupAvatar = { bytes: Buffer; mime: string };
+function groupAvatarSource(value?: string) {
+  if (!value || value.length > 2048) return undefined;
+  try {
+    const url = new URL(value);
+    const cdn = [".feishucdn.com", ".larksuitecdn.com", ".larkofficecdn.com"].some(domain => url.hostname.endsWith(domain));
+    if (cdn && url.protocol === "https:" && !url.port && !url.username && !url.password) return url.href;
+  } catch { /* Feishu may omit the avatar field. */ }
+  return undefined;
+}
+
 interface RegisterJob {
   stage: "preparing" | "qr" | "done" | "error";
   botId: string;
@@ -105,6 +122,7 @@ function officialRegistrationUrl(value: string) {
 }
 
 export interface FeishuModuleOptions { registerApp: RegisterAppFn; transport?: TransportFactory; fetchImpl?: typeof fetch; devicePollMs?: number;
+  profileAssets?: { uiDir: string; publicOrigin?: string };
   routeInbound?: (appId: string, event: unknown, kind: "message" | "card") => void | Promise<unknown>;
   sharedApp?: (appId: string) => Row | undefined;
   ownershipAllowed?: (appId:string,operation:"receive"|"send"|"bind"|"connect")=>Promise<boolean>;
@@ -134,13 +152,14 @@ export class FeishuModule {
   private readonly recoverWaiters = new Set<()=>void>();
   private readonly recovery: ReturnType<typeof setInterval>;
   private readonly connecting = new Set<string>();
+  private syncingProfiles = false;
 
   constructor(private readonly store: CoreStore, readonly changed: () => void, private readonly agents: AgentModule, private readonly runtime: TaskRuntime, private readonly options: FeishuModuleOptions) {
     ensureFeishuDeliverySchema(store);
     // A process may have died after sending but before persisting the provider response.
     store.run("UPDATE feishu_delivery_parts SET state='pending' WHERE state='sending'");
     this.expireUnknownDeliveries();
-    this.recovery = setInterval(() => { if (!this.closed) { this.recoverInbound(); this.onPublished(); void this.flushOutbox(); } }, 1000);
+    this.recovery = setInterval(() => { if (!this.closed) { this.recoverInbound(); this.onPublished(); void this.flushOutbox(); void this.flushProfiles(); } }, 1000);
     this.recovery.unref();
     this.api = new FeishuApi(options.fetchImpl);
     this.transportFactory = options.transport ?? wsTransportFactory;
@@ -150,12 +169,13 @@ export class FeishuModule {
     return {
       ...(this.job ? { job: { stage: this.job.stage, ...(this.job.url ? { url: this.job.url } : {}), ...(this.job.stage === "qr" && this.job.scanToken ? { scanPath: feishuScanPrefix + this.job.scanToken } : {}), ...(this.job.expiresAt ? { expiresAt: this.job.expiresAt } : {}), ...(this.job.error ? { error: this.job.error } : {}) } } : {}),
       ...(this.userAuth ? { userAuth: { id: this.userAuth.id, stage: this.userAuth.stage, ...(this.userAuth.url ? { url: this.userAuth.url } : {}), ...(this.userAuth.expiresAt ? { expiresAt: this.userAuth.expiresAt } : {}), ...(this.userAuth.error ? { error: this.userAuth.error } : {}) } } : {}),
-      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.bot_name, a.bot_avatar, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY a.created_at")
+      apps: this.store.all("SELECT a.connector_id AS id, a.app_id, a.brand, a.connection AS status, a.error, a.owner_open_id, a.bot_id, a.bot_name, a.bot_avatar, a.profile_status, a.user_token, a.user_scopes_json, a.user_token_expires_at, c.enabled, c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY a.created_at")
         .map((row) => ({
           id: String(row.id), appId: String(row.app_id), brand: String(row.brand), status: String(row.status), error: row.error === null ? null : String(row.error),
           ownerBound: !!row.owner_open_id, botId: String(row.bot_id), botName: String(this.store.get("SELECT name FROM bots WHERE id=?", String(row.bot_id))?.name ?? ""),
           enabled: row.enabled === 1, version: Number(row.version),
           name: row.bot_name ? String(row.bot_name) : null, avatarUrl: row.bot_avatar ? String(row.bot_avatar) : null,
+          profileStatus: row.profile_status ?? null,
           groupCount: Number(this.store.get("SELECT COUNT(*) n FROM feishu_group_settings WHERE app_id=? AND in_group=1", row.app_id)?.n ?? 0),
           userAuthorized: !!row.user_token, userScopes: JSON.parse(String(row.user_scopes_json ?? "[]")) as string[], userExpiresAt: row.user_token_expires_at === null ? null : Number(row.user_token_expires_at),
         })),
@@ -223,12 +243,55 @@ export class FeishuModule {
     this.changed();
   }
 
+  private assistantProfile(botId: string) {
+    const bot = this.store.get("SELECT b.name, a.appearance_json FROM bots b LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.id=? AND b.status='active'", botId);
+    if (!bot) return undefined;
+    const appearance = bot.appearance_json ? parseAppearance(JSON.parse(String(bot.appearance_json))) :
+      defaultAppearance(botId, String(this.agents.contacts()[0]?.id ?? ""));
+    const key = appearance.kind === "companion" ? `companion-${appearance.shape}-${appearance.color}` : `${appearance.kind}-${appearance.id}`;
+    const assetPath = `/feishu-avatars/${key}.png`;
+    const assets = this.options.profileAssets;
+    const file = assets && path.join(assets.uiDir, assetPath);
+    return { name: String(bot.name), file: file && existsSync(file) ? file : undefined, assetPath };
+  }
+
+  queueProfile(botId: string) {
+    this.store.run("UPDATE personal_feishu_apps SET profile_revision=profile_revision+1,profile_status='pending' WHERE bot_id=?", botId);
+  }
+
+  private async flushProfiles() {
+    if (this.syncingProfiles || this.closed) return;
+    this.syncingProfiles = true;
+    try {
+      const pending = this.store.all("SELECT a.* FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id JOIN bots b ON b.id=a.bot_id WHERE a.profile_status='pending' AND c.enabled=1 AND b.status='active'");
+      for (const app of pending) {
+        if (this.closed) break;
+        const isCurrent = () => !this.closed && !!this.store.get("SELECT 1 FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE a.connector_id=? AND a.profile_revision=? AND a.profile_status='pending' AND c.enabled=1", app.connector_id, app.profile_revision);
+        try {
+          if (!isCurrent()) continue;
+          const profile = this.assistantProfile(String(app.bot_id));
+          if (!profile) continue;
+          const avatar = profile.file ? new Uint8Array(await readFile(profile.file)) : undefined;
+          await this.api.updateAppProfile(this.credentials(app), { name: profile.name, avatar }, () => {
+            if (!isCurrent()) throw new Error("飞书资料已变化");
+          });
+          if (isCurrent()) this.store.run("UPDATE personal_feishu_apps SET profile_status='publication' WHERE connector_id=?", app.connector_id);
+        } catch (error) {
+          if (isCurrent()) this.store.run("UPDATE personal_feishu_apps SET profile_status=? WHERE connector_id=?", error instanceof FeishuApiError && error.code === 210021 ? "unsupported" : "error", app.connector_id);
+        }
+        if (!this.closed) this.changed();
+      }
+    } finally { this.syncingProfiles = false; }
+  }
+
   private async registerFlow(job: RegisterJob) {
-    const botName = String(this.store.get("SELECT name FROM bots WHERE id=?", job.botId)?.name ?? "NexBot");
+    const profile = this.assistantProfile(job.botId);
+    const avatar = profile?.file && this.options.profileAssets?.publicOrigin
+      ? new URL(profile.assetPath, this.options.profileAssets.publicOrigin).href : undefined;
     try {
       const result = await this.options.registerApp({
         source: "nexbot", createOnly: true,
-        appPreset: { name: botName, desc: "NexBot 个人助手" },
+        appPreset: { name: profile?.name ?? "NexBot", desc: "NexBot 个人助手", ...(avatar ? { avatar } : {}) },
         addons: { scopes: scopeManifest.scopes, events: { items: { tenant: [...baselineEvents] } }, callbacks: { items: ["card.action.trigger"] } },
         onQRCodeReady: (info) => {
           if (job.controller.signal.aborted) return;
@@ -241,7 +304,12 @@ export class FeishuModule {
       });
       if (job.controller.signal.aborted || this.closed) return;
       if (this.store.get("SELECT connector_id FROM personal_feishu_apps WHERE app_id=?", result.client_id)) throw new Error("该应用已添加");
+      const currentProfile = this.assistantProfile(job.botId);
+      if (!currentProfile) throw new Error("助手不存在");
       const connectorId = this.persistApp({ appId: result.client_id, appSecret: result.client_secret, brand: result.user_info?.tenant_brand === "lark" ? "lark" : "feishu", ownerOpenId: typeof result.user_info?.open_id === "string" ? result.user_info.open_id : null, botId: job.botId });
+      if (currentProfile.name !== profile?.name || currentProfile.assetPath !== profile.assetPath) {
+        this.store.run("UPDATE personal_feishu_apps SET profile_revision=1,profile_status='pending' WHERE connector_id=?", connectorId);
+      }
       job.stage = "done";
       this.changed();
       void this.connect(connectorId);
@@ -612,7 +680,7 @@ export class FeishuModule {
     if (this.transports.has(connectorId)) return;
     try {
       void this.api.botInfo(credentials).then((info) => {
-        if (info.openId && !this.closed) { this.store.run("UPDATE personal_feishu_apps SET bot_open_id=?,bot_name=COALESCE(?,bot_name),bot_avatar=COALESCE(?,bot_avatar) WHERE connector_id=?", info.openId, info.name ?? null, info.avatarUrl ?? null, connectorId); this.changed(); }
+        if (!this.closed && (info.openId || info.name || info.avatarUrl)) { this.store.run("UPDATE personal_feishu_apps SET bot_open_id=COALESCE(?,bot_open_id),bot_name=COALESCE(?,bot_name),bot_avatar=COALESCE(?,bot_avatar) WHERE connector_id=?", info.openId ?? null, info.name ?? null, info.avatarUrl ?? null, connectorId); this.changed(); }
       }).catch(() => {});
       const transport = await this.transportFactory({ appId: credentials.appId, appSecret: credentials.appSecret, brand: credentials.brand }, {
         onMessage: (event) => this.options.routeInbound ? Promise.resolve(this.options.routeInbound(credentials.appId, event, "message")).then(() => {}) : this.receiveMessage(credentials.appId, event),
@@ -643,6 +711,21 @@ export class FeishuModule {
     this.store.run("UPDATE personal_feishu_apps SET connection=?,error=NULL WHERE connector_id=?", status, connectorId);
   }
 
+  changeReceiver(data: Record<string, unknown>) {
+    const id = text(data.id, 100), botId = text(data.botId, 100);
+    const app = this.store.get("SELECT a.bot_id,c.version FROM personal_feishu_apps a JOIN personal_connectors c ON c.id=a.connector_id WHERE c.id=? AND c.kind='feishu'", id);
+    if (!app || app.version !== Number(data.version)) throw new Error("连接器已变化，请刷新后重试");
+    if (!this.store.get("SELECT 1 FROM bots WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner)) throw new Error("助手不存在");
+    if (app.bot_id === botId) return { ok: true };
+    this.store.transaction(() => {
+      this.store.run("UPDATE personal_feishu_apps SET bot_id=?,profile_revision=profile_revision+1,profile_status='pending' WHERE connector_id=?", botId, id);
+      this.store.run("UPDATE personal_connectors SET version=version+1 WHERE id=?", id);
+      this.store.audit("feishu.receiver.change", "connector", id, { botId });
+    });
+    this.changed();
+    return { ok: true };
+  }
+
   async toggle(data: Record<string, unknown>) {
     const row = this.store.get("SELECT c.*,a.app_id FROM personal_connectors c JOIN personal_feishu_apps a ON a.connector_id=c.id WHERE c.id=? AND c.kind='feishu'", text(data.id, 100));
     if (!row || row.version !== Number(data.version) || typeof data.enabled !== "boolean") throw new Error("连接器已变化，请刷新后重试");
@@ -657,6 +740,7 @@ export class FeishuModule {
     const row = this.store.get("SELECT c.*,a.app_id FROM personal_connectors c JOIN personal_feishu_apps a ON a.connector_id=c.id WHERE c.id=? AND c.kind='feishu'", text(data.id, 100));
     if (!row || row.version !== Number(data.version)) throw new Error("连接器已变化，请刷新后重试");
     await this.disconnect(String(row.id), "idle");
+    this.groupLists.delete(String(row.app_id));
     this.store.transaction(() => {
       this.store.run("DELETE FROM personal_feishu_messages WHERE app_id=?", row.app_id);
       this.store.run("DELETE FROM personal_feishu_outbound WHERE app_id=?", row.app_id);
@@ -759,7 +843,9 @@ export class FeishuModule {
       if (new Set(aliases.map((v) => v.conversation_id)).size > 1) throw new Error("conflicting_topic_aliases");
       alias = aliases[0];
     }
-    if (alias && this.store.get("SELECT id FROM conversations WHERE id=? AND status='deleted'", alias.conversation_id)) { ignore(); return; }
+    const existing = alias ? this.store.get("SELECT bot_id,status FROM conversations WHERE id=?", alias.conversation_id) : undefined;
+    if (existing?.status === "deleted") { ignore(); return; }
+    const receiver = String(existing?.bot_id ?? app.bot_id);
     const destination = this.store.get("SELECT * FROM feishu_destinations WHERE app_id=? AND chat_id=? AND enabled=1", appId, chatId);
     if (row.chat_type === "group") {
       // An unclaimed group cannot execute in the owner's workspace.
@@ -785,12 +871,12 @@ export class FeishuModule {
     const clientId = `feishu:${hash(appId + ":" + chatId + ":" + messageId)}`;
     const chatName = typeof group?.name === "string" && group.name ? group.name : undefined;
     this.store.transaction(() => {
-      const directJob = !shared && alias?.job_id ? this.store.get("SELECT id FROM agent_jobs WHERE id=? AND bot_id=? AND stopped_at IS NULL", alias.job_id, app.bot_id) : undefined;
+      const directJob = !shared && alias?.job_id ? this.store.get("SELECT id FROM agent_jobs WHERE id=? AND bot_id=? AND stopped_at IS NULL", alias.job_id, receiver) : undefined;
       const accepted = directJob && this.agents.jobs && owner
         ? this.agents.jobs.input(String(directJob.id), content, clientId, "direct", this.store.session)
         : shared
           ? this.agents.send(String(app.bot_id), content, clientId, this.store.session, { conversationId: this.groupConversation(app, chatId, chatName, event), audience: "public" })
-          : this.agents.send(String(app.bot_id), content, clientId, this.store.session, {
+          : this.agents.send(receiver, content, clientId, this.store.session, {
             ...(alias ? { conversationId: String(alias.conversation_id) } : { newConversation: true }),
             audience: alias ? (this.store.get("SELECT audience FROM agent_topics WHERE conversation_id=?",alias.conversation_id)?.audience === "public" ? "public" : "private") : row.chat_type === "group" ? "public" : "private",
             ...(!alias ? { sourceContext: { channel: "feishu", appId, chatId, chatType: row.chat_type, actorOpenId: actor, tenantKey: event.tenant_key ?? record(event.sender).tenant_key ?? null, ...(chatName ? { chatName } : {}) } } : {}),
@@ -832,14 +918,18 @@ export class FeishuModule {
 
   private readonly groupInfoAttempts = new Map<string, number>();
   /** Caches the group's name, member count and whether it is a Feishu topic group. */
-  private async refreshGroup(appId: string, chatId: string, name?: string) {
+  private readonly groupLists = new Map<string, { expiresAt: number; error: string | null }>();
+  private readonly pendingGroupLists = new Map<string, Promise<string | null>>();
+  private readonly groupAvatars = new Map<string, { expiresAt: number; value: Promise<GroupAvatar | undefined> }>();
+
+  private async refreshGroup(appId: string, chatId: string, name?: string, listAvatar?: string) {
     const result = await this.requestForApp(appId, "GET", `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`);
     const data = record(result.data);
     const topic = data.chat_mode === "topic" || data.group_message_type === "thread";
     const members = Number(data.user_count);
-    this.store.run(`INSERT INTO feishu_group_settings(app_id,chat_id,name,kind,members,in_group,refreshed_at,updated_at) VALUES(?,?,?,?,?,1,?,?)
-      ON CONFLICT(app_id,chat_id) DO UPDATE SET name=excluded.name,kind=excluded.kind,members=excluded.members,in_group=1,refreshed_at=excluded.refreshed_at`,
-      appId, chatId, (pick(data, ["name"]) ?? name ?? "").slice(0, 200) || null, topic ? "topic" : "group", data.user_count != null && Number.isFinite(members) ? members : null, now(), now());
+    this.store.run(`INSERT INTO feishu_group_settings(app_id,chat_id,name,kind,members,avatar_url,in_group,refreshed_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?)
+      ON CONFLICT(app_id,chat_id) DO UPDATE SET name=excluded.name,kind=excluded.kind,members=excluded.members,avatar_url=excluded.avatar_url,in_group=1,refreshed_at=excluded.refreshed_at`,
+      appId, chatId, (pick(data, ["name"]) ?? name ?? "").slice(0, 200) || null, topic ? "topic" : "group", data.user_count != null && Number.isFinite(members) ? members : null, groupAvatarSource(pick(data, ["avatar"])) ?? listAvatar ?? null, now(), now());
   }
   /** Routing needs to know whether a group is a topic group. A failed lookup falls back to the defaults and retries later. */
   private async ensureGroupInfo(appId: string, chatId: string) {
@@ -851,10 +941,11 @@ export class FeishuModule {
     catch { this.store.run("INSERT OR IGNORE INTO feishu_group_settings(app_id,chat_id,updated_at) VALUES(?,?,?)", appId, chatId, now()); }
   }
 
-  private groupRows(appId: string) {
+  private groupRows(appId: string, connectorId: string) {
     this.store.run("INSERT OR IGNORE INTO feishu_group_settings(app_id,chat_id,updated_at) SELECT app_id,chat_id,? FROM feishu_destinations WHERE app_id=? AND chat_type='group' AND enabled=1", now(), appId);
     return this.store.all("SELECT s.*,d.chat_id AS claimed FROM feishu_group_settings s LEFT JOIN feishu_destinations d ON d.app_id=s.app_id AND d.chat_id=s.chat_id AND d.chat_type='group' AND d.enabled=1 WHERE s.app_id=? AND s.in_group=1 ORDER BY s.name IS NULL,s.name,s.chat_id", appId)
       .map((row) => ({ chatId: String(row.chat_id), name: row.name ? String(row.name) : null, kind: String(row.kind), members: row.members == null ? null : Number(row.members),
+        avatarUrl: row.avatar_url ? `/api/feishu/group-avatar?id=${encodeURIComponent(connectorId)}&chat=${encodeURIComponent(String(row.chat_id))}&v=${hash(String(row.avatar_url)).slice(0, 16)}` : null,
         claimed: !!row.claimed, trigger: String(row.trigger), session: String(row.session), context: String(row.context ?? ""), version: Number(row.version) }));
   }
   private ownApp(connectorId: unknown) {
@@ -863,35 +954,99 @@ export class FeishuModule {
     return app;
   }
 
-  /** Groups the app's bot is in. Feishu is asked when connected; otherwise the cached list is returned with the error. */
   async groups(data: Record<string, unknown>) {
     const app = this.ownApp(data.id), appId = String(app.app_id);
     let error: string | null = null;
     if (app.enabled === 1 && app.connection === "connected") {
-      try {
-        const seen = new Set<string>();
-        let pageToken = "";
-        for (let page = 0; page < 10; page++) {
-          const result = await this.requestForApp(appId, "GET", `/open-apis/im/v1/chats?page_size=100${pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : ""}`);
-          const list = record(result.data);
-          for (const item of Array.isArray(list.items) ? list.items : []) {
-            const chat = record(item), chatId = pick(chat, ["chat_id"]);
-            if (!chatId) continue;
-            seen.add(chatId);
-            const cached = this.groupSetting(appId, chatId);
-            if (cached?.refreshed_at && Number(cached.refreshed_at) > now() - 10 * 60_000) { this.store.run("UPDATE feishu_group_settings SET in_group=1 WHERE app_id=? AND chat_id=?", appId, chatId); continue; }
-            await this.refreshGroup(appId, chatId, pick(chat, ["name"])).catch(() => {
-              this.store.run("INSERT INTO feishu_group_settings(app_id,chat_id,name,updated_at) VALUES(?,?,?,?) ON CONFLICT(app_id,chat_id) DO UPDATE SET in_group=1", appId, chatId, pick(chat, ["name"]) ?? null, now());
-            });
-          }
-          pageToken = pick(list, ["page_token"]) ?? "";
-          if (list.has_more !== true || !pageToken) break;
+      const cached = this.groupLists.get(appId);
+      if (cached && cached.expiresAt > now()) error = cached.error;
+      else {
+        let pending = this.pendingGroupLists.get(appId);
+        if (!pending) {
+          pending = this.refreshGroupList(appId).then(error => {
+            this.groupLists.set(appId, { error, expiresAt: now() + (error ? 30_000 : groupCacheMs) });
+            return error;
+          }).finally(() => this.pendingGroupLists.delete(appId));
+          this.pendingGroupLists.set(appId, pending);
         }
-        for (const row of this.store.all("SELECT chat_id FROM feishu_group_settings WHERE app_id=? AND in_group=1", appId))
-          if (!seen.has(String(row.chat_id))) this.store.run("UPDATE feishu_group_settings SET in_group=0 WHERE app_id=? AND chat_id=?", appId, row.chat_id);
-      } catch (e) { error = safe(e); }
+        error = await pending;
+      }
     }
-    return { groups: this.groupRows(appId), error };
+    const remaining = (this.groupLists.get(appId)?.expiresAt ?? 0) - now();
+    return { groups: this.groupRows(appId, String(app.connector_id)), error, cacheForMs: Math.max(0, remaining) };
+  }
+
+  private async refreshGroupList(appId: string): Promise<string | null> {
+    try {
+      const seen = new Set<string>();
+      let pageToken = "";
+      for (let page = 0; page < 10; page++) {
+        const result = await this.requestForApp(appId, "GET", `/open-apis/im/v1/chats?page_size=100${pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : ""}`);
+        const list = record(result.data);
+        for (const item of Array.isArray(list.items) ? list.items : []) {
+          const chat = record(item), chatId = pick(chat, ["chat_id"]);
+          if (!chatId) continue;
+          seen.add(chatId);
+          const avatar = groupAvatarSource(pick(chat, ["avatar"]));
+          const cached = this.groupSetting(appId, chatId);
+          if (cached?.refreshed_at && Number(cached.refreshed_at) > now() - groupCacheMs) {
+            this.store.run("UPDATE feishu_group_settings SET in_group=1,avatar_url=COALESCE(?,avatar_url) WHERE app_id=? AND chat_id=?", avatar ?? null, appId, chatId);
+            continue;
+          }
+          await this.refreshGroup(appId, chatId, pick(chat, ["name"]), avatar).catch(() => {
+            this.store.run(`INSERT INTO feishu_group_settings(app_id,chat_id,name,avatar_url,updated_at) VALUES(?,?,?,?,?)
+              ON CONFLICT(app_id,chat_id) DO UPDATE SET in_group=1,avatar_url=COALESCE(excluded.avatar_url,avatar_url)`,
+            appId, chatId, pick(chat, ["name"]) ?? null, avatar ?? null, now());
+          });
+        }
+        pageToken = pick(list, ["page_token"]) ?? "";
+        if (list.has_more !== true) break;
+        if (!pageToken || page === 9) return "群列表未完整加载";
+      }
+      for (const row of this.store.all("SELECT chat_id FROM feishu_group_settings WHERE app_id=? AND in_group=1", appId))
+        if (!seen.has(String(row.chat_id))) this.store.run("UPDATE feishu_group_settings SET in_group=0 WHERE app_id=? AND chat_id=?", appId, row.chat_id);
+      return null;
+    } catch (e) { return safe(e); }
+  }
+
+  async groupAvatar(data: Record<string, unknown>) {
+    const app = this.ownApp(data.id), chatId = text(data.chat, 100);
+    const group = this.groupSetting(String(app.app_id), chatId);
+    const url = group?.in_group === 1 && groupAvatarSource(typeof group.avatar_url === "string" ? group.avatar_url : undefined);
+    if (!url || data.v !== hash(url).slice(0, 16)) return undefined;
+    const key = `${app.connector_id}:${chatId}:${url}`;
+    const cached = this.groupAvatars.get(key);
+    if (cached && cached.expiresAt > now()) return cached.value;
+    for (const [old, entry] of this.groupAvatars) if (entry.expiresAt <= now()) this.groupAvatars.delete(old);
+    while (this.groupAvatars.size >= 64) this.groupAvatars.delete(this.groupAvatars.keys().next().value!);
+    const entry = { expiresAt: now() + groupCacheMs, value: this.fetchGroupAvatar(url) };
+    this.groupAvatars.set(key, entry);
+    return entry.value;
+  }
+
+  private async fetchGroupAvatar(url: string): Promise<GroupAvatar | undefined> {
+    try {
+      const response = await (this.options.fetchImpl ?? fetch)(url, { redirect: "error", signal: AbortSignal.timeout(8000) });
+      const mime = response.headers.get("content-type")?.split(";")[0]?.trim() ?? "";
+      if (!response.ok || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mime) ||
+          !response.body || Number(response.headers.get("content-length")) > maxGroupAvatarBytes) {
+        await response.body?.cancel();
+        return undefined;
+      }
+      const parts: Uint8Array[] = [];
+      let size = 0;
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > maxGroupAvatarBytes) return undefined;
+          parts.push(part.value);
+        }
+        return size ? { bytes: Buffer.concat(parts), mime } : undefined;
+      } finally { await reader.cancel().catch(() => {}); }
+    } catch { return undefined; }
   }
 
   /** Saves one group's reply mode and context. Saving an unclaimed group lets the bound owner claim it. */
@@ -914,7 +1069,7 @@ export class FeishuModule {
       this.store.audit("feishu.group.save", "connector", String(app.connector_id), { chatId, trigger, session, context: !!context });
     });
     this.changed();
-    return this.groupRows(appId).find((group) => group.chatId === chatId);
+    return this.groupRows(appId, String(app.connector_id)).find((group) => group.chatId === chatId);
   }
 
   claimGroup(data: { appId: string; chatId: string; actorOpenId: string }) {

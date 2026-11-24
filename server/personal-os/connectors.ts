@@ -62,12 +62,12 @@ export class ConnectorModule {
   }
   private row(connectorId: string) {
     const row = this.store.get("SELECT * FROM personal_connectors WHERE id=? AND workspace_id=? AND owner_user_id=?", connectorId, this.store.workspace, this.store.owner);
-    if (!row) throw new Error("连接器不存在");
+    if (!row || row.kind === "feishu") throw new Error("连接器不存在");
     return row;
   }
   list(): ConnectorView[] {
     return this.store.all("SELECT * FROM personal_connectors WHERE workspace_id=? AND owner_user_id=? ORDER BY created_at,id", this.store.workspace, this.store.owner).map((row) => ({
-      id: String(row.id), provider: row.provider as "mcp" | "gmail" | "github", account: row.account as string | null, name: String(row.name), url: String(row.url), transport: row.transport as "http" | "sse", enabled: row.enabled === 1, version: Number(row.version), hasToken: !!row.credential,
+      id: String(row.id), kind: row.kind === "feishu" ? "feishu" : "mcp", provider: row.provider as "mcp" | "gmail" | "github", account: row.account as string | null, name: String(row.name), url: String(row.url), transport: row.transport as "http" | "sse", enabled: row.enabled === 1, version: Number(row.version), hasToken: !!row.credential,
       tools: JSON.parse(String(row.tools_json)), checkedAt: row.checked_at as number | null, error: row.error as string | null,
       grants: [],
     }));

@@ -101,6 +101,18 @@ class Repository(
     private var foreground = true
     private var cursor: String? = null
     private var loadedSync: SyncState? = null
+    private data class History(val messages: List<MessageRow>, val hasMore: Boolean)
+    private val localHistory = LinkedHashMap<String, History>()
+
+    private fun rememberHistory(botId: String) {
+        val current = _state.value
+        if (current.selectedBotId != botId) return
+        val messages = current.messages.takeLast(250)
+        localHistory.remove(botId)
+        localHistory[botId] = History(messages, current.hasMore || messages.size < current.messages.size)
+        if (localHistory.size > 12) localHistory.remove(localHistory.keys.first())
+    }
+
     private var selectedSeq = 0L
     private var lastSnapshotAt = 0L
     private var snapshotWanted = false
@@ -195,6 +207,7 @@ class Repository(
             withContext(Dispatchers.IO) { store.clear() }
             client = null
             loadedSync = null
+            localHistory.clear()
             cursor = null
             selectedSeq = 0
             _state.value = UiState(phase = Phase.Login)
@@ -221,6 +234,7 @@ class Repository(
     private fun expire(connection: StoredConnection?, message: String?) {
         client = null
         loadedSync = null
+        localHistory.clear()
         cursor = null
         selectedSeq = 0
         store.clear()
@@ -254,14 +268,22 @@ class Repository(
 
     fun selectBot(botId: String) {
         scope.launch {
-            selectedSeq = 0
+            val cached = localHistory[botId]
+            selectedSeq = cached?.messages?.lastOrNull()?.seq ?: 0L
             _state.update {
-                it.copy(selectedBotId = botId, messages = emptyList(), streaming = emptyList(), hasMore = false, error = null)
+                it.copy(selectedBotId = botId, messages = cached?.messages.orEmpty(), streaming = emptyList(), hasMore = cached?.hasMore == true, error = null)
+            }
+            if (cached != null) {
+                reload(forceSnapshot = true)
+                return@launch
             }
             val core = client ?: return@launch
             try {
-                applyFeed(core.messages(botId), replace = true)
+                val feed = core.messages(botId)
+                if (client !== core || _state.value.selectedBotId != botId) return@launch
+                if (selectedSeq == 0L && matchesHistory(feed)) applyFeed(feed, replace = true)
             } catch (failure: Exception) {
+                if (client !== core || _state.value.selectedBotId != botId) return@launch
                 markLost(failure.message)
             }
             requestReload(forceSnapshot = true)
@@ -392,8 +414,12 @@ class Repository(
         val firstSeq = _state.value.messages.firstOrNull()?.seq?.takeIf { it > 1 } ?: return
         scope.launch {
             try {
-                val feed = client?.messages(botId, before = firstSeq) ?: return@launch
+                val core = client ?: return@launch
+                val expected = loadedSync
+                val feed = core.messages(botId, before = firstSeq)
                 val current = _state.value
+                if (client !== core || current.selectedBotId != botId || loadedSync != expected) return@launch
+                if (!matchesHistory(feed)) { requestReload(forceSnapshot = true); return@launch }
                 val merged = (feed.messages + current.messages).distinctBy { it.id }.sortedBy { it.seq }
                 _state.update {
                     it.copy(
@@ -401,6 +427,7 @@ class Repository(
                         hasMore = feed.messages.isNotEmpty() && (feed.messages.firstOrNull()?.seq ?: 1L) > 1L,
                     )
                 }
+                rememberHistory(botId)
             } catch (failure: Exception) {
                 _state.update { it.copy(error = failure.message ?: "加载失败") }
             }
@@ -451,7 +478,9 @@ class Repository(
             clock() - lastSnapshotAt >= snapshotMinIntervalMs
         if (snapshotDue) {
             try {
-                applyState(core.state(summary = true))
+                val snapshot = core.state(summary = true)
+                if (client !== core) return
+                applyState(snapshot)
                 lastSnapshotAt = clock()
                 snapshotWanted = false
             } catch (failure: CoreException) {
@@ -465,9 +494,19 @@ class Repository(
             }
         }
         val botId = _state.value.selectedBotId ?: return
+        val after = selectedSeq
         try {
-            val feed = if (selectedSeq > 0) core.messages(botId, after = selectedSeq) else core.messages(botId)
-            applyFeed(feed, replace = selectedSeq == 0L)
+            val feed = if (after > 0) core.messages(botId, after = after) else core.messages(botId)
+            if (client !== core || _state.value.selectedBotId != botId) return
+            if (!matchesHistory(feed)) {
+                localHistory.clear()
+                selectedSeq = 0
+                _state.update { it.copy(messages = emptyList(), streaming = emptyList(), hasMore = false) }
+                requestReload(forceSnapshot = true)
+                return
+            }
+            if (after == 0L && selectedSeq != 0L) return
+            applyFeed(feed, replace = after == 0L)
         } catch (failure: CoreException) {
             if (failure.status == 401) {
                 expire(_state.value.connection, "登录已过期，请重新登录")
@@ -507,10 +546,17 @@ class Repository(
             )
         }
         if (invalid) {
+            localHistory.clear()
             selectedSeq = 0
             requestReload(forceSnapshot = true)
         }
         announce(previous, _state.value)
+    }
+
+    private fun matchesHistory(feed: MessageFeed): Boolean {
+        val current = loadedSync ?: return true
+        return feed.sync.coreId.isEmpty() || (current.coreId == feed.sync.coreId &&
+            current.bootId == feed.sync.bootId && current.privacyEpoch == feed.sync.privacyEpoch)
     }
 
     private fun applyFeed(feed: MessageFeed, replace: Boolean) {
@@ -534,6 +580,7 @@ class Repository(
             )
         }
         val botId = _state.value.selectedBotId
+        if (botId != null) rememberHistory(botId)
         if (botId != null && lastSeq > 0) {
             scope.launch { runCatching { client?.markRead(botId, lastSeq) } }
         }
@@ -576,6 +623,7 @@ class Repository(
                                 cursor = frame.cursor.toString()
                                 if (SyncPolicy.needsSnapshot(frame, loadedSync)) {
                                     loadedSync = null
+                                    localHistory.clear()
                                     selectedSeq = 0
                                     _state.update {
                                         it.copy(messages = emptyList(), streaming = emptyList(), hasMore = false)

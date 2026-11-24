@@ -42,9 +42,10 @@ extension CoreClient {
     }
     public func financeAssistant() async throws -> FinanceAssistant { try await get("/api/agents/finance") }
     public func financeTopics(botID: String) async throws -> [FinanceTopic] { let result: FinanceTopicList = try await get("/api/agents/topics", query: [("bot",botID)]); return result.topics }
-    public func topicFeed(botID: String, conversationID: String, before: Int? = nil) async throws -> Feed {
+    public func topicFeed(botID: String, conversationID: String, before: Int? = nil, after: Int? = nil) async throws -> Feed {
         var query = [("bot",botID),("conversationId",conversationID)]
         if let before { query.append(("before",String(before))) }
+        if let after { query.append(("after",String(after))) }
         return try await get("/api/agents/messages",query:query)
     }
     public func sendTopic(_ input: TopicInput) async throws -> TopicInputResult { try await post(input.messageId == nil ? "/api/agents/input" : "/api/agents/edit",body:input) }

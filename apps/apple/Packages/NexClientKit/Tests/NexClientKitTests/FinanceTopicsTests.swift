@@ -38,9 +38,9 @@ final class FinanceTopicsTests:XCTestCase {
         let store=WorkspaceStore(client:core.client())
         await store.refresh();await store.loadFinanceAssistant()
         XCTAssertEqual(store.financeBotID,"finance-role");XCTAssertEqual(store.selectedBotID,"finance-role")
-        XCTAssertEqual(store.feishuReceiverID(selection: ""), "finance-role")
+        XCTAssertEqual(store.feishuReceiverID(selection: ""), "")
         XCTAssertEqual(store.feishuReceiverID(selection: "first"), "first")
-        XCTAssertEqual(store.feishuReceiverID(selection: "deleted"), "finance-role")
+        XCTAssertEqual(store.feishuReceiverID(selection: "deleted"), "")
         XCTAssertEqual(core.recorded("/api/agents/finance").count,1)
         store.stop()
     }

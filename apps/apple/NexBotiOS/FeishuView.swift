@@ -14,8 +14,7 @@ struct FeishuSection: View {
             FeishuDetailView(workspace: workspace)
         } label: {
             HStack(spacing: 12) {
-                Text("飞").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                    .frame(width: 26, height: 26).background(Color(hex: 0x3370FF), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                FeishuLogo(size: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("飞书").font(.subheadline.weight(.semibold))
                     Text(apps.isEmpty ? (feishu?.job?.isRunning == true ? "等待扫码" : "未连接") : issues > 0 ? "\(apps.count) 个应用 · \(issues) 个异常" : "\(apps.count) 个应用")
@@ -85,7 +84,7 @@ struct FeishuDetailView: View {
             Button("确认移除", role: .destructive) { if let app = confirmingRemove { run { try await workspace.removeFeishu(appID: app.id) } } }
         }
         .task(id: feishu?.needsPolling == true) { await poll() }
-        .onChange(of: apps.count) { old, new in if new > old { adding = false } }
+        .onChange(of: apps.count) { old, new in if new > old { adding = false; selectedBotID = "" } }
     }
 
     @ViewBuilder private func row(_ app: FeishuAppView) -> some View {
@@ -113,6 +112,7 @@ struct FeishuDetailView: View {
                 .disabled(busy)
                 .accessibilityLabel("更多操作")
             }
+            if let status = app.profileStatusLabel { Text(status).font(.caption).foregroundStyle(Theme.muted) }
             if app.status == "error", let appError = app.error { Text(appError).font(.caption).foregroundStyle(Theme.danger) }
             if let code = bindCodes[app.id], !app.ownerBound {
                 Text("在飞书私聊机器人发送 \(code)，10 分钟内有效").font(.footnote).foregroundStyle(Theme.muted).textSelection(.enabled)
@@ -143,17 +143,18 @@ struct FeishuDetailView: View {
             } else {
                 if let job, job.stage == "error", let jobError = job.error { InlineBanner(text: jobError) }
                 Picker("接收助手", selection: Binding(get: { botID }, set: { selectedBotID = $0 })) {
+                    Text("请选择助手").tag("")
                     ForEach(workspace.bots) { bot in Text(bot.name).tag(bot.id) }
                 }
                 .pickerStyle(.menu)
                 HStack(spacing: 10) {
                     Button { run { try await workspace.startFeishuRegister(botID: botID) } } label: {
-                        HStack(spacing: 6) { if busy { ProgressView().controlSize(.small) }; Text("扫码连接飞书") }
+                        HStack(spacing: 6) { if busy { ProgressView().controlSize(.small) }; Text("扫码创建应用") }
                     }
                     .buttonStyle(PillButtonStyle(primary: true)).disabled(busy || botID.isEmpty)
                     Button("使用已有应用") { errorText = nil; manual = true }
-                        .buttonStyle(PillButtonStyle()).disabled(busy)
-                    if !apps.isEmpty { Button("取消") { adding = false }.buttonStyle(PillButtonStyle()).disabled(busy) }
+                        .buttonStyle(PillButtonStyle()).disabled(busy || botID.isEmpty)
+                    if !apps.isEmpty { Button("取消") { adding = false; selectedBotID = "" }.buttonStyle(PillButtonStyle()).disabled(busy) }
                 }
             }
         }
@@ -189,14 +190,8 @@ struct FeishuAppScreen: View {
         ScrollView {
             if let app = workspace.state?.feishu?.app(appID) {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 12) {
-                        FeishuAvatar(app: app, size: 52)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(app.displayName).font(.title3.weight(.bold))
-                            Text("\(app.appID) · 接收助手 \(app.botName)").font(.caption).foregroundStyle(Theme.muted).textSelection(.enabled)
-                            Text(app.statusLabel).font(.caption.weight(.medium)).foregroundStyle(app.statusTint)
-                        }
-                        Spacer()
+                    FeishuAppOverview(workspace: workspace, app: app, busy: busy) { botID in
+                        run { try await workspace.changeFeishuReceiver(appID: app.id, botID: botID) }
                     }
                     if app.status == "error" { InlineBanner(text: app.error ?? "连接异常") }
                     else if app.status == "busy" { InlineBanner(text: "另一个程序正在使用这个应用的长连接") }
@@ -217,7 +212,7 @@ struct FeishuAppScreen: View {
             }
         }
         .background(Theme.background)
-        .navigationTitle(workspace.state?.feishu?.app(appID)?.displayName ?? "飞书应用")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbarBackground(Theme.background, for: .navigationBar)

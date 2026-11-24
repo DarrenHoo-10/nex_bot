@@ -4,7 +4,7 @@ import type { Brand } from "./api.ts";
 export interface RegisterAppOptions {
   source?: string;
   signal?: AbortSignal;
-  appPreset?: { name?: string; desc?: string };
+  appPreset?: { name?: string; desc?: string; avatar?: string };
   addons?: { scopes?: { tenant?: string[]; user?: string[] }; events?: { items?: { tenant?: string[]; user?: string[] } }; callbacks?: { items?: string[] } };
   appId?: string;
   createOnly?: boolean;
