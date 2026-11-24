@@ -209,7 +209,8 @@ export type LaunchArgs = Partial<LaunchIds> & CliLaunchOptions;
  * neither bracket means anything to cmd.exe, and it can never start with `-`. */
 function launchFlags(engine: CliEngine, options: CliLaunchOptions): string[] {
   const { model, effort } = options;
-  if (model === undefined && effort === undefined) return [];
+  const access = permissionFlags(engine, options.permissions);
+  if (model === undefined && effort === undefined) return access;
   if (engine === "zcode") throw new LaunchError("invalid_argument", "ZCode cannot choose a model or effort");
   if (model !== undefined && !isCliModel(model)) throw new LaunchError("invalid_argument", "the model name is not allowed");
   if (effort !== undefined && !isCliEffort(engine, effort)) throw new LaunchError("invalid_argument", `${engine} has no effort ${JSON.stringify(effort)}`);
@@ -224,7 +225,18 @@ function launchFlags(engine: CliEngine, options: CliLaunchOptions): string[] {
   for (const flag of flags) {
     if (flag !== model && !SAFE_ARG.test(flag)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(flag)} is not allowed`);
   }
-  return flags;
+  return [...flags, ...access];
+}
+
+/** Full access: Claude Code skips every permission prompt, Codex runs without approvals or
+ * sandbox. "ask" (or nothing) adds no flag, so the CLI keeps the user's own settings. ZCode
+ * has no such flag. Both flags are accepted by `claude --resume`/`--fork-session` and by
+ * `codex resume`/`codex fork` (Claude Code 2.1.331, Codex 0.163). */
+export function permissionFlags(engine: CliEngine, mode: CliLaunchOptions["permissions"]): string[] {
+  if (mode !== "full") return [];
+  if (engine === "claude") return ["--dangerously-skip-permissions"];
+  if (engine === "codex") return ["--dangerously-bypass-approvals-and-sandbox"];
+  return [];
 }
 
 /** The CLI arguments (without the executable). New Claude sessions get an id we
@@ -410,6 +422,7 @@ export async function planLaunch(
       ...(hooks ? { pluginDir: hooks.pluginDir } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      ...(input.permissions !== undefined ? { permissions: input.permissions } : {}),
     },
     executable,
     options,

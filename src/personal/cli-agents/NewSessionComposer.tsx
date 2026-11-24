@@ -1,8 +1,8 @@
 // A new session, started from the same message box every session has (attachments, goal mode, skills, model):
 // the folder, CLI and worktree sit in a row above it, and sending starts the session with that message.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, GitBranch } from "lucide-react";
-import type { CliDeviceView, CliEngine, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
+import { ArrowLeft, GitBranch, ShieldAlert, ShieldCheck } from "lucide-react";
+import type { CliDeviceView, CliEngine, CliPermissionMode, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import type { LaunchChoice } from "./CliModelMenu";
 import { Composer } from "./Composer";
@@ -39,6 +39,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   const [git, setGit] = useState(false);
   const [branch, setBranch] = useState<string | null>(null);
   const [choice, setChoice] = useState<LaunchChoice>({ model: "", effort: "" });
+  const [permissions, setPermissions] = useState<CliPermissionMode>("full");
 
   useEffect(() => { if (engines.length && !engines.includes(engine)) setEngine(engines[0]); }, [engines, engine]);
   useEffect(() => { setChoice({ model: "", effort: "" }); }, [engine, deviceId]);
@@ -51,6 +52,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   }, [dir, deviceId, source]);
 
   const features = device?.cliAgents?.features ?? [];
+  const canChoosePermissions = features.includes("permissions") && engine !== "zcode";
   const branchError = branch !== null ? branchProblem(branch) : null;
   const ready = !blocker && !!device && engines.includes(engine) && !!dir && !branchError;
   // the box below is the session's own message box: it only needs the computer, CLI and folder
@@ -65,6 +67,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
       deviceId, engine, cwd: dir.path, message, files, attach: features.includes("attach"),
       ...(dir.create ? { createDir: true } : {}), ...(branch !== null ? { branch: branch.trim() } : {}),
       choice: features.includes("launchOptions") ? choice : { model: "", effort: "" },
+      ...(canChoosePermissions ? { permissions } : {}),
     });
   };
 
@@ -83,6 +86,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
               source={source} recents={recent}/>
             <HarnessPicker engines={engines} value={engine} onChange={setEngine} disabled={!!blocker}/>
             {git ? <BranchChip branch={branch} onChange={setBranch} problem={branchError}/> : null}
+            {canChoosePermissions ? <PermissionChip value={permissions} onChange={setPermissions}/> : null}
             {/* only what needs attention; the folder's full path is on its chip */}
             {status ? <span className="na-new-path" role="alert">{status}</span> : null}
           </div>
@@ -91,6 +95,18 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
         </div>
       </div>
     </section>
+  );
+}
+
+/** How the session asks before it acts: full access (the default; nothing is asked) or the CLI's own prompts,
+ * which then arrive as cards. One tap switches. */
+function PermissionChip({ value, onChange }: { value: CliPermissionMode; onChange(next: CliPermissionMode): void }) {
+  const full = value === "full";
+  return (
+    <button type="button" className="na-pick-chip na-permission-chip" aria-pressed={full} data-mode={value}
+      title={full ? "完全访问：不再逐项确认" : "每次询问：需要你确认"} onClick={() => onChange(full ? "ask" : "full")}>
+      {full ? <ShieldCheck size={14}/> : <ShieldAlert size={14}/>}<span>{full ? "完全访问" : "每次询问"}</span>
+    </button>
   );
 }
 

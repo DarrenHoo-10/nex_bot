@@ -13,6 +13,7 @@ import {
   cliVersion,
   clearCliCache,
   launchEnv,
+  permissionFlags,
   planLaunch,
   resolveCli,
   terminalLabels,
@@ -45,6 +46,22 @@ describe("cliArgs", () => {
     expect(cliArgs("claude", "resume", { nativeId: UUID })).toEqual(["--resume", UUID]);
     expect(cliArgs("codex", "new")).toEqual([]);
     expect(cliArgs("codex", "resume", { nativeId: UUID })).toEqual(["resume", UUID]);
+  });
+
+  it("adds each CLI's full-access flag only for permissions full, after the model flags", () => {
+    expect(permissionFlags("claude", "full")).toEqual(["--dangerously-skip-permissions"]);
+    expect(permissionFlags("codex", "full")).toEqual(["--dangerously-bypass-approvals-and-sandbox"]);
+    expect(permissionFlags("zcode", "full")).toEqual([]);
+    expect(permissionFlags("claude", "ask")).toEqual([]);
+    expect(permissionFlags("codex", undefined)).toEqual([]);
+    expect(cliArgs("claude", "new", { nativeId: UUID, permissions: "full" })).toEqual(["--session-id", UUID, "--dangerously-skip-permissions"]);
+    expect(cliArgs("claude", "new", { nativeId: UUID, model: "opus", permissions: "full" })).toEqual(["--session-id", UUID, "--model", "opus", "--dangerously-skip-permissions"]);
+    expect(cliArgs("codex", "new", { permissions: "full" })).toEqual(["--dangerously-bypass-approvals-and-sandbox"]);
+    expect(cliArgs("codex", "resume", { nativeId: UUID, permissions: "full" })).toEqual(["resume", UUID, "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(cliArgs("codex", "fork", { forkFrom: UUID, permissions: "full" })).toEqual(["fork", UUID, "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(cliArgs("codex", "new", { permissions: "ask" })).toEqual([]);
+    // ZCode has no such flag and takes the mode without complaint
+    expect(cliArgs("zcode", "new", { permissions: "full" })).toEqual([]);
   });
 
   it("requires an id where the CLI needs one", () => {

@@ -112,7 +112,11 @@ export const startSession = (deviceId: string, engine: CliEngine, cwd: string, o
 export const continueSession = (key: CliSessionKey, options: CliLaunchOptions = {}) => call<{ key: CliSessionKey }>("/continue", { key, ...launchBody(options) });
 
 function launchBody(options: CliLaunchOptions): CliLaunchOptions {
-  return { ...(options.model ? { model: options.model } : {}), ...(options.effort ? { effort: options.effort } : {}) };
+  return {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.effort ? { effort: options.effort } : {}),
+    ...(options.permissions ? { permissions: options.permissions } : {}),
+  };
 }
 
 /** The sub-folders of a folder on a computer; "" lists its drives and home folder. */
@@ -215,9 +219,9 @@ export const interruptSession = (key: CliSessionKey) => call<{ outcome: string }
 export const openLocal = (key: CliSessionKey) => call<{ ok: boolean }>("/open-local", { key });
 export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: boolean }>("/hide", { key, hidden });
 
-/** An answer: allow or deny, with the chosen labels for a question. */
-export const answerRequest = (id: string, decision: CliAnswerDecision, answers?: Record<string, string>) =>
-  call<{ outcome: string }>("/answer", { id, decision, ...(answers ? { answers } : {}) });
+/** An answer: allow or deny, with the chosen labels for a question; `always` allows such calls for the rest of the session. */
+export const answerRequest = (id: string, decision: CliAnswerDecision, answers?: Record<string, string>, always?: boolean) =>
+  call<{ outcome: string }>("/answer", { id, decision, ...(answers ? { answers } : {}), ...(always ? { always: true } : {}) });
 
 export const forkSession = (key: CliSessionKey, botId: string) => call<{ botId: string; conversationId: string }>("/fork", { key, botId });
 

@@ -158,7 +158,7 @@ describe("request cards in the workspace", () => {
     await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r1" })] });
     await click(button("允许"));
     await flush();
-    expect(fixture.answerRequest).toHaveBeenCalledWith("r1", "allow", undefined);
+    expect(fixture.answerRequest).toHaveBeenCalledWith("r1", "allow", undefined, undefined);
     const card = container.querySelector(".cli-request")!;
     expect(card.getAttribute("data-state")).toBe("allowed");
     expect(card.textContent).toContain("已允许");
@@ -168,12 +168,31 @@ describe("request cards in the workspace", () => {
     expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("allowed");
   });
 
+  it("shows the full arguments and allows for the rest of the session when the request offers it", async () => {
+    await open();
+    await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r1", detail: JSON.stringify({ command: "rm -rf build" }, null, 2), always: true })] });
+    const card = container.querySelector(".cli-request")!;
+    expect(card.querySelector(".cli-request-detail pre")!.textContent).toContain('"command": "rm -rf build"');
+    await click(button("本会话总是允许"));
+    await flush();
+    expect(fixture.answerRequest).toHaveBeenCalledWith("r1", "allow", undefined, true);
+    expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("always");
+    expect(container.querySelector(".cli-request")!.textContent).toContain("本会话已允许");
+  });
+
+  it("offers no session-wide allow when the request does not", async () => {
+    await open();
+    await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r1" })] });
+    expect(button("本会话总是允许")).toBeNull();
+    expect(container.querySelector(".cli-request-detail")).toBeNull();
+  });
+
   it("answers deny", async () => {
     await open();
     await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r1" })] });
     await click(button("拒绝"));
     await flush();
-    expect(fixture.answerRequest).toHaveBeenCalledWith("r1", "deny", undefined);
+    expect(fixture.answerRequest).toHaveBeenCalledWith("r1", "deny", undefined, undefined);
     expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("denied");
   });
 
@@ -197,7 +216,7 @@ describe("request cards in the workspace", () => {
     await click(inputs[3]);
     await click(button("提交"));
     await flush();
-    expect(fixture.answerRequest).toHaveBeenCalledWith("q1", "allow", { "用哪个框架？": "Vue", "要哪些功能？": "路由, 测试" });
+    expect(fixture.answerRequest).toHaveBeenCalledWith("q1", "allow", { "用哪个框架？": "Vue", "要哪些功能？": "路由, 测试" }, undefined);
     expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("answered");
   });
 

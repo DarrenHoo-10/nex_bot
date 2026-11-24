@@ -78,6 +78,8 @@ export const CLI_LIMITS = {
   requestQuestions: 8,
   requestQuestion: 1000,
   requestDescription: 1000,
+  /** the tool's arguments as shown on a permission card */
+  requestDetail: 4000,
   requestAnswer: 4096,
   /** error text a cli.turn carries (it may name a usage-limit reset time) */
   turnError: 1000,
@@ -292,8 +294,12 @@ export interface CliRequestWire {
   kind: CliRequestKind;
   tool: string;
   summary: string;
+  /** the tool's arguments in full (clipped to CLI_LIMITS.requestDetail) */
+  detail?: string;
   options?: string[];
   questions?: CliRequestQuestion[];
+  /** the device can allow this kind of call for the rest of the session (answer with `always`) */
+  always?: boolean;
   /** epoch ms */
   expiresAt: number;
 }
@@ -305,8 +311,10 @@ export interface CliRequestView {
   kind: CliRequestKind;
   tool: string;
   summary: string;
+  detail?: string;
   options?: string[];
   questions?: CliRequestQuestion[];
+  always?: boolean;
   /** epoch ms */
   createdAt: number;
   expiresAt: number;
@@ -396,8 +404,9 @@ export interface CliError {
  * attachments written to the computer (`attach`) and the models its CLIs offer
  * (`models`). Older executors send none. */
 /** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first. */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs";
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs"];
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions";
+/** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask". */
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions"];
 
 /** What the page shows when the computer's executor lacks a feature. */
 export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
@@ -473,9 +482,17 @@ export function isCliEffort(engine: CliEngine, value: unknown): value is string 
   return typeof value === "string" && (CLI_EFFORTS[engine] ?? []).includes(value);
 }
 
+/** How a launched CLI asks before it acts. "full": Claude `--dangerously-skip-permissions`, Codex
+ * `--dangerously-bypass-approvals-and-sandbox` (nothing is asked). "ask": the CLI's own settings, so
+ * prompts reach the request cards. A new session (start) defaults to "full", a continued one to "ask". */
+export type CliPermissionMode = "full" | "ask";
+export const CLI_PERMISSION_MODES: readonly CliPermissionMode[] = ["full", "ask"];
+
 export interface CliLaunchOptions {
   model?: string;
   effort?: string;
+  /** only sent to executors that list the `permissions` feature */
+  permissions?: CliPermissionMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -563,8 +580,9 @@ export interface CliOpArgs {
   steer: { ref: CliSessionRef; text: string };
   interrupt: { ref: CliSessionRef };
   open_local: { ref: CliSessionRef };
-  /** answers the pending request `id`; `answers` maps a question to its chosen label(s) */
-  answer: { id: string; decision: CliAnswerDecision; answers?: Record<string, string>; message?: string };
+  /** answers the pending request `id`; `answers` maps a question to its chosen label(s);
+   * `always` (with allow, only for a request that offered it) also allows such calls for the rest of the session */
+  answer: { id: string; decision: CliAnswerDecision; answers?: Record<string, string>; message?: string; always?: boolean };
   /** a Git query or worktree creation for the session's repository on the device */
   git: { ref: CliSessionRef; action: "info" } | { ref: CliSessionRef; action: "worktree"; branch: string; requestId: string };
   /** every listed session's user and assistant text, newest sessions first */
@@ -1212,8 +1230,10 @@ function requestFields(o: Rec) {
     kind: oneOf(o.kind, CLI_REQUEST_KINDS),
     tool: str(o.tool, CLI_LIMITS.requestTool),
     summary: str(o.summary, SUMMARY_MAX),
+    detail: optStr(o, "detail", CLI_LIMITS.requestDetail),
     options: present(o, "options") ? requestOptions(o.options) : undefined,
     questions: present(o, "questions") ? requestQuestions(o.questions) : undefined,
+    always: optBool(o, "always") === true ? true : undefined,
     expiresAt: int(o.expiresAt, 0, COUNTER_MAX),
   };
 }
@@ -1227,8 +1247,10 @@ function requestView(value: unknown): CliRequestView {
     kind: fields.kind,
     tool: fields.tool,
     summary: fields.summary,
+    detail: fields.detail,
     options: fields.options,
     questions: fields.questions,
+    always: fields.always,
     createdAt: int(o.createdAt, 0, COUNTER_MAX),
     expiresAt: fields.expiresAt,
   });
@@ -1250,6 +1272,7 @@ function launchOptions(o: Rec, engine: CliEngine): CliLaunchOptions {
     if (!isCliEffort(engine, o.effort)) fail();
     out.effort = o.effort;
   }
+  if (present(o, "permissions")) out.permissions = oneOf(o.permissions, CLI_PERMISSION_MODES);
   return out;
 }
 
@@ -1341,6 +1364,7 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
       decision: oneOf(o.decision, CLI_ANSWER_DECISIONS),
       answers: present(o, "answers") ? answersMap(o.answers) : undefined,
       message: optStr(o, "message", CLI_LIMITS.answerMessage),
+      always: optBool(o, "always") === true ? true : undefined,
     }),
 };
 

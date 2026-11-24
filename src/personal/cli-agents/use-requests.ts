@@ -27,6 +27,6 @@ export function useCliRequests(stream: CliStream) {
   }, [expiry]);
 
   const merge = useCallback((views: readonly CliRequestView[]) => setStore((current) => mergePending(current, views)), []);
-  const answered = useCallback((key: CliSessionKey, id: string, decision: "allow" | "deny") => setStore((current) => markAnswered(current, key, id, decision)), []);
+  const answered = useCallback((key: CliSessionKey, id: string, decision: "allow" | "deny", always?: boolean) => setStore((current) => markAnswered(current, key, id, decision, always)), []);
   return { store, now, merge, answered };
 }

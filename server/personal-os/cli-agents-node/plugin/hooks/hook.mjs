@@ -16,7 +16,10 @@
 //
 // Wire format, one JSON line each way (the bridge side is hooks.ts):
 //   hook -> bridge  {"v":1,"token":"…","event":"permission|post|stop","input":{…}}
-//   bridge -> hook  {"v":1,"decision":"allow|deny|pass","message"?:"…","answers"?:{…}}
+//   bridge -> hook  {"v":1,"decision":"allow|deny|pass","message"?:"…","answers"?:{…},"always"?:true}
+//
+// `always` allows the call and applies the rules Claude Code itself suggested
+// for this prompt (permission_suggestions) for the rest of the session only.
 import net from "node:net";
 
 const MODES = new Set(["permission", "post", "stop"]);
@@ -61,10 +64,20 @@ function readStdin() {
   });
 }
 
+/** Claude Code's own suggestions for this prompt, kept to the current session. */
+function sessionRules(suggestions) {
+  if (!Array.isArray(suggestions)) return [];
+  return suggestions.filter((entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry)).map((entry) => ({ ...entry, destination: "session" }));
+}
+
 /** What Claude Code expects on stdout for a decision. */
 function permissionOutput(input, reply) {
   if (reply.decision === "allow") {
     const decision = { behavior: "allow" };
+    if (reply.always === true && input.tool_name !== "AskUserQuestion") {
+      const rules = sessionRules(input.permission_suggestions);
+      if (rules.length) decision.updatedPermissions = rules;
+    }
     if (input.tool_name === "AskUserQuestion") {
       // To verify with a real Claude Code: the answers go in updatedInput next to the original questions.
       if (!reply.answers || typeof reply.answers !== "object") return null;
@@ -151,12 +164,13 @@ async function main() {
     tool_name: input.tool_name,
     tool_use_id: input.tool_use_id,
     tool_input: slim(input.tool_input),
+    ...(Array.isArray(input.permission_suggestions) ? { permission_suggestions: slim(input.permission_suggestions) } : {}),
   };
   const line = JSON.stringify({ v: 1, token, event: mode, input: sent });
   const waitMs = mode === "permission" ? Number(process.env.NEXBOT_HOOK_TIMEOUT_MS) || DEFAULT_WAIT_MS : DELIVER_WAIT_MS;
   const reply = await exchange(pipe, line, waitMs, mode === "permission");
   if (mode !== "permission" || !reply || reply.v !== 1) return null;
-  return permissionOutput({ tool_name: input.tool_name, tool_input: input.tool_input }, reply);
+  return permissionOutput({ tool_name: input.tool_name, tool_input: input.tool_input, permission_suggestions: input.permission_suggestions }, reply);
 }
 
 let output = null;

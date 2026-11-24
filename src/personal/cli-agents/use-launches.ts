@@ -3,7 +3,7 @@
 // the computer builds the worktree and starts the CLI, and the message is sent as
 // soon as the session exists. A failure stays on the row with a retry.
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CliEngine, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
+import type { CliEngine, CliPermissionMode, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { CliApiError, cliErrorText, sendMessage, startSession, uploadAttachment } from "./api";
 import type { LaunchChoice } from "./CliModelMenu";
 import { fileReference, saveLaunch, type PickedFile } from "./composer-additions";
@@ -24,6 +24,8 @@ export interface LaunchRequest {
   /** the computer takes uploads (`attach`); without it only small text files go inline */
   attach?: boolean;
   choice: LaunchChoice;
+  /** "ask": the CLI keeps its own permission prompts; absent: the computer's default (full access) */
+  permissions?: CliPermissionMode;
 }
 
 export type LaunchPhase = "starting" | "sending" | "sent" | "failed";
@@ -110,7 +112,11 @@ export function useLaunches(sessions: readonly CliSessionView[], onSettled?: () 
     try {
       if (!target) {
         patch(launch.id, { phase: "starting", error: undefined });
-        const options = { ...(launch.choice.model ? { model: launch.choice.model } : {}), ...(launch.choice.effort ? { effort: launch.choice.effort } : {}) };
+        const options = {
+          ...(launch.choice.model ? { model: launch.choice.model } : {}),
+          ...(launch.choice.effort ? { effort: launch.choice.effort } : {}),
+          ...(launch.permissions ? { permissions: launch.permissions } : {}),
+        };
         if (review && launch.branch) {
           target = await review.run("worktree-start", review.initial, { deviceId: launch.deviceId, engine: launch.engine, cwd: launch.cwd, branch: launch.branch, requestId: attempt.requestId });
           if (!target) throw new Error("未取得新会话");

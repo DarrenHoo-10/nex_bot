@@ -295,18 +295,21 @@ public struct CliRequestRecord: Sendable, Hashable, Identifiable {
     public var closed: Bool
     /// What this app answered, when it was this app.
     public var decision: CliDecision?
+    /// Allowed for the rest of the session.
+    public var always: Bool
     public var by: CliResolvedBy?
     public var id: String { view.id }
-    public init(view: CliRequest, closed: Bool = false, decision: CliDecision? = nil, by: CliResolvedBy? = nil) {
-        self.view = view; self.closed = closed; self.decision = decision; self.by = by
+    public init(view: CliRequest, closed: Bool = false, decision: CliDecision? = nil, always: Bool = false, by: CliResolvedBy? = nil) {
+        self.view = view; self.closed = closed; self.decision = decision; self.always = always; self.by = by
     }
 }
 
-public enum CliCardState: String, Sendable { case pending, allowed, denied, answered, terminal, gone, expired
+public enum CliCardState: String, Sendable { case pending, allowed, always, denied, answered, terminal, gone, expired
     public var text: String {
         switch self {
         case .pending: "等你处理"
         case .allowed: "已允许"
+        case .always: "本会话已允许"
         case .denied: "已拒绝"
         case .answered: "已处理"
         case .terminal: "已在终端处理"
@@ -355,10 +358,10 @@ public struct CliRequestStore: Sendable, Equatable {
         records = next
     }
 
-    private mutating func close(_ key: CliSessionKey, _ id: String, by: CliResolvedBy?, decision: CliDecision?) {
+    private mutating func close(_ key: CliSessionKey, _ id: String, by: CliResolvedBy?, decision: CliDecision?, always: Bool = false) {
         guard let list = records[key], let at = list.firstIndex(where: { $0.id == id && !$0.closed }) else { return }
         var record = list[at]
-        record.closed = true; record.by = by; record.decision = decision
+        record.closed = true; record.by = by; record.decision = decision; record.always = always && decision == .allow
         var rest = list; rest.remove(at: at)
         put(key, rest + [record])
     }
@@ -368,8 +371,8 @@ public struct CliRequestStore: Sendable, Equatable {
         close(key, id, by: by, decision: nil)
     }
 
-    public mutating func markAnswered(_ key: CliSessionKey, _ id: String, _ decision: CliDecision) {
-        close(key, id, by: .nexbot, decision: decision)
+    public mutating func markAnswered(_ key: CliSessionKey, _ id: String, _ decision: CliDecision, always: Bool = false) {
+        close(key, id, by: .nexbot, decision: decision, always: always)
     }
 
     public static func state(of record: CliRequestRecord, now: Int) -> CliCardState {
@@ -380,7 +383,7 @@ public struct CliRequestStore: Sendable, Equatable {
         case .timeout?: return .expired
         default:
             if record.decision == .deny { return .denied }
-            if record.decision == .allow { return record.view.kind == .question ? .answered : .allowed }
+            if record.decision == .allow { return record.view.kind == .question ? .answered : record.always ? .always : .allowed }
             return .answered
         }
     }

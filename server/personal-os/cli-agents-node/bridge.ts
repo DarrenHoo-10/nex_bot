@@ -32,8 +32,10 @@ import {
   type CliEngine,
   type CliErrorCode,
   type CliItem,
+  type CliLaunchOptions,
   type CliOp,
   type CliOpArgs,
+  type CliPermissionMode,
   type CliSessionRef,
   type CliSessionWire,
   type CoreCliMessage,
@@ -43,7 +45,8 @@ import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { CodexDaemons, DaemonError, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
 import { harnessFor } from "./harness.ts";
-import { HookError, HookServer, TurnTracker, locateHookPlugin } from "./hooks.ts";
+import { HookError, HookServer, TurnTracker, locateHookPlugin, platformPlugin } from "./hooks.ts";
+import { ScreenPromptError, ScreenPrompts, type ScreenTerminal } from "./screen-prompts.ts";
 import { InboxError, sendToInbox } from "./inbox.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import {
@@ -79,6 +82,8 @@ export interface HcLike {
   list(params?: { all?: boolean; labels?: Record<string, string> }): Promise<HcListResult>;
   get(terminal: string): Promise<HcTerminal>;
   read(terminal: string, params?: { lines?: number }): Promise<{ text: string }>;
+  /** presses keys (`enter`, `esc`, `1`...); answers approval dialogs read off the screen */
+  keys?(terminal: string, keys: string[]): Promise<unknown>;
   /** `send` that fails with kind `hc_draft` instead of merging into a local draft */
   sendGuarded(params: HcSendParams): Promise<HcSendResult>;
   interrupt(terminal: string, params?: { timeout?: number }): Promise<{ outcome: string }>;
@@ -148,6 +153,10 @@ export interface CliAgentBridgeOptions {
   inboxConfirmMs?: number;
   /** Where `attach` writes files. Default: `<os.tmpdir()>/nexbot-attachments`. */
   attachDir?: string;
+  /** How often the screens of nex_bot's terminals are checked for approval dialogs no hook reported. Default 1.5 s; 0 turns it off. */
+  screenPromptMs?: number;
+  /** How long such a dialog must stay before it becomes a card (tests pass 0). */
+  screenPromptGraceMs?: number;
   /** Wall-clock budget of one `search`. Default 8 s (the op itself has 10). */
   searchBudgetMs?: number;
 }
@@ -237,6 +246,8 @@ export class CliAgentBridge {
   private readonly fallbackTimers = new Map<string, NodeJS.Timeout>();
   private readonly codexTails = new Map<string, TranscriptReader>();
   private readonly codexDaemons: CodexDaemons;
+  private readonly screens: ScreenPrompts;
+  private screenTimer: NodeJS.Timeout | null = null;
   private readonly git: DeviceGit;
 
   constructor(private readonly options: CliAgentBridgeOptions) {
@@ -250,6 +261,21 @@ export class CliAgentBridge {
       onLost: () => this.discovery.reapply({ flush: true }),
       log: (level, message) => this.log(level, `codex daemon: ${message}`),
       ...options.codexDaemon,
+    });
+    this.screens = new ScreenPrompts({
+      terminals: () => this.screenTerminals(),
+      reported: (ref) => (this.hooks?.pendingFor(ref) ?? 0) > 0 || (ref.startsWith("codex:") && this.codexDaemons.hasPendingFor(ref.slice(ref.indexOf(":") + 1))),
+      maybeWaiting: (terminal) => this.maybeWaiting(terminal),
+      read: async (address) => (await this.requireHc()).read(address, { lines: 60 }).then((result) => result.text),
+      press: async (address, key) => {
+        const hc = await this.requireHc();
+        if (!hc.keys) throw new OpFailure("not_found");
+        await hc.keys(address, [key]);
+      },
+      emit: (message) => this.sendJson(message),
+      linked: () => this.link_ !== null && !this.detached,
+      ...(options.screenPromptGraceMs === undefined ? {} : { graceMs: () => options.screenPromptGraceMs as number }),
+      log: (message) => this.log("debug", message),
     });
     this.discovery = new SessionDiscovery({
       ...(options.claudeDirs ? { claudeDirs: options.claudeDirs } : {}),
@@ -353,8 +379,11 @@ export class CliAgentBridge {
     void this.warm();
     // Core dropped its copies of open approvals with the old link
     this.codexDaemons.relink();
-    // The hook listener comes up with the link, so terminals that survived a client restart keep forwarding.
-    void this.ensureHooks();
+    // The hook listener comes up with the link, so terminals that survived a client restart keep forwarding;
+    // prompts that came while the link was down are announced now.
+    void this.ensureHooks().then((hooks) => hooks?.relink());
+    this.screens.relink();
+    this.armScreens();
   }
 
   /** The socket dropped. Streams and watches die with it (Core re-opens what it needs); scanning and herdr-core carry on. */
@@ -390,6 +419,9 @@ export class CliAgentBridge {
     this.refreshTimer = this.expiryTimer = this.graceTimer = null;
     for (const timer of this.fallbackTimers.values()) clearTimeout(timer);
     this.fallbackTimers.clear();
+    if (this.screenTimer) clearInterval(this.screenTimer);
+    this.screenTimer = null;
+    this.screens.clear();
     for (const reader of this.codexTails.values()) reader.close();
     this.codexTails.clear();
     const hooks = this.hooks;
@@ -580,6 +612,45 @@ export class CliAgentBridge {
     }
   }
 
+  // -- internals: approval dialogs on the screen ------------------------------------------------
+
+  /** Starts looking at the screens of nex_bot's terminals for dialogs no hook or daemon reported. */
+  private armScreens(): void {
+    const every = this.options.screenPromptMs ?? 1500;
+    if (this.screenTimer || this.detached || every <= 0) return;
+    this.screenTimer = setInterval(() => {
+      // nothing to look at until herdr-core runs a terminal of ours
+      if (this.detached || !this.hc || this.terminals.size === 0) return;
+      this.track(this.screens.scan());
+    }, every);
+    this.screenTimer.unref?.();
+  }
+
+  private screenTerminals(): ScreenTerminal[] {
+    const out: ScreenTerminal[] = [];
+    for (const info of this.terminals.values()) {
+      if (!info.nativeId || (info.engine !== "claude" && info.engine !== "codex")) continue;
+      try {
+        out.push({ ref: cliRef(info.engine, info.nativeId), engine: info.engine, address: info.address });
+      } catch {
+        // not a session we can show
+      }
+    }
+    return out;
+  }
+
+  /** The CLI says it waits (Claude's status file) or herdr-core sees the agent blocked on the user. */
+  private async maybeWaiting(terminal: ScreenTerminal): Promise<boolean> {
+    if (this.discovery.get(terminal.ref)?.state === "waiting") return true;
+    const hc = this.hc;
+    if (!hc) return false;
+    try {
+      return (await hc.get(terminal.address)).status === "blocked";
+    } catch {
+      return false;
+    }
+  }
+
   // -- internals: Claude hooks ------------------------------------------------------------------
 
   /** The hook listener, started on first use. Null when hooks are off, there is no plugin, or the listener cannot start. */
@@ -588,13 +659,18 @@ export class CliAgentBridge {
     if (this.hooks) return Promise.resolve(this.hooks);
     this.hooksStarting ??= (async () => {
       try {
-        if (this.pluginDir === undefined) this.pluginDir = this.options.pluginDir === undefined ? locateHookPlugin(this.options.env ? { env: this.options.env } : {}) : this.options.pluginDir;
+        if (this.pluginDir === undefined) {
+          const located = this.options.pluginDir === undefined ? locateHookPlugin(this.options.env ? { env: this.options.env } : {}) : this.options.pluginDir;
+          // Windows terminals get a copy whose hooks run in PowerShell (see platformPlugin)
+          this.pluginDir = located ? platformPlugin(located, this.options.dir, this.platform) : located;
+        }
         if (!this.pluginDir) return null;
         const server = new HookServer({
           dir: this.options.dir,
           emit: (message) => this.sendJson(message),
           turns: this.turns,
-          active: () => this.link_ !== null && !this.detached,
+          active: () => !this.detached,
+          linked: () => this.link_ !== null && !this.detached,
           isLive: (ref) => this.nexbotTerminals().has(ref),
           platform: this.platform,
           ...(this.options.hookSocketDir ? { socketDir: this.options.hookSocketDir } : {}),
@@ -1281,7 +1357,7 @@ export class CliAgentBridge {
         cwd,
         executable,
         ...(hooks ? { hooks } : {}),
-        ...launchOptionsOf(args),
+        ...launchOptionsOf(args, "full"),
       },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
@@ -1572,6 +1648,14 @@ export class CliAgentBridge {
 
   /** Core relays the answer to a pending request; it goes to the hook that waits for it. */
   private async opAnswer(args: CliOpArgs["answer"]): Promise<{ outcome: string }> {
+    if (this.screens.owns(args.id)) {
+      try {
+        return { outcome: await this.screens.answer(args) };
+      } catch (error) {
+        if (error instanceof ScreenPromptError) throw new OpFailure(error.code, error.code === "not_found" ? "request is closed" : undefined);
+        throw error;
+      }
+    }
     if (this.codexDaemons.owns(args.id)) {
       try {
         return { outcome: this.codexDaemons.answer(args) };
@@ -1607,8 +1691,15 @@ function refuseZcodeOptions(engine: CliEngine, args: { model?: string; effort?: 
   if (engine === "zcode" && (args.model !== undefined || args.effort !== undefined)) throw new OpFailure("invalid", "ZCode 不支持选择模型和推理强度");
 }
 
-function launchOptionsOf(args: { model?: string; effort?: string }): { model?: string; effort?: string } {
-  return { ...(args.model !== undefined ? { model: args.model } : {}), ...(args.effort !== undefined ? { effort: args.effort } : {}) };
+/** The launch options of an op. A new session (`start`) runs with full access unless the user chose
+ * "ask"; a continued one keeps the CLI's own settings unless the user chose otherwise. */
+function launchOptionsOf(args: CliLaunchOptions, fallback?: CliPermissionMode): CliLaunchOptions {
+  const permissions = args.permissions ?? fallback;
+  return {
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(args.effort !== undefined ? { effort: args.effort } : {}),
+    ...(permissions !== undefined ? { permissions } : {}),
+  };
 }
 
 /** Up to SEARCH_DB_ITEMS items of a database chat, oldest first. The Codex App

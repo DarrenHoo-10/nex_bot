@@ -58,6 +58,10 @@ export interface FakeTerminal extends HcTerminal {
   streams: FakeStream[];
   sent: HcSendParams[];
   interrupts: number;
+  /** what `read` shows while the terminal lives */
+  screen?: string;
+  /** keys pressed with `keys` */
+  pressed: string[];
 }
 
 export class FakeHc extends EventEmitter implements HcLike {
@@ -113,6 +117,7 @@ export class FakeHc extends EventEmitter implements HcLike {
       streams: [],
       sent: [],
       interrupts: 0,
+      pressed: [],
     };
     this.terminals.set(address, terminal);
     this.onRun?.(terminal, params);
@@ -136,7 +141,19 @@ export class FakeHc extends EventEmitter implements HcLike {
 
   async read(address: string): Promise<{ text: string }> {
     if (!this.terminals.has(address)) throw new HcError("not_found", "no such terminal");
-    return { text: this.terminals.get(address)!.reason ?? "" };
+    const terminal = this.terminals.get(address)!;
+    return { text: terminal.screen ?? terminal.reason ?? "" };
+  }
+
+  /** plays the CLI after keys were pressed */
+  onKeys: ((terminal: FakeTerminal, keys: string[]) => void) | null = null;
+
+  async keys(address: string, keys: string[]): Promise<{ turn: number }> {
+    const terminal = this.terminals.get(address);
+    if (!terminal || terminal.state !== "live") throw new HcError("not_found", "no such terminal");
+    terminal.pressed.push(...keys);
+    this.onKeys?.(terminal, keys);
+    return { turn: this.turn };
   }
 
   async sendGuarded(params: HcSendParams): Promise<HcSendResult> {
@@ -202,6 +219,6 @@ export class FakeHc extends EventEmitter implements HcLike {
 }
 
 function plain(terminal: FakeTerminal): HcTerminal {
-  const { env: _env, streams: _streams, sent: _sent, interrupts: _interrupts, ...rest } = terminal;
+  const { env: _env, streams: _streams, sent: _sent, interrupts: _interrupts, screen: _screen, pressed: _pressed, ...rest } = terminal;
   return { ...rest };
 }

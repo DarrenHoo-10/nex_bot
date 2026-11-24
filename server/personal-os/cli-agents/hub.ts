@@ -534,8 +534,13 @@ export class CliAgentHub {
     if (existing) { if (existing.session_key !== key) this.invalidMessages++; return; }
     const pending = Number(this.store.get("SELECT COUNT(*) n FROM cli_agent_requests WHERE session_key=? AND status='pending'", key)?.n ?? 0);
     if (pending >= CLI_LIMITS.requestsPerSession) return;
-    const extra = message.options !== undefined || message.questions !== undefined
-      ? this.store.encrypt(JSON.stringify({ ...(message.options !== undefined ? { options: message.options } : {}), ...(message.questions !== undefined ? { questions: message.questions } : {}) }))
+    const extra = message.options !== undefined || message.questions !== undefined || message.detail !== undefined || message.always === true
+      ? this.store.encrypt(JSON.stringify({
+        ...(message.options !== undefined ? { options: message.options } : {}),
+        ...(message.questions !== undefined ? { questions: message.questions } : {}),
+        ...(message.detail !== undefined ? { detail: message.detail } : {}),
+        ...(message.always === true && message.kind === "permission" ? { always: true } : {}),
+      }))
       : null;
     this.store.insert("cli_agent_requests", {
       id: message.id, session_key: key, kind: message.kind, tool: message.tool,
@@ -578,10 +583,12 @@ export class CliAgentHub {
 
   private requestView(row: Row): CliRequestView {
     const summary = (JSON.parse(this.store.decrypt(String(row.summary_json))) as { summary: string }).summary;
-    const extra = row.options_json === null ? {} : (JSON.parse(this.store.decrypt(String(row.options_json))) as { options?: string[]; questions?: CliRequestQuestion[] });
+    const extra = row.options_json === null ? {} : (JSON.parse(this.store.decrypt(String(row.options_json))) as { options?: string[]; questions?: CliRequestQuestion[]; detail?: string; always?: boolean });
     return {
       id: String(row.id), key: asKey(String(row.session_key)), kind: row.kind as CliRequestView["kind"], tool: String(row.tool), summary,
+      ...(typeof extra.detail === "string" ? { detail: extra.detail } : {}),
       ...(extra.options ? { options: extra.options } : {}), ...(extra.questions ? { questions: extra.questions } : {}),
+      ...(extra.always === true ? { always: true } : {}),
       createdAt: Number(row.created_at), expiresAt: Number(row.expires_at),
     };
   }
@@ -608,7 +615,7 @@ export class CliAgentHub {
   /** Answers a pending request on the device. The request is claimed first, so
    * two answers cannot both reach the device; a definite failure gives it back,
    * an unknown outcome keeps it closed (the device may have acted). */
-  async answer(actor: string, requestId: string, decision: "allow" | "deny", answers?: Record<string, string>, message?: string): Promise<{ outcome: string }> {
+  async answer(actor: string, requestId: string, decision: "allow" | "deny", answers?: Record<string, string>, message?: string, always?: boolean): Promise<{ outcome: string }> {
     const row = this.store.get("SELECT * FROM cli_agent_requests WHERE id=?", requestId);
     if (!row) throw new CliOpError("not_found");
     const key = String(row.session_key);
@@ -618,6 +625,8 @@ export class CliAgentHub {
     const view = this.requestView(row);
     const core = view.tool.startsWith(CORE_REQUEST_PREFIX);
     if (core && !this.coreAnswer) throw new CliOpError("not_found", "nothing handles this request");
+    // "always" only means something for a permission the device offered it for
+    const forSession = always === true && decision === "allow" && view.kind === "permission" && view.always === true;
     let chosen: Record<string, string> | undefined;
     if (view.kind === "question" && decision === "allow") {
       chosen = answers;
@@ -626,14 +635,14 @@ export class CliAgentHub {
     }
     const claimed = Number(this.store.run(
       "UPDATE cli_agent_requests SET status='answered',decided_by='nexbot',decision_json=? WHERE id=? AND status='pending'",
-      this.store.encrypt(JSON.stringify({ decision, ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}) })), requestId,
+      this.store.encrypt(JSON.stringify({ decision, ...(forSession ? { always: true } : {}), ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}) })), requestId,
     ).changes);
     if (!claimed) throw new CliOpError("not_found", "request is closed");
     try {
       const result = core
         ? await this.coreAnswer!(view, decision, chosen, actor)
         : await this.op(actor, parsed.deviceId, key, "answer", {
-          id: requestId, decision, ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}),
+          id: requestId, decision, ...(forSession ? { always: true } : {}), ...(chosen ? { answers: chosen } : {}), ...(message ? { message } : {}),
         });
       this.emitRequestResolved(asKey(key), requestId, "nexbot");
       this.refreshSummary();
@@ -836,7 +845,7 @@ export class CliAgentHub {
       const recorded = op === "send" || op === "steer"
         ? { ref: (parsed as CliOpArgs["send"]).ref, length: (parsed as CliOpArgs["send"]).text.length }
         : op === "answer"
-          ? { id: (parsed as CliOpArgs["answer"]).id, decision: (parsed as CliOpArgs["answer"]).decision }
+          ? { id: (parsed as CliOpArgs["answer"]).id, decision: (parsed as CliOpArgs["answer"]).decision, ...((parsed as CliOpArgs["answer"]).always ? { always: true } : {}) }
           : parsed;
       this.store.insert("cli_agent_ops", {
         id: opId, device_id: deviceId, session_key: sessionKey, op, args_json: JSON.stringify(recorded),
@@ -886,15 +895,17 @@ export class CliAgentHub {
   }
 
   /** Model and effort only go to an executor that lists `launchOptions`: an older
-   * one would drop them from the args and start with its defaults unasked. */
+   * one would drop them from the args and start with its defaults unasked. The
+   * permission mode only goes to one that lists `permissions`; an older one keeps
+   * asking as it always did, so the choice is dropped rather than refused. */
   private launchOptions(deviceId: string, launch: CliLaunchOptions): CliLaunchOptions {
+    const caps = this.caps.get(deviceId);
     const options: CliLaunchOptions = {
       ...(launch.model !== undefined ? { model: launch.model } : {}),
       ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
     };
-    if (!Object.keys(options).length) return options;
-    const caps = this.caps.get(deviceId);
-    if (caps && !hasCliFeature(caps, "launchOptions")) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
+    if (Object.keys(options).length && caps && !hasCliFeature(caps, "launchOptions")) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
+    if (launch.permissions !== undefined && (!caps || hasCliFeature(caps, "permissions"))) options.permissions = launch.permissions;
     return options;
   }
 

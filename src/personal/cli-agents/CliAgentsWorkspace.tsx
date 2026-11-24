@@ -272,9 +272,9 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     previousRequests.current = new Set(open.map((request) => request.id));
   }, [loaded, sessions, requests.store, requests.now, select]);
 
-  const answer = useCallback(async (key: CliSessionKey, id: string, decision: CliAnswerDecision, answers?: Record<string, string>) => {
-    await answerRequest(id, decision, answers);
-    requests.answered(key, id, decision);
+  const answer = useCallback(async (key: CliSessionKey, id: string, decision: CliAnswerDecision, answers?: Record<string, string>, always?: boolean) => {
+    await answerRequest(id, decision, answers, always);
+    requests.answered(key, id, decision, always);
   }, [requests.answered]);
 
   const hide = async (session: CliSessionView, hidden: boolean) => {
@@ -365,7 +365,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                   onBack={() => setMobileView("list")}
                   requests={requests.store.get(selected.key)}
                   now={requests.now}
-                  onAnswer={(id, decision, answers) => answer(selected.key, id, decision, answers)}
+                  onAnswer={(id, decision, answers, always) => answer(selected.key, id, decision, answers, always)}
                   onFork={bots?.length && onOpenTopic ? () => setForking(selected) : undefined}
                   features={devices.find(d => d.id===selected.deviceId)?.cliAgents?.features}
                   echo={launcher.echo(selected.key)}
@@ -389,7 +389,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                 </div>)}
               </div>{canSide(selected) && <button aria-label="新建侧边聊天" title="新建侧边聊天" onClick={()=>void sideChats.open(selected,"","",true)}><Plus size={15}/></button>}
               <button className="na-side-hide" aria-label={terminalActive?"收起侧边栏":"关闭侧边会话"} title="收起侧边栏" onClick={()=>sideChats.select(null)}><PanelLeftOpen size={15}/></button></header>
-              {terminalActive ? <TerminalView key={selected.key} sessionKey={selected.key} stream={stream} connected={status==="open"}/> : side ? <SessionPane key={side.key} session={side} stream={stream} compact features={devices.find(d => d.id===side.deviceId)?.cliAgents?.features} onSideOpen={canSide(side)?(q,m)=>sideChats.open(side,q,m):undefined} onBack={()=>sideChats.select(null)} onKeyChange={sideChats.changeSession} requests={requests.store.get(side.key)} now={requests.now} onAnswer={(id,d,a)=>answer(side.key,id,d,a)}/>
+              {terminalActive ? <TerminalView key={selected.key} sessionKey={selected.key} stream={stream} connected={status==="open"}/> : side ? <SessionPane key={side.key} session={side} stream={stream} compact features={devices.find(d => d.id===side.deviceId)?.cliAgents?.features} onSideOpen={canSide(side)?(q,m)=>sideChats.open(side,q,m):undefined} onBack={()=>sideChats.select(null)} onKeyChange={sideChats.changeSession} requests={requests.store.get(side.key)} now={requests.now} onAnswer={(id,d,a,al)=>answer(side.key,id,d,a,al)}/>
                 : sideDraft && <section className="na-side-blank"><Composer key={sideDraft.id} session={sideDraft.source} features={devices.find(d => d.id===sideDraft.source.deviceId)?.cliAgents?.features}
                   draft={{...sideDraft,busy:sideDraft.busy||sideDraft.sent,configure:(model,effort)=>sideChats.patch(sideDraft.id,{model,effort})}}
                   onSend={text=>sideChats.send(sideDraft,text)} onInterrupt={async()=>{}}/></section>}

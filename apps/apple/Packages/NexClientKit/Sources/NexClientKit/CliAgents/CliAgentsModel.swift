@@ -308,7 +308,8 @@ public final class CliAgentsModel {
         do {
             if target == nil {
                 let key = try await clientProvider().cliStart(deviceId: request.deviceId, engine: request.engine, cwd: request.cwd, worktreeBranch: request.branch,
-                                                              requestId: entry.requestId, model: request.model, effort: request.effort, createDir: request.createDir)
+                                                              requestId: entry.requestId, model: request.model, effort: request.effort, createDir: request.createDir,
+                                                              permissions: request.permissions)
                 target = key
                 updateLaunch(id) { $0.target = key }
                 await refresh()
@@ -389,12 +390,13 @@ public final class CliAgentsModel {
         }
     }
 
-    /// Answers a pending request. `selection` holds the chosen labels of a question.
-    public func answer(_ request: CliRequest, decision: CliDecision, selection: CliRequestStore.Selection = [:]) async throws {
+    /// Answers a pending request. `selection` holds the chosen labels of a question; `always` allows such calls for the rest of the session.
+    public func answer(_ request: CliRequest, decision: CliDecision, selection: CliRequestStore.Selection = [:], always: Bool = false) async throws {
         let answers = decision == .allow && request.kind == .question ? CliRequestStore.answers(request.questions ?? [], selection) : nil
-        try await clientProvider().cliAnswer(id: request.id, decision: decision, answers: answers)
+        let forSession = always && decision == .allow && request.offersAlways
+        try await clientProvider().cliAnswer(id: request.id, decision: decision, answers: answers, always: forSession)
         touch()
-        requests.markAnswered(request.key, request.id, decision)
+        requests.markAnswered(request.key, request.id, decision, always: forSession)
         scheduleExpiry()
     }
 

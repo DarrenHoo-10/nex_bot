@@ -7,10 +7,11 @@ private struct CliKeyBody: Encodable { let key: String }
 private struct CliStartBody: Encodable {
     let deviceId: String; let engine: String; let cwd: String
     var worktreeBranch: String? = nil; var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
+    var permissions: String? = nil
 }
 private struct CliSendBody: Encodable { let key: String; let text: String }
 private struct CliHideBody: Encodable { let key: String; let hidden: Bool }
-private struct CliAnswerBody: Encodable { let id: String; let decision: CliDecision; let answers: [String: String]? }
+private struct CliAnswerBody: Encodable { let id: String; let decision: CliDecision; let answers: [String: String]?; var always: Bool? = nil }
 private struct CliForkBody: Encodable { let key: String; let botId: String }
 private struct CliSupervisionBody: Encodable { let settings: Settings
     struct Settings: Encodable { let transientRetry: Bool?; let usageLimit: Bool?; let wakeup: Bool? }
@@ -83,9 +84,12 @@ extension CoreClient {
 
     /// Starts a CLI in `cwd`, or in a new worktree of it on `worktreeBranch` (`requestId` makes a retry reuse that tree). A
     /// worktree of a large repository takes a while to check out: this request waits longer than the others.
-    public func cliStart(deviceId: String, engine: CliEngine, cwd: String, worktreeBranch: String? = nil, requestId: String? = nil, model: String? = nil, effort: String? = nil, createDir: Bool = false) async throws -> CliSessionKey {
+    /// `permissions` is "full" or "ask"; nil leaves the computer's default (full access for a new session).
+    public func cliStart(deviceId: String, engine: CliEngine, cwd: String, worktreeBranch: String? = nil, requestId: String? = nil, model: String? = nil, effort: String? = nil, createDir: Bool = false,
+                         permissions: CliPermissionMode? = nil) async throws -> CliSessionKey {
         let body = CliStartBody(deviceId: deviceId, engine: engine.rawValue, cwd: cwd, worktreeBranch: worktreeBranch, requestId: worktreeBranch == nil ? nil : requestId,
-                                model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil, createDir: createDir && worktreeBranch == nil ? true : nil)
+                                model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil, createDir: createDir && worktreeBranch == nil ? true : nil,
+                                permissions: permissions?.rawValue)
         let r: CliKeyResult = try await send(request(Self.cliBase + "/start", query: [], body: JSONEncoder().encode(body), timeout: 45), as: CliKeyResult.self)
         return r.key
     }
@@ -122,8 +126,9 @@ extension CoreClient {
 
     /// Allow or deny a pending request. A question answer maps the question text to the chosen labels joined by ", ".
     /// A request that was answered elsewhere or expired fails with code `not_found`.
-    public func cliAnswer(id: String, decision: CliDecision, answers: [String: String]? = nil) async throws {
-        let r: CliOutcomeResult = try await post(Self.cliBase + "/answer", body: CliAnswerBody(id: id, decision: decision, answers: answers))
+    /// `always` (with allow) also allows such calls for the rest of the session, for a request that offers it.
+    public func cliAnswer(id: String, decision: CliDecision, answers: [String: String]? = nil, always: Bool = false) async throws {
+        let r: CliOutcomeResult = try await post(Self.cliBase + "/answer", body: CliAnswerBody(id: id, decision: decision, answers: answers, always: always && decision == .allow ? true : nil))
         _ = r
     }
 

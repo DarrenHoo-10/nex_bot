@@ -217,6 +217,28 @@ describe("answering", () => {
     expect(device.ops("answer")[0].args).toMatchObject({ id: "r1", decision: "deny", message: "not now" });
   });
 
+  it("shows the full arguments and relays always only for a request that offered it", async () => {
+    const { f, device, key, heard } = await ready();
+    device.send(permission("r1", "s1", { detail: "{\n  \"command\": \"secret build\"\n}", always: true }));
+    device.send(permission("r2"));
+    await until(() => f.app.cliHub.requests(key).length === 2, "stored");
+    const [first, second] = f.app.cliHub.requests(key);
+    expect(first).toMatchObject({ id: "r1", detail: "{\n  \"command\": \"secret build\"\n}", always: true });
+    expect(second.always).toBeUndefined();
+    expect(second.detail).toBeUndefined();
+    const pushed = heard.filter((m) => m.type === "requests").at(-1) as Extract<ServerMessage, { type: "requests" }>;
+    expect(pushed.requests[0]).toMatchObject({ detail: first.detail, always: true });
+    // the detail is encrypted at rest like the summary
+    expect(JSON.stringify(f.app.store.all("SELECT * FROM cli_agent_requests"))).not.toContain("secret build");
+
+    expect((await f.call("cli-agents/answer", { id: "r1", decision: "allow", always: true })).status).toBe(200);
+    expect(device.ops("answer")[0].args).toEqual({ id: "r1", decision: "allow", always: true });
+    // a request that did not offer it gets a plain allow
+    expect((await f.call("cli-agents/answer", { id: "r2", decision: "allow", always: true })).status).toBe(200);
+    expect(device.ops("answer")[1].args).toEqual({ id: "r2", decision: "allow" });
+    expect((await f.call("cli-agents/answer", { id: "r2", decision: "allow", always: "yes" })).status).toBe(400);
+  });
+
   it("rejects malformed answers before anything reaches the device", async () => {
     const { f, device, key } = await ready();
     device.send(question("q1"));

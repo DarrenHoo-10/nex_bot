@@ -13,6 +13,8 @@ export interface RequestRecord {
   closed: boolean;
   /** what this page answered, when it was this page */
   decision?: "allow" | "deny";
+  /** allowed for the rest of the session */
+  always?: boolean;
   by?: CliRequestResolvedBy;
 }
 
@@ -68,7 +70,7 @@ export function dropOpen(store: RequestStore): RequestStore {
   return next;
 }
 
-function close(store: RequestStore, key: CliSessionKey, id: string, patch: Pick<RequestRecord, "by" | "decision">): RequestStore {
+function close(store: RequestStore, key: CliSessionKey, id: string, patch: Pick<RequestRecord, "by" | "decision" | "always">): RequestStore {
   const current = store.get(key);
   const record = current?.find((entry) => entry.view.id === id && !entry.closed);
   if (!current || !record) return store;
@@ -83,11 +85,11 @@ export function resolveRequest(store: RequestStore, key: CliSessionKey, id: stri
   return close(store, key, id, { by });
 }
 
-export function markAnswered(store: RequestStore, key: CliSessionKey, id: string, decision: "allow" | "deny"): RequestStore {
-  return close(store, key, id, { by: "nexbot", decision });
+export function markAnswered(store: RequestStore, key: CliSessionKey, id: string, decision: "allow" | "deny", always?: boolean): RequestStore {
+  return close(store, key, id, { by: "nexbot", decision, ...(always && decision === "allow" ? { always: true } : {}) });
 }
 
-export type CardState = "pending" | "allowed" | "denied" | "answered" | "terminal" | "gone" | "expired";
+export type CardState = "pending" | "allowed" | "always" | "denied" | "answered" | "terminal" | "gone" | "expired";
 
 export function cardState(record: RequestRecord, now: number): CardState {
   if (!record.closed) return now > record.view.expiresAt + EXPIRY_GRACE_MS ? "expired" : "pending";
@@ -97,7 +99,7 @@ export function cardState(record: RequestRecord, now: number): CardState {
     case "timeout": return "expired";
     default:
       if (record.decision === "deny") return "denied";
-      if (record.decision === "allow") return record.view.kind === "question" ? "answered" : "allowed";
+      if (record.decision === "allow") return record.view.kind === "question" ? "answered" : record.always ? "always" : "allowed";
       return "answered";
   }
 }
@@ -105,6 +107,7 @@ export function cardState(record: RequestRecord, now: number): CardState {
 export const CARD_STATE_TEXT: Record<CardState, string> = {
   pending: "等你处理",
   allowed: "已允许",
+  always: "本会话已允许",
   denied: "已拒绝",
   answered: "已处理",
   terminal: "已在终端处理",

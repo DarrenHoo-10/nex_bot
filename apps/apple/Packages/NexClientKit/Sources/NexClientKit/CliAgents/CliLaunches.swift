@@ -32,6 +32,9 @@ public struct CliModelCatalog: Sendable, Hashable, Decodable {
     }
 }
 
+/// How a launched CLI asks before it acts: "full" skips every prompt, "ask" keeps the CLI's own prompts (they arrive as cards).
+public enum CliPermissionMode: String, Sendable, Hashable, CaseIterable { case full, ask }
+
 /// What a new session is started with; empty model and effort leave the CLI's own defaults.
 public struct CliLaunchRequest: Sendable, Hashable {
     public var deviceId: String
@@ -45,8 +48,12 @@ public struct CliLaunchRequest: Sendable, Hashable {
     public var effort: String
     /// make `cwd` first: it did not exist when it was picked
     public var createDir: Bool
-    public init(deviceId: String, engine: CliEngine, cwd: String, branch: String? = nil, message: String = "", model: String = "", effort: String = "", createDir: Bool = false) {
+    /// nil leaves the computer's default (full access); only sent to computers that list `permissions`
+    public var permissions: CliPermissionMode?
+    public init(deviceId: String, engine: CliEngine, cwd: String, branch: String? = nil, message: String = "", model: String = "", effort: String = "", createDir: Bool = false,
+                permissions: CliPermissionMode? = nil) {
         self.deviceId = deviceId; self.engine = engine; self.cwd = cwd; self.branch = branch; self.message = message; self.model = model; self.effort = effort; self.createDir = createDir
+        self.permissions = permissions
     }
 }
 

@@ -28,7 +28,7 @@ export interface SessionPaneProps {
   /** this session's request cards */
   requests?: readonly RequestRecord[];
   now?: number;
-  onAnswer?(id: string, decision: CliAnswerDecision, answers?: Record<string, string>): Promise<unknown>;
+  onAnswer?(id: string, decision: CliAnswerDecision, answers?: Record<string, string>, always?: boolean): Promise<unknown>;
   /** hand the session to an assistant; absent when there is no assistant to take it */
   onFork?(): void;
   onSideOpen?(quote?:string,message?:string):Promise<void>;

@@ -281,7 +281,8 @@ describe("start with forkFrom", () => {
     const newId = result.ref.slice("claude:".length);
     expect(newId).not.toBe(CID(1));
     const terminal = hc.terminals.get(result.terminal)!;
-    expect(terminal.argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--fork-session", "--session-id", newId]);
+    // a fork is a new session: full access unless the user chose "ask"
+    expect(terminal.argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--fork-session", "--session-id", newId, "--dangerously-skip-permissions"]);
     // the CLI finds a transcript by its project directory: the fork runs where the parent does
     expect(terminal.cwd).toBe(path.resolve(workDir));
     expect(result.cwd).toBe(path.resolve(workDir));
@@ -332,7 +333,7 @@ describe("start with forkFrom", () => {
     expect(reply.ok).toBe(true);
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(2)}`);
-    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1)]);
+    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1), "--dangerously-bypass-approvals-and-sandbox"]);
     expect(hc.terminals.get(result.terminal)!.cwd).toBe(path.resolve(workDir));
   });
 });
@@ -347,7 +348,7 @@ describe("start", () => {
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toMatch(/^claude:[0-9a-f-]{36}$/);
     const terminal = hc.terminals.get(result.terminal)!;
-    expect(terminal.argv).toEqual(["/fake/bin/claude", "--session-id", result.ref.slice("claude:".length)]);
+    expect(terminal.argv).toEqual(["/fake/bin/claude", "--session-id", result.ref.slice("claude:".length), "--dangerously-skip-permissions"]);
     expect(terminal.cwd).toBe(path.resolve(workDir));
     expect(terminal.labels).toEqual({ nexbot: "1", "nexbot.engine": "claude", "nexbot.native": result.ref.slice("claude:".length) });
     expect(hc.runs[0]).toMatchObject({ size: { cols: 100, rows: 30 }, keep: false });
@@ -431,7 +432,7 @@ describe("Codex session mapping", () => {
     expect(reply.ok).toBe(true);
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(2)}`);
-    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex"]);
+    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "--dangerously-bypass-approvals-and-sandbox"]);
     expect(hc.terminals.get(result.terminal)!.labels).toMatchObject({ "nexbot.engine": "codex", "nexbot.native": "pending" });
     const rows = Object.fromEntries(t.sessions().map((row) => [row.nativeId, row]));
     expect(rows[XID(2)]).toMatchObject({ liveIn: "nexbot", terminal: result.terminal });
@@ -778,6 +779,8 @@ describe("Claude hooks and turn ends", () => {
   const BASH = { hook_event_name: "PermissionRequest", session_id: "s", tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } };
 
   const hooked = (extra: Partial<CliAgentBridgeOptions> = {}) => setup({ pluginDir: PLUGIN, hookNode: process.execPath, hookSocketDir: root, turnFallbackMs: 60, ...extra });
+  /** Windows terminals get the PowerShell copy of the plugin in the data directory (platformPlugin). */
+  const pluginUsed = () => (process.platform === "win32" ? path.join(dataDir, "cli-agents-plugin") : PLUGIN);
   type Setup = ReturnType<typeof setup>;
   const requests = (t: Setup) => t.messages.filter((m): m is Extract<DeviceCliMessage, { type: "cli.request" }> => m.type === "cli.request");
   const turns = (t: Setup) => t.messages.filter((m): m is Extract<DeviceCliMessage, { type: "cli.turn" }> => m.type === "cli.turn");
@@ -813,7 +816,7 @@ describe("Claude hooks and turn ends", () => {
     const t = hooked();
     const started = await startClaude(t);
     const id = started.ref.slice("claude:".length);
-    expect(started.terminal.argv).toEqual(["/fake/bin/claude", "--session-id", id, "--plugin-dir", PLUGIN]);
+    expect(started.terminal.argv).toEqual(["/fake/bin/claude", "--session-id", id, "--dangerously-skip-permissions", "--plugin-dir", pluginUsed()]);
     expect(started.terminal.env).toMatchObject({ NEXBOT_HOOK_NODE: process.execPath });
     expect(started.terminal.env.NEXBOT_HOOK_TOKEN.endsWith(`.${id}`)).toBe(true);
     expect(started.terminal.env.NEXBOT_HOOK_PIPE).toBeTruthy();
@@ -863,17 +866,46 @@ describe("Claude hooks and turn ends", () => {
     expect(await conn.reply).toMatchObject({ decision: "pass" });
   });
 
-  it("sends the hooks back to the terminal when the link to Core drops", async () => {
+  it("keeps a prompt open across a dropped link and announces it again when Core is back", async () => {
     const t = hooked();
     const started = await startClaude(t);
     const conn = ask(started.terminal.env, "permission", BASH);
     await until(() => requests(t).length === 1);
+    const first = requests(t)[0];
     t.bridge.unlink();
-    expect(await conn.reply).toMatchObject({ decision: "pass" });
-    // and while unlinked nothing is asked
-    const later = ask(started.terminal.env, "permission", BASH);
-    expect(await later.reply).toMatchObject({ decision: "pass" });
+    // a prompt that comes while the link is down waits as well (the terminal shows it meanwhile)
+    const later = ask(started.terminal.env, "permission", { ...BASH, tool_use_id: "toolu_2", tool_input: { command: "npm run build" } });
+    let settled = false;
+    void conn.reply.then(() => (settled = true));
+    void later.reply.then(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(settled).toBe(false);
     expect(requests(t)).toHaveLength(1);
+
+    t.bridge.link(t.link);
+    await until(() => requests(t).length === 3);
+    expect(requests(t).slice(1).map((r) => r.summary).sort()).toEqual(["npm run build", "npm test"]);
+    expect(requests(t)[1].id === first.id || requests(t)[2].id === first.id).toBe(true);
+    expect(await t.call("answer", { id: first.id, decision: "allow" })).toMatchObject({ ok: true });
+    expect(await conn.reply).toEqual({ v: 1, decision: "allow" });
+  });
+
+  it("allows for the rest of the session only when Claude offered session rules", async () => {
+    const t = hooked();
+    const started = await startClaude(t);
+    const suggested = { ...BASH, permission_suggestions: [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "localSettings" }] };
+    const conn = ask(started.terminal.env, "permission", suggested);
+    await until(() => requests(t).length === 1);
+    expect(requests(t)[0]).toMatchObject({ always: true });
+    await t.call("answer", { id: requests(t)[0].id, decision: "allow", always: true });
+    expect(await conn.reply).toEqual({ v: 1, decision: "allow", always: true });
+
+    // without suggestions the card offers no "always", and an "always" answer is a plain allow
+    const plain = ask(started.terminal.env, "permission", { ...BASH, tool_use_id: "toolu_3" });
+    await until(() => requests(t).length === 2);
+    expect(requests(t)[1].always).toBeUndefined();
+    await t.call("answer", { id: requests(t)[1].id, decision: "allow", always: true });
+    expect(await plain.reply).toEqual({ v: 1, decision: "allow" });
   });
 
   it("ignores a hook of a session whose terminal ended", async () => {
@@ -891,7 +923,8 @@ describe("Claude hooks and turn ends", () => {
     const t = hooked();
     await t.start();
     await t.call("continue", { ref: `claude:${CID(1)}` });
-    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--plugin-dir", PLUGIN]);
+    // a continued session keeps the CLI's own permission settings
+    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--plugin-dir", pluginUsed()]);
     expect(hc.last().env.NEXBOT_HOOK_TOKEN.endsWith(`.${CID(1)}`)).toBe(true);
     await t.call("continue", { ref: `codex:${XID(1)}` });
     expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1)]);
@@ -989,7 +1022,7 @@ describe("launch options, search and attachments", () => {
   it("lists the features this executor has", async () => {
     const t = setup();
     await t.bridge.prepare();
-    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs"]);
+    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions"]);
   });
 
   it("starts and continues with the model and effort the user picked", async () => {
@@ -1000,9 +1033,57 @@ describe("launch options, search and attachments", () => {
     const started = await t.call("start", { engine: "claude", cwd: workDir, model: "opus", effort: "max" });
     expect(started.ok).toBe(true);
     const id = (started.result as { ref: string }).ref.slice("claude:".length);
-    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", id, "--model", "opus", "--effort", "max"]);
+    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", id, "--model", "opus", "--effort", "max", "--dangerously-skip-permissions"]);
     expect((await t.call("continue", { ref: `codex:${XID(1)}`, model: "gpt-6.2-sol", effort: "ultra" })).ok).toBe(true);
     expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=ultra"]);
+  });
+
+  it("starts with the CLI's own permission prompts when the user chose ask, and continues with full access when asked", async () => {
+    claudeWritesTranscript();
+    claudeTranscript(CID(1), "resume me");
+    codexRollout(XID(1), "resume codex");
+    const t = setup();
+    await t.start();
+    const asked = await t.call("start", { engine: "claude", cwd: workDir, permissions: "ask" });
+    expect(asked.ok).toBe(true);
+    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", (asked.result as { ref: string }).ref.slice("claude:".length)]);
+    expect((await t.call("continue", { ref: `claude:${CID(1)}`, permissions: "full" })).ok).toBe(true);
+    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--dangerously-skip-permissions"]);
+    expect((await t.call("continue", { ref: `codex:${XID(1)}`, permissions: "full" })).ok).toBe(true);
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "--dangerously-bypass-approvals-and-sandbox"]);
+  });
+
+  it("turns an approval dialog no hook reported into a card and answers it with the dialog's key", async () => {
+    claudeWritesTranscript();
+    const t = setup({ screenPromptMs: 20, screenPromptGraceMs: 0 });
+    await t.start();
+    const started = await t.call("start", { engine: "claude", cwd: workDir, permissions: "ask" });
+    const { ref, terminal } = started.result as { ref: string; terminal: string };
+    const fake = hc.terminals.get(terminal)!;
+    fake.status = "blocked";
+    fake.screen = [
+      "─".repeat(80),
+      " Read file",
+      " Read(C:\\Temp\\shot.png)",
+      " Do you want to proceed?",
+      " ❯ 1. Yes",
+      "   2. Yes, allow reading from /c/Temp during this session",
+      "   3. No",
+      " Esc to cancel · Tab to amend",
+    ].join("\n");
+    hc.onKeys = (term) => {
+      term.status = "working";
+      term.screen = "● Reading…";
+    };
+    await until(() => t.messages.some((m) => m.type === "cli.request"));
+    const card = t.messages.find((m): m is Extract<DeviceCliMessage, { type: "cli.request" }> => m.type === "cli.request")!;
+    expect(card).toMatchObject({ ref, kind: "permission", tool: "Read", summary: "C:\\Temp\\shot.png", always: true });
+    expect(await t.call("answer", { id: card.id, decision: "allow", always: true })).toMatchObject({ ok: true, result: { outcome: "ok" } });
+    expect(fake.pressed).toEqual(["2"]);
+    // answered: a second answer finds nothing and no new card comes for the cleared screen
+    expect(await t.call("answer", { id: card.id, decision: "allow" })).toMatchObject({ ok: false, error: { code: "not_found" } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(t.messages.filter((m) => m.type === "cli.request")).toHaveLength(1);
   });
 
   it("refuses an effort the engine lacks, and any option for ZCode", async () => {

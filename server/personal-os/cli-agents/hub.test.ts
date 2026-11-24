@@ -959,6 +959,25 @@ describe("search, launch options and attachments", () => {
     expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", model: "auto/claude-opus-5-5[1m]" });
   });
 
+  it("sends the permission mode only to an executor that takes it, and drops it for an older one", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "perm", { cap: { ...FULL, features: [...FULL.features, "permissions"] } });
+    const old = await connectDevice(f, "perm-old", { cap: FULL });
+    device.sessions([wire("p1")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.some((s) => s.nativeId === "p1"), "listed");
+    for (const target of [device, old]) target.onOp = (message) => message.op === "start" || message.op === "continue" ? { ok: true, result: { ref: "claude:p1", terminal: "t" } } : defaultOp(message);
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", permissions: "ask" })).status).toBe(200);
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", permissions: "ask" });
+    expect((await f.call("cli-agents/continue", { key: keyOf(device, "p1"), permissions: "full" })).status).toBe(200);
+    expect(device.ops("continue").at(-1)!.args).toEqual({ ref: "claude:p1", permissions: "full" });
+    // nothing chosen: the executor applies its own default (full for a new session)
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj" })).status).toBe(200);
+    expect(device.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj" });
+    expect((await f.call("cli-agents/start", { deviceId: old.id, engine: "claude", cwd: "C:/proj", permissions: "ask" })).status).toBe(200);
+    expect(old.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj" });
+    expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", permissions: "root" })).status).toBe(400);
+  });
+
   it("passes each session's context usage to the page, and a change of usage alone", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "context", { cap: FULL });

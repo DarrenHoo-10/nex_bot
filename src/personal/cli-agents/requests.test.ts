@@ -81,6 +81,10 @@ describe("how a card reads", () => {
     expect(cardState(denied.get(KEY)![0], NOW)).toBe("denied");
     const asked = markAnswered(setPending(EMPTY_STORE, KEY, [questionRequest({ id: "q" })]), KEY, "q", "allow");
     expect(cardState(asked.get(KEY)![0], NOW)).toBe("answered");
+    const always = markAnswered(setPending(EMPTY_STORE, KEY, [req("a")]), KEY, "a", "allow", true);
+    expect(cardState(always.get(KEY)![0], NOW)).toBe("always");
+    // "always" means nothing for a deny
+    expect(cardState(markAnswered(setPending(EMPTY_STORE, KEY, [req("a")]), KEY, "a", "deny", true).get(KEY)![0], NOW)).toBe("denied");
   });
 
   it("counts only the pending ones", () => {

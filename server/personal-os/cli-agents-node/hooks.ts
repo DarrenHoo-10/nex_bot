@@ -5,11 +5,13 @@
 // through `answer()` and is handed to the waiting hook. Turn ends (the Stop
 // hook, a status change, a Codex task_complete) become `cli.turn`.
 //
-// Everything fails towards the terminal: when Core is unreachable, the feature
-// is paused or off, the token is wrong, the request expires or the link drops,
-// the hook is told to pass and Claude Code asks in its own terminal as usual.
+// Claude Code shows its own prompt in the terminal while the hook waits, so a
+// waiting hook never blocks the person at the computer. When the feature is
+// paused or off, the token is wrong or the request expires, the hook passes.
+// When only the link to Core drops, the request stays open and is announced
+// again once Core is back, so the card still reaches the phone.
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -51,6 +53,64 @@ export function locateHookPlugin(options: { env?: NodeJS.ProcessEnv; moduleUrl?:
     if (candidate && existsSync(path.join(candidate, ".claude-plugin", "plugin.json"))) return path.resolve(candidate);
   }
   return null;
+}
+
+/** The hook events of the plugin and how each runs (as in plugin/hooks/hooks.json). */
+const HOOK_EVENTS = [
+  { event: "PermissionRequest", mode: "permission", matcher: "*", timeout: 1800, async: false },
+  { event: "PostToolUse", mode: "post", matcher: "*", timeout: 10, async: true },
+  { event: "Stop", mode: "stop", matcher: undefined, timeout: 10, async: true },
+] as const;
+
+/** The hooks.json Windows terminals get. Claude Code on Windows runs a hook command in Git Bash when it
+ * finds one and in PowerShell otherwise, where the POSIX command of plugin/hooks/hooks.json does not
+ * parse (and a failing PermissionRequest hook then denies the call). `shell: "powershell"` runs it in
+ * PowerShell either way; it always exits 0, so a hook that cannot reach nex_bot leaves the prompt to the
+ * terminal. Checked with Claude Code 2.1.331 on Windows 11, with and without Git Bash. */
+export function windowsHooksJson(): string {
+  const hooks: Record<string, unknown[]> = {};
+  for (const entry of HOOK_EVENTS) {
+    const command = `if ($env:NEXBOT_HOOK_NODE) { $env:ELECTRON_RUN_AS_NODE = '1'; & $env:NEXBOT_HOOK_NODE "\${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs" ${entry.mode} }; exit 0`;
+    hooks[entry.event] = [
+      {
+        ...(entry.matcher ? { matcher: entry.matcher } : {}),
+        hooks: [{ type: "command", shell: "powershell", command, ...(entry.async ? { async: true } : {}), timeout: entry.timeout }],
+      },
+    ];
+  }
+  return JSON.stringify({ hooks }, null, 2) + "\n";
+}
+
+/** The plugin a Claude terminal on this platform gets: the shipped one on macOS and Linux; on Windows a copy
+ * in `dataDir` whose hooks.json runs in PowerShell (see windowsHooksJson). Files are rewritten only when they
+ * differ. Falls back to the shipped plugin when the copy cannot be written. */
+export function platformPlugin(source: string, dataDir: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return source;
+  const target = path.join(dataDir, "cli-agents-plugin");
+  try {
+    const files: Array<{ to: string; text: string }> = [
+      { to: path.join(".claude-plugin", "plugin.json"), text: readFileSync(path.join(source, ".claude-plugin", "plugin.json"), "utf8") },
+      { to: path.join("hooks", "hook.mjs"), text: readFileSync(path.join(source, "hooks", "hook.mjs"), "utf8") },
+      { to: path.join("hooks", "hooks.json"), text: windowsHooksJson() },
+    ];
+    for (const file of files) {
+      const to = path.join(target, file.to);
+      let current: string | null = null;
+      try {
+        current = readFileSync(to, "utf8");
+      } catch {
+        // not written yet
+      }
+      if (current === file.text) continue;
+      mkdirSync(path.dirname(to), { recursive: true });
+      const temp = `${to}.${process.pid}.tmp`;
+      writeFileSync(temp, file.text);
+      renameSync(temp, to);
+    }
+    return target;
+  } catch {
+    return source;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +171,10 @@ export interface HookServerOptions {
   dir: string;
   emit: Emit;
   turns: TurnTracker;
-  /** The feature is on, not paused, and Core is reachable: otherwise every hook passes. */
+  /** The feature is on and not paused: otherwise every hook passes. */
   active: () => boolean;
+  /** Core is reachable. While it is not, prompts wait and are announced by `relink()`. Default: `active`. */
+  linked?: () => boolean;
   /** The session runs in a live nex_bot terminal. A token of any other session is refused. */
   isLive: (ref: CliSessionRef) => boolean;
   platform?: NodeJS.Platform;
@@ -131,17 +193,35 @@ interface Pending {
   canonical: string;
   questions?: CliRequestQuestion[];
   isQuestion: boolean;
+  /** Claude Code offered session rules for this prompt (permission_suggestions), so "always" can be answered */
+  always: boolean;
+  message: Extract<DeviceCliMessage, { type: "cli.request" }>;
   socket: net.Socket;
   timer: NodeJS.Timeout;
   done: boolean;
 }
 
-type Reply = { decision: "allow" | "deny" | "pass"; message?: string; answers?: Record<string, string> };
+/** `always`: hook.mjs applies the prompt's own permission_suggestions for the rest of the session. */
+type Reply = { decision: "allow" | "deny" | "pass"; message?: string; answers?: Record<string, string>; always?: boolean };
 
 interface HookInput {
   tool_name?: unknown;
   tool_use_id?: unknown;
   tool_input?: unknown;
+  permission_suggestions?: unknown;
+}
+
+/** The tool's arguments as a card shows them: indented JSON, a string as it is. */
+export function requestDetail(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  let text: string;
+  try {
+    text = typeof input === "string" ? input : (JSON.stringify(input, null, 2) ?? "");
+  } catch {
+    return undefined;
+  }
+  if (!text || text === "{}") return undefined;
+  return clipUnits(text, CLI_LIMITS.requestDetail);
 }
 
 const isRec = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -192,6 +272,8 @@ export class HookServer {
   private readonly secret: Buffer;
   private readonly pipePath: string;
   private readonly pending = new Map<string, Pending>();
+  /** closes Core did not hear because the link was down; sent by relink() */
+  private readonly unsent: Array<{ id: string; by: CliRequestResolvedBy }> = [];
   private readonly sockets = new Set<net.Socket>();
   private server: net.Server | null = null;
   private starting: Promise<void> | null = null;
@@ -217,6 +299,17 @@ export class HookServer {
 
   get pendingCount(): number {
     return this.pending.size;
+  }
+
+  /** Open requests of one session. */
+  pendingFor(ref: CliSessionRef): number {
+    let count = 0;
+    for (const pending of this.pending.values()) if (pending.ref === ref) count += 1;
+    return count;
+  }
+
+  private linked(): boolean {
+    return (this.options.linked ?? this.options.active)();
   }
 
   private log(level: "debug" | "info" | "warn" | "error", message: string): void {
@@ -326,9 +419,17 @@ export class HookServer {
     }
   }
 
-  /** The link to Core dropped: the prompts go back to the terminal. Core closes its copies itself. */
+  /** The link to Core dropped. Core closes its copies itself; ours stay open (the terminal shows the
+   * prompt meanwhile) until `relink()` announces them again. */
   linkLost(): void {
-    this.passAll();
+    // nothing to do: an answer can only come back over a new link
+  }
+
+  /** Core is reachable again: announce every open request. */
+  relink(): void {
+    if (this.closed || !this.linked()) return;
+    for (const closed of this.unsent.splice(0)) this.options.emit({ type: "cli.request.resolved", ...closed });
+    for (const pending of this.pending.values()) this.options.emit(pending.message);
   }
 
   private passAll(): void {
@@ -427,6 +528,20 @@ export class HookServer {
     const now = (this.options.now ?? Date.now)();
     const id = randomUUID();
     const summary = questions ? questions[0].question : summarizeInput(input.tool_input);
+    const always = !isQuestion && Array.isArray(input.permission_suggestions) && input.permission_suggestions.some(isRec);
+    const detail = isQuestion ? undefined : requestDetail(input.tool_input);
+    const message: Extract<DeviceCliMessage, { type: "cli.request" }> = {
+      type: "cli.request",
+      ref,
+      id,
+      kind: isQuestion ? "question" : "permission",
+      tool: clipUnits(tool, CLI_LIMITS.requestTool),
+      summary,
+      ...(detail && detail !== summary ? { detail } : {}),
+      ...(questions ? { questions } : {}),
+      ...(always ? { always: true } : {}),
+      expiresAt: now + (this.options.ttlMs ?? REQUEST_TTL_MS),
+    };
     const pending: Pending = {
       id,
       ref,
@@ -435,6 +550,8 @@ export class HookServer {
       canonical: canonical(input.tool_input),
       ...(questions ? { questions } : {}),
       isQuestion,
+      always,
+      message,
       socket,
       timer: setTimeout(() => this.finish(pending, "timeout", { decision: "pass" }), this.options.ttlMs ?? REQUEST_TTL_MS),
       done: false,
@@ -443,17 +560,8 @@ export class HookServer {
     this.pending.set(id, pending);
     // Claude Code ends the hook when the prompt is answered in the terminal.
     socket.on("close", () => this.finish(pending, "terminal", null));
-    const sent = this.options.emit({
-      type: "cli.request",
-      ref,
-      id,
-      kind: isQuestion ? "question" : "permission",
-      tool: clipUnits(tool, CLI_LIMITS.requestTool),
-      summary,
-      ...(questions ? { questions } : {}),
-      expiresAt: now + (this.options.ttlMs ?? REQUEST_TTL_MS),
-    });
-    if (!sent) this.finish(pending, null, { decision: "pass" });
+    // Without a link the request waits for relink(); the terminal shows the prompt meanwhile.
+    if (this.linked()) this.options.emit(message);
   }
 
   /** PostToolUse: the tool ran, so a prompt for it was answered in the terminal. */
@@ -478,7 +586,7 @@ export class HookServer {
     pending.done = true;
     clearTimeout(pending.timer);
     this.pending.delete(pending.id);
-    if (by) this.options.emit({ type: "cli.request.resolved", id: pending.id, by });
+    if (by && !this.options.emit({ type: "cli.request.resolved", id: pending.id, by }) && this.unsent.length < 200) this.unsent.push({ id: pending.id, by });
     if (reply) this.reply(pending.socket, reply);
     else pending.socket.destroy();
     return true;
@@ -506,7 +614,7 @@ export class HookServer {
       }
       reply = { decision: "allow", answers: chosen };
     } else {
-      reply = { decision: "allow" };
+      reply = { decision: "allow", ...(args.always === true && pending.always ? { always: true } : {}) };
     }
     // Core closes its copy when this answer succeeds, so no resolved message goes back.
     this.finish(pending, null, reply);

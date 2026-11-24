@@ -322,6 +322,24 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliCardState.gone.text, "会话已结束")
     }
 
+    func testSessionWideAllow() throws {
+        let json = #"{"id":"r1","key":"k","kind":"permission","tool":"Read","summary":"C:\\Temp\\a.png","detail":"{\n  \"file_path\": \"C:\\\\Temp\\\\a.png\"\n}","always":true,"createdAt":1,"expiresAt":99}"#
+        let offered = try JSONDecoder().decode(CliRequest.self, from: Data(json.utf8))
+        XCTAssertEqual(offered.detail, "{\n  \"file_path\": \"C:\\\\Temp\\\\a.png\"\n}")
+        XCTAssertTrue(offered.offersAlways)
+        let plain = try JSONDecoder().decode(CliRequest.self, from: Data(#"{"id":"r2","key":"k","kind":"permission","tool":"Bash","summary":"ls","createdAt":1,"expiresAt":99}"#.utf8))
+        XCTAssertNil(plain.detail)
+        XCTAssertFalse(plain.offersAlways)
+        var store = CliRequestStore()
+        store.setPending("k", [offered, cliRequest("r3", key: "k")])
+        store.markAnswered("k", "r1", .allow, always: true)
+        XCTAssertEqual(CliRequestStore.state(of: store.records["k"]!.last!, now: 0), .always)
+        XCTAssertEqual(CliCardState.always.text, "本会话已允许")
+        // always means nothing for a deny
+        store.markAnswered("k", "r3", .deny, always: true)
+        XCTAssertEqual(CliRequestStore.state(of: store.records["k"]!.last!, now: 0), .denied)
+    }
+
     func testClosedCardsAreTrimmed() {
         var store = CliRequestStore()
         let all = (0..<15).map { cliRequest("r\($0)", key: "k") }

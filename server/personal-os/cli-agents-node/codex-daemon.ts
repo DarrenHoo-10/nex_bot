@@ -503,6 +503,9 @@ export class CodexDaemons {
       kind: "permission",
       tool: tracked.kind,
       summary: summaryOf(tracked.kind, tracked.params),
+      ...detailOf(tracked.kind, tracked.params),
+      // accepted for the session: `acceptForSession` for commands and edits, scope `session` for permissions
+      always: true,
       expiresAt: tracked.expiresAt,
     });
   }
@@ -520,12 +523,19 @@ export class CodexDaemons {
     for (const tracked of this.requests.values()) this.announce(tracked);
   }
 
+  /** Whether an approval of this thread is open. */
+  hasPendingFor(threadId: string): boolean {
+    for (const tracked of this.requests.values()) if (tracked.threadId === threadId) return true;
+    return false;
+  }
+
   /** Whether the request belongs to a daemon thread. */
   owns(requestId: string): boolean {
     return this.requests.has(requestId);
   }
 
-  /** Answers an approval: allow accepts it, deny declines it. Throws DaemonError not_found when it is closed. */
+  /** Answers an approval: allow accepts it (for the rest of the session with `always`), deny declines it.
+   * Throws DaemonError not_found when it is closed. */
   answer(args: CliOpArgs["answer"]): string {
     const tracked = this.requests.get(args.id);
     if (!tracked) throw new DaemonError("not_found", "request is closed");
@@ -534,12 +544,13 @@ export class CodexDaemons {
       throw new DaemonError("not_found", "request is closed");
     }
     const allow = args.decision === "allow";
+    const session = allow && args.always === true;
     let result: Rec;
     if (tracked.kind === "permissions") {
       const asked = rec(tracked.params.permissions) ?? {};
-      result = allow ? { permissions: grantedOf(asked), scope: "turn" } : { permissions: {}, scope: "turn" };
+      result = allow ? { permissions: grantedOf(asked), scope: session ? "session" : "turn" } : { permissions: {}, scope: "turn" };
     } else {
-      result = { decision: allow ? "accept" : "decline" };
+      result = { decision: allow ? (session ? "acceptForSession" : "accept") : "decline" };
     }
     if (!tracked.rpc.respond(tracked.rpcId, result)) {
       this.resolve(tracked, "gone");
@@ -568,6 +579,18 @@ function grantedOf(asked: Rec): Rec {
   if (asked.fileSystem) granted.fileSystem = asked.fileSystem;
   if (asked.network) granted.network = asked.network;
   return granted;
+}
+
+/** What the card shows below the summary: the command, folder and reason, one per line. */
+function detailOf(kind: ApprovalKind, params: Rec): { detail?: string } {
+  const command = Array.isArray(params.command) ? params.command.filter((part) => typeof part === "string").join(" ") : str(params.command);
+  const lines = [
+    kind === "shell" && command ? `命令：${command}` : undefined,
+    str(params.cwd) ? `目录：${str(params.cwd)}` : undefined,
+    kind === "apply_patch" && str(params.grantRoot) ? `写入范围：${str(params.grantRoot)}` : undefined,
+    str(params.reason) ? `原因：${str(params.reason)}` : undefined,
+  ].filter((line): line is string => line !== undefined);
+  return lines.length > 1 ? { detail: clipUnits(lines.join("\n"), CLI_LIMITS.requestDetail) } : {};
 }
 
 function summaryOf(kind: ApprovalKind, params: Rec): string {

@@ -48,6 +48,7 @@ struct AgentNewSessionPage: View {
     @State private var message = ""
     @State private var chosenModel = ""
     @State private var effort = ""
+    @State private var permissions: CliPermissionMode = .full
     @State private var catalog = CliModelCatalog()
     @State private var browsing = false
     @State private var editingBranch = false
@@ -60,6 +61,7 @@ struct AgentNewSessionPage: View {
     private var text: String { message.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var tooLong: Bool { text.utf8.count > CoreClient.cliMaxSendBytes }
     private var canChoose: Bool { device?.cliAgents?.features.contains("launchOptions") == true }
+    private var canChoosePermissions: Bool { device?.cliAgents?.features.contains("permissions") == true }
     private var fallbackModel: String { catalog.current ?? "" }
     private var offered: [String] { CliLaunches.efforts(engine: engine, models: catalog.models, model: chosenModel.isEmpty ? fallbackModel : chosenModel) }
     private var ready: Bool { blocker == nil && device != nil && engines.contains(engine) && dir != nil && branchError == nil && !tooLong }
@@ -152,6 +154,18 @@ struct AgentNewSessionPage: View {
             }
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .accessibilityLabel("运行工具")
+
+            if canChoosePermissions {
+                // full access (the default) or the CLI's own prompts, which then arrive as cards
+                Button { permissions = permissions == .full ? .ask : .full } label: {
+                    AgentPickChip {
+                        Image(systemName: permissions == .full ? "checkmark.shield" : "exclamationmark.shield").foregroundStyle(Theme.muted)
+                        Text(permissions == .full ? "完全访问" : "每次询问")
+                    }
+                }
+                .buttonStyle(.plain).help(permissions == .full ? "完全访问：不再逐项确认" : "每次询问：需要你确认")
+                .accessibilityLabel("权限").accessibilityValue(permissions == .full ? "完全访问" : "每次询问")
+            }
 
             if git {
                 // the "Worktree" checkbox: checked, the session starts in a new worktree on nexagent/<random>
@@ -249,7 +263,8 @@ struct AgentNewSessionPage: View {
     private func start() {
         guard ready, let dir else { return }
         let key = model.launch(CliLaunchRequest(deviceId: deviceId, engine: engine, cwd: dir.path, branch: branch?.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                message: text, model: canChoose ? chosenModel : "", effort: canChoose ? effort : "", createDir: dir.create))
+                                                message: text, model: canChoose ? chosenModel : "", effort: canChoose ? effort : "", createDir: dir.create,
+                                                permissions: canChoosePermissions ? permissions : nil))
         started(key)
     }
 }

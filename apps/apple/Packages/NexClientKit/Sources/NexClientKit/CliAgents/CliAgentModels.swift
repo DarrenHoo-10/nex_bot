@@ -240,16 +240,22 @@ public struct CliRequest: Sendable, Hashable, Identifiable, Decodable {
     public var kind: CliRequestKind
     public var tool: String
     public var summary: String
+    /// The tool's arguments in full, when the computer sent them.
+    public var detail: String?
     public var options: [String]?
     public var questions: [CliQuestion]?
+    /// The computer can allow this kind of call for the rest of the session (answer with `always`).
+    public var always: Bool?
     /// Epoch milliseconds.
     public var createdAt: Int
     public var expiresAt: Int
-    public init(id: String, key: CliSessionKey, kind: CliRequestKind = .permission, tool: String = "", summary: String = "", options: [String]? = nil,
-                questions: [CliQuestion]? = nil, createdAt: Int = 0, expiresAt: Int) {
-        self.id = id; self.key = key; self.kind = kind; self.tool = tool; self.summary = summary; self.options = options
-        self.questions = questions; self.createdAt = createdAt; self.expiresAt = expiresAt
+    public init(id: String, key: CliSessionKey, kind: CliRequestKind = .permission, tool: String = "", summary: String = "", detail: String? = nil, options: [String]? = nil,
+                questions: [CliQuestion]? = nil, always: Bool? = nil, createdAt: Int = 0, expiresAt: Int) {
+        self.id = id; self.key = key; self.kind = kind; self.tool = tool; self.summary = summary; self.detail = detail; self.options = options
+        self.questions = questions; self.always = always; self.createdAt = createdAt; self.expiresAt = expiresAt
     }
+    /// Offers "本会话总是允许".
+    public var offersAlways: Bool { kind == .permission && always == true }
 }
 
 // MARK: Errors

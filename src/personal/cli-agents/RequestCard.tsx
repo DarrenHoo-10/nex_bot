@@ -1,7 +1,7 @@
 // One permission or question request of a session. Pending cards can be
 // answered; the others only say how they ended.
 import { useState } from "react";
-import { Check, X } from "lucide-react";
+import { Check, CheckCheck, X } from "lucide-react";
 import type { CliAnswerDecision } from "../../../shared/cli-agents";
 import { cliErrorText, CliApiError } from "./api";
 import { answersComplete, answersFor, CARD_STATE_TEXT, cardState, toggleChoice, type RequestRecord, type Selection } from "./requests";
@@ -9,8 +9,8 @@ import { answersComplete, answersFor, CARD_STATE_TEXT, cardState, toggleChoice, 
 export interface RequestCardProps {
   record: RequestRecord;
   now: number;
-  /** Rejects with the error to show. */
-  onAnswer(id: string, decision: CliAnswerDecision, answers?: Record<string, string>): Promise<unknown>;
+  /** Rejects with the error to show. `always` allows such calls for the rest of the session. */
+  onAnswer(id: string, decision: CliAnswerDecision, answers?: Record<string, string>, always?: boolean): Promise<unknown>;
 }
 
 function answerErrorText(cause: unknown): string {
@@ -25,15 +25,16 @@ export function RequestCard({ record, now, onAnswer }: RequestCardProps) {
   const pending = state === "pending";
   const question = view.kind === "question";
   const [selection, setSelection] = useState<Selection>({});
-  const [busy, setBusy] = useState<CliAnswerDecision | null>(null);
+  const [busy, setBusy] = useState<CliAnswerDecision | "always" | null>(null);
   const [error, setError] = useState("");
+  const canAlways = !question && view.always === true;
 
-  const run = async (decision: CliAnswerDecision) => {
+  const run = async (decision: CliAnswerDecision, always = false) => {
     if (busy) return;
-    setBusy(decision);
+    setBusy(always ? "always" : decision);
     setError("");
     try {
-      await onAnswer(view.id, decision, question && decision === "allow" && view.questions ? answersFor(view.questions, selection) : undefined);
+      await onAnswer(view.id, decision, question && decision === "allow" && view.questions ? answersFor(view.questions, selection) : undefined, always || undefined);
     } catch (cause) {
       setError(answerErrorText(cause));
     } finally {
@@ -67,9 +68,20 @@ export function RequestCard({ record, now, onAnswer }: RequestCardProps) {
           })}
         </fieldset>
       )) : view.summary ? <pre className="cli-request-summary">{view.summary}</pre> : null}
+      {!question && view.detail ? (
+        <details className="cli-request-detail">
+          <summary>参数</summary>
+          <pre>{view.detail}</pre>
+        </details>
+      ) : null}
       {pending ? (
         <div className="cli-request-actions">
           <button type="button" disabled={!!busy} onClick={() => void run("deny")}><X size={14} />{busy === "deny" ? "正在拒绝…" : "拒绝"}</button>
+          {canAlways ? (
+            <button type="button" disabled={!!busy} onClick={() => void run("allow", true)}>
+              <CheckCheck size={14} />{busy === "always" ? "正在允许…" : "本会话总是允许"}
+            </button>
+          ) : null}
           <button type="button" className="primary" disabled={!!busy || !complete} onClick={() => void run("allow")}>
             <Check size={14} />{busy === "allow" ? (question ? "正在提交…" : "正在允许…") : question ? "提交" : "允许"}
           </button>

@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CliRequestWire, DeviceCliMessage } from "../../../shared/cli-agents.ts";
-import { HookError, HookServer, REQUEST_TTL_MS, TurnTracker, locateHookPlugin } from "./hooks.ts";
+import { HookError, HookServer, REQUEST_TTL_MS, TurnTracker, locateHookPlugin, platformPlugin, windowsHooksJson } from "./hooks.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.join(here, "plugin");
@@ -55,6 +55,7 @@ function rig(options: { ttlMs?: number; dir?: string } = {}): Rig {
     emit,
     turns,
     active: () => state.active,
+    linked: () => state.link,
     isLive: (ref) => state.live.has(ref),
     socketDir: dir,
     ...(options.ttlMs ? { ttlMs: options.ttlMs } : {}),
@@ -258,28 +259,65 @@ describe("permission requests", () => {
     expect(r.server.pendingCount).toBe(0);
   });
 
-  it("passes when the feature is paused or Core cannot be reached", async () => {
+  it("passes when the feature is paused", async () => {
     const r = await started();
     r.state.active = false;
-    expect(await talk(r.server.pipe, permission(r.server.tokenFor(REF), BASH)).reply).toMatchObject({ decision: "pass" });
-    r.state.active = true;
-    r.state.link = false;
     expect(await talk(r.server.pipe, permission(r.server.tokenFor(REF), BASH)).reply).toMatchObject({ decision: "pass" });
     expect(r.server.pendingCount).toBe(0);
   });
 
-  it("sends every waiting hook back to the terminal when the link drops or the server closes", async () => {
+  it("holds a prompt while Core cannot be reached and announces it on relink", async () => {
+    const r = await started();
+    r.state.link = false;
+    const one = talk(r.server.pipe, permission(r.server.tokenFor(REF), BASH));
+    await until(() => r.server.pendingCount === 1, "held");
+    expect(r.requests()).toHaveLength(0);
+    r.state.link = true;
+    r.server.relink();
+    await until(() => r.requests().length === 1, "card after relink");
+    expect(r.server.pendingFor(REF)).toBe(1);
+    expect(r.server.answer({ id: r.requests()[0].id, decision: "allow" })).toBe("ok");
+    expect(await one.reply).toEqual({ v: 1, decision: "allow" });
+  });
+
+  it("keeps waiting hooks across a dropped link and sends them back to the terminal when the server closes", async () => {
     const r = await started();
     const one = talk(r.server.pipe, permission(r.server.tokenFor(REF), BASH));
     await until(() => r.requests().length === 1, "card");
     r.server.linkLost();
-    expect(await one.reply).toMatchObject({ decision: "pass" });
-    expect(r.server.pendingCount).toBe(0);
-
-    const two = talk(r.server.pipe, permission(r.server.tokenFor(REF), BASH));
-    await until(() => r.requests().length === 2, "second card");
+    await wait(50);
+    expect(r.server.pendingCount).toBe(1);
+    r.server.relink();
+    await until(() => r.requests().length === 2, "announced again");
+    expect(r.requests()[1].id).toBe(r.requests()[0].id);
     await r.server.close();
-    expect(await two.reply).toMatchObject({ decision: "pass" });
+    expect(await one.reply).toMatchObject({ decision: "pass" });
+  });
+
+  it("tells Core on relink about a prompt that was answered in the terminal while the link was down", async () => {
+    const r = await started();
+    const one = talk(r.server.pipe, permission(r.server.tokenFor(REF), BASH));
+    await until(() => r.requests().length === 1, "card");
+    r.state.link = false;
+    r.server.linkLost();
+    one.socket.destroy();
+    await until(() => r.server.pendingCount === 0, "closed by the terminal");
+    expect(r.messages.some((m) => m.type === "cli.request.resolved")).toBe(false);
+    r.state.link = true;
+    r.server.relink();
+    expect(r.messages.filter((m) => m.type === "cli.request.resolved")).toEqual([{ type: "cli.request.resolved", id: r.requests()[0].id, by: "terminal" }]);
+  });
+
+  it("puts the full arguments on the card and offers always only with session suggestions", async () => {
+    const r = await started();
+    const edit = { ...BASH, tool_name: "Edit", tool_input: { file_path: "/w/a.ts", old_string: "a", new_string: "b" }, permission_suggestions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] };
+    const conn = talk(r.server.pipe, permission(r.server.tokenFor(REF), edit));
+    await until(() => r.requests().length === 1, "card");
+    const card = r.requests()[0];
+    expect(card).toMatchObject({ tool: "Edit", summary: "/w/a.ts", always: true });
+    expect(JSON.parse(card.detail!)).toEqual(edit.tool_input);
+    expect(r.server.answer({ id: card.id, decision: "allow", always: true })).toBe("ok");
+    expect(await conn.reply).toEqual({ v: 1, decision: "allow", always: true });
   });
 
   it("caps the open requests of one session", async () => {
@@ -405,6 +443,36 @@ describe("the plugin files", () => {
       expect(command.trim().endsWith("|| true")).toBe(true);
     }
   });
+
+  it("has a Windows copy whose hooks run in PowerShell, do nothing without nex_bot and always exit 0", () => {
+    const shipped = read("hooks", "hooks.json").hooks;
+    const windows = JSON.parse(windowsHooksJson()).hooks;
+    expect(Object.keys(windows).sort()).toEqual(Object.keys(shipped).sort());
+    for (const [event, mode] of [["PermissionRequest", "permission"], ["PostToolUse", "post"], ["Stop", "stop"]] as const) {
+      const entry = windows[event][0].hooks[0];
+      const original = shipped[event][0].hooks[0];
+      expect(entry).toMatchObject({ type: "command", shell: "powershell", timeout: original.timeout });
+      expect(entry.async).toBe(original.async);
+      expect(windows[event][0].matcher).toBe(shipped[event][0].matcher);
+      expect(entry.command).toBe(`if ($env:NEXBOT_HOOK_NODE) { $env:ELECTRON_RUN_AS_NODE = '1'; & $env:NEXBOT_HOOK_NODE "\${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs" ${mode} }; exit 0`);
+    }
+  });
+
+  it("writes the Windows copy into the data directory and leaves other platforms on the shipped plugin", () => {
+    expect(platformPlugin(PLUGIN, dir, "darwin")).toBe(PLUGIN);
+    expect(platformPlugin(PLUGIN, dir, "linux")).toBe(PLUGIN);
+    const copy = platformPlugin(PLUGIN, dir, "win32");
+    expect(copy).toBe(path.join(dir, "cli-agents-plugin"));
+    expect(readFileSync(path.join(copy, "hooks", "hooks.json"), "utf8")).toBe(windowsHooksJson());
+    expect(readFileSync(path.join(copy, "hooks", "hook.mjs"), "utf8")).toBe(readFileSync(HOOK, "utf8"));
+    expect(readFileSync(path.join(copy, ".claude-plugin", "plugin.json"), "utf8")).toBe(readFileSync(path.join(PLUGIN, ".claude-plugin", "plugin.json"), "utf8"));
+    // a stale copy is brought up to date
+    writeFileSync(path.join(copy, "hooks", "hooks.json"), "{}");
+    expect(platformPlugin(PLUGIN, dir, "win32")).toBe(copy);
+    expect(readFileSync(path.join(copy, "hooks", "hooks.json"), "utf8")).toBe(windowsHooksJson());
+    // a source without the plugin files stays as it is
+    expect(platformPlugin(path.join(dir, "missing"), dir, "win32")).toBe(path.join(dir, "missing"));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -437,6 +505,24 @@ describe("hook.mjs", () => {
     r.server.answer({ id: request.id, decision: "allow" });
     expect(await run.code).toBe(0);
     expect(JSON.parse(await run.stdout)).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+  });
+
+  it("applies Claude Code's own suggestions for the session when the answer is always", async () => {
+    const r = await started();
+    const suggestions = [
+      { type: "addRules", rules: [{ toolName: "Read", ruleContent: "//c/Temp/**" }], behavior: "allow", destination: "localSettings" },
+      "not a rule",
+    ];
+    const run = runHook("permission", { ...BASH, permission_suggestions: suggestions }, hookEnv(r.server));
+    const request = await until(() => r.requests()[0], "cli.request");
+    expect(request.always).toBe(true);
+    r.server.answer({ id: request.id, decision: "allow", always: true });
+    expect(JSON.parse(await run.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "allow", updatedPermissions: [{ type: "addRules", rules: [{ toolName: "Read", ruleContent: "//c/Temp/**" }], behavior: "allow", destination: "session" }] },
+      },
+    });
   });
 
   it("prints the deny decision with the message", async () => {

@@ -339,9 +339,10 @@ export class CliAgentRoutes {
   }
 
   private async answer(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
-    const { id, decision, answers, message } = data;
+    const { id, decision, answers, message, always } = data;
     if (typeof id !== "string" || id.length < 1 || id.length > CLI_LIMITS.requestId) return cliErrorResult("invalid");
     if (decision !== "allow" && decision !== "deny") return cliErrorResult("invalid");
+    if (always !== undefined && typeof always !== "boolean") return cliErrorResult("invalid");
     if (message !== undefined && (typeof message !== "string" || message.length > CLI_LIMITS.answerMessage)) return cliErrorResult("invalid");
     let chosen: Record<string, string> | undefined;
     if (answers !== undefined) {
@@ -355,8 +356,8 @@ export class CliAgentRoutes {
       }
     }
     // The audit row says who answered what kind of decision, never the answer text.
-    this.store.audit("cli.answer", "cli_request", id, { sessionId: request.sessionId, decision });
-    const result = await this.hub.answer(request.sessionId, id, decision, chosen, message);
+    this.store.audit("cli.answer", "cli_request", id, { sessionId: request.sessionId, decision, ...(always === true ? { always: true } : {}) });
+    const result = await this.hub.answer(request.sessionId, id, decision, chosen, message, always === true);
     return { status: 200, body: { outcome: result.outcome } };
   }
 
@@ -467,14 +468,16 @@ export class CliAgentRoutes {
     return { status: 200, body: await this.hub.attach(request.sessionId, key, name, bytes) };
   }
 
-  /** `model` / `effort` of a start or continue body; null when one is malformed. */
+  /** `model` / `effort` / `permissions` of a start or continue body; null when one is malformed. */
   private launchOptions(data: Record<string, unknown>, engine: CliEngine): CliLaunchOptions | null {
-    const { model, effort } = data;
+    const { model, effort, permissions } = data;
     if (model !== undefined && model !== null && model !== "" && !isCliModel(model)) return null;
     if (effort !== undefined && effort !== null && effort !== "" && !isCliEffort(engine, effort)) return null;
+    if (permissions !== undefined && permissions !== null && permissions !== "full" && permissions !== "ask") return null;
     return {
       ...(typeof model === "string" && model ? { model } : {}),
       ...(typeof effort === "string" && effort ? { effort } : {}),
+      ...(permissions === "full" || permissions === "ask" ? { permissions } : {}),
     };
   }
 
