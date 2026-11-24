@@ -108,7 +108,7 @@ struct AgentSessionsView: View {
             selected: composing == nil ? model.selectedKey : nil,
             onSelect: { key in composing = nil; onSelect(key) },
             onCreate: { composing = AgentNewTarget(deviceId: model.selected?.deviceId, cwd: model.selected?.cwd) },
-            onNew: { composing = AgentNewTarget(deviceId: $0, cwd: nil) },
+            onNew: { composing = AgentNewTarget(deviceId: $0, cwd: $1) },
             onHide: { session, hidden in
                 Task {
                     do { try await model.setHidden(session.key, hidden) } catch { errorText = CliErrorText.text(for: error) }
@@ -193,7 +193,7 @@ struct AgentSessionList: View {
     let selected: CliSessionKey?
     let onSelect: (CliSessionKey) -> Void
     let onCreate: () -> Void
-    let onNew: (String) -> Void
+    let onNew: (String, String?) -> Void
     let onHide: (CliSession, Bool) -> Void
     @AppStorage("nexagent.activeFolded") private var activeFolded = false
 
@@ -261,7 +261,7 @@ struct AgentSessionList: View {
                     Text(group.device.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                     Text(group.device.online ? "\(group.count)" : "离线").font(.caption).foregroundStyle(Theme.muted)
                     Spacer()
-                    Button { onNew(group.device.id) } label: { Image(systemName: "plus") }
+                    Button { onNew(group.device.id, nil) } label: { Image(systemName: "plus") }
                         .buttonStyle(.plain).foregroundStyle(Theme.muted)
                         .accessibilityLabel("在 \(group.device.name) 上新建会话")
                 }
@@ -270,6 +270,13 @@ struct AgentSessionList: View {
                 HStack(spacing: 6) {
                     Text(folder.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
                     Spacer()
+                    Button { onNew(group.device.id, folder.cwd) } label: {
+                        Image(systemName: "plus").font(.system(size: 12)).frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
+                    .help("新建会话")
+                    .accessibilityLabel("在 \(folder.label) 中新建会话")
                     Text("\(folder.sessions.count)").font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }
                 .padding(.horizontal, 6).padding(.top, 8).padding(.bottom, 2)

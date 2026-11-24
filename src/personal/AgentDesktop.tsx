@@ -1,3 +1,4 @@
+import { startWebUpdateChecks, webUpdates } from "./web-updates";
 import { userErrorText } from "../lib/http-errors";
 import { formatCompactTokens } from "../lib/token-count";
 import { AssistantActionDialog } from "./components/AssistantActions";
@@ -272,10 +273,14 @@ export function AgentDesktop() {
   messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
   const [update, setUpdate] = useState<ClientUpdateState>();
+  const updater = desktop ?? webUpdates;
   useEffect(() => {
-    void desktop?.updateState?.().then(setUpdate).catch(() => {});
-    return desktop?.onUpdateState?.(setUpdate) ?? undefined;
-  }, []);
+    let active = true, changed = false;
+    const unsubscribe = updater.onUpdateState?.(state => { changed = true; if (active) setUpdate(state); });
+    void updater.updateState?.().then(state => { if (active && !changed) setUpdate(state); }).catch(() => {});
+    const stop = desktop ? undefined : startWebUpdateChecks();
+    return () => { active = false; unsubscribe?.(); stop?.(); };
+  }, [updater]);
   useEffect(() => desktop?.onClipboardImage?.((image) => {
     const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
     if (!bytes.byteLength || !image.type.startsWith("image/")) return;
@@ -768,7 +773,7 @@ export function AgentDesktop() {
       </header>
       {page === "agent" && bot ? <button type="button" aria-label="助手详情" aria-pressed={panelOpen} title={panelOpen ? "收起 Agent 资料" : "展开 Agent 资料"} className="panel-handle glass" onClick={() => setDetail(!detail)}>{panelOpen ? <ChevronRight size={15}/> : <ChevronLeft size={15}/>}</button> : null}
 
-      {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(userErrorText(e)))}>立即更新</button></div> : null}
+      {update?.status === "ready" && updater.installUpdate && !(page === "settings" && settingsCategory === "about") ? <div role="status" className="update-banner">{desktop ? `新版本 ${update.version} 已就绪` : "网页有新版本"}<button type="button" onClick={() => void updater.installUpdate?.().catch((e: Error) => setError(userErrorText(e)))}>{desktop ? "立即更新" : "刷新页面"}</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ProviderSettings state={state} refresh={reload} active={modelChooserOpen}/>}</div> : null}
 
