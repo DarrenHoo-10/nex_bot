@@ -1,6 +1,7 @@
 // nex_bot's Claude Code hook (plain Node, no dependencies; it runs inside the
 // plugin directory, so it cannot import anything from the repository).
 //
+//   hook.mjs question     PreToolUse for AskUserQuestion: collect the user's answers
 //   hook.mjs permission   PermissionRequest: ask nex_bot, wait for the answer
 //   hook.mjs post         PostToolUse: the tool ran, so the prompt was answered
 //   hook.mjs stop         Stop: a turn ended
@@ -15,14 +16,14 @@
 // listening, a wrong token, a timeout, a stdin that is not JSON.
 //
 // Wire format, one JSON line each way (the bridge side is hooks.ts):
-//   hook -> bridge  {"v":1,"token":"…","event":"permission|post|stop","input":{…}}
+//   hook -> bridge  {"v":1,"token":"…","event":"question|permission|post|stop","input":{…}}
 //   bridge -> hook  {"v":1,"decision":"allow|deny|pass","message"?:"…","answers"?:{…},"always"?:true}
 //
 // `always` allows the call and applies the rules Claude Code itself suggested
 // for this prompt (permission_suggestions) for the rest of the session only.
 import net from "node:net";
 
-const MODES = new Set(["permission", "post", "stop"]);
+const MODES = new Set(["question", "permission", "post", "stop"]);
 const STDIN_LIMIT = 8 * 1024 * 1024;
 const REPLY_LIMIT = 256 * 1024;
 const DELIVER_WAIT_MS = 3000;
@@ -79,7 +80,6 @@ function permissionOutput(input, reply) {
       if (rules.length) decision.updatedPermissions = rules;
     }
     if (input.tool_name === "AskUserQuestion") {
-      // To verify with a real Claude Code: the answers go in updatedInput next to the original questions.
       if (!reply.answers || typeof reply.answers !== "object") return null;
       decision.updatedInput = { ...input.tool_input, answers: reply.answers };
     }
@@ -157,6 +157,7 @@ async function main() {
     return null;
   }
   if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  if (mode === "question" && (input.hook_event_name !== "PreToolUse" || input.tool_name !== "AskUserQuestion")) return null;
   const sent = {
     hook_event_name: input.hook_event_name,
     session_id: input.session_id,
@@ -167,10 +168,18 @@ async function main() {
     ...(Array.isArray(input.permission_suggestions) ? { permission_suggestions: slim(input.permission_suggestions) } : {}),
   };
   const line = JSON.stringify({ v: 1, token, event: mode, input: sent });
-  const waitMs = mode === "permission" ? Number(process.env.NEXBOT_HOOK_TIMEOUT_MS) || DEFAULT_WAIT_MS : DELIVER_WAIT_MS;
-  const reply = await exchange(pipe, line, waitMs, mode === "permission");
-  if (mode !== "permission" || !reply || reply.v !== 1) return null;
-  return permissionOutput({ tool_name: input.tool_name, tool_input: input.tool_input, permission_suggestions: input.permission_suggestions }, reply);
+  const interactive = mode === "permission" || mode === "question";
+  const waitMs = interactive ? Number(process.env.NEXBOT_HOOK_TIMEOUT_MS) || DEFAULT_WAIT_MS : DELIVER_WAIT_MS;
+  const reply = await exchange(pipe, line, waitMs, interactive);
+  if (!interactive || !reply || reply.v !== 1) return null;
+  if (mode === "question") {
+    if (reply.decision === "deny") {
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reply.message || "Question dismissed in NexBot." } };
+    }
+    if (reply.decision !== "allow" || !reply.answers) return null;
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...input.tool_input, answers: reply.answers } } };
+  }
+  return permissionOutput(input, reply);
 }
 
 let output = null;

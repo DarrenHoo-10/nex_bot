@@ -5,8 +5,8 @@
 // through `answer()` and is handed to the waiting hook. Turn ends (the Stop
 // hook, a status change, a Codex task_complete) become `cli.turn`.
 //
-// Claude Code shows its own prompt in the terminal while the hook waits, so a
-// waiting hook never blocks the person at the computer. When the feature is
+// Claude's native permission prompt can be answered while PermissionRequest
+// waits. PreToolUse collects questions before that prompt. When the feature is
 // paused or off, the token is wrong or the request expires, the hook passes.
 // When only the link to Core drops, the request stays open and is announced
 // again once Core is back, so the card still reaches the phone.
@@ -57,6 +57,7 @@ export function locateHookPlugin(options: { env?: NodeJS.ProcessEnv; moduleUrl?:
 
 /** The hook events of the plugin and how each runs (as in plugin/hooks/hooks.json). */
 const HOOK_EVENTS = [
+  { event: "PreToolUse", mode: "question", matcher: "AskUserQuestion", timeout: 1800, async: false },
   { event: "PermissionRequest", mode: "permission", matcher: "*", timeout: 1800, async: false },
   { event: "PostToolUse", mode: "post", matcher: "*", timeout: 10, async: true },
   { event: "Stop", mode: "stop", matcher: undefined, timeout: 10, async: true },
@@ -489,6 +490,15 @@ export class HookServer {
     }
     const input = message.input as HookInput;
     switch (message.event) {
+      case "question":
+        // A pre-tool hook runs before Claude can show its own question. Fall through
+        // to the native interaction immediately when remote answering is unavailable.
+        if (input.tool_name !== "AskUserQuestion" || !this.linked()) {
+          this.reply(socket, { decision: "pass" });
+          return;
+        }
+        this.onPermission(socket, ref, input);
+        return;
       case "permission":
         this.onPermission(socket, ref, input);
         return;

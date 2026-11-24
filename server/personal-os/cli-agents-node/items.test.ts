@@ -149,6 +149,12 @@ describe("claude: assistant records", () => {
     expect(items[0]).toMatchObject({ input: '{"a":1,"b":[2]}' });
   });
 
+  it("shows question text in activity history", () => {
+    const questions = [{ question: "是否批准？", options: [{ label: "批准" }, { label: "拒绝" }] }];
+    const { items } = claude({ type: "assistant", uuid: "ask", message: { content: [{ type: "tool_use", id: "q", name: "AskUserQuestion", input: { questions } }] } });
+    expect(items[0]).toMatchObject({ name: "AskUserQuestion", input: "是否批准？" });
+  });
+
   it("shows a sub-agent call by its task name, not its whole brief", () => {
     const prompt = "Read every file under src and report…\n".repeat(40);
     const { items } = claude({ type: "assistant", uuid: "a7", message: { content: [{ type: "tool_use", id: "t", name: "Agent", input: { description: "Survey the sidebar", prompt, subagent_type: "Explore" } }] } });

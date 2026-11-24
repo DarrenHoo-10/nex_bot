@@ -12,6 +12,7 @@ import {
   type CliSessionWire,
 } from "../../../shared/cli-agents.ts";
 import { inboxWords } from "./inbox.ts";
+import { ASK_USER_QUESTION_TOOL, parseAskQuestions } from "../../../shared/ask-question.ts";
 
 export type ToolItem = Extract<CliItem, { kind: "tool" }>;
 
@@ -407,12 +408,13 @@ function claudeAssistant(record: Rec, message: Rec | undefined, ctx: ItemContext
       }
       case "tool_use": {
         const name = asStr(block.name) ?? "tool";
+        const questions = name === ASK_USER_QUESTION_TOOL ? parseAskQuestions(block.input) : null;
         const tool: ToolItem = {
           kind: "tool",
           id: idFor(index),
           ts,
           name: truncateUtf8(name, 200),
-          input: summarizeInput(block.input),
+          input: questions ? summary(questions.map((entry) => entry.question).join("\n")) : summarizeInput(block.input),
           status: "running",
         };
         registerTool(ctx, asStr(block.id), tool);

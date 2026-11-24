@@ -428,13 +428,14 @@ describe("locateHookPlugin", () => {
 describe("the plugin files", () => {
   const read = (...parts: string[]) => JSON.parse(readFileSync(path.join(PLUGIN, ...parts), "utf8"));
 
-  it("declares the nexbot plugin with the three hooks", () => {
+  it("intercepts questions before permission checks and leaves other tools on the permission path", () => {
     expect(read(".claude-plugin", "plugin.json")).toMatchObject({ name: "nexbot" });
     const hooks = read("hooks", "hooks.json").hooks;
-    expect(Object.keys(hooks).sort()).toEqual(["PermissionRequest", "PostToolUse", "Stop"]);
+    expect(Object.keys(hooks).sort()).toEqual(["PermissionRequest", "PostToolUse", "PreToolUse", "Stop"]);
+    expect(hooks.PreToolUse[0]).toMatchObject({ matcher: "AskUserQuestion", hooks: [{ type: "command", timeout: 1800 }] });
     expect(hooks.PermissionRequest[0]).toMatchObject({ matcher: "*" });
     expect(hooks.PermissionRequest[0].hooks[0]).toMatchObject({ type: "command", timeout: 1800 });
-    for (const [event, mode] of [["PermissionRequest", "permission"], ["PostToolUse", "post"], ["Stop", "stop"]] as const) {
+    for (const [event, mode] of [["PreToolUse", "question"], ["PermissionRequest", "permission"], ["PostToolUse", "post"], ["Stop", "stop"]] as const) {
       const command: string = hooks[event][0].hooks[0].command;
       expect(command).toContain("${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs");
       expect(command).toContain(` ${mode}`);
@@ -448,7 +449,7 @@ describe("the plugin files", () => {
     const shipped = read("hooks", "hooks.json").hooks;
     const windows = JSON.parse(windowsHooksJson()).hooks;
     expect(Object.keys(windows).sort()).toEqual(Object.keys(shipped).sort());
-    for (const [event, mode] of [["PermissionRequest", "permission"], ["PostToolUse", "post"], ["Stop", "stop"]] as const) {
+    for (const [event, mode] of [["PreToolUse", "question"], ["PermissionRequest", "permission"], ["PostToolUse", "post"], ["Stop", "stop"]] as const) {
       const entry = windows[event][0].hooks[0];
       const original = shipped[event][0].hooks[0];
       expect(entry).toMatchObject({ type: "command", shell: "powershell", timeout: original.timeout });
@@ -497,6 +498,22 @@ function runHook(mode: string, input: unknown, env: Record<string, string | unde
 const hookEnv = (server: HookServer, extra: Record<string, string> = {}) => ({ NEXBOT_HOOK_PIPE: server.pipe, NEXBOT_HOOK_TOKEN: server.tokenFor(REF), ...extra });
 
 describe("hook.mjs", () => {
+  it("leaves the native question available when the remote UI is offline and never intercepts other tools", async () => {
+    const r = await started();
+    const input = { ...QUESTION, hook_event_name: "PreToolUse" };
+    expect(await runHook("question", { ...input, tool_name: "Bash" }, hookEnv(r.server)).stdout).toBe("");
+    r.state.link = false;
+    expect(await runHook("question", input, hookEnv(r.server)).stdout).toBe("");
+    expect(r.server.pendingCount).toBe(0);
+  });
+
+  it("dismisses a pre-tool question without executing it", async () => {
+    const r = await started();
+    const run = runHook("question", { ...QUESTION, hook_event_name: "PreToolUse" }, hookEnv(r.server));
+    const request = await until(() => r.requests()[0], "question");
+    r.server.answer({ id: request.id, decision: "deny" });
+    expect(JSON.parse(await run.stdout).hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" });
+  });
   it("prints the allow decision for a permission request", async () => {
     const r = await started();
     const run = runHook("permission", BASH, hookEnv(r.server));

@@ -228,7 +228,7 @@ describe("Agent mode through Core, a real node and a fake herdr-core", () => {
     await browser.find("term.closed", (m) => m.sid === opened.sid);
   }, 60_000);
 
-  it("turns a Claude permission prompt into a Core card and returns the owner's answer to the real hook script", async () => {
+  it.each(["permission", "question"])("round trips a Claude %s through Core to the real hook script", async (mode) => {
     const hc = new FakeHc();
     let s: Stack;
     hc.onRun = (terminal) => {
@@ -248,8 +248,9 @@ describe("Agent mode through Core, a real node and a fake herdr-core", () => {
     const terminal = hc.last();
     expect(terminal.argv).toContain("--plugin-dir");
 
-    // What Claude Code does: run the hook with the permission request on stdin.
-    const hook = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), "plugin", "hooks", "hook.mjs"), "permission"], {
+    const question = "是否批准演示操作？";
+    const questions = [{ question, header: "审批测试", multiSelect: false, options: [{ label: "批准", description: "继续" }, { label: "拒绝", description: "停止" }] }];
+    const hook = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), "plugin", "hooks", "hook.mjs"), mode], {
       env: { PATH: process.env.PATH, NEXBOT_HOOK_PIPE: terminal.env.NEXBOT_HOOK_PIPE, NEXBOT_HOOK_TOKEN: terminal.env.NEXBOT_HOOK_TOKEN },
       stdio: ["pipe", "pipe", "ignore"],
     });
@@ -257,7 +258,11 @@ describe("Agent mode through Core, a real node and a fake herdr-core", () => {
     let stdout = "";
     hook.stdout.on("data", (chunk) => (stdout += chunk));
     const exited = new Promise<number | null>((resolve) => hook.on("close", resolve));
-    hook.stdin.end(JSON.stringify({ hook_event_name: "PermissionRequest", session_id: "s", tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } }));
+    const isQuestion = mode === "question";
+    hook.stdin.end(JSON.stringify({
+      hook_event_name: isQuestion ? "PreToolUse" : "PermissionRequest", session_id: "s", tool_use_id: "toolu_1",
+      tool_name: isQuestion ? "AskUserQuestion" : "Bash", tool_input: isQuestion ? { questions } : { command: "npm test" },
+    }));
 
     // The card reaches Core and shows in the list of open requests.
     let request: Record<string, any> | undefined;
@@ -265,12 +270,17 @@ describe("Agent mode through Core, a real node and a fake herdr-core", () => {
       const listed = await s.call(`cli-agents/requests?key=${encodeURIComponent(started.data.key)}`);
       request = listed.data.requests?.[0];
     }
-    expect(request).toMatchObject({ tool: "Bash", summary: "npm test", kind: "permission" });
+    expect(request).toMatchObject(isQuestion
+      ? { tool: "AskUserQuestion", summary: question, kind: "question", questions: [{ question, options: questions[0].options }] }
+      : { tool: "Bash", summary: "npm test", kind: "permission" });
 
-    const answered = await s.call("cli-agents/answer", { id: request!.id, decision: "allow" });
+    const answers = { [question]: "拒绝" };
+    const answered = await s.call("cli-agents/answer", { id: request!.id, decision: "allow", ...(isQuestion ? { answers } : {}) });
     expect(answered.status).toBe(200);
     expect(await exited).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+    expect(JSON.parse(stdout).hookSpecificOutput).toEqual(isQuestion
+      ? { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { questions, answers } }
+      : { hookEventName: "PermissionRequest", decision: { behavior: "allow" } });
 
     // A second answer for the same request is refused: the hook has gone.
     const late = await s.call("cli-agents/answer", { id: request!.id, decision: "allow" });

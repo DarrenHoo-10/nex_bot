@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$NEXBOT_HOOK_NODE\" ] || ELECTRON_RUN_AS_NODE=1 \"$NEXBOT_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs\" question || true",
+            "timeout": 1800
+          }
+        ]
+      }
+    ],
     "PermissionRequest": [
       {
         "matcher": "*",
