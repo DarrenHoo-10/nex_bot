@@ -419,6 +419,17 @@ public struct Usage: RowBacked {
     public var calls: Int { row.int("calls") ?? 0 }
     public var inputTokens: Int { row.int("input_tokens") ?? 0 }
     public var outputTokens: Int { row.int("output_tokens") ?? 0 }
+    public var compactInputTokens: String { Self.compactTokens(inputTokens) }
+    public var compactOutputTokens: String { Self.compactTokens(outputTokens) }
+
+    private static func compactTokens(_ tokens: Int) -> String {
+        guard tokens >= 1_000 else { return String(tokens) }
+        let millions = tokens >= 1_000_000
+        let value = Double(tokens) / (millions ? 1_000_000 : 1_000)
+        let digits = value >= 100 ? 0 : 1
+        let number = value.formatted(.number.precision(.fractionLength(0...digits)).grouping(.never).locale(Locale(identifier: "en_US_POSIX")))
+        return number + (millions ? "M" : "k")
+    }
 }
 
 /// `delegations[]`: an agent-to-agent hand-off (`a2a_messages`).

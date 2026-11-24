@@ -21,8 +21,8 @@ struct InspectorSettingsTab: View {
             group("用量") {
                 HStack {
                     stat("累计调用", "\(usage?.calls ?? 0) 次")
-                    stat("输入 Token", (usage?.inputTokens ?? 0).formatted())
-                    stat("输出 Token", (usage?.outputTokens ?? 0).formatted())
+                    stat("输入 Token", usage?.compactInputTokens ?? "0")
+                    stat("输出 Token", usage?.compactOutputTokens ?? "0")
                 }
                 .fieldCard(padding: 14)
             }
