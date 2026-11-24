@@ -424,11 +424,18 @@ public struct Usage: RowBacked {
 
     private static func compactTokens(_ tokens: Int) -> String {
         guard tokens >= 1_000 else { return String(tokens) }
-        let millions = tokens >= 1_000_000
-        let value = Double(tokens) / (millions ? 1_000_000 : 1_000)
+        let unit: (scale: Double, suffix: String)
+        if tokens >= 1_000_000_000 {
+            unit = (1_000_000_000, "B")
+        } else if tokens >= 1_000_000 {
+            unit = (1_000_000, "M")
+        } else {
+            unit = (1_000, "K")
+        }
+        let value = Double(tokens) / unit.scale
         let digits = value >= 100 ? 0 : 1
         let number = value.formatted(.number.precision(.fractionLength(0...digits)).grouping(.never).locale(Locale(identifier: "en_US_POSIX")))
-        return number + (millions ? "M" : "k")
+        return number + unit.suffix
     }
 }
 

@@ -1,5 +1,5 @@
 import { userErrorText } from "../lib/http-errors";
-import { formatTokens } from "../lib/usage";
+import { formatCompactTokens } from "../lib/usage";
 import { AssistantActionDialog } from "./components/AssistantActions";
 import { TopicBubble, topicTimeline, type FinanceTopic } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
@@ -922,8 +922,8 @@ export function AgentDesktop() {
             <div className="ds-field-card usage-card">
               <div className="ds-usage-grid">
                 <div><small>累计调用</small><strong>{Number(botUsage?.calls ?? 0)} 次</strong></div>
-                <div><small>输入 Token</small><strong>{formatTokens(Number(botUsage?.input_tokens ?? 0))}</strong></div>
-                <div><small>输出 Token</small><strong>{formatTokens(Number(botUsage?.output_tokens ?? 0))}</strong></div>
+                <div><small>输入 Token</small><strong>{formatCompactTokens(Number(botUsage?.input_tokens ?? 0))}</strong></div>
+                <div><small>输出 Token</small><strong>{formatCompactTokens(Number(botUsage?.output_tokens ?? 0))}</strong></div>
               </div>
             </div>
           </div>

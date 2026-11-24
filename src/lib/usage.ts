@@ -39,6 +39,13 @@ export function formatTokens(n: number): string {
 }
 const trim = (x: number) => (x >= 100 ? Math.round(x).toString() : x.toFixed(1).replace(/\.0$/, ""));
 
+export function formatCompactTokens(n: number): string {
+  if (!hasFiniteCost(n) || n < 1_000) return formatTokens(n);
+  if (n >= 1_000_000_000) return `${trim(n / 1_000_000_000)}B`;
+  if (n >= 1_000_000) return `${trim(n / 1_000_000)}M`;
+  return `${trim(n / 1_000)}K`;
+}
+
 /** Task-picker variant: hide unused tasks and spell out small counts. */
 export function formatTaskTokens(total: number): string | null {
   if (!Number.isFinite(total) || total < 1) return null;
