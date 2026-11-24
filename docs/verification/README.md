@@ -3,6 +3,7 @@
 - [GitHub 监视与 Webhook 原子工具](github-webhook-tools.md)
 
 - [NexAgent 权限确认卡与默认完全访问：开发验证（2026-11-24）](nexagent-permission-prompts-20261124.md)
+- [NexAgent 权限确认送达各端、新会话默认完全访问：全平台发布 0.9.46（2026-11-24）](nexagent-permission-release-20261124.md)
 - [NexAgent 发送体验、可读错误与模型失败提醒：全平台发布 0.9.45（2026-11-24）](nexagent-errors-release-20261124.md)
 - [NexAgent 会话翻译：全平台发布 0.9.44（2026-11-22）](nexagent-translation-release-20261122.md)
 - [NexAgent 会话翻译配置与验证](nexagent-translation.md)
