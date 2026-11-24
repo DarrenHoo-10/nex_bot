@@ -11,6 +11,7 @@ import { composerMode } from "./session-model";
 import { CliModelMenu, type LaunchChoice } from "./CliModelMenu";
 import { useCompactComposer } from "../components/use-compact-composer";
 import type { CliQueue } from "./api";
+import { isVisibleQueueEntry } from "./use-queue";
 
 // Drafts live as long as the page, one per session.
 const drafts = new Map<string, string>();
@@ -68,7 +69,7 @@ export interface ComposerProps {
   onCancelRevision?(): void;
   onQueueWithdraw?(entryId: string, version: number): Promise<void>;
   onQueueEdit?(entryId: string, version: number, text: string): Promise<void>;
-  onQueueSteer?(entryId: string): Promise<void>;
+  onQueueSteer?(entryId: string, version: number): Promise<void>;
   onQueueResume?(): Promise<void>;
 }
 
@@ -87,7 +88,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const context=draft||starter?undefined:session.context;
   const [sentAt,setSentAt]=useState(0);
   const active=!draft && (running||(!!review&&sentAt>Date.now()-9000));
-  const realQueue = !draft ? (queue?.entries ?? []).filter(entry=>entry.status==="pending"||entry.status==="uncertain") : [];
+  const realQueue = !draft ? (queue?.entries ?? []).filter(isVisibleQueueEntry) : [];
   const draftRef=useRef<HTMLTextAreaElement>(null);
   const formRef=useRef<HTMLFormElement>(null);
   useEffect(()=>{
@@ -190,11 +191,10 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   // a new session may start without a message: it only opens the CLI in that folder
   const canSubmit=(starter ? starter.ready : !!(body || extra.files.length)) && (extra.goal===null || !!goal);
   const stopOnly = mode.kind==="send" && mode.running && !sending && !(body || extra.files.length);
-  // 排队/引导 only applies where a turn actually runs: a nex_bot terminal session
-  const wantsDelivery = !draft && session.liveIn === "nexbot" && !!session.terminal && running;
-  // 排队/引导 is offered only where the choice is honoured (the review fixture, or a running nex_bot
-  // terminal), and only for a message about to go while the agent is busy
-  const offersDelivery = active && (!!review || wantsDelivery) && !!(body || extra.files.length) && !revision;
+  const managedTerminal = !draft && session.liveIn === "nexbot" && !!session.terminal;
+  const claudeInbox = !draft && session.engine === "claude" && session.sendVia === "inbox";
+  const queuesWhileBusy = !revision && (managedTerminal || claudeInbox) && (running || session.state === "waiting");
+  const offersDelivery = active && (!!review || (managedTerminal && running)) && !!(body || extra.files.length) && !revision;
   // the paused note matters only while something waits in the queue
   const pausedNote = !review && queue?.paused && realQueue.length > 0;
   const submit = async () => {
@@ -225,7 +225,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       rememberSent(session.key, body, kept.files);
       // a resend replaces the message the agent is on: it goes now, never into the queue
       result = active&&review&&!revision ? await review.run(kept.choice,session.key,{text:value})
-        : wantsDelivery&&!revision ? await onSend(value, kept.choice as "queue"|"steer") : await onSend(value);
+        : queuesWhileBusy ? await onSend(value, offersDelivery && kept.choice === "steer" ? "steer" : "queue") : await onSend(value);
     } catch (cause) {
       // the message goes back in the box, unless something new was typed meanwhile
       if (!drafts.get(key) && !getExtras(key).files.length) {
@@ -280,9 +280,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <span className="na-queued-label"><ListOrdered size={13}/>排队 {i+1}</span>
           <span className="na-queued-text" title={entry.text}>{entry.text}</span>
           {entry.status==="uncertain" ? <small className="na-queued-state" role="status">待确认</small> : null}
-          {entry.status==="failed" && entry.errorCode ? <small className="na-queued-state" data-tone="error" role="alert">发送失败</small> : null}
-          {entry.status==="pending" ? <span className="na-queued-actions">
-            {onQueueSteer && running ? <button type="button" className="is-icon" aria-label="引导" data-tip="引导" onClick={()=>void run(()=>onQueueSteer(entry.id))}><CornerUpRight size={14}/></button> : null}
+          {entry.status==="failed" ? <small className="na-queued-state" data-tone="error" role="alert">发送失败</small> : null}
+          {entry.status==="pending" || entry.status==="failed" ? <span className="na-queued-actions">
+            {entry.status==="pending" && onQueueSteer && managedTerminal && running ? <button type="button" className="is-icon" aria-label="引导" data-tip="引导" onClick={()=>void run(()=>onQueueSteer(entry.id, entry.version))}><CornerUpRight size={14}/></button> : null}
             {onQueueEdit ? <button type="button" className="is-icon" aria-label={"编辑排队消息 "+(i+1)} data-tip="编辑" onClick={()=>setEditingQueue({id:entry.id,version:entry.version,text:entry.text})}><Pencil size={13}/></button> : null}
             {onQueueWithdraw ? <button type="button" className="is-icon" aria-label="撤销" data-tip="撤销" onClick={()=>void run(()=>onQueueWithdraw(entry.id, entry.version))}><Undo2 size={14}/></button> : null}
           </span> : null}
@@ -343,7 +343,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         </div>}
         {/* one button: Stop while a turn runs and the box is empty, Send once there is something to send */}
         {stopOnly ? <button type="button" className="na-stop" aria-label={review?"中断":"停止"} title={review?"中断":"停止当前运行并暂停队列"} disabled={busy} onClick={() => void run(onInterrupt)}><Square size={12} fill="currentColor" strokeWidth={0}/></button> : null}
-        {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":offersDelivery?(delivery==="queue"?"排队发送":"引导当前任务"):"发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
+        {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":offersDelivery && delivery==="steer" ? "引导当前任务" : queuesWhileBusy ? "排队发送" : "发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
       </div>
       {tooLarge ? <small role="alert" className="cli-composer-error">内容太长</small> : error ? <small role="alert" className="cli-composer-error">{error}</small> : null}
       {mode.kind==="send" && mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}

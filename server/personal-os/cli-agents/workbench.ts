@@ -435,6 +435,7 @@ export class CliAgentWorkbench {
       return this.insertEntry(workbenchId, key, input, { status: "pending" });
     });
     if (input.delivery === "queue") {
+      this.pushQueue(workbenchId);
       this.pump(workbenchId);
       return this.submitResult(this.entryRow(entryId), null);
     }
@@ -456,6 +457,7 @@ export class CliAgentWorkbench {
     } else if (failure.code === "device_offline" || failure.code === "busy") {
       // nothing left Core: back to pending, the consumer decides when it may go
       this.store.run("UPDATE cli_agent_outbox SET status='pending',version=version+1,updated_at=? WHERE id=?", now(), entryId);
+      this.pushQueue(workbenchId);
       this.pump(workbenchId);
     } else {
       this.store.run("UPDATE cli_agent_outbox SET status='failed',error_code=?,version=version+1,updated_at=? WHERE id=?", failure.code, now(), entryId);
@@ -543,14 +545,13 @@ export class CliAgentWorkbench {
   // -------------------------------------------------------------------------
   // Queue commands
 
-  /** Edits a queued entry in place. Only still-pending entries move; anything
-   * a consumer claimed answers with a conflict so the caller can decide. */
+  /** Edits a pending or definitively failed entry. A paused queue still needs to be resumed. */
   editEntry(input: WorkbenchEntryInput, text: string): CliQueueEntryView {
     const row = this.entryRow(input.entryId);
-    if (String(row.status) !== "pending") throw new CliOpError("conflict", "条目已投递，可编辑后重发");
+    if (row.status !== "pending" && row.status !== "failed") throw new CliOpError("conflict", "条目已投递，可编辑后重发");
     this.store.transaction(() => {
       const changes = Number(this.store.run(
-        "UPDATE cli_agent_outbox SET body=?,version=version+1,updated_at=? WHERE id=? AND status='pending' AND version=?",
+        "UPDATE cli_agent_outbox SET body=?,status='pending',error_code=NULL,op_id=NULL,version=version+1,updated_at=? WHERE id=? AND status IN ('pending','failed') AND version=?",
         this.store.encrypt(JSON.stringify({ text })), now(), input.entryId, input.expectedVersion,
       ).changes);
       if (!changes) throw this.staleEntry(input.entryId);
@@ -564,9 +565,9 @@ export class CliAgentWorkbench {
   /** Withdraws a queued entry; terminal state, the consumer never dispatches it. */
   withdrawEntry(input: WorkbenchEntryInput): CliQueueEntryView {
     const row = this.entryRow(input.entryId);
-    if (String(row.status) !== "pending") throw new CliOpError("conflict", "条目已投递，不能撤回");
+    if (row.status !== "pending" && row.status !== "failed") throw new CliOpError("conflict", "条目已投递，不能撤回");
     const changes = Number(this.store.run(
-      "UPDATE cli_agent_outbox SET status='withdrawn',version=version+1,updated_at=? WHERE id=? AND status='pending' AND version=?",
+      "UPDATE cli_agent_outbox SET status='withdrawn',version=version+1,updated_at=? WHERE id=? AND status IN ('pending','failed') AND version=?",
       now(), input.entryId, input.expectedVersion,
     ).changes);
     if (!changes) throw this.staleEntry(input.entryId);
@@ -591,8 +592,8 @@ export class CliAgentWorkbench {
       throw new CliOpError("turn_changed");
     }
     const claimed = Number(this.store.run(
-      "UPDATE cli_agent_outbox SET status='claimed',version=version+1,updated_at=? WHERE id=? AND status='pending'",
-      now(), input.entryId,
+      "UPDATE cli_agent_outbox SET status='claimed',version=version+1,updated_at=? WHERE id=? AND status='pending' AND version=?",
+      now(), input.entryId, input.expectedVersion,
     ).changes);
     if (!claimed) throw this.staleEntry(input.entryId);
     const failure = await this.dispatch("workbench", key, session.deviceId, "steer", input.entryId);

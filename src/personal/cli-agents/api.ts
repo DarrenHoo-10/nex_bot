@@ -225,8 +225,8 @@ export const editQueued = (entryId: string, expectedVersion: number, text: strin
   call<{ entry: unknown }>("/queue/edit", { entryId, expectedVersion, text });
 export const withdrawQueued = (entryId: string, expectedVersion: number) =>
   call<{ entry: unknown }>("/queue/withdraw", { entryId, expectedVersion });
-export const steerQueued = (entryId: string) =>
-  call<{ entry: unknown }>("/queue/steer", { entryId });
+export const steerQueued = (entryId: string, expectedVersion: number) =>
+  call<{ entry: unknown }>("/queue/steer", { entryId, expectedVersion });
 export const interruptSession = (key: CliSessionKey) => call<{ outcome: string }>("/interrupt", { key });
 export const openLocal = (key: CliSessionKey) => call<{ ok: boolean }>("/open-local", { key });
 export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: boolean }>("/hide", { key, hidden });

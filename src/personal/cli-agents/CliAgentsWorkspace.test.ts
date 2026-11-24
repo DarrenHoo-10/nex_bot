@@ -433,10 +433,12 @@ describe("session pane", () => {
     expect(radios[1].getAttribute("aria-checked")).toBe("true");
   });
 
-  it("keeps the delivery switch away from sessions that ignore it", async () => {
+  it("queues behind a busy Claude inbox without offering an unsupported steer", async () => {
     await mount({ devices: [device()], sessions: [session({ state: "running", liveIn: "terminal", terminal: undefined, sendVia: "inbox" })] }, "dev1:claude:s1");
     await typeText(container.querySelector("textarea")!, "还在吗");
     expect(container.querySelector("[role=radiogroup]")).toBeNull();
+    await click(button("发送"));
+    expect(fixture.sendMessage).toHaveBeenCalledWith("dev1:claude:s1", "还在吗", expect.objectContaining({ delivery: "queue" }));
   });
 
   it("shows the paused-queue note only while something waits", async () => {
@@ -571,9 +573,12 @@ describe("session pane", () => {
     expect(container.querySelector("[data-testid=cli-composer-note]")?.textContent).toBe("已发送，未确认");
   });
 
-  it("does not claim delivery for a message that only joined the queue", async () => {
-    fixture.sendMessage.mockResolvedValue({ queued: true, status: "pending" });
-    await mount({ devices: [device()], sessions: [session()] }, "dev1:claude:s1");
+  it("keeps a queued message visible across the send receipt and exposes its queue actions", async () => {
+    let resolveQueue!: (queue: unknown) => void;
+    fixture.fetchQueue.mockResolvedValueOnce({ workbenchId: "wb", sessionKey: "dev1:claude:s1", paused: false, entries: [] });
+    fixture.fetchQueue.mockImplementationOnce(() => new Promise((resolve) => { resolveQueue = resolve; }));
+    fixture.sendMessage.mockResolvedValue({ messageId: "q1", queued: true, status: "pending" });
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
     const box = container.querySelector("textarea") as HTMLTextAreaElement;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "稍后");
@@ -581,7 +586,15 @@ describe("session pane", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await flush();
-    expect(container.querySelector(".na-working")).toBeNull();
+    expect(container.querySelector("[data-testid=cli-user-echo]")?.textContent).toContain("稍后");
+    await act(async () => { resolveQueue({ workbenchId: "wb", sessionKey: "dev1:claude:s1", paused: false,
+      entries: [{ id: "q1", seq: 1, text: "稍后", status: "pending", version: 1, createdAt: 1, updatedAt: 1 }] }); });
+    expect(container.querySelector("[data-testid=cli-user-echo]")).toBeNull();
+    expect(container.querySelector(".na-queued-text")?.textContent).toBe("稍后");
+    expect(button("编辑排队消息 1")).not.toBeNull();
+    expect(button("引导")).not.toBeNull();
+    await click(button("引导"));
+    expect(fixture.steerQueued).toHaveBeenCalledWith("q1", 1);
   });
 
   it("renders the transcript the Core returned", async () => {

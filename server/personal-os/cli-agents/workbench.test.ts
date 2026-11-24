@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPersonalApp, type AppOptions } from "../index.ts";
+import type { CliQueueView } from "../../../shared/cli-agents.ts";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -132,6 +133,8 @@ describe("queue delivery", () => {
     const f = await fixture();
     const device = await connectDevice(f, "queue");
     const key = await sessionOn(f, device, "q1", "running");
+    const updates: CliQueueView[] = [];
+    cleanups.push(f.app.cliHub.onQueue((message) => { if (message.type === "queue" && message.queue.sessionKey === key) updates.push(message.queue); }));
     const b = await f.call("cli-agents/send", { key, text: "B", delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() });
     expect(b.status).toBe(200);
     expect(b.data).toMatchObject({ queued: true, status: "pending" });
@@ -139,8 +142,9 @@ describe("queue delivery", () => {
     expect(c.data.queued).toBe(true);
     await wait(60);
     expect(device.ops("send")).toHaveLength(0);
-    console.error("DBG after enqueue", JSON.stringify((await f.get("cli-agents/queue?key=" + encodeURIComponent(key))).data));
-    console.error("DBG state", JSON.stringify(f.app.cliHub.list().sessions.map((x: any) => [x.key, x.state, x.online, x.liveIn])));
+    expect(updates.map((queue) => queue.entries.map((entry) => [entry.text, entry.status]))).toEqual([
+      [["B", "pending"]], [["B", "pending"], ["C", "pending"]],
+    ]);
 
     // turn 1 ends: the device reports idle and the turn end, then B goes
     device.sessions([runningWire("q1", { state: "idle" })]);
@@ -222,6 +226,21 @@ describe("queue delivery", () => {
     const late = await f.call("cli-agents/send", { key, text: "晚了", delivery: "steer", clientMessageId: ids.client(), requestId: ids.request() });
     expect(late.status).toBe(409);
     expect(late.data.code).toBe("turn_changed");
+  });
+
+  it("steers the edited queue entry only at its current version", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "queue-steer");
+    const key = await sessionOn(f, device, "queue-steer");
+    const queued = (await f.call("cli-agents/send", { key, text: "原文", delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() })).data;
+    const edited = await f.call("cli-agents/queue/edit", { entryId: queued.messageId, expectedVersion: queued.version, text: "修订后的指令" });
+    expect(edited.status).toBe(200);
+    const stale = await f.call("cli-agents/queue/steer", { entryId: queued.messageId, expectedVersion: queued.version });
+    expect(stale.status).toBe(409);
+    expect(device.ops("steer")).toHaveLength(0);
+    const steered = await f.call("cli-agents/queue/steer", { entryId: queued.messageId, expectedVersion: edited.data.entry.version });
+    expect(steered.data.entry.status).toBe("sent");
+    expect(device.ops("steer").map((op) => op.args.text)).toEqual(["修订后的指令"]);
   });
 });
 

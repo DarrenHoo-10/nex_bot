@@ -17,7 +17,7 @@ import { askedSession, sessionStatusLabel, sessionTitle, sessionTone } from "./s
 import type { CliStream } from "./stream";
 import { SessionInfoCard } from "./SessionInfoCard";
 import { TranscriptView } from "./TranscriptView";
-import { useCliQueue } from "./use-queue";
+import { isVisibleQueueEntry, useCliQueue } from "./use-queue";
 
 export interface SessionPaneProps {
   session: CliSessionView;
@@ -48,7 +48,7 @@ export interface SessionPaneProps {
 const NO_REQUESTS: readonly RequestRecord[] = [];
 
 /** A message sent from this page that the session's records do not hold yet. */
-export interface PendingSend { id: string; text: string; at: number; known: ReadonlySet<string> }
+export interface PendingSend { id: string; text: string; at: number; known: ReadonlySet<string>; queueId?: string }
 
 const plain = (text: string) => text.replace(/\s+/g, " ").trim();
 
@@ -94,7 +94,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const pending = requests.filter((record) => cardState(record, now) === "pending").length;
   const shown = askedSession(session, pending);
   const resumedKey = useRef<CliSessionKey|null>(null);
-  const queue = useCliQueue(stream, session.key);
+  const { queue, refreshQueue } = useCliQueue(stream, session.key);
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
   // A message being edited leaves the conversation; its resend takes its place.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => readHidden(session.key));
@@ -142,6 +142,11 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   // Messages sent from this page show at once, before the session's records hold them.
   const [echoes, setEchoes] = useState<PendingSend[]>([]);
   useEffect(() => { setEchoes((list) => settlePending(list, items)); }, [items]);
+  const queuedIds = useMemo(() => new Set(queue?.entries.filter(isVisibleQueueEntry).map((entry) => entry.id)), [queue]);
+  const visibleEchoes = echoes.filter((echo) => !echo.queueId || !queuedIds.has(echo.queueId));
+  useEffect(() => {
+    if (visibleEchoes.length < echoes.length) setEchoes((list) => list.filter((echo) => !echo.queueId || !queuedIds.has(echo.queueId)));
+  }, [queuedIds, visibleEchoes.length, echoes.length]);
   const dropPending = (id: string) => setEchoes((list) => list.filter((entry) => entry.id !== id));
   const progress = awaiting ? (awaiting.fresh ? "执行中" : awaiting.resuming ? "正在恢复会话" : "等待回复")
     : session.online && session.state === "running" ? "执行中" : "";
@@ -192,7 +197,12 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       });
       // a queued entry is not delivered yet: the queue strip shows it instead
       const outcome = result as { queued?: boolean; status?: string; delivery?: string };
-      if (outcome.queued && outcome.status !== "uncertain") { dropPending(echoId); setAwaiting(null); }
+      if (outcome.queued) {
+        const messageId = (result as { messageId?: string }).messageId;
+        if (messageId) setEchoes((list) => list.map((echo) => echo.id === echoId ? { ...echo, queueId: messageId } : echo));
+        void refreshQueue();
+        setAwaiting(null);
+      }
       else setAwaiting({ known, resuming: false, unconfirmed: outcome.delivery === "unconfirmed" });
     }
     if(revision)setRevision(null);
@@ -229,7 +239,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} pending={echoes} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} pending={visibleEchoes} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div ref={workspaceLayer} id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
@@ -245,7 +255,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
         onCancelRevision={cancelEdit}
         onQueueWithdraw={async (entryId, version) => { await withdrawQueued(entryId, version); }}
         onQueueEdit={async (entryId, version, text) => { await editQueued(entryId, version, text); }}
-        onQueueSteer={async (entryId) => { await steerQueued(entryId); }}
+        onQueueSteer={async (entryId, version) => { await steerQueued(entryId, version); }}
         onQueueResume={async () => { await resume(); }}
       />
       {failure && !compact ? <ModelFailureDialog reason={failure} onClose={() => setFailure(null)}/> : null}
