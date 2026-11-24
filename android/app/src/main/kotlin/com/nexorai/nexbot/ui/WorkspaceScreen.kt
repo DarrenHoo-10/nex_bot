@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
+import android.util.Base64
 import android.webkit.WebMessage
 import android.webkit.WebMessagePort
 import android.webkit.ValueCallback
@@ -223,8 +224,17 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private fun request(id: String, path: String, method: String, body: String) {
         scope.launch {
             try {
-                val result = withContext(Dispatchers.IO) { transport.request(path, method, body) }
-                reply(id, JSONObject().put("status", result.status).put("body", result.body.toString(Charsets.UTF_8)))
+                val result = withContext(Dispatchers.IO) {
+                    val response = transport.request(path, method, body)
+                    val preview = method == "GET" && WorkspaceTransport.isAttachmentPreview(path.substringBefore('?'), path.substringAfter('?', ""))
+                    val mime = response.contentType.substringBefore(';').trim()
+                    if (preview && response.status == 200 && mime in setOf("image/png", "image/jpeg", "image/webp")) {
+                        if (response.body.size <= 2 * 1024 * 1024) JSONObject().put("status", 200).put("mime", mime)
+                            .put("binary", Base64.encodeToString(response.body, Base64.NO_WRAP))
+                        else JSONObject().put("status", 413)
+                    } else JSONObject().put("status", response.status).put("body", response.body.toString(Charsets.UTF_8))
+                }
+                reply(id, result)
             } catch (failure: Exception) {
                 if (failure is CancellationException) throw failure
                 reply(id, JSONObject().put("error", failure.message ?: "连接失败"))

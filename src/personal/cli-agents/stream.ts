@@ -137,10 +137,19 @@ export class CliStream {
   }
 
   /** Receive a session's items. The returned function releases this caller. */
-  subscribeSession(key: CliSessionKey): () => void {
+  private sessionKnown = new Map<CliSessionKey, string[]>();
+
+  updateSessionKnown(key: CliSessionKey, known: string[]) {
+    if (this.sessions.has(key)) this.sessionKnown.set(key, known);
+  }
+
+  subscribeSession(key: CliSessionKey, known?: string[]): () => void {
     const count = this.sessions.get(key) ?? 0;
     this.sessions.set(key, count + 1);
-    if (count === 0) this.send({ type: "sub.session", key });
+    if (count === 0) {
+      if (known) this.sessionKnown.set(key, known);
+      this.send({ type: "sub.session", key, known });
+    }
     let done = false;
     return () => {
       if (done) return;
@@ -148,6 +157,7 @@ export class CliStream {
       const left = (this.sessions.get(key) ?? 1) - 1;
       if (left > 0) { this.sessions.set(key, left); return; }
       this.sessions.delete(key);
+      this.sessionKnown.delete(key);
       this.send({ type: "unsub.session", key });
     };
   }
@@ -221,7 +231,7 @@ export class CliStream {
       this.startPing();
       // what the page wants survives a drop: ask for all of it again
       if (this.wantList > 0) this.send({ type: "sub.list" });
-      for (const key of this.sessions.keys()) this.send({ type: "sub.session", key });
+      for (const key of this.sessions.keys()) this.send({ type: "sub.session", key, known: this.sessionKnown.get(key) });
     };
     socket.onmessage = (event) => {
       if (this.socket !== socket) return;

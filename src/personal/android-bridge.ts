@@ -11,7 +11,7 @@ interface NativeWorkspace {
   streamBinary(id: string, base64: string): void;
   streamClose(id: string, code: string): void;
 }
-type Reply = { status?: number; body?: string; error?: string; value?: unknown };
+type Reply = { status?: number; body?: string; binary?: string; mime?: string; error?: string; value?: unknown };
 type NativeWindow = Window & {
   nex?: unknown;
   __nexReply?: (id: string, reply: Reply) => void;
@@ -75,6 +75,7 @@ export function installAndroidBridge() {
     const body = init?.body ?? (input instanceof Request && method !== "GET" ? await input.text() : "");
     if (body && typeof body !== "string") throw new Error("不支持的请求格式");
     const reply = await call((id) => native.request(id, url.pathname + url.search, method, String(body ?? "")));
+    if (reply.binary && reply.mime) return new Response(fromBase64(reply.binary), { status: reply.status ?? 200, headers: { "Content-Type": reply.mime } });
     return new Response(reply.body ?? "", { status: reply.status ?? 200, headers: { "Content-Type": "application/json" } });
   };
   class NativeEvents extends EventTarget {

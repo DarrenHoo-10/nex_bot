@@ -136,16 +136,9 @@ struct FinanceTopicsView: View {
         guard let id=selected,workspace.connection == .connected else{return}
         let epoch=generation
         do {
-            var history = workspace.cachedTopicMessages(botID: botID, topicID: id)
-            var feed = try await workspace.client.topicFeed(botID: botID, conversationID: id, after: history.last?.seq)
-            while true {
-                guard epoch == generation, id == selected, workspace.connection == .connected,
-                      workspace.sync?.sameGeneration(as: feed.sync) == true, !Task.isCancelled else { return }
-                let last = history.last?.seq ?? 0
-                history += feed.messages.filter { $0.seq > last }
-                guard feed.hasMore, let after = history.last?.seq, after > last else { break }
-                feed = try await workspace.client.topicFeed(botID: botID, conversationID: id, after: after)
-            }
+            let feed=try await workspace.cachedTopicFeed(botID:botID,conversationID:id)
+            guard epoch==generation,id==selected,workspace.connection == .connected,!Task.isCancelled else{return}
+            let history = feed.messages
             let tasks=try await workspace.client.topicTasks(botID:botID,conversationID:id)
             guard epoch==generation,id==selected,workspace.connection == .connected,
                   workspace.sync?.sameGeneration(as: feed.sync) == true,!Task.isCancelled else{return}
@@ -167,7 +160,7 @@ struct FinanceTopicsView: View {
     }
     private func loadOlder(_ id:String) async {
         guard let before=messages.first?.seq else{return}
-        do{let feed=try await workspace.client.topicFeed(botID:botID,conversationID:id,before:before);guard selected==id,workspace.connection == .connected,workspace.sync?.sameGeneration(as: feed.sync) == true else{return};let existing=Set(messages.map(\.id));messages=feed.messages.filter{!existing.contains($0.id)}+messages;workspace.rememberTopicMessages(messages, botID: botID, topicID: id, generation: feed.sync)}catch{errorText=error.localizedDescription}
+        do{let feed=try await workspace.cachedTopicFeed(botID:botID,conversationID:id,before:before);guard selected==id,workspace.connection == .connected,workspace.sync?.sameGeneration(as: feed.sync) == true else{return};let existing=Set(messages.map(\.id));messages=feed.messages.filter{!existing.contains($0.id)}+messages;workspace.rememberTopicMessages(messages, botID: botID, topicID: id, generation: feed.sync)}catch{errorText=error.localizedDescription}
     }
     private func retry(_ id:String,taskID:String) async {
         let clientID=taskRetryIDs[taskID] ?? UUID().uuidString;taskRetryIDs[taskID]=clientID

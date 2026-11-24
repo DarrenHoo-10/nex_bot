@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /* oxlint-disable unicorn/no-useless-spread -- the copies are deliberate: listeners and entries remove themselves while a loop runs over the collection */
 // Browser WebSocket for Agent mode (`/api/cli-agents/stream`): the live session
 // list, transcript items of the sessions a browser has open, and terminal bytes.
@@ -191,7 +192,7 @@ export class CliAgentStream {
     switch (message.type) {
       case "ping": this.send(connection, { type: "pong" }); break;
       case "sub.list": this.subscribeList(connection); break;
-      case "sub.session": void this.subscribeSession(connection, message.key); break;
+      case "sub.session": void this.subscribeSession(connection, message.key, message.known); break;
       case "unsub.session": {
         connection.subscriptions.get(message.key)?.off();
         connection.subscriptions.delete(message.key);
@@ -241,7 +242,7 @@ export class CliAgentStream {
     });
   }
 
-  private async subscribeSession(connection: Connection, key: string) {
+  private async subscribeSession(connection: Connection, key: string, known?: string[]) {
     connection.subscriptions.get(key)?.off();
     connection.subscriptions.delete(key);
     if (connection.subscriptions.size >= MAX_SUBSCRIPTIONS) { this.sendError(connection, "busy", undefined, key); return; }
@@ -256,7 +257,15 @@ export class CliAgentStream {
     try {
       const page = await this.hub.items(connection.sessionId, key);
       if (connection.subscriptions.get(key) !== subscription) return;
-      this.sendItems(connection, key, page.items, page.more);
+      if (known && page.items.length <= 200) {
+        const snapshot = page.items.map((item) => `${createHash("sha256").update(JSON.stringify(item)).digest("hex")}:${item.id}`);
+        const have = new Set(known);
+        const missing = page.items.filter((_, index) => !have.has(snapshot[index]));
+        const frame = { type: "items" as const, key: key as CliSessionKey, items: missing, reset: true, more: page.more, snapshot };
+        if (snapshot.every(mark => mark.length <= 512) && Buffer.byteLength(JSON.stringify(frame)) <= MESSAGE_BYTES) {
+          this.send(connection, frame);
+        } else this.sendItems(connection, key, page.items, page.more);
+      } else this.sendItems(connection, key, page.items, page.more);
     } catch (error) {
       if (connection.subscriptions.get(key) !== subscription) return;
       this.sendError(connection, error instanceof CliOpError ? error.code : "unknown", undefined, key);

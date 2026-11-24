@@ -120,11 +120,22 @@ public final class ConversationStore {
         let gen = generation
         defer { if gen == generation { isLoadingOlder = false } }
         do {
-            let feed = try await workspace.client.feed(bot: botID, before: first)
+            let scope = workspace.contentCacheScope
+            let key = "history:" + botID + ":before:" + String(first)
+            var cached: Feed?
+            if let scope { cached = await LocalContentCache.shared.load(Feed.self, scope: scope, key: key) }
+            guard gen == generation, scope == workspace.contentCacheScope else { return }
+            let feed: Feed
+            if let cached { feed = cached }
+            else { feed = try await workspace.client.feed(bot: botID, before: first) }
             guard gen == generation else { return }
             guard feed.sync.sameGeneration(as: sync) else { workspace.clearContent(); await workspace.refresh(); return }
             messages = feed.messages.filter { $0.seq < first } + messages
             hasOlder = feed.messages.count >= 100
+            if cached == nil, let scope {
+                let page = Feed(messages: feed.messages, sync: feed.sync, hasMore: feed.hasMore)
+                Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: key) }
+            }
         } catch {
             guard gen == generation else { return }
             sendError = workspace.report(error).message

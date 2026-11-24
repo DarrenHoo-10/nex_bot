@@ -57,6 +57,20 @@ public final class CliAgentsModel {
     @ObservationIgnored private var previousStates: [CliSessionKey: CliSessionState]?
     @ObservationIgnored private var previousRequestIds: Set<String>?
     @ObservationIgnored private var subscribed: [CliSessionKey: Int] = [:]
+    private struct StoredTail: Codable, Sendable {
+        var marks: [String]
+        var items: [CliItem]
+        var translationEnabled: Bool?
+
+        var persistable: StoredTail {
+            let saved = zip(marks, items).filter { $0.1.kind != .tool && $0.1.kind != .thinking }
+            return StoredTail(marks: saved.map { $0.0 }, items: saved.map { $0.1 }, translationEnabled: translationEnabled)
+        }
+    }
+    @ObservationIgnored private var cachedTails: [CliSessionKey: StoredTail] = [:]
+    @ObservationIgnored private var openGeneration: [CliSessionKey: UUID] = [:]
+    @ObservationIgnored private let cacheScope: @MainActor () -> String?
+    @ObservationIgnored private var awaitingCacheAuthorization = false
     @ObservationIgnored private var terminal: CliTerminalController?
     @ObservationIgnored private let streamFactory: (@MainActor (CliAgentsModel) -> CliAgentStream)?
     @ObservationIgnored private var launchTasks: [String: Task<Void, Never>] = [:]
@@ -65,8 +79,9 @@ public final class CliAgentsModel {
     @ObservationIgnored var launchRetryNanos: UInt64 = 500_000_000
 
     public init(client: @escaping @MainActor () -> CoreClient, defaults: UserDefaults = .standard,
-                streamFactory: (@MainActor (CliAgentsModel) -> CliAgentStream)? = nil) {
-        clientProvider = client; self.defaults = defaults; self.streamFactory = streamFactory
+                streamFactory: (@MainActor (CliAgentsModel) -> CliAgentStream)? = nil,
+                cacheScope: @escaping @MainActor () -> String? = { nil }) {
+        clientProvider = client; self.defaults = defaults; self.streamFactory = streamFactory; self.cacheScope = cacheScope
         selectedKey = defaults.string(forKey: Self.selectedKeyDefault)
         notificationsOn = defaults.string(forKey: Self.notifyDefault) == "1"
     }
@@ -169,11 +184,39 @@ public final class CliAgentsModel {
     }
 
     /// The session view appeared: follow its transcript and requests.
+    public func invalidateCachedTranscripts(waitForScope: Bool) {
+        awaitingCacheAuthorization = waitForScope
+        cachedTails.removeAll()
+        openGeneration.removeAll()
+        transcripts.removeAll()
+        for key in subscribed.keys {
+            Task {
+                await stream?.updateSessionKnown(key, known: [])
+                if !waitForScope, !awaitingCacheAuthorization, subscribed[key] != nil { await loadTranscript(key) }
+            }
+        }
+    }
+
     public func openSession(_ key: CliSessionKey) {
         if let closed = closedTranscripts.removeValue(forKey: key), Date().timeIntervalSince(closed) >= 300 { transcripts[key] = nil }
         subscribed[key, default: 0] += 1
-        if subscribed[key] == 1, let stream { Task { await stream.subscribeSession(key) } }
-        if transcript(key).loaded == false { Task { await loadTranscript(key) } }
+        if subscribed[key] == 1 {
+            let scope = cacheScope(), generation = UUID()
+            openGeneration[key] = generation
+            let openingStream = stream
+            Task {
+                let cached = if let scope {
+                    await LocalContentCache.shared.load(StoredTail.self, scope: scope, key: "cli-tail:" + key)
+                } else { nil as StoredTail? }
+                guard openGeneration[key] == generation, cacheScope() == scope else { return }
+                cachedTails[key] = cached
+                if let openingStream, self.stream === openingStream {
+                    await openingStream.subscribeSession(key, known: scope == nil ? nil : cached?.marks ?? [])
+                }
+                if cached != nil { try? await Task.sleep(for: .milliseconds(1200)) }
+                if openGeneration[key] == generation, cached == nil || !transcript(key).loaded { await loadTranscript(key) }
+            }
+        }
         Task { await loadRequests(key) }
     }
 
@@ -181,6 +224,8 @@ public final class CliAgentsModel {
         guard let count = subscribed[key] else { return }
         if count <= 1 {
             subscribed[key] = nil
+            openGeneration[key] = nil
+            cachedTails[key] = nil
             if var cached = transcripts[key], cached.loaded {
                 if cached.items.count > 200 { cached.items = Array(cached.items.suffix(200)); cached.more = true }
                 transcripts[key] = cached
@@ -197,11 +242,16 @@ public final class CliAgentsModel {
     private func loadTranscript(_ key: CliSessionKey) async {
         do {
             let page = try await clientProvider().cliItems(key: key)
-            guard subscribed[key] != nil else { return }
+            guard subscribed[key] != nil, !awaitingCacheAuthorization else { return }
             var t = transcript(key)
             // a push that arrived first is newer than this answer
             if !t.loaded { t.items = CliTranscript.merge(t.items, page.items); t.more = page.more; t.loaded = true }
             t.translationEnabled = page.translationEnabled
+            if var tail = cachedTails[key], let scope = cacheScope() {
+                tail.translationEnabled = page.translationEnabled
+                cachedTails[key] = tail
+                Task { [tail] in await LocalContentCache.shared.enqueue(tail.persistable, scope: scope, key: "cli-tail:" + key) }
+            }
             t.error = nil
             transcripts[key] = t
             await fillEarlierTurns(key)
@@ -260,7 +310,15 @@ public final class CliAgentsModel {
     }
 
     public func translateReply(_ key: CliSessionKey, item: CliItem) async throws -> String? {
-        try await clientProvider().cliTranslateReply(key: key, itemId: item.id, source: item.text)
+        let scope = cacheScope()
+        let cacheKey = "translation:zh:v1:" + key + ":" + item.id + ":" + LocalContentCache.digest(item.text)
+        if let scope, let cached = await LocalContentCache.shared.load(String.self, scope: scope, key: cacheKey), scope == cacheScope() { return cached }
+        try Task.checkCancellation()
+        let text = try await clientProvider().cliTranslateReply(key: key, itemId: item.id, source: item.text)
+        if let scope, let text, scope == cacheScope() {
+            Task { await LocalContentCache.shared.enqueue(text, scope: scope, key: cacheKey) }
+        }
+        return text
     }
 
     public func interrupt(_ key: CliSessionKey) async throws { try await clientProvider().cliInterrupt(key: key) }
@@ -530,8 +588,30 @@ public final class CliAgentsModel {
             if let newDevices { devices = newDevices }
             settleLaunches()
             evaluateNotifications()
+        case .cachedItems(let key, let items, let more, let snapshot):
+            guard subscribed[key] != nil, !awaitingCacheAuthorization, let scope = cacheScope() else { return }
+            let prior = cachedTails[key]
+            let cached = Dictionary(zip(prior?.marks ?? [], prior?.items ?? []), uniquingKeysWith: { _, last in last })
+            let changed = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            let combined = snapshot.compactMap { changed[String($0.dropFirst(65))] ?? cached[$0] }
+            guard combined.count == snapshot.count else { Task { await loadTranscript(key) }; return }
+            var t = transcript(key)
+            let priorIds = Set(prior?.items.map(\.id) ?? [])
+            let next = CliTranscript.reset(t.items.filter { !priorIds.contains($0.id) }, combined)
+            t.items = next.items
+            if !next.kept { t.more = more }
+            t.loaded = true
+            t.error = nil
+            t.translationEnabled = prior?.translationEnabled ?? t.translationEnabled
+            transcripts[key] = t
+            let tail = StoredTail(marks: snapshot, items: combined, translationEnabled: t.translationEnabled)
+            cachedTails[key] = tail
+            Task {
+                await stream?.updateSessionKnown(key, known: snapshot)
+                await LocalContentCache.shared.enqueue(tail.persistable, scope: scope, key: "cli-tail:" + key)
+            }
         case .items(let key, let items, let reset, let more):
-            guard subscribed[key] != nil else { return }
+            guard subscribed[key] != nil, !awaitingCacheAuthorization else { return }
             var t = transcript(key)
             if reset {
                 // the newest page again (a reconnect, a rewritten file): earlier pages stay

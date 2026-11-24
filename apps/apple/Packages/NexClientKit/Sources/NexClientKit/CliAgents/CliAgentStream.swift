@@ -149,6 +149,7 @@ public actor CliAgentStream {
     private var lastRx = 0.0
     private var listCount = 0
     private var sessionCounts: [CliSessionKey: Int] = [:]
+    private var sessionKnown: [CliSessionKey: [String]] = [:]
     private var abandoned = Set<String>()
 
     public init(requestProvider: @escaping RequestProvider,
@@ -212,15 +213,15 @@ public actor CliAgentStream {
 
     public func unsubscribeList() { listCount = max(0, listCount - 1) }
 
-    public func subscribeSession(_ key: CliSessionKey) {
+    public func subscribeSession(_ key: CliSessionKey, known: [String]? = nil) {
         let count = (sessionCounts[key] ?? 0) + 1
         sessionCounts[key] = count
-        if count == 1 { send(["type": "sub.session", "key": key]) }
+        if count == 1 { sessionKnown[key] = known; sendSessionSubscription(key) }
     }
 
     public func unsubscribeSession(_ key: CliSessionKey) {
         guard let count = sessionCounts[key] else { return }
-        if count <= 1 { sessionCounts[key] = nil; send(["type": "unsub.session", "key": key]) } else { sessionCounts[key] = count - 1 }
+        if count <= 1 { sessionCounts[key] = nil; sessionKnown[key] = nil; send(["type": "unsub.session", "key": key]) } else { sessionCounts[key] = count - 1 }
     }
 
     // MARK: Terminal
@@ -294,9 +295,19 @@ public actor CliAgentStream {
         if generation == mine { runTask = nil }
     }
 
+    public func updateSessionKnown(_ key: CliSessionKey, known: [String]) {
+        if sessionCounts[key] != nil { sessionKnown[key] = known }
+    }
+
+    private func sendSessionSubscription(_ key: CliSessionKey) {
+        var message: [String: Any] = ["type": "sub.session", "key": key]
+        if let known = sessionKnown[key] { message["known"] = known }
+        send(message)
+    }
+
     private func resubscribe() {
         if listCount > 0 { send(["type": "sub.list"]) }
-        for key in sessionCounts.keys { send(["type": "sub.session", "key": key]) }
+        for key in sessionCounts.keys { sendSessionSubscription(key) }
     }
 
     private func receiveLoop(socket: any CliSocket, generation mine: Int) async {

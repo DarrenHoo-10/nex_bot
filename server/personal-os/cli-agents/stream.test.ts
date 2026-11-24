@@ -312,6 +312,32 @@ describe("list and transcript", () => {
     expect(browser.msgs.some((m) => m.type === "items" && m.items.some((i: any) => i.id === item(4).id))).toBe(false);
   });
 
+  it("sends only changed transcript items to a subscriber with a persisted page", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f.origin, f.call, undefined, "mac");
+    device.sessions([wire("a")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 1, "listed");
+    const key = device.id + ":claude:a";
+    let items = [item(1), item(2), item(3)];
+    device.onOp = (message) => message.op === "read" ? { ok: true, result: { items, more: false } } : defaultOp(message);
+    const browser = await connectBrowser(f.origin, { cookie: OWNER });
+    browser.send({ type: "sub.session", key, known: [] });
+    const first = await browser.find("items", (m) => m.reset === true);
+    expect(first).toMatchObject({ key, items });
+    expect(first.snapshot).toHaveLength(3);
+
+    items = [item(1), item(2, "rewritten"), item(4)];
+    browser.send({ type: "sub.session", key, known: first.snapshot });
+    const next = await browser.find("items", (m) => m.reset === true && m.snapshot?.some((mark: string) => mark.endsWith(":i0004")));
+    expect(next).toMatchObject({ key, items: [item(2, "rewritten"), item(4)] });
+    expect(next.snapshot.map((mark: string) => mark.slice(65))).toEqual(["i0001", "i0002", "i0004"]);
+    expect(next.snapshot[0]).toBe(first.snapshot[0]);
+
+    browser.send({ type: "sub.session", key, known: next.snapshot });
+    const unchanged = await browser.find("items", (m) => m.reset === true && m.items.length === 0);
+    expect(unchanged).toMatchObject({ key, items: [], snapshot: next.snapshot });
+  });
+
   it("reports an error for a session whose device cannot answer the read", async () => {
     const f = await fixture();
     const device = await connectDevice(f.origin, f.call, undefined, "mac");

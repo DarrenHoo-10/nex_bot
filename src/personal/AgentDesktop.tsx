@@ -15,6 +15,8 @@ import { rehypeStaticHTML } from "./static-html";
 import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Sparkles, Square, X } from "lucide-react";
 import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
+import { usePersistentPreview } from "./use-persistent-preview";
+import { authorizeLocalCache, clearLocalCache, localCacheScope, queueLocalCache, readLocalCache } from "./local-content-cache";
 import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
 import { ProviderSettings } from "./ProviderSettings";
@@ -80,7 +82,9 @@ const FilePreviewContext = createContext<((path: string) => void) | undefined>(u
 const imageName = /\.(?:png|jpe?g|webp|gif)$/i;
 /** Images are always served by Core; clients never receive storage URLs. */
 function AttachmentImage({ id, alt }: { id: string; alt: string }) {
-  return <img className="generated-chat-image" src={`/api/attachments/${id}?preview=1`} alt={alt} loading="lazy"/>;
+  const image = useRef<HTMLImageElement>(null);
+  const source = usePersistentPreview(`/api/attachments/${id}?preview=1`, image);
+  return <img ref={image} className="generated-chat-image" src={source} alt={alt} loading="lazy"/>;
 }
 function MarkdownImage({ src, alt }: ComponentProps<'img'> & ExtraProps) {
   const id = typeof src === "string" ? /^\/api\/attachments\/([a-zA-Z0-9-]+)$/.exec(src)?.[1] : undefined;
@@ -317,7 +321,7 @@ export function AgentDesktop() {
     // and checked against the state's sync identity afterwards.
     const visible = loaded.current?.key === draftKey ? loaded.current : undefined;
     const guess = !target ? (visible ?? localHistory.current.get(draftKey)) : undefined;
-    const early = current ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
+    const early = current && (guess || !accountStatus?.sessionId || target) ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
     early?.catch(() => undefined);
     const [next, topicList] = await Promise.all([
       api<State>("state"),
@@ -331,6 +335,8 @@ export function AgentDesktop() {
       setStreaming([]);
     }
     historySync.current = next.sync;
+    authorizeLocalCache(next.sync, accountStatus?.sessionId);
+    const persistedScope = accountStatus?.sessionId ? localCacheScope() : undefined;
     if (current && !next.bots.some(bot=>bot.id===current)) {
       const replacement=next.bots.find(bot=>bot.replaces_id===current);
       if(finance)setFinanceBotId(replacement ? str(replacement.id) : undefined);
@@ -354,7 +360,10 @@ export function AgentDesktop() {
     if (current) {
       // Commit task state with its feed below, so the typing indicator cannot
       // disappear a network round trip before the final reply arrives.
-      const cached = guess;
+      const cacheKey = `history:${draftKey}`;
+      const persisted = !guess && !target && !early ? await readLocalCache<HistoryWindow>(persistedScope, cacheKey) : undefined;
+      if (request !== serial.current || selected.current !== current) return;
+      const cached = guess ?? persisted;
       const same = cached?.key === draftKey && sameHistory(cached.sync, next.sync);
       let history = same ? cached.messages : [];
       let feed: Feed;
@@ -362,8 +371,8 @@ export function AgentDesktop() {
       // transcript again so the reply cannot lag behind the task that produced it.
       const pending = pendingSend.current;
       const feedAfterAccept = !!pending && pending.botId === current && request > pending.acceptedAfter;
-      const freshFeed = () => api<Feed>(same && history.length ? `${base}&after=${history.at(-1)!.seq}` : base);
-      try { feed = await (feedAfterAccept ? freshFeed() : (same || !guess?.messages.length ? early! : api<Feed>(base))); }
+      const freshFeed = () => api<Feed>(history.length ? `${base}&after=${history.at(-1)!.seq}` : base);
+      try { feed = await (feedAfterAccept || !early || (!same && guess?.messages.length) ? freshFeed() : early); }
       catch (failure) {
         if (request !== serial.current || selected.current !== current) return;
         if (!target || !(failure instanceof Error) || failure.message !== '该消息已不存在或已遗忘') throw failure;
@@ -391,6 +400,10 @@ export function AgentDesktop() {
       if (conversation) setOlderEnd(!!olderEnd);
       loaded.current = { botId: current, key: draftKey, messages: history, sync: feed.sync, olderEnd };
       if (!target) rememberHistory(loaded.current);
+      const previousTail = same ? cached.messages.at(-1)?.seq : undefined;
+      if (!target && history.length && previousTail !== history.at(-1)?.seq) {
+        queueLocalCache(persistedScope, cacheKey, { ...loaded.current, messages: history.slice(-200), olderEnd: history.length <= 200 && olderEnd });
+      }
       feedRetry.current = false;
       setMessages((shown) => withPendingOptimistic(history, shown));
       setTopics(topicList?.topics ?? []);
@@ -403,7 +416,7 @@ export function AgentDesktop() {
       }
     }
     if (request === serial.current) { setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
-  }, [offline, finance, topicMode, conversation, draftKey, botId]);
+  }, [offline, finance, topicMode, conversation, draftKey, botId, accountStatus?.sessionId]);
   useEffect(() => {
     // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
     if (!selected.current) void reload().catch((e: Error) => setError(userErrorText(e)));
@@ -417,7 +430,10 @@ export function AgentDesktop() {
         loaded.current = undefined;
         localHistory.current.clear();
         historySync.current = undefined;
-        if (generationChanged) { setMessages([]); setStreaming([]); }
+        if (generationChanged) {
+          clearLocalCache();
+          setState(undefined); setMessages([]); setStreaming([]); setPreview(undefined);
+        }
       }
       refresh();
     };
@@ -640,9 +656,14 @@ export function AgentDesktop() {
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
-    const result = await api<{ messages: RecordRow[]; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${snapshot.messages[0].seq}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
+    type HistoryPage = { messages: RecordRow[]; sync: State["sync"] };
+    const before = snapshot.messages[0].seq;
+    const scope = localCacheScope(), key = `history:${draftKey}:before:${before}`;
+    const cached = await readLocalCache<HistoryPage>(scope, key);
+    const result = cached ?? await api<HistoryPage>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${before}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
     const current = loaded.current;
-    if (destination.current !== draftKey || !current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
+    if (destination.current !== draftKey || !current || current.botId !== snapshot.botId || current.sync.coreId !== result.sync.coreId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
+    if (!cached) queueLocalCache(scope, key, { messages: result.messages, sync: result.sync });
     const olderEnd = !!conversation && result.messages.length < 200;
     if (olderEnd) setOlderEnd(true);
     const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];

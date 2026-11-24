@@ -147,14 +147,14 @@ public struct CliDevice: Sendable, Hashable, Identifiable, Decodable {
 
 // MARK: Items
 
-public enum CliItemKind: String, Sendable, Hashable, Decodable { case user, assistant, thinking, tool, notice, turn }
-public enum CliToolStatus: String, Sendable, Hashable, Decodable { case running, ok, error }
-public enum CliNoticeLevel: String, Sendable, Hashable, Decodable { case info, error }
-public enum CliTurnPhase: String, Sendable, Hashable, Decodable { case started, ended, aborted }
+public enum CliItemKind: String, Sendable, Hashable, Codable { case user, assistant, thinking, tool, notice, turn }
+public enum CliToolStatus: String, Sendable, Hashable, Codable { case running, ok, error }
+public enum CliNoticeLevel: String, Sendable, Hashable, Codable { case info, error }
+public enum CliTurnPhase: String, Sendable, Hashable, Codable { case started, ended, aborted }
 
 /// One conversation item. Which fields are set depends on `kind`: `text` for user, assistant, thinking and notice;
 /// `name`, `input`, `status` and `output` for a tool; `level` for a notice; `phase` for a turn marker.
-public struct CliItem: Sendable, Hashable, Identifiable, Decodable {
+public struct CliItem: Sendable, Hashable, Identifiable, Codable {
     public var id: String
     public var ts: Int
     public var kind: CliItemKind
@@ -367,6 +367,7 @@ public enum CliServerMessage: Sendable {
     case list(devices: [CliDevice], sessions: [CliSession])
     case listDelta(upserts: [CliSession], removes: [CliSessionKey], devices: [CliDevice]?)
     case items(key: CliSessionKey, items: [CliItem], reset: Bool, more: Bool?)
+    case cachedItems(key: CliSessionKey, items: [CliItem], more: Bool, snapshot: [String])
     case termOpened(req: String, sid: UInt32, cols: Int, rows: Int, observe: Bool)
     case termSize(sid: UInt32, cols: Int, rows: Int)
     case termClosed(sid: UInt32, reason: String)
@@ -379,7 +380,7 @@ public enum CliServerMessage: Sendable {
     private struct Envelope: Decodable { let type: String }
     private struct ListBody: Decodable { let devices: LossyList<CliDevice>; let sessions: LossyList<CliSession> }
     private struct DeltaBody: Decodable { let upserts: LossyList<CliSession>; let removes: [String]; let devices: LossyList<CliDevice>? }
-    private struct ItemsBody: Decodable { let key: String; let items: LossyList<CliItem>; let reset: Bool?; let more: Bool? }
+    private struct ItemsBody: Decodable { let key: String; let items: LossyList<CliItem>; let reset: Bool?; let more: Bool?; let snapshot: [String]? }
     private struct OpenedBody: Decodable { let req: String; let sid: UInt32; let cols: Int; let rows: Int; let observe: Bool }
     private struct SizeBody: Decodable { let sid: UInt32; let cols: Int; let rows: Int }
     private struct ClosedBody: Decodable { let sid: UInt32; let reason: String }
@@ -396,7 +397,10 @@ public enum CliServerMessage: Sendable {
         switch type {
         case "list": return body(ListBody.self).map { .list(devices: $0.devices.values, sessions: $0.sessions.values) }
         case "list.delta": return body(DeltaBody.self).map { .listDelta(upserts: $0.upserts.values, removes: $0.removes, devices: $0.devices?.values) }
-        case "items": return body(ItemsBody.self).map { .items(key: $0.key, items: $0.items.values, reset: $0.reset ?? false, more: $0.more) }
+        case "items": return body(ItemsBody.self).map {
+            if let snapshot = $0.snapshot { return .cachedItems(key: $0.key, items: $0.items.values, more: $0.more == true, snapshot: snapshot) }
+            return .items(key: $0.key, items: $0.items.values, reset: $0.reset ?? false, more: $0.more)
+        }
         case "term.opened": return body(OpenedBody.self).map { .termOpened(req: $0.req, sid: $0.sid, cols: $0.cols, rows: $0.rows, observe: $0.observe) }
         case "term.size": return body(SizeBody.self).map { .termSize(sid: $0.sid, cols: $0.cols, rows: $0.rows) }
         case "term.closed": return body(ClosedBody.self).map { .termClosed(sid: $0.sid, reason: $0.reason) }

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Download, ImageOff, Loader2 } from "lucide-react";
 import { desktop } from "../api";
+import { usePersistentPreview } from "../use-persistent-preview";
 import { imageMenuPosition, type MessageImage } from "../message-media";
 import { ImageLightbox } from "./ImageLightbox";
 
@@ -28,21 +29,18 @@ async function downloadImage(image: MessageImage): Promise<void> {
 
 /** Android WebView intercepts authenticated attachment previews, so every
  * client can use the same same-origin `?preview=1` URL. */
-function useMessageImage(image: MessageImage) {
-  const [source, setSource] = useState(image.previewUrl);
+function useMessageImage(image: MessageImage, tile: RefObject<HTMLButtonElement | null>) {
+  const source = usePersistentPreview(image.previewUrl, tile);
   const [failed, setFailed] = useState(false);
 
-  useEffect(() => {
-    setSource(image.previewUrl);
-    setFailed(false);
-  }, [image.previewUrl]);
+  useEffect(() => { setFailed(false); }, [source]);
 
   return { source, failed, setFailed };
 }
 
 function MessageImageTile({ image, onDelete }: { image: MessageImage; onDelete?: (image: MessageImage) => Promise<void> }) {
-  const { source, failed, setFailed } = useMessageImage(image);
   const tile = useRef<HTMLButtonElement>(null);
+  const { source, failed, setFailed } = useMessageImage(image, tile);
   const menuRef = useRef<HTMLDivElement>(null);
   const longPress = useRef<{ timer: number; x: number; y: number } | undefined>(undefined);
   const suppressClick = useRef(0);

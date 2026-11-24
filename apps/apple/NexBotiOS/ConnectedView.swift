@@ -15,12 +15,15 @@ struct ConnectedView: View {
     init(model: AppModel, workspace: WorkspaceStore) {
         self.model = model
         self.workspace = workspace
-        _agents = State(initialValue: CliAgentsModel(client: { workspace.client }))
+        _agents = State(initialValue: CliAgentsModel(client: { workspace.client }, cacheScope: { workspace.contentCacheScope }))
     }
 
     var body: some View {
         ContactsView(model: model, workspace: workspace, agents: agents, nav: nav)
             .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
+            .onChange(of: workspace.contentCacheScope) { old, new in
+                if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
+            }
             .task(id: workspace.connection) { if workspace.connection == .connected, agents.notificationsOn { agents.start() } }
             .onAppear { agents.installNotifier() }
             .environment(nav)

@@ -760,7 +760,7 @@ export type CoreCliMessage =
 
 export type ClientMessage =
   | { type: "sub.list" }
-  | { type: "sub.session"; key: CliSessionKey }
+  | { type: "sub.session"; key: CliSessionKey; known?: string[] }
   | { type: "unsub.session"; key: CliSessionKey }
   | { type: "term.open"; req: string; key: CliSessionKey; cols: number; rows: number; observe: boolean }
   | { type: "term.resize"; sid: number; cols: number; rows: number }
@@ -771,7 +771,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: "list"; devices: CliDeviceView[]; sessions: CliSessionView[] }
   | { type: "list.delta"; upserts: CliSessionView[]; removes: CliSessionKey[]; devices?: CliDeviceView[] }
-  | { type: "items"; key: CliSessionKey; items: CliItem[]; reset?: boolean; more?: boolean }
+  | { type: "items"; key: CliSessionKey; items: CliItem[]; reset?: boolean; more?: boolean; snapshot?: string[] }
   | { type: "term.opened"; req: string; sid: number; cols: number; rows: number; observe: boolean }
   | { type: "term.size"; sid: number; cols: number; rows: number }
   | { type: "term.closed"; sid: number; reason: string }
@@ -1649,7 +1649,7 @@ export function parseClientMessage(value: unknown): ClientMessage | null {
       case "sub.list":
         return { type: "sub.list" };
       case "sub.session":
-        return { type: "sub.session", key: key(o.key) };
+        return pick({ type: "sub.session" as const, key: key(o.key), known: present(o, "known") ? arr(o.known, 200).map(v => str(v, 512, 66)) : undefined });
       case "unsub.session":
         return { type: "unsub.session", key: key(o.key) };
       case "term.open":
@@ -1699,6 +1699,7 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
           items: items(o.items),
           reset: optBool(o, "reset"),
           more: optBool(o, "more"),
+          snapshot: present(o, "snapshot") ? arr(o.snapshot, 200).map(v => str(v, 512, 66)) : undefined,
         });
       case "term.opened":
         return {

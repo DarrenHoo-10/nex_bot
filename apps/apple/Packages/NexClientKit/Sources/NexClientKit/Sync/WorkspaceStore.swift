@@ -38,6 +38,9 @@ public final class WorkspaceStore {
     /// Latest snapshot; nil until the first sync and while resyncing.
     public private(set) var state: WorkspaceState?
     public private(set) var sync: SyncIdentity?
+    var cacheSessionID: String?
+    @ObservationIgnored var diskCacheScope: String?
+    public var contentCacheScope: String? { state == nil ? nil : diskCacheScope }
     public private(set) var connection: ConnectionStatus = .connecting
     /// Human-readable status such as "正在重新同步…"; nil when healthy.
     public private(set) var notice: String?
@@ -326,8 +329,12 @@ public final class WorkspaceStore {
     }
 
     /// Drops every cached message, streaming text and snapshot; in-flight responses become stale.
-    func clearContent() {
+    func clearContent(invalidateDisk: Bool = true) {
         serial += 1
+        if invalidateDisk, let scope = diskCacheScope {
+            diskCacheScope = nil
+            Task { await LocalContentCache.shared.clear(scope) }
+        }
         state = nil; sync = nil; sessions = []; financeBotID = nil
         clearLocalAssets()
         topicWindows.removeAll(); recentTopicKeys.removeAll()
@@ -335,7 +342,7 @@ public final class WorkspaceStore {
     }
 
     func offline() {
-        clearContent()
+        clearContent(invalidateDisk: false)
         connection = .resyncing; notice = Self.resyncMessage
     }
 
@@ -380,9 +387,18 @@ public final class WorkspaceStore {
         let target = conv?.focusedMessageID
         let guess = (target == nil && conv?.loadedSync != nil && conv?.messages.isEmpty == false) ? conv : nil
         let afterSeq = guess?.messages.last?.seq
-        async let early = Self.capture(client, bot: current, after: afterSeq, around: target)
+        let prefetch = cacheSessionID != nil && guess == nil && target == nil ? nil : current
+        async let early = Self.capture(client, bot: prefetch, after: afterSeq, around: target)
         let next = try await client.state(view: .summary)
         guard request == serial else { return }
+        if let sessionID = cacheSessionID, !sessionID.isEmpty, !next.sync.coreId.isEmpty, !next.sync.bootId.isEmpty {
+            let scope = LocalContentCache.digest("\(sessionID):\(next.sync.coreId):\(next.sync.bootId):\(next.sync.privacyEpoch)")
+            if diskCacheScope != scope {
+                await LocalContentCache.shared.authorize(scope)
+                guard request == serial else { return }
+                diskCacheScope = scope
+            }
+        }
         let nextEpochs = Dictionary(uniqueKeysWithValues: next.bots.map { ($0.id, $0.row.int("memory_epoch") ?? 0) })
         for (id, epoch) in memoryEpochs where nextEpochs[id] != epoch {
             conversations[id]?.discardDraft()
@@ -402,8 +418,11 @@ public final class WorkspaceStore {
                 if selectedBotID != nil { scheduleRefresh(after: 0) }
                 return
             }
-            let same = conv.loadedSync?.sameGeneration(as: next.sync) == true && guess != nil
-            var history = same ? conv.messages : []
+            let memoryHit = conv.loadedSync?.sameGeneration(as: next.sync) == true && guess != nil
+            let cached = !memoryHit && guess == nil && target == nil ? await cachedHistory(for: current) : nil
+            guard request == serial, selectedBotID == current else { return }
+            let same = memoryHit || cached?.isEmpty == false
+            var history = memoryHit ? conv.messages : cached ?? []
             var feed: Feed
             // The prefetch can be served before this state snapshot. After a send, read the transcript again.
             let feedAfterAccept = target == nil && conv.sendAcceptedSerial.map { request > $0 } == true
@@ -411,8 +430,11 @@ public final class WorkspaceStore {
                 if feedAfterAccept {
                     if let prefetched = await early { _ = try? prefetched.get() }
                     feed = try await client.feed(bot: current, after: same ? history.last?.seq : nil)
+                } else if let after = cached?.last?.seq {
+                    feed = try await client.feed(bot: current, after: after)
                 } else {
-                    feed = try await (same || guess == nil ? early!.get() : client.feed(bot: current))
+                    if let prefetched = await early, same || guess == nil { feed = try prefetched.get() }
+                    else { feed = try await client.feed(bot: current, around: target) }
                 }
             }
             catch {
@@ -432,7 +454,11 @@ public final class WorkspaceStore {
                 feed = try await client.feed(bot: current, after: history.last?.seq ?? 0)
             }
             guard request == serial, selectedBotID == current else { return }
-            conv.commit(history, sync: feed.sync, streaming: feed.streaming, hasOlder: fresh ? firstCount >= 100 : nil)
+            conv.commit(history, sync: feed.sync, streaming: feed.streaming, hasOlder: fresh ? firstCount >= 100 : (cached != nil ? true : nil))
+            if target == nil, !history.isEmpty, let scope = diskCacheScope {
+                let page = Array(history.suffix(200))
+                Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: "history:" + current) }
+            }
             if conv.focusedMessageID == nil { Task { await conv.markReadIfNeeded() } }
         }
         // Publish task status and the matching transcript in one MainActor turn.
@@ -441,6 +467,12 @@ public final class WorkspaceStore {
             state = next; sync = next.sync; connection = .connected; notice = nil
             releaseAcceptedSends(request)
         }
+    }
+
+    private func cachedHistory(for bot: String) async -> [AgentMessage]? {
+        guard let scope = diskCacheScope else { return nil }
+        let cached = await LocalContentCache.shared.load([AgentMessage].self, scope: scope, key: "history:" + bot)
+        return scope == diskCacheScope ? cached : nil
     }
 
     private static func capture(_ client: CoreClient, bot: String?, after: Int?, around: String?) async -> Result<Feed, CoreError>? {

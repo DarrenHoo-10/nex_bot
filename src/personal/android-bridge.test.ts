@@ -42,6 +42,18 @@ it("sends settings JSON to the native transport and preserves conflict errors", 
   expect(response.ok).toBe(false);
   expect(await response.json()).toEqual({ error: "版本冲突" });
 });
+it("keeps authenticated preview bytes intact for the local cache", async () => {
+  connectNative();
+  const path = "/api/attachments/image-1?preview=1";
+  const pending = host.fetch(path);
+  const [id, route, method] = native.request.mock.calls[0];
+  expect([route, method]).toEqual([path, "GET"]);
+  host.__nexReply(id, { status: 200, binary: "iVBORw==", mime: "image/png" });
+  const response = await pending;
+  expect(response.headers.get("content-type")).toBe("image/png");
+  expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([137, 80, 78, 71]);
+});
+
 it("does not forward off-origin requests or arbitrary bodies", async () => {
   connectNative();
   await expect(host.fetch("https://elsewhere.test/api/state")).rejects.toThrow();

@@ -12,7 +12,20 @@ import { useReview, type Note } from "./WorkbenchReview";
 import { ToolActivityDisclosure } from "../vendor/rakazo/ToolActivityDisclosure";
 import { cliErrorText, fetchItems, translateReply } from "./api";
 import type { CliStream } from "./stream";
+import { localCacheScope, queueLocalCache, readLocalCache } from "../local-content-cache";
 import { activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
+
+type StoredTail = { marks: string[]; items: CliItem[]; translationEnabled?: boolean | null };
+
+function saveTail(scope: string | undefined, key: string, tail: StoredTail) {
+  const items: CliItem[] = [], marks: string[] = [];
+  tail.items.forEach((item, index) => {
+    if (item.kind === "tool" || item.kind === "thinking") return;
+    items.push(item);
+    marks.push(tail.marks[index]);
+  });
+  queueLocalCache(scope, key, { ...tail, items, marks });
+}
 
 const NO_PENDING: readonly { id: string; text: string }[] = [];
 const NO_HIDDEN: ReadonlySet<string> = new Set();
@@ -210,9 +223,11 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
   latestTranscript.current = { sessionKey, items, more, translationEnabled };
   const fetchedAt = useRef(0);
   const generation = useRef(0);
+  const localTail = useRef<StoredTail | undefined>(undefined);
 
   const loadFirst = useCallback(async () => {
     const mine = ++generation.current;
+    const scope = localCacheScope();
     setLoading(true);
     setError("");
     try {
@@ -223,6 +238,10 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
       setMore(page.more);
       setTranslationEnabled(page.translationEnabled ?? null);
       fetchedAt.current = Date.now();
+      if (localTail.current) {
+        localTail.current = { ...localTail.current, translationEnabled: page.translationEnabled ?? null };
+        saveTail(scope, `cli-tail:${sessionKey}`, localTail.current);
+      }
     } catch (cause) {
       if (generation.current === mine) setError(cliErrorText(cause, "记录读取失败"));
     } finally {
@@ -232,20 +251,58 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
 
   useEffect(() => {
     const cache = localTranscripts(stream);
-    const cached = cache.get(sessionKey);
-    fetchedAt.current = cached?.refreshedAt ?? 0;
-    setItems(cached?.items ?? []);
-    setTranslationEnabled(cached?.translationEnabled);
-    setMore(cached?.more ?? false);
+    const memory = cache.get(sessionKey);
+    fetchedAt.current = memory?.refreshedAt ?? 0;
+    setItems(memory?.items ?? []);
+    setTranslationEnabled(memory?.translationEnabled);
+    setMore(memory?.more ?? false);
     setError("");
     followingRef.current = true;
     anchorRef.current = null;
-    if (cached && Date.now() - fetchedAt.current < 30_000) setLoading(false);
-    else void loadFirst();
-    const release = stream.subscribeSession(sessionKey);
+    const scope = localCacheScope(), key = `cli-tail:${sessionKey}`;
+    localTail.current = undefined;
+    let stopped = false, release: (() => void) | undefined, fallback: ReturnType<typeof setTimeout> | undefined;
+    const open = (cached?: StoredTail) => {
+      if (stopped || release) return;
+      clearTimeout(fallback);
+      localTail.current = cached;
+      release = stream.subscribeSession(sessionKey, scope ? cached?.marks ?? [] : undefined);
+      if (!cached && (!memory || Date.now() - fetchedAt.current >= 30_000)) void loadFirst();
+      else if (!cached) setLoading(false);
+      else {
+        setTranslationEnabled(cached.translationEnabled ?? null);
+        fallback = setTimeout(() => void loadFirst(), 1200);
+      }
+    };
+    if (scope) void readLocalCache<StoredTail>(scope, key).then(open);
+    else open();
     const off = stream.on((event) => {
       if (event.type !== "message" || event.message.type !== "items" || event.message.key !== sessionKey) return;
       const message = event.message;
+      if (message.snapshot) {
+        clearTimeout(fallback);
+        const previous = localTail.current;
+        const byMark = new Map(previous?.marks.map((mark, index) => [mark, previous.items[index]]));
+        const changed = new Map(message.items.map(item => [item.id, item]));
+        const rebuilt = message.snapshot.map(mark => changed.get(mark.slice(65)) ?? byMark.get(mark));
+        if (!rebuilt.every((item): item is CliItem => item !== undefined)) {
+          void loadFirst();
+          return;
+        }
+        const tail = { marks: message.snapshot, items: rebuilt, translationEnabled: previous?.translationEnabled };
+        localTail.current = tail;
+        stream.updateSessionKnown(sessionKey, tail.marks);
+        saveTail(scope, key, tail);
+        setLoading(false);
+        setItems(current => {
+          const previousTailIds = new Set(previous?.items.map(item => item.id));
+          const next = resetItems(current.filter(item => !previousTailIds.has(item.id)), rebuilt);
+          if (!next.kept) setMore(message.more === true);
+          return next.items;
+        });
+        return;
+      }
+      if (message.reset) clearTimeout(fallback);
       if (!message.reset) { setItems((current) => mergeItems(current, message.items)); return; }
       // the newest page again (a reconnect, a rewritten file, a changed App chat): earlier pages stay
       setItems((current) => {
@@ -263,8 +320,10 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
         if (cache.size > 8) cache.delete(cache.keys().next().value!);
       }
       generation.current++;
+      stopped = true;
+      clearTimeout(fallback);
       off();
-      release();
+      release?.();
     };
   }, [stream, sessionKey, loadFirst]);
 

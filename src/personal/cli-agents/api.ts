@@ -1,3 +1,4 @@
+import { localCacheScope, queueLocalCache, readLocalCache } from "../local-content-cache";
 // HTTP side of Agent mode (plan 5.4). Not the shared `api()` wrapper: that one
 // keeps only the error text, and this page needs Core's `code` to say what
 // happened. Responses are validated with the shared parsers.
@@ -93,8 +94,16 @@ export async function fetchItems(key: CliSessionKey, before?: string): Promise<{
 }
 
 export async function translateReply(key: CliSessionKey, itemId: string, source: string, signal: AbortSignal): Promise<string | undefined> {
+  const scope = localCacheScope();
+  const digest = scope && globalThis.crypto?.subtle ? await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source)).catch(() => undefined) : undefined;
+  const cacheKey = digest ? `cli-translation:zh:v1:${key}:${itemId}:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")}` : undefined;
+  const stored = cacheKey ? await readLocalCache<string>(scope, cacheKey) : undefined;
+  signal.throwIfAborted();
+  if (stored) return stored;
   const result = await call<{ translation?: unknown }>("/translate", { key, itemId, source }, "POST", signal);
-  return typeof result.translation === "string" && result.translation !== source ? result.translation : undefined;
+  const translation = typeof result.translation === "string" && result.translation !== source ? result.translation : undefined;
+  if (cacheKey && translation && !signal.aborted) queueLocalCache(scope, cacheKey, translation);
+  return translation;
 }
 
 /** `parentId` binds the started session to a pending branch row; `forkFrom` makes it a real context fork of that session (same computer and tool).

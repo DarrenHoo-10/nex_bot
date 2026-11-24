@@ -60,9 +60,20 @@ extension WorkspaceStore {
     }
     /// Downloads a sent attachment (`AttachmentLink.id`). The suggested file name comes from Core.
     public func downloadAttachment(id: String) async throws -> (data: Data, filename: String) {
-        try await cachedAsset("attachment:" + id) {
+        struct Asset: Codable, Sendable { let data: Data; let filename: String }
+        let scope = contentCacheScope
+        let key = "attachment:" + id
+        if let scope, let asset = await LocalContentCache.shared.load(Asset.self, scope: scope, key: key), scope == contentCacheScope {
+            return (asset.data, asset.filename)
+        }
+        let asset = try await cachedAsset(key) {
             try await self.act(refresh: false) { try await self.client.downloadAttachment(id: id) }
         }
+        if let scope, scope == contentCacheScope, asset.data.count <= 1_500_000 {
+            let record = Asset(data: asset.data, filename: asset.filename)
+            Task { await LocalContentCache.shared.enqueue(record, scope: scope, key: key) }
+        }
+        return asset
     }
 
     public func feishuGroupAvatar(path: String) async throws -> Data {
@@ -72,6 +83,29 @@ extension WorkspaceStore {
             return (data: result.data, filename: "")
         }.data
     }
+    public func cachedTopicFeed(botID: String, conversationID: String, before: Int? = nil) async throws -> Feed {
+        guard let scope = contentCacheScope, let expected = sync else {
+            return try await client.topicFeed(botID: botID, conversationID: conversationID, before: before)
+        }
+        let key = "topic:" + botID + ":" + conversationID + ":" + (before.map { String($0) } ?? "recent")
+        let memory = before == nil ? cachedTopicMessages(botID: botID, topicID: conversationID) : []
+        let cached = memory.isEmpty ? await LocalContentCache.shared.load([AgentMessage].self, scope: scope, key: key) : memory
+        guard scope == contentCacheScope else { throw CancellationError() }
+        if before != nil, let cached { return Feed(messages: cached, sync: expected) }
+        var messages = cached ?? []
+        var feed = try await client.topicFeed(botID: botID, conversationID: conversationID, before: before, after: before == nil ? messages.last?.seq : nil)
+        while true {
+            guard scope == contentCacheScope, feed.sync.sameGeneration(as: expected) else { throw CancellationError() }
+            messages += feed.messages
+            guard before == nil, feed.hasMore, let last = feed.messages.last?.seq else { break }
+            feed = try await client.topicFeed(botID: botID, conversationID: conversationID, after: last)
+        }
+        let page = Array(messages.suffix(200))
+        if cached != page { Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: key) } }
+        feed.messages = page
+        return feed
+    }
+
     /// Archives the agent. The store then selects the first remaining agent.
     public func archiveAgent(botID: String) async throws {
         let b = try currentBot(botID)

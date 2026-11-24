@@ -3,6 +3,7 @@ import { BrandMark } from "./components/BrandMark";
 import { LogOut } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, desktop } from "./api";
+import { clearLocalCache, purgeLocalCache } from "./local-content-cache";
 import { HomePage, registerUrl } from "./HomePage";
 
 interface IdentityStatus {
@@ -57,6 +58,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<IdentityStatus>(), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [confirmLogout, setConfirmLogout] = useState(false);
   const generation = useRef(0);
+  const statusSession = useRef<string | undefined>(undefined);
   const loggingOut = useRef(false);
   const returningToLogin = useRef(false);
   const refresh = useCallback(async () => {
@@ -65,6 +67,8 @@ export function LoginGate({ children }: { children: ReactNode }) {
     try {
       const result = await api<IdentityStatus>("auth/status");
       if (current !== generation.current || loggingOut.current) return;
+      if (!result.authenticated && statusSession.current) clearLocalCache();
+      statusSession.current = result.authenticated ? result.sessionId : undefined;
       if (!result.authenticated && desktop?.forgetLogin) {
         returningToLogin.current = true; setStatus(undefined); setLoading(true);
         try { await desktop.forgetLogin(); } catch { returningToLogin.current = false; setError("无法返回登录页，请重启应用"); }
@@ -77,7 +81,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
     void refresh();
-    const expired = () => { if (loggingOut.current || returningToLogin.current) return; setStatus(undefined); setLoading(true); setError("登录已失效，请重新登录"); void refresh(); };
+    const expired = () => { if (loggingOut.current || returningToLogin.current) return; clearLocalCache(); setStatus(undefined); setLoading(true); setError("登录已失效，请重新登录"); void refresh(); };
     const visible = () => { if (document.visibilityState === "visible") void refresh(); };
     window.addEventListener("nex-session-expired", expired); document.addEventListener("visibilitychange", visible);
     const timer = setInterval(() => void refresh(), 30_000);
@@ -90,13 +94,14 @@ export function LoginGate({ children }: { children: ReactNode }) {
       ++generation.current;
       await desktop?.stopDevice?.();
       await api("auth/logout", {});
+      await purgeLocalCache();
       if (desktop?.forgetLogin) { await desktop.forgetLogin(); return; }
       setConfirmLogout(false); setStatus(undefined); setError("");
       loggingOut.current = false; await refresh();
     }
     finally { loggingOut.current = false; }
   }
-  if (status?.authenticated) return <Account.Provider value={{ status, logout: async () => { setConfirmLogout(true); } }}>
+  if (status?.authenticated) return <Account.Provider key={status.sessionId} value={{ status, logout: async () => { setConfirmLogout(true); } }}>
     {/* Keep the workspace mounted so returning home preserves drafts and the selected conversation. */}
     <div style={{ display: home ? "none" : "contents" }}>{children}</div>
     {home && <HomePage signedIn login={<section className="login-card"><BrandMark size={56}/><h1>NexBot</h1><a className="home-button is-primary" href="#workspace">进入工作台</a></section>}/>}

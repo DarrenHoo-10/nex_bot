@@ -13,7 +13,7 @@ struct MainView: View {
 
     init(workspace: WorkspaceStore) {
         self.workspace = workspace
-        _agents = State(initialValue: CliAgentsModel(client: { workspace.client }))
+        _agents = State(initialValue: CliAgentsModel(client: { workspace.client }, cacheScope: { workspace.contentCacheScope }))
     }
 
     private static let panel = RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -65,6 +65,9 @@ struct MainView: View {
         .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif
         .onAppear { agents.installNotifier(); AppUpdater.shared.start { workspace.client } }
+        .onChange(of: workspace.contentCacheScope) { old, new in
+            if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
+        }
         .task(id: workspace.connection) { if workspace.connection == .connected, agents.notificationsOn { agents.start() } }
         .onDisappear { AppUpdater.shared.stop() }
         .task(id: workspace.connection) { if workspace.connection == .connected { await workspace.loadFinanceAssistant() } }
