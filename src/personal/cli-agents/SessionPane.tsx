@@ -2,7 +2,7 @@
 // the workbench contracts: sends carry idempotency ids, a running session
 // queues or steers, stopping pauses the outbox in Core, and edit-and-resend
 // records the revised message.
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
 import { modelFailureReason, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { ModelFailureDialog } from "./ModelFailureDialog";
@@ -87,13 +87,13 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
   // A message being edited leaves the conversation; its resend takes its place.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => readHidden(session.key));
-  const hide = (id: string, on: boolean) => setHidden((current) => {
+  const hide = useCallback((id: string, on: boolean) => setHidden((current) => {
     const next = new Set(current);
     if (on) next.add(id); else next.delete(id);
     saveHidden(session.key, next);
     return next;
-  });
-  const edit = (messageId: string, text: string) => { if (revision && revision.messageId !== messageId) hide(revision.messageId, false); hide(messageId, true); setRevision({ messageId, text }); };
+  }), [session.key]);
+  const edit = useCallback((messageId: string, text: string) => { if (revision && revision.messageId !== messageId) hide(revision.messageId, false); hide(messageId, true); setRevision({ messageId, text }); }, [hide, revision]);
   const cancelEdit = () => { if (revision) hide(revision.messageId, false); setRevision(null); };
   // A model call that failed for good, as it arrives: a dialog, and the turn stays where it stopped.
   const [failure, setFailure] = useState<string | null>(null);
@@ -134,7 +134,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const dropPending = (id: string) => setEchoes((list) => list.filter((entry) => entry.id !== id));
   const progress = awaiting ? (awaiting.fresh ? "执行中" : awaiting.resuming ? "正在恢复会话" : "等待回复")
     : session.online && session.state === "running" ? "执行中" : "";
-  const working = progress && !compact ? { label: progress } : undefined;
+  const working = useMemo(() => progress && !compact ? { label: progress } : undefined, [progress, compact]);
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
     const known = new Set(items.map((item) => item.id));

@@ -1,6 +1,6 @@
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { completedCliReplies, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
@@ -204,7 +204,7 @@ export function EchoMessage({ text }: { text: string }) {
   );
 }
 
-export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState<boolean | null>();
@@ -418,4 +418,4 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
       </div>
     </div>
   );
-}
+});

@@ -745,7 +745,7 @@ export async function createPersonalApp(options: AppOptions) {
         agents.updateProfile(data); json(response, 200, { ok: true }); return;
       }
       if (url.pathname === "/api/bots/appearance") { agents.updateAppearance(data); json(response, 200, { ok: true }); return; }
-      if (url.pathname === "/api/bots/model") { agents.updateModel(data); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/bots/model") { json(response, 200, { ok: true, selection: agents.updateModel(data) }); return; }
       if (url.pathname === "/api/bots/policy") { agents.updatePolicy(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/approval-mode") { agents.updateApprovalMode(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/archive") { agents.archive(data); json(response, 200, { ok: true }); return; }

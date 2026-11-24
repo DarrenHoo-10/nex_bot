@@ -21,12 +21,12 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "é€
   const open = controlledOpen ?? localOpen, setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
   const usable = connections.filter((connection) => connection.enabled && connection.configured);
   const current = usable.find((connection) => connection.id === choice.connectionId) ?? usable.find((connection) => connection.isDefault) ?? usable[0];
-  const [viewed, setViewed] = useState(current?.id ?? "");
+  const [viewed, setViewed] = useState("");
   const [picking, setPicking] = useState(false), [query, setQuery] = useState("");
   const [catalogs, setCatalogs] = useState<Record<string, { models?: string[]; error?: string; loading?: boolean }>>({});
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   const provider = usable.find((connection) => connection.id === viewed) ?? current;
-  useEffect(() => { if (open) { setViewed(current?.id ?? ""); setPicking(false); setQuery(""); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!open) { setViewed(""); setPicking(false); setQuery(""); } }, [open]);
 
   // A provider showing every model lists them from the service once per menu.
   useEffect(() => {
@@ -41,12 +41,16 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "é€
 
   const effective = provider && provider.id === current?.id ? choice.model || (selectionOnly ? "" : provider.defaultModel) : "";
   const models = useMemo(() => {
-    if (!provider) return [];
+    if (!open || picking || !provider) return [];
     const listed = provider.models ?? catalogs[provider.id]?.models ?? [];
     const all = [...new Set([...listed, ...(provider.defaultModel && (!selectionOnly || provider.models === null) ? [provider.defaultModel] : []), ...(effective && (!selectionOnly || provider.models === null || listed.includes(effective)) ? [effective] : [])])];
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    return all.filter((model) => terms.every((term) => model.toLowerCase().includes(term) || modelName(provider, model).toLowerCase().includes(term)));
-  }, [provider, catalogs, effective, query, selectionOnly]);
+    if (!terms.length) return all;
+    return all.filter((model) => {
+      const id = model.toLowerCase(), name = modelName(provider, model).toLowerCase();
+      return terms.every((term) => id.includes(term) || name.includes(term));
+    });
+  }, [open, picking, provider, catalogs, effective, query, selectionOnly]);
 
   // The slider follows the chosen model on the chosen provider.
   const chosenModel = current ? choice.model || current.defaultModel : "";
