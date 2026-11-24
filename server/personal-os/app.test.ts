@@ -511,7 +511,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.fake.scripts.push({ kind: "openai-text", text: "我会按照私人秘书的身份工作" });
     const task = f.app.agents.send(botId, "你叫什么，是什么身份？", "named-agent").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
-    const prompt = JSON.parse(f.fake.requests[0].body).messages.find((m: { role: string }) => m.role === "system").content;
+    const prompt = JSON.parse(f.fake.requests[0].body).messages.find((m: { role: string }) => (m.role === "system" || m.role === "developer")).content;
     expect(prompt).toContain('"name":"我的私人秘书"'); expect(prompt).toContain('"instructions":""');
   }, 40_000);
   it("silently refreshes self and peer identity in a running worker after approval, retaining IDs, privacy and restart continuity", async () => {

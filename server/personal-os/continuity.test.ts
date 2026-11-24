@@ -546,7 +546,7 @@ describe('Continuous personal assistant and memory',()=>{
     expect(systemEntries(app,bot)).toHaveLength(1);
     // The SDK's own tool declarations do not grow with each run either.
     expect(systemEntries(app,bot,false).length).toBeLessThanOrEqual(2);
-    expect(answerRequests(fake).every(messages=>messages.filter(m=>m.role==='system').length===1)).toBe(true);
+    expect(answerRequests(fake).every(messages=>messages.filter(m=>m.role==='system'||m.role==='developer').length===1)).toBe(true);
   },60000);
   it('keeps a scoped working note even when long-term memory is off',async()=>{
     const {app,fake,bot}=await fixture();

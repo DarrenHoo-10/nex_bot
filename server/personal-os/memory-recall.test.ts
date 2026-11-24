@@ -49,7 +49,7 @@ const turn = (app: App, bot: string, text: string, key: string) => finished(app,
 const turnIn = (app: App, conversation: string, text: string, key: string) => finished(app, app.runtime.input(conversation, text, key));
 const streamed = (chat: Fixture['chat']) => chat.requests.filter((row) => row.stream);
 const wire = (request: Record<string, unknown>) => request.messages as Wire;
-const stableOf = (request: Record<string, unknown>) => String(wire(request).find((message) => message.role === 'system')?.content);
+const stableOf = (request: Record<string, unknown>) => String(wire(request).find((message) => message.role === 'system' || message.role === 'developer')?.content);
 const volatileOf = (request: Record<string, unknown>) => String(wire(request).find((message) => message.role === 'user' && String(message.content).includes('<system-reminder>'))?.content);
 const RECALL_HEADER = '按本次输入召回的相关记忆';
 /** The recall block inside a volatile reminder ('' when there is none). */
