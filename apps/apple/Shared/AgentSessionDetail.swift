@@ -1,5 +1,10 @@
 import SwiftUI
 import NexClientKit
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Drafts survive switching between sessions.
 @MainActor
@@ -40,6 +45,8 @@ struct AgentSessionDetail: View {
     let onKeyChange: (CliSessionKey) -> Void
     @State private var tab: AgentTab = .terminal
     @State private var forking = false
+    @State private var forkItemId: String?
+    @State private var branchedChat: CliForkResult?
     @State private var actionError = ""
     @State private var pending: [AgentPendingSend] = []
     /// A model call that failed for good while this screen was open.
@@ -70,11 +77,24 @@ struct AgentSessionDetail: View {
         } message: {
             Text((failure ?? "") + "\n任务已停在这里")
         }
-        .sheet(isPresented: $forking) {
-            if let session {
-                AgentForkSheet(model: model, workspace: workspace, session: session) { botId in
-                    forking = false
-                    openAssistant(botId)
+        .sheet(isPresented: $forking, onDismiss: {
+            forkItemId = nil
+            branchedChat = nil
+        }) {
+            if let branchedChat {
+                FinanceTopicsView(workspace: workspace, botID: branchedChat.botId, conversationID: branchedChat.conversationId,
+                                  onClose: { forking = false })
+                    #if os(macOS)
+                    .frame(minWidth: 520, minHeight: 460)
+                    #endif
+            } else if let session {
+                AgentForkSheet(model: model, workspace: workspace, session: session, itemId: forkItemId) { result in
+                    if forkItemId != nil {
+                        branchedChat = result
+                    } else {
+                        forking = false
+                        openAssistant(result.botId)
+                    }
                 }
             }
         }
@@ -105,7 +125,11 @@ struct AgentSessionDetail: View {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
                 } else {
-                    AgentTranscript(model: model, key: key, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending)
+                    AgentTranscript(model: model, key: key, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending,
+                                    branch: workspace.bots.isEmpty ? nil : { itemId in
+                                        forkItemId = itemId
+                                        forking = true
+                                    })
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -235,6 +259,7 @@ private struct AgentTranscript: View {
     var working: String?
     /// messages sent from here that the records do not hold yet
     var pending: [AgentPendingSend] = []
+    var branch: ((String) -> Void)?
 
     var body: some View {
         let t = model.transcript(key)
@@ -277,7 +302,7 @@ private struct AgentTranscript: View {
                             ForEach(blocks) { block in
                                 AgentBlockView(block: block, translate: t.translationEnabled && completed.contains(block.id) ? { item in
                                     try await model.translateReply(key, item: item)
-                                } : nil)
+                                } : nil, branch: completed.contains(block.id) ? branch : nil)
                             }
                             if let echo { AgentEchoBubble(text: echo) }
                             ForEach(sent) { AgentEchoBubble(text: $0.text) }
@@ -301,6 +326,7 @@ private struct AgentTranscript: View {
 private struct AgentBlockView: View {
     let block: CliBlock
     var translate: ((CliItem) async throws -> String?)?
+    var branch: ((String) -> Void)?
 
     var body: some View {
         switch block {
@@ -315,7 +341,7 @@ private struct AgentBlockView: View {
                 }
             }
         case .assistant(let item):
-            AgentReplyText(item: item, translate: translate)
+            AgentReplyText(item: item, translate: translate, branch: branch)
         case .activity(_, let items):
             AgentActivity(items: items)
         case .notice(_, let level, let text):
@@ -327,10 +353,12 @@ private struct AgentBlockView: View {
 private struct AgentReplyText: View {
     let item: CliItem
     var translate: ((CliItem) async throws -> String?)?
+    var branch: ((String) -> Void)?
     @State private var translated: String?
     @State private var original = false
     @State private var failed = false
     @State private var retry = 0
+    private var displayedText: String { original ? item.text : translated ?? item.text }
 
     private struct Request: Equatable {
         let source: String
@@ -339,7 +367,7 @@ private struct AgentReplyText: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            MarkdownText(source: original ? item.text : translated ?? item.text, fontSize: 14)
+            MarkdownText(source: displayedText, fontSize: 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if translated != nil {
                 Button(original ? "查看中文" : "查看原文") { original.toggle() }
@@ -348,6 +376,22 @@ private struct AgentReplyText: View {
                 Button("重试翻译") { retry += 1 }
                     .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent)
             }
+            HStack(spacing: 4) {
+                Button {
+                    #if os(macOS)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(displayedText, forType: .string)
+                    #else
+                    UIPasteboard.general.string = displayedText
+                    #endif
+                } label: { Label("复制", systemImage: "doc.on.doc") }
+                    .help("复制")
+                if let branch {
+                    Button { branch(item.id) } label: { Label("分支到新聊天", systemImage: "arrow.triangle.branch") }
+                        .help("分支到新聊天")
+                }
+            }
+            .labelStyle(.iconOnly).buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Theme.muted)
         }
         .task(id: translate == nil ? nil : Request(source: item.text, attempt: retry)) {
             translated = nil
@@ -391,6 +435,7 @@ private struct AgentToolRow: View {
     @State private var open = false
 
     var body: some View {
+        let backgroundTitle = CliTranscript.backgroundTaskTitle(item)
         DisclosureGroup(isExpanded: $open) {
             VStack(alignment: .leading, spacing: 6) {
                 if !item.input.isEmpty { code(item.input) }
@@ -398,8 +443,10 @@ private struct AgentToolRow: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Text(item.name).font(.system(size: 12, weight: .medium))
-                Text(CliTranscript.toolSummary(item.input)).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(1)
+                Text(backgroundTitle ?? item.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                if backgroundTitle == nil {
+                    Text(CliTranscript.toolSummary(item.input)).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(1)
+                }
                 Spacer(minLength: 0)
                 Text(CliTranscript.toolStatusText(item.status)).font(.caption2).foregroundStyle(item.status == .error ? Theme.danger : Theme.muted)
             }

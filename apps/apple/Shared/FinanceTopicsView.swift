@@ -5,6 +5,17 @@ import NexClientKit
 struct FinanceTopicsView: View {
     let workspace: WorkspaceStore
     let botID: String
+    let conversationID: String?
+    let onClose: (() -> Void)?
+
+    init(workspace: WorkspaceStore, botID: String, conversationID: String? = nil, onClose: (() -> Void)? = nil) {
+        self.workspace = workspace
+        self.botID = botID
+        self.conversationID = conversationID
+        self.onClose = onClose
+        _selected = State(initialValue: conversationID)
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     @State private var topics: [FinanceTopic] = []
     @State private var selected: String?
@@ -28,15 +39,21 @@ struct FinanceTopicsView: View {
                 Text(workspace.bot(botID)?.name ?? "金融助手").font(.headline)
                 Spacer()
                 Button("模型") {modelOpen=true}
-                Button("新对话",systemImage:"plus") { selected = nil; messages = []; streaming = "";editingMessageID=nil;taskRows=[]; generation += 1 }
-                    .disabled(sending || pending != nil)
+                if let onClose {
+                    Button("关闭", action: onClose)
+                } else {
+                    Button("新对话",systemImage:"plus") { selected = nil; messages = []; streaming = "";editingMessageID=nil;taskRows=[]; generation += 1 }
+                        .disabled(sending || pending != nil)
+                }
             }
             if workspace.connection != .connected { ProgressView("正在重新同步…") }
             else {
                 if let current {
                     HStack(alignment: .top) {
-                        Button("返回聊天") {
-                            selected = nil; messages = []; streaming = ""; editingMessageID = nil; taskRows = []; generation += 1
+                        if conversationID == nil {
+                            Button("返回聊天") {
+                                selected = nil; messages = []; streaming = ""; editingMessageID = nil; taskRows = []; generation += 1
+                            }
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             Text(current.title).font(.headline)
@@ -47,8 +64,12 @@ struct FinanceTopicsView: View {
                 }
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:12) {
-                        ForEach(topics) { topic in topicCard(topic) }
-                        if topics.isEmpty { Text("新建一段对话").foregroundStyle(.secondary) }
+                        if conversationID != nil {
+                            if let current { topicCard(current) }
+                        } else {
+                            ForEach(topics) { topic in topicCard(topic) }
+                            if topics.isEmpty { Text("新建一段对话").foregroundStyle(.secondary) }
+                        }
                     }
                 }
                 if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
@@ -95,7 +116,7 @@ struct FinanceTopicsView: View {
                 VStack(alignment:.leading,spacing:3) {
                     Text(message.role == "user" ? "我" : workspace.bot(botID)?.name ?? "金融助手").font(.caption).foregroundStyle(.secondary)
                     MarkdownText(source:message.content)
-                    if selected == topic.id && message.role == "user" && message.taskID == nil && pending == nil {Button("编辑待运行消息"){editingMessageID=message.id;drafts[topic.id]=message.content}.font(.caption)}
+                    if selected == topic.id && message.row.string("input_status") == "pending" && pending == nil {Button("编辑待运行消息"){editingMessageID=message.id;drafts[topic.id]=message.content}.font(.caption)}
                 }
             }
             if selected == topic.id {
@@ -111,7 +132,9 @@ struct FinanceTopicsView: View {
                 }
             }
             if selected == topic.id && !streaming.isEmpty { MarkdownText(source:streaming) }
-            Button(selected == topic.id ? "正在回复此话题" : "回复话题") { selectTopic(topic.id) }.disabled(sending || pending != nil)
+            if conversationID == nil {
+                Button(selected == topic.id ? "正在回复此话题" : "回复话题") { selectTopic(topic.id) }.disabled(sending || pending != nil)
+            }
         }
         .padding(14).frame(maxWidth:.infinity,alignment:.leading)
         .background(.quaternary,in:RoundedRectangle(cornerRadius:14))

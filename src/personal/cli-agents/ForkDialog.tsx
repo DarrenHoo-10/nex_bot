@@ -10,6 +10,7 @@ export interface CliBotChoice { id: string; name: string }
 
 export interface ForkDialogProps {
   session: CliSessionView;
+  itemId?: string;
   bots: readonly CliBotChoice[];
   /** the assistant the user was last talking to */
   initialBotId?: string;
@@ -17,8 +18,9 @@ export interface ForkDialogProps {
   onForked(botId: string, conversationId: string): void;
 }
 
-export function ForkDialog({ session, bots, initialBotId, onClose, onForked }: ForkDialogProps) {
+export function ForkDialog({ session, itemId, bots, initialBotId, onClose, onForked }: ForkDialogProps) {
   const [botId, setBotId] = useState(() => (initialBotId && bots.some((bot) => bot.id === initialBotId) ? initialBotId : bots[0]?.id ?? ""));
+  const title = itemId ? "分支到新聊天" : "交给助手";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -34,10 +36,10 @@ export function ForkDialog({ session, bots, initialBotId, onClose, onForked }: F
     setBusy(true);
     setError("");
     try {
-      const forked = await forkSession(session.key, botId);
+      const forked = itemId ? await forkSession(session.key, botId, itemId) : await forkSession(session.key, botId);
       onForked(forked.botId || botId, forked.conversationId);
     } catch (cause) {
-      setError(cause instanceof CliApiError && cause.code === "not_found" ? "没有可交接的记录" : cliErrorText(cause, "没能交接"));
+      setError(cause instanceof CliApiError && cause.code === "not_found" ? (itemId ? "找不到这条回复" : "没有可交接的记录") : cliErrorText(cause, itemId ? "没能创建分支" : "没能交接"));
       setBusy(false);
     }
   };
@@ -49,9 +51,9 @@ export function ForkDialog({ session, bots, initialBotId, onClose, onForked }: F
         const buttons=Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
         const first=buttons[0], last=buttons.at(-1);if(!first||!last)return;
         if(e.shiftKey && document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus()}
-      }} className="modal cli-dialog" role="dialog" aria-modal="true" aria-label="交给助手" onSubmit={(event) => void submit(event)}>
+      }} className="modal cli-dialog" role="dialog" aria-modal="true" aria-label={title} onSubmit={(event) => void submit(event)}>
         <div className="modal-heading">
-          <h2>交给助手</h2>
+          <h2>{title}</h2>
           <button type="button" className="icon-button" aria-label="关闭" disabled={busy} onClick={onClose}><X size={16} /></button>
         </div>
         <div className="cli-fork-session" title={session.cwd}>{sessionTitle(session)}</div>
@@ -63,7 +65,7 @@ export function ForkDialog({ session, bots, initialBotId, onClose, onForked }: F
         {error ? <p className="cli-field-hint" role="alert">{error}</p> : null}
         <div className="cli-dialog-actions">
           <button type="button" disabled={busy} onClick={onClose}>取消</button>
-          <button type="submit" className="primary" disabled={!botId || busy}>{busy ? "正在交接…" : "交给助手"}</button>
+          <button type="submit" className="primary" disabled={!botId || busy}>{busy ? "正在创建…" : title}</button>
         </div>
       </form>
     </div>

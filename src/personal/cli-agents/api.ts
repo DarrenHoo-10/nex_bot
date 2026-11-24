@@ -232,7 +232,8 @@ export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: b
 export const answerRequest = (id: string, decision: CliAnswerDecision, answers?: Record<string, string>, always?: boolean) =>
   call<{ outcome: string }>("/answer", { id, decision, ...(answers ? { answers } : {}), ...(always ? { always: true } : {}) });
 
-export const forkSession = (key: CliSessionKey, botId: string) => call<{ botId: string; conversationId: string }>("/fork", { key, botId });
+export const forkSession = (key: CliSessionKey, botId: string, itemId?: string) =>
+  call<{ botId: string; conversationId: string }>(itemId === undefined ? "/fork" : "/fork-message", { key, botId, itemId });
 
 // ---------------------------------------------------------------------------
 // Workbench tree, queue and Git (workbench plan sections 3 and 4)

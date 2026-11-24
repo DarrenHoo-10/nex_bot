@@ -13,6 +13,47 @@ function parse(text: string): Fields {
 
 const finished = /^(completed|failed|errored|cancelled|canceled|stopped|shutdown|not_found)$/i;
 
+const directoryChange = /^(?:cd|chdir|pushd|set-location)\s+(?:\/d\s+)?(?:"[^"]*"|'[^']*'|[^;&\r\n]+?)\s*(?:&&|;|\r?\n)\s*/i;
+const packageManagers = new Set(["npm", "pnpm", "yarn", "bun"]);
+const packageRunners = new Set(["npx", "bunx"]);
+
+function shortTitle(title: string): string {
+  const chars = Array.from(title.trim().replace(/\s+/g, " "));
+  return chars.length > 36 ? chars.slice(0, 35).join("") + "…" : chars.join("");
+}
+
+function executableName(token: string | undefined): string {
+  return (token?.split(/[\\/]/).at(-1) ?? "").replace(/\.(?:cmd|bat|exe)$/i, "");
+}
+
+function backgroundTitle(data: Fields, input: string): string {
+  const description = typeof data.description === "string" ? shortTitle(data.description) : "";
+  if (description) return description;
+  const command = data.command ?? data.cmd ?? input;
+  if (typeof command !== "string") return "后台任务";
+  // Directory changes, arguments, and leading environment assignments are not task names.
+  const invocation = command.trimStart().replace(directoryChange, "").replace(/^(?:[\w]+=(?:"[^"]*"|'[^']*'|\S*)\s+)*/, "");
+  const tokens = Array.from(invocation.matchAll(/"([^"]*)"|'([^']*)'|([^\s;&|]+)/g), match => match[1] ?? match[2] ?? match[3]);
+  if (executableName(tokens[0]).toLowerCase() === "corepack") tokens.shift();
+  const program = executableName(tokens.shift());
+  const lower = program.toLowerCase();
+  const packageManager = packageManagers.has(lower);
+  const runsTool = packageRunners.has(lower) || packageManager && /^(?:exec|x)$/.test(tokens[0] ?? "");
+  if (packageManager && /^(?:exec|run|x)$/.test(tokens[0] ?? "")) tokens.shift();
+  const next = tokens[0]?.startsWith("-") ? undefined : tokens[0];
+  const task = runsTool ? executableName(next) : program;
+  if (task.toLowerCase() === "vite") {
+    const subcommand = runsTool ? tokens[1] : next;
+    if (subcommand === "build") return "Vite 构建";
+    return subcommand === "preview" ? "Vite 预览服务器" : "Vite 开发服务器";
+  }
+  if (runsTool && task) return /^[\w@.+-]+$/.test(task) ? shortTitle(task) : "后台任务";
+  if (!/^[\w.+-]+$/.test(program)) return "后台任务";
+  if (packageManager && next && /^[\w:@.+-]+$/.test(next)) return shortTitle(`${program} ${next}`);
+  if (/^(?:node|python3?|deno|ruby)$/.test(lower) && next && /\.[a-z0-9]+$/i.test(next)) return shortTitle(executableName(next));
+  return shortTitle(program);
+}
+
 export function sessionActivity(items: readonly CliItem[], state: CliSessionState, online: boolean) {
   const empty = { todos: [], agents: [], jobs: [] };
   if (!online || state === "stopped") return empty;
@@ -87,9 +128,9 @@ export function sessionActivity(items: readonly CliItem[], state: CliSessionStat
       agents.delete(String(data.id));
     } else if (["bash", "shell", "exec_command", "shell_command"].includes(name ?? "")) {
       const id = output.match(/(?:running in (?:the )?background with (?:task )?id|process running with session id)\s*:?\s*([\w-]+)/i)?.[1];
-      const entry = { title: String(data.command || data.cmd || item.input || "后台任务"), state: "运行中" };
-      if (id) jobs.set(id, entry);
-      else if (data.run_in_background === true && item.status === "running" && inTurn) jobs.set(item.id, entry);
+      if (id || data.run_in_background === true && item.status === "running" && inTurn) {
+        jobs.set(id || item.id, { title: backgroundTitle(data, item.input), state: "运行中" });
+      }
 
     } else if (name === "taskstop" || name === "taskoutput") {
       const id = String(data.task_id ?? data.shell_id);

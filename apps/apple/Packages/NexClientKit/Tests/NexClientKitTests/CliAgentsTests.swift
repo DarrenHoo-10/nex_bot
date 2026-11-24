@@ -23,6 +23,19 @@ func cliRequest(_ id: String = "r1", key: String = "d1:claude:s1", kind: CliRequ
 }
 
 final class CliAgentsTests: XCTestCase {
+    func testBackgroundTaskUsesShortTitle() {
+        let output = "Command running in background with ID: task-1"
+        var item = CliItem(id: "job", ts: 1, kind: .tool, name: "Bash",
+                           input: #"{"command":"cd \"D:/temporary worktree\" && corepack pnpm exec vite --port 5199"}"#,
+                           status: .ok, output: output)
+        XCTAssertEqual(CliTranscript.backgroundTaskTitle(item), "Vite 开发服务器")
+        item.input = #"{"command":"pnpm test","description":"  验证\n 界面 "}"#
+        XCTAssertEqual(CliTranscript.backgroundTaskTitle(item), "验证 界面")
+        item.input = "node scripts/check.mjs --detail"
+        XCTAssertEqual(CliTranscript.backgroundTaskTitle(item), "check.mjs")
+        item.output = nil
+        XCTAssertNil(CliTranscript.backgroundTaskTitle(item))
+    }
     func decode<T: Decodable>(_ type: T.Type, _ object: Any) throws -> T {
         try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: object))
     }

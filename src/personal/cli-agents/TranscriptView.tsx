@@ -5,7 +5,8 @@ import { completedCliReplies, type CliEngine, type CliItem, type CliSessionKey }
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
 import {HarnessMark} from "./tokendance/HarnessMark";
-import { Languages } from "lucide-react";
+import { Check, Copy, GitBranch, Languages, X } from "lucide-react";
+import { useCopyFeedback } from "../../lib/copy-text";
 import { useChineseReply } from "./use-chinese-reply";
 import { AnnotatedMessage } from "./AnnotatedMessage";
 import { useReview, type Note } from "./WorkbenchReview";
@@ -93,7 +94,9 @@ function Activity({ items }: { items: ActivityItem[] }) {
 
 interface CoreReply { key: CliSessionKey; id: string }
 
-export function ReplyText({ source, supplied, local = true, core }: { source: string; supplied?: string; local?: boolean; core?: CoreReply }) {
+export function ReplyText({ source, supplied, local = true, core, actions, onBranch }: {
+  source: string; supplied?: string; local?: boolean; core?: CoreReply; actions?: boolean; onBranch?(): void;
+}) {
   const [original, setOriginal] = useState(false);
   const localReply = useChineseReply(local && !core ? source : "", supplied);
   const [remoteReply, setRemoteReply] = useState<string>();
@@ -117,6 +120,8 @@ export function ReplyText({ source, supplied, local = true, core }: { source: st
   const status = core ? remoteStatus : localReply.status;
   const request = core ? () => retry(value => value + 1) : localReply.request;
   const shown = original ? source : translation || source;
+  const copied = useCopyFeedback(shown);
+  const CopyIcon = copied.state === "copied" ? Check : copied.state === "failed" ? X : Copy;
   return <>
     <Suspense fallback={<p className="cli-plain">{shown}</p>}><RichText value={shown}/></Suspense>
     {translation ? <button type="button" className="text-button na-original" onClick={() => setOriginal(!original)}>
@@ -124,10 +129,18 @@ export function ReplyText({ source, supplied, local = true, core }: { source: st
     </button> : status !== "idle" && <button type="button" className="text-button na-original" disabled={status === "working"} onClick={request}>
       <Languages size={12}/>{status === "working" ? "正在翻译…" : status === "failed" ? "重试翻译" : "翻译成中文"}
     </button>}
+    {actions && <div className="na-reply-actions">
+      <button type="button" aria-label="复制" title={copied.state === "copied" ? "已复制" : copied.state === "failed" ? "复制失败" : "复制"} onClick={copied.copy}>
+        <CopyIcon size={15} aria-hidden="true" />
+      </button>
+      {onBranch && <button type="button" aria-label="分支到新聊天" title="分支到新聊天" onClick={onBranch}>
+        <GitBranch size={15} aria-hidden="true" />
+      </button>}
+    </div>}
   </>;
 }
 
-function BlockView({ block, engine, translations, onEdit, byline = true, local, core }: { block: Block; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; local: boolean; core?: CoreReply }) {
+function BlockView({ block, engine, translations, onEdit, byline = true, local, core, onBranch }: { block: Block; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; local: boolean; core?: CoreReply; onBranch?(): void }) {
   // onEdit is passed only for a message that may still be revised
   switch (block.kind) {
     case "user":
@@ -143,7 +156,7 @@ function BlockView({ block, engine, translations, onEdit, byline = true, local, 
       return (
         <div className="cli-msg is-assistant markdown" data-testid="cli-assistant">
           {byline ? <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine?AGENT_LABEL[engine]:"助手"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div> : null}
-          <ReplyText key={block.item.text} source={block.item.text} local={local} core={core} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
+          <ReplyText key={block.item.text} actions onBranch={onBranch} source={block.item.text} local={local} core={core} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
         </div>
       );
     case "activity":
@@ -204,7 +217,7 @@ export function EchoMessage({ text }: { text: string }) {
   );
 }
 
-export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,echo,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,onBranch,echo,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; onBranch?(messageId: string): void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState<boolean | null>();
@@ -405,7 +418,7 @@ export function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSi
         {blocks.map(block => {
           const complete = block.kind === "assistant" && completed.has(block.id);
           const core = translationEnabled && complete ? { key: sessionKey, id: block.id } : undefined;
-          const message = <BlockView key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={editable.ids.has(block.id) ? onEdit : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
+          const message = <BlockView key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={editable.ids.has(block.id) ? onEdit : undefined} onBranch={complete && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
           return onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}

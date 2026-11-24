@@ -192,6 +192,9 @@ class Repository(
                 client = core
                 _state.update { it.copy(phase = Phase.Ready, connection = saved, busy = false, error = null, notice = null) }
                 enterReady()
+            } catch (cancelled: CancellationException) {
+                _state.update { it.copy(busy = false) }
+                throw cancelled
             } catch (failure: CoreException) {
                 _state.update { it.copy(busy = false, error = failure.message) }
             } catch (failure: Exception) {

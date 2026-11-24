@@ -8,12 +8,12 @@ import { fetchGit, type CliGitInfo } from "./api";
 import "./session-info.css";
 
 interface GitInfo {branch:string;head:string;files:string[];added:number;removed:number;worktree?:string;source?:string;error?:string;project?:string}
-function ActivityGroup({title,entries,icon:Icon}:{title:string;entries:ActivityEntry[];icon:typeof Activity}) {
+function ActivityGroup({title,entries,icon:Icon,compact}:{title:string;entries:ActivityEntry[];icon:typeof Activity;compact?:boolean}) {
   if (!entries.length) return null;
-  return <details className="na-activity-group" open={title==="待办" || undefined}>
+  return <details className="na-activity-group" data-compact={compact || undefined} open={title==="待办" || undefined}>
     <summary><Icon size={15}/><b>{title}</b><small>{title==="待办" && entries.length?entries.filter(x=>x.state==="已完成").length+"/":""}{entries.length}</small><ChevronDown size={13}/></summary>
     <ul>{entries.map((entry,index)=><li key={index} data-state={entry.state}>
-      {entry.state==="已完成"?<CheckCircle2 size={13}/>:<Circle size={12}/>}<span>{entry.title}</span><small>{entry.state}</small></li>)}</ul>
+      {entry.state==="已完成"?<CheckCircle2 size={13}/>:<Circle size={12}/>}<span title={compact ? entry.title : undefined}>{entry.title}</span><small>{entry.state}</small></li>)}</ul>
   </details>;
 }
 export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:CliSessionView;items:CliItem[];open:boolean;onTerminalOpen?:()=>void}){
@@ -63,7 +63,7 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
         {git.files.length?<ul>{git.files.map(file=><li key={file}>{file}</li>)}</ul>:<p>工作树干净</p>}</details> :
         <div className="na-info-row"><FileDiff size={15}/><span>更改</span><small>{reading ? "正在读取…" : error || "—"}</small></div>}
       {(activity.todos.length + activity.agents.length + activity.jobs.length > 0) && <div className="na-info-activity"><ActivityGroup title="待办" entries={activity.todos} icon={ListChecks}/>
-        <ActivityGroup title="子代理" entries={activity.agents} icon={Network}/><ActivityGroup title="后台任务" entries={activity.jobs} icon={Activity}/></div>}
+        <ActivityGroup title="子代理" entries={activity.agents} icon={Network}/><ActivityGroup title="后台任务" entries={activity.jobs} icon={Activity} compact/></div>}
       {onTerminalOpen && <footer><button disabled={!canAttach(session)} title={canAttach(session)?"连接当前会话的终端":"当前会话没有可连接的终端"} onClick={onTerminalOpen}><SquareTerminal size={15}/>打开远程终端</button></footer>}
     </section>
   </aside>;

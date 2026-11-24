@@ -111,7 +111,7 @@ async function ready(items: CliItem[] | ((before?: string) => { items: CliItem[]
   const key = `${pair.deviceId}:claude:s1`;
   await until(() => app.cliHub.session(key), "session");
   const botId = app.store.createBot("合成助手");
-  return { app, call, key, botId };
+  return { app, call, key, botId, fake };
 }
 
 describe("fork route", () => {
@@ -149,6 +149,34 @@ describe("fork route", () => {
     expect(forked.status).toBe(200);
     const first = String((app.agents.topicMessages(botId, String(forked.data.conversationId)) as Array<Record<string, any>>)[0].content);
     expect(first.indexOf("用户：newest ask")).toBeLessThan(first.indexOf("助手：older reply"));
+  });
+
+  it("branches from an older reply, excluding messages that came after it", async () => {
+    const pages = new Map<string | undefined, { items: CliItem[]; more: boolean }>([
+      [undefined, { items: [assistant(6, "unrelated newer answer")], more: true }],
+      ["a6", { items: [user(1, "earlier question"), assistant(2, "selected reply"), user(3, "later follow-up")], more: false }],
+      ["a2", { items: [user(1, "earlier question")], more: false }],
+    ]);
+    const { app, call, key, botId, fake } = await ready(before => pages.get(before) ?? { items: [], more: false });
+    let conversationId = "";
+    for (let i = 0; i < 2; i++) {
+      const forked = await call("cli-agents/fork-message", { key, botId, itemId: "a2" });
+      expect(forked.status).toBe(200);
+      conversationId = String(forked.data.conversationId);
+      const [first] = app.agents.topicMessages(botId, conversationId);
+      expect(first.content).toContain("助手：selected reply");
+      expect(first.content).toContain("用户：earlier question");
+      expect(first.content).not.toMatch(/unrelated newer answer|later follow-up/);
+      expect(app.store.get("SELECT id FROM tasks WHERE conversation_id=?", conversationId)).toBeUndefined();
+    }
+    expect((await call("cli-agents/fork-message", { key, botId, itemId: "u3" })).status).toBe(404);
+    expect((await call("cli-agents/fork-message", { key, botId, itemId: "missing" })).status).toBe(404);
+    expect((await call("cli-agents/fork-message", { key, botId })).status).toBe(400);
+    const continued = await call("agents/input", { botId, conversationId, text: "continue the branch", clientId: "cli-fork-follow-up" });
+    expect(continued.status).toBe(202);
+    const request = await until(() => fake.requests.find(request => JSON.stringify(request.body).includes("continue the branch")), "follow-up model request", 10_000);
+    expect(JSON.stringify(request.body)).toContain("selected reply");
+    expect(JSON.stringify(request.body)).not.toMatch(/unrelated newer answer|later follow-up/);
   });
 
   it("refuses bad input, an unknown session, an empty transcript and an unknown assistant", async () => {

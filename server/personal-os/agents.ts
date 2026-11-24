@@ -214,14 +214,19 @@ export class AgentModule {
       return {botId};
     });
   }
-  createTopic(botId: string, options: {title:string;audience:'private'|'public';sourceContext?:Record<string,unknown>}) {
+  createTopic(botId: string, options: {title:string;audience:'private'|'public';sourceContext?:Record<string,unknown>;branchContext?:string}) {
     this.ensure(botId);
     if(!['private','public'].includes(options.audience)) throw new Error('受众无效');
-    return this.store.transaction(() => {
+    const topic = this.store.transaction(() => {
       const conversationId=this.store.createConversation(botId,text(options.title,160));
       this.store.insert('agent_topics',{conversation_id:conversationId,bot_id:botId,audience:options.audience,source_context:canonical(options.sourceContext??{}),created_at:now()});
+      if (options.branchContext) {
+        this.publish(botId, "user", "message", options.branchContext, `cli-fork-context:${conversationId}`, null, null, now(), conversationId);
+      }
       return {id:conversationId,conversationId};
     });
+    if (options.branchContext) this.runtime.changed();
+    return topic;
   }
   topic(botId: string, conversationId: string) {
     this.ensure(botId);

@@ -30,4 +30,15 @@ describe("session activity", () => {
     expect(sessionActivity([job, completed], "idle", true).jobs).toEqual([]);
     expect(sessionActivity([job], "stopped", true).jobs).toEqual([]);
   });
+
+  it("shows a task description or a short command name for detached shells", () => {
+    const output = "Command running in background with ID: check-1";
+    const command = 'cd "D:/temporary worktree" && corepack pnpm exec vite --port 5199 --strictPort --host 127.0.0.1';
+    const title = (data: unknown) => sessionActivity([tool("Bash", data, "ok", output)], "idle", true).jobs[0]?.title;
+    expect(title({ command, description: "  启动本地\n预览  " })).toBe("启动本地 预览");
+    expect(title({ command })).toBe("Vite 开发服务器");
+    expect(title({ command: "cd /d C:\\work && node scripts/check.mjs --detail" })).toBe("check.mjs");
+    expect(title({ command: "ACCESS_TOKEN=hidden ./worker --config config.json" })).toBe("worker");
+    expect(title({ command, description: "验".repeat(50) })).toBe("验".repeat(35) + "…");
+  });
 });
