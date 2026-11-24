@@ -33,7 +33,7 @@ const features = [
   { icon: Plug, title: "连接工具", text: "添加 MCP 连接器或连接 Gmail，所有助手即可使用。" },
   { icon: CalendarClock, title: "后台与定时任务", text: "长任务交给后台执行，主对话随时能继续聊，也能点开任务直接和子代理对话；定时任务按时独立运行，完成后回到对话汇报。" },
   { icon: Check, title: "统一待办", text: "在对话里记录、修改、完成或删除待办；未指定日期默认当天，按日、周、月查看。" },
-  { icon: Cpu, title: "自选模型", text: "接入多个模型供应商，按助手切换模型和思考强度，调整上下文与输出。" },
+  { icon: Cpu, title: "自选模型", text: "按助手切换模型和思考强度，调整上下文与输出。在助手设置中查看累计 Token 用量。" },
   { icon: ShieldCheck, title: "关键操作你来定", text: "删除、覆盖、发消息等操作先请你批准，随时可以停止。" },
 ];
 
