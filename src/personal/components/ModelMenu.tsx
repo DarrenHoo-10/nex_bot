@@ -4,6 +4,7 @@ import { Check, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-re
 import { defaultReasoningLevels, listConnectionModels, modelName, reasoningLabels, resolveReasoning, type Connection, type ReasoningChoice } from "../api";
 import { useAnchoredPopover } from "./anchored-popover";
 import { EffortChoices } from "./EffortChoices";
+import { useCompactComposer } from "./use-compact-composer";
 import "./model-menu.css";
 
 /** What an assistant uses: a provider, a model there ("" = the provider's default model) and its reasoning effort. */
@@ -18,6 +19,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
   connections: Connection[]; choice: ModelChoice; onChange: (choice: ModelChoice) => void; disabled?: boolean; label?: string;
   open?: boolean; onOpenChange?: (open: boolean) => void; anchorRef?: RefObject<HTMLElement | null>; triggerClassName?: string; displayValue?: string; composer?: boolean; selectionOnly?: boolean;
 }) {
+  const compact = useCompactComposer();
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen, setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
   const usable = connections.filter((connection) => connection.enabled && connection.configured);
@@ -38,7 +40,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
       .catch((error: unknown) => setCatalogs((all) => ({ ...all, [provider.id]: { error: userErrorText(error, "获取模型失败") } })));
   }, [open, provider, catalogs]);
 
-  useAnchoredPopover(open, panel, () => anchorRef?.current ?? trigger.current, () => [root.current, anchorRef?.current], () => setOpen(false), 320, composer && !anchorRef ? "end" : "start");
+  useAnchoredPopover(open, panel, () => anchorRef?.current ?? trigger.current, () => [root.current, anchorRef?.current], () => setOpen(false), 320, composer && !anchorRef ? "end" : "start", compact);
 
   const effective = provider && provider.id === current?.id ? choice.model || (selectionOnly ? "" : provider.defaultModel) : "";
   const models = useMemo(() => {
@@ -71,7 +73,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
 
   return <div className="model-menu-root" ref={root}>
     {!anchorRef && <button ref={trigger} type="button" className={triggerClassName ?? "model-picker-trigger"} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)} title={displayValue}><span>{displayValue || chosenModel || label}</span>{composer && offered.length > 0 && <small className="model-trigger-effort">{reasoningLabels[resolved]}</small>}<ChevronDown size={15}/></button>}
-    {open && <div ref={panel} popover="manual" className="model-menu" role="dialog" aria-label={label} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}>
+    {open && <div ref={panel} popover="manual" className="model-menu" role="dialog" aria-label={label} tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}>
       {!usable.length ? <p className="model-menu-empty">还没有可用的供应商，请在设置 → 模型中添加。</p> : picking ? <>
         <button type="button" className="model-menu-provider" onClick={() => setPicking(false)}><ChevronLeft size={15}/><span>供应商</span></button>
         <div className="model-menu-list" role="listbox" aria-label="供应商">
@@ -91,7 +93,7 @@ export function ModelMenu({ connections, choice, onChange, disabled, label = "�
         </>}
         {!selectionOnly && offered.length > 0 && provider?.id === current?.id &&
           <EffortChoices levels={offered} value={resolved === "off" ? undefined : resolved} label={(level) => reasoningLabels[level]} onChange={commitLevel} disabled={disabled}/>}
-        {composer || models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus={!composer}/></label> : null}
+        {composer || models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus={!compact && !composer}/></label> : null}
         <div className="model-menu-list" role="listbox" aria-label="可用模型">
           {models.map((model) => {
             const options = provider?.options[model];

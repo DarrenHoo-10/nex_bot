@@ -5,6 +5,7 @@ import { Check, ChevronDown, Search } from "lucide-react";
 import { CLI_MODELS, CLI_REASONING_LEVELS, cliReasoningChoice, type CliEngine, type CliModelCatalog } from "../../../shared/cli-agents";
 import { EffortChoices } from "../components/EffortChoices";
 import { useAnchoredPopover } from "../components/anchored-popover";
+import { useCompactComposer } from "../components/use-compact-composer";
 import "../components/model-menu.css";
 import "./cli-model-menu.css";
 import { cliErrorText, fetchModels } from "./api";
@@ -60,6 +61,7 @@ export interface CliModelMenuProps {
 }
 
 export function CliModelMenu({ deviceId, engine, live, choice, onChange, running, disabled, note, triggerClassName = "na-model-button", open: controlledOpen, onOpenChange, anchorRef }: CliModelMenuProps) {
+  const compact = useCompactComposer();
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
   const setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
@@ -70,7 +72,7 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
   const models = catalog.models;
   useEffect(() => { if (!open) setQuery(""); }, [open]);
   const anchor = () => anchorRef?.current ?? trigger.current;
-  useAnchoredPopover(open, panel, anchor, () => [root.current, anchorRef?.current], () => setOpen(false));
+  useAnchoredPopover(open, panel, anchor, () => [root.current, anchorRef?.current], () => setOpen(false), 320, "start", compact);
 
   const label = (id: string) => models.find((row) => row.id === id)?.label ?? id;
   const fallback = running?.trim() || catalog.current || "";
@@ -99,7 +101,7 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
     {!anchorRef && <button ref={trigger} type="button" className={triggerClassName} aria-label="模型设置" aria-haspopup="dialog" aria-expanded={open} title={choice.model || fallback || undefined} onClick={() => setOpen(!open)}>
       <span>{title}</span>{engine !== "zcode" && <span className="na-effort">{effortLabel(selectedEffort)}</span>}<ChevronDown size={13}/>
     </button>}
-    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); anchor()?.focus(); } }}>
+    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); anchor()?.focus(); } }}>
       <div className="na-model-head"><span>模型</span>{live && !loading && !error ? <small>来自这台电脑</small> : null}</div>
       {engine !== "zcode" && <EffortChoices levels={CLI_REASONING_LEVELS} value={selectedEffort} label={effortLabel} onChange={commitLevel} disabled={disabled}/>}
       {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)}/></label> : null}
