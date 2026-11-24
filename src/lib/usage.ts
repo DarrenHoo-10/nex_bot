@@ -2,6 +2,9 @@
 // Pure, so the numbers can be tested without the components.
 import type { Bot, TaskUsage } from "@/state/store";
 import { t } from "./i18n";
+import { formatTokens } from "./token-count";
+
+export { formatTokens } from "./token-count";
 
 export const EMPTY_USAGE: TaskUsage = { input: 0, output: 0, costUsd: null, turns: 0 };
 type TokenUsage = Pick<TaskUsage, "input" | "output"> & Partial<TaskUsage>;
@@ -28,22 +31,6 @@ export function sumUsage(items: Array<TaskUsage | undefined>): TaskUsage {
 
 export function botUsage(bot: Pick<Bot, "tasks">): TaskUsage {
   return sumUsage((bot.tasks ?? []).map((t) => t.usage));
-}
-
-/** 950 → "950", 12_400 → "12.4k", 2_300_000 → "2.3M" */
-export function formatTokens(n: number): string {
-  if (!hasFiniteCost(n)) return "0";
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${trim(n / 1000)}k`;
-  return `${trim(n / 1_000_000)}M`;
-}
-const trim = (x: number) => (x >= 100 ? Math.round(x).toString() : x.toFixed(1).replace(/\.0$/, ""));
-
-export function formatCompactTokens(n: number): string {
-  if (!hasFiniteCost(n) || n < 1_000) return formatTokens(n);
-  if (n >= 1_000_000_000) return `${trim(n / 1_000_000_000)}B`;
-  if (n >= 1_000_000) return `${trim(n / 1_000_000)}M`;
-  return `${trim(n / 1_000)}K`;
 }
 
 /** Task-picker variant: hide unused tasks and spell out small counts. */

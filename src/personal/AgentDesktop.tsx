@@ -1,5 +1,5 @@
 import { userErrorText } from "../lib/http-errors";
-import { formatCompactTokens } from "../lib/usage";
+import { formatCompactTokens } from "../lib/token-count";
 import { AssistantActionDialog } from "./components/AssistantActions";
 import { TopicBubble, topicTimeline, type FinanceTopic } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
