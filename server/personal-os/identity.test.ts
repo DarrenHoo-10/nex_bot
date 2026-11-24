@@ -5,6 +5,7 @@ import { HindsightClient } from "./hindsight.ts";
 import path from "node:path";
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import { createPersonalApp } from "./index.ts";
 import { startFakeIdentity } from "./testing/fake-identity.ts";
 import { SESSION_MAX_MS } from "./identity.ts";
@@ -109,6 +110,36 @@ describe("mandatory built-in account login", () => {
     expect((await request(app, "state", undefined, { Authorization: `Bearer ${owner.body.token}` })).status).toBe(401);
     expect(app.store.get("SELECT revoked_at FROM user_sessions WHERE id=?", owner.body.sessionId)!.revoked_at).not.toBeNull();
   });
+  it("disconnects live clients for an identity outage without revoking the login", async () => {
+    const { app, provider } = await fixture();
+    const owner = await login(app, await bootstrap(app));
+    const headers = { Authorization: `Bearer ${owner.body.token}` };
+    const feed = await fetch(app.origin + "/api/events", { headers, signal: AbortSignal.timeout(22_000) });
+    expect(feed.status).toBe(200);
+    const readFeed = feed.text();
+    const socket = new WebSocket(app.origin.replace("http:", "ws:") + "/api/cli-agents/stream", { headers });
+    const closed = new Promise<number>(resolve => socket.once("close", resolve));
+    try {
+      await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+      provider.state.status = 503;
+      staleCache();
+      expect((await request(app, "state", undefined, headers)).status).toBe(503);
+      expect(await closed).toBe(1013);
+      expect(await readFeed).not.toContain("event: revoked");
+
+      provider.state.status = 200;
+      expect((await request(app, "auth/status", undefined, headers)).body).toMatchObject({ authenticated: true, sessionId: owner.body.sessionId });
+      const restored = await fetch(app.origin + "/api/events", { headers, signal: AbortSignal.timeout(5_000) });
+      provider.state.status = 401;
+      staleCache();
+      expect((await request(app, "state", undefined, headers)).status).toBe(401);
+      app.changed();
+      expect(await restored.text()).toContain("event: revoked");
+    } finally {
+      socket.terminate();
+    }
+  }, 30_000);
+
   it("keeps the device name in account status after the upstream revalidation window", async () => {
     const { app } = await fixture(); const owner = await login(app, await bootstrap(app));
     const headers = { Authorization: `Bearer ${owner.body.token}` };

@@ -11,7 +11,7 @@ export class CoreIdentity {
   private readonly controller = new AbortController();
   private readonly checked = new Map<string, { version: number; wall: number; mono: number }>();
   private readonly checking = new Map<string, Promise<Row | undefined>>();
-  onSessionLost?: (sessionId: string) => void;
+  onSessionLost?: (sessionId: string, temporary?: boolean) => void;
   /** Server-owned routing after successful upstream password/session verification. */
   routeVerified?: (session: UpstreamSession, name: string) => Promise<ReturnType<CoreIdentity["acceptVerified"]>>;
   /** Core-owned work whose authorization anchor is a live channel (e.g. a connected Feishu app), not a client session. */
@@ -151,7 +151,7 @@ export class CoreIdentity {
       } catch (error) {
         if (this.closed) return undefined;
         if (error instanceof IdentityError && error.status === 401) { this.revokeLocal(sessionId); return undefined; }
-        this.onSessionLost?.(sessionId); throw error;
+        this.onSessionLost?.(sessionId, true); throw error;
       }
     })();
     this.checking.set(sessionId, check);

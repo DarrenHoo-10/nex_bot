@@ -37,7 +37,7 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(req.headers["Authorization"], "Bearer secret")
         XCTAssertNil(req.headers["Cookie"]); XCTAssertNil(req.headers["Origin"])
         do { try await client.cancel(task: "t"); XCTFail() } catch let e as CoreError {
-            XCTAssertEqual(e.status, 503); XCTAssertEqual(e.code, "identity_unavailable"); XCTAssertEqual(e.message, "无权限"); XCTAssertTrue(e.endsSession)
+            XCTAssertEqual(e.status, 503); XCTAssertEqual(e.code, "identity_unavailable"); XCTAssertEqual(e.message, "无权限"); XCTAssertFalse(e.endsSession)
         }
         XCTAssertEqual(core.recorded("/api/cancel")[0].json["taskId"] as? String, "t")
     }

@@ -128,7 +128,7 @@ export async function api<T>(url: string, data?: unknown, signal?: AbortSignal):
   // a proxy answers a restart or an outage with an HTML page: never parse that as the reply
   const result = await readJson<T & { error?: string; code?: string }>(response);
   if (!response.ok) {
-    if (!url.startsWith("auth/") && (response.status === 401 || result?.code === "identity_unavailable")) window.dispatchEvent(new Event("nex-session-expired"));
+    if (!url.startsWith("auth/") && response.status === 401) window.dispatchEvent(new Event("nex-session-expired"));
     throw new Error(responseErrorText(response.status, result));
   }
   if (result === null) throw new Error(httpErrorText(502));

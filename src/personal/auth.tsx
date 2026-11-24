@@ -10,6 +10,9 @@ interface IdentityStatus {
   authenticated: boolean; initialized: boolean; canInitialize: boolean; coreId: string;
   sessionId?: string; expiresAt?: number; account?: { displayName: string; protocol?: string; deviceName?: string };
 }
+const SESSION_CHECK_INTERVAL = 5 * 60_000;
+const FOREGROUND_CHECK_MIN_INTERVAL = 60_000;
+
 interface LoginTransaction { transactionId: string; bindingToken: string; stepId: string }
 export interface LoginSession { token: string; coreId: string; sessionId: string; expiresAt: number }
 const Account = createContext<{ status?: IdentityStatus; logout(): Promise<void> }>({ logout: async () => {} });
@@ -57,18 +60,26 @@ export function LoginGate({ children }: { children: ReactNode }) {
   }, []);
   const [status, setStatus] = useState<IdentityStatus>(), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [confirmLogout, setConfirmLogout] = useState(false);
+  const [failedChecks, setFailedChecks] = useState(0);
   const generation = useRef(0);
-  const statusSession = useRef<string | undefined>(undefined);
+  const checkedStatus = useRef<IdentityStatus | undefined>(undefined);
+  const lastCheckedAt = useRef(-Infinity);
+  const checkInFlight = useRef<number | undefined>(undefined);
   const loggingOut = useRef(false);
   const returningToLogin = useRef(false);
-  const refresh = useCallback(async () => {
-    if (loggingOut.current || returningToLogin.current) return;
+  const refresh = useCallback(async (background = false) => {
+    if (loggingOut.current || returningToLogin.current || checkInFlight.current !== undefined) return;
+    if (background && Date.now() - lastCheckedAt.current < FOREGROUND_CHECK_MIN_INTERVAL) return;
     const current = ++generation.current;
+    checkInFlight.current = current;
     try {
       const result = await api<IdentityStatus>("auth/status");
       if (current !== generation.current || loggingOut.current) return;
-      if (!result.authenticated && statusSession.current) clearLocalCache();
-      statusSession.current = result.authenticated ? result.sessionId : undefined;
+      if (!result.authenticated && checkedStatus.current?.authenticated) clearLocalCache();
+      checkedStatus.current = result;
+      lastCheckedAt.current = Date.now();
+      setFailedChecks(0);
+      if (result.authenticated) setError("");
       if (!result.authenticated && desktop?.forgetLogin) {
         returningToLogin.current = true; setStatus(undefined); setLoading(true);
         try { await desktop.forgetLogin(); } catch { returningToLogin.current = false; setError("无法返回登录页，请重启应用"); }
@@ -76,26 +87,69 @@ export function LoginGate({ children }: { children: ReactNode }) {
       }
       setStatus(result);
     }
-    catch (e) { if (current === generation.current) { setStatus(undefined); setError(userErrorText(e, "无法验证登录，请重试")); } }
-    finally { if (current === generation.current && !returningToLogin.current) setLoading(false); }
+    catch (e) {
+      if (current === generation.current) {
+        const saved = checkedStatus.current;
+        if (!saved?.authenticated || (saved.expiresAt !== undefined && saved.expiresAt <= Date.now())) {
+          checkedStatus.current = undefined;
+          clearLocalCache();
+          setStatus(undefined);
+        }
+        lastCheckedAt.current = -Infinity;
+        setFailedChecks(failures => failures + 1);
+        setError(userErrorText(e, "无法验证登录，请重试"));
+      }
+    }
+    finally {
+      if (checkInFlight.current === current) checkInFlight.current = undefined;
+      if (current === generation.current && !returningToLogin.current) setLoading(false);
+    }
   }, []);
   useEffect(() => {
     void refresh();
-    const expired = () => { if (loggingOut.current || returningToLogin.current) return; clearLocalCache(); setStatus(undefined); setLoading(true); setError("登录已失效，请重新登录"); void refresh(); };
-    const visible = () => { if (document.visibilityState === "visible") void refresh(); };
-    window.addEventListener("nex-session-expired", expired); document.addEventListener("visibilitychange", visible);
-    const timer = setInterval(() => void refresh(), 30_000);
-    return () => { ++generation.current; clearInterval(timer); window.removeEventListener("nex-session-expired", expired); document.removeEventListener("visibilitychange", visible); };
+    const expired = () => {
+      if (loggingOut.current || returningToLogin.current) return;
+      if (!checkedStatus.current?.authenticated && checkInFlight.current !== undefined) return;
+      ++generation.current;
+      checkInFlight.current = undefined;
+      checkedStatus.current = undefined;
+      clearLocalCache();
+      setStatus(undefined);
+      setLoading(true);
+      setError("登录已失效，请重新登录");
+      void refresh();
+    };
+    const visible = () => { if (document.visibilityState === "visible") void refresh(true); };
+    window.addEventListener("nex-session-expired", expired);
+    window.addEventListener("online", visible);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      ++generation.current;
+      checkInFlight.current = undefined;
+      window.removeEventListener("nex-session-expired", expired);
+      window.removeEventListener("online", visible);
+      document.removeEventListener("visibilitychange", visible);
+    };
   }, [refresh]);
+  useEffect(() => {
+    if (!status?.authenticated && !failedChecks) return;
+    const interval = failedChecks ? 15_000 * (2 ** Math.min(failedChecks - 1, 2)) : SESSION_CHECK_INTERVAL;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void refresh(true);
+    }, interval);
+    return () => clearInterval(timer);
+  }, [refresh, status?.authenticated, failedChecks]);
   async function logout() {
     // Local access is revoked first by Core, even if upstream logout is down.
     loggingOut.current = true;
     try {
       ++generation.current;
+      checkInFlight.current = undefined;
       await desktop?.stopDevice?.();
       await api("auth/logout", {});
       await purgeLocalCache();
       if (desktop?.forgetLogin) { await desktop.forgetLogin(); return; }
+      checkedStatus.current = undefined;
       setConfirmLogout(false); setStatus(undefined); setError("");
       loggingOut.current = false; await refresh();
     }
@@ -116,6 +170,8 @@ export function LoginGate({ children }: { children: ReactNode }) {
         form.reset();
         await desktop?.rememberLogin?.(session);
         if (!desktop) { history.replaceState(null, "", `${location.pathname}${location.search}#workspace`); setHome(false); }
+        ++generation.current;
+        checkInFlight.current = undefined;
         await refresh();
       } catch (e) { setError(userErrorText(e, "登录失败，请重试")); const password = form.elements.namedItem("password") as HTMLInputElement; password.value = ""; }
       finally { setBusy(false); }

@@ -72,6 +72,10 @@ export async function createPersonalApp(options: AppOptions) {
   let closing = false;
   let feishu!: FeishuModule;
   let feishuAccounts: ((action:string,data:Record<string,unknown>)=>unknown|Promise<unknown>) | undefined;
+  const endEventStream = (response: ServerResponse, revoked: boolean) => {
+    streams.delete(response);
+    response.end(revoked ? "event: revoked\ndata: {}\n\n" : undefined);
+  };
   const changed = () => {
     if (closing) return;
     sync.prune(); const snapshot = sync.snapshot();
@@ -79,13 +83,13 @@ export async function createPersonalApp(options: AppOptions) {
       if (finance.hasBinding() && identity) {
         if (!verifyingStreams.has(response)) {
           verifyingStreams.add(response);
-          void authenticate(token).catch(() => undefined).then(verified => {
+          void authenticate(token).then(verified => {
             if (closing || !streams.has(response) || response.destroyed) return;
-            if (!verified) {
-              response.end("event: revoked\ndata: {}\n\n"); streams.delete(response); return;
-            }
+            if (!verified) { endEventStream(response, true); return; }
             const latest = sync.snapshot();
             response.write(`id: ${latest.cursor}\nevent: change\ndata: ${JSON.stringify(latest)}\n\n`);
+          }, () => {
+            if (streams.has(response)) endEventStream(response, false);
           }).finally(() => verifyingStreams.delete(response));
         }
         continue;
@@ -102,9 +106,9 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
     runtime.authorizeTask = (task) => finance.hasSession(String(task.authorized_session_id)) ? finance.authorizeTask(String(task.authorized_session_id)) : identity.authorizeTask(task, finance.hasBinding());
-    identity.onSessionLost = (sessionId) => {
+    identity.onSessionLost = (sessionId, temporary) => {
       connectors.oauth.cancelSession(sessionId);
-      cliStream.closeSession(sessionId);
+      cliStream.closeSession(sessionId, temporary);
       for (const task of store.all("SELECT id FROM tasks WHERE authorized_session_id=? AND ended_at IS NULL", sessionId)) runtime.cancel(String(task.id), "登录失效或无法验证，任务已停止");
       if (!store.get("SELECT id FROM user_sessions WHERE protocol='native-v1' AND revoked_at IS NULL AND expires_at>?", Date.now())) {
         for (const worker of runtime.workers.values()) if (store.get("SELECT authorized_session_id FROM tasks WHERE id=?", worker.taskId)?.authorized_session_id === store.session) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
@@ -187,7 +191,7 @@ export async function createPersonalApp(options: AppOptions) {
     // Only the owner's own login may reach a device terminal; a finance delegation never does.
     authorize: async (token): Promise<StreamAuth> => {
       let session;
-      try { session = await authenticate(token); } catch { return { ok: false, status: 401 }; }
+      try { session = await authenticate(token); } catch { return { ok: false, status: 503 }; }
       if (!session) return { ok: false, status: 401 };
       if (session.user_id !== store.owner || finance.hasSession(String(session.id))) return { ok: false, status: 403 };
       return { ok: true, sessionId: String(session.id) };
@@ -259,8 +263,9 @@ export async function createPersonalApp(options: AppOptions) {
       if (closing) return;
       for (const token of new Set(streams.values())) {
         if (closing) return;
-        try { if (await authenticate(token)) continue; } catch { /* fail closed, including upstream outage */ }
-        for (const [response, current] of streams) if (current === token) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
+        let revoked = false;
+        try { if (await authenticate(token)) continue; revoked = true; } catch { /* Disconnect temporarily when identity cannot be verified. */ }
+        for (const [response, current] of streams) if (current === token) endEventStream(response, revoked);
       }
       for (const worker of runtime.workers.values()) {
         if (closing) return;

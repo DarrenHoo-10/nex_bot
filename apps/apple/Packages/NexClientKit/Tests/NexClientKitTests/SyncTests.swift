@@ -175,11 +175,18 @@ final class SyncTests: XCTestCase {
         store.select("b1"); await store.refresh()
         XCTAssertEqual(ends, [SessionEnd(message: WorkspaceStore.expiredMessage, deleteCredential: true)])
 
-        let core2 = StubCore(); core2.handle { _ in .json(["error": "身份不可用", "code": "identity_unavailable"], status: 503) }
-        let store2 = makeStore(core2); var ends2: [SessionEnd] = []
-        store2.onSessionEnded = { ends2.append($0) }
-        await store2.refresh()
-        XCTAssertEqual(ends2.map(\.deleteCredential), [false])
+    }
+
+    func testIdentityOutageReconnectsWithoutEndingSession() async {
+        let core = StubCore(), fake = Fake()
+        core.handle { _ in .json(["error": "身份不可用", "code": "identity_unavailable"], status: 503) }
+        let store = makeStore(core)
+        store.onSessionEnded = { _ in XCTFail("Identity outage ended the login") }
+        await store.refresh()
+        XCTAssertEqual(store.connection, .resyncing)
+        core.handle(fake.handler)
+        await store.refresh()
+        XCTAssertEqual(store.connection, .connected)
     }
 
     func testRevokedEventEndsSession() async throws {

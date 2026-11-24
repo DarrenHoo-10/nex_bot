@@ -20,7 +20,7 @@ import {
 import { TERM_INPUT, decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { CliOpError, errorCodeOf, type CliAgentHub, type StreamSink } from "./hub.ts";
 
-export type StreamAuth = { ok: true; sessionId: string } | { ok: false; status: 401 | 403 };
+export type StreamAuth = { ok: true; sessionId: string } | { ok: false; status: 401 | 403 | 503 };
 
 export interface StreamOptions {
   hostAllowed(host: string | undefined): boolean;
@@ -39,7 +39,7 @@ const MAX_SUBSCRIPTIONS = 50;
 /** One JSON message stays well under the 1 MiB that proxies and browsers handle comfortably. */
 const MESSAGE_BYTES = 900_000;
 const SOCKET_BUFFER_MAX = 16 * 1024 * 1024;
-const HTTP_TEXT: Record<number, string> = { 401: "Unauthorized", 403: "Forbidden", 429: "Too Many Requests" };
+const HTTP_TEXT: Record<number, string> = { 401: "Unauthorized", 403: "Forbidden", 429: "Too Many Requests", 503: "Service Unavailable" };
 
 interface Subscription {
   ready: boolean;
@@ -101,7 +101,7 @@ export class CliAgentStream {
 
   readonly handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
-    void this.upgrade(request, socket, head).catch(() => this.refuse(socket, 401));
+    void this.upgrade(request, socket, head).catch(() => this.refuse(socket, 503));
   };
 
   private refuse(socket: Duplex, status: number) {
@@ -179,6 +179,7 @@ export class CliAgentStream {
   }
 
   private onMessage(connection: Connection, raw: RawData, isBinary: boolean) {
+    if (!this.connections.has(connection) || connection.ws.readyState !== WebSocket.OPEN) return;
     if (isBinary) {
       const bytes = Array.isArray(raw) ? Buffer.concat(raw) : raw instanceof ArrayBuffer ? new Uint8Array(raw) : raw;
       const frame = decodeTermFrame(new Uint8Array(bytes));
@@ -292,16 +293,21 @@ export class CliAgentStream {
   private async reauthorize() {
     for (const token of new Set([...this.connections].map((connection) => connection.token))) {
       if (this.closed) return;
-      let ok = false;
-      try { ok = (await this.options.authorize(token)).ok; } catch { ok = false; }
-      if (ok) continue;
-      for (const connection of [...this.connections]) if (connection.token === token) connection.ws.close(4401, "session ended");
+      const auth = await this.options.authorize(token).catch(() => ({ ok: false, status: 503 } as const));
+      if (auth.ok) continue;
+      const temporary = auth.status === 503;
+      for (const connection of [...this.connections]) if (connection.token === token) this.closeConnection(connection, temporary);
     }
   }
 
   /** Called when a login ends (logout, revoke, lost upstream session). */
-  closeSession(sessionId: string) {
-    for (const connection of [...this.connections]) if (connection.sessionId === sessionId) connection.ws.close(4401, "session ended");
+  closeSession(sessionId: string, temporary = false) {
+    for (const connection of [...this.connections]) if (connection.sessionId === sessionId) this.closeConnection(connection, temporary);
+  }
+
+  private closeConnection(connection: Connection, temporary: boolean) {
+    connection.ws.close(temporary ? 1013 : 4401, temporary ? "try again later" : "session ended");
+    this.detach(connection);
   }
 
   close() {

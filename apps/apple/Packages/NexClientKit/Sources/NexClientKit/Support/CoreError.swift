@@ -21,8 +21,8 @@ public struct CoreError: Error, LocalizedError, Sendable, Equatable {
 
     /// The stored credential is no longer valid (401/403/409).
     public var invalidatesCredential: Bool { [401, 403, 409].contains(status ?? 0) }
-    /// The signed-in session is over (401 or `identity_unavailable`).
-    public var endsSession: Bool { status == 401 || code == "identity_unavailable" }
+    /// Core explicitly rejected the current login.
+    public var endsSession: Bool { status == 401 }
     public var isCancellation: Bool { kind == .cancelled }
 
     /// Maps any thrown error to a `CoreError`.
