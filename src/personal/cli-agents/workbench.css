@@ -66,9 +66,8 @@
 .na-stage .cli-app .na-nav-icon[aria-pressed="true"]{color:var(--na-accent);background:var(--na-soft)}
 .na-search-clear{display:grid;place-items:center;padding:0;border:0;background:transparent;color:var(--na-muted);cursor:pointer}
 /* a project's + shows while the pointer is on its row */
-.na-stage .cli-app .na-folder-new{width:22px;min-width:22px;height:24px;display:grid;place-items:center;padding:0;border:0;border-radius:5px;background:transparent;color:var(--na-muted);opacity:0}
-.na-folder:hover .na-folder-new,.na-folder:focus-within .na-folder-new{opacity:1}
-@media(hover:none){.na-folder .na-folder-new{opacity:1}}
+.na-stage .cli-app .na-folder-new{width:22px;min-width:22px;height:24px;display:grid;place-items:center;padding:0;border:0;border-radius:5px;background:transparent;color:var(--na-muted)}
+.na-stage .cli-app .na-folder-new:hover,.na-stage .cli-app .na-folder-new:focus-visible{background:var(--na-soft);color:var(--na-accent)}
 .na-folder[draggable="true"]{cursor:grab}.na-folder[data-dragging]{opacity:.45}
 .na-project{border-radius:6px}
 .na-project[data-drop="before"]{box-shadow:inset 0 2px var(--na-accent)}

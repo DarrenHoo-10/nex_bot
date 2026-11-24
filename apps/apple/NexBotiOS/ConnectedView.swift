@@ -7,7 +7,9 @@ struct ConnectedView: View {
     let workspace: WorkspaceStore
     @State private var nav = Navigation()
     @State private var preferences = ContactPreferences()
+    @State private var updater = IOSAppUpdater()
     @State private var update: ClientUpdateOffer?
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("nexbot.skippedUpdate") private var skipped = ""
     @State private var agents: CliAgentsModel
     @Environment(\.openURL) private var openURL
@@ -34,14 +36,20 @@ struct ConnectedView: View {
                     .environment(preferences)
             }
             // iOS cannot install itself: tell the person once per version and link the installer.
-            .task {
-                let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-                if let offer = try? await workspace.client.clientUpdate(platform: "ios", current: current), offer.version != skipped { update = offer }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    if let offer = await updater.checkIfDue(workspace.client), offer.version != skipped {
+                        update = offer
+                    }
+                    try? await Task.sleep(for: .seconds(5 * 60))
+                }
             }
             .alert("新版本 \(update?.version ?? "") 可用", isPresented: Binding(get: { update != nil }, set: { if !$0 { update = nil } })) {
                 Button("下载") { if let url = update?.url { openURL(url) }; update = nil }
                 Button("稍后", role: .cancel) { skipped = update?.version ?? ""; update = nil }
             }
+            .environment(updater)
         #if DEBUG
             .task { await DebugHooks.runCommands(model: model, workspace: workspace, nav: nav) }
         #endif
