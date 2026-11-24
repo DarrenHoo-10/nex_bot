@@ -231,11 +231,6 @@ struct MBDisclosure<Content: View>: View {
     }
 }
 
-func mbFallbackMessage(_ error: Error) -> String {
-    let text = message(of: error)
-    return text.isEmpty ? "操作失败，请重试" : text
-}
-
 #if DEBUG
 extension Notification.Name { static let mbDebug = Notification.Name("nexbot.macB.debug") }
 
