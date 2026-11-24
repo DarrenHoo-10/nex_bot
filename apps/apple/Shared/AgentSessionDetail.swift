@@ -378,6 +378,7 @@ private struct AgentActivity: View {
                 }
             }
             .padding(.top, 6)
+            .frame(maxWidth: 560, alignment: .leading)
         } label: {
             (Text(tools.isEmpty ? "思考" : "\(tools.count) 项操作") + (failed > 0 ? Text(" · \(failed) 项失败").foregroundStyle(Theme.danger) : Text("")))
                 .font(.system(size: 12)).foregroundStyle(Theme.muted)
@@ -406,8 +407,7 @@ private struct AgentToolRow: View {
     }
 
     private func code(_ text: String) -> some View {
-        Text(String(text.prefix(4000))).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        ToolCodeBlock(text: text)
             .background(Theme.wash, in: RoundedRectangle(cornerRadius: 8))
     }
 }

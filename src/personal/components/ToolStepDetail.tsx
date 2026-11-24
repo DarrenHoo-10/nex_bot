@@ -62,7 +62,7 @@ export function toolStepBlocks(tool: string, item: PreviewItem): ToolStepBlock[]
   }
   if (String(item.content ?? "").trim()) {
     const result = resultOf(item);
-    if (!(result.mono && item.status !== "failed" && quietResults.has(tool))) push(resultLabels[tool] ?? "执行结果", result.text, result.mono);
+    if (!(result.mono && item.status !== "failed" && quietResults.has(tool))) push(resultLabels[tool] ?? "执行结果", result.text, result.mono || tool === "device.exec");
   }
   return blocks;
 }

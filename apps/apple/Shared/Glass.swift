@@ -233,6 +233,28 @@ struct OutlineFlow: Layout {
 
 // MARK: - Tool capsule
 
+struct ToolCodeBlock: View {
+    let text: String
+    var maxHeight: CGFloat = 220
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            code
+            ScrollView(.vertical) { code }
+        }
+        .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
+    }
+
+    private var code: some View {
+        Text(verbatim: text)
+            .font(.system(size: 11, design: .monospaced))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+    }
+}
+
 /// The collapsed tool activity: up to three kind icons, `N 项操作` and, in red, ` · M 项失败`.
 struct ToolCapsuleLabel: View {
     let summary: ToolActivity.Summary

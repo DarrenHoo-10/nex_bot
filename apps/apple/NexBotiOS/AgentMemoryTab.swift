@@ -144,18 +144,13 @@ struct PreviewCard: View {
             }
             if let arguments = item.arguments, !arguments.isEmpty {
                 DisclosureGroup("调用参数") {
-                    Text(arguments).font(.system(.caption2, design: .monospaced)).textSelection(.enabled)
-                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    ToolCodeBlock(text: arguments)
                         .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .font(.footnote).tint(Theme.muted)
             }
-            ScrollView(.vertical) {
-                Text(item.content.isEmpty ? "暂无内容" : item.content).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 260)
-            .padding(10).background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            ToolCodeBlock(text: item.content.isEmpty ? "暂无内容" : item.content, maxHeight: 260)
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .padding(12).cardStyle()
         .accessibilityElement(children: .contain).accessibilityLabel("内容预览")
