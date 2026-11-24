@@ -572,8 +572,11 @@ export interface CliOpArgs {
     /** launch options; only sent to executors that list `launchOptions` */
     model?: string;
     effort?: string;
+    /** only sent to executors that list `permissions`; absent means full access for a new session */
+    permissions?: CliPermissionMode;
   };
-  continue: { ref: CliSessionRef; cols?: number; rows?: number; model?: string; effort?: string };
+  /** `permissions` absent: the CLI keeps its own settings */
+  continue: { ref: CliSessionRef; cols?: number; rows?: number; model?: string; effort?: string; permissions?: CliPermissionMode };
   send: { ref: CliSessionRef; text: string };
   /** guidance into a turn that is already running; the device only accepts it
    * while the session has an active turn (workbench plan section 3) */
