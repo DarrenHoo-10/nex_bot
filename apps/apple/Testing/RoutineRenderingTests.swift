@@ -155,13 +155,17 @@ final class JobRenderingTests: XCTestCase {
     @MainActor func testReportCards() async throws {
         let store = try await workspace()
         XCTAssertEqual(store.state?.openJobs(botID: "b1").count, 3)
-        func message(_ id: String, _ job: String, _ state: String, _ content: String) -> AgentMessage {
-            AgentMessage(row: ["id": .string(id), "bot_id": "b1", "role": state == "blocked" ? "system" : "assistant", "content": .string(content), "job_id": .string(job), "job_state": .string(state), "created_at": 1_800_000_001_000])
+        func message(_ id: String, _ job: String, _ task: String, _ state: String, _ content: String) -> AgentMessage {
+            AgentMessage(row: ["id": .string(id), "bot_id": "b1", "task_id": .string(task), "role": state == "blocked" ? "system" : "assistant", "content": .string(content), "job_id": .string(job), "job_state": .string(state), "created_at": 1_800_000_001_000])
         }
+        let question = JobReportCard(message: message("m-question", "j-question", "t1", "question", "后台任务「整理下载文件夹」\n已按类型整理 12 个文件。\n\n下载里的 3 张截图要保留吗？"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
+        let oldRound = JobReportCard(message: message("m-question", "j-question", "previous-round", "question", "上轮提问"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
+        XCTAssertTrue(question.isCurrentReport)
+        XCTAssertFalse(oldRound.isCurrentReport)
         let view = VStack(alignment: .leading, spacing: 14) {
-            JobReportCard(message: message("m-question", "j-question", "question", "后台任务「整理下载文件夹」\n已按类型整理 12 个文件。\n\n下载里的 3 张截图要保留吗？"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
-            JobReportCard(message: message("m-review", "j-review", "ready", "后台任务「写周报」\n周报已写好：本周完成 3 项。"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
-            JobReportCard(message: message("m-blocked", "j-blocked", "blocked", "后台任务「操作屏幕」\n屏幕正被「整理下载文件夹」使用。"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
+            question
+            JobReportCard(message: message("m-review", "j-review", "t2", "ready", "后台任务「写周报」\n周报已写好：本周完成 3 项。"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
+            JobReportCard(message: message("m-blocked", "j-blocked", "t3", "blocked", "后台任务「操作屏幕」\n屏幕正被「整理下载文件夹」使用。"), workspace: store, open: {}, reply: { _ in }) { EmptyView() }
             Spacer()
         }.padding(20).background(Theme.background)
         try await snapshot(view, name: "job-report-cards", requested: nil)

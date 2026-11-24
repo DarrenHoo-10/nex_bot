@@ -59,11 +59,10 @@ struct AgentLaunchDetail: View {
                     if case .failed(let reason) = launch.phase {
                         VStack(alignment: .leading, spacing: 6) {
                             AgentByline(engine: launch.request.engine)
+                            Text(reason).font(.footnote).foregroundStyle(Theme.danger)
                             HStack(spacing: 10) {
-                                Text(reason).font(.footnote).foregroundStyle(Theme.danger)
-                                Spacer()
-                                Button("重试") { model.retryLaunch(launch.id) }.buttonStyle(.bordered)
-                                Button("关闭") { model.dismissLaunch(launch.id) }.buttonStyle(.bordered)
+                                Button("重试") { model.retryLaunch(launch.id) }.buttonStyle(ConversationActionButtonStyle())
+                                Button("关闭") { model.dismissLaunch(launch.id) }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
                             }
                         }
                     } else {

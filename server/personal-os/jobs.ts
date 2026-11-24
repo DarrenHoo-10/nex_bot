@@ -1,6 +1,7 @@
 import { CoreStore, id, now, optionalText, text, type Row } from "./store.ts";
 import type { AgentModule } from "./agents.ts";
 import { resourceNames, waitingKey, type DeviceLeases } from "./device-leases.ts";
+import { publicModelFailure } from "./model-errors.ts";
 
 /**
  * Where a background job stands, derived from its tasks, approvals and reports (never stored), so a restart shows
@@ -12,6 +13,8 @@ export const openStages: JobStage[] = ["approval", "question", "review", "blocke
 const reportStates = ["ready", "question", "blocked", "failed", "dropped"];
 const SUMMARY_LIMIT = 600, QUESTION_LIMIT = 300;
 const clip = (value: string, max: number) => value.length > max ? value.slice(0, max - 1) + "…" : value;
+const reportSummary = (report: Row) => report.automatic === 1 && report.state === "failed"
+  ? publicModelFailure(String(report.summary)) : String(report.summary);
 const localTime = (at: number) => new Date(at).toLocaleString("zh-CN", { hour12: false });
 type Via = "direct" | "owner" | "system";
 
@@ -189,7 +192,7 @@ export class JobModule {
       if (task.status === "cancelled") { this.markStopped(job); return; }
       const existing = this.store.get("SELECT * FROM agent_job_reports WHERE task_id=?", taskId);
       if (existing?.message_id) return;
-      if (task.status === "failed") this.writeReport(job, taskId, { state: "failed", summary: clip(String(task.result_summary || "执行失败"), SUMMARY_LIMIT) }, true);
+      if (task.status === "failed") this.writeReport(job, taskId, { state: "failed", summary: clip(publicModelFailure(String(task.result_summary || "执行失败")), SUMMARY_LIMIT) }, true);
       else if (!existing) this.writeReport(job, taskId, { state: "ready", summary: clip(String(task.result_summary || "已完成"), SUMMARY_LIMIT) }, true);
       const report = this.store.get("SELECT * FROM agent_job_reports WHERE task_id=?", taskId)!;
       const state = String(report.state);
@@ -254,7 +257,7 @@ export class JobModule {
         id: String(job.id), botId: String(job.bot_id), title: String(job.title), stage, taskId: task ? String(task.id) : null, originTaskId: job.origin_task_id ?? null,
         todoId: job.todo_id ?? null, todoVersion: todo ? Number(todo.version) : null, todoStatus: todo ? String(todo.status) : null,
         progress: job.progress ?? null, progressAt: job.progress_at ?? null,
-        latestReport: report ? { id: String(report.id), state: String(report.state), summary: hidden ? "" : String(report.summary), question: hidden ? null : report.question ?? null, waitingFor: report.waiting_for ?? null, automatic: report.automatic === 1, messageId: report.message_id ?? null, createdAt: Number(report.created_at) } : null,
+        latestReport: report ? { id: String(report.id), state: String(report.state), summary: hidden ? "" : reportSummary(report), question: hidden ? null : report.question ?? null, waitingFor: report.waiting_for ?? null, automatic: report.automatic === 1, messageId: report.message_id ?? null, createdAt: Number(report.created_at) } : null,
         createdAt: Number(job.created_at), endedAt: openStages.includes(stage) ? null : Number(job.stopped_at ?? task?.ended_at ?? job.created_at),
       };
     });
@@ -287,11 +290,14 @@ export class JobModule {
   /** Execution details of a job over all its rounds, in the shape of a routine occurrence's. Forgotten rounds are left out. */
   detail(jobId: string) {
     const job = this.row(jobId);
-    const tasks = this.store.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at FROM tasks t WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) ORDER BY created_at,rowid", job.conversation_id);
+    const tasks = this.store.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at FROM tasks t WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) ORDER BY created_at,rowid", job.conversation_id)
+      .map((task) => task.status === "failed" && typeof task.result_summary === "string" ? { ...task, result_summary: publicModelFailure(task.result_summary) } : task);
     const ids = tasks.map((task) => String(task.id)), marks = ids.map(() => "?").join(",");
-    const messages = ids.length ? this.store.all(`SELECT id,task_id,role,content,created_at FROM transcript WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids) : [];
+    const messages = ids.length ? this.store.all(`SELECT id,task_id,role,content,created_at FROM transcript WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)
+      .map((message) => message.role === "system" ? { ...message, content: publicModelFailure(String(message.content)) } : message) : [];
     const steps = ids.length ? this.store.all(`SELECT id,task_id,tool_name,status,created_at FROM tool_calls WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids).map((call) => ({ ...call, summary: String(call.tool_name), preview: "" })) : [];
-    const reports = ids.length ? this.store.all(`SELECT id,task_id,state,summary,question,automatic,message_id,created_at FROM agent_job_reports WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids) : [];
+    const reports = ids.length ? this.store.all(`SELECT id,task_id,state,summary,question,automatic,message_id,created_at FROM agent_job_reports WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)
+      .map((report) => ({ ...report, summary: reportSummary(report) })) : [];
     const current = tasks.at(-1);
     const streaming = current ? this.runtime.workers.get(String(current.id))?.streaming ?? "" : "";
     return { job: this.view(job), task: current ?? null, tasks, messages, steps, reports, streaming };

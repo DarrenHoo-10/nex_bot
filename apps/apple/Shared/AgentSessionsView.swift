@@ -79,15 +79,19 @@ struct AgentSessionsView: View {
             if !linkText.isEmpty { Text(linkText).font(.caption).foregroundStyle(Theme.muted) }
             if model.waitingCount > 0 { CliChip(text: "等你处理 \(model.waitingCount)", tone: .waiting) }
             Spacer()
-            Button { Task { await toggleBell() } } label: {
-                Image(systemName: model.notificationsOn ? "bell.fill" : "bell.slash")
-            }
-            .buttonStyle(.plain).foregroundStyle(model.notificationsOn ? Theme.identityAccent : Theme.muted)
-            .help(model.notificationsOn ? "关闭通知" : "开启通知").accessibilityLabel(model.notificationsOn ? "关闭通知" : "开启通知")
-            Button { sheet = .supervision } label: { Image(systemName: "gearshape") }
-                .buttonStyle(.plain).foregroundStyle(Theme.muted)
-                .help("自动处理设置").accessibilityLabel("自动处理设置")
+            headerActions
         }
+    }
+
+    @ViewBuilder private var headerActions: some View {
+        Button { Task { await toggleBell() } } label: {
+            Image(systemName: model.notificationsOn ? "bell.fill" : "bell.slash")
+        }
+        .buttonStyle(.plain).foregroundStyle(model.notificationsOn ? Theme.identityAccent : Theme.muted)
+        .help(model.notificationsOn ? "关闭通知" : "开启通知").accessibilityLabel(model.notificationsOn ? "关闭通知" : "开启通知")
+        Button { sheet = .supervision } label: { Image(systemName: "gearshape") }
+            .buttonStyle(.plain).foregroundStyle(Theme.muted)
+            .help("自动处理设置").accessibilityLabel("自动处理设置")
     }
 
     private var banner: some View {
@@ -150,12 +154,22 @@ struct AgentSessionsView: View {
     #else
     private var layout: some View {
         VStack(spacing: 10) {
-            header
+            if !linkText.isEmpty || model.waitingCount > 0 {
+                HStack(spacing: 8) {
+                    if !linkText.isEmpty { Text(linkText).font(.caption).foregroundStyle(Theme.muted) }
+                    if model.waitingCount > 0 { CliChip(text: "等你处理 \(model.waitingCount)", tone: .waiting) }
+                }
+            }
             banner
             list { key in model.select(key); pushed = key }
         }
         .padding(.horizontal, 16).padding(.top, 8)
         .background { WorkspaceSurface(kind: .stage) }
+        .navigationTitle("NexAgent")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) { headerActions }
+        }
         .navigationDestination(item: $pushed) { key in
             Group {
                 if let launch = model.launches.first(where: { $0.key == key }) {

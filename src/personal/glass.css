@@ -94,12 +94,10 @@
   transition: opacity .25s ease, transform .25s ease, visibility 0s;
 }
 .rk-workspace div.contact-heading.who { padding: 5px 12px; }
-.rk-workspace .contact-heading.who > span { display: block; margin: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; line-height: 1.4; color: var(--muted-foreground); }
-.rk-workspace .contact-heading.who > span.active-phrase { color: var(--identity-accent); font-weight: 550; }
-.app.rk-workspace[data-right="open"] .contact-heading.clickable { opacity: 0; transform: translateY(-8px); visibility: hidden; pointer-events: none; transition: opacity .25s ease, transform .25s ease, visibility 0s .25s; }
 .rk-workspace .header-actions .bt-round { width: 34px; height: 34px; flex-basis: 34px; border-radius: 50%; color: var(--secondary-foreground); }
 .rk-workspace .header-actions .bt-round:hover { background: var(--glass-strong); }
 .rk-workspace .header-actions .bt-round.selected { background: var(--foreground); color: var(--background); border-color: transparent; }
+.rk-workspace .header-actions .assistant-inspector-toggle[aria-expanded="true"] { color: var(--identity-accent); background: var(--secondary); border-color: var(--identity-accent); }
 .rk-workspace .memory-pill { display: inline-flex; align-items: center; gap: 5px; max-width: 240px; padding: 5px 12px; border: 0; border-radius: 999px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--glass-strong); color: var(--identity-accent); font-size: 11.5px; box-shadow: var(--shadow-card); }
 
 .rk-workspace .update-banner, .rk-workspace .error-banner {
@@ -268,20 +266,11 @@
 .rk-workspace .inspector-heading { display: flex; align-items: center; justify-content: flex-end; flex: none; height: 34px; padding: 0; }
 .rk-workspace .inspector-heading .icon-button { width: 30px; height: 30px; flex-basis: 30px; border-radius: 50%; }
 .rk-workspace .profile-top { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 0; padding: 0 0 14px; text-align: center; }
-/* The docked panel closes from its edge handle; the heading's close button only serves the overlay drawer. */
+/* The docked panel closes from the conversation header. */
 @media (min-width: 1041px) {
   .rk-workspace .inspector-heading { display: none; }
   .rk-workspace .inspector.ds-drawer { padding-top: 30px; }
 }
-/* Edge handle: a tab on the panel's left edge when open, on the window edge when closed. */
-.rk-workspace .panel-handle {
-  position: absolute; z-index: 7; top: 50%; right: calc(var(--gap) * -1); width: 22px; height: 56px; padding: 0;
-  display: grid; place-items: center; transform: translateY(-50%);
-  border-right: 0; border-radius: 14px 0 0 14px; color: var(--muted-foreground);
-  transition: color .15s ease, width .2s var(--ease), background-color .15s ease, right .36s var(--ease);
-}
-.rk-workspace .panel-handle:hover { width: 26px; color: var(--foreground); background: var(--glass-strong); }
-.rk-workspace .panel-handle:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .rk-workspace .profile-avatar-button { width: auto; height: auto; padding: 0; border-radius: 50%; background: none; }
 .rk-workspace .profile-avatar-button:hover { background: none; }
 .rk-workspace .hero-halo { position: relative; display: grid; place-items: center; width: 132px; height: 132px; }
@@ -329,6 +318,7 @@
   .rk-workspace .inspector.ds-drawer > * { min-width: 244px; }
 }
 @media (max-width: 1040px) {
+  .rk-workspace[data-page="agent"] > main > header { grid-template-columns: auto minmax(0, 1fr) auto; }
   .app.rk-workspace, .app.rk-workspace[data-right="closed"], .app.rk-workspace[data-right="open"] { --rw: 0px; }
   .rk-workspace .inspector.ds-drawer { position: fixed; z-index: 40; top: 14px; right: 14px; bottom: 14px; width: min(320px, calc(100vw - 28px)); background: var(--drawer-surface); box-shadow: var(--shadow-float); }
   .rk-workspace .inspector.ds-drawer > * { min-width: 0; }
@@ -342,7 +332,6 @@
   .rk-workspace .contact-sidebar, .app.rk-workspace[data-left="closed"] .contact-sidebar { border-radius: 0 22px 22px 0; background: var(--drawer-surface); padding: 12px 10px 10px; }
   .rk-workspace .contact-sidebar.is-open { position: fixed; inset: 0 auto 0 0; z-index: 60; width: 278px; }
   .rk-workspace .rail-toggle { display: none; }
-  .rk-workspace .contact-heading.who > span { max-width: 130px; }
   .rk-workspace .header-actions .memory-pill { display: none; }
   .rk-workspace .transcript { padding: 8px 12px 16px; }
   .rk-workspace .message.user .message-body { max-width: 86%; }

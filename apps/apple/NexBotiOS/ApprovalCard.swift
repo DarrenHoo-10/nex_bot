@@ -27,15 +27,15 @@ struct ApprovalCard: View {
                 }
             }
             HStack(spacing: 8) {
-                Button("允许一次") { run(true) }.buttonStyle(PillButtonStyle(primary: true))
+                Button("允许一次") { run(true) }.buttonStyle(ConversationActionButtonStyle())
                 if approval.rememberLabel != nil {
-                    Button("始终允许") { run(true, remember: true) }.buttonStyle(PillButtonStyle())
+                    Button("始终允许") { run(true, remember: true) }.buttonStyle(ConversationActionButtonStyle())
                 }
-                Button("拒绝") { run(false) }.buttonStyle(PillButtonStyle())
-                if busy { ProgressView() }
+                Button("拒绝") { run(false) }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
             }
             .disabled(busy)
             .padding(.top, 2)
+            if busy { ProgressView().controlSize(.small) }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

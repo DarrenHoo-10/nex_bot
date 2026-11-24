@@ -2,6 +2,7 @@
 // answered; the others only say how they ended.
 import { useState } from "react";
 import { Check, CheckCheck, X } from "lucide-react";
+import { ConversationActionButton } from "../components/ConversationActionButton";
 import type { CliAnswerDecision } from "../../../shared/cli-agents";
 import { cliErrorText, CliApiError } from "./api";
 import { answersComplete, answersFor, CARD_STATE_TEXT, cardState, toggleChoice, type RequestRecord, type Selection } from "./requests";
@@ -76,15 +77,15 @@ export function RequestCard({ record, now, onAnswer }: RequestCardProps) {
       ) : null}
       {pending ? (
         <div className="cli-request-actions">
-          <button type="button" disabled={!!busy} onClick={() => void run("deny")}><X size={14} />{busy === "deny" ? "正在拒绝…" : "拒绝"}</button>
+          <ConversationActionButton tone="dark" disabled={!!busy} onClick={() => void run("deny")}><X size={14} aria-hidden="true"/>{busy === "deny" ? "正在拒绝…" : "拒绝"}</ConversationActionButton>
           {canAlways ? (
-            <button type="button" disabled={!!busy} onClick={() => void run("allow", true)}>
-              <CheckCheck size={14} />{busy === "always" ? "正在允许…" : "本会话总是允许"}
-            </button>
+            <ConversationActionButton disabled={!!busy} onClick={() => void run("allow", true)}>
+              <CheckCheck size={14} aria-hidden="true"/>{busy === "always" ? "正在允许…" : "本会话总是允许"}
+            </ConversationActionButton>
           ) : null}
-          <button type="button" className="primary" disabled={!!busy || !complete} onClick={() => void run("allow")}>
-            <Check size={14} />{busy === "allow" ? (question ? "正在提交…" : "正在允许…") : question ? "提交" : "允许"}
-          </button>
+          <ConversationActionButton disabled={!!busy || !complete} onClick={() => void run("allow")}>
+            <Check size={14} aria-hidden="true"/>{busy === "allow" ? (question ? "正在提交…" : "正在允许…") : question ? "提交" : "允许"}
+          </ConversationActionButton>
         </div>
       ) : null}
       {error ? <small role="alert" className="cli-composer-error">{error}</small> : null}

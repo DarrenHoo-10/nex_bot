@@ -1,7 +1,7 @@
 // A new session, started from the same message box every session has (attachments, goal mode, skills, model):
 // the folder, CLI and worktree sit in a row above it, and sending starts the session with that message.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, GitBranch, ShieldAlert, ShieldCheck } from "lucide-react";
+import { GitBranch, PanelLeftOpen, ShieldAlert, ShieldCheck } from "lucide-react";
 import type { CliDeviceView, CliEngine, CliPermissionMode, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import type { LaunchChoice } from "./CliModelMenu";
@@ -23,11 +23,11 @@ export interface NewSessionComposerProps {
   recents(deviceId: string): readonly string[];
   source(deviceId: string): DirectorySource;
   onLaunch(request: NewSessionRequest): void;
-  /** narrow screens: back to the session list */
-  onBack?(): void;
+  /** Narrow screens show the full-width session directory. */
+  onShowDirectory(): void;
 }
 
-export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recents, source, onLaunch, onBack }: NewSessionComposerProps) {
+export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recents, source, onLaunch, onShowDirectory }: NewSessionComposerProps) {
   const firstReady = devices.find((device) => !deviceBlocker(device));
   const [deviceId, setDeviceId] = useState(() => (initialDeviceId && devices.some((device) => device.id === initialDeviceId) ? initialDeviceId : firstReady?.id ?? devices[0]?.id ?? ""));
   const device = devices.find((entry) => entry.id === deviceId);
@@ -75,7 +75,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   return (
     <section className="cli-pane na-new" aria-label="新建会话" data-testid="cli-new-session">
       <header className="cli-pane-head">
-        {onBack ? <button type="button" className="icon-button cli-back" aria-label="返回会话列表" onClick={onBack}><ArrowLeft size={18}/></button> : null}
+        <button type="button" className="icon-button cli-back" aria-label="打开会话目录" onClick={onShowDirectory}><PanelLeftOpen size={19}/></button>
         <div className="cli-pane-title"><strong>新建会话</strong></div>
       </header>
       <div className="na-new-body">

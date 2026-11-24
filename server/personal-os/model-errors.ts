@@ -1,3 +1,11 @@
+export const MODEL_CONNECTION_FAILURE = "模型连接异常";
+
+/** Old workers persisted the SDK's status and response body as the error text. */
+export function publicModelFailure(detail: string): string {
+  return /^5\d{2}\s*:?\s*\{\s*(?:"type"\s*:\s*"error"\s*,\s*)?"error"\s*:/u.test(detail.trimStart())
+    ? MODEL_CONNECTION_FAILURE : detail;
+}
+
 // Report bounded transport metadata, never arbitrary exception messages,
 // request headers, bodies, URL queries or credentials from a fetch cause.
 export function modelConnectionError(error: unknown, url: URL): Error {

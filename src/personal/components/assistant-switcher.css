@@ -1,0 +1,64 @@
+.rk-workspace .assistant-switch-trigger.who { padding: 4px 10px 4px 5px; gap: 7px; }
+.rk-workspace .assistant-switch-trigger strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rk-workspace .assistant-switch-trigger[aria-expanded="true"] { border-color: var(--identity-accent, var(--ring)); }
+
+.assistant-switch-panel {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: max-content;
+  max-width: min(250px, calc(100vw - 24px));
+  padding: 4px;
+  border: 1px solid var(--glass-edge, var(--border));
+  border-radius: 15px;
+  background: var(--drawer-surface, var(--card));
+  color: var(--foreground);
+  box-shadow: var(--shadow-float, 0 12px 28px #10192724);
+  overflow: hidden;
+}
+.assistant-switch-list {
+  box-sizing: border-box;
+  position: relative;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;
+  outline: none;
+  touch-action: pan-y;
+}
+.assistant-switch-list[data-loop="true"] {
+  --assistant-scroll-inset: calc(var(--assistant-leading-rows) * var(--assistant-row));
+  height: calc(var(--assistant-visible-rows) * var(--assistant-row));
+  padding-block: var(--assistant-scroll-inset) calc(var(--assistant-trailing-rows) * var(--assistant-row));
+  scroll-padding-block-start: var(--assistant-scroll-inset);
+}
+.assistant-switch-option {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: var(--assistant-row);
+  padding: 0 8px;
+  border-radius: 11px;
+  scroll-snap-align: start;
+  cursor: pointer;
+  user-select: none;
+}
+.assistant-switch-trigger > .agent-glyph, .assistant-switch-option > .agent-glyph { flex: none; }
+.assistant-switch-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.assistant-switch-option[data-centered] { background: var(--secondary); }
+.assistant-switch-list:focus-visible .assistant-switch-option[data-centered] { outline: 2px solid var(--ring); outline-offset: -2px; }
+@media (hover: hover) {
+  .assistant-switch-option:hover:not([data-centered]) { background: var(--wash, var(--secondary)); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .assistant-switch-panel:popover-open { animation: assistant-switch-open .16s ease-out; }
+  .assistant-switch-option { transition: background-color .16s ease; }
+}
+@keyframes assistant-switch-open {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

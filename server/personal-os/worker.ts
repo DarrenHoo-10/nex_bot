@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createAgentSession, DefaultResourceLoader, defineTool, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type FileEntry } from "@earendil-works/pi-coding-agent";
 import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply } from "./contracts.ts";
-import { modelConnectionError } from "./model-errors.ts";
+import { MODEL_CONNECTION_FAILURE, modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
 import { brokerDescription, brokerParameters } from "./broker-tool.ts";
 import { Check, Errors } from "typebox/value";
@@ -475,6 +475,7 @@ async function main(value: WorkerConfig) {
     await session.agent.continue();
     const last = manager.buildSessionContext().messages.at(-1);
     if (last?.role !== "assistant" || last.stopReason !== "stop") {
+      if (httpFailure && httpFailure.status >= 500) throw new Error(MODEL_CONNECTION_FAILURE);
       const detail = last?.role === "assistant" ? last.errorMessage ?? "Model did not finish" : "Model did not finish";
       if (httpFailure?.status === 404) throw new Error(`模型服务返回 404。请求地址：${httpFailure.address}。请检查 API 基础地址（OpenAI 兼容地址通常包含 /v1）、API 协议和模型 ID。服务响应：${detail}`);
       throw requestFailure ?? new Error(detail);

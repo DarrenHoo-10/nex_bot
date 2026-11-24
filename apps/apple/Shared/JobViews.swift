@@ -36,7 +36,10 @@ struct JobReportCard<Media: View>: View {
     @State private var feedback = ""
 
     private var job: Job? { message.jobID.flatMap { workspace.state?.job($0) } }
-    private var latest: Bool { job?.latestReport?.messageID == message.id }
+    var isCurrentReport: Bool {
+        guard let taskID = job?.taskID else { return false }
+        return taskID == message.taskID && job?.latestReport?.messageID == message.id
+    }
     private var threadColor: Color {
         let palette: [UInt32] = [0x438ece, 0x369f96, 0x9472cf, 0xcc9141]
         let digit = message.jobID?.first?.hexDigitValue ?? 0
@@ -64,7 +67,7 @@ struct JobReportCard<Media: View>: View {
             media()
             let body = AttachmentLink.stripped(message.jobReportBody).trimmingCharacters(in: .whitespacesAndNewlines)
             if !body.isEmpty { MarkdownText(source: body) }
-            if latest, let job, job.stage == "review", job.todoID != nil { actions(job) }
+            if isCurrentReport, let job, job.stage == "review", job.todoID != nil { actions(job) }
             if let error { Text(error).font(.caption).foregroundStyle(Theme.danger).textSelection(.enabled) }
         }
         .padding(.horizontal, 15).padding(.vertical, 12)
@@ -76,7 +79,7 @@ struct JobReportCard<Media: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             report
-            if latest, let job, job.isStoppable { actions(job) }
+            if isCurrentReport, let job, job.isStoppable { actions(job) }
         }
         .alert("继续修改", isPresented: $revising) {
             TextField("告诉 AI 要调整什么", text: $feedback)
@@ -100,15 +103,15 @@ struct JobReportCard<Media: View>: View {
         HStack(spacing: 10) {
             if job.stage == "question" {
                 Button("回复") { reply(job) }
-                    .buttonStyle(JobResponseButtonStyle(primary: true))
+                    .buttonStyle(ConversationActionButtonStyle(size: .compact))
             }
             if job.stage == "review", job.todoID != nil {
-                Button("验收") { run { try await workspace.acceptJob(job) } }.buttonStyle(RoutineButtonStyle(primary: true))
-                Button("修改") { revising = true }.buttonStyle(RoutineButtonStyle())
+                Button("验收") { run { try await workspace.acceptJob(job) } }.buttonStyle(ConversationActionButtonStyle())
+                Button("修改") { revising = true }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
             }
             if job.isStoppable {
                 Button("停止") { run { try await workspace.stopJob(job.id) } }
-                    .buttonStyle(JobResponseButtonStyle(primary: false))
+                    .buttonStyle(ConversationActionButtonStyle(tone: .dark, size: .compact))
             }
             if busy { ProgressView().controlSize(.small) }
         }
@@ -121,25 +124,6 @@ struct JobReportCard<Media: View>: View {
             defer { busy = false }
             do { try await action() } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }
         }
-    }
-}
-
-private struct JobResponseButtonStyle: ButtonStyle {
-    let primary: Bool
-    @Environment(\.isEnabled) private var enabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        let surface = primary ? (configuration.isPressed ? 0xecebef : 0xffffff) : (configuration.isPressed ? 0x19161f : 0x221e29)
-        configuration.label
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color(hex: primary ? 0x18151d : 0xf6f4f8))
-            .padding(.horizontal, 22)
-            .frame(minWidth: 84, minHeight: 44)
-            .background(Color(hex: UInt32(surface)), in: shape)
-            .overlay { shape.strokeBorder(primary ? Color.black.opacity(0.10) : Color(hex: 0x3a3640)) }
-            .contentShape(shape)
-            .opacity(enabled ? 1 : 0.5)
     }
 }
 

@@ -1,6 +1,7 @@
 // A session that is still being started, laid out like any conversation: the user's first message,
 // the agent's reply slot saying it is being handled (or why it did not start), and the message box.
 import { ArrowLeft, ArrowUp, Plus, RotateCcw, X } from "lucide-react";
+import { ConversationActionButton } from "../components/ConversationActionButton";
 import { HarnessMark } from "./tokendance/HarnessMark";
 import { EchoMessage, WorkingRow } from "./TranscriptView";
 import type { Launch } from "./use-launches";
@@ -25,8 +26,8 @@ export function LaunchPane({ launch, onBack, onRetry, onDismiss }: { launch: Lau
             <div className="na-byline"><HarnessMark agentId={launch.engine}/><b>{AGENT_LABEL[launch.engine]}</b></div>
             <div className="cli-notice na-launch-error" data-level="error" role="alert">
               <span>{launch.error}</span>
-              <button type="button" className="text-button" onClick={onRetry}><RotateCcw size={13}/>重试</button>
-              <button type="button" className="text-button" onClick={onDismiss}><X size={13}/>关闭</button>
+              <ConversationActionButton onClick={onRetry}><RotateCcw size={13} aria-hidden="true"/>重试</ConversationActionButton>
+              <ConversationActionButton tone="dark" onClick={onDismiss}><X size={13} aria-hidden="true"/>关闭</ConversationActionButton>
             </div>
           </div> : <WorkingRow engine={launch.engine} label="执行中" byline/>}
         </div></div>
