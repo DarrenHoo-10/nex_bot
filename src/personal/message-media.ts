@@ -1,4 +1,4 @@
-import { CLI_IMAGE_PREFIX, cliImageId } from "../../shared/cli-images";
+import { CLI_IMAGE_PREFIX, cliImageId, mapCliImageLinks } from "../../shared/cli-images";
 
 /**
  * Chat messages carry uploads and generated images as Markdown attachment
@@ -24,6 +24,7 @@ export interface ParsedMessage {
 
 const IMAGE_EXTENSIONS = new Set(["jpeg", "jpg", "png", "webp"]);
 const IMAGE_MARKDOWN = /!\[([^\]\n]*)\]\(\s*(\/api\/(?:attachments|cli-agents\/images)\/)([A-Za-z0-9-]+)(?:\?[^)\s]*)?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g;
+const STANDALONE_CLI_IMAGE = /^\s*(?:https?:\/\/[^/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f-]+)(?:\?ticket=[^\s)]+)?\s*$/;
 const ATTACHMENT_LINK = /\[([^\]\n]*)\]\(\s*\/api\/attachments\/([A-Za-z0-9-]+)(?:\?[^)\s]*)?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g;
 const DOWNLOAD_LABEL = /^(?:下载|下载图片|下载原图|保存图片|download(?:\s+image)?|save(?:\s+image)?)$/i;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
@@ -70,7 +71,8 @@ function makeImage(id: string, label: string, cli: boolean): MessageImage {
 type CollectImage = (id: string, label: string, cli?: boolean) => void;
 
 function transformProse(segment: string, collect: CollectImage, seen: Set<string>, includeCli: boolean): string {
-  let output = segment.replace(IMAGE_MARKDOWN, (match, label: string, prefix: string, id: string) => {
+  const normalized = includeCli ? mapCliImageLinks(segment, id => CLI_IMAGE_PREFIX + id) : segment;
+  let output = normalized.replace(IMAGE_MARKDOWN, (match, label: string, prefix: string, id: string) => {
     const cli = prefix === CLI_IMAGE_PREFIX;
     if (cli && (!includeCli || !cliImageId(prefix + id))) return match;
     collect(id, label, cli);
@@ -139,6 +141,12 @@ export function parseMessageMedia(value: string, includeCli = false): ParsedMess
     }
     if (INDENTED_CODE.test(line)) {
       lines.push(line);
+      continue;
+    }
+    const standalone = includeCli ? STANDALONE_CLI_IMAGE.exec(line) : null;
+    const image = standalone && cliImageId(standalone[1]);
+    if (image) {
+      collect(image, "图片", true);
       continue;
     }
     lines.push(transformLine(line, collect, seen, includeCli));

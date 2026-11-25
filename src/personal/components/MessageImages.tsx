@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Download, ImageOff, Loader2 } from "lucide-react";
 import { desktop } from "../api";
@@ -38,9 +38,12 @@ function useMessageImage(image: MessageImage, tile: RefObject<HTMLButtonElement 
   return { source, failed, setFailed };
 }
 
-function MessageImageTile({ image, onDelete }: { image: MessageImage; onDelete?: (image: MessageImage) => Promise<void> }) {
+function MessageImageTile({ image, fitImage, onDelete }: { image: MessageImage; fitImage: boolean; onDelete?: (image: MessageImage) => Promise<void> }) {
   const tile = useRef<HTMLButtonElement>(null);
   const { source, failed, setFailed } = useMessageImage(image, tile);
+  const [dimensions, setDimensions] = useState<{ source: string; ratio: number }>();
+  const ratio = !failed && dimensions?.source === source ? dimensions?.ratio : undefined;
+  const loading = !failed && (!source || (fitImage && ratio === undefined));
   const menuRef = useRef<HTMLDivElement>(null);
   const longPress = useRef<{ timer: number; x: number; y: number } | undefined>(undefined);
   const suppressClick = useRef(0);
@@ -153,9 +156,10 @@ function MessageImageTile({ image, onDelete }: { image: MessageImage; onDelete?:
     <button
       ref={tile}
       type="button"
-      className={`message-image ${source ? "is-loaded" : ""} ${failed ? "is-failed" : ""}`}
-      aria-label={failed ? `图片无法显示：${image.name}` : source ? `查看图片 ${image.name}` : `正在加载图片 ${image.name}`}
-      aria-busy={!source && !failed ? true : undefined}
+      className={`message-image ${source ? "is-loaded" : ""} ${failed ? "is-failed" : ""} ${ratio !== undefined ? "is-fitted" : ""}`}
+      style={ratio !== undefined ? { "--message-image-ratio": ratio } as CSSProperties : undefined}
+      aria-label={failed ? `图片无法显示：${image.name}` : loading ? `正在加载图片 ${image.name}` : `查看图片 ${image.name}`}
+      aria-busy={loading || undefined}
       title={failed ? image.name : "查看图片"}
       onClick={() => {
         if (Date.now() < suppressClick.current) return;
@@ -179,9 +183,13 @@ function MessageImageTile({ image, onDelete }: { image: MessageImage; onDelete?:
       onPointerLeave={clearLongPress}
       onDragStart={(event) => event.preventDefault()}
     >
-      {failed ? <span className="message-image-failed"><ImageOff size={20}/><span>{image.name}</span></span>
-        : source ? <img src={source} alt={image.alt} loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)}/>
-          : <span className="message-image-loading" role="status" aria-label="正在加载图片"><Loader2 size={18}/></span>}
+      {failed ? <span className="message-image-failed"><ImageOff size={20}/><span>{image.name}</span></span> : <>
+        {source && <img src={source} alt={image.alt} loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)}
+          onLoad={fitImage ? ({ currentTarget: image }) => {
+            if (image.naturalWidth && image.naturalHeight) setDimensions({ source, ratio: image.naturalWidth / image.naturalHeight });
+          } : undefined}/>}
+        {loading && <span className="message-image-loading" role="status" aria-label="正在加载图片"><Loader2 size={18}/></span>}
+      </>}
     </button>
 
     {menu && position ? createPortal(
@@ -195,7 +203,7 @@ function MessageImageTile({ image, onDelete }: { image: MessageImage; onDelete?:
   </>;
 }
 
-export function MessageImages({ images, onDelete }: { images: readonly MessageImage[]; onDelete?: (image: MessageImage) => Promise<void> }) {
+export function MessageImages({ images, fitImage = false, onDelete }: { images: readonly MessageImage[]; fitImage?: boolean; onDelete?: (image: MessageImage) => Promise<void> }) {
   if (!images.length) return null;
-  return <div className="message-media">{images.map((image) => <MessageImageTile key={image.id} image={image} onDelete={onDelete}/>)}</div>;
+  return <div className="message-media">{images.map((image) => <MessageImageTile key={image.id} image={image} fitImage={fitImage} onDelete={onDelete}/>)}</div>;
 }

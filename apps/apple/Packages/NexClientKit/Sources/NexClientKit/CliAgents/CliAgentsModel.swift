@@ -15,6 +15,7 @@ public final class CliAgentsModel {
         public var more = false
         public var loaded = false
         public var loadingOlder = false
+        public var olderError: String?
         public var translationEnabled = false
         public var error: String?
         public init() {}
@@ -227,6 +228,8 @@ public final class CliAgentsModel {
             openGeneration[key] = nil
             cachedTails[key] = nil
             if var cached = transcripts[key], cached.loaded {
+                cached.loadingOlder = false
+                cached.olderError = nil
                 if cached.items.count > 200 { cached.items = Array(cached.items.suffix(200)); cached.more = true }
                 transcripts[key] = cached
                 closedTranscripts[key] = Date()
@@ -280,7 +283,7 @@ public final class CliAgentsModel {
     func fillEarlierTurns(_ key: CliSessionKey) async {
         for _ in 0..<6 {
             let t = transcript(key)
-            guard subscribed[key] != nil, t.more, t.error == nil, CliTranscript.userTurns(t.items) < 3 else { return }
+            guard subscribed[key] != nil, t.more, t.error == nil, t.olderError == nil, CliTranscript.userTurns(t.items) < 3 else { return }
             await loadOlder(key)
         }
     }
@@ -288,15 +291,26 @@ public final class CliAgentsModel {
     public func loadOlder(_ key: CliSessionKey) async {
         var t = transcript(key)
         guard t.more, !t.loadingOlder, let first = t.items.first else { return }
-        t.loadingOlder = true; transcripts[key] = t
+        t.loadingOlder = true
+        t.olderError = nil
+        transcripts[key] = t
+        let generation = openGeneration[key]
+        defer {
+            if openGeneration[key] == generation {
+                transcripts[key]?.loadingOlder = false
+            }
+        }
         do {
             let page = try await clientProvider().cliItems(key: key, before: first.id)
+            guard openGeneration[key] == generation, subscribed[key] != nil else { return }
             var next = transcript(key)
-            next.items = CliTranscript.prepend(next.items, page.items); next.more = page.more; next.loadingOlder = false; next.error = nil
+            guard next.items.first?.id == first.id else { return }
+            next.items = CliTranscript.prepend(next.items, page.items)
+            next.more = page.more
             transcripts[key] = next
         } catch {
-            var next = transcript(key); next.loadingOlder = false; next.error = CliErrorText.text(for: error, fallback: "读取失败")
-            transcripts[key] = next
+            guard openGeneration[key] == generation, subscribed[key] != nil, transcript(key).items.first?.id == first.id else { return }
+            transcripts[key]?.olderError = CliErrorText.text(for: error, fallback: "更早的记录读取失败")
         }
     }
 

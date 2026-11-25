@@ -208,26 +208,49 @@ struct DocumentCard<Content: View>: View {
 /// Chips that wrap onto further rows.
 struct OutlineFlow: Layout {
     var spacing: CGFloat = 6
+    var trailing = false
+
+    private struct Row {
+        var tiles: [(index: Int, size: CGSize)] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0, widest: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
-            if x > 0, x + size.width > width { x = 0; y += row + spacing; row = 0 }
-            x += size.width + spacing; row = max(row, size.height); widest = max(widest, x - spacing)
-        }
-        return CGSize(width: proposal.width ?? widest, height: y + row)
+        let rows = rows(for: proposal.width ?? .infinity, subviews: subviews)
+        let height = rows.reduce(CGFloat.zero) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * spacing
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
-            if x > 0, x + size.width > bounds.width { x = 0; y += row + spacing; row = 0 }
-            subview.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y), proposal: ProposedViewSize(width: min(size.width, bounds.width), height: size.height))
-            x += size.width + spacing; row = max(row, size.height)
+        var y = bounds.minY
+        for row in rows(for: bounds.width, subviews: subviews) {
+            var x = trailing ? bounds.maxX - row.width : bounds.minX
+            for tile in row.tiles {
+                subviews[tile.index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(tile.size))
+                x += tile.size.width + spacing
+            }
+            y += row.height + spacing
         }
+    }
+
+    private func rows(for width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil))
+            let tile = CGSize(width: min(size.width, width), height: size.height)
+            if !row.tiles.isEmpty && row.width + spacing + tile.width > width {
+                rows.append(row)
+                row = Row()
+            }
+            if !row.tiles.isEmpty { row.width += spacing }
+            row.tiles.append((index, tile))
+            row.width += tile.width
+            row.height = max(row.height, tile.height)
+        }
+        if !row.tiles.isEmpty { rows.append(row) }
+        return rows
     }
 }
 

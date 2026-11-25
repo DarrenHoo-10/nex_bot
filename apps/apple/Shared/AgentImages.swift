@@ -100,15 +100,26 @@ struct AgentImageDrafts: View {
 struct AgentImageMessage: View {
     let text: String
     let load: (String) async throws -> Data
-    private static let pattern = /!\[([^\]\n]*)\]\((\/api\/cli-agents\/images\/[0-9a-f-]{36})\)/
+    private static let pattern = /!\[([^\]\n]*)\]\((?:https?:\/\/[^\/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?ticket=[^)\s]+)?\)/
+    private static let standalone = /(?m)^[ \t]*(?:https?:\/\/[^\/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?ticket=[^\s)]+)?[ \t]*$/
 
     var body: some View {
-        let images = text.matches(of: Self.pattern)
-        let caption = text.replacing(Self.pattern, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutMarkdown = text.replacing(Self.pattern, with: "")
+        let matches = text.matches(of: Self.pattern).map {
+            (name: String($0.output.1), path: String($0.output.2), start: $0.range.lowerBound)
+        } + text.matches(of: Self.standalone).map {
+            (name: "图片", path: String($0.output.1), start: $0.range.lowerBound)
+        }
+        var seen = Set<String>()
+        let images = matches.sorted { $0.start < $1.start }.filter { seen.insert($0.path).inserted }
+        let caption = withoutMarkdown.replacing(Self.standalone, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         VStack(alignment: .trailing, spacing: 6) {
-            ForEach(Array(images.enumerated()), id: \.offset) { _, match in
-                let path = String(match.output.2)
-                AgentImagePreview(name: String(match.output.1), path: path, load: load).id(path)
+            if !images.isEmpty {
+                OutlineFlow(spacing: 6, trailing: true) {
+                    ForEach(images, id: \.path) { image in
+                        AgentImagePreview(name: image.name, path: image.path, load: load)
+                    }
+                }
             }
             if !caption.isEmpty {
                 Text(caption).font(.system(size: 14)).textSelection(.enabled)
@@ -128,16 +139,35 @@ private struct AgentImagePreview: View {
     @State private var failed = false
     @State private var open = false
 
+    private var bounds: CGSize {
+        #if os(iOS)
+        CGSize(width: 36, height: 36)
+        #else
+        CGSize(width: 240, height: 160)
+        #endif
+    }
+
+    private var cornerRadius: CGFloat { bounds.width <= 36 ? 5 : 12 }
+
     var body: some View {
         Button { open = true } label: {
-            RoundedRectangle(cornerRadius: 12).fill(Theme.card)
-                .overlay {
-                    if let thumbnail { Image(thumbnail, scale: 1, label: Text(name)).resizable().scaledToFit() }
-                    else if failed { Image(systemName: "photo").foregroundStyle(Theme.muted) }
-                    else { ProgressView().controlSize(.small) }
+            Group {
+                if let thumbnail {
+                    let width = CGFloat(thumbnail.width)
+                    let height = CGFloat(thumbnail.height)
+                    let scale = min(bounds.width / width, bounds.height / height)
+                    Image(thumbnail, scale: 1, label: Text(name)).resizable()
+                        .frame(width: width * scale, height: height * scale)
+                } else {
+                    RoundedRectangle(cornerRadius: cornerRadius).fill(Theme.card)
+                        .overlay {
+                            if failed { Image(systemName: "photo").foregroundStyle(Theme.muted) }
+                            else { ProgressView().controlSize(.small) }
+                        }
+                        .frame(width: bounds.width, height: bounds.height)
                 }
-                .frame(width: 240, height: 160)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         }
         .buttonStyle(.plain)
         .disabled(thumbnail == nil)

@@ -141,6 +141,7 @@ export function useLaunches(sessions: readonly CliSessionView[], onSettled?: () 
             const references: string[] = [];
             for (const entry of attempt.files) references.push(await fileReference(entry, key, upload));
             const text = [launch.message.trim(), ...references].filter(Boolean).join("\n\n");
+            echoes.current.set(key, { text, at: launch.createdAt });
             await sendMessage(key, text, { delivery: "send", clientMessageId: attempt.clientMessageId, requestId: attempt.sendRequestId });
             break;
           } catch (cause) {

@@ -127,7 +127,7 @@ export function ReplyText({ source, supplied, local = true, core, actions, onBra
   const text = media.images.length ? media.text : shown;
   const CopyIcon = copied.state === "copied" ? Check : copied.state === "failed" ? X : Copy;
   return <>
-    <MessageImages images={media.images}/>
+    <MessageImages images={media.images} fitImage/>
     {text ? <Suspense fallback={<p className="cli-plain">{text}</p>}><RichText value={text}/></Suspense> : null}
     {translation ? <button type="button" className="text-button na-original" onClick={() => setOriginal(!original)}>
       <Languages size={12}/>{original ? "查看中文" : "查看原文"}
@@ -217,7 +217,7 @@ function UserMessageContent({ text }: { text: string }) {
   const media = useMemo(() => parseMessageMedia(text, true), [text]);
   const caption = media.images.length ? media.text : text;
   return <>
-    <MessageImages images={media.images}/>
+    <MessageImages images={media.images} fitImage/>
     {caption ? <div className="cli-bubble">{caption}</div> : null}
   </>;
 }
@@ -239,6 +239,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   const [more, setMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState("");
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -283,6 +284,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     setItems(memory?.items ?? []);
     setTranslationEnabled(memory?.translationEnabled);
     setMore(memory?.more ?? false);
+    setOlderError("");
     setError("");
     followingRef.current = true;
     anchorRef.current = null;
@@ -378,15 +380,17 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     const mine = generation.current;
     olderBusy.current = true;
     setLoadingOlder(true);
-    setError("");
+    setOlderError("");
     try {
       const page = await fetchItems(sessionKey, before);
-      if (generation.current !== mine) return;
+      if (generation.current !== mine || oldestId(itemsRef.current) !== before) return;
       anchorRef.current = { height: scroller.scrollHeight, top: scroller.scrollTop };
       setItems((current) => prependItems(current, page.items));
       setMore(page.more);
     } catch (cause) {
-      if (generation.current === mine) setError(cliErrorText(cause, "记录读取失败"));
+      if (generation.current === mine && oldestId(itemsRef.current) === before) {
+        setOlderError(cliErrorText(cause, "更早的记录读取失败"));
+      }
     } finally {
       olderBusy.current = false;
       setLoadingOlder(false);
@@ -398,18 +402,18 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     if (!scroller) return;
     followingRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= BOTTOM_FOLLOW_THRESHOLD;
     // reading upwards loads earlier records without a click
-    if (more && !error && scroller.scrollTop < OLDER_SCROLL_PX) void loadOlder();
+    if (!loading && more && !error && !olderError && scroller.scrollTop < OLDER_SCROLL_PX) void loadOlder();
   };
 
   // A page is 40 items, which one busy turn can fill: earlier turns load until a few are in view.
   const autoLoads = useRef(0);
   useEffect(() => { autoLoads.current = 0; }, [sessionKey]);
   useEffect(() => {
-    if (loading || loadingOlder || !more || error || autoLoads.current >= MAX_AUTO_PAGES) return;
+    if (loading || loadingOlder || !more || error || olderError || autoLoads.current >= MAX_AUTO_PAGES) return;
     if (userTurns(items) >= MIN_TURNS_IN_VIEW) return;
     autoLoads.current++;
     void loadOlder();
-  }, [items, more, loading, loadingOlder, error, loadOlder]);
+  }, [items, more, loading, loadingOlder, error, olderError, loadOlder]);
 
   const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
   const blocks = useMemo(() => withoutHidden(groupItems(details?.history?.length?mergeItems(details.history,items):items), hidden), [items,details?.history,hidden]);
@@ -428,7 +432,10 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   return (
     <div className="cli-transcript" ref={scrollRef} onScroll={onScroll} data-testid="cli-transcript">
       <div className="cli-transcript-list" ref={listRef}>
-        {more ? <button type="button" className="cli-older" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "正在读取…" : "加载更早的记录"}</button> : null}
+        {more ? <button type="button" className="cli-older" disabled={loading || loadingOlder} onClick={() => void loadOlder()}>
+          {loadingOlder ? "正在读取…" : olderError ? "重试加载更早的记录" : "加载更早的记录"}
+        </button> : null}
+        {more && olderError ? <div className="cli-notice" data-level="error" role="alert">{olderError}</div> : null}
         {blocks.map(block => {
           const complete = block.kind === "assistant" && completed.has(block.id);
           const core = translationEnabled && complete ? { key: sessionKey, id: block.id } : undefined;

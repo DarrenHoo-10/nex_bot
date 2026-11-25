@@ -281,8 +281,8 @@ private struct AgentTranscript: View {
             if blocks.isEmpty && (echo != nil || !sent.isEmpty) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        if let echo { AgentEchoBubble(text: echo) }
-                        ForEach(sent) { AgentEchoBubble(text: $0.text) }
+                        if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
+                        ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
                         AgentWorkingRow(engine: engine, label: working ?? "执行中", byline: true)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 6)
@@ -302,19 +302,23 @@ private struct AgentTranscript: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
                             if t.more {
-                                Button(t.loadingOlder ? "正在读取…" : "加载更早的记录") { Task { await model.loadOlder(key) } }
+                                Button(t.loadingOlder ? "正在读取…" : t.olderError == nil ? "加载更早的记录" : "重试加载更早的记录") { Task { await model.loadOlder(key) } }
                                     .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent).disabled(t.loadingOlder)
                                     .frame(maxWidth: .infinity)
                                     // reading upwards loads earlier records without a tap
-                                    .onAppear { Task { await model.loadOlder(key) } }
+                                    .onAppear { if t.olderError == nil { Task { await model.loadOlder(key) } } }
+                                if let error = t.olderError {
+                                    Text(error).font(.caption).foregroundStyle(Theme.danger)
+                                        .frame(maxWidth: .infinity)
+                                }
                             }
                             ForEach(blocks) { block in
                                 AgentBlockView(block: block, expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) ? { item in
                                     try await model.translateReply(key, item: item)
                                 } : nil, branch: completed.contains(block.id) ? branch : nil)
                             }
-                            if let echo { AgentEchoBubble(text: echo) }
-                            ForEach(sent) { AgentEchoBubble(text: $0.text) }
+                            if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
+                            ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
                             // the agent's name heads the dots only when nothing of this reply is shown yet
                             if let working { AgentWorkingRow(engine: engine, label: working, byline: echo != nil || !sent.isEmpty || { if case .user = blocks.last { return true } else { return false } }()) }
                             Color.clear.frame(height: 1).id("bottom")

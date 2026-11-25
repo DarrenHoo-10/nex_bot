@@ -55,7 +55,7 @@ struct AgentLaunchDetail: View {
             // laid out like any conversation: the message, then the agent's reply slot
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if !launch.request.message.isEmpty { AgentEchoBubble(text: launch.request.message) }
+                    if !launch.request.message.isEmpty { AgentEchoBubble(text: launch.request.message, loadImage: model.downloadImage) }
                     if case .failed(let reason) = launch.phase {
                         VStack(alignment: .leading, spacing: 6) {
                             AgentByline(engine: launch.request.engine)
@@ -121,13 +121,12 @@ struct AgentWorkingRow: View {
 /// The user's message, as the transcript shows one.
 struct AgentEchoBubble: View {
     let text: String
+    let loadImage: (String) async throws -> Data
 
     var body: some View {
         HStack {
             Spacer(minLength: 40)
-            Text(text).font(.system(size: 14)).textSelection(.enabled)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            AgentImageMessage(text: text, load: loadImage)
         }
     }
 }

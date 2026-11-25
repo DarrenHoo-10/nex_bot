@@ -255,6 +255,22 @@ describe("session list", () => {
 });
 
 describe("session pane", () => {
+  it("retries the same older cursor while keeping the visible transcript", async () => {
+    const key = "dev1:claude:s1";
+    const current = [1, 2, 3].map(index => ({ kind: "user", id: "u" + index, ts: index, text: "已加载 " + index }));
+    fixture.fetchItems
+      .mockResolvedValueOnce({ items: current, more: true })
+      .mockRejectedValueOnce(new Error("历史暂时无法读取"))
+      .mockResolvedValueOnce({ items: [{ kind: "user", id: "old", ts: 0, text: "更早的一条" }], more: false });
+    await mount({ devices: [device()], sessions: [session({ state: "idle" })] }, key);
+    await click(button("加载更早的记录"));
+    expect(text()).toContain("已加载 1");
+    await click(button("重试加载更早的记录"));
+    expect(fixture.fetchItems.mock.calls).toEqual([[key], [key, "u1"], [key, "u1"]]);
+    expect(text()).toContain("更早的一条");
+    expect(text()).toContain("已加载 1");
+  });
+
   it("blocks the composer with a reason when the session runs elsewhere", async () => {
     await mount({ devices: [device()], sessions: [session({ liveIn: "terminal", terminal: undefined })] }, "dev1:claude:s1");
     expect(container.querySelector("[role=tablist]")).toBeNull();

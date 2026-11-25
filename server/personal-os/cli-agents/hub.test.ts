@@ -522,6 +522,25 @@ describe("transcript cache", () => {
     expect(Number(f.app.store.get("SELECT COUNT(*) n FROM cli_agent_items")?.n)).toBe(1);
   });
 
+  it("retries an oversized older page with the same cursor and a smaller limit", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "large-history");
+    device.sessions([wire("a")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 1, "listed");
+    const key = keyOf(device, "a"), before = item(20).id;
+    const reads: { before: string; limit: number }[] = [];
+    device.onOp = (message) => {
+      if (message.op !== "read") return defaultOp(message);
+      reads.push({ before: message.args.before, limit: message.args.limit });
+      return message.args.limit > 10
+        ? { ok: false, error: { code: "too_large", message: "内容太长" } }
+        : { ok: true, result: { items: [item(19, "older")], more: true } };
+    };
+    const response = await f.call("cli-agents/items?" + new URLSearchParams({ key, before }));
+    expect(reads).toEqual([{ before, limit: 40 }, { before, limit: 20 }, { before, limit: 10 }]);
+    expect(response).toMatchObject({ status: 200, data: { items: [item(19, "older")], more: true } });
+  });
+
   it("answers a history read from the device online and from the cache offline", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "history");
@@ -538,6 +557,8 @@ describe("transcript cache", () => {
     await until(() => !f.app.cliHub.session(key)?.online, "offline");
     const cached = await f.call(`cli-agents/items?key=${encodeURIComponent(key)}`);
     expect(cached.data).toMatchObject({ more: false, items: [{ text: "one" }, { text: "two" }] });
+    const older = await f.call("cli-agents/items?" + new URLSearchParams({ key, before: item(1).id }));
+    expect(older.data).toMatchObject({ code: "device_offline", error: "会话所在电脑离线，暂时无法加载更早的记录" });
   });
 });
 

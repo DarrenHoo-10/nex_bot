@@ -1027,18 +1027,24 @@ export class CliAgentHub {
     return parsed;
   }
 
-  /** One page of a transcript. Online, the device answers; offline or unknown,
-   * the cached page does. Any other device error propagates. */
+  /** Read-only transcript requests can shrink to fit the executor's reply limit. */
   async items(actor: string, key: string, before?: string): Promise<{ items: CliItem[]; more: boolean }> {
     const parsed = this.requireKey(key);
-    try {
-      const result = await this.op(actor, parsed.deviceId, key, "read", { ref: parsed.ref, ...(before ? { before } : {}), limit: PAGE_SIZE });
-      const items = result.items.map(privateImageItem);
-      if (this.sessionRow(key)) this.cacheItems(key, items, false);
-      return { ...result, items };
-    } catch (error) {
-      if (error instanceof CliOpError && (error.code === "device_offline" || error.code === "unknown")) return this.cachedPage(key, before);
-      throw error;
+    for (let limit = PAGE_SIZE; ; limit = Math.floor(limit / 2)) {
+      try {
+        const result = await this.op(actor, parsed.deviceId, key, "read", { ref: parsed.ref, ...(before ? { before } : {}), limit });
+        const items = result.items.map(privateImageItem);
+        if (this.sessionRow(key)) this.cacheItems(key, items, false);
+        return { ...result, items };
+      } catch (error) {
+        if (!(error instanceof CliOpError)) throw error;
+        if (error.code === "too_large" && limit > 1) continue;
+        if (error.code !== "device_offline" && error.code !== "unknown") throw error;
+        const cached = this.cachedPage(key, before);
+        if (!before || cached.items.length) return cached;
+        const message = error.code === "device_offline" ? "会话所在电脑离线" : "会话所在电脑未响应";
+        throw new CliOpError(error.code, message + "，暂时无法加载更早的记录");
+      }
     }
   }
 

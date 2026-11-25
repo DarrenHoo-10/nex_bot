@@ -4,8 +4,21 @@
 .rk-workspace .message-media { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
 .rk-workspace .message.user .message-media,
 .cli-app .cli-msg.is-user .message-media { justify-content: flex-end; }
-.cli-app .message-image { max-width: 100%; }
+.cli-app.rk-workspace .message-image {
+  --message-image-max-width: min(240px, 64vw);
+  --message-image-max-height: min(160px, 64vw * 2 / 3);
+  width: var(--message-image-max-width);
+  max-width: 100%;
+}
+.cli-app.rk-workspace .message-image.is-fitted {
+  width: min(var(--message-image-max-width), var(--message-image-max-height) * var(--message-image-ratio));
+  aspect-ratio: var(--message-image-ratio);
+  border: 0;
+  background: transparent;
+}
 .cli-app.rk-workspace .message-image img { object-fit: contain; }
+.cli-app.rk-workspace .message-image:not(.is-fitted) img { position: absolute; inset: 0; visibility: hidden; }
+.cli-app .message-media { align-items: flex-start; gap: 6px; }
 .cli-app .cli-msg.is-user .message-media { max-width: 100%; margin-bottom: 4px; }
 .rk-workspace .message-image {
   position: relative; display: block; width: min(240px, 64vw); aspect-ratio: 3 / 2;
@@ -132,4 +145,13 @@
   .rk-workspace .image-lightbox { padding: 12px; }
   .rk-workspace .image-lightbox-frame img { max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 8px; }
   .rk-workspace .message-image { width: min(240px, 70vw); }
+  .cli-app.rk-workspace .message-image {
+    --message-image-max-width: 36px;
+    --message-image-max-height: 36px;
+    aspect-ratio: 1;
+    border-radius: 5px;
+  }
+  .cli-app.rk-workspace .message-image-loading,
+  .cli-app.rk-workspace .message-image-failed { padding: 0; }
+  .cli-app.rk-workspace .message-image-failed span { display: none; }
 }
