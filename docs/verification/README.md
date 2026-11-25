@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 引导消息与 Windows 安装向导 · 0.9.52 四端发布（2026-11-26）](nexagent-guide-0952-20261126.md)
+
 - [NexAgent 图片预览和 0.9.51 全平台发布（2026-11-25）](nexagent-images-0951-20261125.md)
 
 - [NexAgent 输入框模型显示、Codex 新建会话修复与 0.9.50 预览发布（2026-11-25）](nexagent-composer-model-0950-20261125.md)

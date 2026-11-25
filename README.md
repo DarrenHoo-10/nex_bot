@@ -23,7 +23,7 @@
 
 | 方式 | 适合什么场景 | 当前状态 |
 | --- | --- | --- |
-| Windows EXE | 日常对话、完整设置，以及让助手操作这台电脑 | x64 桌面客户端，便携版 |
+| Windows EXE | 日常对话、完整设置，以及让助手操作这台电脑 | x64 桌面客户端，安装版 |
 | Mac 应用 | 原生 macOS 客户端：对话、完整设置，以及让助手读取文件、运行命令 | Apple Silicon，macOS 14 及以上，DMG 测试版 |
 | iPhone 应用 | 原生 iOS 客户端：对话、附件、审批与设置 | iOS 17 及以上，未签名 IPA，需用 AltStore 重签（每 7 天续签） |
 | Android APK | 随时查看消息、发送任务、上传文件和处理审批 | Android 8.0 及以上，测试版 |
@@ -33,30 +33,30 @@ Android 与 Windows 共用账号设置、模型、记忆服务、连接器、设
 
 ## 下载与安装
 
-飞书可以接入多个应用，每个机器人对应一个助手；连接器里点开应用，可以为每个群设置触发方式（必须 @、话题内免 @、默认应答、全部回复）、会话方式（群聊共享话题独立、整群一个会话、每次 @ 开新话题）和只对该群生效的系统上下文。飞书里的话题对应 NexBot 话题，网页上接收飞书的助手会像金融助手一样显示话题卡片。网页和 Windows 的左上角可切换 NexBot / NexAgent，NexAgent 按电脑 → 项目 → 会话整理 Claude Code、Codex 会话。NexAgent 的项目可拖动排序（新项目排在最前），时钟按钮按时间列出全部会话，放大镜可按标题和会话内容搜索；输入框可选模型和推理强度，支持粘贴图片；发往 Claude 桌面端或终端会话（含跳过权限模式）的消息由该电脑上的客户端送达。模型菜单列出该电脑上 Claude Code / Codex 在终端里可选的模型；新建会话直接在右侧的输入框里写第一条消息，上方可浏览或新建目录、选运行工具和工作树，提交后会话立即出现；侧栏置顶「进行中」，输入框在圆环左侧显示当前模型，圆环按会话实际使用的模型以 K / M 显示上下文用量，历史记录可一直往前翻，新建会话勾选 Worktree 即在新的工作树里运行。NexAgent 可在「设置 → 模型 → 翻译服务」选择已连接的模型，异步翻译已完成的英文回复。Jev 判定超时或不可用时，继续按本地规则筛选。助手设置中的长 Token 用量显示为 4.2M 一类的简写。NexAgent 回复可复制或从该处创建私人聊天分支，选区菜单支持复制，后台任务显示简称。发送的消息立即显示，发出 30 秒内且未被回应的消息可编辑后重发；模型调用失败时居中提示原因。Claude、Codex 需要确认时，各端都会收到权限卡片，可查看完整参数并选择「本会话总是允许」；新建会话默认完全访问，也可切换为「每次询问」。当前发布的客户端为 Windows 0.9.51、Android 0.2.50 和 Mac / iOS 0.2.43。每个工作区都有一个金融助手，在 NexBot 或已连接的 `nex_stock` 中新建对话，会在同一个助手下生成独立话题。
+飞书可以接入多个应用，每个机器人对应一个助手；连接器里点开应用，可以为每个群设置触发方式（必须 @、话题内免 @、默认应答、全部回复）、会话方式（群聊共享话题独立、整群一个会话、每次 @ 开新话题）和只对该群生效的系统上下文。飞书里的话题对应 NexBot 话题，网页上接收飞书的助手会像金融助手一样显示话题卡片。网页和 Windows 的左上角可切换 NexBot / NexAgent，NexAgent 按电脑 → 项目 → 会话整理 Claude Code、Codex 会话。NexAgent 的项目可拖动排序（新项目排在最前），时钟按钮按时间列出全部会话，放大镜可按标题和会话内容搜索；输入框可选模型和推理强度，支持粘贴图片；发往 Claude 桌面端或终端会话（含跳过权限模式）的消息由该电脑上的客户端送达。模型菜单列出该电脑上 Claude Code / Codex 在终端里可选的模型；新建会话直接在右侧的输入框里写第一条消息，上方可浏览或新建目录、选运行工具和工作树，提交后会话立即出现；侧栏置顶「进行中」，输入框在圆环左侧显示当前模型，圆环按会话实际使用的模型以 K / M 显示上下文用量，历史记录可一直往前翻，新建会话勾选 Worktree 即在新的工作树里运行。NexAgent 可在「设置 → 模型 → 翻译服务」选择已连接的模型，异步翻译已完成的英文回复。Jev 判定超时或不可用时，继续按本地规则筛选。助手设置中的长 Token 用量显示为 4.2M 一类的简写。NexAgent 回复可复制或从该处创建私人聊天分支，选区菜单支持复制，后台任务显示简称。发送的消息立即显示，发出 30 秒内且未被回应的消息可编辑后重发；模型调用失败时居中提示原因。Claude、Codex 需要确认时，各端都会收到权限卡片，可查看完整参数并选择「本会话总是允许」；新建会话默认完全访问，也可切换为「每次询问」。当前发布的客户端为 Windows 0.9.52、Android 0.2.51 和 Mac / iOS 0.2.44。每个工作区都有一个金融助手，在 NexBot 或已连接的 `nex_stock` 中新建对话，会在同一个助手下生成独立话题。
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
-| Windows x64 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.51-preview.1/NexBot-0.9.51-x64-Client-Portable.exe) | 双击运行，免安装 |
-| Android 8.0+ | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.51-preview.1/nexbot-0.2.50-debug.apk) | 在手机上打开并安装，测试版 |
-| Mac（Apple 芯片） | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.51-preview.1/NexBot-0.2.43-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
-| iPhone（iOS 17+） | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.51-preview.1/NexBot-0.2.43-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
-| 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.51-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
+| Windows x64 · 0.9.52 | [下载 EXE](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.52-preview.1/NexBot-0.9.52-x64-Client-Setup.exe) | 运行安装向导，可选目录 |
+| Android 8.0+ · 0.2.51 | [下载 APK](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.52-preview.1/nexbot-0.2.51-debug.apk) | 在手机上打开并安装，测试版 |
+| Mac（Apple 芯片）· 0.2.44 | [下载 DMG](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.52-preview.1/NexBot-0.2.44-mac-arm64.dmg) | 打开 DMG，把 NexBot 拖进「应用程序」，首次打开见下方 |
+| iPhone（iOS 17+）· 0.2.44 | [下载 IPA](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.52-preview.1/NexBot-0.2.44-ios-unsigned.ipa) | 未签名，用 AltStore 或 Sideloadly 签名后安装，见下方 |
+| 校验文件 | [SHA256SUMS.txt](https://github.com/DarrenHoo-10/nex_bot/releases/download/nexbot-v0.9.52-preview.1/SHA256SUMS.txt) | 核对下载文件完整性 |
 
-各平台安装包、校验值与验证范围见 [0.9.51 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.51-preview.1)。Windows 包尚无发布者数字签名。Mac 应用使用临时签名，尚未公证。Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
+各平台安装包、校验值与验证范围见 [0.9.52 发布说明](https://github.com/DarrenHoo-10/nex_bot/releases/tag/nexbot-v0.9.52-preview.1)。Windows 包尚无发布者数字签名。Mac 应用使用临时签名，尚未公证。Android 包使用调试签名，适合体验测试。GitHub 的「Source code」压缩包是源码，不能直接安装。
 
 Android 已包含完整设置和助手管理。自行构建请参阅 [Android 安装包说明](android/README.md)。
 
-### Windows：运行 EXE
+### Windows 安装
 
-1. 获取 `NexBot-<版本>-x64-Client-Portable.exe`。
-2. 把文件放在方便保留的位置，双击打开。当前是便携版，无需运行安装向导，也不需要安装 Node.js。
+1. 下载 `NexBot-<版本>-x64-Client-Setup.exe`。从便携版迁移时，先关闭正在运行的 NexBot。
+2. 运行安装向导。首次安装可选择新目录或空目录，覆盖安装沿用已登记的目录。安装版沿用当前 Windows 用户的 NexBot 配置。
 3. 使用 NexorAI 账号的邮箱和密码登录。客户端默认连接 NexBot 正式服务。
 4. 进入助手对话，或点击左上角「＋」创建助手。
 
-需要桌面入口时，可以为 EXE 创建快捷方式。
+安装向导会创建开始菜单和桌面快捷方式。
 
-**更新方式：** 退出 NexBot，使用发布者提供的新版 EXE 替换旧版，再打开。使用同一账号登录后继续查看原有助手和消息。
+安装版会检查新版并提示更新，也可以手动运行新版 Setup。更新沿用原安装目录和当前用户的配置。
 
 ### Android：安装 APK
 
