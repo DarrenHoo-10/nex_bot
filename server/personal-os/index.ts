@@ -401,7 +401,7 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname.startsWith("/api/auth/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid login request" }); return; }
     // The OSS mirror, when configured, replaces GitHub links: installers download reliably in China.
     if (url.pathname === "/api/client/downloads" && request.method === "GET") { json(response, 200, { ...await downloads.current(), ...await updates.downloads(requestOrigin) }); return; }
-    if (url.pathname === "/api/client/update" && request.method === "GET") { json(response, 200, await updates.check(url.searchParams.get("platform") ?? "", url.searchParams.get("version") ?? "", requestOrigin)); return; }
+    if (url.pathname === "/api/client/update" && request.method === "GET") { json(response, 200, await updates.check(url.searchParams.get("platform") ?? "", url.searchParams.get("version") ?? "", requestOrigin, url.searchParams.get("format"))); return; }
     const installer = /^\/api\/client\/installer\/(android|ios)\/([A-Za-z0-9._-]+)$/.exec(url.pathname);
     if (installer && request.method === "GET") {
       let found: Awaited<ReturnType<typeof updates.installer>>;

@@ -25,12 +25,28 @@ OSS refuses to serve `.apk` and `.ipa` from its default domain
 `/api/client/installer/<android>/<file>` (or `<ios>`) streams the current manifest's
 file from OSS and returns 404 for any other file name.
 
-The packaged Windows portable (`electron/nex-client-update.mjs`) checks after
-sign-in and every six hours, downloads in the background and discards a file
-whose size or digest differs. Only a verified file shows "新版本 x 已就绪 /
-立即更新". Updating copies it next to the running portable, quits, and a hidden
-PowerShell waits for the old process, starts the new version with the same
-`--profile`/`--origin` and removes the old file when it is a NexBot portable.
+For a first Windows installation, Setup defaults to
+`%LOCALAPPDATA%\Programs\NexBot` and accepts a new or empty folder chosen in the
+wizard. If NexBot is already installed for this user, Setup displays the
+registered folder and uses it for the reinstall. In-app updates also use that
+folder. A nonempty folder without a registered NexBot install is rejected,
+including folders containing an unpacked copy. To move a registered install,
+uninstall it from Windows Installed apps, then run Setup and choose the new
+folder. Setup adds Start menu and desktop shortcuts, and the portable and
+installed versions share the `%APPDATA%\NexBotClient` profile. For the first
+switch, close the portable and run
+Setup from the download page. The installer leaves the old portable executable
+where it was downloaded. Starting NexBot again brings the existing window to the
+foreground, including when it is minimized.
+
+The installed Windows client (`electron/nex-client-update.mjs`) checks after
+sign-in and every six hours with `platform=windows&format=nsis`. Core serves
+these installers from `platforms.windows-setup` and keeps serving published
+portable updates from `platforms.windows` to older clients. Public downloads
+prefer Setup once it is mirrored. The updater downloads in the background and
+verifies file size and SHA-256 before showing "新版本 x 已就绪 / 立即更新". A
+hidden PowerShell waits for the app to exit, runs Setup against the registered
+directory, and reopens the client with the same `--profile`/`--origin` arguments.
 
 Android (`android/app/.../update/AppUpdater.kt`) checks after sign-in and every
 six hours, downloads the APK into its cache, keeps it only when size and digest
@@ -99,9 +115,15 @@ receives a storage URL.
 - `pnpm exec vitest run server/personal-os/client-updates.test.ts`: version
   comparison, manifest validation, OSS query signatures, update answers and the
   public routes without login.
-- `node --test electron/nex-client-update.node-test.mjs`: verified download,
-  reuse of a verified file, rejection of tampered or truncated downloads, and
-  the handoff script's arguments and removal rule.
+- Windows release preparation in an isolated Windows account or VM: run the
+  published candidate Setup, confirm the installation directory, shortcuts and
+  Installed apps entry, and use `scripts/smoke-shell-login.mjs --exe=<installed exe>`.
+  Cover a custom directory with spaces, rejection of a nonempty unregistered
+  directory and preservation of its contents, and reinstalling into the same
+  registered directory. Check a second launch with the same profile while the
+  first window is minimized, then update and confirm the same executable path
+  and profile.
+  Check both update formats and the public download before publishing.
 - `./gradlew :core:test` (`ClientUpdateTest`, `WorkspaceTransportTest`): Android
   offer validation, verified download and Core-only image previews.
 - `swift test` in `apps/apple/Packages/NexClientKit` (`ClientUpdateTests`).

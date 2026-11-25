@@ -3,7 +3,7 @@ productName: NexBot Client
 directories:
   output: release/personal-client
 extraMetadata:
-  name: nexbot-client
+  name: nexbot
   version: 0.9.51
   main: electron/nex-client-main.mjs
 npmRebuild: false
@@ -17,6 +17,7 @@ files:
   - electron/nex-client-device.mjs
   - electron/nex-client-clipboard.mjs
   - electron/nex-client-update.mjs
+  - electron/single-instance.mjs
   - shared/model-catalog.mjs
   - electron/client/**
   - package.json
@@ -37,10 +38,16 @@ extraResources:
 
 win:
   target:
-    - target: portable
+    - target: nsis
       arch: x64
   icon: build/nexbot-icon.ico
-portable:
-  useZip: true
-  unpackDirName: true
-  artifactName: NexBot-${version}-x64-Client-Portable.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  include: build/nexbot-installer.nsh
+  shortcutName: NexBot
+  createStartMenuShortcut: true
+  createDesktopShortcut: true
+  uninstallDisplayName: NexBot
+  deleteAppDataOnUninstall: false
+  artifactName: NexBot-${version}-x64-Client-Setup.${ext}

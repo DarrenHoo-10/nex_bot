@@ -71,6 +71,20 @@ describe("client updates", () => {
     expect(await new ClientUpdateSource(undefined).check("windows", "0.9.8")).toMatchObject({ available: false });
   });
 
+  it("offers Windows updates in the requested format and prefers Setup for public downloads", async () => {
+    const file = "NexBot-0.9.10-x64-Client-Setup.exe";
+    const setup = { version: "0.9.10", file, key: `nexbot/releases/nexbot-v0.9.10-preview.1/${file}`, size: 2048, sha256: sha };
+    const source = new ClientUpdateSource({ ...mirror, manifest: async () => parseManifest({
+      ...manifest, platforms: { ...manifest.platforms, "windows-setup": setup },
+    }) });
+    expect(await source.check("windows", "0.9.8")).toMatchObject({ available: true, file: manifest.platforms.windows.file });
+    expect(await source.check("windows", "0.9.9")).toMatchObject({ available: false });
+    expect(await source.check("windows", "0.9.9", undefined, "nsis")).toMatchObject({ available: true, file, url: mirror.signedUrl(setup.key) });
+    expect(await source.check("windows", "0.9.10", undefined, "nsis")).toMatchObject({ available: false });
+    expect(await new ClientUpdateSource(mirror).check("windows", "0.9.8", undefined, "nsis")).toMatchObject({ available: false });
+    expect((await source.downloads())?.windows).toMatchObject({ name: file, version: "0.9.10" });
+  });
+
   it("gives each platform its own release's tag, notes and date after a partial release", async () => {
     const appleKey = (file: string) => `nexbot/releases/nexbot-apple-v0.2.5-preview.1/${file}`;
     const partial = {

@@ -8,16 +8,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ClientDevice } from "./nex-client-device.mjs";
 import { installLocalUi } from "./nex-client-ui.mjs";
 import { installClipboardImagePaste } from "./nex-client-clipboard.mjs";
-import { ClientUpdater, portableHandoff } from "./nex-client-update.mjs";
-import { spawn } from "node:child_process";
+import { ClientUpdater, runInstallerAfterExit } from "./nex-client-update.mjs";
+import { activateExistingWindow } from "./single-instance.mjs";
 import { fetchModelCatalog } from "../shared/model-catalog.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const profile = process.argv.find((a) => a.startsWith("--profile="))?.slice(10);
 app.setName(process.platform === "darwin" && profile ? "NexBot Client Fixture " + createHash("sha256").update(profile).digest("hex").slice(0, 12) : "NexBot Client");
 app.setPath("userData", profile ? path.resolve(profile) : path.join(app.getPath("appData"), "NexBotClient"));
+if (process.platform === "win32") app.setAppUserModelId("com.nexbot.client");
 const defaultOrigin = process.env.NEX_CLIENT_DEFAULT_ORIGIN || "https://bot.nexorai.com.cn";
-let device, updater, shuttingDown = false;
+let device, updater, shuttingDown = false, installing = false;
 let window, saved, origin, connectionError = "", resuming = false, loginEpoch = 0, repointed = false;
 const cancelled = Object.assign(new Error("已取消"), { cancelled: true });
 const credentials = path.join(app.getPath("userData"), "connection.bin");
@@ -97,7 +98,10 @@ async function login(settings) {
 }
 if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) app.quit();
 else {
-  app.on("second-instance", (_event, args) => { if (args.includes("--quit")) app.quit(); else { window?.show(); window?.focus(); } });
+  app.on("second-instance", (_event, args) => {
+    if (args.includes("--quit")) app.quit();
+    else if (!shuttingDown) activateExistingWindow([window]);
+  });
   app.on("window-all-closed", () => app.quit());
   app.on("before-quit", (event) => {
     if (shuttingDown || !device) return;
@@ -134,8 +138,9 @@ else {
       device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode, sessionRefreshed,
       });
     }
-    // Only the packaged portable can replace itself; development builds skip updates.
-    if (process.platform === "win32" && process.env.PORTABLE_EXECUTABLE_FILE) {
+    // The NSIS uninstaller is present only after installation, including in a custom install directory.
+    const uninstaller = path.join(path.dirname(process.execPath), `Uninstall ${path.basename(process.execPath)}`);
+    if (process.platform === "win32" && app.isPackaged && existsSync(uninstaller)) {
       updater = new ClientUpdater({ version: app.getVersion(), directory: path.join(app.getPath("userData"), "updates"), changed: (state) => { if (!window?.isDestroyed()) window.webContents.send("nex:update-state", state); } });
       setInterval(() => { const target = origin ?? saved?.origin; if (target) void updater.check(target); }, 6 * 60 * 60_000).unref();
     }
@@ -212,13 +217,18 @@ else {
       if (!target) throw new Error("请先连接服务");
       return updater.check(target);
     });
-    ipcMain.handle("client:update-install", (event) => {
+    ipcMain.handle("client:update-install", async (event) => {
       validate(event);
       if (!updater || updater.status !== "ready") throw new Error("更新尚未就绪");
-      // The running portable is locked, so a hidden PowerShell waits for this client to exit,
-      // starts the new version with the same profile and Core, then removes the old file.
-      const script = portableHandoff({ downloaded: updater.file, currentExe: process.env.PORTABLE_EXECUTABLE_FILE, pids: [process.pid, process.ppid], args: process.argv.filter((value) => /^--(profile|origin)=/.test(value)) });
-      spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      if (installing) return;
+      installing = true;
+      try {
+        await runInstallerAfterExit({ downloaded: updater.file, currentExe: process.execPath, pid: process.pid, args: process.argv.filter((value) => /^--(profile|origin)=/.test(value)) });
+      } catch (error) {
+        installing = false;
+        updater.set("error", { error: error instanceof Error ? error.message : "无法启动安装程序", progress: undefined });
+        throw error;
+      }
       setTimeout(() => app.quit(), 50);
     });
     resuming = !!saved;

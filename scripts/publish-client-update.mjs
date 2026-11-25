@@ -21,6 +21,7 @@ const manifestKey = "nexbot/releases/manifest.json";
 
 const patterns = {
   windows: /^NexBot-(\d+\.\d+\.\d+)-x64-Client-Portable\.exe$/,
+  "windows-setup": /^NexBot-(\d+\.\d+\.\d+)-x64-Client-Setup\.exe$/,
   android: /^nexbot-(\d+\.\d+\.\d+)-(?!unsigned)[a-z]+\.apk$/,
   mac: /^NexBot-(\d+\.\d+\.\d+)-mac-arm64\.dmg$/,
   ios: /^NexBot-(\d+\.\d+\.\d+)-ios-unsigned\.ipa$/,

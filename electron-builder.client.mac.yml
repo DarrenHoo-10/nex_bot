@@ -17,6 +17,7 @@ files:
   - electron/nex-client-device.mjs
   - electron/nex-client-clipboard.mjs
   - electron/nex-client-update.mjs
+  - electron/single-instance.mjs
   - shared/model-catalog.mjs
   - electron/client/**
   - package.json

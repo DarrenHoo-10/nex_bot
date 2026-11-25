@@ -8,7 +8,7 @@ const repo = "https://github.com/DarrenHoo-10/nex_bot";
 export const registerUrl = "https://user.nexorai.com.cn/register/nexbot";
 const links = { releases: `${repo}/releases` };
 
-interface ClientDownload { url: string; version: string; publishedAt: string; tag?: string }
+interface ClientDownload { name?: string; url: string; version: string; publishedAt: string; tag?: string }
 interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload; mac?: ClientDownload; ios?: ClientDownload }
 /** Core resolves the shared release manifest; unavailable platforms fall back to the release list. */
 function useClientDownloads() {
@@ -38,8 +38,9 @@ const features = [
 ];
 
 function platforms({ windows, android, mac, ios }: ClientDownloads) {
+  const windowsFormat = windows?.name?.endsWith("-Client-Setup.exe") ? "x64 安装版" : "x64 便携版，免安装";
   return [
-    { icon: Laptop, name: "Windows", detail: windows ? `${windows.version} · x64 便携版，免安装` : "x64 便携版，免安装", note: "可让助手操作这台电脑", href: windows?.url ?? links.releases, action: windows ? "下载 EXE" : "前往 GitHub 下载" },
+    { icon: Laptop, name: "Windows", detail: windows ? `${windows.version} · ${windowsFormat}` : "Windows x64", note: "可让助手操作这台电脑", href: windows?.url ?? links.releases, action: windows ? "下载 EXE" : "前往 GitHub 下载" },
     { icon: Smartphone, name: "Android", detail: android ? `${android.version} · Android 8.0 及以上` : "Android 8.0 及以上", note: "查看消息、发送任务、处理审批。已同步的历史消息保存在本机。", href: android?.url ?? links.releases, action: android ? "下载 APK" : "前往 GitHub 下载" },
     { icon: Laptop, name: "Mac", detail: mac ? `${mac.version} · Apple 芯片，macOS 14 及以上` : "Apple 芯片，macOS 14 及以上", note: "临时签名，尚未公证", href: mac?.url ?? links.releases, action: mac ? "下载 DMG" : "前往 GitHub 下载" },
     { icon: Smartphone, name: "iPhone", detail: ios ? `${ios.version} · iOS 17 及以上` : "iOS 17 及以上", note: "未签名 IPA，需自行签名安装", href: ios?.url ?? links.releases, action: ios ? "下载 IPA" : "前往 GitHub 下载" },
