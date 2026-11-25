@@ -19,6 +19,7 @@ import { HerdrCore, locateHerdrCore } from "./hc.ts";
 import { FakeHc } from "./fake-hc.ts";
 import type { HcScope } from "./bridge.ts";
 import type { CommandRunner } from "./liveness.ts";
+import { agyProxyEnvironment } from "./agy-native.ts";
 
 const OWNER = "synthetic-cli-integration-owner";
 const LSTART = "Sun Nov 15 09:00:00 2026";
@@ -171,6 +172,13 @@ function claudeTranscript(claudeDir: string, id: string, text: string, cwd: stri
   const old = new Date(Date.now() - 60_000);
   utimesSync(file, old, old);
 }
+
+it("lets Windows AGY use a local system proxy while preserving an explicit proxy", async () => {
+  const windows: CommandRunner = async () => ({ code: 0, stdout: "http=127.0.0.1:1234;https=127.0.0.1:2345" });
+  expect(await agyProxyEnvironment("win32", {}, windows)).toEqual({ HTTP_PROXY: "http://127.0.0.1:1234", HTTPS_PROXY: "http://127.0.0.1:2345" });
+  expect(await agyProxyEnvironment("win32", { https_proxy: "http://example.invalid:7890" }, windows)).toEqual({});
+  expect(await agyProxyEnvironment("darwin", {}, windows)).toEqual({});
+});
 
 it("runs AGY through ACP without herdr and continues the native conversation once", async () => {
   const root = tempDir("nex-agy-int-");

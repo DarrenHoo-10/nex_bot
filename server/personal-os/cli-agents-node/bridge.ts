@@ -1764,7 +1764,7 @@ export class CliAgentBridge {
           engine: "agy", mode: "resume", nativeId: row.nativeId, key: row.nativeId,
           cwd: row.cwd, executable: await this.cliPath("agy"),
         }, { platform: this.platform, env: this.options.env, homedir: this.options.homedir });
-        plan.env = { ...plan.env, ...this.launchEnvironment("agy", row.configDir) };
+        plan.env = { ...plan.env, ...this.launchEnvironment("agy", row.configDir), ...await this.agy.proxyEnvironment() };
         await this.agy.handoff(row.nativeId);
         const terminal = await this.runTerminal(hc, "agy", plan, clampTermSize(undefined, undefined));
         this.register(terminal, "agy", row.nativeId, plan.cwd);

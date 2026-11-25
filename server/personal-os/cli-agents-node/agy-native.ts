@@ -31,6 +31,28 @@ export function supportsAgyAcp(version: string | null): boolean {
   return major > 1 || (major === 1 && (minor > 5 || (minor === 5 && patch >= 15)));
 }
 
+/** AGY uses Go's proxy environment, while a Windows GUI may only have WinINET set. */
+export async function agyProxyEnvironment(
+  platform: NodeJS.Platform, env: NodeJS.ProcessEnv, run: CommandRunner = defaultRunner,
+): Promise<Record<string, string>> {
+  if (platform !== "win32" || Object.entries(env).some(([key, value]) => /^(all|http|https)_proxy$/i.test(key) && value)) return {};
+  const query = "$s=Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction SilentlyContinue; if ($s.ProxyEnable -eq 1) { [Console]::Write($s.ProxyServer) }";
+  const result = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", query], { env, timeoutMs: 1500 });
+  if (result.code !== 0) return {};
+  const entries = result.stdout.trim().split(";");
+  const common = entries.length === 1 && !entries[0].includes("=") ? entries[0] : undefined;
+  const forProtocol = (protocol: string) => entries.find((entry) => entry.trim().toLowerCase().startsWith(protocol + "="))?.split("=", 2)[1] ?? common;
+  const proxy: Record<string, string> = {};
+  for (const protocol of ["http", "https"]) {
+    // Bind this fallback to a local proxy already configured by the user.
+    // Remote proxies still use explicit environment variables on the executor.
+    const raw = forProtocol(protocol)?.trim();
+    const match = /^(?:http:\/\/)?(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/i.exec(raw ?? "");
+    if (match && Number(match[2]) >= 1 && Number(match[2]) <= 65535) proxy[protocol.toUpperCase() + "_PROXY"] = "http://" + match[1] + ":" + match[2];
+  }
+  return proxy;
+}
+
 export async function agyJson(file: string): Promise<AgyRecord> {
   try {
     const info = await lstat(file);

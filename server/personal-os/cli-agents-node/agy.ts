@@ -11,7 +11,7 @@ import { CLI_IMAGE_PREFIX, mapCliImageLinks } from "../../../shared/cli-images.t
 import { execCli } from "../../procs.ts";
 import { AgyAcp, AgyAcpError } from "./agy-acp.ts";
 import {
-  agyArray, agyJson, agyModelId, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
+  agyArray, agyJson, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
   type AgyNativeSession, type AgyRecord, type AgyWriters,
 } from "./agy-native.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
@@ -206,6 +206,10 @@ export class AgyRuntime {
 
   enable(): void { this.enabled = true; }
 
+  proxyEnvironment(): Promise<Record<string, string>> {
+    return agyProxyEnvironment(this.options.platform, this.options.env);
+  }
+
   async scan(): Promise<void> {
     if (!this.enabled || this.disposed) return;
     this.scans ??= (async () => {
@@ -270,10 +274,10 @@ export class AgyRuntime {
 
   private async readModels(): Promise<CliModelCatalog> {
     const executable = await this.options.executable();
-    const settings = await agyJson(path.join(this.options.dir, "settings.json"));
+    const [settings, proxy] = await Promise.all([agyJson(path.join(this.options.dir, "settings.json")), this.proxyEnvironment()]);
     return new Promise((resolve, reject) => {
       execCli(executable, ["models"], {
-        env: { ...this.options.env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" }, timeout: 6500, maxBuffer: 1024 * 1024,
+        env: { ...this.options.env, ...proxy, AGY_CLI_DISABLE_AUTO_UPDATE: "true" }, timeout: 6500, maxBuffer: 1024 * 1024,
       }, (error, out) => {
         const catalog = modelsFromOutput(out, agyString(settings.model), agyString(settings.effort));
         if (!error && catalog.models.length) resolve(catalog);
@@ -353,11 +357,11 @@ export class AgyRuntime {
     await session.closing;
     if (session.acp) return session.acp;
     if (!this.enabled || this.disposed) throw new AgyError("cli_missing", "请安装或更新到 Antigravity CLI 1.5.15 以上");
-    const executable = await this.options.executable();
+    const [executable, proxy] = await Promise.all([this.options.executable(), this.proxyEnvironment()]);
     if (this.disposed) throw new AgyError("paused", "本机控制已暂停");
     let acp: AgyAcp;
     try {
-      acp = new AgyAcp(executable, session.cwd, this.options.env,
+      acp = new AgyAcp(executable, session.cwd, { ...this.options.env, ...proxy },
         (method, params, request) => this.onRpc(session, acp, method, params, request),
         () => this.disconnected(session, acp));
     } catch (error) {
