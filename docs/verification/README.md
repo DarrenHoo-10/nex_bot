@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [工作区按需同步、历史消息本地缓存与 0.9.49 预览发布（2026-11-25）](workspace-history-sync-20261125.md)
+
 - [NexAgent 翻译回退与 Token 用量简写 · 全平台发布 0.9.47（2026-11-25）](nexagent-jev-release-20261125.md)
 
 - [NexBot 会话操作与移动端审批：全平台发布 0.9.48（2026-11-25）](nexbot-0948-release-20261125.md)
