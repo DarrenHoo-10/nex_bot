@@ -51,27 +51,58 @@ if ($registered.UninstallString -notlike "*$target*") { throw 'Uninstaller no lo
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class FixtureWindow {
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr handle, int command);
+    private delegate bool Visit(IntPtr window, IntPtr data);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(Visit callback, IntPtr data);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr handle, StringBuilder name, int size);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr handle);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr handle, int command);
+    public static IntPtr Find(uint pid) {
+        var result = IntPtr.Zero;
+        EnumWindows((handle, ignored) => {
+            uint owner;
+            GetWindowThreadProcessId(handle, out owner);
+            if (owner != pid || !IsWindowVisible(handle)) return true;
+            var name = new StringBuilder(256);
+            GetClassName(handle, name, name.Capacity);
+            if (name.ToString() != "Chrome_WidgetWin_1") return true;
+            result = handle;
+            return false;
+        }, IntPtr.Zero);
+        return result;
+    }
 }
 '@
 $launchProfile = Join-Path $env:RUNNER_TEMP 'nexbot-launch-fixture'
 $arg = '--profile="' + $launchProfile + '"'
+$ready = Join-Path $env:RUNNER_TEMP 'nexbot-window-ready.json'
+$env:NEX_CLIENT_SMOKE_OUTPUT = $ready
 $first = Start-Process $exe.FullName -ArgumentList $arg -PassThru
+Remove-Item Env:NEX_CLIENT_SMOKE_OUTPUT
 try {
     $deadline = (Get-Date).AddSeconds(45)
-    while (!$first.MainWindowHandle -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250; $first.Refresh() }
-    $handle = $first.MainWindowHandle
-    if (!$handle) { throw 'Missing initial client window.' }
-    [void][FixtureWindow]::ShowWindow($handle, 6)
-    if (![FixtureWindow]::IsIconic($handle)) { throw 'Window did not minimize.' }
+    do {
+        if ($first.HasExited) { throw 'Initial client exited.' }
+        $handle = [FixtureWindow]::Find($first.Id)
+        if ($handle -ne [IntPtr]::Zero -and (Test-Path $ready)) { break }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    if ($handle -eq [IntPtr]::Zero -or !(Test-Path $ready)) { throw 'Initial Electron window was not ready.' }
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        [void][FixtureWindow]::ShowWindowAsync($handle, 6)
+        Start-Sleep -Milliseconds 200
+    } while (![FixtureWindow]::IsIconic($handle) -and (Get-Date) -lt $deadline)
+    if (![FixtureWindow]::IsIconic($handle)) { throw 'Windows did not minimize the ready Electron window.' }
     $second = Start-Process $exe.FullName -ArgumentList $arg -PassThru
     if (!$second.WaitForExit(15000)) { throw 'Second launch started another instance.' }
     $deadline = (Get-Date).AddSeconds(15)
     while ([FixtureWindow]::IsIconic($handle) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
     $first.Refresh()
-    if ($first.HasExited -or [FixtureWindow]::IsIconic($handle)) { throw 'Existing window did not restore.' }
+    if ($first.HasExited -or [FixtureWindow]::Find($first.Id) -ne $handle -or [FixtureWindow]::IsIconic($handle)) { throw 'Existing window did not restore.' }
 } finally {
     Start-Process $exe.FullName -ArgumentList ($arg + ' --quit') -Wait
     [void]$first.WaitForExit(10000)
