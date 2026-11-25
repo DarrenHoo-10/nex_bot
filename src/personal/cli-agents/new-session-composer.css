@@ -1,7 +1,7 @@
 /* The new-session page: the message box in the middle of the pane, with the folder, CLI and model at its edge. */
 .na-new { --nn-ink: var(--na-ink, #20362b); --nn-muted: var(--na-muted, #52685a); --nn-line: var(--na-line, #d2e1d6); --nn-paper: var(--na-paper, #fff); --nn-hover: var(--na-inset, #eff6ef); --nn-soft: var(--na-soft, #cde8d8); --nn-accent: var(--na-accent, #176643); }
 .na-new .na-new-body { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 0; padding: 24px clamp(16px, 5vw, 64px) 14vh; }
-.na-new .na-new-stack { display: grid; gap: 8px; width: min(820px, 100%); }
+.na-new .na-new-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: min(820px, 100%); }
 .na-stage .cli-app .na-new .na-new-stack .cli-composer { box-sizing: border-box; width: 100%; margin: 0; }
 .na-stage .cli-app .na-new .na-new-stack .cli-composer textarea { min-height: 72px; }
 .na-new .na-new-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 4px; }

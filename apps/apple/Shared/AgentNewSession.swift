@@ -250,7 +250,7 @@ struct AgentNewSessionPage: View {
                 #else
                 AgentComposerAdd(images: $images, error: $imageError)
                 #endif
-                Spacer()
+                Spacer(minLength: 0)
                 #if os(macOS)
                 if canChoose {
                     // compact like the session's own model button: the name of the choice, the list on click
@@ -260,18 +260,18 @@ struct AgentNewSessionPage: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(chosenModel.isEmpty ? (fallbackModel.isEmpty ? "默认模型" : label(fallbackModel)) : label(chosenModel)).lineLimit(1)
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
+                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted).fixedSize()
                         }
                         .font(.system(size: 12.5)).foregroundStyle(Theme.foreground)
-                        .frame(maxWidth: 220, alignment: .trailing)
                     }
-                    .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    .menuStyle(.button).buttonStyle(.plain)
+                    .frame(maxWidth: 220, alignment: .trailing)
                     .accessibilityLabel("模型设置")
                 }
                 #endif
                 Button(action: start) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)) }
                     .buttonStyle(.plain).foregroundStyle(ready ? Theme.identityAccent : Theme.offline)
-                    .disabled(!ready).accessibilityLabel("开始会话")
+                    .fixedSize().disabled(!ready).accessibilityLabel("开始会话")
             }
         }
         .padding(14)
