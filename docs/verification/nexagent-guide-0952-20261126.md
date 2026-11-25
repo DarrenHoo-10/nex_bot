@@ -21,4 +21,4 @@
 - GitHub 预览版的四个安装包、校验清单和源码提交文件均已核对大小与摘要。OSS 发布前已备份原清单，试运行后上传并逐一回读校验。
 - 从公网更新接口检查四端，上一版本获得对应安装包，当前版本不再提示更新。逐个下载接口返回的文件，字节数和 SHA-256 与上表一致。Windows 安装版使用 NSIS 更新通道，0.9.51 便携版用户需手动运行一次 Setup。
 - 用浏览器打开生产官网，从实际渲染的四个平台下载入口核对版本和下载文件。四个文件的字节数与 SHA-256 均与上表一致。
-- 本地 Android 单测通过。GitHub 的 Android 检查在下载 Robolectric 依赖时收到 Maven Central 的 HTTP 429。
+- 本地 Android 单测通过。GitHub 初次下载 Robolectric 依赖遇到 Maven Central 限流，在发布标签上重跑后 Kotlin、Android 应用测试、APK 构建和 Core 通信样例校验均通过。[发布标签 CI](https://github.com/DarrenHoo-10/nex_bot/actions/runs/45658834362)
