@@ -1848,6 +1848,15 @@ export function isCliCommandRecord(text: string): boolean {
   return CLI_COMMAND_RECORD.test(text);
 }
 
+/** Claude Code records text that reached it as a paste inside `<pasted_content id="…">` tags
+ * (the closing tag repeats the id). The tags are not the user's words. */
+const PASTED_CONTENT_TAG = /<\/?pasted_content(?:\s+id="[^"<>\n]*")?\s*>/g;
+export function unwrapPastedContent(text: string): string {
+  if (!text.includes("pasted_content")) return text;
+  const unwrapped = text.replace(PASTED_CONTENT_TAG, "");
+  return unwrapped === text ? text : unwrapped.trim();
+}
+
 /** Why a model call failed, in a few words, for an error the CLI recorded ("API Error: …").
  * Null for any other notice. The provider's raw wording is never shown. */
 export function modelFailureReason(text: string): string | null {

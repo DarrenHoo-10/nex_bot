@@ -74,13 +74,23 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   };
 
   const status = blocker ?? branchError ?? (dir ? null : "先选择工作目录");
+  // A phone's keyboard shrinks the page while the box is in use: the box stays in view at the bottom, and the
+  // brand and chips go up with it under the header
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = body.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => { if (element.contains(document.activeElement)) element.scrollTop = element.scrollHeight; });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   return (
     <section className="cli-pane na-new" aria-label="新建会话" data-testid="cli-new-session">
       <header className="cli-pane-head">
         <button type="button" className="icon-button cli-back" aria-label="打开会话目录" onClick={onShowDirectory}><PanelLeftOpen size={19}/></button>
         <div className="cli-pane-title"><strong>新建会话</strong></div>
       </header>
-      <div className="na-new-body">
+      <div className="na-new-body" ref={body}>
         <div className="na-new-stack">
           <div className="na-new-hero">
             <BrandMark agent size={38}/>

@@ -1,7 +1,7 @@
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { completedCliReplies, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
+import { completedCliReplies, unwrapPastedContent, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
 import { MessageImages } from "../components/MessageImages";
 import { parseMessageMedia } from "../message-media";
 import { AGENT_LABEL } from "./session-model";
@@ -16,7 +16,7 @@ import { cliErrorText, fetchItems, translateReply } from "./api";
 import type { CliStream } from "./stream";
 import { localCacheScope, queueLocalCache, readLocalCache } from "../local-content-cache";
 import type { CliQueueEntry } from "./api";
-import { guideTimeline, type GuideMessage, activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
+import { guideTimeline, type GuideMessage, activityStats, groupItems, replyTails, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
 
 type StoredTail = { marks: string[]; items: CliItem[]; translationEnabled?: boolean | null };
 
@@ -240,7 +240,7 @@ export function ReplyText({ source, supplied, local = true, core, actions, onBra
   </>;
 }
 
-function BlockView({ block, engine, translations, onEdit, guideStatus, byline = true, local, core, onBranch }: { block: Block; guideStatus?:string; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; local: boolean; core?: CoreReply; onBranch?(): void }) {
+function BlockView({ block, engine, translations, onEdit, guideStatus, byline = true, actions = true, local, core, onBranch }: { block: Block; guideStatus?:string; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; actions?: boolean; local: boolean; core?: CoreReply; onBranch?(): void }) {
   // onEdit is passed only for a message that may still be revised
   switch (block.kind) {
     case "user":
@@ -257,7 +257,7 @@ function BlockView({ block, engine, translations, onEdit, guideStatus, byline = 
       return (
         <div className="cli-msg is-assistant markdown" data-testid="cli-assistant">
           {byline ? <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine?AGENT_LABEL[engine]:"助手"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div> : null}
-          <ReplyText key={block.item.text} actions onBranch={onBranch} source={block.item.text} local={local} core={core} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
+          <ReplyText key={block.item.text} actions={actions} onBranch={onBranch} source={block.item.text} local={local} core={core} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
         </div>
       );
     case "activity":
@@ -309,13 +309,16 @@ export function editableMessages(blocks: readonly Block[], now: number): { ids: 
   return { ids, next };
 }
 
-function UserMessageContent({ text }: { text: string }) {
+function UserMessageContent({ text: raw }: { text: string }) {
+  const text = unwrapPastedContent(raw);
   const media = useMemo(() => parseMessageMedia(text, true), [text]);
   const caption = media.images.length ? media.text : text;
-  return <>
+  // the pictures sit in the message's top-left corner; without words they stand on their own
+  if (!caption) return <MessageImages images={media.images} fitImage/>;
+  return <div className="cli-bubble" data-media={media.images.length ? true : undefined}>
     <MessageImages images={media.images} fitImage/>
-    {caption ? <div className="cli-bubble">{caption}</div> : null}
-  </>;
+    {caption}
+  </div>;
 }
 
 /** A message the user sent that the session's records do not hold yet. */
@@ -528,6 +531,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
   const blocks = useMemo(() => withoutHidden(groupItems(guideTimeline(details?.history?.length?mergeItems(details.history,items):items, guides ?? [])), hidden), [items,details?.history,hidden,guides]);
   const { heads, replying } = useMemo(() => replyHeads(blocks), [blocks]);
+  const tails = useMemo(() => replyTails(blocks), [blocks]);
   const completed = useMemo(() => completedCliReplies(items, active), [items, active]);
   const echoShown = !!echo && !items.some((item) => item.kind === "user");
   // edit-and-resend: only a message nothing answered yet, and only for a short while
@@ -555,7 +559,9 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
           const guide = block.kind === "user" ? guides?.find(row => "guide:" + row.id === block.id) : undefined;
           const status = guide && queueEntries?.find(entry => entry.id === guide.id)?.status;
           const guideStatus = status === "failed" ? "发送失败" : status === "uncertain" || guide?.uncertain ? "待确认" : undefined;
-          const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} onBranch={complete && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
+          // copy and branch: only on a finished reply's conclusion, not on what the agent wrote while working
+          const conclusion = complete && tails.has(block.id);
+          const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} actions={conclusion} onBranch={conclusion && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
           return onNotes && !localOnly ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}

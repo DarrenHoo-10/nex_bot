@@ -157,22 +157,29 @@ struct AgentImageMessage: View {
         var seen = Set<String>()
         let images = matches.sorted { $0.start < $1.start }.filter { seen.insert($0.path).inserted }
         let caption = withoutMarkdown.replacing(Self.standalone, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-        VStack(alignment: .trailing, spacing: 6) {
-            if !images.isEmpty {
-                OutlineFlow(spacing: 6, trailing: true) {
-                    ForEach(images, id: \.path) { image in
-                        AgentImagePreview(name: image.name, path: image.path, load: load)
-                    }
+        // with words, the pictures sit in the bubble's top-left corner above them; without, they stand on their own
+        if caption.isEmpty {
+            OutlineFlow(spacing: 6, trailing: true) {
+                ForEach(images, id: \.path) { image in
+                    AgentImagePreview(name: image.name, path: image.path, load: load)
                 }
             }
-            if !caption.isEmpty {
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                if !images.isEmpty {
+                    OutlineFlow(spacing: 6, trailing: false) {
+                        ForEach(images, id: \.path) { image in
+                            AgentImagePreview(name: image.name, path: image.path, load: load)
+                        }
+                    }
+                }
                 Text(caption).font(.system(size: 14)).foregroundStyle(Color.white).textSelection(.enabled)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(
-                        LinearGradient(colors: [Theme.nexAgentBubbleTop, Theme.nexAgentBubbleBottom], startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: Bubble.user
-                    )
             }
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(
+                LinearGradient(colors: [Theme.nexAgentBubbleTop, Theme.nexAgentBubbleBottom], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: Bubble.user
+            )
         }
     }
 }

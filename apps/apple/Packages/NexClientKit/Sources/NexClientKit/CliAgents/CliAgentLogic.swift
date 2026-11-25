@@ -56,7 +56,7 @@ public enum CliSessions {
     }
 
     public static func title(_ s: CliSession) -> String {
-        let t = s.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = CliTranscript.unwrapPastedContent(s.title).trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? "\(s.engine.label) 会话" : t
     }
 
@@ -300,7 +300,11 @@ public enum CliTranscript {
         for item in items {
             switch item.kind {
             // a `/model` switch and other commands leave bookkeeping records, not the user's words
-            case .user: if !isCommandRecord(item.text) { blocks.append(.user(item)) }
+            case .user:
+                guard !isCommandRecord(item.text) else { continue }
+                var shown = item
+                shown.text = unwrapPastedContent(item.text)
+                blocks.append(.user(shown))
             case .assistant: blocks.append(.assistant(item))
             case .tool, .thinking:
                 if case .activity(let id, let run)? = blocks.last { blocks[blocks.count - 1] = .activity(id: id, items: run + [item]) }
@@ -313,6 +317,30 @@ public enum CliTranscript {
             }
         }
         return blocks
+    }
+
+    /// The last assistant block of each reply: its conclusion. Only it carries copy and branch; the text the agent
+    /// wrote between its steps does not (same rule as the web client).
+    public static func replyTails(_ blocks: [CliBlock]) -> Set<String> {
+        var tails = Set<String>()
+        var last: String?
+        for block in blocks {
+            switch block {
+            case .user: if let last { tails.insert(last) }; last = nil
+            case .assistant(let item): last = item.id
+            default: break
+            }
+        }
+        if let last { tails.insert(last) }
+        return tails
+    }
+
+    /// Claude Code records text that reached it as a paste inside `<pasted_content id="…">` tags (the closing tag
+    /// repeats the id); the tags are not the user's words (same rule as the web client).
+    public static func unwrapPastedContent(_ text: String) -> String {
+        guard text.contains("pasted_content") else { return text }
+        let unwrapped = text.replacingOccurrences(of: #"</?pasted_content(?:\s+id="[^"<>\n]*")?\s*>"#, with: "", options: .regularExpression)
+        return unwrapped == text ? text : unwrapped.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// A user record that is only a CLI command's bookkeeping (same rule as the web client).

@@ -58,6 +58,20 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliTranscript.modelFailureReason("API Error: 529 {\"type\":\"overloaded_error\"}"), "模型服务暂时不可用")
     }
 
+    func testTranscriptUnwrapsPastedTextAndMarksReplyConclusions() {
+        let items = [
+            CliItem(id: "u1", ts: 1, kind: .user, text: "<pasted_content id=\"e93a\">\n修一下\n</pasted_content id=\"e93a\">"),
+            CliItem(id: "a1", ts: 2, kind: .assistant, text: "先看看"),
+            CliItem(id: "a2", ts: 3, kind: .assistant, text: "改好了"),
+            CliItem(id: "u2", ts: 4, kind: .user, text: "谢谢"),
+        ]
+        let blocks = CliTranscript.group(items)
+        guard case .user(let first) = blocks[0] else { return XCTFail("expected the user's message") }
+        XCTAssertEqual(first.text, "修一下")
+        XCTAssertEqual(CliTranscript.replyTails(blocks), ["a2"])
+        XCTAssertEqual(CliTranscript.unwrapPastedContent("what is pasted_content?"), "what is pasted_content?")
+    }
+
     func testTaskNotificationsDoNotBecomeChatBubblesOrUserTurns() throws {
         let text = "<task-notification><task-id>task-1</task-id><output-file>/private/task.log</output-file><status>completed</status><summary>private output</summary></task-notification>"
         let items = try decode([CliItem].self, [

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CliItem } from "../../../shared/cli-agents";
 import { assistantItem, toolItem, userItem } from "./fixtures";
-import { guideTimeline, activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
+import { guideTimeline, activityStats, groupItems, replyTails, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
 
 const ids = (items: readonly CliItem[]) => items.map((item) => item.id);
 const thinking = (id: string, ts: number): CliItem => ({ kind: "thinking", id, ts, text: "想一想" });
@@ -169,5 +169,19 @@ describe("small helpers", () => {
   it("names the oldest loaded id", () => {
     expect(oldestId([userItem("u1", 1), userItem("u2", 2)])).toBe("u1");
     expect(oldestId([])).toBeUndefined();
+  });
+});
+
+describe("replyTails", () => {
+  it("marks only the last assistant block of each reply", () => {
+    const blocks = groupItems([
+      userItem("u1", 1, "做个贪吃蛇"),
+      assistantItem("a1", 2, "先看一下目录"),
+      toolItem("t1", 3),
+      assistantItem("a2", 4, "做好了"),
+      userItem("u2", 5, "再加个计分"),
+      assistantItem("a3", 6, "正在改"),
+    ]);
+    expect([...replyTails(blocks)]).toEqual(["a2", "a3"]);
   });
 });

@@ -4,12 +4,12 @@
 // records the revised message.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
-import { cliQuestionToSteer, modelFailureReason, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { cliQuestionToSteer, modelFailureReason, unwrapPastedContent, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { ModelFailureDialog } from "./ModelFailureDialog";
 import { CliApiError, continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
 import { useNotes } from "./use-notes";
-import {getLaunch,saveLaunch,transferGoal} from "./composer-additions";
+import {getApplied,getLaunch,saveApplied,saveLaunch,transferGoal} from "./composer-additions";
 import { Composer, type LaunchChoice } from "./Composer";
 import { cardState, type RequestRecord } from "./requests";
 import { RequestCard } from "./RequestCard";
@@ -76,7 +76,7 @@ export function settlePending(list: readonly PendingSend[], items: readonly CliI
 export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onBranchReply, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features, echo }: SessionPaneProps) {
   const review=useReview();
   const details=review?.records[session.key];
-  const heading=details?.title||title?.trim()||sessionTitle(session);
+  const heading=unwrapPastedContent(details?.title||title?.trim()||"")||sessionTitle(session);
   const [workspaceOpen,setWorkspaceOpen]=useState(false);
   const workspaceId=useId();
   const workspaceToggle=useRef<HTMLButtonElement>(null);
@@ -153,9 +153,15 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     if (fresh.length) setFailure(fresh[fresh.length - 1].reason);
   }, [items]);
   const [launch, setLaunch] = useState<LaunchChoice>(() => getLaunch(session.key));
-  /** what this page last told the running CLI, so a send only switches when the choice changed */
-  const applied = useRef<string>(JSON.stringify({ model: "", effort: "" }));
-  const chooseLaunch = (next: LaunchChoice) => { setLaunch(next); saveLaunch(session.key, next); };
+  /** what the running CLI was started with or last told, so a send only switches when the choice changed.
+   * Unknown (a session from before this was kept): the saved choice, which it was started with. */
+  const applied = useRef<string>(JSON.stringify(getApplied(session.key) ?? launch));
+  const markApplied = (key: string, value: LaunchChoice) => { applied.current = JSON.stringify(value); saveApplied(key, value); };
+  const chooseLaunch = (next: LaunchChoice) => {
+    // a change not sent yet stays a change after the page reopens
+    if (!getApplied(session.key)) saveApplied(session.key, JSON.parse(applied.current) as LaunchChoice);
+    setLaunch(next); saveLaunch(session.key, next);
+  };
   // From a send until the session answers: a resumed CLI can take a while to
   // print anything, and without this the page looks like nothing happened.
   const [awaiting, setAwaiting] = useState<{ known: ReadonlySet<string>; resuming: boolean; unconfirmed?: boolean; fresh?: boolean } | null>(() => echo ? { known: new Set(), resuming: false, fresh: true } : null);
@@ -194,7 +200,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       // the chosen model and effort start the CLI (an older executor only takes a plain continue)
       const launchOptions = !review && features?.includes("launchOptions") && Object.keys(options).length ? options : undefined;
       resumedKey.current=(await continueSession(session.key, launchOptions)).key;
-      applied.current = JSON.stringify(launch);
+      markApplied(resumedKey.current, launch);
     }
     const key=resumedKey.current??session.key;
     if (!review && session.sendVia === "acp" && session.state === "idle" && delivery !== "steer" && delivery !== "queue" && applied.current !== JSON.stringify(launch)) {
@@ -207,7 +213,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       for (const command of [launch.model && launch.model!==before.model ? "/model "+launch.model : "", launch.effort && launch.effort!==before.effort ? "/effort "+launch.effort : ""].filter(Boolean)) {
         await sendMessage(key, command, { delivery: delivery ?? "send", clientMessageId: crypto.randomUUID(), requestId: crypto.randomUUID() });
       }
-      applied.current = JSON.stringify(launch);
+      markApplied(key, launch);
     }
     // an edited message replaces the one the agent is still on: that turn stops first
     if(revision && !review && session.state==="running"){

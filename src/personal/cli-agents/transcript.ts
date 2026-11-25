@@ -184,3 +184,16 @@ export function activityStats(items: readonly ActivityItem[]) {
 export function oldestId(items: readonly CliItem[]): string | undefined {
   return items[0]?.id;
 }
+
+/** The last assistant block of each reply: its conclusion. Only it carries copy and branch;
+ * the text the agent wrote between its steps does not. */
+export function replyTails(blocks: readonly Block[]): Set<string> {
+  const tails = new Set<string>();
+  let last: string | undefined;
+  for (const block of blocks) {
+    if (block.kind === "user") { if (last) tails.add(last); last = undefined; }
+    else if (block.kind === "assistant") last = block.id;
+  }
+  if (last) tails.add(last);
+  return tails;
+}

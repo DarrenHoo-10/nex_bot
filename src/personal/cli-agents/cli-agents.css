@@ -26,13 +26,14 @@
   flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr);
   gap: 10px; padding: 0 12px 12px;
 }
-.cli-app .cli-side { min-height: 0; overflow: auto; border-radius: 16px; padding: 8px; }
+.cli-app .cli-side { min-height: 0; overflow: hidden auto; border-radius: 16px; padding: 8px; }
 .cli-app .cli-content { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-radius: 16px; overflow: hidden; }
 .cli-app .cli-placeholder, .cli-app .cli-empty { color: var(--muted-foreground); font-size: 12px; padding: 18px 12px; text-align: center; }
 .cli-app .cli-placeholder { margin: auto; }
 
-/* list */
-.cli-app .cli-list { display: grid; gap: 10px; }
+/* list. Its grids keep one column as wide as the list: a long session name is cut short, never widens the page */
+.cli-app .cli-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.cli-app .cli-list .na-active { grid-template-columns: minmax(0, 1fr); }
 .cli-app .cli-device > header {
   display: flex; align-items: center; gap: 7px; height: auto; min-height: 0;
   padding: 4px 4px 4px 8px; border: 0; background: transparent;
@@ -104,6 +105,8 @@
 .cli-app .cli-older { justify-self: center; padding: 5px 12px; font-size: 12px; border-radius: 8px; background: transparent; border: 1px solid var(--input); }
 .cli-app .cli-msg.is-user { display: grid; justify-items: end; gap: 3px; }
 .cli-app .cli-msg.is-user small { font-size: 11px; color: var(--muted-foreground); }
+/* pictures sent with words: in the bubble's top-left corner, above the text */
+.cli-app .cli-msg.is-user .cli-bubble .message-media { justify-content: flex-start; max-width: 100%; margin: 2px 0 8px; white-space: normal; }
 .cli-app .cli-bubble { max-width: 85%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; background: var(--chat-user, var(--secondary)); color: var(--chat-user-foreground, var(--foreground)); }
 .cli-app .cli-msg.is-assistant { line-height: 1.7; overflow-wrap: anywhere; min-width: 0; }
 .cli-app .cli-plain { margin: 0; white-space: pre-wrap; }

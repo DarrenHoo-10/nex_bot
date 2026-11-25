@@ -2,7 +2,7 @@ import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, GitFork, LoaderCircle, Trash2, Fingerprint, ChevronDown, ChevronRight, Clock3, Ellipsis, Monitor, Plus, Search, X } from "lucide-react";
-import type { CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
+import { unwrapPastedContent, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { AGENT_LABEL, RECENT_MS, askedSession, projectOf, forkParentKey, foldHistory, matchesTerms, moveProject, orderProjects, projectGroups, rememberProjects, sessionStatusLabel, sessionTone, sessionTitle, treeParents, type DeviceGroup } from "./session-model";
 import { searchSessions } from "./api";
 import { copyText } from "../../lib/copy-text";
@@ -126,7 +126,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     return () => doc.removeEventListener("pointerdown", clearOutsideSelection, true);
   }, []);
   const meta=(key:CliSessionKey)=>review?.records[key] ?? workbench?.get(key);
-  const label=(s:CliSessionView)=>{const own=meta(s.key);return (own&&"title" in own&&own.title)||sessionTitle(s)};
+  const label=(s:CliSessionView)=>{const own=meta(s.key);return (own&&"title" in own&&own.title?unwrapPastedContent(own.title):"")||sessionTitle(s)};
   // the older per-session "hidden" flag reads as archived: one place to put sessions away
   const isArchived=(s:CliSessionView)=>Boolean(meta(s.key)?.archived)||(!review&&!!s.hidden);
   const ownRow=(key:CliSessionKey)=>{const own=meta(key);return own&&"id" in own&&own.id?own as WorkbenchMeta:undefined};

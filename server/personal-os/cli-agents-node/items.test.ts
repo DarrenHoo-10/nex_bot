@@ -47,6 +47,13 @@ describe("claude: user records", () => {
     expect(claude({ type: "user", uuid: "c4", timestamp: TS, message: { content: "what does <command-name> mean?" } }).items).toHaveLength(1);
   });
 
+  it("drops the tags Claude Code puts around pasted text", () => {
+    const pasted = claude({ type: "user", uuid: "p1", timestamp: TS, message: { content: "<pasted_content id=\"e93a\">\n1点击nexagent\n第二行\n</pasted_content id=\"e93a\">" } });
+    expect(pasted.items).toEqual([{ kind: "user", id: "p1", ts: MS, text: "1点击nexagent\n第二行" }]);
+    // words that only mention the tag are still the user's
+    expect(claude({ type: "user", uuid: "p2", timestamp: TS, message: { content: "what is pasted_content?" } }).items[0]).toMatchObject({ text: "what is pasted_content?" });
+  });
+
   it("shows a message NexBot sent through the inbox as the user's, and its Stop as a notice", () => {
     const peer = (body: string) => ({ type: "user", uuid: "p1", timestamp: TS, isMeta: true, origin: { kind: "peer", body }, message: { content: "Another Claude session sent a message:\n<cross-session-message>" + body + "</cross-session-message>" } });
     expect(claude(peer(inboxMessageText("所以对吗"))).items).toEqual([{ kind: "user", id: "p1", ts: MS, text: "所以对吗" }]);

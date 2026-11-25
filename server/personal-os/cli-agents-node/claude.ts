@@ -8,7 +8,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliLiveIn, type CliSessionState } from "../../../shared/cli-agents.ts";
+import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, unwrapPastedContent, type CliLiveIn, type CliSessionState } from "../../../shared/cli-agents.ts";
 import { claudeUsed, claudeWindow } from "./context-usage.ts";
 import { desktopHides, EMPTY_DESKTOP_INDEX, type DesktopIndex, type DesktopSessionState } from "./claude-desktop.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
@@ -384,7 +384,7 @@ function userText(record: Rec): string | undefined {
   }
   const kept = parts.filter((p) => p.trim() !== "" && !NOISE.test(p));
   if (kept.length === 0) return undefined;
-  return kept.join("\n");
+  return unwrapPastedContent(kept.join("\n")) || undefined;
 }
 
 function shortTitle(raw: string): string {

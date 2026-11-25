@@ -341,6 +341,8 @@ private struct AgentTranscript: View {
         let working = self.working ?? (sent.isEmpty ? nil : "等待回复")
         let blocks = CliTranscript.group(AgentGuide.timeline(t.items, guides))
         let completed = CliTranscript.completedReplies(t.items, active: active)
+        // copy and branch: only on a finished reply's conclusion
+        let conclusions = CliTranscript.replyTails(blocks).intersection(completed)
         let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
         Group {
             if blocks.isEmpty && (echo != nil || !sent.isEmpty) {
@@ -382,7 +384,7 @@ private struct AgentTranscript: View {
                                 let state = guide.flatMap { guide in model.queues[key]?.entries.first { $0.id == guide.id }?.status }
                                 AgentBlockView(block: block, guideStatus: state == "failed" ? "发送失败" : (state == "uncertain" || guide?.uncertain == true ? "待确认" : nil), expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) && !guides.contains(where: { $0.tail?.id == block.id }) ? { item in
                                     try await model.translateReply(key, item: item)
-                                } : nil, branch: completed.contains(block.id) ? branch : nil)
+                                } : nil, actions: conclusions.contains(block.id), branch: conclusions.contains(block.id) ? branch : nil)
                             }
                             if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
                             ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
@@ -409,6 +411,7 @@ private struct AgentBlockView: View {
     @Binding var expandedActivities: Set<String>
     let loadImage: (String) async throws -> Data
     var translate: ((CliItem) async throws -> String?)?
+    var actions = true
     var branch: ((String) -> Void)?
 
     var body: some View {
@@ -423,7 +426,7 @@ private struct AgentBlockView: View {
                 }
             }
         case .assistant(let item):
-            AgentReplyText(item: item, translate: translate, branch: branch)
+            AgentReplyText(item: item, translate: translate, actions: actions, branch: branch)
         case .activity(let id, let items):
             AgentActivity(items: items, open: Binding(get: { expandedActivities.contains(id) }, set: { open in
                 if open { expandedActivities.insert(id) }
@@ -438,6 +441,7 @@ private struct AgentBlockView: View {
 private struct AgentReplyText: View {
     let item: CliItem
     var translate: ((CliItem) async throws -> String?)?
+    var actions = true
     var branch: ((String) -> Void)?
     @State private var translated: String?
     @State private var original = false
@@ -461,22 +465,24 @@ private struct AgentReplyText: View {
                 Button("重试翻译") { retry += 1 }
                     .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.nexAgentAccent)
             }
-            HStack(spacing: 4) {
-                Button {
-                    #if os(macOS)
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(displayedText, forType: .string)
-                    #else
-                    UIPasteboard.general.string = displayedText
-                    #endif
-                } label: { Label("复制", systemImage: "doc.on.doc") }
-                    .help("复制")
-                if let branch {
-                    Button { branch(item.id) } label: { Label("分支到新聊天", systemImage: "arrow.triangle.branch") }
-                        .help("分支到新聊天")
+            if actions {
+                HStack(spacing: 4) {
+                    Button {
+                        #if os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(displayedText, forType: .string)
+                        #else
+                        UIPasteboard.general.string = displayedText
+                        #endif
+                    } label: { Label("复制", systemImage: "doc.on.doc") }
+                        .help("复制")
+                    if let branch {
+                        Button { branch(item.id) } label: { Label("分支到新聊天", systemImage: "arrow.triangle.branch") }
+                            .help("分支到新聊天")
+                    }
                 }
+                .labelStyle(.iconOnly).buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Theme.muted)
             }
-            .labelStyle(.iconOnly).buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Theme.muted)
         }
         .task(id: translate == nil ? nil : Request(source: item.text, attempt: retry)) {
             translated = nil
@@ -1213,7 +1219,8 @@ private struct AgentComposer: View {
                     AgentDrafts.appliedEfforts[session.key] = nil
                 }
             }
-            if canSetOnSend, let level = resolvedEffort, AgentDrafts.appliedEfforts[session.key] != level {
+            // only a level picked here: the default would type /effort before the first message of every visit
+            if canSetOnSend, effort != nil, let level = resolvedEffort, AgentDrafts.appliedEfforts[session.key] != level {
                 try await model.send(session.key, text: "/effort " + level)
                 AgentDrafts.appliedEfforts[session.key] = level
             }

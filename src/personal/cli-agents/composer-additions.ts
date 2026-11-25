@@ -30,6 +30,18 @@ export function getLaunch(key:string):{model:string;effort:string}{
 export function saveLaunch(key:string,value:{model:string;effort:string}){
   try{if(!value.model&&!value.effort)localStorage.removeItem(launchKey(key));else localStorage.setItem(launchKey(key),JSON.stringify(value))}catch{/* lasts for the page */}
 }
+/** The model and effort the session's CLI already runs with, as far as this browser knows: it was started with them
+ * or was told them (/model, /effort). A send types only what differs, so reopening the page repeats nothing. */
+const appliedKey=(key:string)=>"nexagent.applied."+key;
+export function getApplied(key:string):{model:string;effort:string}|null{
+  try{const raw=localStorage.getItem(appliedKey(key));if(raw===null)return null;
+    const value=JSON.parse(raw) as {model?:unknown;effort?:unknown};
+    return {model:typeof value.model==="string"?value.model:"",effort:typeof value.effort==="string"?value.effort:""};
+  }catch{return null}
+}
+export function saveApplied(key:string,value:{model:string;effort:string}){
+  try{localStorage.setItem(appliedKey(key),JSON.stringify({model:value.model,effort:value.effort}))}catch{/* lasts for the page */}
+}
 export function transferGoal(from:string,to:string){
   const goal=getExtras(from).goal;
   if(goal!==null && from!==to)saveExtras(to,{...getExtras(to),goal});

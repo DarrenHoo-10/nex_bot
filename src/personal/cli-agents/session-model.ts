@@ -1,6 +1,6 @@
 // Pure helpers over the session rows Core sends: grouping, labels and what the
 // composer may do. No React, no network.
-import { CLI_ENGINES, type CliDeviceView, type CliEngine, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { CLI_ENGINES, unwrapPastedContent, type CliDeviceView, type CliEngine, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 
 export const ENGINE_LABEL: Record<CliEngine, string> = { claude: "Claude", codex: "Codex", zcode: "ZCode", agy: "Antigravity" };
 /** The agent names the session list groups by. */
@@ -177,7 +177,7 @@ export function foldHistory(rows: readonly CliSessionView[], parents: ReadonlyMa
 }
 
 export function sessionTitle(session: Pick<CliSessionView, "title" | "engine" | "cwd">): string {
-  return session.title.trim() || `${ENGINE_LABEL[session.engine]} 会话`;
+  return unwrapPastedContent(session.title).trim() || `${ENGINE_LABEL[session.engine]} 会话`;
 }
 
 export interface AgentGroup { engine: CliEngine; label: string; sessions: CliSessionView[] }

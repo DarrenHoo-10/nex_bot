@@ -11,6 +11,7 @@ import {
   isCliCommandRecord,
   parseCliTaskNotification,
   truncateUtf8,
+  unwrapPastedContent,
   type CliItem,
   type CliSessionWire,
 } from "../../../shared/cli-agents.ts";
@@ -288,7 +289,7 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
     }
     if (!attachment || attachment.type !== "queued_command") return none;
     const raw = attachment.prompt ?? attachment.content ?? attachment.text;
-    const text = blocksText(raw);
+    const text = unwrapPastedContent(blocksText(raw));
     if (attachment.commandMode === "task-notification") {
       const task = parseCliTaskNotification(text);
       return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
@@ -374,7 +375,7 @@ function claudeUser(record: Rec, message: Rec | undefined, ctx: ItemContext, bas
 
   // `/model` and other commands: their bookkeeping records are not the user's words
   if (texts.length > 0 && texts.every(isCliCommandRecord)) texts.length = 0;
-  let text = texts.join("\n\n");
+  let text = unwrapPastedContent(texts.join("\n\n"));
   const extracted = extractImagePaths(text);
   text = extracted.text;
   images.push(...extracted.images);

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CliEngine, CliPermissionMode, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { CliApiError, cliErrorText, sendMessage, startSession, uploadAttachment } from "./api";
 import type { LaunchChoice } from "./CliModelMenu";
-import { fileReference, saveLaunch, type PickedFile } from "./composer-additions";
+import { fileReference, saveApplied, saveLaunch, type PickedFile } from "./composer-additions";
 import { useReview } from "./WorkbenchReview";
 
 export interface LaunchRequest {
@@ -125,6 +125,8 @@ export function useLaunches(sessions: readonly CliSessionView[], onSettled?: () 
         }
         // the composer of the new session keeps the model and effort it started with
         saveLaunch(target, launch.choice);
+        // ...and its CLI already runs with them: the first message must not type them again
+        saveApplied(target, launch.choice);
         patch(launch.id, { target });
         settled.current?.();
       }
