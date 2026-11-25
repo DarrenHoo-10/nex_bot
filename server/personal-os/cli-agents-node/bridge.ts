@@ -37,6 +37,7 @@ import {
   type CliLaunchOptions,
   type CliOp,
   type CliOpArgs,
+  type CliOpResult,
   type CliPermissionMode,
   type CliSessionRef,
   type CliSessionWire,
@@ -1507,7 +1508,7 @@ export class CliAgentBridge {
 
   /** A session outside nex_bot's terminals that this device can still write to: a Claude inbox, a shared
    * Codex daemon, or a ZCode session the host channel has attached. */
-  private async sendOutside(args: CliOpArgs["send"], row: CliSessionWire): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
+  private async sendOutside(args: CliOpArgs["send"], row: CliSessionWire, steer = false): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
     const route = this.discovery.routeFor(args.ref);
     if (route?.via === "codexQueue" && row.sendVia === "inbox" && this.codexDesktopQueue) {
       await this.codexDesktopQueue.send({ home: route.home, threadId: route.threadId, version: route.version, text: args.text });
@@ -1520,6 +1521,7 @@ export class CliAgentBridge {
         platform: this.platform,
         transcript: this.discovery.transcriptFor(args.ref),
         state: row.state,
+        steer,
         ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }),
       });
       return { turn: 0, started: false, delivery: result.delivery, ...(result.waiting ? { waiting: true } : {}) };
@@ -1554,8 +1556,8 @@ export class CliAgentBridge {
   }
 
   /** Guidance into a turn that is already running: typing into the live
-   * terminal, a daemon steer, or the host channel for ZCode. */
-  private async opSteer(args: CliOpArgs["steer"]): Promise<{ accepted: boolean }> {
+   * terminal, a priority inbox message, a daemon steer, or the host channel for ZCode. */
+  private async opSteer(args: CliOpArgs["steer"]): Promise<CliOpResult["steer"]> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     const address = this.addressFor(args.ref);
@@ -1572,6 +1574,11 @@ export class CliAgentBridge {
     const row = this.discovery.get(args.ref);
     const caps = row ? harnessFor(row.engine)?.caps(row) : undefined;
     const route = this.discovery.routeFor(args.ref);
+    if (route?.via === "inbox" && row?.engine === "claude" && row.sendVia === "inbox") {
+      if (row.state !== "running") throw new OpFailure("turn_changed");
+      const { delivery } = await this.sendOutside(args, row, true);
+      return { accepted: true, ...(delivery ? { delivery } : {}) };
+    }
     if (route?.via === "daemon" && row?.sendVia === "daemon") {
       if (caps && !caps.steer) throw new OpFailure("invalid", "此入口不支持引导");
       const sent = await this.codexDaemons.send(route.home, route.threadId, args.text);
@@ -1582,7 +1589,6 @@ export class CliAgentBridge {
       const result = await this.options.zcodeHost.submit(route.sessionId, args.text, { steer: true });
       return { accepted: result.accepted === true };
     }
-    // guidance needs a running turn to land in; a plain inbox is not one
     throw new OpFailure(row?.state === "running" || row?.state === "waiting" ? "invalid" : "turn_changed");
   }
 

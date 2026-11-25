@@ -18,7 +18,7 @@ const queueBox = () => container.querySelector<HTMLTextAreaElement>("textarea[ar
 const sendButton = () => container.querySelector<HTMLButtonElement>("button[aria-label=发送]")!;
 const buttons = (label: string) => [...container.querySelectorAll("button")].filter((b) => b.getAttribute("aria-label") === label || b.textContent?.trim() === label);
 /** the queued card's own icon buttons (the send-mode toggle has a 引导 too) */
-const queued = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(`.na-queued button[aria-label="${label}"]`)];
+const queued = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".na-queued button")].filter((button) => button.getAttribute("aria-label") === label || button.textContent?.trim() === label);
 
 const entry = (over: Partial<CliQueue["entries"][number]> = {}): CliQueue["entries"][number] => ({
   id: "e1", seq: 1, text: "排队的消息", status: "pending", version: 1, createdAt: 1, updatedAt: 1, ...over,
@@ -86,6 +86,16 @@ describe("the real queue under the composer", () => {
     expect(container.textContent).toContain("待确认");
     expect(queued("撤销")).toHaveLength(0);
     expect(queued("引导")).toHaveLength(0);
+  });
+
+  it("offers steering for Claude inbox queues on a capable computer", async () => {
+    const inbox = session({ nativeId: "inbox1", engine: "claude", state: "running", liveIn: "desktop", terminal: undefined, sendVia: "inbox" });
+    const onQueueSteer = vi.fn(async () => {});
+    await show({ session: inbox, queue: queue(), onQueueSteer });
+    expect(queued("引导")).toHaveLength(0);
+    await show({ session: inbox, queue: queue(), onQueueSteer, features: ["inboxSteer"] });
+    await act(async () => { queued("引导")[0].click(); });
+    expect(onQueueSteer).toHaveBeenCalledWith("e1", 1);
   });
 
   it("steering appears only while the session runs", async () => {

@@ -16,6 +16,7 @@ import {
   type CliQueueStatus,
   type CliQueueView,
   type CliSessionKey,
+  type CliSessionView,
   type CliWorkbenchKind,
   type CliWorkbenchSessionView,
   parseCliKey,
@@ -421,8 +422,7 @@ export class CliAgentWorkbench {
     const outside = OUTSIDE_VIA.has(session.sendVia ?? "");
     if (input.delivery === "steer") {
       if (queueState.paused && queueState.pauseReason === "stopped") throw new CliOpError("busy", "停止受理中，引导已拒绝");
-      if (session.liveIn !== "nexbot" || !session.terminal) throw new CliOpError("turn_changed");
-      if (session.state !== "running" && session.state !== "waiting") throw new CliOpError("turn_changed");
+      this.requireSteering(session);
     }
     if (input.delivery === "send" && !outside) {
       if (session.state === "stopped") throw new CliOpError("stopped");
@@ -465,6 +465,15 @@ export class CliAgentWorkbench {
       this.pushQueue(workbenchId);
     }
     return this.submitResult(this.entryRow(entryId), failure.opId);
+  }
+
+  private requireSteering(session: CliSessionView): void {
+    if (session.liveIn === "nexbot" && session.terminal && (session.state === "running" || session.state === "waiting")) return;
+    if (session.engine === "claude" && session.sendVia === "inbox" && session.state === "running") {
+      this.hub.requireFeature(session.deviceId, "inboxSteer");
+      return;
+    }
+    throw new CliOpError("turn_changed");
   }
 
   private submitResult(entry: Row, operationId: string | null): WorkbenchSubmitResult {
@@ -588,9 +597,9 @@ export class CliAgentWorkbench {
     const key = String(wb?.session_key ?? row.session_key);
     const session = this.hub.session(key);
     if (!session) throw new CliOpError("not_found");
-    if (session.liveIn !== "nexbot" || !session.terminal || (session.state !== "running" && session.state !== "waiting")) {
-      throw new CliOpError("turn_changed");
-    }
+    const queue = this.queueState(workbenchId);
+    if (queue.paused && queue.pauseReason === "stopped") throw new CliOpError("busy", "停止受理中，引导已拒绝");
+    this.requireSteering(session);
     const claimed = Number(this.store.run(
       "UPDATE cli_agent_outbox SET status='claimed',version=version+1,updated_at=? WHERE id=? AND status='pending' AND version=?",
       now(), input.entryId, input.expectedVersion,

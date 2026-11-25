@@ -172,7 +172,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     }
     const key=resumedKey.current??session.key;
     // a Claude in a NexBot terminal takes the change at once, typed as its own commands
-    if(!review && session.engine==="claude" && session.liveIn==="nexbot" && !!session.terminal && session.state!=="stopped" && applied.current!==JSON.stringify(launch)){
+    if(delivery!=="steer" && !review && session.engine==="claude" && session.liveIn==="nexbot" && !!session.terminal && session.state!=="stopped" && applied.current!==JSON.stringify(launch)){
       const before = JSON.parse(applied.current) as LaunchChoice;
       for (const command of [launch.model && launch.model!==before.model ? "/model "+launch.model : "", launch.effort && launch.effort!==before.effort ? "/effort "+launch.effort : ""].filter(Boolean)) {
         await sendMessage(key, command, { delivery: delivery ?? "send", clientMessageId: crypto.randomUUID(), requestId: crypto.randomUUID() });

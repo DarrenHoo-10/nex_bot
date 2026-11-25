@@ -596,6 +596,7 @@ private struct AgentComposer: View {
     @State private var draft = ""
     @State private var sending = false
     @State private var error = ""
+    @State private var deliveryNotice: String?
     @State private var images: [CliImageUpload] = []
     @State private var showingEffort = false
     @State private var effort: String?
@@ -604,6 +605,18 @@ private struct AgentComposer: View {
     @State private var catalog = CliModelCatalog(models: [])
 
     private var canSetOnResume: Bool { model.device(session.deviceId)?.cliAgents?.features.contains("launchOptions") == true }
+    private var claudeInbox: Bool {
+        session.engine == .claude && session.sendVia == "inbox" && model.device(session.deviceId)?.cliAgents?.features.contains("inboxSteer") == true
+    }
+    private var canSteer: Bool {
+        session.state == .running && ((session.liveIn == .nexbot && session.terminal != nil) || claudeInbox)
+    }
+    private var composerMode: CliComposerMode {
+        if claudeInbox && session.online && session.state != .stopped {
+            return .send(running: session.state == .running || session.state == .waiting)
+        }
+        return CliSessions.composerMode(session)
+    }
     private var canSetOnSend: Bool { session.engine == .claude && session.liveIn == .nexbot && session.terminal != nil }
     private var effortLevels: [String] { CliLaunches.efforts[session.engine] == nil ? [] : CliLaunches.reasoningLevels }
     private var selectedEffort: String { CliLaunches.reasoningChoice(effort) }
@@ -618,8 +631,9 @@ private struct AgentComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if !error.isEmpty { Text(error).font(.caption).foregroundStyle(Theme.danger) }
+            if let deliveryNotice { Text(deliveryNotice).font(.caption).foregroundStyle(Theme.muted) }
             AgentImageDrafts(images: $images)
-            switch CliSessions.composerMode(session) {
+            switch composerMode {
             case .send(let running):
                 sendRow(running: running)
             case .stopped(let hint):
@@ -681,6 +695,10 @@ private struct AgentComposer: View {
             #if os(macOS)
             if canSetOnSend && !effortLevels.isEmpty { effortButton }
             #endif
+            if canSteer && canSend {
+                Button("引导") { Task { await send(steer: true) } }
+                    .buttonStyle(ConversationActionButtonStyle(size: .compact))
+            }
             // one button: Stop while a turn runs and the box is empty, Send once there is something to send
             if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty {
                 Button { Task { await interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 26)) }
@@ -727,7 +745,9 @@ private struct AgentComposer: View {
     }
 
     /// The box empties and the message shows in the conversation at once; a failure puts it back.
-    private func send() async {
+    private func send(steer: Bool = false) async {
+        guard canSend, !steer || canSteer else { return }
+        deliveryNotice = nil
         let text = draft
         let submittedImages = images
         var entry: AgentPendingSend?
@@ -735,7 +755,7 @@ private struct AgentComposer: View {
         defer { sending = false }
         do {
             let message = try await model.imageMessage(session.key, text: text, images: submittedImages)
-            if canSetOnSend {
+            if !steer && canSetOnSend {
                 let applied = AgentDrafts.appliedModels[session.key]
                 let wanted = chosenModel.isEmpty ? (applied == nil ? nil : catalog.current) : chosenModel
                 if let wanted, wanted != applied {
@@ -744,7 +764,7 @@ private struct AgentComposer: View {
                     AgentDrafts.appliedEfforts[session.key] = nil
                 }
             }
-            if canSetOnSend, let level = resolvedEffort, AgentDrafts.appliedEfforts[session.key] != level {
+            if !steer && canSetOnSend, let level = resolvedEffort, AgentDrafts.appliedEfforts[session.key] != level {
                 try await model.send(session.key, text: "/effort " + level)
                 AgentDrafts.appliedEfforts[session.key] = level
             }
@@ -752,7 +772,11 @@ private struct AgentComposer: View {
             pending.append(echo)
             entry = echo
             if draft == text { draft = "" }
-            try await model.send(session.key, text: message)
+            if steer {
+                deliveryNotice = try await model.steer(session.key, text: message)
+            } else {
+                try await model.send(session.key, text: message)
+            }
             images.removeAll { submittedImages.contains($0) }
         } catch {
             if let entry {

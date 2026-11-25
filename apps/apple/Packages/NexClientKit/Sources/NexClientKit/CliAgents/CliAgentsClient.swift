@@ -10,7 +10,10 @@ private struct CliStartBody: Encodable {
     var worktreeBranch: String? = nil; var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
     var permissions: String? = nil
 }
-private struct CliSendBody: Encodable { let key: String; let text: String }
+private struct CliSendBody: Encodable {
+    let key: String; let text: String
+    var delivery: String? = nil; var clientMessageId: String? = nil; var requestId: String? = nil
+}
 private struct CliImageResult: Decodable, Sendable { let path: String }
 private struct CliHideBody: Encodable { let key: String; let hidden: Bool }
 private struct CliAnswerBody: Encodable { let id: String; let decision: CliDecision; let answers: [String: String]?; var always: Bool? = nil }
@@ -115,6 +118,18 @@ extension CoreClient {
     public func cliSend(key: CliSessionKey, text: String) async throws {
         let r: CliSendResult = try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text))
         _ = r
+    }
+
+    /// Returns the delivery notice when Core cannot confirm immediate steering.
+    public func cliSteer(key: CliSessionKey, text: String) async throws -> String? {
+        let body = CliSendBody(key: key, text: text, delivery: "steer", clientMessageId: UUID().uuidString, requestId: UUID().uuidString)
+        let result: CliSendResult = try await post(Self.cliBase + "/send", body: body)
+        switch result.status {
+        case "failed": return "引导失败，消息已保留"
+        case "uncertain": return "引导结果待确认"
+        case "pending": return "引导暂未送达，已排队"
+        default: return result.delivery == "unconfirmed" ? "已发送，未确认" : nil
+        }
     }
 
     public func cliUploadImage(key: CliSessionKey, image: CliImageUpload) async throws -> String {

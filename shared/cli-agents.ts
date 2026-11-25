@@ -404,9 +404,9 @@ export interface CliError {
  * attachments written to the computer (`attach`) and the models its CLIs offer
  * (`models`). Older executors send none. */
 /** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first. */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions";
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer";
 /** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask". */
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions"];
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer"];
 
 /** What the page shows when the computer's executor lacks a feature. */
 export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
@@ -649,7 +649,7 @@ export interface CliOpResult {
   start: { ref: CliSessionRef; terminal: string; cwd?: string };
   continue: { ref: CliSessionRef; terminal: string };
   send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean };
-  steer: { accepted: boolean };
+  steer: { accepted: boolean; delivery?: CliDelivery };
   interrupt: { outcome: string };
   open_local: Record<string, never>;
   answer: { outcome: string };
@@ -1410,7 +1410,7 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
       delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined,
       waiting: optBool(o, "waiting"),
     }),
-  steer: (o) => ({ accepted: bool(o.accepted) }),
+  steer: (o) => pick({ accepted: bool(o.accepted), delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined }),
   interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),
   open_local: () => ({}),
   // a device that answers with an empty result still counts as delivered

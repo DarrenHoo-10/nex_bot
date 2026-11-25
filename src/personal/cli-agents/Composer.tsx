@@ -194,7 +194,8 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const managedTerminal = !draft && session.liveIn === "nexbot" && !!session.terminal;
   const claudeInbox = !draft && session.engine === "claude" && session.sendVia === "inbox";
   const queuesWhileBusy = !revision && (managedTerminal || claudeInbox) && (running || session.state === "waiting");
-  const offersDelivery = active && (!!review || (managedTerminal && running)) && !!(body || extra.files.length) && !revision;
+  const canSteer = running && queue?.pauseReason !== "stopped" && (managedTerminal || (claudeInbox && features?.includes("inboxSteer")));
+  const offersDelivery = active && (!!review || canSteer) && !!(body || extra.files.length) && !revision;
   // the paused note matters only while something waits in the queue
   const pausedNote = !review && queue?.paused && realQueue.length > 0;
   const submit = async () => {
@@ -282,7 +283,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           {entry.status==="uncertain" ? <small className="na-queued-state" role="status">待确认</small> : null}
           {entry.status==="failed" ? <small className="na-queued-state" data-tone="error" role="alert">发送失败</small> : null}
           {entry.status==="pending" || entry.status==="failed" ? <span className="na-queued-actions">
-            {entry.status==="pending" && onQueueSteer && managedTerminal && running ? <button type="button" className="is-icon" aria-label="引导" data-tip="引导" onClick={()=>void run(()=>onQueueSteer(entry.id, entry.version))}><CornerUpRight size={14}/></button> : null}
+            {entry.status==="pending" && onQueueSteer && canSteer ? <button type="button" onClick={()=>void run(()=>onQueueSteer(entry.id, entry.version))}><CornerUpRight size={14} aria-hidden="true"/>引导</button> : null}
             {onQueueEdit ? <button type="button" className="is-icon" aria-label={"编辑排队消息 "+(i+1)} data-tip="编辑" onClick={()=>setEditingQueue({id:entry.id,version:entry.version,text:entry.text})}><Pencil size={13}/></button> : null}
             {onQueueWithdraw ? <button type="button" className="is-icon" aria-label="撤销" data-tip="撤销" onClick={()=>void run(()=>onQueueWithdraw(entry.id, entry.version))}><Undo2 size={14}/></button> : null}
           </span> : null}

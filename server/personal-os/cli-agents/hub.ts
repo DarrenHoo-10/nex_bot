@@ -953,7 +953,7 @@ export class CliAgentHub {
   }
 
   /** An executor that does not list `feature` would ignore or refuse it: say it needs an update instead. */
-  private requireFeature(deviceId: string, feature: CliFeature): void {
+  requireFeature(deviceId: string, feature: CliFeature): void {
     const caps = this.caps.get(deviceId);
     if (caps && !hasCliFeature(caps, feature)) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
   }

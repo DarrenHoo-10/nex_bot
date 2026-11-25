@@ -360,7 +360,7 @@ public struct CliForkResult: Sendable, Hashable, Decodable {
 }
 
 struct CliKeyResult: Decodable, Sendable { let key: String }
-struct CliSendResult: Decodable, Sendable { let turn: Int?; let started: Bool? }
+struct CliSendResult: Decodable, Sendable { let turn: Int?; let started: Bool?; let status: String?; let delivery: String? }
 struct CliOutcomeResult: Decodable, Sendable { let outcome: String? }
 
 // MARK: WebSocket messages

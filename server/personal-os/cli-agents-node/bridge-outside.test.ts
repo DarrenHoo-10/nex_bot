@@ -190,6 +190,25 @@ describe("Claude inbox", () => {
     expect(reply).toMatchObject({ ok: true, result: { delivery: "unconfirmed", waiting: true } });
   });
 
+  it("steers a running Claude inbox at priority now without sending the stop message", async () => {
+    const socket = await inbox();
+    liveClaude(501, CID(1), "busy", { messagingSocketPath: socket.socketPath, peerProtocol: 1 });
+    liveClaude(502, CID(2), "idle", { messagingSocketPath: socket.socketPath, peerProtocol: 1 });
+    writeKey(501, socket.socketPath);
+    writeKey(502, socket.socketPath);
+    const t = setup({ inboxConfirmMs: 100 });
+    await t.start();
+    await until(() => t.bridge.sessions().filter((row) => row.sendVia === "inbox").length === 2);
+    expect(await t.call("steer", { ref: `claude:${CID(1)}`, text: "Change the plan" })).toMatchObject({ ok: true, result: { accepted: true, delivery: "unconfirmed" } });
+    await until(() => socket.lines.length === 2);
+    const sent = JSON.parse(socket.lines[1]);
+    expect(sent).toMatchObject({ priority: "now", session_id: CID(1) });
+    expect(sent.message.content).toContain("Change the plan");
+    expect(sent.message.content).not.toContain("NexBot remote stop");
+    expect(await t.call("steer", { ref: `claude:${CID(2)}`, text: "Too late" })).toMatchObject({ ok: false, error: { code: "turn_changed" } });
+    expect(socket.lines).toHaveLength(2);
+  });
+
   it("stops a working session through its inbox at priority now, and refuses Stop for one at rest", async () => {
     let transcript = "";
     const socket = await inbox((line) => {

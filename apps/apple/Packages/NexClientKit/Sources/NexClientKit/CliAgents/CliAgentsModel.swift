@@ -309,6 +309,10 @@ public final class CliAgentsModel {
         try await clientProvider().cliSend(key: key, text: trimmed)
     }
 
+    public func steer(_ key: CliSessionKey, text: String) async throws -> String? {
+        try await clientProvider().cliSteer(key: key, text: text)
+    }
+
     public func imageMessage(_ key: CliSessionKey, text: String, images: [CliImageUpload]) async throws -> String {
         guard images.count <= ChatAttachment.maxCount else { throw CoreError(kind: .http, message: "最多添加 5 张图片", status: 400) }
         var lines = [text.trimmingCharacters(in: .whitespacesAndNewlines)]

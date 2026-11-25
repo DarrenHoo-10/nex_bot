@@ -63,6 +63,8 @@ export interface InboxSendOptions {
   /** The user pressed Stop: the inbox's priority `now` aborts the running turn (Claude
    * Code's own "send now"), and the words ask the model to stop and say where. */
   stop?: boolean;
+  /** Give this message to the running session with Claude’s “send now” priority. */
+  steer?: boolean;
   /** The receiving session's permission class; by default read from `transcript` (null: not known). */
   permissionClass?: InboxPermissionClass | null;
 }
@@ -283,7 +285,7 @@ export async function sendToInbox(target: InboxTarget, text: string, options: In
       message: { role: "user", content: mode === "bypass" ? inboxEnvelope(words, "bypass") : words },
       msgV: 1,
       msg_id: messageId,
-      priority: options.stop ? "now" : "next",
+      priority: options.stop || options.steer ? "now" : "next",
       session_id: target.sessionId,
     }) + "\n";
   if (Buffer.byteLength(line, "utf8") > FRAME_MAX) throw new InboxError("too_large", "内容太长");
