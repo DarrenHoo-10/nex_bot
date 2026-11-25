@@ -39,9 +39,15 @@ $profile = New-Item -Force -ItemType Directory (Join-Path $env:APPDATA 'NexBotCl
 $sentinel = Join-Path $profile 'fixture.txt'
 Set-Content $sentinel 'saved'
 $alternate = Join-Path $env:RUNNER_TEMP 'Alternate location'
-if ((Install-Candidate $alternate) -ne 0 -or (Test-Path $alternate) -or !(Test-Path $exe.FullName) -or (Get-Content $sentinel) -ne 'saved') {
-    throw 'Reinstall did not preserve the registered path and profile.'
-}
+$reinstallCode = Install-Candidate $alternate
+if ($reinstallCode -ne 0) { throw "Reinstall returned $reinstallCode." }
+# NSIS may create the command-line /D directory during startup, before it reads the registered path.
+if ((Test-Path $alternate) -and @(Get-ChildItem -Force $alternate).Count) { throw 'Setup wrote files into the alternate folder.' }
+if (!(Test-Path $exe.FullName)) { throw 'Reinstall removed the registered executable.' }
+if (!(Test-Path $sentinel) -or (Get-Content $sentinel) -ne 'saved') { throw 'Reinstall lost the profile marker.' }
+$registered = Get-ItemProperty $entry.PSPath
+if ($registered.UninstallString -notlike "*$target*") { throw 'Uninstaller no longer points to the registered path.' }
+
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
