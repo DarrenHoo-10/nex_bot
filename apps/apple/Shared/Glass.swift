@@ -81,7 +81,7 @@ struct RoundGlassButton: View {
                 .glass(Circle())
                 .contentShape(Circle())
         }
-        .plainActionFeedback(in: Circle())
+        .plainActionFeedback()
         .help(label).accessibilityLabel(label)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

@@ -29,7 +29,7 @@ struct MBButton: View {
             .opacity(enabled ? 1 : 0.5)
             .contentShape(Rectangle())
         }
-        .plainActionFeedback(in: shape)
+        .plainActionFeedback()
         .disabled(!enabled || busy)
     }
 
