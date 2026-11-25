@@ -395,6 +395,11 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliRequestStore.answers(questions, selection), ["选哪个": "甲, 丙", "确认吗": "否"], "labels in option order, one choice replaces the other")
         selection = CliRequestStore.toggle(selection, index: 0, label: "丙", multi: true)
         XCTAssertEqual(CliRequestStore.answers(questions, selection)["选哪个"], "甲")
+        selection = CliRequestStore.toggle(selection, index: 1, label: CliRequestStore.otherChoice, multi: false)
+        XCTAssertFalse(CliRequestStore.answersComplete(questions, selection, other: [1: "   "]))
+        XCTAssertTrue(CliRequestStore.answersComplete(questions, selection, other: [1: "自定义回复"]))
+        selection = CliRequestStore.toggle(selection, index: 0, label: CliRequestStore.otherChoice, multi: true)
+        XCTAssertEqual(CliRequestStore.answers(questions, selection, other: [0: "补充项", 1: "自定义回复"]), ["选哪个": "甲, 补充项", "确认吗": "自定义回复"])
         XCTAssertFalse(CliRequestStore.answersComplete(nil, [:]))
     }
 

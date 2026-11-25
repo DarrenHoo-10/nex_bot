@@ -21,8 +21,8 @@ function useClientDownloads() {
   return downloads;
 }
 
-const work: Appearance = { kind: "companion", shape: "soft", color: "teal" };
-const research: Appearance = { kind: "companion", shape: "bean", color: "blue" };
+const work: Appearance = { kind: "companion", shape: "soft", color: "blue" };
+const research: Appearance = { kind: "companion", shape: "bean", color: "plum" };
 const writing: Appearance = { kind: "companion", shape: "pebble", color: "clay" };
 
 const features = [

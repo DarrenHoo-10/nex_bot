@@ -7,12 +7,11 @@ import { parseMessageMedia } from "../message-media";
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
 import {HarnessMark} from "./tokendance/HarnessMark";
-import { Check, Copy, GitBranch, Languages, X } from "lucide-react";
+import { Blocks, Brain, Check, ChevronDown, ChevronRight, Copy, FilePenLine, FileText, GitBranch, Languages, LoaderCircle, Search, SquareTerminal, Wrench, X, type LucideIcon } from "lucide-react";
 import { useCopyFeedback } from "../../lib/copy-text";
 import { useChineseReply } from "./use-chinese-reply";
 import { AnnotatedMessage } from "./AnnotatedMessage";
 import { useReview, type Note } from "./WorkbenchReview";
-import { ToolActivityDisclosure } from "../vendor/rakazo/ToolActivityDisclosure";
 import { cliErrorText, fetchItems, translateReply } from "./api";
 import type { CliStream } from "./stream";
 import { localCacheScope, queueLocalCache, readLocalCache } from "../local-content-cache";
@@ -66,32 +65,127 @@ const OLDER_SCROLL_PX = 160;
 // AgentDesktop imports this page, so its message renderer is loaded lazily.
 const RichText = lazy(() => import("../AgentDesktop").then((module) => ({ default: module.RichText })));
 
-const TOOL_STATUS_TEXT = { running: "运行中", ok: "完成", error: "失败" } as const;
+type ToolCategory = "shell" | "read" | "edit" | "search" | "mcp" | "thinking" | "other";
+
+function toolCategory(item: ActivityItem): ToolCategory {
+  if (item.kind === "thinking") return "thinking";
+  const name = item.name.toLowerCase();
+  if (/^(bash|shell|exec|terminal|command|run_command|device\.exec)/.test(name)) return "shell";
+  if (/^(read|view|cat|ls|list|glob|file_read|read_file)/.test(name)) return "read";
+  if (/^(edit|write|multiedit|patch|replace|create|edit_file|write_file)/.test(name)) return "edit";
+  if (/^(grep|search|find|websearch|web_search|ripgrep)/.test(name)) return "search";
+  if (/^(mcp|connector\.)/.test(name)) return "mcp";
+  return "other";
+}
+
+const CATEGORY_ICON: Record<ToolCategory, LucideIcon> = {
+  shell: SquareTerminal,
+  read: FileText,
+  edit: FilePenLine,
+  search: Search,
+  mcp: Blocks,
+  thinking: Brain,
+  other: Wrench,
+};
+
+const CATEGORY_DONE_LABEL: Record<ToolCategory, string> = {
+  shell: "运行了命令",
+  read: "读取了文件",
+  edit: "编辑了文件",
+  search: "搜索了内容",
+  mcp: "调用了工具集成",
+  thinking: "思考过程",
+  other: "执行了操作",
+};
+
+const CATEGORY_LIVE_LABEL: Record<ToolCategory, string> = {
+  shell: "正在执行命令",
+  read: "正在执行读取",
+  edit: "正在执行编辑",
+  search: "正在执行搜索",
+  mcp: "正在执行工具集成",
+  thinking: "正在执行思考",
+  other: "正在执行操作",
+};
+
+function activityHeading(items: readonly ActivityItem[], live: boolean): { icon: LucideIcon; label: string } {
+  const categories = [...new Set(items.map(toolCategory))];
+  const primary: ToolCategory = categories.length === 1 ? categories[0] : (categories.find((c) => c !== "thinking") ?? "other");
+  if (categories.length === 1) {
+    return {
+      icon: CATEGORY_ICON[primary],
+      label: live ? CATEGORY_LIVE_LABEL[primary] : CATEGORY_DONE_LABEL[primary],
+    };
+  }
+  return {
+    icon: CATEGORY_ICON[primary],
+    label: live ? `正在执行 · ${items.length} 项操作` : `执行了 ${items.length} 项操作`,
+  };
+}
 
 function Activity({ items }: { items: ActivityItem[] }) {
   const stats = activityStats(items);
+  const failed = items.filter((item) => item.kind === "tool" && item.status === "error").length;
+  const heading = activityHeading(items, stats.live);
+  const HeadIcon = heading.icon;
   return (
-    <ToolActivityDisclosure live={stats.live} stepCount={stats.stepCount} steps={stats.steps}>
-      <div className="cli-steps">
-        {items.map((item) => item.kind === "thinking" ? (
-          <details key={item.id} className="cli-step">
-            <summary><span className="step-dot ok" /><strong>思考</strong></summary>
-            <pre>{item.text}</pre>
-          </details>
-        ) : (
-          <details key={item.id} className="cli-step">
-            <summary>
-              <span className={`step-dot ${item.status === "error" ? "failed" : item.status}`} />
-              <strong>{item.name}</strong>
-              <code>{toolSummary(item.input)}</code>
-              <small>{TOOL_STATUS_TEXT[item.status]}</small>
-            </summary>
-            {item.input ? <pre>{item.input}</pre> : null}
-            {item.output ? <pre>{item.output}</pre> : null}
-          </details>
-        ))}
+    <details data-testid="tool-activity" data-live={stats.live || undefined} className="na-activity">
+      <summary className="na-activity-summary">
+        <HeadIcon size={14} strokeWidth={1.75} className="na-activity-icon" aria-hidden="true" />
+        <span className="na-activity-label">{heading.label}</span>
+        {failed > 0 ? <span className="na-activity-failed">· {failed} 项失败</span> : null}
+        <ChevronDown size={13} strokeWidth={1.75} className="na-activity-chevron" aria-hidden="true" />
+      </summary>
+      <div className="na-activity-list cli-steps">
+        {items.map((item) => {
+          const category = toolCategory(item);
+          const StepIcon = CATEGORY_ICON[category];
+          if (item.kind === "thinking") {
+            return (
+              <details key={item.id} className="cli-step na-step">
+                <summary>
+                  <StepIcon size={13.5} strokeWidth={1.75} className="na-step-icon" aria-hidden="true" />
+                  <span className="na-step-line">思考过程</span>
+                  <ChevronRight size={13} className="na-step-chevron" aria-hidden="true" />
+                </summary>
+                <div className="na-step-card">
+                  <div className="na-step-card-head">思考</div>
+                  <div className="na-step-card-body">
+                    <pre className="na-step-output">{item.text}</pre>
+                  </div>
+                </div>
+              </details>
+            );
+          }
+          const isShell = category === "shell";
+          const line = toolSummary(item.input) || item.name;
+          const cardTitle = isShell ? "Shell" : item.name;
+          const inputText = item.input.trim();
+          const outputText = item.output?.trim() ?? "";
+          return (
+            <details key={item.id} className="cli-step na-step" data-status={item.status}>
+              <summary>
+                <StepIcon size={13.5} strokeWidth={1.75} className="na-step-icon" aria-hidden="true" />
+                <code className="na-step-line">{item.status === "error" && isShell ? `Command failed (${line})` : line}</code>
+                <ChevronRight size={13} className="na-step-chevron" aria-hidden="true" />
+              </summary>
+              <div className="na-step-card">
+                <div className="na-step-card-head">{cardTitle}</div>
+                <div className="na-step-card-body">
+                  {inputText ? <pre className="na-step-input">{isShell ? `$ ${inputText}` : inputText}</pre> : null}
+                  {outputText ? <pre className="na-step-output">{outputText}</pre> : null}
+                </div>
+                <div className="na-step-card-foot" data-status={item.status}>
+                  {item.status === "ok" ? <><Check size={12} strokeWidth={2.2} aria-hidden="true" />成功</>
+                    : item.status === "error" ? <><X size={12} strokeWidth={2.2} aria-hidden="true" />失败</>
+                    : <><LoaderCircle size={12} className="na-busy-icon" aria-hidden="true" />运行中</>}
+                </div>
+              </div>
+            </details>
+          );
+        })}
       </div>
-    </ToolActivityDisclosure>
+    </details>
   );
 }
 

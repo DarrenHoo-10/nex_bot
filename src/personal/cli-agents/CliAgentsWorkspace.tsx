@@ -4,7 +4,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PanelLeftOpen, MessageSquare, SquareTerminal, Plus, X } from "lucide-react";
 import { WorkbenchProvider, useReview } from "./WorkbenchReview";
-import "./workbench.css";
 import type { CliAnswerDecision, CliDeviceView, CliRequestView, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { desktop } from "../api";
 import { BrandMark } from "../components/BrandMark";
@@ -27,8 +26,6 @@ import { useSideChats } from "./use-side-chats";
 import { TerminalView } from "./TerminalView";
 import { SessionPane } from "./SessionPane";
 import { CLOSE_UNAUTHORIZED, CliStream, type StreamStatus } from "./stream";
-import "./cli-agents.css";
-import "./button-feedback.css";
 
 const SELECTED_KEY = "nexbot.cliSelected";
 

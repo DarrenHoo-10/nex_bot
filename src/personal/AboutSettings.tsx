@@ -1,6 +1,7 @@
 import { userErrorText } from "../lib/http-errors";
 import { useEffect, useRef, useState } from "react";
 import { desktop, type ClientUpdateState } from "./api";
+import { BrandMark } from "./components/BrandMark";
 import { webUpdates } from "./web-updates";
 
 export function AboutSettings() {
@@ -42,15 +43,22 @@ export function AboutSettings() {
   return <>
     <div className="preferences-panel-heading"><h2>关于</h2></div>
     <section className="preferences-section">
-      <div className="preferences-section-heading"><h3>NexBot</h3></div>
-      <dl className="preferences-facts"><div><dt>当前版本</dt><dd>{update?.current || "—"}</dd></div></dl>
-      <div className="preferences-actions">
-        {ready && updater.installUpdate ? <button type="button" className="primary" disabled={busy} onClick={() => void perform(true)}>{pending ? "正在更新…" : desktop ? "立即更新" : "刷新页面"}</button>
-          : updater.checkUpdate && update?.status !== "unsupported" ? <button type="button" disabled={busy} onClick={() => void perform(false)}>{update?.status === "downloading" ? "正在下载…" : busy ? "检查中…" : "检查更新"}</button> : null}
+      <div className="about-brand-card">
+        <div className="about-brand-head">
+          <BrandMark size={42}/>
+          <div className="about-brand-meta">
+            <h3>NexBot</h3>
+            <dl className="preferences-facts"><div><dt>当前版本</dt><dd>{update?.current || "—"}</dd></div></dl>
+          </div>
+          <div className="preferences-actions">
+            {ready && updater.installUpdate ? <button type="button" className="primary" disabled={busy} onClick={() => void perform(true)}>{pending ? "正在更新…" : desktop ? "立即更新" : "刷新页面"}</button>
+              : updater.checkUpdate && update?.status !== "unsupported" ? <button type="button" disabled={busy} onClick={() => void perform(false)}>{update?.status === "downloading" ? "正在下载…" : busy ? "检查中…" : "检查更新"}</button> : null}
+          </div>
+        </div>
+        {message && <p className="about-status" role="status">{message}</p>}
+        {!updater.checkUpdate && update?.status !== "unsupported" && <p className="about-status" role="status">此版本暂不支持手动检查更新</p>}
+        {error && <p role="alert" className="model-error">{error}</p>}
       </div>
-      {message && <p role="status">{message}</p>}
-      {!updater.checkUpdate && update?.status !== "unsupported" && <p role="status">此版本暂不支持手动检查更新</p>}
-      {error && <p role="alert" className="model-error">{error}</p>}
     </section>
   </>;
 }

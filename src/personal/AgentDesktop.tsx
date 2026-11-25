@@ -4,7 +4,7 @@ import { formatCompactTokens } from "../lib/token-count";
 import { AssistantActionDialog } from "./components/AssistantActions";
 import { TopicBubble, topicTimeline, type FinanceTopic } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
-import { createContext, lazy, memo, Suspense, useMemo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { createContext, lazy, memo, Suspense, useMemo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type ReactNode } from "react";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
@@ -20,7 +20,6 @@ import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, s
 import { useAccount } from "./auth";
 import { usePersistentPreview } from "./use-persistent-preview";
 import { authorizeLocalCache, clearLocalCache, localCacheScope, queueLocalCache, readLocalCache } from "./local-content-cache";
-import { lookOf } from "./characters";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
 import { ProviderSettings } from "./ProviderSettings";
 import { AvatarPicker } from "./components/AvatarPicker";
@@ -30,7 +29,7 @@ import { ContactSidebar, type AgentSidebarSlot } from "./components/ContactSideb
 import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
 import { ToolStepDetail } from "./components/ToolStepDetail";
-import { appearanceOf, colors, companionState, companionLabels, type CompanionState } from "./avatars/appearance";
+import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
 import { DocumentCard } from "./components/DocumentCard";
@@ -868,7 +867,6 @@ export function AgentDesktop() {
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   };
   const signOut = () => { void logout().catch(() => setError("退出登录未完成，请重试")); };
-  const botLook = lookOf(bot, state.bots);
   // The assistant's provider, model (or that provider's default model) and reasoning effort.
   const modelChoice = modelSelection.choice;
   const botConnection = connections.find((item) => item.id === modelChoice.connectionId) ?? defaultConnection;
@@ -885,7 +883,6 @@ export function AgentDesktop() {
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   const panelOpen = page === "agent" && detail && !!bot, railClosed = !rail && wide;
   const routines = state.routines.filter((r) => r.bot_id === botId);
-  const look = appearanceOf(bot, str(state.bots[0]?.id)), accent = look.kind === "companion" ? colors[look.color].value : undefined;
   const heroState = !connected ? companionLabels.offline : tasks.length ? taskPhrase(tasks[0]) : avatarState === "idle" ? "在线" : companionLabels[avatarState];
   void lookRevision;
 
@@ -896,12 +893,12 @@ export function AgentDesktop() {
   const renderSidebar = (agent?: AgentSidebarSlot) => <ContactSidebar agent={agent} onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
   const sidebarNode = renderSidebar();
 
-  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.bootId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.bootId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name), bot: entry, allBots: state.bots }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
 
   if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 
   return <div className="workspace-stage" data-dark={dark ? "1" : "0"} data-shell={desktop?.mode === "client" ? "1" : "0"}>
-    <div className={`app rk-workspace ${panelOpen ? "with-detail" : ""}`} data-left={railClosed ? "closed" : "open"} data-right={panelOpen ? "open" : "closed"} data-page={page} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"} style={accent ? { "--bot-color": accent } as CSSProperties : undefined}>
+    <div className={`app rk-workspace ${panelOpen ? "with-detail" : ""}`} data-left={railClosed ? "closed" : "open"} data-right={panelOpen ? "open" : "closed"} data-page={page} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
     {sidebarNode}
 
     <main>
@@ -946,7 +943,6 @@ export function AgentDesktop() {
           {!focusedMessage && !olderEnd && Number(rawMessages[0]?.seq) > 1 ? <button className="older" onClick={() => void loadOlder().catch((failure: unknown) => setError(userErrorText(failure, "加载失败")))}>加载更早的消息</button> : null}
           {!messages.length && !processing && historyLoading ? <div className="history-loading" role="status"><span className="spin"/>正在载入历史会话…</div> : !messages.length && !processing ? <div className="welcome ds-welcome">
             <Avatar bot={bot} allBots={state.bots} large size={84} animate/>
-            <div className="ds-welcome-badge" style={{ color: botLook.ink.solid, background: botLook.ink.soft }}>长期陪伴，随时开始</div>
             <h1>{bot?.name}</h1>
             <p>{str(bot?.instructions) || "我是你的专属智能同伴。你可以直接向我提问、安排定时任务，或输入 @ 让我与团队其他成员协作。"}</p>
             <small>直接发消息，或安排一项定时任务。</small>
@@ -960,14 +956,13 @@ export function AgentDesktop() {
             return <article className={`message assistant streaming ${link ? "a2a-reply" : ""}`} key={s.taskId}>
               <Avatar bot={bot} allBots={state.bots} size={26} state={avatarState}/>
               <div className="message-body">
-                {link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div><div className="bubble"><RichText value={s.text} pending/></div><span className="muted">正在回复…</span></>}
+                {link ? <><div className="message-author"><strong>{bot?.name}</strong></div><FoldedReply content={s.text} recipient={str(peer?.name) || "Agent"} pending/></> : <><div className="bubble"><RichText value={s.text} pending/></div><span className="muted">正在回复…</span></>}
               </div>
             </article>;
           })}
           {processing ? <article className="message assistant processing-message">
             <Avatar bot={bot} allBots={state.bots} size={26} state={avatarState}/>
             <div className="message-body">
-              <div className="ds-bot-author" style={{ color: botLook.ink.solid }}>{bot?.name}</div>
               <div className="bubble processing-dots" role="status" aria-label={`${bot?.name ?? "Agent"} 正在处理消息`}><span aria-hidden="true"/><span aria-hidden="true"/><span aria-hidden="true"/></div>
               <span className="muted processing-caption">{tasks[0] ? taskPhrase(tasks[0]) : "正在发送…"}</span>
             </div>

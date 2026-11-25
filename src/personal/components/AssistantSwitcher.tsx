@@ -2,7 +2,6 @@ import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type Keyb
 import { str, type RecordRow } from "../api";
 import { useAnchoredPopover } from "./anchored-popover";
 import { AgentAvatar } from "./AgentAvatar";
-import "./assistant-switcher.css";
 
 const rowHeight = 44;
 const copies = 9;

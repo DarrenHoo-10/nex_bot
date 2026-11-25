@@ -5,7 +5,6 @@ import { defaultReasoningLevels, listConnectionModels, modelName, reasoningLabel
 import { useAnchoredPopover } from "./anchored-popover";
 import { EffortChoices } from "./EffortChoices";
 import { useCompactComposer } from "./use-compact-composer";
-import "./model-menu.css";
 
 /** What an assistant uses: a provider, a model there ("" = the provider's default model) and its reasoning effort. */
 export interface ModelChoice { connectionId: string; model: string; reasoning: ReasoningChoice | null }

@@ -122,9 +122,12 @@ struct AgentImageMessage: View {
                 }
             }
             if !caption.isEmpty {
-                Text(caption).font(.system(size: 14)).textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                Text(caption).font(.system(size: 14)).foregroundStyle(Color.white).textSelection(.enabled)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(
+                        LinearGradient(colors: [Theme.nexAgentBubbleTop, Theme.nexAgentBubbleBottom], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: Bubble.user
+                    )
             }
         }
     }

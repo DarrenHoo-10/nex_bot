@@ -1,5 +1,4 @@
 import { str, type RecordRow } from './api';
-import './finance-topics.css';
 
 export interface FinanceTopic {
   conversationId: string;

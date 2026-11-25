@@ -83,7 +83,7 @@ struct AgentSessionDetail: View {
         .alert("模型调用失败", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
             Button("知道了", role: .cancel) { failure = nil }
         } message: {
-            Text((failure ?? "") + "\n任务已停在这里")
+            Text(failure ?? "")
         }
         .sheet(isPresented: $forking, onDismiss: {
             forkItemId = nil
@@ -118,17 +118,6 @@ struct AgentSessionDetail: View {
                 Text(actionError).font(.caption).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14).padding(.bottom, 6)
             }
-            if !cards.isEmpty {
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(cards.sorted { !$0.closed && $1.closed }) { record in
-                            AgentRequestCard(model: model, record: record)
-                        }
-                    }
-                    .padding(.horizontal, 14).padding(.bottom, 8)
-                }
-                .frame(maxHeight: 260)
-            }
             Group {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
@@ -141,6 +130,19 @@ struct AgentSessionDetail: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !cards.isEmpty {
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach(cards.sorted { !$0.closed && $1.closed }) { record in
+                            AgentRequestCard(model: model, record: record)
+                        }
+                    }
+                    .frame(maxWidth: 660)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                }
+                .frame(maxHeight: 300)
+            }
             AgentComposer(model: model, session: session, pending: $pending, guides: $guides) { next in onKeyChange(next) }
         }
     }
@@ -364,7 +366,7 @@ private struct AgentTranscript: View {
                         LazyVStack(alignment: .leading, spacing: 12) {
                             if t.more {
                                 Button(t.loadingOlder ? "正在读取…" : t.olderError == nil ? "加载更早的记录" : "重试加载更早的记录") { Task { await model.loadOlder(key) } }
-                                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent).disabled(t.loadingOlder)
+                                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.nexAgentAccent).disabled(t.loadingOlder)
                                     .frame(maxWidth: .infinity)
                                     // reading upwards loads earlier records without a tap
                                     .onAppear { if t.olderError == nil { Task { await model.loadOlder(key) } } }
@@ -452,10 +454,10 @@ private struct AgentReplyText: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             if translated != nil {
                 Button(original ? "查看中文" : "查看原文") { original.toggle() }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent)
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.nexAgentAccent)
             } else if failed {
                 Button("重试翻译") { retry += 1 }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent)
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.nexAgentAccent)
             }
             HStack(spacing: 4) {
                 Button {
@@ -488,25 +490,113 @@ private struct AgentReplyText: View {
     }
 }
 
+private enum AgentToolKind {
+    case shell, read, edit, search, think, other
+
+    static func classify(_ name: String) -> Self {
+        let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.contains("bash") || lower.contains("shell") || lower.contains("exec") || lower.contains("terminal") || lower.contains("command") { return .shell }
+        if lower.contains("edit") || lower.contains("write") || lower.contains("patch") || lower.contains("replace") || lower.contains("create") { return .edit }
+        if lower.contains("read") || lower.contains("view") || lower.contains("cat") || lower == "ls" || lower.contains("list") { return .read }
+        if lower.contains("grep") || lower.contains("glob") || lower.contains("search") || lower.contains("find") || lower.contains("web") || lower.contains("fetch") { return .search }
+        return .other
+    }
+
+    var symbol: String {
+        switch self {
+        case .shell: "terminal"
+        case .read: "doc.text"
+        case .edit: "pencil.line"
+        case .search: "magnifyingglass"
+        case .think: "brain"
+        case .other: "wrench"
+        }
+    }
+
+    var pastLabel: String {
+        switch self {
+        case .shell: "运行了命令"
+        case .read: "读取了文件"
+        case .edit: "修改了文件"
+        case .search: "搜索了内容"
+        case .think: "思考了片刻"
+        case .other: "执行了工具"
+        }
+    }
+
+    var requestVerb: String {
+        switch self {
+        case .shell: "请求执行"
+        case .edit: "修改文件"
+        case .read: "读取文件"
+        default: "请求操作"
+        }
+    }
+
+    var cardHeader: String {
+        switch self {
+        case .shell: "Shell"
+        case .read: "Read"
+        case .edit: "Edit"
+        case .search: "Search"
+        case .think: "Thinking"
+        case .other: "Tool"
+        }
+    }
+}
+
 private struct AgentActivity: View {
     let items: [CliItem]
     @Binding var open: Bool
 
-    var body: some View {
+    private var summary: (symbol: String, text: String, failed: Int) {
         let tools = items.filter { $0.kind == .tool }
         let failed = tools.filter { $0.status == .error }.count
-        DisclosureGroup(isExpanded: $open) {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(items) { item in
-                    if item.kind == .tool { AgentToolRow(item: item) }
-                    else { Text(item.text).font(.caption).foregroundStyle(Theme.muted).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+        if tools.isEmpty { return (AgentToolKind.think.symbol, "思考了片刻", 0) }
+        let kinds = tools.map { AgentToolKind.classify($0.name) }
+        let unique = Set(kinds)
+        if tools.count == 1, let only = kinds.first { return (only.symbol, only.pastLabel, failed) }
+        if unique.count == 1, let only = unique.first { return (only.symbol, "\(only.pastLabel) · \(tools.count) 项", failed) }
+        return (kinds.first?.symbol ?? "wrench", "执行了 \(tools.count) 项操作", failed)
+    }
+
+    var body: some View {
+        let info = summary
+        VStack(alignment: .leading, spacing: 4) {
+            Button { withAnimation(.easeOut(duration: 0.16)) { open.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: info.symbol).font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+                    Text(info.text).font(.system(size: 12.5)).foregroundStyle(Theme.muted)
+                    if info.failed > 0 {
+                        Text("· \(info.failed) 项失败").font(.system(size: 11.5)).foregroundStyle(Theme.danger)
+                    }
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted.opacity(0.7))
+                        .rotationEffect(.degrees(open ? 90 : 0))
                 }
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
             }
-            .padding(.top, 6)
-            .frame(maxWidth: 560, alignment: .leading)
-        } label: {
-            (Text(tools.isEmpty ? "思考" : "\(tools.count) 项操作") + (failed > 0 ? Text(" · \(failed) 项失败").foregroundStyle(Theme.danger) : Text("")))
-                .font(.system(size: 12)).foregroundStyle(Theme.muted)
+            .buttonStyle(.plain)
+
+            if open {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(items) { item in
+                        if item.kind == .tool {
+                            AgentToolRow(item: item)
+                        } else {
+                            Text(item.text).font(.caption).foregroundStyle(Theme.muted).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 2)
+                        }
+                    }
+                }
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(Theme.border).frame(width: 1).padding(.vertical, 2)
+                }
+                .padding(.leading, 5)
+                .frame(maxWidth: 640, alignment: .leading)
+            }
         }
     }
 }
@@ -515,118 +605,306 @@ private struct AgentToolRow: View {
     let item: CliItem
     @State private var open = false
 
+    private var kind: AgentToolKind { AgentToolKind.classify(item.name) }
+
     var body: some View {
         let backgroundTitle = CliTranscript.backgroundTaskTitle(item)
-        DisclosureGroup(isExpanded: $open) {
-            VStack(alignment: .leading, spacing: 6) {
-                if !item.input.isEmpty { code(item.input) }
-                if let output = item.output, !output.isEmpty { code(output) }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(backgroundTitle ?? item.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                if backgroundTitle == nil {
-                    Text(CliTranscript.toolSummary(item.input)).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(1)
+        let lineText = backgroundTitle ?? {
+            let s = CliTranscript.toolSummary(item.input)
+            return s.isEmpty ? item.name : s
+        }()
+        VStack(alignment: .leading, spacing: 4) {
+            Button { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: kind.symbol).font(.system(size: 11))
+                        .foregroundStyle(item.status == .error ? Theme.danger : Theme.muted)
+                    Text(lineText).font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(open ? Theme.foreground : Theme.muted)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.muted.opacity(0.65))
+                        .rotationEffect(.degrees(open ? 90 : 0))
                 }
-                Spacer(minLength: 0)
-                Text(CliTranscript.toolStatusText(item.status)).font(.caption2).foregroundStyle(item.status == .error ? Theme.danger : Theme.muted)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if open {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(kind.cardHeader).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                    Divider().opacity(0.5)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !item.input.isEmpty {
+                            ToolCodeBlock(text: kind == .shell ? "$ " + item.input : item.input)
+                                .foregroundStyle(Theme.foreground)
+                        }
+                        if let output = item.output, !output.isEmpty {
+                            ToolCodeBlock(text: output)
+                                .foregroundStyle(Theme.muted)
+                        }
+                    }
+                    Divider().opacity(0.5)
+                    HStack(spacing: 4) {
+                        Spacer()
+                        Image(systemName: item.status == .error ? "xmark" : item.status == .running ? "clock" : "checkmark")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(item.status == .error ? "失败" : item.status == .running ? "运行中" : "成功")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(item.status == .error ? Theme.danger : item.status == .running ? Theme.nexAgentAccent : Theme.muted)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                }
+                .background(Theme.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))
             }
         }
     }
-
-    private func code(_ text: String) -> some View {
-        ToolCodeBlock(text: text)
-            .background(Theme.wash, in: RoundedRectangle(cornerRadius: 8))
-    }
 }
 
-// MARK: Requests
+// MARK: Requests — Scheme E Floating Glass Island
 
 private struct AgentRequestCard: View {
     let model: CliAgentsModel
     let record: CliRequestRecord
     @State private var selection: CliRequestStore.Selection = [:]
+    @State private var other: CliRequestStore.OtherAnswers = [:]
     @State private var busy: CliDecision?
     @State private var busyAlways = false
     @State private var error = ""
 
+    private static let optionLetters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
     private var request: CliRequest { record.view }
 
     var body: some View {
         let state = model.cardState(record)
         let open = state == .pending
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(request.kind == .question ? "提问" : request.tool).font(.system(size: 13, weight: .semibold))
-                Spacer()
-                CliChip(text: open ? (request.kind == .question ? "等你回答" : "等你批准") : state.text, tone: open ? .waiting : .idle)
-            }
-            if request.kind == .question {
-                ForEach(Array((request.questions ?? []).enumerated()), id: \.offset) { index, question in questionView(index, question, enabled: open) }
-            } else if !request.summary.isEmpty {
-                Text(request.summary).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(8)
-                    .background(Theme.wash, in: RoundedRectangle(cornerRadius: 8))
-            }
-            if request.kind != .question, let detail = request.detail, !detail.isEmpty {
-                DisclosureGroup("参数") {
-                    ScrollView { Text(detail).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                        .frame(maxHeight: 200).padding(8)
-                        .background(Theme.wash, in: RoundedRectangle(cornerRadius: 8))
-                }
-                .font(.caption).foregroundStyle(Theme.muted)
-            }
-            if open {
-                HStack {
-                    Spacer()
-                    Button(busy == .deny ? "正在拒绝…" : "拒绝") { submit(.deny) }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
-                    if request.offersAlways {
-                        Button(busyAlways ? "正在允许…" : "本会话总是允许") { submit(.allow, always: true) }.buttonStyle(ConversationActionButtonStyle())
+        if !open {
+            resolvedPill(state)
+        } else if request.kind == .question {
+            questionIsland
+        } else {
+            permissionIsland
+        }
+    }
+
+    private func resolvedPill(_ state: CliCardState) -> some View {
+        let dotColor: Color = switch state {
+        case .denied: Theme.danger
+        case .allowed, .always, .answered: Theme.nexAgentAccent
+        default: Theme.muted
+        }
+        let label = request.kind == .question
+            ? (request.questions?.map(\.question).joined(separator: " / ") ?? (request.summary.isEmpty ? "提问" : request.summary))
+            : request.tool
+        return HStack(spacing: 7) {
+            Circle().fill(dotColor).frame(width: 7, height: 7)
+            Text(label).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.foreground).lineLimit(1)
+            Text("· \(state.text)").font(.system(size: 12)).foregroundStyle(Theme.muted)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .glass(Capsule(), strong: true, lift: .none)
+    }
+
+    private var permissionIsland: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(request.tool).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.nexAgentAccent)
+                        Text("· \(AgentToolKind.classify(request.tool).requestVerb)").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                     }
-                    Button(busy == .allow && !busyAlways ? (request.kind == .question ? "正在提交…" : "正在允许…") : (request.kind == .question ? "提交" : "允许")) { submit(.allow) }
-                        .buttonStyle(ConversationActionButtonStyle())
-                        .disabled(request.kind == .question && !CliRequestStore.answersComplete(request.questions, selection))
+                    if !request.summary.isEmpty {
+                        Text(request.summary)
+                            .font(.system(size: 12.5, design: .monospaced))
+                            .foregroundStyle(Theme.foreground)
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 3) {
+                    islandButton(busy == .deny ? "拒绝中…" : "拒绝", role: .deny) { submit(.deny) }
+                    if request.offersAlways {
+                        islandButton(busyAlways ? "处理中…" : "总是", role: .secondary) { submit(.allow, always: true) }
+                            .help("本会话总是允许")
+                            .accessibilityLabel("本会话总是允许")
+                    }
+                    islandButton(busy == .allow && !busyAlways ? "允许中…" : "允许", role: .primary) { submit(.allow) }
+                }
+                .padding(4)
+                .background(Theme.wash, in: Capsule())
                 .disabled(busy != nil)
             }
             if !error.isEmpty { Text(error).font(.caption).foregroundStyle(Theme.danger) }
         }
-        .padding(12)
-        .cardSurface(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .opacity(open ? 1 : 0.7)
+        .padding(.leading, 16).padding(.trailing, 10).padding(.vertical, 10)
+        .glass(RoundedRectangle(cornerRadius: 24, style: .continuous), strong: true, lift: .card)
     }
 
-    private func questionView(_ index: Int, _ question: CliQuestion, enabled: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let header = question.header, !header.isEmpty { Text(header).font(.caption).foregroundStyle(Theme.muted) }
-            Text(question.question).font(.system(size: 13))
-            ForEach(question.options, id: \.label) { option in
-                let on = selection[index]?.contains(option.label) ?? false
-                Button {
-                    selection = CliRequestStore.toggle(selection, index: index, label: option.label, multi: question.multiSelect)
-                } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: question.multiSelect ? (on ? "checkmark.square.fill" : "square") : (on ? "largecircle.fill.circle" : "circle"))
-                            .foregroundStyle(on ? Theme.identityAccent : Theme.muted)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(option.label).font(.system(size: 13)).foregroundStyle(Theme.foreground)
-                            if let description = option.description, !description.isEmpty {
-                                Text(description).font(.caption).foregroundStyle(Theme.muted)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
+    private var questionIsland: some View {
+        let questions = request.questions ?? []
+        let multiQ = questions.count > 1
+        let complete = CliRequestStore.answersComplete(questions, selection, other: other)
+        return VStack(alignment: .leading, spacing: 12) {
+            if !questions.isEmpty {
+                ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+                    if index > 0 { Divider().opacity(0.45) }
+                    questionSection(index, question, multiQ: multiQ, total: questions.count)
                 }
-                .buttonStyle(.plain).disabled(!enabled)
+            } else if !request.summary.isEmpty {
+                Text(request.summary).font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.foreground)
+            }
+            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(Theme.danger) }
+            HStack {
+                Spacer()
+                HStack(spacing: 3) {
+                    islandButton(busy == .deny ? "拒绝中…" : "拒绝", role: .deny) { submit(.deny) }
+                    islandButton(busy == .allow ? "提交中…" : "提交", role: .primary, disabled: !complete) { submit(.allow) }
+                        .disabled(!complete)
+                }
+                .padding(4)
+                .background(Theme.wash, in: Capsule())
+                .disabled(busy != nil)
             }
         }
+        .padding(16)
+        .glass(RoundedRectangle(cornerRadius: 24, style: .continuous), strong: true, lift: .card)
+    }
+
+    private func questionSection(_ index: Int, _ question: CliQuestion, multiQ: Bool, total: Int) -> some View {
+        let chosen = selection[index] ?? []
+        let otherOn = chosen.contains(CliRequestStore.otherChoice)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                if multiQ {
+                    Text("\(index + 1) / \(total)")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Theme.nexAgentAccent)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Theme.nexAgentSoft, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                } else if let header = question.header, !header.isEmpty {
+                    Text(header)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.nexAgentAccent)
+                        .padding(.horizontal, 8).padding(.vertical, 2)
+                        .background(Theme.nexAgentSoft, in: Capsule())
+                }
+                Text(question.question).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.foreground)
+                Spacer(minLength: 4)
+                if question.multiSelect { Text("可多选").font(.caption2).foregroundStyle(Theme.muted) }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(question.options.enumerated()), id: \.element.label) { optIndex, option in
+                    let on = chosen.contains(option.label)
+                    let letter = optIndex < Self.optionLetters.count ? String(Self.optionLetters[optIndex]) : "\(optIndex + 1)"
+                    Button {
+                        selection = CliRequestStore.toggle(selection, index: index, label: option.label, multi: question.multiSelect)
+                    } label: {
+                        HStack(alignment: .center, spacing: 10) {
+                            optionBadge(selected: on, multi: question.multiSelect, marker: letter)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(option.label).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.foreground)
+                                if let description = option.description, !description.isEmpty {
+                                    Text(description).font(.caption).foregroundStyle(Theme.muted)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(on ? Theme.nexAgentSoft : Color.clear, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(on ? Theme.nexAgentAccent : Theme.border))
+                        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(busy != nil)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Button {
+                        selection = CliRequestStore.toggle(selection, index: index, label: CliRequestStore.otherChoice, multi: question.multiSelect)
+                    } label: {
+                        HStack(spacing: 10) {
+                            optionBadge(selected: otherOn, multi: question.multiSelect, marker: "…")
+                            Text(question.multiSelect ? "其他补充" : "其他（自定义输入）")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Theme.foreground)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(busy != nil)
+
+                    if otherOn {
+                        TextField(question.multiSelect ? "输入补充内容…" : "输入自定义回复…", text: otherBinding(index))
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .padding(.horizontal, 10).padding(.vertical, 7)
+                            .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))
+                            .padding(.leading, question.multiSelect ? 27 : 34)
+                            .disabled(busy != nil)
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(otherOn ? Theme.nexAgentSoft : Color.clear, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(otherOn ? Theme.nexAgentAccent : Theme.border))
+            }
+        }
+    }
+
+    private func otherBinding(_ index: Int) -> Binding<String> {
+        Binding(get: { other[index] ?? "" }, set: { other[index] = $0 })
+    }
+
+    @ViewBuilder
+    private func optionBadge(selected: Bool, multi: Bool, marker: String) -> some View {
+        if multi {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(selected ? Theme.nexAgentSolid : Color.clear)
+                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(selected ? Theme.nexAgentSolid : Theme.border, lineWidth: 1.5))
+                if selected {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.white)
+                }
+            }
+            .frame(width: 17, height: 17)
+        } else {
+            ZStack {
+                Circle().fill(selected ? Theme.nexAgentSolid : Theme.wash)
+                Text(selected ? "✓" : marker)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(selected ? Color.white : Theme.muted)
+            }
+            .frame(width: 24, height: 24)
+        }
+    }
+
+    private enum IslandRole { case deny, secondary, primary }
+
+    private func islandButton(_ title: String, role: IslandRole, disabled: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: role == .primary ? .semibold : .medium))
+                .foregroundStyle(role == .primary ? Color.white : role == .deny ? Theme.muted : Theme.foreground)
+                .padding(.horizontal, role == .primary ? 15 : 11)
+                .padding(.vertical, 6)
+                .background(role == .primary ? Theme.nexAgentSolid : Color.clear, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .opacity(disabled ? 0.42 : 1)
     }
 
     private func submit(_ decision: CliDecision, always: Bool = false) {
         busy = decision; busyAlways = always; error = ""
         Task {
-            do { try await model.answer(request, decision: decision, selection: selection, always: always) }
+            do { try await model.answer(request, decision: decision, selection: selection, other: other, always: always) }
             catch { self.error = CliAgentsModel.answerErrorText(error) }
             busy = nil; busyAlways = false
         }
@@ -714,7 +992,7 @@ private struct AgentComposer: View {
                     if hint == nil && canSetOnResume && !effortLevels.isEmpty { effortButton }
                     #endif
                     Button(sending ? "正在继续…" : "继续") { Task { await resume() } }
-                        .buttonStyle(.borderedProminent).tint(Theme.identityAccent).disabled(hint != nil || sending)
+                        .buttonStyle(.borderedProminent).tint(Theme.nexAgentSolid).disabled(hint != nil || sending)
                 }
             case .blocked(let hint):
                 Text(hint).font(.footnote).foregroundStyle(Theme.muted)
@@ -823,7 +1101,7 @@ private struct AgentComposer: View {
                     .buttonStyle(.plain).foregroundStyle(Theme.foreground).accessibilityLabel("停止")
             } else {
                 Button { Task { await send() } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 26)) }
-                    .buttonStyle(.plain).foregroundStyle(canSend ? Theme.identityAccent : Theme.offline)
+                    .buttonStyle(.plain).foregroundStyle(canSend ? Theme.nexAgentSolid : Theme.offline)
                     .disabled(!canSend).accessibilityLabel("发送")
             }
         }
@@ -891,7 +1169,7 @@ private struct AgentComposer: View {
         .accessibilityLabel("思考强度")
         .accessibilityValue(CliLaunches.effortLabel(selectedEffort))
         .popover(isPresented: $showingEffort, arrowEdge: .bottom) {
-            ChatEffortChoices(levels: effortLevels, selection: selectedEffort, label: CliLaunches.effortLabel, tint: Theme.identityAccent, choose: setEffort)
+            ChatEffortChoices(levels: effortLevels, selection: selectedEffort, label: CliLaunches.effortLabel, tint: Theme.nexAgentAccent, choose: setEffort)
             .padding(12).frame(width: 305)
             #if os(iOS)
             .presentationCompactAdaptation(.popover)
@@ -1018,7 +1296,7 @@ struct AgentContextRing: View {
     }
 
     private var detail: String {
-        guard let usage else { return "还没有记录：会话回复过一次后显示" }
+        guard let usage else { return "暂无记录" }
         guard let window = usage.window else { return "已用 \(CliContext.tokens(usage.used)) tokens" }
         return "已用 \(CliContext.tokens(usage.used)) / \(CliContext.tokens(window)) tokens"
     }

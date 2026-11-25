@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Box, Check, Eye, EyeOff, MoreHorizontal, Pencil, Plus, Search, Star } from "lucide-react";
 import { api, listConnectionModels, modelName, type Connection, type State } from "./api";
 import { useModelSelection } from "./useModelSelection";
-import "./components/model-picker.css";
-import "./provider-settings.css";
+import { ConfirmDialog } from "./ui/Dialog";
+import { Switch } from "./ui/Switch";
 
 const formats = [{ value: "openai", label: "OpenAI 兼容 (/chat/completions)" }, { value: "anthropic", label: "Anthropic Messages (/v1/messages)" }];
 const errorText = (error: unknown) => userErrorText(error, "操作失败");
@@ -39,7 +39,7 @@ export function ProviderSettings({ state, refresh, active }: { state: State; ref
 function ProviderForm({ connection, refresh, onCreated }: { connection?: Connection; refresh: () => Promise<void>; onCreated?: (id: string) => void }) {
   const [name, setName] = useState(connection?.name ?? ""), [provider, setProvider] = useState(connection?.provider ?? "openai");
   const [endpoint, setEndpoint] = useState(connection?.endpoint ?? ""), [apiKey, setApiKey] = useState(""), [showKey, setShowKey] = useState(false);
-  const [pending, setPending] = useState(false), [error, setError] = useState(""), [saved, setSaved] = useState(false), [menu, setMenu] = useState(false);
+  const [pending, setPending] = useState(false), [error, setError] = useState(""), [saved, setSaved] = useState(false), [menu, setMenu] = useState(false), [confirmDelete, setConfirmDelete] = useState(false);
   const menuRoot = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menu) return;
@@ -65,12 +65,12 @@ function ProviderForm({ connection, refresh, onCreated }: { connection?: Connect
       <Box size={20} aria-hidden="true"/>
       <h3>{connection ? connection.name : "添加供应商"}</h3>
       {connection ? <>
-        <label className="provider-switch" title={connection.isDefault ? "默认供应商不能停用" : undefined}><input type="checkbox" role="switch" aria-label="启用供应商" checked={connection.enabled} disabled={pending || connection.isDefault} onChange={(event) => toggle(event.target.checked)}/><span aria-hidden="true"/></label>
+        <Switch aria-label="启用供应商" title={connection.isDefault ? "默认供应商不能停用" : undefined} checked={connection.enabled} disabled={pending || connection.isDefault} onChange={(event) => toggle(event.target.checked)}/>
         <div className="provider-menu" ref={menuRoot}>
           <button type="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}><MoreHorizontal size={18}/></button>
           {menu ? <div role="menu" className="provider-menu-list">
             <button type="button" role="menuitem" disabled={pending || connection.isDefault} onClick={() => { setMenu(false); void act(() => api("connections/default", { id: connection.id })); }}>{connection.isDefault ? "已是默认供应商" : "设为默认供应商"}</button>
-            <button type="button" role="menuitem" className="danger-link" disabled={pending || connection.isDefault} onClick={() => { setMenu(false); if (window.confirm(`删除供应商「${connection.name}」？它的 API Key 会被清除，正在用它的助手会改用默认供应商。`)) void act(() => api("connections/remove", { id: connection.id, version: connection.version })); }}>删除供应商</button>
+            <button type="button" role="menuitem" className="danger-link" disabled={pending || connection.isDefault} onClick={() => { setMenu(false); setConfirmDelete(true); }}>删除供应商</button>
           </div> : null}
         </div>
       </> : null}
@@ -86,6 +86,20 @@ function ProviderForm({ connection, refresh, onCreated }: { connection?: Connect
       <div className="preferences-actions"><button className="primary" type="submit" disabled={!changed}>{pending ? "保存中…" : connection ? "保存" : "添加"}</button>{saved ? <span className="preferences-saved" role="status"><Check size={15}/>已保存</span> : null}</div>
       {error ? <p role="alert" className="model-error">{error}</p> : null}
     </fieldset>
+    {connection ? (
+      <ConfirmDialog
+        open={confirmDelete}
+        title={`删除供应商「${connection.name}」？`}
+        description="它的 API Key 会被清除，正在用它的助手会改用默认供应商。"
+        confirmLabel="删除供应商"
+        busy={pending}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={async () => {
+          const ok = await act(() => api("connections/remove", { id: connection.id, version: connection.version }));
+          if (ok) setConfirmDelete(false);
+        }}
+      />
+    ) : null}
   </form>;
 }
 
@@ -173,7 +187,7 @@ function ProviderModels({ connection, refresh, active }: { connection: Connectio
             <span className="provider-model-tools">
               {!isDefault ? <button type="button" aria-label={`设为默认模型：${model}`} title="设为默认模型" onClick={() => void setDefault(model)}><Star size={15}/></button> : null}
               <button type="button" aria-label={`编辑 ${model}`} aria-expanded={editing === model} title="编辑" onClick={() => setEditing(editing === model ? "" : model)}><Pencil size={15}/></button>
-              <label className="provider-switch small"><input type="checkbox" role="switch" aria-label={`启用 ${model}`} checked={on} onChange={() => autosave.toggle(model, all)}/><span aria-hidden="true"/></label>
+              <Switch size="sm" aria-label={`启用 ${model}`} checked={on} onChange={() => autosave.toggle(model, all)} className="ml-1.5"/>
             </span>
           </div>
           {editing === model ? <ModelEditor connection={connection} model={model} refresh={refresh} close={() => setEditing("")}/> : null}

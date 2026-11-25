@@ -11,7 +11,7 @@ import { HarnessPicker } from "./HarnessPicker";
 import type { DirectorySource } from "./directory-source";
 import { deviceBlocker } from "./session-model";
 import { branchProblem, randomBranch, type LaunchRequest } from "./use-launches";
-import "./new-session-composer.css";
+import { BrandMark } from "../components/BrandMark";
 
 export type NewSessionRequest = LaunchRequest;
 
@@ -80,6 +80,10 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
       </header>
       <div className="na-new-body">
         <div className="na-new-stack">
+          <div className="na-new-hero">
+            <BrandMark agent size={38}/>
+            <h2>NexAgent</h2>
+          </div>
           <div className="na-new-options" role="group" aria-label="会话设置">
             <DirectoryPicker devices={devices.map((entry) => ({ id: entry.id, name: entry.name, online: entry.online && !deviceBlocker(entry) }))}
               deviceId={deviceId} onDevice={(id) => { setDeviceId(id); setDir(null); }} value={dir} onChange={setDir}

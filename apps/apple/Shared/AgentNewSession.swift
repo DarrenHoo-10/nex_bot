@@ -31,8 +31,8 @@ private struct AgentPickChip<Label: View>: View {
             .foregroundStyle(dashed ? Theme.muted : Theme.foreground)
             .lineLimit(1)
             .padding(.horizontal, 10).frame(height: 28)
-            .background(active ? Theme.successSoft : Theme.card, in: Capsule())
-            .overlay(Capsule().strokeBorder(active ? Theme.success : Theme.border, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2] : [])))
+            .background(active ? Theme.nexAgentSoft : Theme.card, in: Capsule())
+            .overlay(Capsule().strokeBorder(active ? Theme.nexAgentAccent : Theme.border, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2] : [])))
     }
 }
 
@@ -197,7 +197,7 @@ struct AgentNewSessionPage: View {
                 } label: {
                     AgentPickChip(dashed: branch == nil) {
                         Image(systemName: branch == nil ? "square" : "checkmark.square.fill")
-                            .foregroundStyle(branch == nil ? Theme.muted : Theme.identityAccent)
+                            .foregroundStyle(branch == nil ? Theme.muted : Theme.nexAgentAccent)
                         Text("Worktree")
                     }
                 }
@@ -248,7 +248,7 @@ struct AgentNewSessionPage: View {
             #if os(macOS)
             if canChoose && !effortLevels.isEmpty {
                 ChatEffortChoices(levels: effortLevels, selection: selectedEffort, label: CliLaunches.effortLabel,
-                                  tint: Theme.identityAccent, choose: { effort = $0 })
+                                  tint: Theme.nexAgentAccent, choose: { effort = $0 })
             }
             #endif
             HStack(spacing: 8) {
@@ -282,7 +282,7 @@ struct AgentNewSessionPage: View {
                 }
                 #endif
                 Button(action: start) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)) }
-                    .buttonStyle(.plain).foregroundStyle(ready ? Theme.identityAccent : Theme.offline)
+                    .buttonStyle(.plain).foregroundStyle(ready ? Theme.nexAgentSolid : Theme.offline)
                     .fixedSize().disabled(!ready).accessibilityLabel("开始会话")
             }
         }
@@ -321,7 +321,7 @@ struct AgentComposerModelOptions: View {
             List {
                 if !levels.isEmpty {
                     ChatEffortChoices(levels: levels, selection: selection, label: CliLaunches.effortLabel,
-                                      tint: Theme.identityAccent, choose: chooseEffort)
+                                      tint: Theme.nexAgentAccent, choose: chooseEffort)
                 }
                 row("", title: "默认模型")
                 ForEach(catalog.models) { option in row(option.id, title: option.label) }
@@ -337,7 +337,7 @@ struct AgentComposerModelOptions: View {
             HStack {
                 Text(title).foregroundStyle(Theme.foreground)
                 Spacer()
-                if model == id { Image(systemName: "checkmark").foregroundStyle(Theme.identityAccent) }
+                if model == id { Image(systemName: "checkmark").foregroundStyle(Theme.nexAgentAccent) }
             }
             .contentShape(Rectangle())
         }
@@ -409,7 +409,7 @@ struct AgentDirectoryBrowser: View {
                     .lineLimit(1).truncationMode(.head)
                 Spacer()
                 Button(missing ? "新建并使用" : "使用此目录") { choose(AgentDirChoice(path: current, create: missing)) }
-                    .buttonStyle(.borderedProminent).tint(Theme.identityAccent).disabled(current.isEmpty)
+                    .buttonStyle(.borderedProminent).tint(Theme.nexAgentSolid).disabled(current.isEmpty)
             }
         }
         .padding(14)
@@ -503,7 +503,7 @@ struct AgentDirectoryBrowser: View {
             .buttonStyle(.plain)
             if case .folder = row.kind {
                 Button { choose(AgentDirChoice(path: row.path, create: false)) } label: { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.identityAccent).help("使用这个目录").accessibilityLabel("使用 \(row.path)")
+                    .buttonStyle(.plain).foregroundStyle(Theme.nexAgentAccent).help("使用这个目录").accessibilityLabel("使用 \(row.path)")
                     #if os(macOS)
                     .opacity(hovered == row.id ? 1 : 0)
                     #endif

@@ -514,9 +514,9 @@ public final class CliAgentsModel {
         }
     }
 
-    /// Answers a pending request. `selection` holds the chosen labels of a question; `always` allows such calls for the rest of the session.
-    public func answer(_ request: CliRequest, decision: CliDecision, selection: CliRequestStore.Selection = [:], always: Bool = false) async throws {
-        let answers = decision == .allow && request.kind == .question ? CliRequestStore.answers(request.questions ?? [], selection) : nil
+    /// Answers a pending request. `selection` holds the chosen labels of a question; `other` holds custom "其他" text; `always` allows such calls for the rest of the session.
+    public func answer(_ request: CliRequest, decision: CliDecision, selection: CliRequestStore.Selection = [:], other: CliRequestStore.OtherAnswers = [:], always: Bool = false) async throws {
+        let answers = decision == .allow && request.kind == .question ? CliRequestStore.answers(request.questions ?? [], selection, other: other) : nil
         let forSession = always && decision == .allow && request.offersAlways
         try await clientProvider().cliAnswer(id: request.id, decision: decision, answers: answers, always: forSession)
         touch()

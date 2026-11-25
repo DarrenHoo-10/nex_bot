@@ -9,7 +9,7 @@ const uploadAttachment = vi.hoisted(() => vi.fn(async () => ({ path: "/api/cli-a
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), uploadAttachment }));
 const layout = vi.hoisted(() => ({ compact: false }));
 vi.mock("../components/use-compact-composer", () => ({ useCompactComposer: () => layout.compact }));
-import { Composer, deliveryNote, OUTSIDE_NOTE, UNCONFIRMED_NOTE, WAITING_NOTE } from "./Composer";
+import { Composer, deliveryNote, UNCONFIRMED_NOTE, WAITING_NOTE } from "./Composer";
 import { session } from "./fixtures";
 
 let root: Root;
@@ -62,10 +62,10 @@ describe("what a send says about a session on the computer", () => {
 });
 
 describe("composer for a session outside nex_bot's terminals", () => {
-  it("takes a message and says where it goes, with no interrupt", async () => {
+  it("takes a message without redundant resting copy, with no interrupt", async () => {
     await show(session({ nativeId: "o1", liveIn: "desktop", terminal: undefined, state: "running", sendVia: "inbox" }));
     expect(area()).not.toBeNull();
-    expect(note()).toBe(OUTSIDE_NOTE);
+    expect(note()).toBeUndefined();
     expect(container.querySelector("button[aria-label=中断]")).toBeNull();
     expect(container.querySelector("[data-testid=cli-composer]")?.classList.contains("is-blocked")).toBe(false);
   });
@@ -80,7 +80,7 @@ describe("composer for a session outside nex_bot's terminals", () => {
     expect(area().value).toBe("");
     expect(note()).toBe(UNCONFIRMED_NOTE);
     await type("下一条");
-    expect(note()).toBe(OUTSIDE_NOTE);
+    expect(note()).toBeUndefined();
   });
 
   it("keeps the next draft when a pending send finishes", async () => {
@@ -106,7 +106,7 @@ describe("composer for a session outside nex_bot's terminals", () => {
     await show(undefined, async () => ({ turn: 0, delivery: "confirmed" }));
     await type("好");
     await submit();
-    expect(note()).toBe(OUTSIDE_NOTE);
+    expect(note()).toBeUndefined();
   });
 
   it("keeps the text and shows the reason when the send is refused", async () => {
@@ -115,7 +115,7 @@ describe("composer for a session outside nex_bot's terminals", () => {
     await submit();
     expect(area().value).toBe("/clear");
     expect(container.querySelector("[role=alert]")?.textContent).toBe("不能发送斜杠命令");
-    expect(note()).toBe(OUTSIDE_NOTE);
+    expect(note()).toBeUndefined();
   });
 
   it("shows no such line in a nex_bot terminal, and blocks a session with no route", async () => {

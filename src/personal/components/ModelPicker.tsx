@@ -1,7 +1,6 @@
 import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, ChevronDown, Search, Square } from 'lucide-react';
-import './model-picker.css';
 import { useCompactComposer } from "./use-compact-composer";
 
 type Catalog = { models: string[]; hasMore: boolean };

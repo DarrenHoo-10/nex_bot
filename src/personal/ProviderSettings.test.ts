@@ -71,6 +71,22 @@ describe("设置 → 模型: providers", () => {
     await act(async () => button("更多操作").click());
     expect(button("删除供应商").disabled).toBe(true);
   });
+
+  it("confirms deletion of a non-default provider with an in-app dialog instead of window.confirm", async () => {
+    const nativeConfirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", nativeConfirm);
+    await mount([connection(), second]);
+    await act(async () => button("智谱").click());
+    await act(async () => button("更多操作").click());
+    await act(async () => button("删除供应商").click());
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    const dialog = container.querySelector<HTMLDialogElement>("dialog");
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("删除供应商「智谱」？");
+    const confirmBtn = [...dialog!.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent?.trim() === "删除供应商")!;
+    await act(async () => confirmBtn.click());
+    expect(fixture.api).toHaveBeenCalledWith("connections/remove", { id: "zhipu", version: 1 });
+  });
 });
 
 describe("Provider-reported model names", () => {

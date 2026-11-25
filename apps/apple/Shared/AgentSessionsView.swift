@@ -4,9 +4,9 @@ import NexClientKit
 extension CliTone {
     var color: Color {
         switch self {
-        case .running: Theme.success
+        case .running: Theme.nexAgentAccent
         case .waiting: Theme.approval
-        case .idle: Theme.identityAccent
+        case .idle: Theme.nexAgentAccent
         case .stopped, .offline: Theme.offline
         }
     }
@@ -86,7 +86,7 @@ struct AgentSessionsView: View {
         Button { Task { await toggleBell() } } label: {
             Image(systemName: model.notificationsOn ? "bell.fill" : "bell.slash")
         }
-        .buttonStyle(.plain).foregroundStyle(model.notificationsOn ? Theme.identityAccent : Theme.muted)
+        .buttonStyle(.plain).foregroundStyle(model.notificationsOn ? Theme.nexAgentAccent : Theme.muted)
         .help(model.notificationsOn ? "关闭通知" : "开启通知").accessibilityLabel(model.notificationsOn ? "关闭通知" : "开启通知")
         Button { sheet = .supervision } label: { Image(systemName: "gearshape") }
             .buttonStyle(.plain).foregroundStyle(Theme.muted)
@@ -99,7 +99,7 @@ struct AgentSessionsView: View {
             if !text.isEmpty {
                 HStack {
                     Text(text).font(.caption).foregroundStyle(Theme.danger)
-                    Button("重新加载") { errorText = ""; Task { await model.refresh() } }.font(.caption).buttonStyle(.plain).foregroundStyle(Theme.identityAccent)
+                    Button("重新加载") { errorText = ""; Task { await model.refresh() } }.font(.caption).buttonStyle(.plain).foregroundStyle(Theme.nexAgentAccent)
                 }
             }
         }
@@ -319,8 +319,8 @@ struct AgentSessionList: View {
                 .accessibilityLabel(session.hidden ? "取消隐藏" : "隐藏")
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(selected == session.key ? Theme.successSoft : .clear, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(alignment: .leading) { if selected == session.key { Rectangle().fill(Theme.success).frame(width: 2).padding(.vertical, 4) } }
+        .background(selected == session.key ? Theme.nexAgentSoft : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(alignment: .leading) { if selected == session.key { Rectangle().fill(Theme.nexAgentAccent).frame(width: 2.5).padding(.vertical, 4) } }
         .opacity(session.hidden ? 0.55 : 1)
         .help("\(agentName(session.engine)) · \(CliSessions.statusLabel(session))")
     }
@@ -332,9 +332,9 @@ struct AgentStateDot: View {
     @State private var breathing = false
     var body: some View {
         Circle()
-            .fill(tone == .running ? Theme.success : tone == .waiting ? Theme.approval : .clear)
+            .fill(tone == .running ? Theme.nexAgentAccent : tone == .waiting ? Theme.approval : .clear)
             .frame(width: 8, height: 8)
-            .overlay(Circle().stroke(tone == .running ? Theme.success.opacity(breathing ? 0 : 0.35) : .clear, lineWidth: breathing ? 6 : 1))
+            .overlay(Circle().stroke(tone == .running ? Theme.nexAgentAccent.opacity(breathing ? 0 : 0.35) : .clear, lineWidth: breathing ? 6 : 1))
             .onAppear { if tone == .running { withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) { breathing = true } } }
             .accessibilityHidden(true)
     }

@@ -1,5 +1,4 @@
 import type { ComponentPropsWithoutRef } from "react";
-import "./conversation-action-button.css";
 
 type Props = ComponentPropsWithoutRef<"button"> & { tone?: "light" | "dark"; size?: "regular" | "compact" };
 

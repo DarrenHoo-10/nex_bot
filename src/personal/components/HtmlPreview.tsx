@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import { HTML_PREVIEW_LIMIT, previewHeight } from '../../../shared/html-preview';
-import './html-preview.css';
 
 function PreviewFrame({ source, onStatus, fill = false }: { source: string; onStatus?: Dispatch<SetStateAction<string>>; fill?: boolean }) {
   const [height, setHeight] = useState(240);

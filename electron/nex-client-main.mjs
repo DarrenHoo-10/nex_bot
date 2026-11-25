@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } from "electron";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { isIP } from "node:net";
@@ -9,6 +9,7 @@ import { ClientDevice } from "./nex-client-device.mjs";
 import { installLocalUi } from "./nex-client-ui.mjs";
 import { installClipboardImagePaste } from "./nex-client-clipboard.mjs";
 import { ClientUpdater, runInstallerAfterExit } from "./nex-client-update.mjs";
+import { createClientTray } from "./nex-client-tray.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
 import { fetchModelCatalog } from "../shared/model-catalog.mjs";
 
@@ -18,8 +19,9 @@ app.setName(process.platform === "darwin" && profile ? "NexBot Client Fixture " 
 app.setPath("userData", profile ? path.resolve(profile) : path.join(app.getPath("appData"), "NexBotClient"));
 if (process.platform === "win32") app.setAppUserModelId("com.nexbot.client");
 const defaultOrigin = process.env.NEX_CLIENT_DEFAULT_ORIGIN || "https://bot.nexorai.com.cn";
-let device, updater, shuttingDown = false, installing = false;
+let device, updater, tray, quitting = false, shuttingDown = false, installing = false;
 let window, saved, origin, connectionError = "", resuming = false, loginEpoch = 0, repointed = false;
+const quitApp = () => { quitting = true; app.quit(); };
 const cancelled = Object.assign(new Error("已取消"), { cancelled: true });
 const credentials = path.join(app.getPath("userData"), "connection.bin");
 const clientInstanceFile = path.join(app.getPath("userData"), "client-instance-id");
@@ -99,18 +101,25 @@ async function login(settings) {
   resuming = false;
   if (epoch !== loginEpoch) throw cancelled;
   await device?.start(saved);
+  tray?.refresh();
   if (epoch !== loginEpoch) throw cancelled;
   await window.loadURL(origin + "/");
   void updater?.check(origin);
 }
-if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) app.quit();
+if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) quitApp();
 else {
   app.on("second-instance", (_event, args) => {
-    if (args.includes("--quit")) app.quit();
-    else if (!shuttingDown) activateExistingWindow([window]);
+    if (args.includes("--quit")) quitApp();
+    else if (!shuttingDown) {
+      if (tray?.isHidden()) tray.show();
+      else activateExistingWindow([window]);
+    }
   });
-  app.on("window-all-closed", () => app.quit());
+  app.on("window-all-closed", () => { if (quitting || !tray) app.quit(); });
   app.on("before-quit", (event) => {
+    quitting = true;
+    tray?.destroy();
+    tray = undefined;
     if (shuttingDown || !device) return;
     event.preventDefault(); shuttingDown = true;
     void device.stop().finally(() => app.quit());
@@ -142,9 +151,39 @@ else {
     const executorFile = path.join(resourceRoot, "client-executor", "client-node", "client-node.js");
     if (existsSync(executorFile)) {
       const { createClientNode } = await import(pathToFileURL(executorFile).href);
-      device = new ClientDevice({ directory: path.join(app.getPath("userData"), "devices"), safeStorage, request, createNode: createClientNode, sessionRefreshed,
+      device = new ClientDevice({
+        directory: path.join(app.getPath("userData"), "devices"),
+        safeStorage,
+        request,
+        createNode: createClientNode,
+        changed: () => tray?.refresh(),
+        sessionRefreshed,
       });
     }
+    try {
+      tray = createClientTray({
+        Tray,
+        Menu,
+        nativeImage,
+        iconPath: path.join(root, "electron", "client", "nexbot-icon.png"),
+        getWindow: () => window,
+        getDeviceState: () => (saved && origin && device ? device.state() : { available: false }),
+        onTogglePause: async (paused) => {
+          if (!saved || !origin || !device) return;
+          await device.setPaused(paused).catch(() => {});
+          tray?.refresh();
+        },
+        onQuit: quitApp,
+      });
+    } catch {
+      tray = undefined;
+    }
+    window.on("close", (event) => {
+      if (quitting || shuttingDown || installing || !tray) return;
+      event.preventDefault();
+      tray.hide(window);
+    });
+    window.on("show", () => tray?.windowShown(window));
     // The NSIS uninstaller is present only after installation, including in a custom install directory.
     const uninstaller = path.join(path.dirname(process.execPath), `Uninstall ${path.basename(process.execPath)}`);
     if (process.platform === "win32" && app.isPackaged && existsSync(uninstaller)) {
@@ -155,6 +194,7 @@ else {
     installLocalUi(window.webContents.session, existsSync(bundledUi) ? bundledUi : path.join(root, "ui"), () => origin);
     installClipboardImagePaste(window.webContents, clipboard, () => origin);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    window.webContents.on("will-attach-webview", (event) => event.preventDefault());
     window.webContents.on("will-navigate", (event, url) => { if (url !== connectionPage && (!origin || new URL(url).origin !== origin)) event.preventDefault(); });
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     ipcMain.handle("client:connection", (event) => { validate(event, true); return { origin: saved?.origin ?? targetOrigin ?? defaultOrigin, name: saved?.name || os.hostname() || "我的电脑", saved: !!saved, resuming, error: connectionError }; });
@@ -203,18 +243,18 @@ else {
     });
     ipcMain.handle("client:forget-login", async (event) => {
       validate(event); loginEpoch++; await device?.stop({ revoke: true }); resuming = false; connectionError = ""; if (existsSync(credentials)) unlinkSync(credentials);
-      saved = undefined; origin = undefined; await window.webContents.session.clearStorageData(); await window.loadURL(connectionPage);
+      saved = undefined; origin = undefined; tray?.refresh(); await window.webContents.session.clearStorageData(); await window.loadURL(connectionPage);
     });
     ipcMain.handle("client:disconnect", async (event) => {
       validate(event);
       loginEpoch++; await device?.stop({ revoke: true });
       if (saved) await request(saved.origin, "/api/auth/logout", {}, saved.token).catch(() => {});
-      saved = undefined; origin = undefined;
+      saved = undefined; origin = undefined; tray?.refresh();
       if (existsSync(credentials)) unlinkSync(credentials);
       await window.webContents.session.clearStorageData(); await window.loadURL(connectionPage);
     });
     ipcMain.handle("client:external", async (event, value) => { validate(event); const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid URL"); await shell.openExternal(url.href); });
-    ipcMain.handle("client:quit", (event) => { validate(event); setTimeout(() => app.quit(), 50); });
+    ipcMain.handle("client:quit", (event) => { validate(event); setTimeout(() => quitApp(), 50); });
     const unsupportedUpdate = () => ({ status: "unsupported", current: app.isPackaged ? app.getVersion() : "开发版" });
     ipcMain.handle("client:update-state", (event) => { validate(event); return updater?.state() ?? unsupportedUpdate(); });
     ipcMain.handle("client:update-check", (event) => {
@@ -236,7 +276,7 @@ else {
         updater.set("error", { error: error instanceof Error ? error.message : "无法启动安装程序", progress: undefined });
         throw error;
       }
-      setTimeout(() => app.quit(), 50);
+      setTimeout(() => quitApp(), 50);
     });
     resuming = !!saved;
     await window.loadURL(connectionPage);

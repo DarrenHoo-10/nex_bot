@@ -301,7 +301,7 @@ describe("session pane", () => {
     await pickModel("Opus");
     expect(document.querySelector(".na-model-menu .model-menu-stops [aria-pressed=true]")?.textContent).toBe("高");
     await pickEffort("中");
-    expect(document.querySelector(".na-model-menu .na-model-note")?.textContent).toBe("继续会话时生效");
+    expect(document.querySelector(".na-model-menu .na-model-note")).toBeNull();
     expect(container.querySelector('button[aria-label="模型设置"]')?.textContent).toContain("中");
     const input = container.querySelector("textarea")!;
     await act(async () => {
@@ -343,7 +343,7 @@ describe("session pane", () => {
     const ring = container.querySelector<HTMLButtonElement>("button[aria-label=上下文用量]")!;
     expect(ring.getAttribute("data-level")).toBe("none");
     await click(ring);
-    expect(container.querySelector(".na-context-detail small")?.textContent).toBe("还没有记录：会话回复过一次后显示");
+    expect(container.querySelector(".na-context-detail small")?.textContent).toBe("暂无记录");
   });
 
   it("lists the models the CLI offers on the computer, as NexBot's menu does", async () => {
