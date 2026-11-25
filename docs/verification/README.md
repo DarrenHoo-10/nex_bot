@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 输入框模型显示、Codex 新建会话修复与 0.9.50 预览发布（2026-11-25）](nexagent-composer-model-0950-20261125.md)
+
 - [工作区按需同步、历史消息本地缓存与 0.9.49 预览发布（2026-11-25）](workspace-history-sync-20261125.md)
 
 - [NexAgent 翻译回退与 Token 用量简写 · 全平台发布 0.9.47（2026-11-25）](nexagent-jev-release-20261125.md)

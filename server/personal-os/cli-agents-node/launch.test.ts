@@ -394,7 +394,7 @@ describe("planLaunch", () => {
       { engine: "codex", mode: "new", key: "abc12345-ffff", cwd: root, executable: "/opt/codex" },
       { env: {} },
     );
-    expect(plan.argv).toEqual(["/opt/codex"]);
+    expect(plan.argv).toEqual(["/opt/codex", "-c", "check_for_update_on_startup=false"]);
     expect(plan.labels["nexbot.native"]).toBe(PENDING_NATIVE_ID);
     expect(plan.name).toBe("nexbot-codex-abc12345");
   });
@@ -438,7 +438,7 @@ describe("hooks in planLaunch", () => {
     const dir = plugin();
     const codex = await planLaunch({ engine: "codex", mode: "new", cwd: root, executable: "/opt/codex", hooks: { pluginDir: dir, node: "/opt/node", pipe, token } }, { env: {} });
     expect(codex.hooked).toBe(false);
-    expect(codex.argv).toEqual(["/opt/codex"]);
+    expect(codex.argv).toEqual(["/opt/codex", "-c", "check_for_update_on_startup=false"]);
     expect(codex.env.NEXBOT_HOOK_PIPE).toBeUndefined();
 
     const missing = await planLaunch({ engine: "claude", mode: "new", nativeId: UUID, cwd: root, executable: "/opt/claude", hooks: { pluginDir: path.join(root, "nothing"), node: "/opt/node", pipe, token } }, { env: {} });

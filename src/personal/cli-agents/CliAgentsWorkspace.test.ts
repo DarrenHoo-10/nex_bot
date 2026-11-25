@@ -594,7 +594,8 @@ describe("session pane", () => {
     expect(button("编辑排队消息 1")).not.toBeNull();
     expect(button("引导")).not.toBeNull();
     await click(button("引导"));
-    expect(fixture.steerQueued).toHaveBeenCalledWith("q1", 1);
+    // a running turn with no open question: the steer carries no question to cancel
+    expect(fixture.steerQueued).toHaveBeenCalledWith("q1", 1, { questionId: undefined });
   });
 
   it("renders the transcript the Core returned", async () => {

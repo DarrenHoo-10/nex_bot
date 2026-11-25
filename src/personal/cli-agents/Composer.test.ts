@@ -22,6 +22,9 @@ const sendButton = () => container.querySelector<HTMLButtonElement>("button[aria
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  // the model menu is a popover; the test DOM has no popover API
+  HTMLElement.prototype.showPopover ??= function () {};
+  HTMLElement.prototype.hidePopover ??= function () {};
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
