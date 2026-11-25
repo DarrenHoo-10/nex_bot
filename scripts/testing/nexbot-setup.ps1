@@ -108,6 +108,6 @@ try {
     [void]$first.WaitForExit(10000)
 }
 
-node scripts/smoke-shell-login.mjs "--exe=$($exe.FullName)"
+node scripts/smoke-release-login.mjs "--exe=$($exe.FullName)"
 if ($LASTEXITCODE) { throw 'Installed client smoke failed.' }
 Get-FileHash $setup.FullName -Algorithm SHA256

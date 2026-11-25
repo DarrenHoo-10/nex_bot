@@ -24,6 +24,7 @@ jobs:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           Copy-Item scripts/testing/nexbot-setup.ps1 "$env:RUNNER_TEMP/verify-setup.ps1"
+          Copy-Item scripts/smoke-shell-login.mjs "$env:RUNNER_TEMP/verify-login.mjs"
           if ($env:SOURCE_COMMIT) {
             if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source SHA' }
             git merge-base --is-ancestor $env:SOURCE_COMMIT HEAD
@@ -42,6 +43,7 @@ jobs:
       - run: pnpm package:client:win
       - run: node scripts/build-personal.mjs --core
       - run: |
+          Copy-Item "$env:RUNNER_TEMP/verify-login.mjs" scripts/smoke-release-login.mjs
           & "$env:RUNNER_TEMP/verify-setup.ps1"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

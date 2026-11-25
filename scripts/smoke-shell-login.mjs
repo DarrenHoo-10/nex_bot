@@ -191,7 +191,12 @@ try {
   if (existsSync(saved) || (await fetch(core.origin + "/api/state", { headers: { Authorization: "Bearer " + cookie } })).status !== 401) throw new Error("Logout retained access");
   await second.quit(); cases.push("unified-memory-settings-visible", "logout-clears-shell-and-Core-session");
   const third = await launch(); await until(() => third.evaluate("!!document.querySelector('#connection')")); await login(third, " synthetic password "); await until(() => third.evaluate("document.querySelector('.contact-groups')?.textContent.includes('独立后端联系人')"));
-  await third.evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(()=>document.dispatchEvent(new Event('visibilitychange')))").catch(error => { if (!/Inspected target navigated|Execution context was destroyed/.test(error.message)) throw error; });
+  await third.evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(response=>{if(!response.ok)throw new Error('Fixture logout failed: '+response.status)})").catch(error => { if (!/Inspected target navigated|Execution context was destroyed/.test(error.message)) throw error; });
+  // A just-authenticated client reuses its status for one minute. Allow that
+  // window to expire before simulating the user returning to the revoked session.
+  await new Promise(resolve => setTimeout(resolve, 61_000));
+  await third.command("Page.bringToFront");
+  await third.evaluate("document.dispatchEvent(new Event('visibilitychange'))").catch(error => { if (!/Inspected target navigated|Execution context was destroyed/.test(error.message)) throw error; });
   await until(() => third.evaluate("!!document.querySelector('#connection')&&document.querySelector('h1').textContent==='登录 NexBot'"));
   if (third.webLoginFrames || existsSync(saved)) throw new Error("Expired session showed web login or kept saved login");
   cases.push("active-session-expiry-uses-canonical-login");
