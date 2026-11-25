@@ -249,6 +249,13 @@ export function permissionFlags(engine: CliEngine, mode: CliLaunchOptions["permi
   return [];
 }
 
+/** Codex's TUI checks for a newer release on startup and, when it finds one, opens an
+ * "Update available" menu before the chat with "Update now" preselected. A session
+ * started from another device sits on that menu, and any Enter there runs the
+ * installer and quits the TUI ("Please restart Codex"). Terminals started here skip
+ * the check; the user's own `codex` keeps their config (checked on Codex 0.172). */
+export const CODEX_STARTUP_FLAGS: readonly string[] = ["-c", "check_for_update_on_startup=false"];
+
 /** The CLI arguments (without the executable). New Claude sessions get an id we
  * choose so the transcript can be found at once; Codex assigns its own. */
 export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: LaunchArgs = {}, options: PlatformOptions = {}): string[] {
@@ -296,6 +303,7 @@ export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: LaunchArgs = {
     if (!SAFE_ARG.test(arg)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(arg)} is not allowed`);
   }
   args.push(...launchFlags(engine, ids));
+  if (engine === "codex") args.push(...CODEX_STARTUP_FLAGS);
   if (ids.pluginDir !== undefined) {
     if (engine !== "claude") throw new LaunchError("invalid_argument", "only Claude takes a plugin directory");
     args.push("--plugin-dir", validatePluginDir(ids.pluginDir, options.platform ?? process.platform));
