@@ -44,8 +44,8 @@ describe("cliArgs", () => {
   it("builds the Claude and Codex invocations", () => {
     expect(cliArgs("claude", "new", { nativeId: UUID })).toEqual(["--session-id", UUID]);
     expect(cliArgs("claude", "resume", { nativeId: UUID })).toEqual(["--resume", UUID]);
-    expect(cliArgs("codex", "new")).toEqual([]);
-    expect(cliArgs("codex", "resume", { nativeId: UUID })).toEqual(["resume", UUID]);
+    expect(cliArgs("codex", "new")).toEqual(["-c", "check_for_update_on_startup=false"]);
+    expect(cliArgs("codex", "resume", { nativeId: UUID })).toEqual(["resume", UUID, "-c", "check_for_update_on_startup=false"]);
   });
 
   it("adds each CLI's full-access flag only for permissions full, after the model flags", () => {
@@ -56,12 +56,22 @@ describe("cliArgs", () => {
     expect(permissionFlags("codex", undefined)).toEqual([]);
     expect(cliArgs("claude", "new", { nativeId: UUID, permissions: "full" })).toEqual(["--session-id", UUID, "--dangerously-skip-permissions"]);
     expect(cliArgs("claude", "new", { nativeId: UUID, model: "opus", permissions: "full" })).toEqual(["--session-id", UUID, "--model", "opus", "--dangerously-skip-permissions"]);
-    expect(cliArgs("codex", "new", { permissions: "full" })).toEqual(["--dangerously-bypass-approvals-and-sandbox"]);
-    expect(cliArgs("codex", "resume", { nativeId: UUID, permissions: "full" })).toEqual(["resume", UUID, "--dangerously-bypass-approvals-and-sandbox"]);
-    expect(cliArgs("codex", "fork", { forkFrom: UUID, permissions: "full" })).toEqual(["fork", UUID, "--dangerously-bypass-approvals-and-sandbox"]);
-    expect(cliArgs("codex", "new", { permissions: "ask" })).toEqual([]);
+    expect(cliArgs("codex", "new", { permissions: "full" })).toEqual(["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
+    expect(cliArgs("codex", "resume", { nativeId: UUID, permissions: "full" })).toEqual(["resume", UUID, "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
+    expect(cliArgs("codex", "fork", { forkFrom: UUID, permissions: "full" })).toEqual(["fork", UUID, "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
+    expect(cliArgs("codex", "new", { permissions: "ask" })).toEqual(["-c", "check_for_update_on_startup=false"]);
     // ZCode has no such flag and takes the mode without complaint
     expect(cliArgs("zcode", "new", { permissions: "full" })).toEqual([]);
+  });
+
+  it("starts every Codex terminal without the startup update check", () => {
+    // the "Update available" menu would stand between a remote start and the chat
+    for (const args of [cliArgs("codex", "new"), cliArgs("codex", "resume", { nativeId: UUID }), cliArgs("codex", "fork", { forkFrom: UUID })]) {
+      expect(args.slice(-2)).toEqual(["-c", "check_for_update_on_startup=false"]);
+    }
+    expect(cliArgs("claude", "new", { nativeId: UUID })).not.toContain("check_for_update_on_startup=false");
+    expect(cliArgs("zcode", "new")).toEqual([]);
+    expect(SAFE_ARG.test("check_for_update_on_startup=false")).toBe(true);
   });
 
   it("requires an id where the CLI needs one", () => {
@@ -86,7 +96,7 @@ describe("cliArgs", () => {
 
     it("forks Claude into a session id we choose, and Codex with its own fork command", () => {
       expect(cliArgs("claude", "fork", { nativeId: UUID, forkFrom: PARENT })).toEqual(["--resume", PARENT, "--fork-session", "--session-id", UUID]);
-      expect(cliArgs("codex", "fork", { forkFrom: PARENT })).toEqual(["fork", PARENT]);
+      expect(cliArgs("codex", "fork", { forkFrom: PARENT })).toEqual(["fork", PARENT, "-c", "check_for_update_on_startup=false"]);
     });
 
     it("needs the session to fork, and a new id for Claude", () => {
@@ -123,7 +133,7 @@ describe("cliArgs", () => {
   describe("model and effort", () => {
     it("adds no flag when none was picked", () => {
       expect(cliArgs("claude", "new", { nativeId: UUID })).toEqual(["--session-id", UUID]);
-      expect(cliArgs("codex", "new", {})).toEqual([]);
+      expect(cliArgs("codex", "new", {})).toEqual(["-c", "check_for_update_on_startup=false"]);
     });
 
     it("passes Claude's --model and --effort, in every mode", () => {
@@ -133,9 +143,9 @@ describe("cliArgs", () => {
     });
 
     it("passes Codex's -m and -c model_reasoning_effort after the subcommand", () => {
-      expect(cliArgs("codex", "new", { model: "gpt-6.2-sol", effort: "high" })).toEqual(["-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"]);
-      expect(cliArgs("codex", "resume", { nativeId: UUID, effort: "minimal" })).toEqual(["resume", UUID, "-c", "model_reasoning_effort=minimal"]);
-      expect(cliArgs("codex", "fork", { forkFrom: UUID, model: "gpt-6-astra" })).toEqual(["fork", UUID, "-m", "gpt-6-astra"]);
+      expect(cliArgs("codex", "new", { model: "gpt-6.2-sol", effort: "high" })).toEqual(["-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false"]);
+      expect(cliArgs("codex", "resume", { nativeId: UUID, effort: "minimal" })).toEqual(["resume", UUID, "-c", "model_reasoning_effort=minimal", "-c", "check_for_update_on_startup=false"]);
+      expect(cliArgs("codex", "fork", { forkFrom: UUID, model: "gpt-6-astra" })).toEqual(["fork", UUID, "-m", "gpt-6-astra", "-c", "check_for_update_on_startup=false"]);
       // the config override is a plain token: no quoting needed with or without cmd.exe
       expect(SAFE_ARG.test("model_reasoning_effort=high")).toBe(true);
     });
@@ -152,7 +162,7 @@ describe("cliArgs", () => {
 
     it("reaches the argv planLaunch builds", async () => {
       const plan = await planLaunch({ engine: "codex", mode: "new", cwd: root, executable: "/usr/bin/codex", model: "gpt-6.1-terra", effort: "ultra" }, { platform: process.platform, env: {} });
-      expect(plan.argv).toEqual(["/usr/bin/codex", "-m", "gpt-6.1-terra", "-c", "model_reasoning_effort=ultra"]);
+      expect(plan.argv).toEqual(["/usr/bin/codex", "-m", "gpt-6.1-terra", "-c", "model_reasoning_effort=ultra", "-c", "check_for_update_on_startup=false"]);
     });
   });
 });
@@ -168,6 +178,8 @@ describe("buildArgv", () => {
       "/usr/local/bin/codex",
       "resume",
       UUID,
+      "-c",
+      "check_for_update_on_startup=false",
     ]);
   });
 
@@ -194,7 +206,7 @@ describe("buildArgv", () => {
   });
 
   it("never wraps a .cmd name outside Windows", () => {
-    expect(buildArgv("codex", "new", {}, "/tmp/codex.cmd", { platform: "linux" })).toEqual(["/tmp/codex.cmd"]);
+    expect(buildArgv("codex", "new", {}, "/tmp/codex.cmd", { platform: "linux" })).toEqual(["/tmp/codex.cmd", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("refuses a shim path that cmd.exe would interpret", () => {

@@ -339,7 +339,7 @@ describe("start with forkFrom", () => {
     expect(reply.ok).toBe(true);
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(2)}`);
-    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
     expect(hc.terminals.get(result.terminal)!.cwd).toBe(path.resolve(workDir));
   });
 });
@@ -430,7 +430,7 @@ describe("Codex session mapping", () => {
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(9)}`);
     expect(hc.terminals.get(result.terminal)).toMatchObject({
-      argv: ["/fake/bin/codex", "resume", XID(9), "-m", "gpt-6.2", "-c", "model_reasoning_effort=high", "--no-daemon"],
+      argv: ["/fake/bin/codex", "resume", XID(9), "-m", "gpt-6.2", "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false", "--no-daemon"],
       labels: { "nexbot.native": XID(9) },
     });
     expect(t.sessions()).toContainEqual(expect.objectContaining({ nativeId: XID(9), terminal: result.terminal }));
@@ -453,7 +453,7 @@ describe("Codex session mapping", () => {
     expect(reply.ok).toBe(true);
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(2)}`);
-    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(hc.terminals.get(result.terminal)!.argv).toEqual(["/fake/bin/codex", "fork", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
     expect(hc.terminals.get(result.terminal)!.labels).toMatchObject({ "nexbot.engine": "codex", "nexbot.native": "pending" });
     const rows = Object.fromEntries(t.sessions().map((row) => [row.nativeId, row]));
     expect(rows[XID(2)]).toMatchObject({ liveIn: "nexbot", terminal: result.terminal });
@@ -509,7 +509,7 @@ describe("continue", () => {
     await t.start();
     const reply = await t.call("continue", { ref: `codex:${XID(1)}` });
     expect(reply.ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high"]);
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("passes a custom config directory to the CLI", async () => {
@@ -950,7 +950,7 @@ describe("Claude hooks and turn ends", () => {
     expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--effort", "high", "--plugin-dir", pluginUsed()]);
     expect(hc.last().env.NEXBOT_HOOK_TOKEN.endsWith(`.${CID(1)}`)).toBe(true);
     await t.call("continue", { ref: `codex:${XID(1)}` });
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high"]);
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false"]);
     expect(hc.last().env.NEXBOT_HOOK_PIPE).toBeUndefined();
   });
 
@@ -1058,7 +1058,7 @@ describe("launch options, search and attachments", () => {
     const id = (started.result as { ref: string }).ref.slice("claude:".length);
     expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", id, "--model", "opus", "--effort", "max", "--dangerously-skip-permissions"]);
     expect((await t.call("continue", { ref: `codex:${XID(1)}`, model: "gpt-6.2-sol", effort: "ultra" })).ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=ultra"]);
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=ultra", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("starts with the CLI's own permission prompts when the user chose ask, and continues with full access when asked", async () => {
@@ -1073,7 +1073,7 @@ describe("launch options, search and attachments", () => {
     expect((await t.call("continue", { ref: `claude:${CID(1)}`, permissions: "full" })).ok).toBe(true);
     expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--effort", "high", "--dangerously-skip-permissions"]);
     expect((await t.call("continue", { ref: `codex:${XID(1)}`, permissions: "full" })).ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox"]);
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=high", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("turns an approval dialog no hook reported into a card and answers it with the dialog's key", async () => {
@@ -1118,7 +1118,7 @@ describe("launch options, search and attachments", () => {
     }));
     await t.start();
     expect((await t.call("continue", { ref: `codex:${XID(1)}` })).ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=medium"]);
+    expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=medium", "-c", "check_for_update_on_startup=false"]);
   });
 
   it("refuses an effort the engine lacks, and any option for ZCode", async () => {
