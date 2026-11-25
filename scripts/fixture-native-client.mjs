@@ -102,7 +102,7 @@ Password    : ${JSON.stringify(PASSWORD)}   (leading and trailing spaces are int
 2nd account : other@example.test (same password). Plain createPersonalApp has no accountWorkspaces mode,
               so Core is bound to the owner identity; expect other@ to be refused at auth/respond.
 Agents      : 工作助手, 研究伙伴 (each has seeded history)
-Fake MCP    : ${mcp.origin}/mcp   (add it as a connector, test, then grant; tools: echo, private_tool. SSE transport: ${mcp.origin}/sse)
+Fake MCP    : ${mcp.origin}/mcp   (add it as a connector and test; tools: echo, private_tool; tools: echo, private_tool. SSE transport: ${mcp.origin}/sse)
 Model       : configured (state.config present)
 Temp dir    : ${root}
 PID         : ${process.pid}

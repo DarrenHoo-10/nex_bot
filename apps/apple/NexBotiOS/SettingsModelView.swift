@@ -123,6 +123,7 @@ struct SettingsModelView: View {
                 }
                 .cardStyle()
                 if let config = workspace.state?.config { ImageModelSection(workspace: workspace).id("\(config.providerID)|\(config.endpoint)") }
+                TranslationModelSection(workspace: workspace)
                 RetrievalSection(workspace: workspace)
             }
         }
@@ -292,20 +293,27 @@ private struct ProviderModelsIOS: View {
 
     @ViewBuilder private func row(_ model: String) -> some View {
         let options = connection.options[model], isDefault = model == connection.defaultModel
+        let name = connection.displayName(model)
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(connection.displayName(model)).font(.callout.weight(.medium)).foregroundStyle(enabled.contains(model) ? Theme.foreground : Theme.muted).lineLimit(1).truncationMode(.middle)
-                if connection.displayName(model) != model { Text(model).font(.caption2.monospaced()).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle) }
-                let tags = [isDefault ? "默认" : nil, options?.imageInput == true ? "视觉" : nil, options?.reasoning.first.map { "推理 \($0.label)\(options!.reasoning.count > 1 ? "–\(options!.reasoning.last!.label)" : "")" }].compactMap { $0 }
+                ScrollView(.horizontal) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(name).font(.callout.weight(.medium)).foregroundStyle(enabled.contains(model) ? Theme.foreground : Theme.muted)
+                        if name != model { Text(model).font(.caption2.monospaced()).foregroundStyle(Theme.muted) }
+                    }
+                    .fixedSize()
+                }
+                .scrollIndicators(.hidden)
+                let tags = [isDefault ? "默认" : nil, options?.imageInput != false ? "视觉" : nil].compactMap { $0 }
                 if !tags.isEmpty { Text(tags.joined(separator: " · ")).font(.caption2).foregroundStyle(Theme.muted) }
             }
-            Spacer(minLength: 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Menu {
                 if !isDefault { Button("设为默认模型") { Task { try? await workspace.updateConnection(connection, defaultModel: model) } } }
                 Button("编辑") { editing = model }
             } label: { Image(systemName: "ellipsis").foregroundStyle(Theme.muted).frame(width: 30, height: 30) }
                 .accessibilityLabel("\(model) 的操作")
-            Toggle("启用 \(model)", isOn: Binding(get: { enabled.contains(model) }, set: { _ in autosave?.toggle(model, all: all) })).labelsHidden()
+            Toggle("启用 \(model)", isOn: Binding(get: { enabled.contains(model) }, set: { _ in autosave?.toggle(model, all: all) })).labelsHidden().fixedSize()
         }
         .padding(.vertical, 6)
     }
@@ -341,8 +349,7 @@ private struct ModelOptionsSheetIOS: View {
     @State private var info: ModelLimitInfo?
     @State private var context = ""
     @State private var output = ""
-    @State private var imageInput = false
-    @State private var levels: [ReasoningLevel] = []
+    @State private var imageInput = true
     @State private var saving = false
     @State private var error = ""
 
@@ -354,11 +361,6 @@ private struct ModelOptionsSheetIOS: View {
                     TextField(info.map { "最大输出（自动 · \($0.automatic.maxOutputTokens.formatted())）" } ?? "最大输出（自动）", text: $output).keyboardType(.numberPad)
                 }
                 Section { Toggle("支持图片输入", isOn: $imageInput) }
-                Section("推理档位") {
-                    ForEach(ReasoningLevel.allCases, id: \.self) { level in
-                        Toggle(level.label, isOn: Binding(get: { levels.contains(level) }, set: { on in levels = ReasoningLevel.allCases.filter { $0 == level ? on : levels.contains($0) } }))
-                    }
-                }
                 if !error.isEmpty { Section { Text(error).foregroundStyle(Theme.danger) } }
             }
             .navigationTitle(model).navigationBarTitleDisplayMode(.inline)
@@ -369,11 +371,10 @@ private struct ModelOptionsSheetIOS: View {
         }
         .task {
             let stored = connection.options[model]
-            imageInput = stored?.imageInput ?? false; levels = stored?.reasoning ?? []
+            imageInput = stored?.imageInput ?? true
             guard let result = try? await workspace.modelLimits(provider: connection.provider, endpoint: connection.endpoint, model: model) else { return }
             info = result
             context = result.manual.contextWindow.map(String.init) ?? ""; output = result.manual.maxOutputTokens.map(String.init) ?? ""
-            if stored == nil, let capabilities = result.capabilities { imageInput = capabilities.imageInput; if capabilities.reasoning { levels = [.low, .medium, .high] } }
         }
     }
 
@@ -384,7 +385,7 @@ private struct ModelOptionsSheetIOS: View {
         Task {
             defer { saving = false }
             do {
-                try await workspace.saveModelOptions(connectionID: connection.id, model: model, version: connection.options[model]?.version ?? 0, imageInput: imageInput, reasoning: levels,
+                try await workspace.saveModelOptions(connectionID: connection.id, model: model, version: connection.options[model]?.version ?? 0, imageInput: imageInput, reasoning: ReasoningLevel.defaults,
                                                      contextWindow: Int(trimmedContext), maxOutputTokens: Int(trimmedOutput))
                 dismiss()
             } catch { self.error = (error as? CoreError)?.message ?? error.localizedDescription }

@@ -20,7 +20,7 @@ struct ConversationView: View {
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.scenePhase) private var scenePhase
     @State private var modelChooserOpen = false
-    @State private var exported = false
+    @State private var switchingAssistant = false
     @State private var dropTargeted = false
     @State private var memoryBaseline: [String: String]?
     @State private var memoryNotice = ""
@@ -37,7 +37,6 @@ struct ConversationView: View {
     private var bot: Bot? { workspace.bot(botID) }
     private var isActive: Bool { activeState == .key && scenePhase == .active }
     private var pendingApprovals: [Approval] { workspace.approvals.filter { $0.botID == botID } }
-    private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
     private var openJobs: [Job] { workspace.state?.openJobs(botID: botID) ?? [] }
 
     /// `version:updated_at` of every memory this agent can see; a change makes the 已更新记忆 pill appear.
@@ -86,32 +85,27 @@ struct ConversationView: View {
 
     // MARK: Header
 
-    /// The floating capsule (avatar, name, status) appears only while the inspector is closed and opens it; round glass buttons sit on the right.
+    /// The floating capsule switches conversations. The inspector has its own toggle on the right.
     private var header: some View {
         let state = workspace.companionState(botID)
-        let subtitle: String = {
-            guard let first = tasks.first else { return state.label }
-            let phrase = ToolLabels.taskPhrase(first)
-            return tasks.count > 1 ? "\(phrase) · \(tasks.count) 项工作正在进行" : phrase
-        }()
-        let covered = ui.inspectorVisible
         return ZStack {
-            Button { ui.inspectorVisible = true } label: {
-                HStack(spacing: 9) {
+            Button { switchingAssistant.toggle() } label: {
+                HStack(spacing: 7) {
                     if let bot { AgentAvatar(appearance: workspace.appearance(bot), state: state, size: 30, animated: preferences.motionEnabled) }
                     Text(bot?.name ?? "NexBot").font(.system(size: 13.5, weight: .semibold)).lineLimit(1)
-                    Text(subtitle).font(.system(size: 11.5, weight: tasks.isEmpty ? .regular : .medium))
-                        .foregroundStyle(tasks.isEmpty ? Theme.muted : Theme.identityAccent).lineLimit(1).frame(maxWidth: 220, alignment: .leading)
                 }
-                .padding(.leading, 6).padding(.trailing, 16).padding(.vertical, 5)
+                .padding(.leading, 5).padding(.trailing, 10).padding(.vertical, 4)
                 .glass(Capsule())
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .help("打开 Agent 资料").accessibilityLabel("\(bot?.name ?? "Agent") 资料")
-            .opacity(covered ? 0 : 1).offset(y: covered ? -8 : 0)
-            .allowsHitTesting(!covered).accessibilityHidden(covered)
-            .animation(.easeOut(duration: 0.25), value: covered)
+            .help("切换助手").accessibilityLabel("\(bot?.name ?? "Agent")，切换助手")
+            .popover(isPresented: $switchingAssistant, arrowEdge: .bottom) {
+                AssistantSwitcher(workspace: workspace, selectedID: botID) { id in
+                    switchingAssistant = false
+                    if id != botID { workspace.select(id) }
+                }
+            }
 
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
@@ -124,10 +118,7 @@ struct ConversationView: View {
                     .glass(Capsule(), strong: true, lift: .card).frame(maxWidth: 240)
                 }
                 if !openJobs.isEmpty { jobsPill }
-                if !conversation.messages.isEmpty {
-                    RoundGlassButton(symbol: exported ? "checkmark" : "square.and.arrow.up", label: "复制对话记录", action: share)
-                }
-                RoundGlassButton(symbol: "sidebar.right", label: "Agent 资料", selected: ui.inspectorVisible) { ui.inspectorVisible.toggle() }
+                RoundGlassButton(symbol: "sidebar.right", label: ui.inspectorVisible ? "收起助手详情" : "助手详情", selected: ui.inspectorVisible) { ui.inspectorVisible.toggle() }
             }
         }
         .padding(.horizontal, 2).frame(height: 64)
@@ -157,13 +148,6 @@ struct ConversationView: View {
             }
             .padding(6).frame(width: 300)
         }
-    }
-
-    private func share() {
-        guard let text = workspace.exportTranscript(botID: botID) else { return }
-        AgentUI.shared.copyToPasteboard(text)
-        exported = true
-        Task { try? await Task.sleep(for: .seconds(1.8)); exported = false }
     }
 
     private var noModelBanner: some View {
@@ -673,7 +657,7 @@ private struct MessageRow: View {
     /// Short time plus the hover actions 引用 and 复制.
     private var meta: some View {
         HStack(spacing: 10) {
-            if let at = message.createdAt { Text(TimeFormat.formatShortTime(at)).font(.system(size: 10.5).monospacedDigit()).help(TimeFormat.formatTime(at)) }
+            if !message.isFromUser, let at = message.createdAt { Text(TimeFormat.formatShortTime(at)).font(.system(size: 10.5).monospacedDigit()).help(TimeFormat.formatTime(at)) }
             if canAct { actions.opacity(actionsVisible ? 1 : 0) }
         }
         .font(.system(size: 10.5)).foregroundStyle(Theme.muted)

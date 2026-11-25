@@ -58,6 +58,9 @@ const ballast = (label: string, repeats = 1200) => `${label} ` + '合成资料'.
 // The prompt no longer lists every memory (memory-recall.md: core memory and one recall per task instead), so seven
 // 1,200-character documents no longer add about 12k tokens to every request. The input carries that weight instead.
 const DOCUMENT_WEIGHT = 2070;
+// On-demand tool discovery (tool-discovery-20261030.md) cut the resident tool declaration and instructions by about
+// 4,900 tokens, so the input carries that weight too: without it the third turn fits and nothing is reduced.
+const TOOL_PROMPT_WEIGHT = 850;
 const withoutSystem = (request: Record<string, unknown>) => JSON.stringify((request.messages as Array<{ role: string }>).filter(message => message.role !== 'system' && message.role !== 'developer'));
 const stored = (app: App, bot: string) => app.runtime.projection.load(runtimeOf(app, bot))!;
 const edits = (app: App, bot: string) => stored(app, bot).filter(entry => entry.type === 'context_edit') as Array<{ targetId: string; replacement: { content: Array<{ text: string }> } | null }>;
@@ -170,7 +173,7 @@ describe('A request that does not fit is reduced in the turn', () => {
     expect(app.runtime.failures.blocked(runtime).size).toBe(4);
     // Digests work; the history fold fails.
     fake.setOverride(body => body.stream || isDigest(body) ? undefined : reply('', 'stop'));
-    const task = await turn(app, bot, ballast('SYNC-INPUT', 1200 + DOCUMENT_WEIGHT), 'sync-3');
+    const task = await turn(app, bot, ballast('SYNC-INPUT', 1200 + DOCUMENT_WEIGHT + TOOL_PROMPT_WEIGHT), 'sync-3');
     expect(app.store.get('SELECT status FROM tasks WHERE id=?', task)?.status).toBe('succeeded');
     const calls = summarizers(fake);
     expect(calls.filter(isDigest).length).toBeGreaterThanOrEqual(4);
@@ -194,7 +197,7 @@ describe('A request that does not fit is reduced in the turn', () => {
   it('accepts a short digest cut off at the output cap (the turn succeeds) and marks it partial', async () => {
     const { app, fake, bot } = await setup();
     fake.setOverride(body => body.stream ? undefined : isDigest(body) ? reply('简短摘要', 'length') : undefined);
-    const task = await turn(app, bot, ballast('SYNC-INPUT', 1200 + DOCUMENT_WEIGHT), 'sync-3');
+    const task = await turn(app, bot, ballast('SYNC-INPUT', 1200 + DOCUMENT_WEIGHT + TOOL_PROMPT_WEIGHT), 'sync-3');
     expect(app.store.get('SELECT status FROM tasks WHERE id=?', task)?.status).toBe('succeeded');
     const partial = edits(app, bot).filter(edit => JSON.stringify(edit.replacement).includes('摘要不完整'));
     expect(partial.length).toBeGreaterThanOrEqual(1);

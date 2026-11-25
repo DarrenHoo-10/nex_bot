@@ -78,6 +78,8 @@ data class ClientSessions(
 
 @Serializable
 data class SyncState(
+    val revision: Long? = null,
+    val at: Long? = null,
     val cursor: Long = 0,
     val privacyEpoch: Long = 0,
     val coreId: String = "",
@@ -92,6 +94,7 @@ data class SyncEvent(
     val coreId: String = "",
     val bootId: String = "",
     val reset: Boolean = false,
+    val revision: Long? = null,
 )
 
 @Serializable
@@ -266,6 +269,7 @@ data class MessageFeed(
     val sync: SyncState = SyncState(),
     val messages: List<MessageRow> = emptyList(),
     val hasMore: Boolean = false,
+    val hasOlder: Boolean? = null,
     val streaming: List<StreamingText> = emptyList(),
 )
 

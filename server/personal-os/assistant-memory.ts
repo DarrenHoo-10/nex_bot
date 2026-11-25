@@ -142,11 +142,11 @@ export class AssistantMemory {
   /** Like `source`, for a memory that rests on the originals of several assistants (a user topic): any assistant's message or archive. */
   sourceAny(ref: string) {
     if (ref.startsWith('episode:')) {
-      const episode = this.store.get('SELECT * FROM conversation_episodes WHERE id=?', ref.slice(8));
+      const episode = this.store.get("SELECT * FROM conversation_episodes WHERE id=? AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", ref.slice(8));
       if (!episode) throw new Error('来源不存在或已遗忘');
       return { id: ref, role: 'episode', content: episodeText(episode), created_at: episode.ended_at, task_id: null };
     }
-    const row = this.store.get('SELECT id,role,content,created_at,task_id FROM agent_messages WHERE id=?', ref);
+    const row = this.store.get("SELECT id,role,content,created_at,task_id FROM agent_messages WHERE id=? AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", ref);
     if (!row || row.content === '[已遗忘]') throw new Error('来源不存在或已遗忘');
     return row;
   }

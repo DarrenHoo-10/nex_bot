@@ -1,15 +1,12 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, X } from "lucide-react";
+import { Loader2, Trash2, X } from "lucide-react";
 
 function portalRoot(): HTMLElement {
   return document.querySelector<HTMLElement>(".rk-workspace") ?? document.body;
 }
 
-/** A minimal enlarged-image view: the image floats over the transcript and
- * only one control is shown, an X at its top-right corner. When onDelete is
- * supplied the X removes the image; otherwise it closes the view. Clicking the
- * backdrop or pressing Escape closes without removing anything. */
 export function ImageLightbox({ src, alt, deleteLabel = "删除图片", onClose, onDelete }: {
   src: string;
   alt: string;
@@ -18,6 +15,7 @@ export function ImageLightbox({ src, alt, deleteLabel = "删除图片", onClose,
   onDelete?: () => void | Promise<void>;
 }) {
   const button = useRef<HTMLButtonElement>(null);
+  const deleteButton = useRef<HTMLButtonElement>(null);
   const close = useRef(onClose);
   const deletingRef = useRef(false);
   const [deleting, setDeleting] = useState(false);
@@ -36,7 +34,8 @@ export function ImageLightbox({ src, alt, deleteLabel = "删除图片", onClose,
       }
       if (event.key === "Tab") {
         event.preventDefault();
-        button.current?.focus();
+        const next = document.activeElement === button.current && !deleteButton.current?.disabled ? deleteButton.current : null;
+        (next ?? button.current)?.focus();
       }
     };
     document.addEventListener("keydown", key);
@@ -47,18 +46,14 @@ export function ImageLightbox({ src, alt, deleteLabel = "删除图片", onClose,
   }, []);
 
   const remove = async () => {
-    if (deleting) return;
-    if (!onDelete) {
-      onClose();
-      return;
-    }
+    if (deleting || !onDelete) return;
     setDeleting(true);
     setError("");
     try {
       await onDelete();
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error && failure.message ? failure.message : "删除失败，请重试");
+      setError(userErrorText(failure, "删除失败，请重试"));
       setDeleting(false);
     }
   };
@@ -67,9 +62,12 @@ export function ImageLightbox({ src, alt, deleteLabel = "删除图片", onClose,
     <div className="image-lightbox" onMouseDown={(event) => { if (!deleting && event.target === event.currentTarget) onClose(); }}>
       <div className="image-lightbox-frame" role="dialog" aria-modal="true" aria-label={`查看图片：${alt}`}>
         <img src={src} alt={alt} draggable={false} onContextMenu={(event) => event.preventDefault()}/>
-        <button ref={button} type="button" className="image-lightbox-delete" aria-label={deleteLabel} title={deleteLabel} disabled={deleting} onClick={() => void remove()}>
-          {deleting ? <Loader2 size={17}/> : <X size={19}/>}
-        </button>
+        <div className="image-lightbox-actions">
+          {onDelete && <button ref={deleteButton} type="button" className="image-lightbox-delete" aria-label={deleteLabel} title={deleteLabel} disabled={deleting} onClick={() => void remove()}>
+            {deleting ? <Loader2 size={17}/> : <Trash2 size={17}/>}
+          </button>}
+          <button ref={button} type="button" aria-label="关闭图片预览" title="关闭图片预览" onClick={onClose}><X size={19}/></button>
+        </div>
       </div>
       {error ? <p className="image-lightbox-error" role="alert">{error}</p> : null}
     </div>,

@@ -34,14 +34,13 @@ struct ComposerView: View {
     @State private var exporting = false
     @State private var actionError: String?
     @State private var showModels = false
+    @State private var showPolicy = false
     @State private var draftImage: ImagePreview?
     @State private var revokingRule = false
 
     private var hasModel: Bool { workspace.state?.config != nil }
-    private var canSend: Bool { conversation.canSend && hasModel }
+    private var canSend: Bool { conversation.canSend && hasModel && !workspace.isSavingAgentModel(botID) }
     private var bot: Bot? { workspace.bot(botID) }
-    private var config: ModelConfig? { workspace.state?.config }
-    private var defaultModel: String { config?.defaultModel ?? "" }
     /// The assistant's own model; empty while it follows the default.
     private var chatModel: String { bot?.selectedModel ?? "" }
     private var mode: ApprovalMode { bot?.approvalMode ?? .standard }
@@ -72,7 +71,13 @@ struct ComposerView: View {
             if menu == .add { addMenu.transition(.opacity) }
             if menu == .permissions { permissionMenu.frame(maxWidth: .infinity, alignment: .leading).transition(.opacity) }
             if !conversation.attachments.isEmpty { attachmentChips }
-            HStack(alignment: .bottom, spacing: 4) {
+            VStack(spacing: 3) {
+                TextField(conversation.replyJob.map { "回复后台任务：\($0.title)" } ?? "给 \(botName) 发消息…", text: $conversation.draft, axis: .vertical)
+                    .lineLimit(3...6)
+                    .padding(.horizontal, 7).padding(.top, 7)
+                    .accessibilityLabel("发送给 Agent 的消息")
+                    .onChange(of: conversation.draft) { showMentionsDismissed = false; menu = nil }
+            HStack(spacing: 5) {
                 Button { toggle(.add) } label: {
                     Image(systemName: "plus").font(.system(size: 17, weight: .medium))
                         .foregroundStyle(menu == .add ? Theme.foreground : Theme.muted)
@@ -82,11 +87,8 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .disabled(conversation.isSending || conversation.isUploadingAttachments)
                 .accessibilityLabel("添加文件或指令")
-                TextField(conversation.replyJob.map { "回复后台任务：\($0.title)" } ?? "给 \(botName) 发消息…", text: $conversation.draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .padding(.vertical, 8)
-                    .accessibilityLabel("发送给 Agent 的消息")
-                    .onChange(of: conversation.draft) { showMentionsDismissed = false; menu = nil }
+                Spacer(minLength: 4)
+                ComposerContextControl(workspace: workspace, conversation: conversation, bot: bot)
                 // While the agent works and nothing is typed, the send key stops it (web composer).
                 if showStop {
                     Button { Task { await stopAll() } } label: {
@@ -111,6 +113,7 @@ struct ComposerView: View {
                     .accessibilityLabel("发送消息")
                 }
             }
+            }
             .padding(.leading, 6).padding(.trailing, 5).padding(.vertical, 5)
             .glass(RoundedRectangle(cornerRadius: 25, style: .continuous), strong: true)
         }
@@ -127,9 +130,10 @@ struct ComposerView: View {
             Task { await addPhotos(items) }
         }
         .sheet(isPresented: $showModels) {
-            ChatModelSheet(workspace: workspace, botID: botID, onError: { actionError = $0 })
+            ChatModelSheet(workspace: workspace, botID: botID, onError: { actionError = $0 }, composer: true)
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showPolicy) { PolicyEditorSheet(workspace: workspace, botID: botID) }
         .sheet(item: $exportFile) { file in ShareSheet(url: file.url).presentationDetents([.medium, .large]) }
         .fullScreenCover(item: $draftImage) { preview in NativeImageViewer(preview: preview) }
         .debugCommand { command, arg in
@@ -141,6 +145,7 @@ struct ComposerView: View {
             case "permmenu": menu = .permissions
             case "modelmenu": menu = nil; showModels = true
             case "closemodels": showModels = false
+            case "policy": showPolicy = true
             case "modelpick": setModel(arg == "-" ? "" : arg)
             case "closemenu": menu = nil
             case "exportui": Task { await export() }
@@ -234,8 +239,8 @@ struct ComposerView: View {
             menuRow("photo", "照片", "photo", disabled: conversation.isUploadingAttachments) { menu = nil; showPhotos = true }
             pasteRow
             heading("指令")
+            menuRow("cpu", "模型", "model", disabled: bot == nil || conversation.isSending) { menu = nil; showModels = true }
             menuRow(mode == .full ? "exclamationmark.shield" : "checkmark.shield", "权限", "permission", value: mode.title, disabled: bot == nil) { menu = .permissions }
-            menuRow("slider.horizontal.3", "模型", "model", value: workspace.state?.modelLabel(forBot: bot) ?? (chatModel.isEmpty ? (defaultModel.isEmpty ? "未连接模型" : defaultModel) : chatModel), disabled: config == nil || bot == nil) { menu = nil; showModels = true }
             menuRow("plus.bubble", "新话题", "topic", disabled: conversation.messages.isEmpty || bot == nil) { menu = nil; Task { await startNewTopic() } }
             menuRow("square.and.arrow.down", "导出对话", "export", value: exporting ? "导出中…" : "Markdown", disabled: conversation.messages.isEmpty || exporting) { menu = nil; Task { await export() } }
         }
@@ -303,6 +308,7 @@ struct ComposerView: View {
                 .accessibilityLabel(option.title).accessibilityAddTraits(option == mode ? .isSelected : [])
             }
             let rules = workspace.approvalRules(botID: conversation.botID)
+            menuRow("shield", "工具权限", "", disabled: bot == nil) { menu = nil; showPolicy = true }
             if !rules.isEmpty {
                 Divider()
                 heading("始终允许")

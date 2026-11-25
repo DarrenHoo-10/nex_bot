@@ -2,7 +2,24 @@
    right-click (pointer) or a long press (touch), so no download link needs to
    live inside the message body. */
 .rk-workspace .message-media { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
-.rk-workspace .message.user .message-media { justify-content: flex-end; }
+.rk-workspace .message.user .message-media,
+.cli-app .cli-msg.is-user .message-media { justify-content: flex-end; }
+.cli-app.rk-workspace .message-image {
+  --message-image-max-width: min(240px, 64vw);
+  --message-image-max-height: min(160px, 64vw * 2 / 3);
+  width: var(--message-image-max-width);
+  max-width: 100%;
+}
+.cli-app.rk-workspace .message-image.is-fitted {
+  width: min(var(--message-image-max-width), var(--message-image-max-height) * var(--message-image-ratio));
+  aspect-ratio: var(--message-image-ratio);
+  border: 0;
+  background: transparent;
+}
+.cli-app.rk-workspace .message-image img { object-fit: contain; }
+.cli-app.rk-workspace .message-image:not(.is-fitted) img { position: absolute; inset: 0; visibility: hidden; }
+.cli-app .message-media { align-items: flex-start; gap: 6px; }
+.cli-app .cli-msg.is-user .message-media { max-width: 100%; margin-bottom: 4px; }
 .rk-workspace .message-image {
   position: relative; display: block; width: min(240px, 64vw); aspect-ratio: 3 / 2;
   flex: 0 0 auto; padding: 0; overflow: hidden; cursor: zoom-in;
@@ -47,13 +64,15 @@
   display: block; max-width: calc(100vw - 48px); max-height: calc(100dvh - 48px);
   object-fit: contain; border-radius: 10px; box-shadow: 0 18px 48px rgb(0 0 0 / 24%);
 }
-.rk-workspace .image-lightbox-delete {
-  position: absolute; top: 8px; right: 8px; display: grid; place-items: center;
+.rk-workspace .image-lightbox-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 8px; }
+.cli-app.rk-workspace .image-lightbox-actions { left: 8px; right: auto; }
+.rk-workspace .image-lightbox-actions button {
+  display: grid; place-items: center;
   width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%;
   background: rgb(0 0 0 / 55%); color: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
 }
-.rk-workspace .image-lightbox-delete:hover:not(:disabled) { background: rgb(0 0 0 / 78%); }
-.rk-workspace .image-lightbox-delete:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.rk-workspace .image-lightbox-actions button:hover:not(:disabled) { background: rgb(0 0 0 / 78%); }
+.rk-workspace .image-lightbox-actions button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .rk-workspace .image-lightbox-delete:disabled svg { animation: nex-image-spin 900ms linear infinite; }
 .rk-workspace .image-lightbox-error {
   position: fixed; z-index: 150; left: 50%; bottom: 28px; transform: translateX(-50%);
@@ -126,4 +145,13 @@
   .rk-workspace .image-lightbox { padding: 12px; }
   .rk-workspace .image-lightbox-frame img { max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 8px; }
   .rk-workspace .message-image { width: min(240px, 70vw); }
+  .cli-app.rk-workspace .message-image {
+    --message-image-max-width: 36px;
+    --message-image-max-height: 36px;
+    aspect-ratio: 1;
+    border-radius: 5px;
+  }
+  .cli-app.rk-workspace .message-image-loading,
+  .cli-app.rk-workspace .message-image-failed { padding: 0; }
+  .cli-app.rk-workspace .message-image-failed span { display: none; }
 }

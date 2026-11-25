@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { timingSafeEqual, randomBytes } from "node:crypto";
 import { CoreStore, id, now, type Row } from "./store.ts";
 import { policyTools } from "./policy.ts";
+import { openAiBase } from "../../shared/model-catalog.mjs";
 
 type Json = Record<string, unknown>;
 // Hindsight receives only this ephemeral service credential. The paid provider
@@ -68,7 +69,7 @@ export class MemoryModelGateway {
             suffix = new URL(model.endpoint).pathname.replace(/\/$/, "").endsWith("/v1") ? "/messages" : "/v1/messages";
             headers = { "x-api-key": model.apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" };
           }
-          const upstream = await fetch(model.endpoint.replace(/\/$/, "") + suffix, { method: "POST", headers, body: JSON.stringify(payload), signal: controller.signal, redirect: "error" });
+          const upstream = await fetch((model.provider === "anthropic" ? model.endpoint.replace(/\/$/, "") : openAiBase(model.endpoint)) + suffix, { method: "POST", headers, body: JSON.stringify(payload), signal: controller.signal, redirect: "error" });
           if (!upstream.ok) { await upstream.body?.cancel(); throw new Error(`provider_http_${upstream.status}`); }
           const raw = await upstream.text(); if (raw.length > 4_000_000) throw new Error("provider_response_too_large");
           let result = JSON.parse(raw) as Json;

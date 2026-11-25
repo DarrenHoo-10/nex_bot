@@ -1,3 +1,4 @@
+import { AssistantLifecycle } from "./assistant-lifecycle.ts";
 import { Readable } from "node:stream";
 import { HTML_PREVIEW_CSP, htmlPreviewShell } from '../../shared/html-preview-shell.mjs';
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -5,10 +6,20 @@ import { networkInterfaces } from "node:os";
 import os from "node:os";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { CoreStore, text, id } from "./store.ts";
+import { CoreStore, text, optionalText, id } from "./store.ts";
 import { catalogSettings, fetchModelCatalog } from "../../shared/model-catalog.mjs";
 import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
+import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
+import { CliAgentWorkbench } from "./cli-agents/workbench.ts";
+import { CliAgentRoutes, readCliAttachment } from "./cli-agents/routes.ts";
+import { CliImages } from "./cli-agents/images.ts";
+import { cliImageId } from "../../shared/cli-images.ts";
+import { CliAgentSupervisor } from "./cli-agents/supervisor.ts";
+import { assistantModelCaller, createTriage } from "./cli-agents/triage.ts";
+import { cliToolExecutor } from "./cli-agents/tools.ts";
+import { CliAgentStream, type StreamAuth } from "./cli-agents/stream.ts";
+import { installUpgrade } from "./upgrade.ts";
 import { DeviceNode } from "./node.ts";
 import { AgentModule } from "./agents.ts";
 import { TodoModule, TodoConflict } from "./todos.ts";
@@ -26,6 +37,8 @@ import { ConnectorModule } from "./connectors.ts";
 import { FeishuModule, feishuScanPrefix, feishuScanToken, type FeishuModuleOptions } from "./feishu/module.ts";
 import { sdkRegisterApp, wsTransportFactory } from "./feishu/transport.ts";
 import { GOOGLE_CALLBACK, type GmailConfiguration } from "./gmail-provider.ts";
+import { GITHUB_CALLBACK, type GithubConfiguration } from "./github-provider.ts";
+import { GithubMonitorModule } from "./github-monitor.ts";
 import type { AttachmentObjects } from './attachment-objects.ts';
 export { OssAttachmentObjects } from './attachment-objects.ts';
 import { ChatFiles } from "./chat-files.ts";
@@ -38,7 +51,7 @@ import type { RetrievalDefaults } from "./retrieval-config.ts";
 import {StockHistory} from "./stock-history.ts";
 import { StockFinance, stockConnectionFromEnv, type StockConnection } from "./stock-finance.ts";
 
-export interface AppOptions { stock?: StockConnection; /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; sharedFeishuAppId?: string; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: FeishuModuleOptions }
+export interface AppOptions { /** Disposable test fixtures only: shorter Agent mode timers and buffers. */ cliAgents?: Partial<CliHubTuning> & { pingMs?: number; pongTimeoutMs?: number; reauthMs?: number }; stock?: StockConnection; /** Server-wide defaults for memory retrieval models (from the environment); a user's own settings win. */ retrieval?: RetrievalDefaults; gmail?: GmailConfiguration; github?: GithubConfiguration; attachmentObjects?: AttachmentObjects; releaseMirror?: Pick<OssReleaseMirror, "manifest" | "signedUrl">; modelCatalog?: ModelCatalogConfig; clientDownloads?: ClientDownloadsOptions; accountWorkspaces?: boolean; sharedFeishuAppId?: string; publicCoreId?: string; serviceOrigin?: string; listen?: false; hostDevice?: false; dir: string; key: Buffer; token: string; port?: number; strictPort?: boolean; host?: string; publicOrigin?: string; /** Set only when a trusted local reverse proxy overwrites X-Forwarded-For with the real client address. */ trustProxy?: boolean; uiDir?: string; hindsight?: { endpoint: string; token: string }; memoryRuntime?: false; /** Only direct disposable test fixtures may opt out. Production service CLI never disables identity. */ identity?: false | { fixtureOrigin: string }; /** Only disposable test fixtures may inject a fake Feishu registration or transport. */ feishu?: FeishuModuleOptions }
 
 
 export async function createPersonalApp(options: AppOptions) {
@@ -55,42 +68,70 @@ export async function createPersonalApp(options: AppOptions) {
     return session;
   };
   const streams = new Map<ServerResponse, string>();
+  const incrementalStreams = new Map<ServerResponse, { botId: string; conversationId: string }>();
+  let lastLegacyStreamRefresh = 0;
   const verifyingStreams = new Set<ServerResponse>();
   let closing = false;
   let feishu!: FeishuModule;
   let feishuAccounts: ((action:string,data:Record<string,unknown>)=>unknown|Promise<unknown>) | undefined;
-  const changed = () => {
+  const endEventStream = (response: ServerResponse, revoked: boolean) => {
+    streams.delete(response);
+    incrementalStreams.delete(response);
+    response.end(revoked ? "event: revoked\ndata: {}\n\n" : undefined);
+  };
+  const broadcast = (legacyOnly = false) => {
     if (closing) return;
     sync.prune(); const snapshot = sync.snapshot();
     for (const [response, token] of streams) {
+      if (legacyOnly && incrementalStreams.has(response)) continue;
       if (finance.hasBinding() && identity) {
         if (!verifyingStreams.has(response)) {
           verifyingStreams.add(response);
-          void authenticate(token).catch(() => undefined).then(verified => {
+          void authenticate(token).then(verified => {
             if (closing || !streams.has(response) || response.destroyed) return;
-            if (!verified) {
-              response.end("event: revoked\ndata: {}\n\n"); streams.delete(response); return;
-            }
+            if (!verified) { endEventStream(response, true); return; }
             const latest = sync.snapshot();
             response.write(`id: ${latest.cursor}\nevent: change\ndata: ${JSON.stringify(latest)}\n\n`);
+          }, () => {
+            if (streams.has(response)) endEventStream(response, false);
           }).finally(() => verifyingStreams.delete(response));
         }
         continue;
       }
-      if (!(token.startsWith("stock_") ? finance.locallyAllowed(token) : identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
+      if (!(token.startsWith("stock_") ? finance.locallyAllowed(token) : identity ? identity.locallyAllowed(token) : clients.authenticate(token))) endEventStream(response, true);
       else response.write(`id: ${snapshot.cursor}\nevent: change\ndata: ${JSON.stringify(snapshot)}\n\n`);
     }
     feishu?.scanApprovals();
   };
+  const changed = () => { sync.revision++; broadcast(); };
   const runtime = new TaskRuntime(store, changed);
+  runtime.onStreamDelta = ({ botId, conversationId, ...delta }) => {
+    if (closing) return;
+    const isTopic = !!store.get("SELECT 1 FROM agent_topics WHERE conversation_id=?", conversationId);
+    const payload = `event: delta\ndata: ${JSON.stringify(delta)}\n\n`;
+    for (const [response, scope] of incrementalStreams) {
+      if (scope.botId !== botId || (scope.conversationId ? scope.conversationId !== conversationId : isTopic)) continue;
+      const token = streams.get(response);
+      if (!token || response.destroyed) continue;
+      if (!(identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { endEventStream(response, true); continue; }
+      // A stalled client reconnects and catches up from the active reply in its next window.
+      if (response.writableLength > 256_000) { endEventStream(response, false); continue; }
+      response.write(payload);
+    }
+    if (streams.size > incrementalStreams.size && Date.now() - lastLegacyStreamRefresh >= 1000) {
+      lastLegacyStreamRefresh = Date.now();
+      broadcast(true);
+    }
+  };
   runtime.memory.retrieval.config.defaults = options.retrieval ?? {};
-  const connectors = new ConnectorModule(store, changed, options.gmail);
+  const connectors = new ConnectorModule(store, changed, options.gmail, options.github, options.publicOrigin);
   runtime.connectorExecutor = (call, args, authorize) => finance.handles(args) ? finance.execute(call, args, authorize, runtime.isTopicTask(String(call.task_id))?.audience === "public" ? "public" : "private") : feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
   runtime.connectorDirectory = (botId) => connectors.directory(botId);
   if (identity) {
     runtime.authorizeTask = (task) => finance.hasSession(String(task.authorized_session_id)) ? finance.authorizeTask(String(task.authorized_session_id)) : identity.authorizeTask(task, finance.hasBinding());
-    identity.onSessionLost = (sessionId) => {
+    identity.onSessionLost = (sessionId, temporary) => {
       connectors.oauth.cancelSession(sessionId);
+      cliStream.closeSession(sessionId, temporary);
       for (const task of store.all("SELECT id FROM tasks WHERE authorized_session_id=? AND ended_at IS NULL", sessionId)) runtime.cancel(String(task.id), "登录失效或无法验证，任务已停止");
       if (!store.get("SELECT id FROM user_sessions WHERE protocol='native-v1' AND revoked_at IS NULL AND expires_at>?", Date.now())) {
         for (const worker of runtime.workers.values()) if (store.get("SELECT authorized_session_id FROM tasks WHERE id=?", worker.taskId)?.authorized_session_id === store.session) runtime.cancel(worker.taskId, "登录失效或无法验证，任务已停止");
@@ -105,6 +146,9 @@ export async function createPersonalApp(options: AppOptions) {
   const memoryPlugin = new ExternalMemoryPlugin(store, runtime.memory.ledger, changed);
 
   const agents = new AgentModule(store, runtime);
+  const monitors = new GithubMonitorModule(store, changed, connectors.oauth, agents);
+  connectors.monitors = monitors;
+  const lifecycle = new AssistantLifecycle(store,runtime,ids=>feishu?.detachDeleted(ids));
   const stockHistory=new StockHistory(store,agents,runtime,finance);
   finance.onHistorySession=(sessionId)=>stockHistory.schedule(sessionId);
   runtime.prepareConversation=(conversationId)=>stockHistory.prepare(conversationId);
@@ -126,9 +170,10 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.memory.personal.tree.notify = (botId, taskId, text, key) => agents.publish(botId, "system", "activity", text, key, taskId);
   feishu = new FeishuModule(store, changed, agents, runtime, {
     ...(options.feishu ?? { registerApp: sdkRegisterApp, transport: wsTransportFactory }),
+    profileAssets: options.uiDir ? { uiDir: options.uiDir, publicOrigin: options.publicOrigin } : options.feishu?.profileAssets,
     ownershipAllowed: options.feishu?.ownershipAllowed ?? ((appId: string) => finance.mayUseChannel(appId)),
-    grantTools: (connectorId, version, botId, tools) => { connectors.grant({ id: connectorId, version, botId, tools }); },
   });
+  agents.onProfileChanged = botId => feishu.queueProfile(botId);
   finance.startReports(report => feishu.ingestReport(report));
   if (identity) identity.channelAuthorize = (task) => feishu.channelAuthorize(task);
   agents.onPublished = (botId, publication) => {
@@ -143,8 +188,39 @@ export async function createPersonalApp(options: AppOptions) {
     if (response.headersSent) { response.end(); return; }
     json(response, error instanceof IdentityError || error instanceof TodoConflict ? error.status : 400, { error: error instanceof Error ? error.message : "请求失败", ...(error instanceof IdentityError && error.status === 503 ? { code: "identity_unavailable" } : {}) });
   }); });
-  const gateway = new DeviceGateway(store, server, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
+  const gateway = new DeviceGateway(store, () => { if (closing) return; runtime.completeDelegations(); runtime.startRecovered(); changed(); });
   gateway.leases = leases;
+  // Agent mode: terminal coding-agent sessions on the user's devices (cli-agents/).
+  const { pingMs, pongTimeoutMs, reauthMs, ...hubTuning } = options.cliAgents ?? {};
+  const cliHub = new CliAgentHub(store, gateway, () => changed(), hubTuning);
+  gateway.cli = cliHub;
+  const cliSupervisor = new CliAgentSupervisor(cliHub, store);
+  cliSupervisor.triage = createTriage(assistantModelCaller(store, (botId) => runtime.tidyModel(botId)));
+  runtime.cliExecutor = cliToolExecutor(cliHub, store);
+  const cliImages = new CliImages(store, options.key);
+  const cliWorkbench = new CliAgentWorkbench(cliHub, store, cliImages);
+  const cliRoutes = new CliAgentRoutes(cliHub, store, { agents, supervisor: cliSupervisor, workbench: cliWorkbench, images: cliImages });
+  // The Host a browser may address, and the Origin its pages then carry. Shared by the HTTP routes and the stream socket.
+  const hostAllowed = (host: string | undefined) => {
+    if (!host) return false;
+    const hosts = new Set([new URL(origin).host, `localhost:${new URL(origin).port}`]);
+    if (options.host === "0.0.0.0") for (const entries of Object.values(networkInterfaces())) for (const entry of entries ?? []) hosts.add(`${entry.family === "IPv6" ? `[${entry.address}]` : entry.address}:${new URL(origin).port}`);
+    if (options.publicOrigin) hosts.add(new URL(options.publicOrigin).host);
+    return hosts.has(host);
+  };
+  const originFor = (host: string) => options.publicOrigin && host === new URL(options.publicOrigin).host ? new URL(options.publicOrigin).origin : `http://${host}`;
+  const cliStream = new CliAgentStream(cliHub, {
+    hostAllowed, originFor, pingMs, pongTimeoutMs, reauthMs,
+    // Only the owner's own login may reach a device terminal; a finance delegation never does.
+    authorize: async (token): Promise<StreamAuth> => {
+      let session;
+      try { session = await authenticate(token); } catch { return { ok: false, status: 503 }; }
+      if (!session) return { ok: false, status: 401 };
+      if (session.user_id !== store.owner || finance.hasSession(String(session.id))) return { ok: false, status: 403 };
+      return { ok: true, sessionId: String(session.id) };
+    },
+  });
+  const handleUpgrade = installUpgrade(server, { device: gateway.handleUpgrade, stream: cliStream.handleUpgrade });
   gateway.onCallSettled = (callId) => jobs.callSettled(callId);
   runtime.deviceExecutor = (call, args) => gateway.execute(call, args);
   // Device calls are marked unsettled first, so a lease whose call the device has not confirmed stays held.
@@ -159,26 +235,42 @@ export async function createPersonalApp(options: AppOptions) {
    * itself so a client can tell that its request was understood. Everything
    * else, including the default when `view` is absent or unknown, is what
    * every existing client already receives. */
-  function stateBody(view: "full" | "summary", requestOrigin: string) {
-    const base = store.state();
+  function stateBody(view: "full" | "summary" | "workspace", requestOrigin: string, page?: string, botId?: string, conversationId?: string, resources?: string) {
+    const scoped = view === "workspace";
+    const chat = !scoped || page === "chat" || page === "work" || page === "chat-settings";
+    const taskStatus = chat || page === "tasks";
+    const settings = !scoped || page === "settings" || page === "chat-settings" || resources?.split(",").includes("settings");
+    const work = !scoped || page === "work" || resources?.split(",").includes("work");
+    const base = store.state(view === "full");
+    const tasks = scoped ? (taskStatus ? [
+      ...base.tasks.filter(task => task.ended_at == null),
+      ...base.tasks.filter(task => task.ended_at != null && task.bot_id === botId && task.origin === "owner").slice(0, 12),
+    ] : []) : base.tasks;
     return {
       ...base,
-      ...(view === "summary" ? { view: "summary", memories: base.memories.map(({ content: _content, ...memory }) => memory) } : {}),
-      connectors: connectors.list(), connectorCatalog: connectors.catalog(),
+      ...(view === "full" ? {} : { view }),
+      ...(scoped ? {
+        tasks, conversations: [],
+        ...(chat && botId ? { historySeq: agents.historySeq(botId, conversationId) } : {}), approvals: chat ? base.approvals : [],
+        delegations: chat ? base.delegations : [], memories: chat ? base.memories : [],
+        devices: settings ? base.devices : [],
+      } : {}),
+      ...(settings ? { connectors: connectors.list(), connectorCatalog: connectors.catalog(), connectorMonitors: monitors.list() } : {}),
       feishu: feishu.state(),
       sync: sync.snapshot(),
       hostDeviceId: gateway.hostDeviceId,
       memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
       memoryPlugin: memoryPlugin.status(),
-      bots: agents.contacts().map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      bots: agents.contacts(scoped).map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
       approvalRules: approvalRules(store),
-      approvals: base.approvals.map((approval) => ({ ...approval, remember_label: approvalRuleLabel(store, approvalRuleScope(JSON.parse(String(approval.arguments_json)))) })),
-      directory: directory(store),
-      routines: routines.list(),
-      occurrences: routines.occurrences(),
-      jobs: jobs.list(),
-      ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal ORDER BY created_at DESC LIMIT 100") }),
+      approvals: (taskStatus ? base.approvals : []).map((approval) => ({ ...approval, remember_label: approvalRuleLabel(store, approvalRuleScope(JSON.parse(String(approval.arguments_json)))) })),
+      ...(settings ? { directory: directory(store) } : {}),
+      routines: work ? routines.list().filter(row => !scoped || !botId || row.bot_id === botId) : [],
+      occurrences: work ? routines.occurrences().filter(row => !scoped || !botId || row.bot_id === botId) : [],
+      jobs: chat ? jobs.list().filter(job => !scoped || job.botId === botId || job.endedAt == null) : [],
+      ...(view !== "full" ? {} : { journal: store.all("SELECT * FROM agent_journal WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 100") }),
       onlineDevices: [...gateway.sockets.keys()],
+      cliAgents: cliHub.summary(),
       node: { ...node.publicState(), hosted: options.hostDevice === false },
       dataDir: store.dir,
       runtime: "Pi 1.0.4",
@@ -199,16 +291,19 @@ export async function createPersonalApp(options: AppOptions) {
   }
   let checkingSessions = false;
   let heartbeatJob: Promise<void> | undefined;
+  void lifecycle.sweep();
   const heartbeat = setInterval(() => {
-    changed(); if (!identity || checkingSessions || closing) return;
+    void lifecycle.sweep();
+    broadcast(); if (!identity || checkingSessions || closing) return;
     checkingSessions = true;
     heartbeatJob = (async () => {
       await identity.retryRevocations();
       if (closing) return;
       for (const token of new Set(streams.values())) {
         if (closing) return;
-        try { if (await authenticate(token)) continue; } catch { /* fail closed, including upstream outage */ }
-        for (const [response, current] of streams) if (current === token) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
+        let revoked = false;
+        try { if (await authenticate(token)) continue; revoked = true; } catch { /* Disconnect temporarily when identity cannot be verified. */ }
+        for (const [response, current] of streams) if (current === token) endEventStream(response, revoked);
       }
       for (const worker of runtime.workers.values()) {
         if (closing) return;
@@ -225,11 +320,8 @@ export async function createPersonalApp(options: AppOptions) {
     const url = new URL(request.url ?? "/", origin);
     // Browser requests must address this exact local server, preventing DNS
     // rebinding; Device Nodes authenticate at the dedicated upgrade endpoint.
-    const hosts = new Set([new URL(origin).host, `localhost:${new URL(origin).port}`]);
-    if (options.host === "0.0.0.0") for (const entries of Object.values(networkInterfaces())) for (const entry of entries ?? []) hosts.add(`${entry.family === "IPv6" ? `[${entry.address}]` : entry.address}:${new URL(origin).port}`);
-    if (options.publicOrigin) hosts.add(new URL(options.publicOrigin).host);
-    if (!request.headers.host || !hosts.has(request.headers.host)) { json(response, 403, { error: "Invalid host" }); return; }
-    const requestOrigin = options.publicOrigin && request.headers.host === new URL(options.publicOrigin).host ? new URL(options.publicOrigin).origin : `http://${request.headers.host}`;
+    if (!request.headers.host || !hostAllowed(request.headers.host)) { json(response, 403, { error: "Invalid host" }); return; }
+    const requestOrigin = originFor(request.headers.host);
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
     if (url.pathname.startsWith(feishuScanPrefix)) {
@@ -243,7 +335,7 @@ export async function createPersonalApp(options: AppOptions) {
       response.writeHead(410, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("二维码已失效，请回到 NexBot 重新生成。"); return;
     }
-    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.feishucdn.com https://*.larksuitecdn.com https://*.feishu.cn https://*.larksuite.com; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     if (url.pathname === '/html-preview.html' && request.method === 'GET') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_PREVIEW_CSP + "; sandbox allow-scripts; frame-ancestors 'self'" });
       response.end(htmlPreviewShell()); return;
@@ -253,6 +345,18 @@ export async function createPersonalApp(options: AppOptions) {
     if (mutating && request.headers.origin && request.headers.origin !== requestOrigin) { json(response, 403, { error: "Invalid origin" }); return; }
     const cookieValue = (name: string) => request.headers.cookie?.split(";").map((v) => v.trim()).find((v) => v.startsWith(name + "="))?.slice(name.length + 1) ?? "";
     const token = request.headers.authorization?.replace(/^Bearer /, "") ?? cookieValue("nex");
+    const imageId = request.method === "GET" ? cliImageId(url.pathname) : undefined;
+    const imageTicket = url.searchParams.get("ticket");
+    async function serveCliImage(fileId: string, authorized: () => Promise<boolean>) {
+      response.setHeader("Cache-Control", "private, no-store");
+      if (!await authorized()) { json(response, 401, { error: "Unauthorized" }); return; }
+      const image = await cliImages.read(fileId);
+      if (!await authorized()) { json(response, 401, { error: "Unauthorized" }); return; }
+      if (!image) { json(response, 404, { error: "图片不存在" }); return; }
+      response.writeHead(200, { "Content-Type": image.mime, "Content-Length": image.bytes.length });
+      response.end(image.bytes);
+    }
+    if (imageId && imageTicket) { await serveCliImage(imageId, async () => cliImages.validTicket(imageId, imageTicket)); return; }
     if (url.pathname === "/api/finance/exchange" && request.method === "POST") {
       if (request.headers.origin || request.headers["sec-fetch-site"]) throw new IdentityError(403, "金融会话交换仅供服务端使用");
       const exchange = await finance.exchange(request.headers.authorization, await body(request), () => agents.finance().botId);
@@ -265,7 +369,27 @@ export async function createPersonalApp(options: AppOptions) {
       response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gmail · NexBot</title><body style="font:16px system-ui;margin:80px auto;padding:24px;max-width:480px"><h1>${connected ? "Gmail 已连接" : "连接未完成"}</h1><p>请返回 NexBot${connected ? " 选择可使用邮件的 Agent。" : " 查看连接状态并重试。"}</p></body></html>`);
       return;
     }
+    if (url.pathname.startsWith("/hooks/github/") && request.method === "POST") {
+      // GitHub webhooks：HMAC 签名校验在监视模块内完成；payload 是不可信外部资料。
+      let accepted = false, reason = "unknown monitor";
+      try {
+        const monitorId = text(url.pathname.slice("/hooks/github/".length), 100);
+        const result = await monitors.webhook(monitorId, request, String(request.headers["x-github-event"] ?? ""), String(request.headers["x-github-delivery"] ?? ""), request.headers["x-hub-signature-256"] as string | undefined);
+        accepted = result.accepted; reason = result.reason ?? "";
+      } catch { reason = "webhook failure"; }
+      const status = !accepted ? reason === "unknown monitor" ? 404 : reason?.includes("signature") ? 401 : reason?.includes("large") ? 413 : 400 : 202;
+      json(response, status, { accepted, ...(reason ? { reason } : {}) });
+      return;
+    }
+    if (url.pathname === GITHUB_CALLBACK && request.method === "GET") {
+      let connected = false;
+      try { await connectors.oauth.callback(url.searchParams); connected = true; } catch { /* Details are available only to the initiating authenticated client. */ }
+      response.writeHead(connected ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GitHub · NexBot</title><body style="font:16px system-ui;margin:80px auto;padding:24px;max-width:480px"><h1>${connected ? "GitHub 已连接" : "连接未完成"}</h1><p>请返回 NexBot${connected ? " 查看连接状态。" : " 查看连接状态并重试。"}</p></body></html>`);
+      return;
+    }
     if (url.pathname.startsWith("/api/connectors/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid connector request" }); return; }
+    if (url.pathname.startsWith("/api/connector-monitors/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid connector request" }); return; }
     const socketAddress = (request.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
     // Behind a local reverse proxy every socket is loopback. Only when the operator declares that proxy trusted
     // do we read the last X-Forwarded-For hop it appended; otherwise the header is attacker-controlled.
@@ -277,7 +401,7 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname.startsWith("/api/auth/") && mutating && (!request.headers["content-type"]?.startsWith("application/json") || request.headers["sec-fetch-site"] === "cross-site")) { json(response, 403, { error: "Invalid login request" }); return; }
     // The OSS mirror, when configured, replaces GitHub links: installers download reliably in China.
     if (url.pathname === "/api/client/downloads" && request.method === "GET") { json(response, 200, { ...await downloads.current(), ...await updates.downloads(requestOrigin) }); return; }
-    if (url.pathname === "/api/client/update" && request.method === "GET") { json(response, 200, await updates.check(url.searchParams.get("platform") ?? "", url.searchParams.get("version") ?? "", requestOrigin)); return; }
+    if (url.pathname === "/api/client/update" && request.method === "GET") { json(response, 200, await updates.check(url.searchParams.get("platform") ?? "", url.searchParams.get("version") ?? "", requestOrigin, url.searchParams.get("format"))); return; }
     const installer = /^\/api\/client\/installer\/(android|ios)\/([A-Za-z0-9._-]+)$/.exec(url.pathname);
     if (installer && request.method === "GET") {
       let found: Awaited<ReturnType<typeof updates.installer>>;
@@ -290,7 +414,7 @@ export async function createPersonalApp(options: AppOptions) {
     if (url.pathname === "/api/client/identity" && request.method === "GET") { json(response, 200, identity ? { ...identity.publicConfiguration(), version: 1, coreId: clients.coreId(), loginMethods: ["password"] } : { version: 1, coreId: clients.coreId(), mode: "local-owner", loginMethods: ["one-time-code"] }); return; }
     if (identity && url.pathname === "/api/auth/status" && request.method === "GET") { json(response, 200, await identity.status(token, bootstrap)); return; }
     if (identity && ["/api/auth/logout", "/api/client/logout"].includes(url.pathname) && request.method === "POST") {
-      const session = identity.locallyAllowed(token); if (session) connectors.oauth.cancelSession(String(session.id));
+      const session = identity.locallyAllowed(token); if (session) { connectors.oauth.cancelSession(String(session.id)); cliStream.closeSession(String(session.id)); }
       await identity.logout(token); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return;
     }
     if (identity && url.pathname === "/api/auth/refresh" && request.method === "POST") {
@@ -338,7 +462,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (finance.hasSession(String(session.id))) {
         const botId = agents.finance().botId;
         const route = request.method + " " + url.pathname;
-        const get = ["GET /api/agents/topics", "GET /api/agents/messages", "GET /api/agents/tasks"];
+        const get = ["GET /api/agents/topics", "GET /api/agents/messages", "GET /api/agents/tasks", "GET /api/agents/context"];
         const post = ["POST /api/agents/input", "POST /api/agents/read", "POST /api/agents/cancel", "POST /api/agents/retry", "POST /api/agents/edit", "POST /api/agents/delete-topic"];
         const scopedFinance = ["GET /api/agents/finance", "GET /api/finance/models", "GET /api/finance/alias",
           "GET /api/finance/aliases", "GET /api/finance/alias/context", "POST /api/finance/alias",
@@ -346,6 +470,26 @@ export async function createPersonalApp(options: AppOptions) {
         const allowed = get.includes(route) ? url.searchParams.get("bot") === botId : post.includes(route) ? (await body(request)).botId === botId :
           route === "POST /api/bots/model" ? (await body(request)).id === botId : scopedFinance.includes(route);
         if (!allowed) throw new IdentityError(403, "此委托只可访问本人的金融助手");
+      }
+      if (imageId) {
+        await serveCliImage(imageId, async () => (await authenticate(token))?.user_id === store.owner);
+        return;
+      }
+      const targetBot = url.searchParams.get("botId") ?? url.searchParams.get("bot");
+      if(targetBot && store.get("SELECT 1 FROM bots WHERE id=? AND status='deleted'",targetBot)) throw new IdentityError(404,"助手不存在");
+      if (url.pathname.startsWith("/api/bots/lifecycle/")) {
+        if (session.user_id !== store.owner) throw new IdentityError(403,"无权管理助手");
+        const operations = "/api/bots/lifecycle/operations/";
+        if (request.method === "GET" && url.pathname.startsWith(operations)) {
+          json(response,200,lifecycle.status(text(url.pathname.slice(operations.length),100))); return;
+        }
+        if (request.method === "POST") {
+          const input=await body(request);
+          if (!(await authenticate(token))) throw new IdentityError(401,"登录已失效");
+          if(url.pathname==="/api/bots/lifecycle/preview") { json(response,200,lifecycle.preview(input));return; }
+          if(url.pathname==="/api/bots/lifecycle/execute") { json(response,202,lifecycle.execute(input));return; }
+        }
+        json(response,404,{error:"Not found"});return;
       }
       if (url.pathname === "/api/finance/models" && request.method === "GET") {
         const {botId} = agents.finance();
@@ -369,15 +513,30 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname.startsWith("/api/connectors/") && session.user_id !== store.owner) { json(response, 403, { error: "此账号没有管理连接器的权限" }); return; }
       if (url.pathname === "/api/connectors/oauth/status" && request.method === "GET") { json(response, 200, connectors.oauth.status(text(url.searchParams.get("id"), 100), String(session.id))); return; }
       if (request.method === "GET" && url.pathname.startsWith("/api/attachments/")) {
-        const { row, bytes } = await files.file(text(url.pathname.slice("/api/attachments/".length), 100));
+        const attachmentId = text(url.pathname.slice("/api/attachments/".length), 100);
+        const attachment = files.authorize(attachmentId);
+        const isImage = url.searchParams.get("preview") === "1" && ["image/png", "image/jpeg", "image/webp"].includes(String(attachment.mime));
+        // Revalidate against workspace and message authorization before reusing browser-stored bytes.
+        const etag = `"${attachment.id}"`;
+        const cache = { "Cache-Control": "private, no-cache", "ETag": etag, "Vary": "Cookie, Authorization" };
+        if (isImage && request.headers["if-none-match"] === etag) { response.writeHead(304, cache); response.end(); return; }
+        const { row, bytes } = await files.file(attachmentId);
         if (!await authenticate(token)) { json(response, 401, { error: 'Unauthorized' }); return; }
+        files.authorize(String(row.id));
         const preview = url.searchParams.get('preview') === '1' && ['image/png', 'image/jpeg', 'image/webp'].includes(String(row.mime));
-        response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Content-Length": bytes.length }); response.end(bytes); return;
+        response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", ...(preview ? cache : { "Cache-Control": "no-store" }), "Content-Length": bytes.length }); response.end(bytes); return;
       }
       if (url.pathname === "/api/events") {
-        response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
+        const scope = url.searchParams.get("incremental") === "1" ? {
+          botId: optionalText(url.searchParams.get("bot"), 100),
+          conversationId: optionalText(url.searchParams.get("conversationId"), 100),
+        } : undefined;
         const event = sync.event(Number(request.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0));
-        streams.set(response, token); response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); request.once("close", () => streams.delete(response)); return;
+        response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
+        streams.set(response, token);
+        if (scope) incrementalStreams.set(response, scope);
+        response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`);
+        response.once("close", () => { streams.delete(response); incrementalStreams.delete(response); }); return;
       }
       if (url.pathname === "/api/clients" && request.method === "GET") { json(response, 200, { sessions: clients.list(), currentSessionId: session.id }); return; }
       if (url.pathname === "/api/memory/retrieval" && request.method === "GET") {
@@ -387,6 +546,10 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/memory/core" && request.method === "GET") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有读取核心记忆的权限" }); return; }
         json(response, 200, runtime.memory.core.view(text(url.searchParams.get("botId"), 100))); return;
+      }
+      if (url.pathname.startsWith("/api/cli-agents") && !mutating) {
+        const result = await cliRoutes.handle({ method: request.method ?? "GET", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner });
+        if (result) { json(response, result.status, result.body); return; }
       }
       if (url.pathname.startsWith("/api/todos")) {
         if (session.user_id !== store.owner) { json(response,403,{error:"此账号没有管理待办的权限"});return; }
@@ -398,10 +561,19 @@ export async function createPersonalApp(options: AppOptions) {
         if(session.user_id!==store.owner){json(response,403,{error:"仅主人可查看投递对账"});return;}
         json(response,200,{parts:feishu.deliveries()});return;
       }
+      if (url.pathname === "/api/feishu/group-avatar" && request.method === "GET") {
+        const image = await feishu.groupAvatar(Object.fromEntries(url.searchParams));
+        if (!image) { json(response, 404, { error: "群头像不可用" }); return; }
+        if (!await authenticate(token)) { json(response, 401, { error: "Unauthorized" }); return; }
+        response.writeHead(200, { "Content-Type": image.mime, "Content-Length": image.bytes.length, "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff", "Vary": "Cookie, Authorization" });
+        response.end(image.bytes); return;
+      }
+      if(url.pathname === "/api/feishu/groups" && request.method === "GET") {json(response,200,await feishu.groups({id:url.searchParams.get("id")??""}));return;}
       if(url.pathname === "/api/feishu/accounts" && request.method === "GET") {json(response,200,await feishuAccounts?.("list",{}) ?? []);return;}
       if (url.pathname === "/api/state") {
-        const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
-        json(response, 200, stateBody(view, requestOrigin)); return;
+        const requested = url.searchParams.get("view");
+        const view = requested === "summary" || requested === "workspace" ? requested : "full";
+        json(response, 200, stateBody(view, requestOrigin, url.searchParams.get("page") ?? "", optionalText(url.searchParams.get("bot"), 100), optionalText(url.searchParams.get("conversationId"), 100), optionalText(url.searchParams.get("resources"), 40))); return;
       }
       if (url.pathname === "/api/agents/search" && request.method === "GET") {
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有搜索会话的权限'});return;}
@@ -424,19 +596,40 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === '/api/agents/topics' && request.method === 'GET') {
         const botId = text(url.searchParams.get('bot'), 100);
         if (finance.hasBinding() && agents.finance().botId === botId) stockHistory.schedule(String(session.id));
-        json(response, 200, {topics: agents.topics(botId)}); return;
+        json(response, 200, {topics: agents.topics(botId, url.searchParams.get("view") === "compact", optionalText(url.searchParams.get("conversationId"), 100) || undefined)}); return;
+      }
+      if (url.pathname === "/api/agents/context" && request.method === "GET") {
+        const botId = text(url.searchParams.get("bot"), 100);
+        const topicId = url.searchParams.get("conversationId");
+        json(response, 200, agents.contextUsage(botId, topicId ? text(topicId, 100) : undefined)); return;
       }
       if (url.pathname === "/api/agents/messages" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
         const after = url.searchParams.has("after") ? Number(url.searchParams.get("after")) : undefined;
+        const windowed = url.searchParams.get("view") === "window";
         if (after !== undefined && (!Number.isSafeInteger(after) || after < 0 || before !== undefined)) throw new Error("消息位置无效");
         const around=url.searchParams.get('around');
         if(around&&(before!==undefined||after!==undefined))throw new Error('消息位置无效');
         const conversationId=url.searchParams.get('conversationId');
         if(conversationId && around) throw new Error('话题内不支持 around');
-        const messages = conversationId ? agents.topicMessages(botId,text(conversationId,100),before,after) : around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before) : agents.messagesAfter(botId, after);
-        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && messages.length === 200, streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT t.bot_id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='owner'", w.taskId)?.bot_id === botId && (!conversationId || store.get("SELECT conversation_id FROM tasks WHERE id=?",w.taskId)?.conversation_id===conversationId)).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
+        const at = Number(url.searchParams.get("at") || -1);
+        if (windowed && (!Number.isSafeInteger(at) || at < 0 || (before === undefined && after === undefined && !around))) throw new Error("需要消息时间戳游标");
+        const limit = windowed ? 40 : undefined;
+        // An initial page is bounded by wall time. Between pages the sequence is
+        // authoritative so delayed imports with older timestamps are still delivered.
+        const until = windowed && before === Number.MAX_SAFE_INTEGER ? at : undefined;
+        const rows = conversationId ? agents.topicMessages(botId,text(conversationId,100),before,after,limit === undefined ? undefined : limit + 1,until) : around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before, limit === undefined ? undefined : limit + 1, until, windowed) : agents.messagesAfter(botId, after, limit === undefined ? undefined : limit + 1, windowed);
+        const extra = limit !== undefined && !around && rows.length > limit;
+        const messages = extra ? (after === undefined ? rows.slice(1) : rows.slice(0, limit)) : rows;
+        const streaming = [...runtime.workers.values()].flatMap(worker => {
+          const task = store.get("SELECT t.bot_id,t.conversation_id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='owner'", worker.taskId);
+          if (task?.bot_id !== botId) return [];
+          if (conversationId ? task.conversation_id !== conversationId
+            : windowed && !around && store.get("SELECT 1 FROM agent_topics WHERE conversation_id=?", task.conversation_id)) return [];
+          return [{ taskId: worker.taskId, text: worker.streaming }];
+        });
+        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && (windowed ? extra : messages.length === 200), ...(windowed && before !== undefined ? { hasOlder: extra } : {}), streaming }); return;
       }
       if (url.pathname === "/api/routines/occurrence" && request.method === "GET") {
         json(response, 200, routines.occurrence(text(url.searchParams.get("id"), 256))); return;
@@ -446,12 +639,13 @@ export async function createPersonalApp(options: AppOptions) {
       }
       if (url.pathname === "/api/messages" && request.method === "GET") {
         const conv = text(url.searchParams.get("conversation"), 100);
+        if (!store.get("SELECT 1 FROM conversations WHERE id=? AND status!='deleted' AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')",conv)) throw new IdentityError(404,"会话不存在");
         json(response, 200, { messages: store.all("SELECT * FROM transcript WHERE conversation_id=? ORDER BY created_at,rowid", conv), streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT conversation_id FROM tasks WHERE id=?", w.taskId)?.conversation_id === conv).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
       }
       if (url.pathname === "/api/preview" && request.method === "GET") {
         if (url.searchParams.has("callId")) {
           const callId = text(url.searchParams.get("callId"), 100);
-          const call = store.get("SELECT id,task_id,bot_id,tool_name,target_kind,target_id,arguments_json,result_json,status,created_at FROM tool_calls WHERE id=?", callId);
+          const call = store.get("SELECT id,task_id,bot_id,tool_name,target_kind,target_id,arguments_json,result_json,status,created_at FROM tool_calls WHERE id=? AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", callId);
           if (!call || store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", call.task_id)) throw new Error("操作记录不存在或已遗忘");
           let resultPreview = "";
           if (call.result_json) {
@@ -473,7 +667,7 @@ export async function createPersonalApp(options: AppOptions) {
             json(response, 200, { kind: "file", path: targetPath, title: path.basename(targetPath), exists: true, size: stat.size, updatedAt: stat.mtimeMs, content }); return;
           }
         }
-        for (const call of store.all("SELECT task_id,arguments_json,result_json,created_at FROM tool_calls WHERE tool_name='device.read' AND status='succeeded' ORDER BY created_at DESC LIMIT 30")) {
+        for (const call of store.all("SELECT task_id,arguments_json,result_json,created_at FROM tool_calls WHERE tool_name='device.read' AND status='succeeded' AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 30")) {
           if (store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", call.task_id)) continue;
           try {
             const args = JSON.parse(String(call.arguments_json)) as { path?: string };
@@ -486,11 +680,21 @@ export async function createPersonalApp(options: AppOptions) {
         }
         json(response, 200, { kind: "file", path: targetPath, title: path.basename(targetPath), exists: false, content: "未在当前授权共享目录或最近读取记录中找到该文件。可在「设备网络」中配置后端允许读取的目录或让 Agent 调用 device.read 读取。" }); return;
       }
+      if ((url.pathname === "/api/cli-agents/attach" || url.pathname === "/api/cli-agents/images") && request.method === "POST") {
+        // the file itself is the body, not JSON: read it here, bounded, before the JSON reader could
+        if (request.headers["sec-fetch-site"] === "cross-site") { json(response, 403, { error: "Invalid request" }); return; }
+        const bytes = await readCliAttachment(request, request.headers["content-length"]);
+        if (!bytes) { json(response, 413, { error: "附件不能超过 8 MB", code: "too_large" }); return; }
+        if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+        const result = await cliRoutes.handle({ method: "POST", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner, bytes, imageOrigin: options.publicOrigin ?? requestOrigin });
+        if (result) { json(response, result.status, result.body); return; }
+      }
       if (!mutating) { json(response, 404, { error: "Not found" }); return; }
       const data = await body(request);
       if (!await authenticate(token)) throw new IdentityError(401, "登录已失效，请重新登录");
+      if(typeof data.botId==="string" && store.get("SELECT 1 FROM bots WHERE id=? AND status='deleted'",data.botId)) throw new IdentityError(404,"助手不存在");
       if (url.pathname === "/api/clients/invite") { if (identity) throw new IdentityError(410, "请在其他设备使用同一账号登录"); json(response, 200, clients.invite(data.name)); changed(); return; }
-      if (url.pathname === "/api/clients/revoke") { if (identity) await identity.revoke(text(data.sessionId, 100)); else clients.revoke(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/clients/revoke") { if (identity) await identity.revoke(text(data.sessionId, 100)); else clients.revoke(text(data.sessionId, 100)); cliStream.closeSession(text(data.sessionId, 100)); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/plugins/memory" || url.pathname === "/api/plugins/memory/test") {
         if (session.user_id !== store.owner) { json(response, 403, { error: "此账号没有配置记忆插件的权限" }); return; }
         json(response, 200, url.pathname.endsWith("/test") ? await memoryPlugin.test(data) : await memoryPlugin.save(data, async () => {
@@ -499,10 +703,10 @@ export async function createPersonalApp(options: AppOptions) {
         })); return;
       }
 
-      if (url.pathname === "/api/client/logout") { connectors.oauth.cancelSession(String(session.id)); if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/client/logout") { connectors.oauth.cancelSession(String(session.id)); cliStream.closeSession(String(session.id)); if (session.id !== store.session) clients.revoke(String(session.id)); response.setHeader("Set-Cookie", "nex=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); changed(); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/connectors/oauth/start") {
-        if (data.provider !== "gmail") throw new Error("不支持此连接器");
-        json(response, 200, connectors.oauth.begin(data, requestOrigin, String(session.id), async () => { const current = await authenticate(token); if (!current || current.id !== session.id || current.user_id !== store.owner) throw new IdentityError(401, "登录已失效"); })); return;
+        if (data.provider !== "gmail" && data.provider !== "github") throw new Error("不支持此连接器");
+        json(response, 200, await connectors.oauth.begin(data, requestOrigin, String(session.id), async () => { const current = await authenticate(token); if (!current || current.id !== session.id || current.user_id !== store.owner) throw new IdentityError(401, "登录已失效"); })); return;
       }
       if (url.pathname === "/api/connectors/oauth/cancel") { json(response, 200, connectors.oauth.cancel(text(data.id, 100), String(session.id))); return; }
       if (url.pathname === "/api/connectors/save") { json(response, 200, connectors.save(data)); return; }
@@ -513,9 +717,14 @@ export async function createPersonalApp(options: AppOptions) {
           : await connectors.test(data, authorize);
         changed(); json(response, 200, result); return;
       }
-      if (url.pathname === "/api/connectors/grant") { json(response, 200, connectors.grant(data)); return; }
+      // Per-bot connector grants were retired; older clients still POST here, so acknowledge without side effects.
+      if (url.pathname === "/api/connectors/grant") { json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/connectors/toggle") { json(response, 200, connectors.toggle(data)); return; }
       if (url.pathname === "/api/connectors/delete") { json(response, 200, await connectors.remove(data)); return; }
+      if (url.pathname === "/api/connector-monitors/list") { json(response, 200, { monitors: monitors.list() }); return; }
+      if (url.pathname === "/api/connector-monitors/save") { json(response, 200, monitors.save(data)); return; }
+      if (url.pathname === "/api/connector-monitors/toggle") { json(response, 200, monitors.toggle(data)); return; }
+      if (url.pathname === "/api/connector-monitors/delete") { json(response, 200, monitors.delete(data)); return; }
       if(url.pathname === "/api/feishu/subscriptions") {json(response,200,feishu.updateSubscription(data));return;}
       if(url.pathname === "/api/feishu/deliveries/reconcile") {
         if(session.user_id!==store.owner){json(response,403,{error:"仅主人可处理投递对账"});return;}
@@ -533,6 +742,8 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/feishu/bind/start") { json(response, 200, feishu.bindStart(data)); return; }
       if (url.pathname === "/api/feishu/user-auth/start") { json(response, 200, feishu.startUserAuth(data)); return; }
       if (url.pathname === "/api/feishu/user-auth/cancel") { feishu.cancelUserAuth(); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/feishu/receiver") { json(response, 200, feishu.changeReceiver(data)); return; }
+      if (url.pathname === "/api/feishu/groups/save") { json(response, 200, feishu.saveGroup(data)); return; }
       if (url.pathname === "/api/feishu/toggle") { json(response, 200, await feishu.toggle(data)); return; }
       if (url.pathname === "/api/feishu/delete") { json(response, 200, await feishu.remove(data)); return; }
       if (url.pathname === "/api/models/images") {
@@ -570,6 +781,10 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/agents/messages/image/delete") {
         const result = await files.deleteMessageImage(text(data.botId, 100), text(data.messageId, 100), text(data.attachmentId, 100));
         changed(); json(response, 200, result); return;
+      }
+      if (url.pathname.startsWith("/api/cli-agents")) {
+        const result = await cliRoutes.handle({ method: request.method ?? "POST", pathname: url.pathname, search: url.searchParams, sessionId: String(session.id), owner: session.user_id === store.owner, data });
+        if (result) { json(response, result.status, result.body); return; }
       }
       if (url.pathname === "/api/todos/save") { json(response,200,todos.save(data));return; }
       if (url.pathname === "/api/todos/action") { json(response,200,todos.action(data,String(session.id)));return; }
@@ -616,7 +831,7 @@ export async function createPersonalApp(options: AppOptions) {
         agents.updateProfile(data); json(response, 200, { ok: true }); return;
       }
       if (url.pathname === "/api/bots/appearance") { agents.updateAppearance(data); json(response, 200, { ok: true }); return; }
-      if (url.pathname === "/api/bots/model") { agents.updateModel(data); json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/api/bots/model") { json(response, 200, { ok: true, selection: agents.updateModel(data) }); return; }
       if (url.pathname === "/api/bots/policy") { agents.updatePolicy(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/approval-mode") { agents.updateApprovalMode(data); json(response, 200, { ok: true }); return; }
       if (url.pathname === "/api/bots/archive") { agents.archive(data); json(response, 200, { ok: true }); return; }
@@ -677,14 +892,15 @@ export async function createPersonalApp(options: AppOptions) {
     if (!file.startsWith(root + path.sep) || !existsSync(file) || !statSync(file).isFile()) { response.writeHead(404); response.end(); return; }
     const types: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" };
     // Vite names everything under /assets/ by content hash, so those files can be cached indefinitely; the HTML entry must always revalidate.
-    const cacheControl = url.pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache";
+    const cacheControl = url.pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable"
+      : /^(?:\/companions\/|\/feishu-avatars\/|\/feishu-logo\.png$)/.test(url.pathname) ? "public, max-age=300" : "no-cache";
     response.writeHead(200, { "Content-Type": types[path.extname(file)] ?? "application/octet-stream", "Cache-Control": cacheControl }); response.end(readFileSync(file));
   }
   const listen = (port: number) => new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, options.host ?? "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
   try { if (options.listen !== false) await listen(options.port ?? 0); }
   catch (error) {
     if (!options.strictPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE" && options.host !== "0.0.0.0") await listen(0);
-    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); gateway.close(); store.close(); throw error; }
+    else { clearInterval(heartbeat); await identity?.close(); await feishu.close(); await connectors.close(); await monitors.close(); await memoryPlugin.close(); await runtime.close(); await node.close(); cliStream.close(); cliSupervisor.close(); cliHub.close(); gateway.close(); store.close(); throw error; }
   }
   const address = server.address();
   if (options.listen === false && options.serviceOrigin) origin = options.serviceOrigin;
@@ -712,6 +928,7 @@ export async function createPersonalApp(options: AppOptions) {
   runtime.startRecovered();
   runtime.scheduleStartupMaintenance();
   routines.start();
+  monitors.start();
   let archiveJob: Promise<unknown> | undefined;
   const archive = () => {
     if (closing || !options.attachmentObjects || archiveJob) return;
@@ -720,15 +937,17 @@ export async function createPersonalApp(options: AppOptions) {
   const archiveTimer = options.attachmentObjects ? setInterval(archive, 60000) : undefined;
   archiveTimer?.unref(); archive();
   if(!options.accountWorkspaces) feishu.start();
-  return { server, store, runtime, agents, routines, jobs, todos, gateway, node, memoryPlugin, identity, connectors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
+  return { server, store, runtime, agents, routines, jobs, todos, gateway, cliHub, cliWorkbench, cliSupervisor, cliStream, cliRoutes, handleUpgrade, node, memoryPlugin, identity, connectors, monitors, finance, stockHistory, feishu, setFeishuAccounts(handler:typeof feishuAccounts){feishuAccounts=handler;}, origin, handleRequest: route, changed, setRequestRouter(router: typeof requestRouter) { requestRouter = router; }, async close() {
 
-    closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob;
+    closing = true; stockHistory.stop(); clearInterval(heartbeat); clearInterval(archiveTimer); clearInterval(jobRecovery); await archiveJob; await lifecycle.close();
     await identity?.close();
     await heartbeatJob;
     routines.close();
-    await finance.close(); await stockHistory.close(); await feishu.close(); await connectors.close(); await memoryPlugin.close();
+    await finance.close(); await stockHistory.close(); await feishu.close(); await connectors.close(); await monitors.close(); await memoryPlugin.close();
     await runtime.memory.personal.close();
     await runtime.memory.ledger.close();
+    // Upgraded sockets are not tracked by closeAllConnections, so the Agent mode stream ends its own.
+    cliStream.close(); cliSupervisor.close(); cliHub.close();
     gateway.close(); await node.close(); for (const response of streams.keys()) response.end();
     await runtime.close(); await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); await Promise.allSettled(store.attachmentJobs.values()); store.close();
   } };

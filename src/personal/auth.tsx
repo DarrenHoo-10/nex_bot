@@ -1,13 +1,18 @@
+import { userErrorText } from "../lib/http-errors";
 import { BrandMark } from "./components/BrandMark";
 import { LogOut } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, desktop } from "./api";
+import { clearLocalCache, purgeLocalCache } from "./local-content-cache";
 import { HomePage, registerUrl } from "./HomePage";
 
 interface IdentityStatus {
   authenticated: boolean; initialized: boolean; canInitialize: boolean; coreId: string;
   sessionId?: string; expiresAt?: number; account?: { displayName: string; protocol?: string; deviceName?: string };
 }
+const SESSION_CHECK_INTERVAL = 5 * 60_000;
+const FOREGROUND_CHECK_MIN_INTERVAL = 60_000;
+
 interface LoginTransaction { transactionId: string; bindingToken: string; stepId: string }
 export interface LoginSession { token: string; coreId: string; sessionId: string; expiresAt: number }
 const Account = createContext<{ status?: IdentityStatus; logout(): Promise<void> }>({ logout: async () => {} });
@@ -55,15 +60,26 @@ export function LoginGate({ children }: { children: ReactNode }) {
   }, []);
   const [status, setStatus] = useState<IdentityStatus>(), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [confirmLogout, setConfirmLogout] = useState(false);
+  const [failedChecks, setFailedChecks] = useState(0);
   const generation = useRef(0);
+  const checkedStatus = useRef<IdentityStatus | undefined>(undefined);
+  const lastCheckedAt = useRef(-Infinity);
+  const checkInFlight = useRef<number | undefined>(undefined);
   const loggingOut = useRef(false);
   const returningToLogin = useRef(false);
-  const refresh = useCallback(async () => {
-    if (loggingOut.current || returningToLogin.current) return;
+  const refresh = useCallback(async (background = false) => {
+    if (loggingOut.current || returningToLogin.current || checkInFlight.current !== undefined) return;
+    if (background && Date.now() - lastCheckedAt.current < FOREGROUND_CHECK_MIN_INTERVAL) return;
     const current = ++generation.current;
+    checkInFlight.current = current;
     try {
       const result = await api<IdentityStatus>("auth/status");
       if (current !== generation.current || loggingOut.current) return;
+      if (!result.authenticated && checkedStatus.current?.authenticated) clearLocalCache();
+      checkedStatus.current = result;
+      lastCheckedAt.current = Date.now();
+      setFailedChecks(0);
+      if (result.authenticated) setError("");
       if (!result.authenticated && desktop?.forgetLogin) {
         returningToLogin.current = true; setStatus(undefined); setLoading(true);
         try { await desktop.forgetLogin(); } catch { returningToLogin.current = false; setError("无法返回登录页，请重启应用"); }
@@ -71,31 +87,75 @@ export function LoginGate({ children }: { children: ReactNode }) {
       }
       setStatus(result);
     }
-    catch (e) { if (current === generation.current) { setStatus(undefined); setError(e instanceof Error ? e.message : "无法验证登录，请重试"); } }
-    finally { if (current === generation.current && !returningToLogin.current) setLoading(false); }
+    catch (e) {
+      if (current === generation.current) {
+        const saved = checkedStatus.current;
+        if (!saved?.authenticated || (saved.expiresAt !== undefined && saved.expiresAt <= Date.now())) {
+          checkedStatus.current = undefined;
+          clearLocalCache();
+          setStatus(undefined);
+        }
+        lastCheckedAt.current = -Infinity;
+        setFailedChecks(failures => failures + 1);
+        setError(userErrorText(e, "无法验证登录，请重试"));
+      }
+    }
+    finally {
+      if (checkInFlight.current === current) checkInFlight.current = undefined;
+      if (current === generation.current && !returningToLogin.current) setLoading(false);
+    }
   }, []);
   useEffect(() => {
     void refresh();
-    const expired = () => { if (loggingOut.current || returningToLogin.current) return; setStatus(undefined); setLoading(true); setError("登录已失效，请重新登录"); void refresh(); };
-    const visible = () => { if (document.visibilityState === "visible") void refresh(); };
-    window.addEventListener("nex-session-expired", expired); document.addEventListener("visibilitychange", visible);
-    const timer = setInterval(() => void refresh(), 30_000);
-    return () => { ++generation.current; clearInterval(timer); window.removeEventListener("nex-session-expired", expired); document.removeEventListener("visibilitychange", visible); };
+    const expired = () => {
+      if (loggingOut.current || returningToLogin.current) return;
+      if (!checkedStatus.current?.authenticated && checkInFlight.current !== undefined) return;
+      ++generation.current;
+      checkInFlight.current = undefined;
+      checkedStatus.current = undefined;
+      clearLocalCache();
+      setStatus(undefined);
+      setLoading(true);
+      setError("登录已失效，请重新登录");
+      void refresh();
+    };
+    const visible = () => { if (document.visibilityState === "visible") void refresh(true); };
+    window.addEventListener("nex-session-expired", expired);
+    window.addEventListener("online", visible);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      ++generation.current;
+      checkInFlight.current = undefined;
+      window.removeEventListener("nex-session-expired", expired);
+      window.removeEventListener("online", visible);
+      document.removeEventListener("visibilitychange", visible);
+    };
   }, [refresh]);
+  useEffect(() => {
+    if (!status?.authenticated && !failedChecks) return;
+    const interval = failedChecks ? 15_000 * (2 ** Math.min(failedChecks - 1, 2)) : SESSION_CHECK_INTERVAL;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void refresh(true);
+    }, interval);
+    return () => clearInterval(timer);
+  }, [refresh, status?.authenticated, failedChecks]);
   async function logout() {
     // Local access is revoked first by Core, even if upstream logout is down.
     loggingOut.current = true;
     try {
       ++generation.current;
+      checkInFlight.current = undefined;
       await desktop?.stopDevice?.();
       await api("auth/logout", {});
+      await purgeLocalCache();
       if (desktop?.forgetLogin) { await desktop.forgetLogin(); return; }
+      checkedStatus.current = undefined;
       setConfirmLogout(false); setStatus(undefined); setError("");
       loggingOut.current = false; await refresh();
     }
     finally { loggingOut.current = false; }
   }
-  if (status?.authenticated) return <Account.Provider value={{ status, logout: async () => { setConfirmLogout(true); } }}>
+  if (status?.authenticated) return <Account.Provider key={status.sessionId} value={{ status, logout: async () => { setConfirmLogout(true); } }}>
     {/* Keep the workspace mounted so returning home preserves drafts and the selected conversation. */}
     <div style={{ display: home ? "none" : "contents" }}>{children}</div>
     {home && <HomePage signedIn login={<section className="login-card"><BrandMark size={56}/><h1>NexBot</h1><a className="home-button is-primary" href="#workspace">进入工作台</a></section>}/>}
@@ -110,8 +170,10 @@ export function LoginGate({ children }: { children: ReactNode }) {
         form.reset();
         await desktop?.rememberLogin?.(session);
         if (!desktop) { history.replaceState(null, "", `${location.pathname}${location.search}#workspace`); setHome(false); }
+        ++generation.current;
+        checkInFlight.current = undefined;
         await refresh();
-      } catch (e) { setError(e instanceof Error ? e.message : "登录失败，请重试"); const password = form.elements.namedItem("password") as HTMLInputElement; password.value = ""; }
+      } catch (e) { setError(userErrorText(e, "登录失败，请重试")); const password = form.elements.namedItem("password") as HTMLInputElement; password.value = ""; }
       finally { setBusy(false); }
     })();
   }}><label className="field">邮箱<input name="email" type="email" required maxLength={254} autoComplete="username" disabled={busy} placeholder="输入你的邮箱"/></label><label className="field">密码<input name="password" type="password" required maxLength={4096} autoComplete="current-password" disabled={busy} placeholder="输入密码"/></label><button className="primary" disabled={busy}>{busy ? "正在登录…" : "登录"}</button></form>}{error ? <p className="login-error" role="alert">{error}</p> : null}<div className="login-signup">没有账号？<a href={registerUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => { if (desktop?.openExternal) { event.preventDefault(); void desktop.openExternal(event.currentTarget.href).catch(() => setError("无法打开注册页，请稍后重试")); } }}>去注册</a></div></section>;

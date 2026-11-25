@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useRef, useState, type CSSProperties } from "react";
 import { Check, X } from "lucide-react";
 import { GRAPHIC_AVATARS } from "../avatars/graphic";
@@ -20,7 +21,7 @@ export function AvatarPicker({ bot, firstId, onChange, close }: { bot: RecordRow
       if (localAvatarPreview) {saveLocalAppearance(bot,selected);close();return;}
       await api("bots/appearance", { id: bot.id, appearance: selected, version: Number(bot.appearance_version ?? 0) }); await onChange(); close();
     }
-    catch (e) { setError(e instanceof Error ? e.message : "保存失败，请重试"); }
+    catch (e) { setError(userErrorText(e, "保存失败，请重试")); }
     finally { setSaving(false); }
   };
   return <div className="avatar-picker identity-picker" ref={root} onKeyDown={(event) => {

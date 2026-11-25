@@ -3,10 +3,11 @@ import { build as viteBuild } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { createRequire } from "node:module";
-import { cpSync, mkdirSync, copyFileSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, copyFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { htmlPreviewShell } from "../shared/html-preview-shell.mjs";
+import { prepareHerdrCore } from "./prepare-herdr-core.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(root, "dist-personal/client-executor");
@@ -14,9 +15,18 @@ mkdirSync(path.join(output, "client-node"), { recursive: true });
 await build({ entryPoints: [path.join(root, "server/personal-os/client-node.ts")], outfile: path.join(output, "client-node/client-node.js"), bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "linked", external: ["pdfjs-dist/legacy/build/pdf.mjs"], banner: { js: "import { createRequire as nexRequire } from 'node:module'; const require = nexRequire(import.meta.url);" } });
 copyFileSync(path.join(root, "server/personal-os/node-schema.sql"), path.join(output, "client-node/node-schema.sql"));
 writeFileSync(path.join(output, "package.json"), JSON.stringify({ type: "module", private: true }));
+// nex_bot's Claude Code plugin (hooks for approval cards and turn ends). The executor finds it at
+// ../cli-agents-plugin relative to client-node/, see locateHookPlugin in cli-agents-node/hooks.ts.
+cpSync(path.join(root, "server/personal-os/cli-agents-node/plugin"), path.join(output, "cli-agents-plugin"), { recursive: true });
 if (process.platform === "win32") {
   await import("./build-personal-computer.mjs");
   cpSync(path.join(root, "dist-personal/server/computer-runtime"), path.join(output, "computer-runtime"), { recursive: true });
+  // Agent mode terminals live in herdr-core so they outlive the client process.
+  // Staging verifies the pinned digests and downloads only when it is missing.
+  await prepareHerdrCore({ root });
+  const herdrCore = path.join(root, "dist-native/herdr-core/win32-x64");
+  if (!existsSync(path.join(herdrCore, "herdr-core.exe"))) throw new Error(`herdr-core is not staged at ${herdrCore}`);
+  cpSync(herdrCore, path.join(output, "herdr-core"), { recursive: true });
 }
 const pdfRoot = realpathSync(path.join(root, "node_modules/pdfjs-dist"));
 const pdfRequire = createRequire(path.join(pdfRoot, "package.json"));

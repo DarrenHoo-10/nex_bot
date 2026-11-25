@@ -63,6 +63,19 @@ it("lists authorized tools with pagination and returns usable action-specific sc
   expect(commonToolPrompt(policyTools(store.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!), "owner")).toContain("job.start(title");
 });
 
+it("discovers GitHub inbound PR notifications without a connected account or connector grants", () => {
+  const { store, bot } = directoryFixture();
+  store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: ["memory.search"] }), bot);
+  for (const query of ["NexBot 能不能收到 GitHub 推送？", "webhook", "回调链接"]) {
+    const result = searchTools(store, bot, { query });
+    expect(result.items).toEqual([]);
+    expect(result.productCapabilities?.[0].description).toContain("创建 PR");
+    expect(result.productCapabilities?.[0].description).toContain("账号独立工作区");
+    expect(result).not.toHaveProperty("hint");
+  }
+  expect(searchTools(store, bot, { query: "todo.list" })).not.toHaveProperty("productCapabilities");
+});
+
 it("does not expose restricted operations or grant them through discovery, including after a policy change", () => {
   const { store, bot } = directoryFixture();
   const before = store.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!;
@@ -124,6 +137,7 @@ it.each(["openai", "anthropic"] as const)("preserves query and pagination and re
     { action: "tool.search", query: "", offset: 0, limit: 3 },
     { action: "tool.search", query: "", offset: 3, limit: 3 },
     { action: "tool.search", query: "job.start", offset: 0, limit: 1 },
+    { action: "tool.search", query: "GitHub 创建 PR 能回调通知你吗" },
   ];
   proposals.forEach((args, i) => model.scripts.push(provider === "openai"
     ? { kind: "openai-tool", calls: [{ id: `page-${i}`, name: "broker", args: JSON.stringify(args) }] }
@@ -140,6 +154,7 @@ it.each(["openai", "anthropic"] as const)("preserves query and pagination and re
   expect(calls.map((call) => call.status)).toEqual(proposals.map(() => "succeeded"));
   expect(calls.map((call) => JSON.parse(String(call.arguments_json)))).toEqual(proposals);
   const pages = calls.map((call) => JSON.parse(String(call.result_json)));
+  expect(pages[4].productCapabilities[0].description).toContain("同时生成 Webhook");
   expect(pages[0].items).toHaveLength(5);
   expect(pages[0].nextOffset).toBe(5);
   expect(pages[1].items).toHaveLength(3);

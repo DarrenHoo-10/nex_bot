@@ -29,10 +29,8 @@ try {
   if (previewAvatars) await api("bots/appearance", { id: bot.id, version: 1, appearance: { kind: "graphic", id: "female-06" } });
   const connector = await api("connectors/save", { name: "示例知识库", url: mcp.origin + "/mcp", transport: "http" });
   await api("connectors/test", { id: connector.id, version: 1 });
-  const configured = (await api("state")).connectors[0];
-  await api("connectors/grant", { id: connector.id, botId: bot.id, version: configured.version, tools: ["echo"] });
   core.agents.publish(bot.id, "user", "message", "帮我把今天的工作安排得清楚一点。", "design-input", null, null, Date.now() - 180_000);
-  core.agents.publish(bot.id, "assistant", "message", "我们先把注意力放在最重要的事情上。\n\n**今天，先做好这三件事**\n\n1. **确认优先级** — 把最需要推进的工作放在第一位。\n2. **补齐资料** — 需要查询时，我会通过已授权的连接器协助你。\n3. **留出收尾时间** — 整理进展，把下一步说清楚。\n\n你想从哪一件开始？", "design-reply", null, null, Date.now() - 170_000);
+  core.agents.publish(bot.id, "assistant", "message", "我们先把注意力放在最重要的事情上。\n\n**今天，先做好这三件事**\n\n1. **确认优先级** — 把最需要推进的工作放在第一位。\n2. **补齐资料** — 需要查询时，我会通过连接器协助你。\n3. **留出收尾时间** — 整理进展，把下一步说清楚。\n\n你想从哪一件开始？", "design-reply", null, null, Date.now() - 170_000);
   core.agents.publish(research.id, "assistant", "message", "资料准备好了，我们可以一起看看。", "research-reply");
   core.agents.publish(writer.id, "assistant", "message", "有了想法，随时来找我一起写。", "writer-reply");
   core.runtime.memory.write(bot.id, { title: "交流偏好（示例）", content: "先说结论，再给具体步骤；优先使用中文。" });

@@ -53,7 +53,7 @@ describe('Model providers (供应商)', () => {
     // An older client's bots/model (provider + endpoint, no connectionId) still works against it.
     const bot = f.app.store.createBot('合成助手');
     await f.request('bots/model', { id: bot, model: 'first-other', provider: 'openai', endpoint: f.first.origin + '/v1', version: 0 });
-    expect(f.app.store.modelConfig(bot)).toMatchObject({ connectionId: 'default', model: 'first-other', apiKey: 'synthetic-first', reasoning: 'off' });
+    expect(f.app.store.modelConfig(bot)).toMatchObject({ connectionId: 'default', model: 'first-other', apiKey: 'synthetic-first', reasoning: 'high', imageInput: true });
   });
 
   it('upgrades a single-connection database without changing its rows', async () => {
@@ -118,13 +118,12 @@ describe('Model providers (供应商)', () => {
     await f.request('bots/model', { id: bot, connectionId: second, model: 'claude-x', reasoning: 'medium', version: 0 });
     let selection = (await f.state()).bots.find(b => b.id === bot)!;
     expect(selection).toMatchObject({ selected_connection: second, selected_model: 'claude-x', selected_reasoning: 'medium' });
-    // medium is not offered: the nearer lower level is used.
-    expect(f.app.store.modelConfig(bot)).toMatchObject({ connectionId: second, provider: 'anthropic', model: 'claude-x', apiKey: 'synthetic-second', reasoning: 'low' });
+    expect(f.app.store.modelConfig(bot)).toMatchObject({ connectionId: second, provider: 'anthropic', model: 'claude-x', apiKey: 'synthetic-second', reasoning: 'medium' });
     await expect(f.request('bots/model', { id: bot, connectionId: 'default', model: 'first-model', version: 0 })).rejects.toThrow('其他设备');
     await f.request('bots/model', { id: bot, connectionId: 'default', model: 'first-model', version: selection.model_selection_version });
     selection = (await f.state()).bots.find(b => b.id === bot)!;
     expect(selection).toMatchObject({ selected_connection: 'default', selected_model: 'first-model' });
-    expect(f.app.store.modelConfig(bot)).toMatchObject({ connectionId: 'default', reasoning: 'off' });
+    expect(f.app.store.modelConfig(bot)).toMatchObject({ connectionId: 'default', reasoning: 'high' });
     // Disabling a provider sends its assistants to the default until it is enabled again.
     await f.request('bots/model', { id: bot, connectionId: second, model: 'claude-x', version: selection.model_selection_version });
     const row = (await f.state()).connections.find(c => c.id === second)!;
@@ -132,7 +131,7 @@ describe('Model providers (供应商)', () => {
     expect(f.app.store.modelConfig(bot).connectionId).toBe('default');
   });
 
-  it.each(['openai', 'anthropic'] as const)('sends reasoning to the %s model only when the model offers levels', async (provider) => {
+  it.each(['openai', 'anthropic'] as const)('sends high by default and honors extended reasoning for the %s model', async (provider) => {
     const f = await fixture();
     const endpoint = provider === 'openai' ? f.first.origin + '/v1' : f.first.origin;
     await f.request('config', { provider, endpoint, model: 'thinker', apiKey: 'synthetic-first' });
@@ -145,13 +144,18 @@ describe('Model providers (供应商)', () => {
       expect(f.app.store.get('SELECT status FROM tasks WHERE id=?', taskId)?.status).toBe('succeeded');
       return JSON.parse(f.first.requests.filter(r => r.body).at(-1)!.body);
     };
-    const plain = await turn('plain');
-    expect(plain.reasoning_effort).toBeUndefined(); expect(plain.thinking).toBeUndefined(); expect(plain.output_config).toBeUndefined();
-    await f.request('connections/model', { connectionId: 'default', model: 'thinker', reasoning: ['low', 'medium', 'high'], version: 0 });
-    await f.request('bots/model', { id: bot, connectionId: 'default', model: 'thinker', reasoning: 'high', version: 0 });
-    const thinking = await turn('thinking');
+    const thinking = await turn('default');
     if (provider === 'openai') expect(thinking.reasoning_effort).toBe('high');
     else expect(thinking.thinking ?? thinking.output_config).toBeTruthy();
+
+    await f.request('connections/model', { connectionId: 'default', model: 'thinker', reasoning: [], imageInput: false, version: 0 });
+    expect(f.app.store.modelConfig(bot)).toMatchObject({ reasoning: 'high', imageInput: false });
+    expect(f.app.store.modelOptions('default', 'thinker').reasoning).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+
+    await f.request('bots/model', { id: bot, model: '', connectionId: 'default', reasoning: 'max', version: 0 });
+    const extended = await turn('extended');
+    if (provider === 'openai') expect(extended.reasoning_effort).toBe('max');
+    else expect(extended.thinking.budget_tokens).toBeGreaterThan(thinking.thinking.budget_tokens);
   });
 
   it('keeps the display names a provider lists for rewritten ids and shows them with its connection', async () => {
@@ -178,7 +182,7 @@ describe('Model providers (供应商)', () => {
   it('picks the nearest offered reasoning level', () => {
     expect(resolveReasoning('high', [])).toBe('off');
     expect(resolveReasoning('off', ['low'])).toBe('off');
-    expect(resolveReasoning(null, ['low', 'medium', 'high'])).toBe('medium');
+    expect(resolveReasoning(null, ['low', 'medium', 'high'])).toBe('high');
     expect(resolveReasoning('medium', ['low', 'high'])).toBe('low');
     expect(resolveReasoning('max', ['low', 'high'])).toBe('high');
     expect(resolveReasoning('xhigh', ['low', 'medium', 'high', 'xhigh', 'max'])).toBe('xhigh');

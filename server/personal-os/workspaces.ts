@@ -8,6 +8,9 @@ import { requestBody } from "./http-body.ts";
 import { FeishuWorkspaceRouter } from "./feishu/workspace-router.ts";
 import { feishuScanToken } from "./feishu/module.ts";
 import { GOOGLE_CALLBACK } from "./gmail-provider.ts";
+import { GITHUB_CALLBACK } from "./github-provider.ts";
+import { CLI_STREAM_PATH } from "./upgrade.ts";
+import { cliImageId } from "../../shared/cli-images.ts";
 
 type App = Awaited<ReturnType<typeof createPersonalApp>>;
 
@@ -75,19 +78,31 @@ export async function createWorkspaceService(options: AppOptions) {
     primary.setRequestRouter(async (request, response) => {
       if (closing) throw new IdentityError(503, "服务正在重启，请稍后重试");
       const route = new URL(request.url ?? "/", primary.origin).pathname;
+      const monitorId = request.method === "POST" && /^\/hooks\/github\/([0-9a-f-]{36})$/i.exec(route)?.[1];
+      if (monitorId) {
+        const target = apps().find(app => app.store.get("SELECT 1 FROM personal_connector_monitors WHERE id=?", monitorId));
+        if (!target || target === primary) return false;
+        await target.handleRequest(request, response);
+        return true;
+      }
       const scanToken = feishuScanToken(route);
       if (scanToken) {
         const target = apps().find(app => app.feishu.registrationTarget(scanToken));
         if (!target || target === primary) return false;
         await target.handleRequest(request, response); return true;
       }
-      if (route === GOOGLE_CALLBACK && request.method === "GET") {
+      if ((route === GOOGLE_CALLBACK || route === GITHUB_CALLBACK) && request.method === "GET") {
         const state = new URL(request.url!, primary.origin).searchParams.get("state") ?? "";
         const target = apps().find((app) => app.connectors.oauth.ownsState(state));
         if (!target || target === primary) return false;
         await target.handleRequest(request, response); return true;
       }
       // All password challenges belong to the endpoint, regardless of old cookies.
+      const fileId = request.method === "GET" ? cliImageId(route) : undefined;
+      if (fileId && new URL(request.url!, primary.origin).searchParams.has("ticket")) {
+        const target = apps().find((app) => app.store.get("SELECT id FROM cli_agent_images WHERE id=? AND published=1", fileId));
+        if (target && target !== primary) { await target.handleRequest(request, response); return true; }
+      }
       if (["/api/auth/start", "/api/auth/respond"].includes(route) || !route.startsWith("/api/")) return false;
       let token = request.headers.authorization?.replace(/^Bearer /, "") ?? request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("nex="))?.slice(4) ?? "";
       if (route === "/api/session" && request.method === "POST") token = String((await requestBody(request)).token ?? "");
@@ -98,9 +113,19 @@ export async function createWorkspaceService(options: AppOptions) {
       // The chosen Core still checks expiry, revocation, membership and upstream status.
       await target.handleRequest(request, response); return true;
     });
-    primary.server.removeListener("upgrade", primary.gateway.handleUpgrade);
+    primary.server.removeListener("upgrade", primary.handleUpgrade);
     primary.server.on("upgrade", (request, socket, head) => {
-      const token = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
+      const bearer = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
+      if (request.url === CLI_STREAM_PATH) {
+        // Browser terminals log in with the `nex` cookie; the workspace that owns that session serves the socket. An unknown token falls to the primary, which refuses it with 401.
+        if (closing) { socket.destroy(); return; }
+        const token = bearer || request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("nex="))?.slice(4) || "";
+        const digest = token && token.length <= 200 ? hash(token) : "";
+        const target = digest ? apps().find((app) => app.store.get("SELECT id FROM user_sessions WHERE token_hash=?", digest)) : undefined;
+        (target ?? primary).cliStream.handleUpgrade(request, socket, head);
+        return;
+      }
+      const token = bearer;
       if (closing || !token || token.length > 200) { socket.destroy(); return; }
       const digest = hash(token);
       const target = apps().find((app) => app.store.get("SELECT id FROM device_credentials WHERE access_hash=? AND status='active' AND access_expires_at>?", digest, Date.now()));

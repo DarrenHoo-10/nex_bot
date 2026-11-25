@@ -62,11 +62,31 @@ it("does not overwrite a newer event with a stale initial state", async () => {
   await act(async () => resolve({ status: "idle", current: "0.9.14" }));
   expect(host.textContent).toContain("立即更新");
 });
-it("identifies the web edition without inventing a client version or update button", async () => {
-  f.desktop = undefined; await render();
-  expect(host.textContent).toContain("网页版");
-  expect(host.textContent).not.toContain("当前版本");
-  expect(host.querySelector("button")).toBeNull();
+it("shows the loaded web version and checks the deployed build even within the same release version", async () => {
+  f.desktop = undefined;
+  const metadata = (revision: string) => `<meta name="nexbot-web-version" content="0.9.46"><meta name="nexbot-web-revision" content="${revision}">`;
+  document.head.insertAdjacentHTML("beforeend", metadata("0123456789abcdef"));
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(new Response("<!doctype html>"))
+    .mockResolvedValueOnce(new Response(metadata("0123456789abcdef")))
+    .mockResolvedValueOnce(new Response(metadata("fedcba9876543210")));
+  vi.stubGlobal("fetch", fetch);
+  try {
+    await render();
+    expect(host.textContent).toContain("当前版本0.9.46");
+    expect(host.textContent).not.toContain("使用方式");
+    expect(host.querySelector("button")?.textContent).toBe("检查更新");
+    await click();
+    expect(host.textContent).toContain("网页版本信息无效");
+    await click();
+    expect(host.textContent).toContain("已是最新版");
+    await click();
+    expect(host.textContent).toContain("网页有新版本");
+    expect(host.querySelector("button")?.textContent).toBe("刷新页面");
+    expect(fetch).toHaveBeenLastCalledWith("/", expect.objectContaining({ cache: "no-store" }));
+  } finally {
+    document.head.querySelectorAll('meta[name^="nexbot-web-"]').forEach(node => node.remove());
+  }
 });
 it("shows the version of an unsupported installation without offering a broken check", async () => {
   f.desktop!.updateState.mockResolvedValue({ status: "unsupported", current: "0.9.14-local" });

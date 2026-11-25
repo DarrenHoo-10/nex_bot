@@ -1,0 +1,53 @@
+:is(.rk-workspace, .cli-app) button.conversation-action {
+  --action-surface: #fff;
+  --action-hover: #f7f6f8;
+  --action-pressed: #ecebef;
+  --action-ink: #18151d;
+  --action-border: rgb(30 24 38 / 10%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 84px;
+  min-height: 44px;
+  padding: 6px 16px;
+  border: 1px solid var(--action-border);
+  border-radius: 12px;
+  background: var(--action-surface);
+  color: var(--action-ink);
+  box-shadow: none;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+:is(.rk-workspace, .cli-app) button.conversation-action[data-tone="dark"] {
+  --action-surface: #221e29;
+  --action-hover: #322d39;
+  --action-pressed: #19161f;
+  --action-ink: #f6f4f8;
+  --action-border: #3a3640;
+}
+
+:is(.rk-workspace, .cli-app) button.conversation-action[data-size="compact"] {
+  min-width: 52px;
+  min-height: 32px;
+  padding: 3px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+@media (pointer: coarse) {
+  :is(.rk-workspace, .cli-app) button.conversation-action[data-size="compact"] { position: relative; }
+  :is(.rk-workspace, .cli-app) button.conversation-action[data-size="compact"]::after {
+    content: "";
+    position: absolute;
+    inset: -6px 0;
+  }
+}
+
+@media (hover: hover) {
+  :is(.rk-workspace, .cli-app) button.conversation-action:hover:enabled { background: var(--action-hover); }
+}
+
+:is(.rk-workspace, .cli-app) button.conversation-action:active:enabled { background: var(--action-pressed); }

@@ -159,14 +159,14 @@ final class RefreshTests: XCTestCase {
 /// Summary state, approval mode, model limits, account initial.
 @MainActor
 final class CoreFeatureTests: XCTestCase {
-    func testSummaryQueryAndTolerantDecoding() async throws {
+    func testWorkspaceQueryAndTolerantDecoding() async throws {
         let core = StubCore()
         core.handle { r in
-            r.path == "/api/state" ? .json(["view": "summary", "sync": syncJSON(), "bots": [["id": "b1", "name": "A"]], "memories": [["id": "m1", "title": "t", "scope": "bot"]]]) : .json(["ok": true])
+            r.path == "/api/state" ? .json(["view": "workspace", "sync": syncJSON(), "bots": [["id": "b1", "name": "A"]], "memories": [["id": "m1", "title": "t", "scope": "bot"]]]) : .json(["ok": true])
         }
         let store = WorkspaceStore(client: core.client(), timing: fastTiming)
         await store.refresh()
-        XCTAssertEqual(core.recorded("/api/state")[0].query, "view=summary")
+        XCTAssertEqual(core.recorded("/api/state")[0].query, "view=workspace&page=chat")
         XCTAssertEqual(store.state?.memories.first?.content, ""); XCTAssertEqual(store.state?.journal.count, 0)
         _ = try await core.client().state(view: .full)
         XCTAssertEqual(core.recorded("/api/state")[1].query, "")

@@ -9,6 +9,32 @@ import {
 } from "./message-media";
 
 describe("parseMessageMedia", () => {
+  it("extracts NexAgent image references only for its transcript and never keeps the delivery ticket", () => {
+    const path = "/api/cli-agents/images/12345678-0000-4000-8000-000000000000";
+    const code = `\`![示例](${path})\``;
+    const text = `看看截图\n\n![截图.png](${path}?ticket=example)\n\n${code}`;
+    expect(parseMessageMedia(text)).toEqual({ text, images: [] });
+    expect(parseMessageMedia(text, true)).toEqual({
+      text: `看看截图\n\n${code}`,
+      images: [{ id: path, url: "", previewUrl: path, name: "截图.png", alt: "截图.png" }],
+    });
+    const invalid = "![假图](/api/cli-agents/images/not-a-uuid)";
+    expect(parseMessageMedia(invalid, true)).toEqual({ text: invalid, images: [] });
+  });
+
+  it("uses an image tile for legacy bare URLs and signed markdown without showing the URL", () => {
+    const path = "/api/cli-agents/images/12345678-0000-4000-8000-000000000000";
+    const signed = "https://core.example.test" + path + "?ticket=123." + "a".repeat(64);
+    expect(parseMessageMedia("看图\n\n" + signed, true)).toMatchObject({
+      text: "看图",
+      images: [{ id: path, previewUrl: path }],
+    });
+    expect(parseMessageMedia("看图\n\n![截图.png](" + signed + ")", true)).toMatchObject({
+      text: "看图",
+      images: [{ id: path, previewUrl: path, alt: "截图.png" }],
+    });
+  });
+
   it("moves a generated image above the message and drops its download link", () => {
     const parsed = parseMessageMedia("![生成图片](/api/attachments/image-1)\n\n[下载图片](/api/attachments/image-1)");
     expect(parsed.text).toBe("");

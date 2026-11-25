@@ -16,7 +16,7 @@ beforeEach(() => {
   fixture.api.mockReset().mockResolvedValue({ authenticated: true, initialized: true });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const render = () => act(async () => root.render(createElement(LoginGate, { children: createElement("textarea", { "aria-label": "草稿", defaultValue: "未发送的消息" }) })));
 async function navigate(hash: string) {
   await act(async () => { history.pushState(null, "", hash); window.dispatchEvent(new HashChangeEvent("hashchange")); });
@@ -49,6 +49,49 @@ it("restores an authenticated homepage after refresh and still checks session ex
   expect(host.querySelector("textarea")).toBeNull();
   expect(host.querySelector(".login-form")).not.toBeNull();
 });
+it("checks every five minutes while visible and coalesces rapid foreground events", async () => {
+  vi.useFakeTimers();
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  try {
+    await render();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("online"));
+    });
+    expect(fixture.api).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(270_000); });
+    expect(fixture.api).toHaveBeenCalledTimes(2);
+    visibility.mockReturnValue("hidden");
+    await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+    expect(fixture.api).toHaveBeenCalledTimes(2);
+  } finally {
+    visibility.mockRestore();
+  }
+});
+
+it("keeps the workspace during a transient check failure and tears it down on revocation", async () => {
+  vi.useFakeTimers();
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  try {
+    await render();
+    const draft = host.querySelector("textarea");
+    fixture.api.mockRejectedValueOnce(new Error("Network unavailable"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+    expect(fixture.api).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("textarea")).toBe(draft);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(fixture.api).toHaveBeenCalledTimes(3);
+    expect(host.querySelector("textarea")).toBe(draft);
+    fixture.api.mockResolvedValue({ authenticated: false, initialized: true });
+    await act(async () => window.dispatchEvent(new Event("nex-session-expired")));
+    expect(host.querySelector("textarea")).toBeNull();
+    expect(host.querySelector(".login-form")).not.toBeNull();
+  } finally {
+    visibility.mockRestore();
+  }
+});
+
 it("keeps native client shells in their workspace even with a homepage fragment", async () => {
   fixture.desktop = { mode: "client" };
   history.replaceState(null, "", "/#home");

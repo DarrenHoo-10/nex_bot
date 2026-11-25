@@ -71,6 +71,17 @@ try {
     if (!await first.evaluate("fetch('/health').then(r=>r.json()).then(v=>v.app==='NexBot')")) throw new Error("Local UI did not forward backend requests");
     if (!await first.evaluate("document.title==='NexBot'")) throw new Error("Window title is not NexBot");
     cases.push("local-ui-with-remote-api");
+    // NexAgent: the bundled UI offers the switch, and the session stream reaches Core with the client's session
+    const pickMode = async (index, label) => {
+      await first.evaluate("document.querySelector('.mode-switcher-button').click();true");
+      await until(() => first.evaluate("!!document.querySelector('.mode-menu')"));
+      await first.evaluate(`document.querySelectorAll('.mode-menu [role=menuitemradio]')[${index}].click();true`);
+      await until(() => first.evaluate(`document.querySelector('.mode-switcher-button strong')?.textContent===${JSON.stringify(label)}`));
+    };
+    await pickMode(1, "NexAgent");
+    await until(() => first.evaluate("[...document.querySelectorAll('.cli-device header strong')].some(el=>el.textContent==='示例电脑')&&!document.querySelector('.cli-link-state')"));
+    await pickMode(0, "NexBot");
+    cases.push("nexagent-switch-and-session-stream");
     await first.evaluate("document.querySelector('.workspace-account-name').click();true");
     await first.evaluate("[...document.querySelectorAll('.account-menu button')].find(el=>el.textContent==='设置').click();true");
     await first.evaluate("[...document.querySelectorAll('.preferences-nav button')].find(el=>el.textContent==='关于').click();true");

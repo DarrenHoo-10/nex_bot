@@ -50,7 +50,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UUID_ANY = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const HASH = /^[0-9a-f]{64}$/i;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
-const VOLATILE_KEYS = new Set(["cursor", "privacyEpoch"]);
+const VOLATILE_KEYS = new Set(["cursor", "privacyEpoch", "revision"]);
 const strings = new Map();
 let stringIndex = 0;
 const mapString = (value) => {
@@ -136,10 +136,10 @@ try {
   record("login-respond.json", login.body);
   record("state-full.json", projectState((await get("state")).body));
   record("state-summary.json", projectState((await get("state?view=summary")).body));
-  record("messages.json", (await get(`agents/messages?bot=${encodeURIComponent(first.body.id)}`)).body);
+  record("messages.json", (await get(`agents/messages?bot=${encodeURIComponent(first.body.id)}&view=window&at=${Date.now()}&before=9007199254740991`)).body);
 
   const abort = new AbortController();
-  const events = await fetch(app.origin + "/api/events?after=0", { headers: { Authorization: `Bearer ${token}` }, signal: abort.signal });
+  const events = await fetch(app.origin + "/api/events?incremental=1&after=0", { headers: { Authorization: `Bearer ${token}` }, signal: abort.signal });
   const reader = events.body.getReader();
   const decoder = new TextDecoder();
   let raw = "";

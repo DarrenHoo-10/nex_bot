@@ -1,7 +1,9 @@
-import type { ConnectorCatalogEntry, ConnectorView } from "../../shared/personal-connectors";
+import { httpErrorText, isTechnicalMessage, readJson, responseErrorText, safeFetch } from "../lib/http-errors";
+import type { ConnectorCatalogEntry, ConnectorView, ConnectorMonitorView } from "../../shared/personal-connectors";
 export type { ConnectorTool, ConnectorView } from "../../shared/personal-connectors";
-export interface FeishuAppView { id: string; appId: string; brand: string; status: string; error: string | null; ownerBound: boolean; botId: string; botName: string; enabled: boolean; version: number; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null }
-export interface FeishuState { job?: { stage: string; url?: string; scanPath?: string; expiresAt?: number; error?: string }; userAuth?: { stage: string; url?: string; expiresAt?: number; error?: string }; apps: FeishuAppView[] }
+export interface FeishuAppView { id: string; appId: string; brand: string; status: string; error: string | null; ownerBound: boolean; botId: string; botName: string; enabled: boolean; version: number; userAuthorized: boolean; userScopes: string[]; userExpiresAt: number | null; name?: string | null; avatarUrl?: string | null; profileStatus?: string | null; groupCount?: number }
+export interface FeishuState { job?: { stage: string; url?: string; scanPath?: string; expiresAt?: number; error?: string }; userAuth?: { id?: string; stage: string; url?: string; expiresAt?: number; error?: string }; apps: FeishuAppView[] }
+export interface FeishuGroupView { chatId: string; name: string | null; avatarUrl?: string | null; kind: "group" | "topic"; members: number | null; claimed: boolean; trigger: "always" | "topic" | "ambient" | "never"; session: "chat-topic" | "chat" | "new-topic"; context: string; version: number }
 export type RecordRow = Record<string, string | number | null>;
 export interface MemoryPluginState {
   providers: Array<{ id: string; name: string; protocol: string }>;
@@ -41,11 +43,12 @@ export const modelName = (connection: Connection | undefined, model: string) => 
 export type ReasoningLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningChoice = ReasoningLevel | "off";
 export const reasoningOrder: ReasoningLevel[] = ["low", "medium", "high", "xhigh", "max"];
+export const defaultReasoningLevels: readonly ReasoningLevel[] = reasoningOrder;
 export const reasoningLabels: Record<ReasoningChoice, string> = { off: "关闭", low: "低", medium: "中", high: "高", xhigh: "很高", max: "最高" };
-/** Same rule as Core: the choice when offered, else the nearest offered level (lower on a tie); medium when unset. */
+/** Same rule as Core: use the nearest offered level (lower on a tie), aiming for high when unset. */
 export function resolveReasoning(choice: string | null | undefined, offered: readonly ReasoningLevel[]): ReasoningChoice {
   if (!offered.length || choice === "off") return "off";
-  const wanted = (reasoningOrder as string[]).includes(String(choice)) ? choice as ReasoningLevel : "medium";
+  const wanted = (reasoningOrder as string[]).includes(String(choice)) ? choice as ReasoningLevel : "high";
   if (offered.includes(wanted)) return wanted;
   const at = reasoningOrder.indexOf(wanted);
   return [...offered].sort((a, b) => Math.abs(reasoningOrder.indexOf(a) - at) - Math.abs(reasoningOrder.indexOf(b) - at) || reasoningOrder.indexOf(a) - reasoningOrder.indexOf(b))[0];
@@ -53,13 +56,15 @@ export function resolveReasoning(choice: string | null | undefined, offered: rea
 /** The models a provider lists, with its saved key unless one is typed. */
 export const listConnectionModels = (connectionId: string, apiKey = "") => api<{ models: string[]; hasMore: boolean; names?: Record<string, string> }>("models/list", { connectionId, ...(apiKey.trim() ? { apiKey } : {}) });
 export interface State {
+  historySeq?: number;
   connections?: Connection[];
   imageModelSelection?: { models: string[]; version: number };
   modelVisibility?: { models: string[] | null; version: number };
   connectors?: ConnectorView[];
   connectorCatalog?: ConnectorCatalogEntry[];
+  connectorMonitors?: ConnectorMonitorView[];
   feishu?: FeishuState;
-  sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string };
+  sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string; revision?: number; at?: number };
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
   approvalRules?: Array<{ id: string; bot_id: string; label: string; active?: boolean }>;
   memories: RecordRow[]; delegations: RecordRow[]; devices: RecordRow[]; tasks: RecordRow[]; onlineDevices: string[];
@@ -69,10 +74,14 @@ export interface State {
   memoryEngine?: { provider: string; release: string; status: string; service: string; pending: number; failed: number; quarantined: number; forgetting: number; revision: string; error: string | null };
   memoryPlugin?: MemoryPluginState;
   hostDeviceId?: string;
+  /** Agent mode summary; absent from a Core that predates it. */
+  cliAgents?: { waiting: number; running: number };
   node: { hosted?: boolean; status: string; origin: string; root: string; exec: boolean; computer?: boolean; computerSupported?: boolean; deviceId?: string; connected: boolean; unknownCalls: RecordRow[] };
   dataDir: string; address: string; lanEnabled: boolean;
 }
-export interface LocalDeviceState { available: boolean; name?: string; status?: string; connected?: boolean; authorized?: boolean; paused?: boolean; deviceId?: string; root?: string; exec?: boolean; computer?: boolean; computerSupported?: boolean; unknownCalls?: RecordRow[] }
+export interface LocalDeviceState { available: boolean; name?: string; status?: string; connected?: boolean; authorized?: boolean; paused?: boolean; deviceId?: string; root?: string; exec?: boolean; computer?: boolean; computerSupported?: boolean; unknownCalls?: RecordRow[];
+  /** Agent sessions of this computer (desktop client only). */
+  cliAgents?: { available: boolean; enabled: boolean; hc: "starting" | "ready" | "error"; engines: Array<{ engine: "claude" | "codex"; version: string | null }> } }
 export interface ClientUpdateState { status: "idle" | "checking" | "current" | "downloading" | "ready" | "error" | "unsupported"; current?: string; version?: string; progress?: number; error?: string }
 type Bridge = {
   platform?: "android";
@@ -82,6 +91,7 @@ type Bridge = {
   workspaceReady?(): Promise<unknown>;
   deviceState?(): Promise<LocalDeviceState>;
   setDevicePaused?(paused: boolean): Promise<LocalDeviceState>;
+  setCliAgentsEnabled?(enabled: boolean): Promise<LocalDeviceState>;
   reconcileDevice?(id: string, version: number): Promise<LocalDeviceState>;
   stopDevice?(): Promise<void>;
   mode?: "client";
@@ -100,25 +110,33 @@ type Bridge = {
   onUpdateState?(callback: (state: ClientUpdateState) => void): (() => void) | void;
 };
 export const desktop = (window as unknown as { nex?: Bridge }).nex;
+/** NexAgent runs in plain browsers, the Windows client (its UI keeps the Core origin and session, so the stream connects directly) and the Android app (native socket relay). */
+export const agentModeAvailable = !desktop || desktop.mode === "client" || desktop.platform === "android";
 export async function listModels(settings: { provider: string; endpoint: string; apiKey: string }): Promise<{ models: string[]; hasMore: boolean }> {
-  const response = await fetch("/api/models/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
+  const response = await safeFetch("/api/models/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
   if (response.status === 404 && desktop?.listModels && settings.apiKey.trim()) return desktop.listModels(settings);
   if (response.status === 404) throw new Error(desktop?.listModels ? "当前版本暂不能用已保存的 Key 查询模型。请在上方重新填写 Key 后获取，无需先保存。" : "当前服务暂不支持获取模型列表，请手动填写模型 ID");
-  const result = await response.json();
+  const result = await readJson<{ models: string[]; hasMore: boolean; error?: string }>(response);
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event("nex-session-expired"));
-    throw new Error(result.error || "获取模型列表失败");
+    throw new Error(result?.error && !isTechnicalMessage(result.error) ? result.error : response.status === 400 ? "获取模型列表失败，请检查服务地址和 Key" : httpErrorText(response.status));
   }
+  if (!result) throw new Error(httpErrorText(502));
   return result;
 }
 export async function api<T>(url: string, data?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch("/api/" + url, data === undefined ? (signal ? { signal } : undefined) : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data), signal });
-  const result = await response.json() as T & { error?: string; code?: string };
-  if (!response.ok) { if (!url.startsWith("auth/") && (response.status === 401 || result.code === "identity_unavailable")) window.dispatchEvent(new Event("nex-session-expired")); throw new Error(result.error ?? "连接失败"); }
+  const response = await safeFetch("/api/" + url, data === undefined ? (signal ? { signal } : undefined) : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data), signal });
+  // a proxy answers a restart or an outage with an HTML page: never parse that as the reply
+  const result = await readJson<T & { error?: string; code?: string }>(response);
+  if (!response.ok) {
+    if (!url.startsWith("auth/") && response.status === 401) window.dispatchEvent(new Event("nex-session-expired"));
+    throw new Error(responseErrorText(response.status, result));
+  }
+  if (result === null) throw new Error(httpErrorText(502));
   return result;
 }
 export const statuses: Record<string, string> = { queued: "排队中", running: "执行中", awaiting_approval: "等你批准", paused: "已暂停", needs_reconciliation: "需核对结果", cancelling: "取消中", succeeded: "已完成", failed: "失败", cancelled: "已取消", rejected: "已拒绝", bound: "已配对", revoked: "已撤销", pending: "待执行", skipped: "已错过" };
-export const toolLabels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "生成图片", "attachment.read": "读取附件", "connector.list": "查看连接器", "connector.tools": "读取工具目录", "connector.call": "调用连接器工具", "agent.delegate": "联系同伴", "agent.directory": "查看同伴目录", "agent.create": "招募新同伴", "agent.update": "更新同伴资料", "memory.search": "检索记忆", "memory.read": "读取记忆", "memory.reflect": "综合记忆", "memory.write": "写入长期记忆", "memory.core.update": "更新核心记忆", "memory.delete": "撤回记忆", "memory.forget": "清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看计划", "routine.save": "保存例行任务", "routine.toggle": "切换计划状态", "routine.run": "立即运行计划", "device.list": "查看设备目录", "device.read": "读取设备文件", "device.exec": "执行终端命令", "device.inventory": "检查设备目录", "device.info": "读取设备信息", "device.computer": "操作电脑窗口", "skill.list": "查看技能目录", "skill.read": "阅读技能说明", "job.start": "交给后台任务", "job.list": "查看后台任务", "job.message": "转交给后台任务", "job.stop": "停止后台任务", "job.report": "提交回报", "job.progress": "记录进度" };
-export const toolPhrases: Record<string, string> = { "html.render": "正在准备展示内容", "image.models": "正在查看生图模型", "image.generate": "正在生成图片", "attachment.read": "正在读取附件", "connector.list": "正在查看连接器", "connector.tools": "正在读取工具目录", "connector.call": "正在调用连接器工具", "agent.delegate": "正在联系同伴", "agent.directory": "正在查看同伴目录", "agent.create": "正在创建新同伴", "agent.update": "正在更新同伴资料", "memory.search": "正在检索记忆", "memory.read": "正在读取记忆", "memory.reflect": "正在综合记忆", "memory.write": "正在记录长期记忆", "memory.core.update": "正在更新核心记忆", "memory.delete": "正在整理记忆", "memory.forget": "正在清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "正在查看计划", "routine.save": "正在安排例行任务", "routine.toggle": "正在调整计划", "routine.run": "正在执行例行任务", "device.list": "正在查看设备目录", "device.read": "正在读取设备文件", "device.exec": "正在执行终端命令", "device.inventory": "正在检查设备状态", "device.info": "正在读取设备信息", "device.computer": "正在操作电脑窗口", "skill.list": "正在查看技能目录", "skill.read": "正在阅读技能说明", "job.start": "正在交给后台任务", "job.list": "正在查看后台任务", "job.message": "正在转交给后台任务", "job.stop": "正在停止后台任务", "job.report": "正在提交回报", "job.progress": "正在记录进度" };
+export const toolLabels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "生成图片", "attachment.read": "读取附件", "connector.list": "查看连接器", "connector.tools": "读取工具目录", "connector.call": "调用连接器工具", "agent.delegate": "联系同伴", "agent.directory": "查看同伴目录", "agent.create": "招募新同伴", "agent.update": "更新同伴资料", "memory.search": "检索记忆", "memory.read": "读取记忆", "memory.reflect": "综合记忆", "memory.write": "写入长期记忆", "memory.core.update": "更新核心记忆", "memory.delete": "撤回记忆", "memory.forget": "清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看计划", "routine.save": "保存例行任务", "routine.toggle": "切换计划状态", "routine.run": "立即运行计划", "routine.delete": "删除定时任务", "device.list": "查看设备目录", "device.read": "读取设备文件", "device.exec": "执行终端命令", "device.inventory": "检查设备目录", "device.info": "读取设备信息", "device.computer": "操作电脑窗口", "skill.list": "查看技能目录", "skill.read": "阅读技能说明", "job.start": "交给后台任务", "job.list": "查看后台任务", "job.message": "转交给后台任务", "job.stop": "停止后台任务", "job.report": "提交回报", "job.progress": "记录进度", "cli.list": "查看 Agent 会话", "cli.read": "读取 Agent 会话", "cli.start": "启动 Agent 会话", "cli.send": "发给 Agent 会话", "cli.interrupt": "中断 Agent 会话" };
+export const toolPhrases: Record<string, string> = { "html.render": "正在准备展示内容", "image.models": "正在查看生图模型", "image.generate": "正在生成图片", "attachment.read": "正在读取附件", "connector.list": "正在查看连接器", "connector.tools": "正在读取工具目录", "connector.call": "正在调用连接器工具", "agent.delegate": "正在联系同伴", "agent.directory": "正在查看同伴目录", "agent.create": "正在创建新同伴", "agent.update": "正在更新同伴资料", "memory.search": "正在检索记忆", "memory.read": "正在读取记忆", "memory.reflect": "正在综合记忆", "memory.write": "正在记录长期记忆", "memory.core.update": "正在更新核心记忆", "memory.delete": "正在整理记忆", "memory.forget": "正在清理记忆", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "正在查看计划", "routine.save": "正在安排例行任务", "routine.toggle": "正在调整计划", "routine.run": "正在执行例行任务", "routine.delete": "正在删除定时任务", "device.list": "正在查看设备目录", "device.read": "正在读取设备文件", "device.exec": "正在执行终端命令", "device.inventory": "正在检查设备状态", "device.info": "正在读取设备信息", "device.computer": "正在操作电脑窗口", "skill.list": "正在查看技能目录", "skill.read": "正在阅读技能说明", "job.start": "正在交给后台任务", "job.list": "正在查看后台任务", "job.message": "正在转交给后台任务", "job.stop": "正在停止后台任务", "job.report": "正在提交回报", "job.progress": "正在记录进度", "cli.list": "正在查看 Agent 会话", "cli.read": "正在读取 Agent 会话", "cli.start": "正在启动 Agent 会话", "cli.send": "正在发给 Agent 会话", "cli.interrupt": "正在中断 Agent 会话" };
 export const str = (value: string | number | null | undefined) => String(value ?? "");
 export const taskPhrase = (task?: RecordRow) => !task ? "" : task.status === "needs_reconciliation" ? "等待核对执行结果" : task.status === "cancelling" ? "正在停止…" : task.status === "awaiting_approval" ? "等你批准" : (task.active_tool && toolPhrases[str(task.active_tool)]) || statuses[str(task.status)] || "执行中";

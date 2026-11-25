@@ -24,7 +24,7 @@ it('persists a single-input model and reasoning through FIFO/restart, preserves 
   await wait(()=>app.store.all("SELECT id FROM tasks WHERE status='succeeded'").length===2);
   const body=JSON.parse(other.requests.find(r=>r.url.includes('completions'))!.body);expect(body.model).toBe('override-model');expect(body.reasoning_effort).toBe('high');expect(app.store.modelConfig(first.botId).model).toBe('changed-default');
   const third=await history.send(app.store.session,{sessionId:'legacy',text:'next auto',clientId:'third'});await wait(()=>app.store.get('SELECT status FROM tasks WHERE id=?',third.taskId)?.status==='succeeded');expect(base.requests.filter(r=>r.url.includes('completions'))).toHaveLength(2);expect(other.requests.filter(r=>r.url.includes('completions'))).toHaveLength(1);
-  await expect(history.send(app.store.session,{sessionId:'bad-reasoning',text:'bad',clientId:'bad',modelSelection:{connectionId,model:'override-model',reasoning:'max'}})).rejects.toThrow('不支持');
+  await expect(history.send(app.store.session,{sessionId:'bad-reasoning',text:'bad',clientId:'bad',modelSelection:{connectionId,model:'override-model',reasoning:'ultra'}})).rejects.toThrow('思考强度无效');
   expect(app.store.get('SELECT session_id FROM stock_history_aliases WHERE session_id=?','bad-reasoning')).toBeUndefined();
   app.runtime.kick=()=>{};
   const active=await history.send(app.store.session,{sessionId:'cancel-model',text:'wait',clientId:'wait'}),queued=await history.send(app.store.session,{sessionId:'cancel-model',text:'do not run',clientId:'cancel-override',modelSelection:input.modelSelection});

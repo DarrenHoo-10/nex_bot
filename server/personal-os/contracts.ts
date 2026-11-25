@@ -12,7 +12,7 @@ export interface WorkerConfig {
   contextWindow: number; maxOutputTokens: number;
   // The provider ("供应商") the model belongs to, and the reasoning effort the model offers nearest to the
   // assistant's choice (see reasoning.ts). "off" or absent: no reasoning parameters are sent.
-  connectionId?: string; reasoning?: "off" | "low" | "medium" | "high" | "xhigh" | "max";
+  connectionId?: string; reasoning?: "off" | "low" | "medium" | "high" | "xhigh" | "max"; imageInput?: boolean;
   // Window of the tidy-up model, which every summarizer request goes to (digests, turn summaries, episode archives).
   // Summarizer batches and window checks are sized by it, not by the chat model's window. Defaults to contextWindow.
   tidyWindow?: number;

@@ -210,6 +210,7 @@ public struct ConnectorView: RowBacked {
     public init(row: Row) { self.row = row }
     public var provider: String { row.string("provider") ?? "mcp" }
     public var isGmail: Bool { provider == "gmail" }
+    public var isGithub: Bool { provider == "github" }
     public var account: String? { row.string("account") }
     public var name: String { row.string("name") ?? "" }
     public var url: String { row.string("url") ?? "" }
@@ -234,10 +235,10 @@ public struct ConnectorView: RowBacked {
     /// List subtitle: 已停用 / 需要检查 / N 个工具 / 尚未测试.
     public var subtitle: String { !enabled ? "已停用" : error != nil ? "需要检查" : checkedAt != nil ? "\(tools.count) 个工具" : "尚未测试" }
     /// Detail chip: 已停用 / 连接异常 / 连接测试通过 / 等待测试.
-    public var statusChip: String { !enabled ? "已停用" : isGmail && !hasToken ? "需要重新授权" : error != nil ? "连接异常" : checkedAt != nil ? (isGmail ? "已连接" : "连接测试通过") : "等待测试" }
-    public var isReady: Bool { enabled && checkedAt != nil && error == nil && (!isGmail || hasToken) }
+    public var statusChip: String { !enabled ? "已停用" : (isGmail || isGithub) && !hasToken ? "需要重新授权" : error != nil ? "连接异常" : checkedAt != nil ? (isGmail || isGithub ? "已连接" : "连接测试通过") : "等待测试" }
+    public var isReady: Bool { enabled && checkedAt != nil && error == nil && (provider == "mcp" || hasToken) }
     /// `Bearer Token · 已加密保存` or `无需令牌`.
-    public var authLabel: String { isGmail ? "搜索和读取邮件" : hasToken ? "Bearer Token · 已加密保存" : "无需令牌" }
+    public var authLabel: String { isGmail ? "搜索和读取邮件" : isGithub ? "仓库、PR、CI 与 issue" : hasToken ? "Bearer Token · 已加密保存" : "无需令牌" }
 }
 
 // MARK: - Devices and node
@@ -418,6 +419,25 @@ public struct Usage: RowBacked {
     public var calls: Int { row.int("calls") ?? 0 }
     public var inputTokens: Int { row.int("input_tokens") ?? 0 }
     public var outputTokens: Int { row.int("output_tokens") ?? 0 }
+    public var compactInputTokens: String { Self.compactTokens(inputTokens) }
+    public var compactOutputTokens: String { Self.compactTokens(outputTokens) }
+
+    /// 950, 47.5K, 475K, 1M, 2.3B: the one token unit every screen uses.
+    static func compactTokens(_ tokens: Int) -> String {
+        guard tokens >= 1_000 else { return String(tokens) }
+        let unit: (scale: Double, suffix: String)
+        if tokens >= 1_000_000_000 {
+            unit = (1_000_000_000, "B")
+        } else if tokens >= 1_000_000 {
+            unit = (1_000_000, "M")
+        } else {
+            unit = (1_000, "K")
+        }
+        let value = Double(tokens) / unit.scale
+        let digits = value >= 100 ? 0 : 1
+        let number = value.formatted(.number.precision(.fractionLength(0...digits)).grouping(.never).locale(Locale(identifier: "en_US_POSIX")))
+        return number + unit.suffix
+    }
 }
 
 /// `delegations[]`: an agent-to-agent hand-off (`a2a_messages`).

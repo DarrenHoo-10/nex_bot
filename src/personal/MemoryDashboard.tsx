@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useRef, useState } from 'react';
 import { api, listModels, str, type State } from './api';
 import { ModelPicker } from './components/ModelPicker';
@@ -21,7 +22,7 @@ export function MemoryDashboard({ state, active }: { state: State; active: boole
           setError('');
         }
       } catch (failure) {
-        if (generation.current === current) setError(failure instanceof Error ? failure.message : '读取失败');
+        if (generation.current === current) setError(userErrorText(failure, '读取失败'));
       }
     };
     void load(); const timer = setInterval(() => void load(), 5000);
@@ -36,7 +37,7 @@ export function MemoryDashboard({ state, active }: { state: State; active: boole
       if (generation.current === current) setSummary(value);
     } catch (failure) {
       if (generation.current === current) {
-        setError(failure instanceof Error ? failure.message : '保存失败');
+        setError(userErrorText(failure, '保存失败'));
         try {
           const value = await api<Summary>('memory/summary', {});
           if (generation.current === current) setSummary(value);

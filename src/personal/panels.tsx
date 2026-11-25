@@ -1,4 +1,5 @@
 ﻿import { useEffect, useId, useState, type ReactNode } from "react";
+import { userErrorText } from "../lib/http-errors";
 import { AccountControls, useAccount } from "./auth";
 import { Cpu, Info, KeyRound, Laptop, Plug, Sparkles, UserRound, X } from "lucide-react";
 import { AboutSettings } from "./AboutSettings";
@@ -7,6 +8,7 @@ import { ConnectorsPage } from "./ConnectorsPage";
 import { ProviderSettings } from "./ProviderSettings";
 import { MemoryDashboard } from './MemoryDashboard';
 import { ImageModelSettings } from './ImageModelSettings';
+import { TranslationSettings } from './TranslationSettings';
 import { RetrievalSettings } from './RetrievalSettings';
 interface Field { name: string; label: string; value?: string; required?: boolean; multiline?: boolean; hint?: string; choices?: Array<{ value: string; label: string }> }
 export function Editor({ title, fields, onClose, onSubmit }: { title: string; fields: Field[]; onClose: () => void; onSubmit: (data: Record<string, string>) => Promise<unknown> }) {
@@ -17,7 +19,7 @@ export function Confirm({ title, detail, onClose, onConfirm }: { title: string; 
   return <><h2>{title}</h2><p>{detail}</p><div className="actions"><button className="danger" onClick={() => void onConfirm()}>确认</button><button autoFocus onClick={onClose}>取消</button></div></>;
 }
 export type SettingsCategory = "account" | "model" | "memory" | "connectors" | "devices" | "about";
-export function SettingsPage({ state, financeBotId, run, category, onCategory, refresh, setDialog, closeDialog }: { state: State; financeBotId?: string; run: (fn: () => Promise<unknown>) => Promise<void>; category: SettingsCategory; onCategory: (category: SettingsCategory) => void; refresh: () => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
+export function SettingsPage({ state, run, category, onCategory, refresh, setDialog, closeDialog }: { state: State; run: (fn: () => Promise<unknown>) => Promise<void>; category: SettingsCategory; onCategory: (category: SettingsCategory) => void; refresh: () => Promise<void>; setDialog: (node: ReactNode) => void; closeDialog: () => void }) {
   const sectionId = useId();
   const categories: Array<{ id: SettingsCategory; label: string; icon: typeof UserRound }> = [
     { id: "account", label: "账号与登录设备", icon: UserRound },
@@ -41,6 +43,7 @@ export function SettingsPage({ state, financeBotId, run, category, onCategory, r
           <div className="preferences-panel-heading"><h2>模型</h2></div>
           <ProviderSettings state={state} refresh={refresh} active={category === "model"}/>
           <ImageModelSettings state={state} refresh={refresh} active={category === "model"}/>
+          {category === "model" && <TranslationSettings connections={state.connections ?? []}/>}
           <RetrievalSettings active={category === "model"}/>
         </section>
         <section id={`${sectionId}-memory`} hidden={category !== "memory"} aria-label="长期记忆" className="preferences-panel">
@@ -48,7 +51,7 @@ export function SettingsPage({ state, financeBotId, run, category, onCategory, r
           <MemoryDashboard state={state} active={category==='memory'}/>
         </section>
         <section id={`${sectionId}-connectors`} hidden={category !== "connectors"} aria-label="连接器" className="preferences-panel">
-          <ConnectorsPage state={state} financeBotId={financeBotId} refresh={refresh}/>
+          <ConnectorsPage state={state} refresh={refresh}/>
         </section>
         <section id={`${sectionId}-devices`} hidden={category !== "devices"} aria-label="设备" className="preferences-panel">
           <Devices state={state} run={run} setDialog={setDialog} closeDialog={closeDialog}/>
@@ -127,7 +130,7 @@ export function Devices({ state, run, setDialog, closeDialog }: { state: State; 
   }, [status?.sessionId]);
   const update = async (work: () => Promise<LocalDeviceState>) => {
     setPending(true); setError("");
-    try { setLocal(await work()); } catch (e) { setError((e instanceof Error ? e.message : "操作失败").replace(/^Error invoking remote method '[^']+': Error: /, "")); }
+    try { setLocal(await work()); } catch (e) { setError((userErrorText(e, "操作失败")).replace(/^Error invoking remote method '[^']+': Error: /, "")); }
     finally { setPending(false); }
   };
   const visible = sessions.filter(session => !session.revoked_at && session.expires_at > clock).sort((a, b) => Number(b.session_id === currentId) - Number(a.session_id === currentId));
@@ -141,6 +144,7 @@ export function Devices({ state, run, setDialog, closeDialog }: { state: State; 
           <Laptop size={22} aria-hidden="true"/>
           <div className="signed-in-device-name"><strong>{session.name}</strong>{isCurrent && <span className="ds-current-pill">本设备</span>}</div>
           <span className="device-presence"><i data-online={online}/>{online ? "在线" : "离线"}{isCurrent && local?.paused ? " · 已暂停" : ""}</span>
+          {isCurrent && desktop?.mode === "client" && local?.cliAgents?.available && <label className="device-switch"><input type="checkbox" role="switch" checked={local.cliAgents.enabled} disabled={pending || !local.authorized} onChange={event => void update(() => desktop!.setCliAgentsEnabled!(event.target.checked))}/>Agent 会话{local.cliAgents.enabled && local.cliAgents.hc === "error" ? " · 终端不可用" : ""}</label>}
           {isCurrent && local?.available && <button disabled={pending || !local.authorized} onClick={() => void update(() => desktop!.setDevicePaused!(!local.paused))}>{pending ? "处理中…" : local.paused ? "恢复控制" : "暂停控制"}</button>}
         </section>;
       })}

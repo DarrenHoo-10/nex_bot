@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowUp, ChevronLeft } from "lucide-react";
 import { api, busyJob, jobStageLabels, str, type JobDetail, type RecordRow } from "../api";
@@ -25,7 +26,7 @@ export function JobChat({ id, botName, avatar, back, renderContent }: { id: stri
         setDetail(next); setError("");
         poll = next.job.endedAt === null && next.job.stage !== "stopped";
       } catch (failure) {
-        if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "加载失败");
+        if (!controller.signal.aborted) setError(userErrorText(failure, "加载失败"));
       } finally {
         if (!controller.signal.aborted && poll) timer = setTimeout(() => void load(), 2000);
       }
@@ -67,7 +68,7 @@ export function JobChat({ id, botName, avatar, back, renderContent }: { id: stri
     try { await api("jobs/input", { jobId: job.id, text, clientId }); setRefresh((value) => value + 1); }
     catch (failure) {
       setOutgoing((items) => items.filter((item) => item.id !== clientId)); setDraft((current) => current || text);
-      setError(failure instanceof Error ? failure.message : "发送失败");
+      setError(userErrorText(failure, "发送失败"));
     } finally { setSending(false); }
   };
 
@@ -87,7 +88,7 @@ export function JobChat({ id, botName, avatar, back, renderContent }: { id: stri
               {entry.role === "assistant" ? avatar : null}
               <div className="message-body">
                 <div className="bubble">{renderContent(entry.content)}{entry.question ? <p className="job-question">{entry.question}</p> : null}</div>
-                <div className="message-meta"><time>{entry.pending ? "发送中…" : clock(entry.at)}</time></div>
+                {entry.pending || entry.role !== "user" ? <div className="message-meta">{entry.pending ? "发送中…" : <time>{clock(entry.at)}</time>}</div> : null}
               </div>
             </article>)}
         {working ? <article className="message assistant">

@@ -1,0 +1,5 @@
+{
+  "name": "nexbot",
+  "version": "0.1.0",
+  "description": "Forwards permission prompts, questions and turn ends of Claude Code sessions started by nex_bot."
+}

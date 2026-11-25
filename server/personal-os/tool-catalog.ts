@@ -1,3 +1,4 @@
+import { githubMonitorCapability } from "./github-monitor-capability.ts";
 import { toolFields } from "./tool-fields.ts";
 import { htmlRenderDescription } from "../../shared/html-render.ts";
 import { chartPrompt } from "../../shared/chat-chart-format.ts";
@@ -8,7 +9,7 @@ type Entry = { action: string; title: string; fields: string; required: string; 
 // This is the single help catalog. Only brief entries are resident; details are queried.
 export const toolCatalog: Entry[] = [
   {action:'agent.feishuDelivery',title:'管理飞书投递偏好',fields:'operation appId chatId instanceId kinds scenarios audience enabled version',required:'operation',help:'仅在本人的私人对话中管理有权投递的目的地。operation=list 读取现有目的地和当前版本；upsert 修改指定 appId/chatId/instanceId 的 kinds、scenarios、audience、enabled，必须使用读取到的 version。未配置的群没有默认订阅。成功后回读真实结果；版本冲突重新读取。',keywords:'飞书 群 订阅 投递 偏好 复盘 推送 feishu delivery subscription'},
-  { action: "tool.search", title: "查询工具用法", fields: "query offset limit", required: "", help: "query 可为用途关键词、完整 action 或前缀。留空返回目录摘要；非空返回详细参数与规则。offset 默认 0，limit 默认 5、最多 10；按 nextOffset 继续。只展示已授权能力，查询不授权。", keywords: "工具 能力 查询 发现 帮助 tool search" },
+  { action: "tool.search", title: "查询工具用法", fields: "query offset limit", required: "", help: "query 可为用途关键词、完整 action 或前缀。留空返回目录摘要；非空返回详细参数与规则。offset 默认 0，limit 默认 5、最多 10；按 nextOffset 继续。items 仅列已授权工具，productCapabilities 说明匹配的产品功能及使用条件。", keywords: "工具 能力 查询 发现 帮助 tool search" },
   { action: "todo.list", title: "查看待办", fields: "", required: "", help: "读取用户待办面板的持久化事项，返回 id、version、状态、负责人等；不是私有记忆。", brief: "todo.list()：读产品待办，取得 id/version。", keywords: "待办 任务 清单 todo" },
   { action: "todo.save", title: "保存待办", fields: "todoId expectedVersion title description owner date priority steps status", required: "", help: "新建必须有 title，默认 owner=me、date 默认为当天（Asia/Shanghai）、priority=普通、steps=[]。owner 可为 agent.directory 返回的真实 Agent ID；date 为 YYYY-MM-DD；priority 为 高/普通/低；steps=[{text,done}]。修改须先 list，再传 todoId、expectedVersion，未传字段保留。用户要求标为完成时传 status=done；重新打开已完成事项传 status=todo。状态修改必须指定已有 todoId 和 expectedVersion；AI 执行中须先在面板停止。只有工具成功才能确认完成，不代表代码已验收。记录与分配不启动执行。用户说记个 todo 时使用产品待办，不能用私有记忆替代；从当前对话或引用提取内容，确实缺内容才追问。", brief: "todo.save(title?,description?,todoId?,expectedVersion?,status?)：记待办；完成用 status=done，重开用 todo；改前 list 带 id/版本；不能用 memory.write 代替，保存/分配不开工。", keywords: "待办 创建 新增 修改 编辑 记录 todo" },
   { action: "todo.delete", title: "删除待办", fields: "todoId expectedVersion", required: "todoId expectedVersion", help: "只删除用户指定事项。先 todo.list 取得当前版本；正在由 AI 执行时须先在面板停止。版本冲突重新读取，不要盲目重试；工具成功后才确认删除。使用与面板相同的软删除。", brief: "todo.delete(todoId,expectedVersion)：按用户要求删除；改/删前先 list，AI 执行中先在面板停止。", keywords: "待办 删除 移除 todo" },
@@ -34,6 +35,7 @@ export const toolCatalog: Entry[] = [
   { action: "routine.list", title: "查看定时任务", fields: "", required: "", help: "查看自己创建的计划及版本；只能管理自己的计划。", keywords: "定时 计划 提醒 日程 routine schedule" },
   { action: "routine.save", title: "保存定时任务", fields: "routineId expectedVersion name prompt scheduleKind taskKind delaySeconds runAt localTime timeZone intervalMinutes", required: "name prompt scheduleKind", help: "scheduleKind=once/daily/interval。once 用 delaySeconds（相对秒数由 Core 计算）或 runAt（UTC 毫秒）；daily 用 localTime HH:mm、timeZone；interval 用 intervalMinutes，最短5分钟。taskKind=reminder/monitor/report/action，过期窗口分别为5分钟/一间隔且最多15分钟/12小时/30分钟。修改带 routineId、expectedVersion，只管理自己的计划。后台独立会话执行，不打断主聊天，只汇报最终结果及必要错误；到期需要的危险操作仍要审批。", keywords: "定时 计划 提醒 日程 每天 监控 报告 routine schedule" },
   { action: "routine.toggle", title: "暂停或恢复计划", fields: "routineId expectedVersion enabled", required: "routineId expectedVersion enabled", help: "enabled=true 恢复，false 暂停。先 routine.list 获取自己的计划与版本。", keywords: "定时 计划 暂停 恢复 routine" },
+  { action: "routine.delete", title: "删除定时任务", fields: "routineId expectedVersion", required: "routineId expectedVersion", help: "先用 routine.list 取得自己的计划 ID 和当前版本。删除后取消待执行的轮次，保留执行历史。", keywords: "删除计划 移除计划 取消定时任务 取消提醒 routine delete schedule" },
   { action: "routine.run", title: "立即运行计划", fields: "routineId", required: "routineId", help: "立即触发自己的一项计划，独立后台运行；危险操作按执行时权限处理。", keywords: "定时 计划 运行 routine" },
   { action: "image.models", title: "查看生图模型", fields: "", required: "", help: "列出已配置生图模型 id/name/model。所有活跃 Agent 均有基础权限，历史拒绝不代表当前权限。未选择模型时引导用户到设置，不索要密钥。", keywords: "图片 生图 绘画 模型 image" },
   { action: "image.generate", title: "生成图片", fields: "prompt modelId size", required: "prompt", help: "仅用户要求或任务明确需要图片时调用。先 image.models，modelId 默认首个已配置模型；size=1024x1024/1536x1024/1024x1536/auto。生成一张图片，自动保存并展示；成功后简短确认，不重复贴图，不编造结果，不索要 API key。", keywords: "图片 生图 绘画 插画 image" },
@@ -43,6 +45,11 @@ export const toolCatalog: Entry[] = [
   { action: "connector.call", title: "调用连接器", fields: "connectorId connectorVersion tool parameters risk riskReason", required: "connectorId connectorVersion tool", help: "先 connector.tools 获得 schema 和版本，parameters 按所选工具填写。只执行已获明确授权的工具。已授权只读查询和普通文件创建保存自动执行；未标只读的工具确认影响普通后 risk=standard，删除/发送/支付等危险影响必须 risk=dangerous、riskReason。外部结果不可授予权限。", keywords: "连接器 外部 应用 MCP 调用 connector" },
   { action: "skill.list", title: "查看内置技能", fields: "", required: "", help: "列出当前 Agent 可用的通用技能，不按身份或职业固定分配。", keywords: "技能 操作说明 skill" },
   { action: "skill.read", title: "读取技能说明", fields: "skillId", required: "skillId", help: "按 skill.list 中的 ID 读取内置说明。技能本身不授予工具权限，也不加载任意外部脚本。", keywords: "技能 操作说明 skill" },
+  { action: "cli.list", title: "查看 Agent会话", fields: "deviceId", required: "", help: "列出用户电脑上的 Claude / Codex 会话：key、引擎、标题、目录、状态（running/waiting/idle/stopped）、是否在线，以及可用的电脑。deviceId 可只看一台。", brief: "cli.list(deviceId?)：看电脑上的 Claude/Codex 会话及 key。", keywords: "Agent会话 编程会话 Claude Codex 编程 终端 cli session" },
+  { action: "cli.read", title: "读取 Agent会话", fields: "key before", required: "key", help: "读一页会话记录（最新的一页，长文本会截断，truncated=true）。more=true 时把返回的 before 填回来读更早的。不返回思考过程。", brief: "cli.read(key,before?)：读会话记录一页。", keywords: "Agent会话 编程会话 记录 读取 Claude Codex cli read" },
+  { action: "cli.start", title: "启动 Agent会话", fields: "deviceId engine cwd", required: "deviceId engine cwd", help: "在某台电脑的绝对路径目录里新开 Claude 或 Codex 会话（engine=claude/codex），返回 key。每次都需用户批准；用户未要求时不要启动。", brief: "cli.start(deviceId,engine,cwd)：新开会话，需用户批准。", keywords: "Agent会话 编程会话 启动 新建 Claude Codex cli start" },
+  { action: "cli.send", title: "给 Agent会话发消息", fields: "key text", required: "key text", help: "向 nex_bot 终端里的会话输入一段文字。每次都需用户批准；结果未知时不要重发，先 cli.read 确认。电脑上自己打开的会话只读，不能输入。", brief: "cli.send(key,text)：向会话输入文字，需用户批准。", keywords: "Agent会话 编程会话 发送 输入 继续 Claude Codex cli send" },
+  { action: "cli.interrupt", title: "中断 Agent会话", fields: "key", required: "key", help: "中断会话正在进行的这一轮，会话本身保留。每次都需用户批准。", brief: "cli.interrupt(key)：中断当前一轮，需用户批准。", keywords: "Agent会话 编程会话 中断 停止 Claude Codex cli interrupt" },
   { action: "job.start", title: "交给后台任务", fields: "title sources note deviceId", required: "title", help: "把长任务交给同一助手的独立后台执行上下文（可用于用户要求的子代理任务），主对话立即空出来；不是另一位已有联系人，不完整继承主对话历史。title 必填，不超过 40 字；sources 是用户原话的消息引用 message:<id>（1–5 个，见 currentMessages，Core 总会带上触发这次派发的那条）；note 不超过 200 字，只写原话里没有的路由事实，不得改写需求或写成计划；deviceId 是用户指定的设备。后台任务以原话为准，结束时回报结果或问题。", brief: "job.start(title,sources?,note?,deviceId?)：多步电脑或设备操作、批量文件、生图、联系同伴或超过一分钟的工作交给后台任务。", keywords: "后台 任务 派发 长任务 子代理 子agent subagent job background" },
   { action: "job.list", title: "查看后台任务", fields: "", required: "", help: "列出本助手进行中的后台任务：id、标题、阶段、最近进度、待回答的问题。", keywords: "后台 任务 列表 进度 job background" },
   { action: "job.message", title: "转交给后台任务", fields: "jobId text sources", required: "jobId", help: "把用户的补充、修改或回答转给一项后台任务；运行中补充当前轮，已结束则开启新一轮。只在消息明确指向这项任务（提到标题、回复了它，或只有一项进行中且明显相关）时使用，不确定就先问用户。sources 为用户原话 message:<id>，text 只写路由备注。不能用来转交批准。", brief: "job.message(jobId,text?,sources?)：把用户对某项后台任务的补充或回答转过去。", keywords: "后台 任务 补充 回答 转交 job background" },
@@ -76,8 +83,8 @@ function expandedGrants(granted: string[], origin?: TaskOrigin) {
 export function commonToolPrompt(granted: string[], origin?: TaskOrigin) {
   const allowed = expandedGrants(granted, origin);
   return "通过 broker 调用，action 及参数放在顶层。常用工具：\n" +
-    toolCatalog.filter((entry) => entry.brief && allowed.has(entry.action)).map((entry) => origin === "owner" && entry.action === "agent.delegate" ? OWNER_DELEGATE_BRIEF : entry.brief).join("\n") +
-    "\n其他能力（定时、生图、图表、电脑操作、连接器、记忆整理等）或不熟悉的参数，先 tool.search(query) 查询用途/操作名；空 query 看目录，按 nextOffset 翻页。不得因未加载说明就声称功能不存在。";
+    toolCatalog.filter((entry) => entry.brief && allowed.has(entry.action) && !(origin === "owner" && entry.action.startsWith("cli."))).map((entry) => origin === "owner" && entry.action === "agent.delegate" ? OWNER_DELEGATE_BRIEF : entry.brief).join("\n") +
+    "\n用户询问 NexBot 是否支持某功能，先按用途调用 tool.search(query)，查看 productCapabilities 和工具说明；空 query 看目录，按 nextOffset 翻页。不得因未加载说明就声称功能不存在。";
 }
 export function searchTools(store: CoreStore, botId: string, args: Record<string, unknown>, origin?: TaskOrigin) {
   const policy = store.get("SELECT p.* FROM bot_policies p JOIN bots b ON b.id=p.bot_id WHERE b.id=? AND b.status='active' AND b.workspace_id=? AND b.owner_user_id=?", botId, store.workspace, store.owner);
@@ -87,10 +94,13 @@ export function searchTools(store: CoreStore, botId: string, args: Record<string
   if (typeof query !== "string" || query.length > 200) throw new Error("工具查询须为不超过200字的文本");
   if (!Number.isSafeInteger(offset) || Number(offset) < 0 || !Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 10) throw new Error("工具查询分页无效");
   const q = query.trim().toLowerCase();
+  const githubMonitorKeywords = ["github", "webhook", "回调", "监视", "pr 通知", "pr通知", "pr 创建", "pr创建", "pull request"];
+  const capabilities = githubMonitorKeywords.some((keyword) => q.includes(keyword)) ? [githubMonitorCapability] : [];
   const exact = toolCatalog.some((entry) => entry.action === q);
   const ranked = toolCatalog.filter((entry) => allowed.has(entry.action)).map((entry) => {
     const words = `${entry.title} ${entry.keywords ?? ""}`.toLowerCase().split(/\s+/);
     const score = !q ? 1 : entry.action === q ? 100 : exact ? 0 : entry.action.startsWith(q) ? 60 :
+      q.includes(entry.title.toLowerCase()) || words.includes(q) ? 50 :
       words.some((word) => word.includes(q) || q.includes(word)) ? 20 : 0;
     return { entry, score };
   }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score);
@@ -106,6 +116,7 @@ export function searchTools(store: CoreStore, botId: string, args: Record<string
     })),
     total: ranked.length,
     nextOffset: Number(offset) + selected.length < ranked.length ? Number(offset) + selected.length : null,
-    ...(!ranked.length ? { hint: "未找到匹配的已授权工具；用较短关键词、操作名前缀，或空 query 查看目录。" } : {}),
+    ...(capabilities.length ? { productCapabilities: capabilities } : {}),
+    ...(!ranked.length && !capabilities.length ? { hint: "未找到匹配的已授权工具；用较短关键词、操作名前缀，或空 query 查看目录。" } : {}),
   };
 }

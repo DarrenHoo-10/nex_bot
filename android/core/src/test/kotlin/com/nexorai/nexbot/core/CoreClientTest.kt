@@ -98,9 +98,9 @@ class CoreClientTest {
         server.enqueue(
             json("""{"sync":{"cursor":1},"messages":[{"id":"m1","seq":2,"role":"assistant","content":"hi"}],"hasMore":false,"streaming":[{"taskId":"t","text":"partial"}]}"""),
         )
-        val feed = client.messages("bot-1", after = 1)
+        val feed = client.messages("bot-1", after = 1, at = 123)
         assertEquals("partial", feed.streaming.single().text)
-        assertEquals("/api/agents/messages?bot=bot-1&after=1", server.takeRequest().path)
+        assertEquals("/api/agents/messages?bot=bot-1&view=window&at=123&after=1", server.takeRequest().path)
     }
 
     @Test

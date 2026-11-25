@@ -32,6 +32,8 @@ struct AgentDetailView: View {
                 PillTabs(items: AgentDetailTab.allCases, title: { $0.rawValue }, selection: Bindable(nav).detailTab)
                 switch nav.detailTab {
                 case .work: work
+                    .onAppear { workspace.setResourceVisible("work", true) }
+                    .onDisappear { workspace.setResourceVisible("work", false) }
                 case .settings: AgentSettingsTab(workspace: workspace, botID: botID)
                 }
             }

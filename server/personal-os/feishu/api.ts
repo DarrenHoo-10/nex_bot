@@ -89,9 +89,34 @@ export class FeishuApi {
     const data = await this.request<{ online_instance_cnt?: number }>(app, "GET", "/open-apis/event/v1/connection");
     return Number(data.online_instance_cnt ?? 0);
   }
-  async botOpenId(app: FeishuCredentials): Promise<string | undefined> {
-    const data = await this.request<{ bot?: { open_id?: string } }>(app, "GET", "/open-apis/bot/v3/info");
-    return typeof data.bot?.open_id === "string" ? data.bot.open_id : undefined;
+  async botInfo(app: FeishuCredentials): Promise<{ openId?: string; name?: string; avatarUrl?: string }> {
+    const data = await this.request<{ bot?: { open_id?: string; app_name?: string; avatar_url?: string } }>(app, "GET", "/open-apis/bot/v3/info");
+    const str = (value: unknown) => typeof value === "string" && value ? value : undefined;
+    return { openId: str(data.bot?.open_id), name: str(data.bot?.app_name), avatarUrl: str(data.bot?.avatar_url) };
+  }
+
+  async updateAppProfile(app: FeishuCredentials, profile: { name: string; avatar?: Uint8Array<ArrayBuffer> }, beforeSend: () => void) {
+    let avatarUrl: string | undefined;
+    if (profile.avatar) {
+      await this.gate(app.appId).wait();
+      const token = await this.tenantToken(app);
+      const form = new FormData();
+      form.set("avatar", new Blob([profile.avatar], { type: "image/png" }), "avatar.png");
+      beforeSend();
+      const response = await this.fetchImpl(`${feishuOrigins(app.brand).open}/open-apis/application/v7/app_avatar/upload`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form, signal: AbortSignal.timeout(15_000),
+      });
+      const payload = record(await response.json().catch(() => ({})));
+      avatarUrl = typeof payload.url === "string" ? payload.url : typeof record(payload.data).url === "string" ? String(record(payload.data).url) : undefined;
+      const code = Number(payload.code ?? response.status);
+      if (!response.ok || !avatarUrl || (payload.code !== undefined && code !== 0)) {
+        throw new FeishuApiError(code, "上传应用头像失败", response.status, payload);
+      }
+    }
+    await this.request(app, "PATCH", `/open-apis/application/v7/applications/${encodeURIComponent(app.appId)}/base`, {
+      i18ns: [{ i18n_key: app.brand === "lark" ? "en_us" : "zh_cn", name: profile.name }],
+      ...(avatarUrl ? { avatar_url: avatarUrl } : {}),
+    }, beforeSend);
   }
 
   /** 用户身份调用：与 request 相同的限流与重试，Bearer 换成 user_access_token。 */

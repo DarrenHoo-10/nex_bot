@@ -71,6 +71,43 @@ describe("client updates", () => {
     expect(await new ClientUpdateSource(undefined).check("windows", "0.9.8")).toMatchObject({ available: false });
   });
 
+  it("offers Windows updates in the requested format and prefers Setup for public downloads", async () => {
+    const file = "NexBot-0.9.10-x64-Client-Setup.exe";
+    const setup = { version: "0.9.10", file, key: `nexbot/releases/nexbot-v0.9.10-preview.1/${file}`, size: 2048, sha256: sha };
+    const source = new ClientUpdateSource({ ...mirror, manifest: async () => parseManifest({
+      ...manifest, platforms: { ...manifest.platforms, "windows-setup": setup },
+    }) });
+    expect(await source.check("windows", "0.9.8")).toMatchObject({ available: true, file: manifest.platforms.windows.file });
+    expect(await source.check("windows", "0.9.9")).toMatchObject({ available: false });
+    expect(await source.check("windows", "0.9.9", undefined, "nsis")).toMatchObject({ available: true, file, url: mirror.signedUrl(setup.key) });
+    expect(await source.check("windows", "0.9.10", undefined, "nsis")).toMatchObject({ available: false });
+    expect(await new ClientUpdateSource(mirror).check("windows", "0.9.8", undefined, "nsis")).toMatchObject({ available: false });
+    expect((await source.downloads())?.windows).toMatchObject({ name: file, version: "0.9.10" });
+  });
+
+  it("gives each platform its own release's tag, notes and date after a partial release", async () => {
+    const appleKey = (file: string) => `nexbot/releases/nexbot-apple-v0.2.5-preview.1/${file}`;
+    const partial = {
+      version: 1, tag: "nexbot-apple-v0.2.5-preview.1", publishedAt: "2026-10-23T02:00:00Z", notes: "Apple 更新",
+      platforms: {
+        // written before entries carried their own details: the tag comes from the key, and the manifest's notes are another release's
+        windows: manifest.platforms.windows,
+        // written by the current publisher
+        android: { ...manifest.platforms.android, tag: "nexbot-v0.9.9-preview.1", notes: "修复若干问题", publishedAt: "2026-10-22T02:00:00Z" },
+        mac: { version: "0.2.5", file: "NexBot-0.2.5-mac-arm64.dmg", key: appleKey("NexBot-0.2.5-mac-arm64.dmg"), size: 4096, sha256: sha },
+        ios: { version: "0.2.5", file: "NexBot-0.2.5-ios-unsigned.ipa", key: appleKey("NexBot-0.2.5-ios-unsigned.ipa"), size: 4096, sha256: sha, tag: "../evil" },
+      },
+    };
+    const source = new ClientUpdateSource({ manifest: async () => parseManifest(partial), signedUrl: mirror.signedUrl });
+    expect(await source.check("windows", "0.9.8")).toMatchObject({ version: "0.9.9", tag: "nexbot-v0.9.9-preview.1", notes: "", publishedAt: "" });
+    expect(await source.check("android", "0.2.8")).toMatchObject({ tag: "nexbot-v0.9.9-preview.1", notes: "修复若干问题", publishedAt: "2026-10-22T02:00:00Z" });
+    expect(await source.check("mac", "0.2.4")).toMatchObject({ tag: "nexbot-apple-v0.2.5-preview.1", notes: "Apple 更新", publishedAt: "2026-10-23T02:00:00Z" });
+    expect((await source.check("ios", "0.2.4")).tag).toBe("nexbot-apple-v0.2.5-preview.1");
+    const downloads = await source.downloads();
+    expect(downloads?.windows?.tag).toBe("nexbot-v0.9.9-preview.1");
+    expect(downloads?.mac?.tag).toBe("nexbot-apple-v0.2.5-preview.1");
+  });
+
   it("keeps the last good manifest through an outage", async () => {
     let calls = 0, at = 0;
     const flaky = { manifest: async () => { if (++calls > 1) throw new Error("offline"); return parseManifest(manifest); }, signedUrl: mirror.signedUrl };

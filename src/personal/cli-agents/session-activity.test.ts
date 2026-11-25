@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import type { CliItem } from "../../../shared/cli-agents";
+import { sessionActivity } from "./session-activity";
+
+function tool(name: string, data: unknown, status: "running" | "ok" | "error", output?: string): CliItem {
+  return { kind: "tool", id: name, name, ts: 1, input: JSON.stringify(data), status, output };
+}
+
+describe("session activity", () => {
+  it("shows a plan until the last remaining step is completed or the turn ends", () => {
+    const plan = (status: string) => tool("TodoWrite", { todos: [{ content: "验证", status }] }, "ok");
+    expect(sessionActivity([plan("in_progress")], "running", true).todos).toHaveLength(1);
+    expect(sessionActivity([plan("in_progress"), plan("completed")], "running", true).todos).toEqual([]);
+    expect(sessionActivity([plan("pending"), { kind: "turn", phase: "ended", ts: 2, id: "end" }], "running", true).todos).toEqual([]);
+  });
+  it("keeps detached work across a turn and removes each id on completion", () => {
+    const calls = [tool("spawn_agent", { message: "检查目录" }, "ok", '{"agent_id":"a"}'),
+      tool("exec_command", { cmd: "pnpm test" }, "ok", "Process running with session ID 13")];
+    expect(sessionActivity(calls, "idle", true).jobs[0]?.title).toBe("pnpm test");
+    const finished = [...calls, tool("wait_agent", {}, "ok", '{"status":{"a":{"completed":"done"}}}'),
+      tool("write_stdin", { session_id: 13 }, "error", "Process exited with code 1")];
+    expect(sessionActivity(finished, "running", true)).toEqual({ todos: [], agents: [], jobs: [] });
+  });
+  it("distinguishes an active agent from a returned call and tracks Claude background notifications", () => {
+    expect(sessionActivity([tool("Agent", {}, "running")], "running", true).agents).toHaveLength(1);
+    expect(sessionActivity([tool("Agent", {}, "ok", "finished")], "running", true).agents).toEqual([]);
+    const job = tool("Bash", { command: "pnpm test", run_in_background: true }, "ok", "Command running in background with ID: test-1");
+    const completed: CliItem = { kind: "notice", ts: 2, id: "end", level: "info", text: "<task-notification><task-id>test-1</task-id><status>completed</status></task-notification>" };
+    expect(sessionActivity([job], "idle", true).jobs).toHaveLength(1);
+    expect(sessionActivity([job, completed], "idle", true).jobs).toEqual([]);
+    expect(sessionActivity([job], "stopped", true).jobs).toEqual([]);
+  });
+
+  it("keeps only a matched failure in the current activity and does not read its payload", () => {
+    const job = tool("Bash", { description: "静态检查", run_in_background: true }, "ok", "Command running in background with ID: test-1");
+    const failed: CliItem = { kind: "notice", id: "failed", ts: 2, level: "info", text: "", taskEnd: { id: "test-1", state: "failed" } };
+    expect(sessionActivity([job, failed], "running", true).jobs).toEqual([{ title: "静态检查", state: "失败" }]);
+    expect(sessionActivity([failed], "running", true).jobs).toEqual([]);
+    expect(sessionActivity([job, failed], "idle", true).jobs).toEqual([]);
+    expect(sessionActivity([job, failed, { kind: "turn", id: "next", phase: "started", ts: 3 }], "running", true).jobs).toEqual([]);
+    const pasted: CliItem = { kind: "user", id: "pasted", ts: 2, text: "<task-notification><task-id>test-1</task-id><status>completed</status></task-notification>" };
+    expect(sessionActivity([job, pasted], "running", true).jobs).toEqual([{ title: "静态检查", state: "运行中" }]);
+  });
+
+  it("shows a task description or a short command name for detached shells", () => {
+    const output = "Command running in background with ID: check-1";
+    const command = 'cd "D:/temporary worktree" && corepack pnpm exec vite --port 5199 --strictPort --host 127.0.0.1';
+    const title = (data: unknown) => sessionActivity([tool("Bash", data, "ok", output)], "idle", true).jobs[0]?.title;
+    expect(title({ command, description: "  启动本地\n预览  " })).toBe("启动本地 预览");
+    expect(title({ command })).toBe("Vite 开发服务器");
+    expect(title({ command: "cd /d C:\\work && node scripts/check.mjs --detail" })).toBe("check.mjs");
+    expect(title({ command: "ACCESS_TOKEN=hidden ./worker --config config.json" })).toBe("worker");
+    expect(title({ command, description: "验".repeat(50) })).toBe("验".repeat(35) + "…");
+  });
+});

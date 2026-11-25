@@ -6,9 +6,9 @@ import type { Appearance } from "./avatars/appearance";
 
 const repo = "https://github.com/DarrenHoo-10/nex_bot";
 export const registerUrl = "https://user.nexorai.com.cn/register/nexbot";
-const links = { releases: `${repo}/releases/tag/nexbot-v0.9.33-preview.1` };
+const links = { releases: `${repo}/releases` };
 
-interface ClientDownload { url: string; version: string; publishedAt: string; tag?: string }
+interface ClientDownload { name?: string; url: string; version: string; publishedAt: string; tag?: string }
 interface ClientDownloads { windows?: ClientDownload; android?: ClientDownload; mac?: ClientDownload; ios?: ClientDownload }
 /** Core resolves the shared release manifest; unavailable platforms fall back to the release list. */
 function useClientDownloads() {
@@ -27,20 +27,21 @@ const writing: Appearance = { kind: "companion", shape: "pebble", color: "clay" 
 
 const features = [
   { icon: Bot, title: "专属助手", text: "为写作、研究、工作整理分别创建助手，选择专属角色头像，随任务状态显示表情与动作。" },
-  { icon: MonitorSmartphone, title: "跨设备接着聊", text: "每个助手保留自己的对话，电脑、手机和网页用同一账号继续；浏览话题记录时，顶部标题和返回入口保持固定。" },
+  { icon: MonitorSmartphone, title: "跨设备接着聊", text: "用同一账号在电脑、手机和网页继续对话，或从 NexAgent 的一条回复创建独立聊天。" },
   { icon: FileText, title: "处理文件", text: "上传文档、PDF 和图片，让助手阅读、总结和整理。" },
   { icon: SquareTerminal, title: "操作电脑", text: "Windows 和 Mac 客户端登录后连接本机，助手可读取文件、运行命令。" },
-  { icon: Plug, title: "连接工具", text: "添加 MCP 连接器，按助手分别授权可用的工具。" },
+  { icon: Plug, title: "连接工具", text: "添加 MCP 连接器或连接 Gmail，所有助手即可使用。" },
   { icon: CalendarClock, title: "后台与定时任务", text: "长任务交给后台执行，主对话随时能继续聊，也能点开任务直接和子代理对话；定时任务按时独立运行，完成后回到对话汇报。" },
   { icon: Check, title: "统一待办", text: "在对话里记录、修改、完成或删除待办；未指定日期默认当天，按日、周、月查看。" },
-  { icon: Cpu, title: "自选模型", text: "接入多个模型供应商，按助手切换模型和思考强度，调整上下文与输出。" },
+  { icon: Cpu, title: "自选模型", text: "按助手切换模型和思考强度，调整上下文与输出。在助手设置中查看累计 Token 用量。" },
   { icon: ShieldCheck, title: "关键操作你来定", text: "删除、覆盖、发消息等操作先请你批准，随时可以停止。" },
 ];
 
 function platforms({ windows, android, mac, ios }: ClientDownloads) {
+  const windowsFormat = windows?.name?.endsWith("-Client-Setup.exe") ? "x64 安装版" : "x64 便携版，免安装";
   return [
-    { icon: Laptop, name: "Windows", detail: windows ? `${windows.version} · x64 便携版，免安装` : "x64 便携版，免安装", note: "可让助手操作这台电脑", href: windows?.url ?? links.releases, action: windows ? "下载 EXE" : "前往 GitHub 下载" },
-    { icon: Smartphone, name: "Android", detail: android ? `${android.version} · Android 8.0 及以上` : "Android 8.0 及以上", note: "查看消息、发送任务、处理审批", href: android?.url ?? links.releases, action: android ? "下载 APK" : "前往 GitHub 下载" },
+    { icon: Laptop, name: "Windows", detail: windows ? `${windows.version} · ${windowsFormat}` : "Windows x64", note: "可让助手操作这台电脑", href: windows?.url ?? links.releases, action: windows ? "下载 EXE" : "前往 GitHub 下载" },
+    { icon: Smartphone, name: "Android", detail: android ? `${android.version} · Android 8.0 及以上` : "Android 8.0 及以上", note: "查看消息、发送任务、处理审批。已同步的历史消息保存在本机。", href: android?.url ?? links.releases, action: android ? "下载 APK" : "前往 GitHub 下载" },
     { icon: Laptop, name: "Mac", detail: mac ? `${mac.version} · Apple 芯片，macOS 14 及以上` : "Apple 芯片，macOS 14 及以上", note: "临时签名，尚未公证", href: mac?.url ?? links.releases, action: mac ? "下载 DMG" : "前往 GitHub 下载" },
     { icon: Smartphone, name: "iPhone", detail: ios ? `${ios.version} · iOS 17 及以上` : "iOS 17 及以上", note: "未签名 IPA，需自行签名安装", href: ios?.url ?? links.releases, action: ios ? "下载 IPA" : "前往 GitHub 下载" },
     { icon: Globe, name: "网页版", detail: "浏览器直接使用", note: "对话和管理助手，无需安装", href: "#login", action: "立即登录" },

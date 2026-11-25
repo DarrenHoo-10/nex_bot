@@ -15,6 +15,7 @@ struct MBButton: View {
     let action: () -> Void
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         Button(action: action) {
             HStack(spacing: 6) {
                 if busy { ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14) }
@@ -23,12 +24,12 @@ struct MBButton: View {
             }
             .foregroundStyle(foreground)
             .padding(.horizontal, 14).frame(minWidth: minWidth).frame(height: 34)
-            .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(kind == .secondary || kind == .danger ? Theme.border : .clear))
+            .background(background, in: shape)
+            .overlay(shape.strokeBorder(kind == .secondary || kind == .danger ? Theme.border : .clear))
             .opacity(enabled ? 1 : 0.5)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .plainActionFeedback()
         .disabled(!enabled || busy)
     }
 
@@ -231,11 +232,6 @@ struct MBDisclosure<Content: View>: View {
     }
 }
 
-func mbFallbackMessage(_ error: Error) -> String {
-    let text = message(of: error)
-    return text.isEmpty ? "操作失败，请重试" : text
-}
-
 #if DEBUG
 extension Notification.Name { static let mbDebug = Notification.Name("nexbot.macB.debug") }
 
@@ -273,14 +269,6 @@ extension MBDebug {
         }
         mbLog("snap \(prefix) windows=\(NSApp.windows.filter(\.isVisible).map { "\(type(of: $0)):\(Int($0.frame.width))x\(Int($0.frame.height))" })")
     }
-}
-
-/// DEBUG: appends a line to `$NEXBOT_DEBUG_COMMAND_FILE.b.log`.
-func mbLog(_ text: String) {
-    guard let base = ProcessInfo.processInfo.environment["NEXBOT_DEBUG_COMMAND_FILE"] else { return }
-    let path = base + ".b.log", line = text + "\n"
-    if let handle = FileHandle(forWritingAtPath: path) { handle.seekToEndOfFile(); handle.write(Data(line.utf8)); try? handle.close() }
-    else { try? line.write(toFile: path, atomically: true, encoding: .utf8) }
 }
 
 extension Notification {

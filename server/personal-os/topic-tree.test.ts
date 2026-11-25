@@ -859,7 +859,7 @@ describe('memory.topic', () => {
     expect(call).toMatchObject({ status: 'succeeded', target_kind: 'memory', target_id: 'memory-topic' });
     expect(containers(app, bot)).toHaveLength(1); expect(containers(app, bot)[0]).toMatchObject({ title: '脚本容器', anchor: '脚本对象' });
     expect(JSON.parse(String(call.result_json))).toMatchObject({ created: containers(app, bot)[0].id });
-    const system = String((chat.requests.find((request) => request.stream)!.messages as Array<{ role: string; content: string }>).find((message) => message.role === 'system')!.content);
+    const system = String((chat.requests.find((request) => request.stream)!.messages as Array<{ role: string; content: string }>).find((message) => message.role === 'system' || message.role === 'developer')!.content);
     expect(system).toContain('memory.topic'); expect(system).toContain('不要主动归组');
   }, 90000);
 });

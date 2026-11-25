@@ -51,7 +51,7 @@ beforeEach(async () => {
   localStorage.clear();
   localStorage.setItem("nexbot.selectedAgent", "agent");
   fixture.api.mockReset().mockImplementation(async (route: string) => {
-    if (route === "state") return state;
+    if (route.startsWith("state?view=workspace")) return state;
     if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
     return {};
   });
@@ -85,7 +85,7 @@ it("opens the authenticated Feishu settings from a Stock management link", async
   try {
     history.replaceState(null, "", "?settings=feishu");
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [] };
       if (route === "clients") return { sessions: [] };
       if (route === "feishu/deliveries") return { parts: [] };
@@ -102,13 +102,79 @@ it("opens the authenticated Feishu settings from a Stock management link", async
   }
 });
 
+it("opens assistant details from its own button and switches assistants only after selection", async () => {
+  HTMLElement.prototype.showPopover ??= function () {};
+  HTMLElement.prototype.hidePopover ??= function () {};
+  vi.stubGlobal("innerHeight", 800);
+  state = { ...state, bots: [...state.bots, { id: "second", name: "Second" }, { id: "third", name: "Third" }, { id: "fourth", name: "Fourth" }, { id: "other", name: "Other" }] };
+  await act(async () => { root.render(createElement(AgentDesktop, { key: "assistant-switch" })); });
+  const details = container.querySelector<HTMLButtonElement>(".assistant-inspector-toggle")!;
+  const inspectorWasOpen = details.getAttribute("aria-expanded") === "true";
+  await act(async () => details.click());
+  expect(details.getAttribute("aria-expanded")).toBe(String(!inspectorWasOpen));
+  expect(container.querySelector('main > header [aria-label="复制对话记录"], .panel-handle')).toBeNull();
+
+  const title = () => container.querySelector<HTMLButtonElement>(".assistant-switch-trigger")!;
+  await act(async () => title().click());
+  const list = container.querySelector<HTMLDivElement>('[role="listbox"][aria-label="切换助手"]')!;
+  const selected = () => list.querySelector("[data-centered]")?.textContent;
+  const key = (value: string) => act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true })); });
+  expect(selected()).toBe("Fixture");
+  expect(list.scrollTop).toBeGreaterThan(0);
+  expect(list.style.getPropertyValue("--assistant-visible-rows")).toBe("5");
+  vi.stubGlobal("innerHeight", 160);
+  await act(async () => window.dispatchEvent(new Event("resize")));
+  expect(list.style.getPropertyValue("--assistant-visible-rows")).toBe("3");
+  expect(list.querySelectorAll('[role="option"]:not([aria-hidden])')).toHaveLength(5);
+  await key("ArrowUp");
+  expect(selected()).toBe("Other");
+  expect(title().textContent).toContain("Fixture");
+  await key("ArrowDown");
+  expect(selected()).toBe("Fixture");
+  await key("ArrowUp");
+  await key("Enter");
+  expect(container.querySelector(".assistant-switch-panel")).toBeNull();
+  expect(title().textContent).toContain("Other");
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("agents/messages?bot=other"))).toBe(true);
+});
+
 describe("Personal composer (Web, Electron and Android WebView)", () => {
+  it("updates the selected model before Core confirms it, then rolls back a rejected choice", async () => {
+    HTMLElement.prototype.showPopover ??= function () {};
+    HTMLElement.prototype.hidePopover ??= function () {};
+    state.config = { default_model: "fixture-a" };
+    state.connections = [{
+      id: "default", name: "Fixture", provider: "openai", endpoint: "http://127.0.0.1/v1", defaultModel: "fixture-a",
+      enabled: true, isDefault: true, configured: true, version: 1, models: ["fixture-a", "fixture-b"], modelsVersion: 0, options: {},
+    }];
+    let rejectSave: (error: Error) => void;
+    fixture.api.mockImplementation(async (route: string) => {
+      if (route.startsWith("state?view=workspace")) return state;
+      if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
+      if (route === "bots/model") return new Promise((_resolve, reject) => { rejectSave = reject; });
+      return {};
+    });
+    await act(async () => { root.render(createElement(AgentDesktop, { key: "model-choice-pending" })); });
+    await type("下一条消息");
+    const trigger = container.querySelector<HTMLButtonElement>(".composer-model-trigger")!;
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')!;
+    await act(async () => { trigger.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('.model-menu-row[title="fixture-b"]')!.click(); });
+    expect(trigger.textContent).toContain("fixture-b");
+    expect(send.disabled).toBe(true);
+    expect(fixture.api).toHaveBeenCalledWith("bots/model", expect.objectContaining({ model: "fixture-b", version: 0 }));
+    await act(async () => { rejectSave(new Error("模型已在其他设备更新")); });
+    expect(trigger.textContent).toContain("fixture-a");
+    expect(send.disabled).toBe(false);
+    expect(container.querySelector(".error-banner")?.textContent).toContain("模型已在其他设备更新");
+  });
+
   it("reuses unchanged rich history while typing, sending and syncing", async () => {
     const content = "## 已有结果\n\n| 项目 | 状态 |\n| --- | --- |\n| 设备 | 在线 |";
     const history = [{ id: "rich-history", role: "assistant", kind: "message", content, created_at: 1, seq: 1 }];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return { ...state };
-      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
+      if (route.startsWith("state?view=workspace")) return { ...state };
+      if (route.startsWith("agents/messages")) return { sync, messages: /[?&]after=[1-9]/.test(route) ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
       return {};
     });
     await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 200)); });
@@ -127,7 +193,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     state = { ...state, tasks: [{ id: "t1", bot_id: "agent", origin: "owner", status: "succeeded" }] };
     let finishFeed!: (value: unknown) => void;
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return new Promise(resolve => { finishFeed = resolve; });
       return {};
     });
@@ -142,6 +208,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise((resolve) => setTimeout(resolve, 200)); });
     const buttons = [...container.querySelectorAll<HTMLButtonElement>(".approval .actions button")];
     expect(buttons.map((button) => button.textContent)).toEqual(["允许一次", "始终允许", "拒绝"]);
+    expect(buttons.every((button) => button.classList.contains("conversation-action"))).toBe(true);
     expect(buttons[1].title).toContain("Fixture device");
     await act(async () => { buttons[1].click(); });
     expect(fixture.api).toHaveBeenCalledWith("approvals", { id: "approval", hash: "digest", allow: true, remember: true });
@@ -222,7 +289,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
       { id: "m2", role: "assistant", kind: "message", content: "更早的回答", created_at: 2, seq: 2 },
     ];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [], hasMore: false };
       return {};
     });
@@ -242,7 +309,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("shows the outgoing message immediately and replaces it once when the server row arrives", async () => {
     const history = [{ id: "m1", role: "user", kind: "message", content: "更早的问题", created_at: 1, seq: 1, source_key: "older" }];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [], hasMore: false };
       return {};
     });
@@ -251,7 +318,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     let clientId = "";
     let releaseInput: () => void = () => {};
     fixture.api.mockImplementation((route: string, body?: { clientId?: string }) => {
-      if (route === "state") return Promise.resolve(state);
+      if (route.startsWith("state?view=workspace")) return Promise.resolve(state);
       if (route === "agents/input") {
         clientId = String(body?.clientId ?? "");
         return new Promise((resolve) => { releaseInput = () => resolve({}); });
@@ -283,7 +350,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("keeps the in-progress row when a newer sync supersedes the send reload", async () => {
     const gates: Array<(value: State) => void> = [];
     fixture.api.mockImplementation((route: string) => {
-      if (route === "state") return new Promise<State>((resolve) => { gates.push(resolve); });
+      if (route.startsWith("state?view=workspace")) return new Promise<State>((resolve) => { gates.push(resolve); });
       if (route === "agents/input") return Promise.resolve({});
       if (route.startsWith("agents/messages")) return Promise.resolve({ sync, messages: [], streaming: [], hasMore: false });
       return Promise.resolve({});
@@ -314,7 +381,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("does not paint the live reply again once that text is in the transcript", async () => {
     const history = [{ id: "answer", role: "assistant", kind: "message", content: "完整回复", created_at: 2, seq: 2, task_id: "t1" }];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded", origin: "owner" }] };
+      if (route.startsWith("state?view=workspace")) return { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded", origin: "owner" }] };
       if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [{ taskId: "t1", text: "完整回复" }, { taskId: "t2", text: "另一段" }], hasMore: false };
       return {};
     });
@@ -367,7 +434,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
 
   it("attaches a pasted screenshot and leaves a text paste alone", async () => {
     fixture.api.mockImplementation(async (route: string, body?: { name?: string }) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
       if (route === "attachments") return { id: "file-1", botId: "agent", name: body?.name, size: 4 };
       return {};
@@ -407,7 +474,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("shows only a pulsing gray placeholder until the upload succeeds", async () => {
     let finish!: (value: unknown) => void;
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
       if (route === "attachments") return new Promise((resolve) => { finish = resolve; });
       return {};
@@ -431,18 +498,26 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
 
 describe("Background jobs in the chat (Web, Electron and Android WebView)", () => {
   const job = (overrides: Record<string, unknown> = {}) => ({ id: "job-1", botId: "agent", title: "整理下载文件夹", stage: "running", taskId: "job-task", originTaskId: "owner-task", todoId: null, todoVersion: null, todoStatus: null, progress: null, latestReport: null, createdAt: 1, endedAt: null, ...overrides });
-  const report = (state: string, extra: Record<string, unknown> = {}) => ({ id: "report-msg", role: state === "blocked" || state === "failed" ? "system" : "assistant", kind: state === "question" ? "request" : state === "ready" ? "result" : "error", content: `后台任务「整理下载文件夹」\n已整理 12 个文件${state === "question" ? "\n\n要保留截图吗？" : ""}`, source_key: "job-report:r1", job_id: "job-1", job_title: "整理下载文件夹", job_state: state, created_at: 2, seq: 2, ...extra });
-  async function show(jobs: unknown[], messages: unknown[], tasks: State["tasks"] = []) {
-    state = { ...state, jobs, tasks } as State;
+  const report = (state: string, extra: Record<string, unknown> = {}) => ({ id: "report-msg", task_id: "job-task", role: state === "blocked" || state === "failed" ? "system" : "assistant", kind: state === "question" ? "request" : state === "ready" ? "result" : "error", content: `后台任务「整理下载文件夹」\n已整理 12 个文件${state === "question" ? "\n\n要保留截图吗？" : ""}`, source_key: "job-report:r1", job_id: "job-1", job_title: "整理下载文件夹", job_state: state, created_at: 2, seq: 2, ...extra });
+  async function show(jobs: unknown[], messages: Array<{ seq: number; [key: string]: unknown }>, tasks: State["tasks"] = []) {
+    // This fixture rewrites its rows in place between stages. Core would then
+    // advance the privacy generation and invalidate the cached transcript.
+    const generation = { ...state.sync, privacyEpoch: state.sync.privacyEpoch + 1 };
+    state = { ...state, sync: generation, jobs, tasks } as State;
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
-      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : messages, streaming: [], hasMore: false };
+      if (route.startsWith("state?view=workspace")) return state;
+      if (route.startsWith("agents/messages")) {
+        const after = Number(new URLSearchParams(route.split("?")[1]).get("after") ?? 0);
+        return { sync: generation, messages: messages.filter(message => message.seq > after), streaming: [], hasMore: false };
+      }
       return {};
     });
-    await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 250)); });
+    await act(async () => { sources.at(-1)!.emit("change", generation); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 280)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
   }
-  const cardButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button")].map(button => button.textContent);
-  const cardButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button")].find(button => button.textContent === label)!;
+  const cardButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button, .job-card + .job-response-actions button")].map(button => button.textContent);
+  const cardButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button, .job-card + .job-response-actions button")].find(button => button.textContent === label)!;
 
   it("shows the hand-off as a marker and the report as a card whose actions follow the job's current stage", async () => {
     const latest = { id: "r1", state: "question", summary: "已整理 12 个文件", question: "要保留截图吗？", messageId: "report-msg", createdAt: 2 };
@@ -455,10 +530,15 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(container.querySelector(".job-card-body")?.textContent).toContain("要保留截图吗？");
     expect(container.querySelector(".job-card-body")?.textContent).not.toContain("后台任务「");
     expect(cardButtons()).toEqual(["回复", "停止"]);
-    await show([job({ stage: "running", latestReport: latest })], [report("question")]);
-    expect(cardButtons()).toEqual(["停止"]);
+    expect(cardButton("回复").childElementCount).toBe(0);
+    expect(cardButton("停止").childElementCount).toBe(0);
+    expect(cardButton("回复").dataset.size).toBe("compact");
+    expect(cardButton("停止").dataset.size).toBe("compact");
+    expect(cardButton("停止").dataset.tone).toBe("dark");
     await act(async () => cardButton("停止").click());
     expect(fixture.api).toHaveBeenCalledWith("jobs/stop", { jobId: "job-1" });
+    await show([job({ stage: "running", taskId: "next-round", latestReport: latest })], [report("question")]);
+    expect(cardButtons()).toEqual([]);
     await show([job({ stage: "done", endedAt: 3, latestReport: { ...latest, state: "ready", question: null } })], [report("ready")]);
     expect(cardButtons()).toEqual([]);
     // A failed job is retried or opened, not stopped; its card leads with the first sentence and folds the rest.
@@ -503,11 +583,20 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     expect(fixture.api).toHaveBeenCalledWith("jobs/input", expect.objectContaining({ jobId: "job-1", text: "保留", clientId: expect.any(String) }));
     expect(fixture.api.mock.calls.some(([route]) => route === "agents/input")).toBe(false);
     expect(container.querySelector(".reply-job-bar")).toBeNull();
+    expect(cardButtons()).toEqual([]);
+    // A saved reply hides the old controls even if the job snapshot still shows the previous round.
+    const clientId = fixture.api.mock.calls.findLast(([route]) => route === "jobs/input")?.[1].clientId;
+    const savedReply = { id: "reply", role: "user", job_id: "job-1", content: "保留", source_key: `job-input:job-1:${clientId}`, created_at: 3, seq: 3 };
+    await show([job({ stage: "question", latestReport: latest })], [report("question"), savedReply]);
+    expect(cardButtons()).toEqual([]);
+    const nextReport = report("question", { id: "next-report", task_id: "next-round", created_at: 4, seq: 4 });
+    await show([job({ stage: "question", taskId: "next-round", latestReport: { ...latest, messageId: nextReport.id } })], [report("question"), savedReply, nextReport]);
+    expect(cardButtons()).toEqual(["回复", "停止"]);
     // A refused reply (a stopped job) restores the draft and the reply target.
     fixture.api.mockImplementation(async (route: string) => {
       if (route === "jobs/input") throw new Error("后台任务已停止，不能再补充");
-      if (route === "state") return state;
-      if (route.startsWith("agents/messages")) return { sync, messages: [report("question")], streaming: [], hasMore: false };
+      if (route.startsWith("state?view=workspace")) return state;
+      if (route.startsWith("agents/messages")) return { sync: state.sync, messages: [], streaming: [], hasMore: false };
       return {};
     });
     await act(async () => cardButton("回复").click());
@@ -515,6 +604,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
     expect(composer().value).toBe("再补充");
     expect(container.querySelector(".reply-job-bar")).not.toBeNull();
+    expect(cardButtons()).toEqual(["回复", "停止"]);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("已停止");
     // Cancelling the reply returns to the main chat.
     await act(async () => container.querySelector<HTMLButtonElement>('.reply-job-bar button[aria-label="取消回复"]')!.click());
@@ -543,9 +633,11 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     await act(async () => container.querySelector<HTMLButtonElement>(".jobs-popover-title")!.click());
     expect(fixture.api).toHaveBeenCalledWith("jobs/detail?id=job-1", undefined, expect.any(AbortSignal));
     expect(container.querySelector(".job-chat-bar")).not.toBeNull();
+    expect(container.querySelector(".jobs-pill-anchor")).toBeNull();
     expect(container.querySelector('textarea[aria-label="发送给子代理的消息"]')).not.toBeNull();
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>(".job-chat-back")!.click());
+    expect(container.querySelector(".jobs-pill")?.textContent).toBe("2 项后台任务");
     expect(container.querySelector('textarea[aria-label="发送给 Agent 的消息"]')).not.toBeNull();
     expect(container.querySelector('.contact-item[data-working="true"]')).not.toBeNull();
   });
@@ -555,11 +647,11 @@ it("opens an inline finance topic in the shared chat and replies to its original
   const topic = {conversationId:"finance-test-thread", title:"示例讨论", audience:"private", sourceContext:{}, last_activity_at:1, message_count:1, unread_count:0, activeTask:null};
   const message = {id:"original", seq:1, role:"user", kind:"message", content:"主题内容", conversation_id:topic.conversationId, created_at:1};
   fixture.api.mockImplementation(async (route:string) => {
-    if (route === "state") return state;
+    if (route.startsWith("state?view=workspace")) return state;
     if (route === "agents/finance") return {botId:"agent"};
     if (route.startsWith("agents/topics?")) return {topics:[topic]};
     if (route.startsWith("agents/tasks?")) return {tasks:[]};
-    if (route.startsWith("agents/messages?")) return {messages: route.includes("after=") ? [] : [message], sync, streaming:[], hasMore:false};
+    if (route.startsWith("agents/messages?")) return {messages: /[?&]after=[1-9]/.test(route) ? [] : [message], sync, streaming:[], hasMore:false};
     return {conversationId:topic.conversationId};
   });
   await act(async () => { root.render(createElement(AgentDesktop, {key:"finance-inline"})); });
@@ -571,4 +663,73 @@ it("opens an inline finance topic in the shared chat and replies to its original
   expect(container.querySelector(".transcript")?.textContent).toContain("主题内容");
   await type("继续会话"); await enter();
   expect(fixture.api).toHaveBeenCalledWith("agents/input",expect.objectContaining({conversationId:topic.conversationId,text:"继续会话"}));
+});
+
+describe("Tool steps in the chat (Web, Electron and Android WebView)", () => {
+  it("expands a memory-write step in place instead of opening the side panel", async () => {
+    const history = [{ id: "m1", role: "assistant", kind: "message", content: "已写入长期记忆。", created_at: 1, seq: 1, tool_steps: [{ id: "call1", tool_name: "memory.write", status: "succeeded", summary: "写作偏好", preview: "", created_at: 1 }] }];
+    const base = fixture.api.getMockImplementation()!;
+    fixture.api.mockImplementation(async (route: string, ...rest: unknown[]) => {
+      if (route.startsWith("state?view=workspace")) return { ...state };
+      if (route.startsWith("agents/messages")) return { sync, messages: /[?&]after=[1-9]/.test(route) ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
+      if (route.startsWith("preview?callId=call1")) return { kind: "tool", id: "call1", title: "memory.write", status: "succeeded", arguments: JSON.stringify({ title: "写作偏好", content: "报告用中文写，先给结论再给依据。" }), content: JSON.stringify({ saved: true, version: 2 }, null, 2) };
+      return base(route, ...rest);
+    });
+    await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 200)); });
+    const row = container.querySelector<HTMLButtonElement>(".step-row");
+    expect(row?.textContent).toContain("写入长期记忆");
+    expect(container.querySelector('[data-right="closed"]')).not.toBeNull();
+    await act(async () => { row!.click(); });
+    const detail = container.querySelector(".step-detail");
+    expect(detail?.textContent).toContain("写入内容");
+    expect(detail?.textContent).toContain("报告用中文写，先给结论再给依据。");
+    expect(detail?.textContent).not.toContain("saved");
+    expect(fixture.api.mock.calls.some(([route]) => String(route).startsWith("preview?callId=call1"))).toBe(true);
+    expect(container.querySelector(".preview-card")).toBeNull();
+    expect(container.querySelector('[data-right="closed"]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>(".step-row")!.click(); });
+    expect(container.querySelector(".step-detail")).toBeNull();
+  });
+});
+
+it("streams text without refetching and keeps cached history when another workspace resource changes", async () => {
+  const versioned = { ...sync, revision: 2, at: 2000 };
+  const history = [{ id: "saved", role: "assistant", kind: "message", content: "历史消息", created_at: 1200, seq: 8 }];
+  fixture.api.mockImplementation(async (route: string) => {
+    if (route.startsWith("state?view=workspace")) return { ...state, historySeq: 8, sync: versioned };
+    if (route.startsWith("agents/messages")) return { sync: versioned, messages: history, streaming: [], hasMore: false };
+    return {};
+  });
+  await act(async () => {
+    sources.at(-1)!.emit("change", versioned);
+    await new Promise(resolve => setTimeout(resolve, 240));
+  });
+  const first = fixture.api.mock.calls.filter(([route]) => route.startsWith("agents/messages")).at(-1)?.[0] as string;
+  expect(first).toContain("view=window");
+  expect(first).toMatch(/[?&]at=\d+/);
+  expect(first).toMatch(/[?&](before|after)=\d+/);
+  fixture.api.mockClear();
+  await act(async () => {
+    sources.at(-1)!.emit("delta", { taskId: "streaming-1", offset: 0, text: "新" });
+    sources.at(-1)!.emit("delta", { taskId: "streaming-1", offset: 1, text: "回复" });
+    sources.at(-1)!.emit("change", versioned);
+    await new Promise(resolve => setTimeout(resolve, 240));
+  });
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?") || route.startsWith("agents/messages"))).toBe(false);
+  await act(async () => {
+    sources.at(-1)!.emit("change", { ...versioned, cursor: 2, revision: 3 });
+    await new Promise(resolve => setTimeout(resolve, 240));
+  });
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?"))).toBe(true);
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("agents/messages"))).toBe(false);
+});
+
+it("loads the first workspace snapshot when the desktop document starts hidden", async () => {
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  await act(async () => { root.unmount(); });
+  fixture.api.mockClear();
+  root = createRoot(container);
+  await act(async () => { root.render(createElement(AgentDesktop)); });
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?view=workspace"))).toBe(true);
+  expect(container.querySelector(".workspace-brand")).not.toBeNull();
 });

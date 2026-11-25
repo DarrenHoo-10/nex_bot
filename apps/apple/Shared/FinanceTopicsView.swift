@@ -5,11 +5,23 @@ import NexClientKit
 struct FinanceTopicsView: View {
     let workspace: WorkspaceStore
     let botID: String
+    let conversationID: String?
+    let onClose: (() -> Void)?
+
+    init(workspace: WorkspaceStore, botID: String, conversationID: String? = nil, onClose: (() -> Void)? = nil) {
+        self.workspace = workspace
+        self.botID = botID
+        self.conversationID = conversationID
+        self.onClose = onClose
+        _selected = State(initialValue: conversationID)
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     @State private var topics: [FinanceTopic] = []
     @State private var selected: String?
     @State private var messages: [AgentMessage] = []
-    @State private var streaming = ""
+    @State private var hasOlder = false
+    private var streaming: String { workspace.topicLiveReplies.map(\.text).joined(separator: "\n") }
     @State private var drafts: [String: String] = [:]
     @State private var pending: TopicInput?
     @State private var sending = false
@@ -28,15 +40,21 @@ struct FinanceTopicsView: View {
                 Text(workspace.bot(botID)?.name ?? "金融助手").font(.headline)
                 Spacer()
                 Button("模型") {modelOpen=true}
-                Button("新对话",systemImage:"plus") { selected = nil; messages = []; streaming = "";editingMessageID=nil;taskRows=[]; generation += 1 }
-                    .disabled(sending || pending != nil)
+                if let onClose {
+                    Button("关闭", action: onClose)
+                } else {
+                    Button("新对话",systemImage:"plus") { selected = nil; messages = []; hasOlder = false;editingMessageID=nil;taskRows=[]; generation += 1 }
+                        .disabled(sending || pending != nil)
+                }
             }
             if workspace.connection != .connected { ProgressView("正在重新同步…") }
             else {
                 if let current {
                     HStack(alignment: .top) {
-                        Button("返回聊天") {
-                            selected = nil; messages = []; streaming = ""; editingMessageID = nil; taskRows = []; generation += 1
+                        if conversationID == nil {
+                            Button("返回聊天") {
+                                selected = nil; messages = []; hasOlder = false; editingMessageID = nil; taskRows = []; generation += 1
+                            }
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             Text(current.title).font(.headline)
@@ -47,8 +65,12 @@ struct FinanceTopicsView: View {
                 }
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:12) {
-                        ForEach(topics) { topic in topicCard(topic) }
-                        if topics.isEmpty { Text("新建一段对话").foregroundStyle(.secondary) }
+                        if conversationID != nil {
+                            if let current { topicCard(current) }
+                        } else {
+                            ForEach(topics) { topic in topicCard(topic) }
+                            if topics.isEmpty { Text("新建一段对话").foregroundStyle(.secondary) }
+                        }
                     }
                 }
                 if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
@@ -68,10 +90,11 @@ struct FinanceTopicsView: View {
         }
         .padding(16)
         .task(id:workspace.sync) { await reload() }
-        .task(id:selected) { await loadSelected() }
+        .task(id:selected) { workspace.watchTopic(botID: botID, conversationID: selected); await loadSelected() }
+        .task(id:workspace.topicRecovery) { await loadSelected() }
         .task(id:scenePhase) { if scenePhase == .active { await reload() } }
-        .onChange(of:workspace.connection) { _,value in if value != .connected { topics=[];messages=[];streaming="";taskRows=[];readSeq=[:];generation += 1 } }
-        .onDisappear { generation += 1 }
+        .onChange(of:workspace.connection) { _,value in if value != .connected { topics=[];messages=[];hasOlder=false;taskRows=[];readSeq=[:];generation += 1 } }
+        .onDisappear { generation += 1; workspace.leaveTopics(botID: botID) }
         #if os(macOS)
         .popover(isPresented:$modelOpen) {ChatModelMenu(workspace:workspace,botID:botID,close:{modelOpen=false},onError:{errorText=$0})}
         #else
@@ -84,18 +107,18 @@ struct FinanceTopicsView: View {
     @ViewBuilder private func topicCard(_ topic:FinanceTopic) -> some View {
         VStack(alignment:.leading,spacing:8) {
             HStack {
-                Button { guard !sending && pending == nil else{return};selected=topic.id;editingMessageID=nil;taskRows=[] } label: { Text(topic.title).font(.headline).multilineTextAlignment(.leading) }.buttonStyle(.plain)
+                Button { guard !sending && pending == nil else{return};selectTopic(topic.id) } label: { Text(topic.title).font(.headline).multilineTextAlignment(.leading) }.buttonStyle(.plain)
                 Spacer()
                 if topic.unread > 0 { Text("\(topic.unread) 未读").font(.caption).foregroundStyle(.tint) }
                 if topic.activeTask != nil { ProgressView().controlSize(.small) }
             }
             Text("\(topic.destinationLabel) · \(topic.replyCount) 条消息").font(.caption).foregroundStyle(.secondary)
-            if selected == topic.id && messages.count >= 200 {Button("加载更早的消息") {Task {await loadOlder(topic.id)}}}
+            if selected == topic.id && hasOlder {Button("加载更早的消息") {Task {await loadOlder(topic.id)}}}
             ForEach(selected == topic.id ? messages : topic.messages) { message in
                 VStack(alignment:.leading,spacing:3) {
                     Text(message.role == "user" ? "我" : workspace.bot(botID)?.name ?? "金融助手").font(.caption).foregroundStyle(.secondary)
                     MarkdownText(source:message.content)
-                    if selected == topic.id && message.role == "user" && message.taskID == nil && pending == nil {Button("编辑待运行消息"){editingMessageID=message.id;drafts[topic.id]=message.content}.font(.caption)}
+                    if selected == topic.id && message.row.string("input_status") == "pending" && pending == nil {Button("编辑待运行消息"){editingMessageID=message.id;drafts[topic.id]=message.content}.font(.caption)}
                 }
             }
             if selected == topic.id {
@@ -111,16 +134,25 @@ struct FinanceTopicsView: View {
                 }
             }
             if selected == topic.id && !streaming.isEmpty { MarkdownText(source:streaming) }
-            Button(selected == topic.id ? "正在回复此话题" : "回复话题") { selected=topic.id;editingMessageID=nil;taskRows=[] }.disabled(sending || pending != nil)
+            if conversationID == nil {
+                Button(selected == topic.id ? "正在回复此话题" : "回复话题") { selectTopic(topic.id) }.disabled(sending || pending != nil)
+            }
         }
         .padding(14).frame(maxWidth:.infinity,alignment:.leading)
         .background(.quaternary,in:RoundedRectangle(cornerRadius:14))
     }
+    private func selectTopic(_ id: String) {
+        guard selected != id else { return }
+        selected = id; editingMessageID = nil; taskRows = []; hasOlder = false
+        messages = workspace.cachedTopicMessages(botID: botID, topicID: id)
+        generation += 1
+    }
+
     private func reload() async {
         guard workspace.connection == .connected else{return}
         let epoch=generation
         do {
-            let result=try await workspace.client.financeTopics(botID:botID)
+            let result=try await workspace.client.financeTopics(botID:botID, conversationID: conversationID)
             guard epoch==generation,workspace.connection == .connected,!Task.isCancelled else{return}
             topics=result;await loadSelected()
         } catch { if epoch==generation {errorText=error.localizedDescription} }
@@ -129,11 +161,15 @@ struct FinanceTopicsView: View {
         guard let id=selected,workspace.connection == .connected else{return}
         let epoch=generation
         do {
-            let feed=try await workspace.client.topicFeed(botID:botID,conversationID:id)
+            let feed=try await workspace.cachedTopicFeed(botID:botID,conversationID:id)
             guard epoch==generation,id==selected,workspace.connection == .connected,!Task.isCancelled else{return}
+            let history = feed.messages
             let tasks=try await workspace.client.topicTasks(botID:botID,conversationID:id)
-            guard epoch==generation,id==selected,workspace.connection == .connected,!Task.isCancelled else{return}
-            messages=feed.messages;taskRows=tasks;streaming=feed.streaming.map(\.text).joined(separator:"\n")
+            guard epoch==generation,id==selected,workspace.connection == .connected,
+                  workspace.sync?.sameGeneration(as: feed.sync) == true,!Task.isCancelled else{return}
+            messages=history;taskRows=tasks;hasOlder=feed.hasOlder ?? false
+            workspace.updateTopicLiveReplies(feed.streaming, botID: botID, conversationID: id)
+            workspace.rememberTopicMessages(history, botID: botID, topicID: id, generation: feed.sync)
             if scenePhase == .active, let seq=messages.last?.seq,seq > (readSeq[id] ?? 0) {readSeq[id]=seq;try await workspace.client.readTopic(botID:botID,conversationID:id,seq:seq)}
         } catch {if epoch==generation,id==selected {errorText=error.localizedDescription}}
     }
@@ -150,7 +186,7 @@ struct FinanceTopicsView: View {
     }
     private func loadOlder(_ id:String) async {
         guard let before=messages.first?.seq else{return}
-        do{let feed=try await workspace.client.topicFeed(botID:botID,conversationID:id,before:before);guard selected==id,workspace.connection == .connected else{return};let existing=Set(messages.map(\.id));messages=feed.messages.filter{!existing.contains($0.id)}+messages}catch{errorText=error.localizedDescription}
+        do{let feed=try await workspace.cachedTopicFeed(botID:botID,conversationID:id,before:before,at:messages.first?.row.int("created_at"));guard selected==id,workspace.connection == .connected,workspace.sync?.sameGeneration(as: feed.sync) == true else{return};hasOlder=feed.hasOlder ?? false;let existing=Set(messages.map(\.id));messages=feed.messages.filter{!existing.contains($0.id)}+messages;workspace.rememberTopicMessages(messages, botID: botID, topicID: id, generation: feed.sync)}catch{errorText=error.localizedDescription}
     }
     private func retry(_ id:String,taskID:String) async {
         let clientID=taskRetryIDs[taskID] ?? UUID().uuidString;taskRetryIDs[taskID]=clientID

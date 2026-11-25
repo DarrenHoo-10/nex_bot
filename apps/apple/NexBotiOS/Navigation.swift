@@ -17,7 +17,7 @@ enum AgentDetailTab: String, CaseIterable { case work = "工作", settings = "�
 /// Root is the contacts list; chats, the approvals list, settings and the other pages are pushed on top.
 @MainActor @Observable
 final class Navigation {
-    enum Route: Hashable { case chat(String), approvals, settings, agentDetail(String), todos }
+    enum Route: Hashable { case chat(String), approvals, settings, agentDetail(String), todos, agentSessions }
     var path: [Route] = []
     /// The account menu sheet.
     var showMenu = false
@@ -52,13 +52,15 @@ final class Navigation {
 
     /// The screen for a route. Kept here so the route table has one owner.
     @ViewBuilder
-    func destination(for route: Route, model: AppModel, workspace: WorkspaceStore) -> some View {
+    func destination(for route: Route, model: AppModel, workspace: WorkspaceStore, agents: CliAgentsModel) -> some View {
         switch route {
         case .chat(let id):
             if id == workspace.financeBotID { FinanceTopicsView(workspace: workspace, botID: id) }
             else { ChatView(workspace: workspace, botID: id) }
         case .approvals: ApprovalsView(workspace: workspace)
         case .todos: TodosView(workspace: workspace) { id in workspace.select(id); self.openChat(id) }.toolbar(.visible, for: .navigationBar)
+        case .agentSessions:
+            AgentSessionsView(model: agents, workspace: workspace) { id in workspace.select(id); self.openChat(id) }.toolbar(.visible, for: .navigationBar)
         case .settings: SettingsView(model: model, workspace: workspace)
         case .agentDetail(let id): AgentDetailView(workspace: workspace, botID: id)
         }

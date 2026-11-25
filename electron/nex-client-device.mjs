@@ -37,6 +37,8 @@ export class ClientDevice {
       authorized: !!this.consent?.allowed, paused: !!this.consent?.paused,
       root: this.record?.root || "", exec: !!this.record?.exec, computer: !!this.record?.computer,
       computerSupported: this.runtime?.node.computer.available() ?? process.platform === "win32",
+      cliAgents: { available: local ? !!local.cliAgents : true, enabled: this.record?.cliAgents !== false,
+        hc: local?.cliAgents?.hc ?? "starting", engines: local?.cliAgents?.engines ?? [] },
       unknownCalls: local?.unknownCalls ?? [] };
   }
   read(file) { return JSON.parse(this.safeStorage.decryptString(readFileSync(file))); }
@@ -107,10 +109,10 @@ export class ClientDevice {
     const keyFile = path.join(this.folder, "key.bin");
     const key = existsSync(keyFile) ? Buffer.from(this.read(keyFile), "base64") : randomBytes(32);
     if (!existsSync(keyFile)) this.write(keyFile, key.toString("base64"));
-    this.runtime = this.createNode(this.folder, key, this.changed, session.origin, { autoConnect: false });
+    this.runtime = this.createNode(this.folder, key, this.changed, session.origin, { autoConnect: false, cliAgents: true });
     this.record = { ...this.record, sessionId: session.sessionId, root: this.consent.allowed ? os.homedir() : "", exec: this.consent.allowed, computer: this.consent.allowed && this.runtime.node.computer.available() };
     this.write(this.recordFile, this.record);
-    this.runtime.node.configure({ ...this.record, origin: session.origin, computer: this.record.computer && this.runtime.node.computer.available() });
+    this.runtime.node.configure({ ...this.record, origin: session.origin, computer: this.record.computer && this.runtime.node.computer.available(), cliAgents: this.record.cliAgents !== false });
     this.error = "";
   }
   /**
@@ -150,18 +152,28 @@ export class ClientDevice {
   }
   configure(update) {
     const epoch = this.generation;
+    return this.enqueue(() => this.applyConfigure(epoch, update));
+  }
+  /** The Agent session switch. It is kept for this device even while control is paused. */
+  setCliAgentsEnabled(enabled) {
+    const epoch = this.generation;
     return this.enqueue(async () => {
-      if (!this.valid(epoch) || !this.runtime) throw new Error("请等待此电脑连接后重试");
-      try { await this.verify(this.session); }
-      catch (error) {
-        if (!loginRejected(error)) throw new Error("网络暂不可用，请稍后重试");
-        await this.closeRuntime(); this.error = "登录已失效，已暂停本机操作"; this.changed(); throw new Error(this.error);
-      }
-      if (!this.valid(epoch) || !this.runtime) throw new Error("登录已变化");
-      const next = { ...this.record, ...update };
-      this.runtime.node.configure({ ...next, origin: this.session.origin });
-      this.record = next; this.write(this.recordFile, next); this.changed(); return this.state();
+      if (this.runtime) return this.applyConfigure(epoch, { cliAgents: enabled === true });
+      if (!this.valid(epoch) || !this.record) throw new Error("请等待此电脑完成登录");
+      this.record = { ...this.record, cliAgents: enabled === true }; this.write(this.recordFile, this.record); this.changed(); return this.state();
     });
+  }
+  async applyConfigure(epoch, update) {
+    if (!this.valid(epoch) || !this.runtime) throw new Error("请等待此电脑连接后重试");
+    try { await this.verify(this.session); }
+    catch (error) {
+      if (!loginRejected(error)) throw new Error("网络暂不可用，请稍后重试");
+      await this.closeRuntime(); this.error = "登录已失效，已暂停本机操作"; this.changed(); throw new Error(this.error);
+    }
+    if (!this.valid(epoch) || !this.runtime) throw new Error("登录已变化");
+    const next = { ...this.record, ...update };
+    this.runtime.node.configure({ ...next, origin: this.session.origin });
+    this.record = next; this.write(this.recordFile, next); this.changed(); return this.state();
   }
   setPaused(paused) {
     const epoch = this.generation;

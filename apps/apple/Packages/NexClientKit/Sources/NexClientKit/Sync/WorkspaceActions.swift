@@ -60,8 +60,70 @@ extension WorkspaceStore {
     }
     /// Downloads a sent attachment (`AttachmentLink.id`). The suggested file name comes from Core.
     public func downloadAttachment(id: String) async throws -> (data: Data, filename: String) {
-        try await act(refresh: false) { try await client.downloadAttachment(id: id) }
+        struct Asset: Codable, Sendable { let data: Data; let filename: String }
+        let scope = contentCacheScope
+        let key = "attachment:" + id
+        if let scope, let asset = await LocalContentCache.shared.load(Asset.self, scope: scope, key: key), scope == contentCacheScope {
+            return (asset.data, asset.filename)
+        }
+        let asset = try await cachedAsset(key) {
+            try await self.act(refresh: false) { try await self.client.downloadAttachment(id: id) }
+        }
+        if let scope, scope == contentCacheScope, asset.data.count <= 1_500_000 {
+            let record = Asset(data: asset.data, filename: asset.filename)
+            Task { await LocalContentCache.shared.enqueue(record, scope: scope, key: key) }
+        }
+        return asset
     }
+
+    public func feishuGroupAvatar(path: String) async throws -> Data {
+        guard path.hasPrefix("/api/feishu/group-avatar?") else { throw CoreError.invalidOrigin("头像地址无效") }
+        return try await cachedAsset(path) {
+            let result = try await self.client.getData(path, timeout: 15)
+            return (data: result.data, filename: "")
+        }.data
+    }
+    public func cachedTopicFeed(botID: String, conversationID: String, before: Int? = nil, at: Int? = nil) async throws -> Feed {
+        guard let expected = sync else {
+            return try await client.topicFeed(botID: botID, conversationID: conversationID, before: before, at: at)
+        }
+        let scope = contentCacheScope
+        let key = "topic:" + botID + ":" + conversationID + ":" + (before.map { String($0) } ?? "recent")
+        let cached = if let scope { await LocalContentCache.shared.load(Feed.self, scope: scope, key: key) } else { nil as Feed? }
+        guard scope == contentCacheScope else { throw CancellationError() }
+        if let cached, cached.sync.sameGeneration(as: expected) {
+            if before != nil { return cached }
+            let topicHead = state?.historySeq ?? -1
+            if !topicCatchUpRequired && (cached.sync.cursor == expected.cursor || topicHead == (cached.messages.last?.seq ?? 0)) {
+                var current = cached
+                current.streaming = topicLiveReplies
+                return current
+            }
+        }
+        let cachedRows = cached?.sync.sameGeneration(as: expected) == true ? cached?.messages ?? [] : []
+        let memory = before == nil ? cachedTopicMessages(botID: botID, topicID: conversationID) : []
+        var messages = memory.isEmpty ? cachedRows : memory
+        let watermark = at ?? messages.last?.row.int("created_at") ?? expected.at
+        let after = before == nil && (cached != nil || !messages.isEmpty) ? (messages.last?.seq ?? 0) : nil
+        var feed = try await client.topicFeed(botID: botID, conversationID: conversationID, before: before, after: after, at: watermark)
+        let hasOlder = after == nil ? feed.hasOlder : cached?.hasOlder
+        while true {
+            guard scope == contentCacheScope, feed.sync.sameGeneration(as: expected) else { throw CancellationError() }
+            let previous = messages.last?.seq ?? 0
+            messages += feed.messages.filter { $0.seq > previous }
+            guard before == nil, feed.hasMore, let last = feed.messages.last, last.seq > previous else { break }
+            feed = try await client.topicFeed(botID: botID, conversationID: conversationID, after: last.seq, at: last.row.int("created_at"))
+        }
+        feed.messages = messages
+        feed.hasOlder = hasOlder
+        if let scope {
+            let page = Feed(messages: Array(messages.suffix(200)), sync: feed.sync, hasOlder: messages.count > 200 || (hasOlder ?? false))
+            Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: key) }
+        }
+        didSyncTopic(botID: botID, conversationID: conversationID)
+        return feed
+    }
+
     /// Archives the agent. The store then selects the first remaining agent.
     public func archiveAgent(botID: String) async throws {
         let b = try currentBot(botID)
@@ -135,11 +197,6 @@ extension WorkspaceStore {
         do { return try await act { try await client.testConnector(id: c.id, version: c.version) } }
         catch { await refresh(); throw error }
     }
-    /// Replaces the tools `botID` may call (empty revokes).
-    public func grantConnector(_ connectorID: String, botID: String, tools: [String]) async throws {
-        let c = try currentConnector(connectorID)
-        try await act { try await client.grantConnector(id: c.id, version: c.version, botID: botID, tools: tools) }
-    }
     public func setConnectorEnabled(_ connectorID: String, enabled: Bool) async throws {
         let c = try currentConnector(connectorID)
         try await act { try await client.toggleConnector(id: c.id, version: c.version, enabled: enabled) }
@@ -151,57 +208,103 @@ extension WorkspaceStore {
 
     // MARK: Feishu
 
-    private var currentFeishuApp: FeishuAppView? { state?.feishu?.app }
+    private func feishuApp(_ id: String) throws -> FeishuAppView {
+        guard let app = state?.feishu?.app(id) else { throw missing("应用不存在") }
+        return app
+    }
 
     /// Starts the scan-to-create job; the QR URL arrives through `state.feishu.job` (poll while `needsPolling`).
     public func startFeishuRegister(botID: String) async throws {
-        guard currentFeishuApp == nil else { throw missing("已连接飞书应用，请先移除") }
         try await act { try await client.feishuRegisterStart(botID: botID) }
     }
     public func cancelFeishuRegister() async throws { try await act { try await client.feishuRegisterCancel() } }
-    /// Pastes an existing app (owner binds later via code). Returns the connector id.
+    /// Pastes an existing app; returns the new connector id.
     @discardableResult
     public func saveFeishuApp(appID: String, secret: String, brand: String, botID: String) async throws -> String {
         try await act { try await client.feishuSave(appID: appID, secret: secret, brand: brand, botID: botID) }
     }
-    /// Returns the 6-digit bind code the owner sends to the bot in a p2p chat.
-    public func startFeishuBind() async throws -> String {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    /// Six-digit owner bind code for one app.
+    public func startFeishuBind(appID: String) async throws -> String {
+        let app = try feishuApp(appID)
         return try await act { try await client.feishuBindStart(id: app.id) }
     }
     /// Starts the owner device-flow authorization; the verification URL arrives through `state.feishu.userAuth`.
-    public func startFeishuUserAuth() async throws {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    public func startFeishuUserAuth(appID: String) async throws {
+        let app = try feishuApp(appID)
         try await act { try await client.feishuUserAuthStart(id: app.id) }
     }
     public func cancelFeishuUserAuth() async throws { try await act { try await client.feishuUserAuthCancel() } }
-    public func setFeishuEnabled(_ enabled: Bool) async throws {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    public func changeFeishuReceiver(appID: String, botID: String) async throws {
+        let app = try feishuApp(appID)
+        try await act { try await client.feishuChangeReceiver(id: app.id, version: app.version, botID: botID) }
+    }
+    public func setFeishuEnabled(appID: String, _ enabled: Bool) async throws {
+        let app = try feishuApp(appID)
         try await act { try await client.feishuToggle(id: app.id, version: app.version, enabled: enabled) }
     }
-    public func removeFeishu() async throws {
-        guard let app = currentFeishuApp else { throw missing("应用不存在") }
+    public func removeFeishu(appID: String) async throws {
+        let app = try feishuApp(appID)
         try await act { try await client.feishuDelete(id: app.id, version: app.version) }
     }
+    public func feishuGroups(appID: String) async throws -> FeishuGroupList {
+        let app = try feishuApp(appID)
+        let key = app.id + ":" + app.status
+        if let cached = feishuGroupLists[key], cached.expires > Date() { return cached.value }
+        let generation = sync
+        let result = try await act(refresh: false) { try await client.feishuGroups(id: app.id) }
+        if result.error == nil, let current = sync, generation?.sameGeneration(as: current) == true {
+            if feishuGroupLists.count >= 12, let oldest = feishuGroupLists.min(by: { $0.value.expires < $1.value.expires })?.key {
+                feishuGroupLists.removeValue(forKey: oldest)
+            }
+            feishuGroupLists[key] = (Date().addingTimeInterval(min(300, Double(result.cacheForMs ?? 300_000) / 1000)), result)
+        }
+        return result
+    }
+    public func saveFeishuGroup(appID: String, group: FeishuGroup, trigger: String, session: String, context: String) async throws -> FeishuGroup {
+        let app = try feishuApp(appID)
+        let saved = try await act { try await client.feishuSaveGroup(id: app.id, chatID: group.chatID, trigger: trigger, session: session, context: context, version: group.version) }
+        feishuGroupLists = feishuGroupLists.filter { !$0.key.hasPrefix(app.id + ":") }
+        return saved
+    }
 
-    public func startGmailAuthorization(connectorID: String? = nil) async throws -> ConnectorOAuthAttempt {
+    public func startConnectorAuthorization(provider: String = "gmail", connectorID: String? = nil) async throws -> ConnectorOAuthAttempt {
         guard !ended else { throw missing(Self.expiredMessage) }
         let connector = try connectorID.map { try currentConnector($0) }
-        guard connector == nil || connector?.isGmail == true else { throw missing("连接器类型不匹配") }
-        return try await act(refresh: false) { try await client.startConnectorAuthorization(id: connector?.id, version: connector?.version) }
+        guard connector == nil || connector?.provider == provider else { throw missing("连接器类型不匹配") }
+        return try await act(refresh: false) { try await client.startConnectorAuthorization(provider: provider, id: connector?.id, version: connector?.version) }
     }
-    public func gmailAuthorizationStatus(id: String) async throws -> ConnectorOAuthStatus {
+    public func connectorAuthorizationStatus(id: String) async throws -> ConnectorOAuthStatus {
         guard !ended else { throw missing(Self.expiredMessage) }
         return try await act(refresh: false) { try await client.connectorAuthorizationStatus(id: id) }
     }
-    public func cancelGmailAuthorization(id: String) async {
+    public func cancelConnectorAuthorization(id: String) async {
         // Best effort after navigation/logout; do not turn a cleanup failure into UI feedback.
         try? await client.cancelConnectorAuthorization(id: id)
     }
     public func disconnectGmail(_ connectorID: String) async throws -> String? {
         let connector = try currentConnector(connectorID)
-        guard connector.isGmail else { throw missing("连接器类型不匹配") }
+        guard connector.isGmail || connector.isGithub else { throw missing("连接器类型不匹配") }
         return try await act { try await client.disconnectConnector(id: connector.id, version: connector.version) }
+    }
+    public var githubMonitors: [ConnectorMonitor] { state?.connectorMonitors ?? [] }
+    @discardableResult
+    public func saveGithubMonitor(existing: ConnectorMonitor?, connectorId: String, botId: String, name: String, repos: [String], ciMode: String, delivery: String, intervalSeconds: Int, mutedRepos: [String], ignoreBranches: [String], enableWebhook: Bool, regenerateWebhookSecret: Bool) async throws -> ConnectorMonitorSaved {
+        try await act { try await client.saveGithubMonitor(ConnectorMonitorBody(id: existing?.id, version: existing?.version, connectorId: connectorId, botId: botId, name: name, repos: repos, ciMode: ciMode, delivery: delivery, intervalSeconds: intervalSeconds, mutedRepos: mutedRepos, ignoreBranches: ignoreBranches, enableWebhook: enableWebhook, regenerateWebhookSecret: regenerateWebhookSecret)) }
+    }
+    public func toggleGithubMonitor(_ monitorID: String, enabled: Bool) async throws {
+        let monitor = try state?.connectorMonitors.first { $0.id == monitorID } ?? { throw missing("监视配置不存在") }()
+        try await act { try await client.toggleGithubMonitor(id: monitor.id, version: monitor.version, enabled: enabled) }
+    }
+    public func deleteGithubMonitor(_ monitorID: String) async throws {
+        let monitor = try state?.connectorMonitors.first { $0.id == monitorID } ?? { throw missing("监视配置不存在") }()
+        try await act { try await client.deleteGithubMonitor(id: monitor.id, version: monitor.version) }
+    }
+    /// Binds a GitHub personal access token and immediately contacts GitHub to discover the account.
+    @discardableResult
+    public func saveGithubToken(_ token: String) async throws -> Int {
+        let saved = try await act(refresh: false) { try await client.saveGithubToken(token) }
+        await refresh()
+        return try await testConnector(saved.id)
     }
 
     // MARK: Devices and node
@@ -437,6 +540,14 @@ extension WorkspaceStore {
     }
     /// Lists a saved provider's models with its saved key; saves nothing.
     public func listModels(connectionID: String) async throws -> ModelCatalog { try await act(refresh: false) { try await client.listModels(connectionID: connectionID) } }
+    public func cliTranslationSettings() async throws -> CliTranslationSettings {
+        try await act(refresh: false) { try await client.cliTranslationSettings() }
+    }
+
+    public func saveCliTranslationSettings(_ selection: CliTranslationSelection?, version: Int) async throws -> CliTranslationSettings {
+        try await act(refresh: false) { try await client.saveCliTranslationSettings(selection, version: version) }
+    }
+
     /// Saves which models a provider offers (`nil` = every model). `version` is the one the edit started from.
     @discardableResult
     public func saveModelVisibility(connectionID: String, models: [String]?, version: Int) async throws -> ModelVisibility {
@@ -447,9 +558,55 @@ extension WorkspaceStore {
     public func saveImageModelSelection(connectionID: String, models: [String], version: Int) async throws -> ModelVisibility {
         try await act { try await client.saveImageModelSelection(connectionID: connectionID, models: models, version: version) }
     }
+    private func newerModelReceipt(_ botID: String, version: Int) -> AgentModelReceipt? {
+        guard let saved = savedAgentModels[botID], saved.model_selection_version > version,
+              state?.connections.contains(where: { $0.id == saved.selected_connection && $0.enabled }) == true else { return nil }
+        return saved
+    }
+
+    public func isSavingAgentModel(_ botID: String) -> Bool { pendingAgentModels[botID] != nil }
+
+    public func agentModelChoice(_ botID: String) -> AgentModelChoice? {
+        guard let bot = bot(botID) else { return nil }
+        return pendingAgentModels[botID] ?? newerModelReceipt(botID, version: bot.modelSelectionVersion)?.choice
+            ?? AgentModelChoice(connectionID: state?.connection(forBot: bot)?.id ?? "", model: bot.selectedModel ?? "", reasoning: bot.selectedReasoning)
+    }
+
     /// Chooses an assistant's provider, model (`""` = that provider's default) and effort (`nil` keeps the stored one).
     public func setAgentModel(botID: String, connectionID: String, model: String, reasoning: String?) async throws {
-        guard let b = bot(botID) else { throw CoreError(kind: .unsupported, message: "Agent 不存在") }
-        try await act { try await client.updateModel(id: botID, connectionID: connectionID, model: model, reasoning: reasoning, version: b.modelSelectionVersion) }
+        let bot = try currentBot(botID)
+        try await act { try await client.updateModel(id: botID, connectionID: connectionID, model: model, reasoning: reasoning, version: bot.modelSelectionVersion) }
+    }
+
+    /// Show each choice immediately and use the confirmed version for the next write.
+    public func chooseAgentModel(_ botID: String, _ choice: AgentModelChoice, onError: @escaping (String) -> Void) {
+        guard let bot = bot(botID) else { return }
+        let saving = isSavingAgentModel(botID)
+        pendingAgentModels[botID] = choice
+        guard !saving else { return }
+        let version = newerModelReceipt(botID, version: bot.modelSelectionVersion)?.model_selection_version ?? bot.modelSelectionVersion
+        Task {
+            defer { pendingAgentModels[botID] = nil }
+            var expected = version
+            var next = choice
+            do {
+                while true {
+                    if let saved = try await act(refresh: false, {
+                        try await client.saveAgentModelSelection(id: botID, connectionID: next.connectionID, model: next.model, reasoning: next.reasoning, version: expected)
+                    }) {
+                        expected = saved.model_selection_version
+                        savedAgentModels[botID] = saved
+                    } else {
+                        await refresh()
+                        guard let latest = self.bot(botID) else { return }
+                        expected = latest.modelSelectionVersion
+                    }
+                    guard let pending = pendingAgentModels[botID], pending != next else { return }
+                    next = pending
+                }
+            } catch {
+                onError((error as? CoreError)?.message ?? error.localizedDescription)
+            }
+        }
     }
 }

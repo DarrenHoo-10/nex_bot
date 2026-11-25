@@ -25,6 +25,7 @@
 .connector-catalog-state.is-added > svg { color: var(--success); }
 .connectors-page .connector-icon { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 15px; border: 1px solid var(--input); background: var(--card); }
 .connectors-page .connector-icon.is-gmail { background: #fff; }
+.connectors-page .connector-icon.is-github { background: #fff; }
 .connector-icon img { width: 44px; height: 44px; object-fit: contain; }
 .connector-no-results { padding: 40px 12px; text-align: center; color: var(--muted-foreground); font-size: 13px; }
 .connector-navigation { margin-bottom: 30px; }
@@ -51,11 +52,6 @@
 .connector-account-heading .connection-status { font-size: 12px; }
 .rk-workspace .connector-account-menu { display: grid; place-items: center; padding: 0; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: var(--muted-foreground); }
 .rk-workspace .connector-account-menu:hover, .rk-workspace .connector-account-menu[aria-expanded="true"] { background: var(--secondary); color: var(--foreground); }
-.connector-account-grants { margin-top: 9px; }
-.connector-account-grants .connector-agent { border: 0; padding: 10px 0; }
-.connector-account-grants .connector-agent strong { font-size: 13px; font-weight: 400; color: var(--muted-foreground); }
-.connector-account-grants .connector-agent small { font-size: 11px; }
-.rk-workspace .connector-account-grants .connector-agent button { border-radius: 18px; padding: 7px 12px; font-size: 11px; white-space: nowrap; }
 .connector-account-management { padding: 5px 0 14px; }
 .connector-account-management .connector-remove { margin-top: 14px; padding-top: 12px; }
 .connector-account-management .connector-remove > .actions { margin-top: 0; }
@@ -90,8 +86,6 @@
 .gmail-authorization a { display: inline-flex; align-items: center; gap: 5px; color: var(--link); font-size: 12px; text-decoration: none; }
 .gmail-authorization a:hover { text-decoration: underline; }
 .gmail-authorization .actions { margin-top: 8px; }
-.connector-account .grant-editor { margin: 10px 0; }
-.connector-account .grant-editor input { width: auto; }
 .connector-mcp-detail .connector-profile-heading { margin-bottom: 26px; }
 .connector-mcp-controls .connector-remove { margin-top: 12px; padding-top: 12px; }
 @media (max-width: 640px) {
@@ -127,3 +121,100 @@
   .connector-app-row { padding: 18px 16px; }
   .connector-information { padding: 10px 16px; }
 }
+
+/* GitHub 令牌连接入口（PAT）。 */
+.connector-pat { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.connector-pat input { flex: 1 1 200px; min-width: 0; }
+
+/* GitHub 监视配置。 */
+.connector-monitor-copy { margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; word-break: break-all; }
+.connector-webhook-note { margin: 12px 0; padding: 12px; background: var(--secondary, #f5f5f4); border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+
+/* Feishu: app list, per-app group settings. */
+.connectors-page .connector-icon.feishu-icon { background: #fff; overflow: hidden; }
+.connector-icon.feishu-icon img { width: 74%; height: 74%; object-fit: contain; }
+.feishu-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.connector-catalog-state.is-error { color: var(--destructive); }
+.rk-workspace .feishu-add { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 20px; padding: 9px 14px; background: var(--secondary); font-size: 12px; white-space: nowrap; }
+.feishu-add-form { margin-top: 20px; padding: 16px 20px; }
+.feishu-add-form .actions { margin-top: 12px; }
+.feishu-qr { align-items: center; flex-wrap: wrap; gap: 12px; }
+.feishu-avatar { width: 40px; height: 40px; flex-shrink: 0; display: grid; place-items: center; border-radius: 50%; background: #3370ff; color: #fff; font-size: 16px; font-weight: 600; }
+.feishu-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; color: var(--muted-foreground); }
+.feishu-status > i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .7; }
+.feishu-status.is-connected { color: var(--success); }
+.feishu-status.is-error { color: var(--destructive); }
+.feishu-status.is-busy { color: #b7791f; }
+.feishu-app, .feishu-group { position: relative; border-top: 1px solid var(--border); }
+.feishu-app:first-child, .feishu-group:first-child { border-top: 0; }
+.feishu-app-row { display: flex; align-items: center; }
+.rk-workspace .feishu-app-open, .rk-workspace .feishu-group-head { flex: 1; min-width: 0; display: flex; align-items: center; gap: 13px; width: 100%; padding: 15px 8px 15px 20px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.rk-workspace .feishu-group-head { padding-right: 20px; }
+.rk-workspace .feishu-app-open:hover, .rk-workspace .feishu-group-head:hover { background: var(--secondary); }
+.feishu-app:first-child .feishu-app-open, .feishu-group:first-child .feishu-group-head { border-top-left-radius: 17px; border-top-right-radius: 17px; }
+.feishu-app-copy { flex: 1; min-width: 0; }
+.feishu-app-copy > strong { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.feishu-app-copy > small { display: block; margin-top: 4px; color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
+.feishu-app-copy > small.is-error, .feishu-app-note.is-error { color: var(--destructive); }
+.feishu-tag { padding: 1px 7px; border-radius: 9px; background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-weight: 400; }
+.rk-workspace .feishu-more { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; margin: 0 12px 0 4px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted-foreground); }
+.rk-workspace .feishu-more:hover, .rk-workspace .feishu-more[aria-expanded="true"] { background: var(--secondary); color: var(--foreground); }
+.feishu-menu { position: absolute; right: 12px; top: calc(100% - 8px); z-index: 20; min-width: 180px; padding: 6px; border: 1px solid var(--input); border-radius: 12px; background: var(--card); box-shadow: 0 10px 30px rgba(15, 20, 30, .12); }
+.rk-workspace .feishu-menu > button { display: block; width: 100%; padding: 9px 12px; border: 0; border-radius: 8px; background: transparent; text-align: left; font-size: 13px; }
+.rk-workspace .feishu-menu > button:hover { background: var(--secondary); }
+.feishu-menu > p { margin: 6px 12px 4px; color: var(--muted-foreground); font-size: 12px; }
+.feishu-app-note { margin: 0; padding: 0 20px 14px 73px; font-size: 12px; }
+.feishu-app-note code { padding: 1px 6px; border-radius: 5px; background: var(--secondary); font-size: 13px; letter-spacing: 1px; }
+.feishu-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding: 11px 15px; border-radius: 12px; background: var(--secondary); font-size: 13px; }
+.feishu-banner.is-error { color: var(--destructive); }
+.feishu-banner.is-busy { color: #8a5600; }
+.feishu-empty { margin: 0; padding: 26px 20px; text-align: center; font-size: 13px; }
+.feishu-group-avatar { width: 34px; height: 34px; flex-shrink: 0; display: grid; place-items: center; border-radius: 50%; overflow: hidden; background: var(--secondary); color: var(--muted-foreground); }
+.feishu-group-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.feishu-group-connection { flex-shrink: 0; font-size: 12px; color: var(--muted-foreground); }
+.feishu-group-head > svg { flex-shrink: 0; color: var(--muted-foreground); transition: transform .15s; }
+.feishu-group-head > svg.is-open { transform: rotate(90deg); }
+.feishu-group-body { margin: 0 10px 12px 54px; padding: 0 12px 12px; border-radius: 10px; background: color-mix(in srgb, var(--secondary) 50%, transparent); }
+.feishu-setting-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 46px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.feishu-setting-row > div { flex: 1 1 160px; min-width: 0; }
+.feishu-setting-row label, .feishu-setting-context label { font-weight: 500; }
+.feishu-setting-row small, .feishu-setting-context small, .feishu-group-footer small, .feishu-setting-value { display: block; color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
+.feishu-setting-row > div > small { margin-top: 2px; }
+.rk-workspace .feishu-setting-row .feishu-setting-trigger { width: 178px; max-width: 100%; min-height: 36px; padding: 6px 10px; font-size: 12px; }
+.rk-workspace .feishu-setting-trigger:hover:not(:disabled), .rk-workspace .feishu-setting-trigger[aria-expanded="true"] { background: var(--secondary); }
+.feishu-setting-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.feishu-setting-menu { overscroll-behavior: contain; }
+.rk-workspace .feishu-setting-menu .model-option { min-height: 42px; gap: 8px; padding: 6px 9px; border: 0; background: transparent; text-align: left; font-size: 13px; }
+.rk-workspace .feishu-setting-menu .model-option[aria-selected="true"] { color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, transparent); }
+.rk-workspace .feishu-setting-menu .model-option:hover, .rk-workspace .feishu-setting-menu .model-option:focus-visible { background: var(--secondary); }
+.rk-workspace .feishu-setting-menu .model-option:focus-visible { outline: 1px solid var(--ring); outline-offset: -1px; }
+.feishu-setting-menu .model-option > span { white-space: normal; }
+.feishu-setting-context { margin-top: 10px; }
+.feishu-setting-context label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+.rk-workspace .feishu-group-body textarea { display: block; width: 100%; min-height: 56px; padding: 7px 9px; border: 1px solid var(--input); border-radius: 8px; background: var(--card); font: inherit; font-size: 12px; line-height: 1.5; resize: vertical; }
+.feishu-group-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.feishu-group-footer .feishu-group-actions { margin: 0 0 0 auto; gap: 6px; }
+
+.feishu-app-identity { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
+.feishu-app-identity-copy { flex: 1; min-width: 0; }
+.feishu-app-identity-copy h2 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.feishu-app-identifier, .feishu-app-identity-copy > small { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
+.feishu-app-identity > .feishu-status { flex-shrink: 0; align-self: flex-start; margin-top: 3px; }
+.feishu-receiver { border-top: 1px solid var(--border); }
+.feishu-receiver-summary { display: flex; align-items: center; gap: 12px; padding: 6px 12px 6px 16px; min-height: 46px; font-size: 13px; }
+.feishu-receiver-summary > span { flex-shrink: 0; color: var(--muted-foreground); }
+.feishu-receiver-summary > strong { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.rk-workspace .feishu-receiver-change { flex-shrink: 0; padding: 6px 9px; border: 0; background: transparent; color: var(--primary); font-size: 13px; }
+.rk-workspace .feishu-receiver-change:hover { background: var(--secondary); }
+.feishu-receiver-editor { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 16px 12px; }
+.feishu-receiver-editor select { flex: 1 1 160px; max-width: 260px; min-width: 0; }
+.feishu-receiver-editor .actions { margin: 0 0 0 auto; gap: 6px; }
+.feishu-app-groups { margin-top: 22px; }
+.feishu-group-list-title { display: flex; justify-content: space-between; align-items: baseline; padding: 0 10px 9px; }
+.rk-workspace .feishu-group-list-title h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.feishu-group-list-title > span { color: var(--muted-foreground); font-size: 12px; }
+.feishu-app-groups .feishu-groups { border-top: 1px solid var(--border); }
+.rk-workspace .feishu-app-groups .feishu-group-head { gap: 10px; border-radius: 0; padding: 9px 10px; min-height: 54px; }
+.feishu-app-groups .feishu-app-copy > small { margin-top: 2px; }
+
+@media (max-width: 640px) { .feishu-group-body { margin-left: 10px; } .feishu-app-note { padding-left: 20px; } }

@@ -3,9 +3,10 @@ import { CoreStore } from "./store.ts";
 
 export class ClientSync {
   readonly bootId = randomUUID();
+  revision = 0;
   constructor(readonly store: CoreStore) {}
   snapshot() {
-    return { cursor: Number(this.store.get("SELECT COALESCE(MAX(seq),0) seq FROM sync_events")!.seq), privacyEpoch: Number(this.store.get("SELECT privacy_epoch FROM sync_state WHERE id=1")!.privacy_epoch), coreId: String(this.store.get("SELECT core_id FROM workspaces WHERE id=?", this.store.workspace)!.core_id), bootId: this.bootId };
+    return { cursor: Number(this.store.get("SELECT COALESCE(MAX(seq),0) seq FROM sync_events")!.seq), privacyEpoch: Number(this.store.get("SELECT privacy_epoch FROM sync_state WHERE id=1")!.privacy_epoch), coreId: String(this.store.get("SELECT core_id FROM workspaces WHERE id=?", this.store.workspace)!.core_id), bootId: this.bootId, revision: this.revision, at: Date.now() };
   }
   event(after: number) {
     const state = this.snapshot(), min = Number(this.store.get("SELECT COALESCE(MIN(seq),0) seq FROM sync_events")!.seq);

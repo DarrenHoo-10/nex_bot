@@ -22,6 +22,23 @@ class WorkspaceTransportTest {
         assertFalse(WorkspaceTransport.isAttachmentPreview("/api/attachments/0a1b-2c", null))
         assertFalse(WorkspaceTransport.isAttachmentPreview("/api/attachments/0a1b-2c/link", "preview=1"))
     }
+    @Test fun `NexAgent images upload raw bytes and use a private preview route`() {
+        val image = "/api/cli-agents/images/12345678-0000-4000-8000-000000000000"
+        assertTrue(WorkspaceTransport.isCliImagePreview(image, null))
+        assertFalse(WorkspaceTransport.isCliImagePreview(image, "ticket=temporary"))
+        assertFalse(WorkspaceTransport.isCliImagePreview("$image/other", null))
+        MockWebServer().use { server ->
+            val client = WorkspaceTransport(server.url("/").toString(), { "fixture" })
+            server.enqueue(MockResponse().setBody("{}"))
+            val path = "/api/cli-agents/images?key=device%3Aclaude%3Asession"
+            assertEquals(200, client.request(path, "POST", "iVBORw==").status)
+            val request = server.takeRequest()
+            assertEquals(path, request.path)
+            assertEquals("Bearer fixture", request.getHeader("Authorization"))
+            assertEquals("application/octet-stream", request.getHeader("Content-Type"))
+            assertEquals("89504e47", request.body.readByteString().hex())
+        }
+    }
     @Test fun `requests use current native token and preserve server error statuses`() {
         MockWebServer().use { server ->
             var token: String? = "fixture-one"

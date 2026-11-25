@@ -124,6 +124,8 @@ struct InspectorWorkTab: View {
     var body: some View {
         if let item = AgentUI.shared.preview, AgentUI.shared.previewBotID == botID { PreviewCard(item: item) { AgentUI.shared.preview = nil } }
         routines
+            .onAppear { workspace.setResourceVisible("work", true) }
+            .onDisappear { workspace.setResourceVisible("work", false) }
             .sheet(item: $selectedRoutine) { RoutinePlanDetailView(workspace: workspace, routine: $0) }
             .sheet(item: $selectedOccurrence) { RoutineOccurrenceDetailView(workspace: workspace, occurrence: $0) }
     }

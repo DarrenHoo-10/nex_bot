@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { jobStageLabels, str, type Job, type RecordRow } from "../api";
 import { parseMessageMedia, type MessageImage } from "../message-media";
 import { MessageImages } from "./MessageImages";
+import { ConversationActionButton } from "./ConversationActionButton";
 
 export interface JobCardActions {
   open(jobId: string): void;
@@ -26,24 +27,30 @@ export function splitFailure(text: string) {
  * A background job's report in the message stream: title, its current stage (from state, not the message), the
  * conclusion and its files, and the actions that stage allows. Actions appear only on the job's latest report.
  */
-export function JobReportCard({ message, job, busy, renderContent, actions, onDeleteImage }: { message: RecordRow; job?: Job; busy: boolean; renderContent: (content: string) => ReactNode; actions: JobCardActions; onDeleteImage?: (image: MessageImage) => Promise<void> }) {
+export function JobReportCard({ message, job, hasReply, busy, renderContent, actions, onDeleteImage }: { message: RecordRow; job?: Job; hasReply: boolean; busy: boolean; renderContent: (content: string) => ReactNode; actions: JobCardActions; onDeleteImage?: (image: MessageImage) => Promise<void> }) {
+  const jobId = str(message.job_id);
+  const tone = (Number.parseInt(jobId[0] ?? "", 16) || 0) % 4;
   const title = job?.title ?? str(message.job_title);
   // The first line repeats the title; the card shows it in its heading.
   const body = str(message.content).replace(/^后台任务「[^\n]*」\n?/, "");
   const { text, images } = parseMessageMedia(body);
-  const latest = !!job && job.latestReport?.messageId === message.id;
+  const activeReport = !!job?.taskId && job.taskId === message.task_id && job.latestReport?.messageId === message.id && !hasReply;
   const stage = job?.stage;
   const failed = str(message.job_state) === "failed", failure = failed ? splitFailure(text) : undefined;
-  return <article className={`job-card ${str(message.job_state)}`} data-job-id={str(message.job_id)} data-message-id={str(message.id)}>
-    <header><button type="button" className="job-card-title" onClick={() => actions.open(str(message.job_id))}>{title}</button>{stage ? <span className={`job-stage ${stage}`}>{jobStageLabels[stage] ?? stage}</span> : null}</header>
-    <MessageImages images={images} onDelete={onDeleteImage}/>
-    {failure ? <div className="job-card-body"><p>{failure.lead}</p>{failure.rest ? <details className="job-card-detail"><summary>详细信息</summary><p>{failure.rest}</p></details> : null}</div>
-      : text ? <div className="job-card-body">{renderContent(text)}</div> : null}
-    {latest && job ? <div className="actions">
-      {stage === "question" ? <button type="button" className="primary" disabled={busy} onClick={() => actions.reply(job)}>回复</button> : null}
-      {stage === "review" && job.todoId ? <><button type="button" className="primary" disabled={busy} onClick={() => actions.accept(job)}>验收</button><button type="button" disabled={busy} onClick={() => actions.revise(job)}>修改</button></> : null}
-      {stage === "failed" ? <><button type="button" className="primary" disabled={busy} onClick={() => actions.retry(job)}>重试</button><button type="button" onClick={() => actions.open(job.id)}>查看</button></> : null}
-      {stage && stoppable.has(stage) ? <button type="button" disabled={busy} onClick={() => actions.stop(job)}>停止</button> : null}
+  return <>
+    <article className={`job-card ${str(message.job_state)}`} data-job-id={jobId} data-tone={tone} data-message-id={str(message.id)}>
+      <header><button type="button" className="job-card-title" onClick={() => actions.open(jobId)}>{title}</button>{stage ? <span className={`job-stage ${stage}`}>{jobStageLabels[stage] ?? stage}</span> : null}</header>
+      <MessageImages images={images} onDelete={onDeleteImage}/>
+      {failure ? <div className="job-card-body"><p>{failure.lead}</p>{failure.rest ? <details className="job-card-detail"><summary>详细信息</summary><p>{failure.rest}</p></details> : null}</div>
+        : text ? <div className="job-card-body">{renderContent(text)}</div> : null}
+      {activeReport && job && (stage === "failed" || (stage === "review" && job.todoId)) ? <div className="actions">
+        {stage === "review" && job.todoId ? <><ConversationActionButton disabled={busy} onClick={() => actions.accept(job)}>验收</ConversationActionButton><ConversationActionButton tone="dark" disabled={busy} onClick={() => actions.revise(job)}>修改</ConversationActionButton></> : null}
+        {stage === "failed" ? <><ConversationActionButton disabled={busy} onClick={() => actions.retry(job)}>重试</ConversationActionButton><ConversationActionButton tone="dark" onClick={() => actions.open(job.id)}>查看</ConversationActionButton></> : null}
+      </div> : null}
+    </article>
+    {activeReport && job && stage && stoppable.has(stage) ? <div className="job-response-actions" role="group" aria-label="任务操作">
+      {stage === "question" ? <ConversationActionButton size="compact" disabled={busy} onClick={() => actions.reply(job)}>回复</ConversationActionButton> : null}
+      <ConversationActionButton size="compact" tone="dark" disabled={busy} onClick={() => actions.stop(job)}>停止</ConversationActionButton>
     </div> : null}
-  </article>;
+  </>;
 }

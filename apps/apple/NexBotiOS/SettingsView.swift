@@ -47,6 +47,10 @@ struct SettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbarBackground(Theme.background, for: .navigationBar)
+        .onChange(of: category, initial: true) { _, category in
+            workspace.setResourceVisible("settings", category == .connectors || category == .devices)
+        }
+        .onDisappear { workspace.setResourceVisible("settings", false) }
         .task { await load() }
         .refreshable { await load(); await workspace.refresh() }
         .errorAlert($errorText)

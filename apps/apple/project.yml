@@ -8,8 +8,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.2.26"
-    CURRENT_PROJECT_VERSION: "28"
+    MARKETING_VERSION: "0.2.43"
+    CURRENT_PROJECT_VERSION: "45"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 packages:
@@ -17,6 +17,10 @@ packages:
     path: Packages/NexMarkdown
   NexClientKit:
     path: Packages/NexClientKit
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    # 1.19+ adds a build-tool plugin that needs a trust prompt in Xcode and `-skipPackagePluginValidation` on the command line.
+    exactVersion: 1.18.0
 targets:
   NexBotMac:
     type: application
@@ -27,6 +31,8 @@ targets:
     sources:
       - NexBotMac
       - Shared
+      - path: ../../public/feishu-logo.png
+        buildPhase: resources
       - path: ../../public/companions
         type: folder
         buildPhase: resources
@@ -37,6 +43,7 @@ targets:
     dependencies:
       - package: NexClientKit
       - package: NexMarkdown
+      - package: SwiftTerm
     info:
       path: NexBotMac/Info.plist
       properties:
@@ -71,6 +78,8 @@ targets:
     sources:
       - NexBotiOS
       - Shared
+      - path: ../../public/feishu-logo.png
+        buildPhase: resources
       - path: ../../public/companions
         type: folder
         buildPhase: resources
@@ -79,6 +88,7 @@ targets:
     dependencies:
       - package: NexClientKit
       - package: NexMarkdown
+      - package: SwiftTerm
     info:
       path: NexBotiOS/Info.plist
       properties:

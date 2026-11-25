@@ -171,6 +171,9 @@ private struct TodoDetails: View {
                 Spacer()
                 if item.status == "running" {
                     Button(item.taskId == nil ? "暂停处理" : "停止执行") { Task { await action("stop", nil) } }
+                        #if os(macOS)
+                        .focusEffectDisabled()
+                        #endif
                     if item.taskId == nil { Button("标记完成") { Task { await action("complete", nil) } }.buttonStyle(.borderedProminent).tint(Theme.identityAccent) }
                 }
                 else if item.status == "done" { Button("重新打开") { Task { await action("reopen", nil) } } }

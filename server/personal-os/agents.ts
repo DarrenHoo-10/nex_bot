@@ -1,3 +1,4 @@
+import { IdentityError } from "./identity-provider.ts";
 import { CoreStore, hash, id, now, optionalText, text, canonical, type Row } from "./store.ts";
 import { entryPage, entryText } from './context-tools.ts';
 import type { TaskRuntime } from "./runtime.ts";
@@ -11,15 +12,17 @@ import { parseAppearance } from "../../shared/personal-appearance.ts";
 export type TopicInputOptions = { conversationId?: string; newConversation?: boolean; sourceContext?: Record<string, unknown>; audience?: 'private' | 'public';modelSelection?:{connectionId?:string;model?:string;reasoning?:string} };
 export type PublishedMessage = { botId: string; messageId: string; conversationId: string | null; taskId: string | null };
 // Keep receipts and referenced rows in storage while excluding removed conversations from inbox reads.
+const withoutTopics = " AND NOT EXISTS (SELECT 1 FROM agent_topics p WHERE p.conversation_id=agent_messages_scope.conversation_id)";
 const visibleInbox = "(SELECT m.*,m.rowid AS rowid FROM agent_messages m WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=m.conversation_id AND c.status='deleted'))";
 export class AgentModule {
   beforeTopicInput?: (botId:string,conversationId:string)=>void;
+  onProfileChanged?: (botId: string) => void;
   onPublished?: (botId: string, event: PublishedMessage) => void;
   /** Background jobs; set by the app once the job module exists. */
   jobs?: JobModule;
   constructor(readonly store: CoreStore, readonly runtime: TaskRuntime) {
     store.transaction(() => {
-      for (const bot of store.all("SELECT id FROM bots")) this.ensure(String(bot.id));
+      for (const bot of store.all("SELECT id FROM bots WHERE status!='deleted'")) this.ensure(String(bot.id));
       // Older releases bound background work to the owner inbox. Recovery must
       // drop that pointer without cancelling or replaying the routine.
       store.run("UPDATE agent_inboxes SET active_task_id=NULL WHERE active_task_id IN (SELECT task_id FROM agent_task_links WHERE origin='routine')");
@@ -56,8 +59,8 @@ export class AgentModule {
     runtime.historySearch = (botId, query, page) => this.search(botId, query, page);
   }
   ensure(botId: string) {
-    const bot = this.store.get("SELECT id FROM bots WHERE id=? AND workspace_id=? AND owner_user_id=?", botId, this.store.workspace, this.store.owner);
-    if (!bot) throw new Error("Agent 不存在");
+    const bot = this.store.get("SELECT id FROM bots WHERE id=? AND workspace_id=? AND owner_user_id=? AND status!='deleted'", botId, this.store.workspace, this.store.owner);
+    if (!bot) throw new IdentityError(404,"Agent 不存在");
     this.store.run("INSERT OR IGNORE INTO agent_inboxes(bot_id,workspace_id,owner_user_id) VALUES(?,?,?)", botId, this.store.workspace, this.store.owner);
   }
   updateProfile(data: Record<string, unknown>) {
@@ -66,8 +69,10 @@ export class AgentModule {
     if (expertise !== undefined && (!Array.isArray(expertise) || expertise.length > 20 || expertise.some((item) => typeof item !== "string" || !item.trim() || item.length > 80))) throw new Error("专长标签无效");
     this.store.transaction(() => {
       this.ensure(botId);
+      const previousName = this.store.get("SELECT name FROM bots WHERE id=?", botId)?.name;
       if (!Number.isSafeInteger(version) || version < 1 || this.store.run("UPDATE bots SET name=?,instructions=?,version=version+1 WHERE id=? AND version=? AND status='active'", name, instructions, botId, version).changes !== 1) throw new Error("Agent 已被更新，请刷新");
       if (Array.isArray(expertise)) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify([...new Set(expertise.map((item: string) => item.trim()))]), botId);
+      if (previousName !== name) this.onProfileChanged?.(botId);
       this.store.audit("agent.profile.update", "bot", botId, { version: version + 1 });
     });
     // Identity metadata does not change permissions, task IDs or inbox history.
@@ -76,26 +81,30 @@ export class AgentModule {
   }
   updateModel(data: Record<string, unknown>) {
     const botId = text(data.id, 100), model = data.model === "" ? "" : text(data.model, 200);
-    this.store.transaction(() => {
+    const selection = this.store.transaction(() => {
       this.ensure(botId);
       if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active'", botId)) throw new Error("助手已归档");
       if (this.store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", botId)) throw new Error("请等待当前任务结束或停止任务后切换模型");
       // With connectionId the assistant may switch provider; without it (older clients) the provider must not have changed.
       const saved = this.store.saveBotModel(botId, { ...data, model });
       this.store.modelConfig(botId);
-      this.store.audit("agent.model.update", "bot", botId, { model, connectionId: this.store.botModelSelection(botId)?.selected_connection, reasoning: saved.reasoning });
+      const selection = this.store.botModelSelection(botId);
+      this.store.audit("agent.model.update", "bot", botId, { model, connectionId: selection?.selected_connection, reasoning: saved.reasoning });
+      return selection;
     });
     this.runtime.changed();
+    return selection;
   }
   updateAppearance(data: Record<string, unknown>) {
     const botId = text(data.id, 100), appearance = parseAppearance(data.appearance), version = Number(data.version);
     this.store.transaction(() => {
       this.ensure(botId);
       if (!this.store.get("SELECT id FROM bots WHERE id=? AND status='active'", botId)) throw new Error("Agent 已归档");
-      const current = this.store.get("SELECT version FROM bot_appearance WHERE bot_id=?", botId);
+      const current = this.store.get("SELECT appearance_json,version FROM bot_appearance WHERE bot_id=?", botId);
       if (!Number.isSafeInteger(version) || version < 0 || Number(current?.version ?? 0) !== version) throw new Error("头像已在其他设备更新，请关闭后重新打开");
       if (current) this.store.run("UPDATE bot_appearance SET appearance_json=?,version=version+1 WHERE bot_id=?", JSON.stringify(appearance), botId);
       else this.store.insert("bot_appearance", { bot_id: botId, appearance_json: JSON.stringify(appearance), version: 1 });
+      if (current?.appearance_json !== JSON.stringify(appearance)) this.onProfileChanged?.(botId);
       this.store.audit("agent.appearance.update", "bot", botId, { version: version + 1 });
     });
     this.runtime.changed();
@@ -209,14 +218,19 @@ export class AgentModule {
       return {botId};
     });
   }
-  createTopic(botId: string, options: {title:string;audience:'private'|'public';sourceContext?:Record<string,unknown>}) {
+  createTopic(botId: string, options: {title:string;audience:'private'|'public';sourceContext?:Record<string,unknown>;branchContext?:string}) {
     this.ensure(botId);
     if(!['private','public'].includes(options.audience)) throw new Error('受众无效');
-    return this.store.transaction(() => {
+    const topic = this.store.transaction(() => {
       const conversationId=this.store.createConversation(botId,text(options.title,160));
       this.store.insert('agent_topics',{conversation_id:conversationId,bot_id:botId,audience:options.audience,source_context:canonical(options.sourceContext??{}),created_at:now()});
+      if (options.branchContext) {
+        this.publish(botId, "user", "message", options.branchContext, `cli-fork-context:${conversationId}`, null, null, now(), conversationId);
+      }
       return {id:conversationId,conversationId};
     });
+    if (options.branchContext) this.runtime.changed();
+    return topic;
   }
   topic(botId: string, conversationId: string) {
     this.ensure(botId);
@@ -224,13 +238,41 @@ export class AgentModule {
     if (!topic||topic.status==='deleted') throw new Error('话题不存在');
     return topic;
   }
-  topics(botId: string) {
+  topics(botId: string, compact = false, conversationId?: string) {
     this.ensure(botId);
-    return this.store.all(`SELECT p.*,c.title,c.status,COALESCE(MAX(m.created_at),p.created_at) last_activity_at,COUNT(m.id) message_count,SUM(CASE WHEN m.role!='user' AND m.source_key NOT LIKE 'stock-history:%' AND m.seq>p.read_seq THEN 1 ELSE 0 END) unread_count FROM agent_topics p JOIN conversations c ON c.id=p.conversation_id LEFT JOIN agent_messages m ON m.conversation_id=p.conversation_id AND m.bot_id=p.bot_id WHERE p.bot_id=? AND c.status!='deleted' GROUP BY p.conversation_id ORDER BY last_activity_at DESC`,botId).map(row => ({...row, conversationId:row.conversation_id,unread_count:Number(row.unread_count??0),sourceContext:JSON.parse(String(row.source_context)),messages:this.topicMessages(botId,String(row.conversation_id),undefined,undefined,2),activeTask:this.store.get('SELECT id,status FROM tasks WHERE (conversation_id=? OR conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?)) AND ended_at IS NULL ORDER BY created_at LIMIT 1',row.conversation_id,row.conversation_id)??null}));
+    return this.store.all(`SELECT p.*,c.title,c.status,COALESCE(MAX(m.created_at),p.created_at) last_activity_at,COUNT(m.id) message_count,COALESCE(MAX(m.seq),0) last_seq,SUM(CASE WHEN m.role!='user' AND m.source_key NOT LIKE 'stock-history:%' AND m.seq>p.read_seq THEN 1 ELSE 0 END) unread_count FROM agent_topics p JOIN conversations c ON c.id=p.conversation_id LEFT JOIN agent_messages m ON m.conversation_id=p.conversation_id AND m.bot_id=p.bot_id WHERE p.bot_id=? AND c.status!='deleted' ${conversationId ? 'AND p.conversation_id=?' : ''} GROUP BY p.conversation_id ORDER BY last_activity_at DESC`,botId,...(conversationId ? [conversationId] : [])).map(row => ({...row, conversationId:row.conversation_id,unread_count:Number(row.unread_count??0),sourceContext:JSON.parse(String(row.source_context)),messages:compact ? (conversationId ? [] : this.store.all("SELECT id,role,SUBSTR(content,1,180) content FROM agent_messages WHERE bot_id=? AND conversation_id=? ORDER BY seq DESC LIMIT 2",botId,row.conversation_id).reverse()) : this.topicMessages(botId,String(row.conversation_id),undefined,undefined,2),activeTask:this.store.get('SELECT id,status FROM tasks WHERE (conversation_id=? OR conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?)) AND ended_at IS NULL ORDER BY created_at LIMIT 1',row.conversation_id,row.conversation_id)??null}));
   }
-  topicMessages(botId: string, conversationId: string, before = Number.MAX_SAFE_INTEGER, after = -1, limit = 200) {
+  topicMessages(botId: string, conversationId: string, before = Number.MAX_SAFE_INTEGER, after = -1, limit = 200, until?: number) {
     this.topic(botId,conversationId);
-    return this.projectMessages(this.store.all(`SELECT m.*,(SELECT status FROM agent_topic_inputs i WHERE i.message_id=m.id) input_status FROM (SELECT * FROM agent_messages WHERE bot_id=? AND conversation_id=? AND seq<? AND seq>? ORDER BY seq ${after>=0?'ASC':'DESC'} LIMIT ?) m ORDER BY seq`,botId,conversationId,before,after,limit));
+    return this.projectMessages(this.store.all(`SELECT m.*,(SELECT status FROM agent_topic_inputs i WHERE i.message_id=m.id) input_status FROM (SELECT * FROM agent_messages WHERE bot_id=? AND conversation_id=? AND seq<? AND seq>? ${until === undefined ? '' : 'AND created_at<=?'} ORDER BY seq ${after>=0?'ASC':'DESC'} LIMIT ?) m ORDER BY seq`,botId,conversationId,before,after,...(until === undefined ? [] : [until]),limit));
+  }
+  contextUsage(botId: string, topicId?: string) {
+    if (topicId) this.topic(botId, topicId);
+    else this.ensure(botId);
+    const connection = this.store.botConnection(botId);
+    const selection = this.store.botModelSelection(botId);
+    const model = selection?.selected_model || String(connection?.default_model ?? "");
+    if (!connection || !selection || !model || !connection.credential_ref) {
+      return { usedTokens: null, contextWindow: null };
+    }
+    const { contextWindow } = this.store.modelLimitSettings({ provider: connection.provider_id, endpoint: connection.endpoint, model });
+    const conversationId = topicId ?? this.store.get(
+      "SELECT a.conversation_id FROM assistant_conversations a JOIN conversations c ON c.id=a.conversation_id WHERE a.bot_id=? AND c.status='open'",
+      botId,
+    )?.conversation_id;
+    if (!conversationId) return { usedTokens: null, contextWindow };
+    // input_tokens already includes cache reads and writes. Use the last measured
+    // answer for this model and conversation, including continuations of a topic.
+    const usage = this.store.get(`
+      SELECT m.input_tokens + m.output_tokens AS used_tokens
+      FROM task_runs r JOIN model_invocations m ON m.run_id = r.id
+      WHERE r.bot_id = ? AND r.model_connection_id = ? AND r.model_id = ?
+        AND (r.conversation_id = ? OR r.conversation_id IN
+          (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id = ?))
+        AND m.purpose = 'answer' AND m.status = 'succeeded' AND m.usage_known = 1
+      ORDER BY m.finished_at DESC, m.rowid DESC LIMIT 1
+    `, botId, selection.selected_connection, model, conversationId, conversationId);
+    return { usedTokens: usage?.used_tokens == null ? null : Number(usage.used_tokens), contextWindow };
   }
   private sendTopic(botId: string, content: string, clientId: string, sessionId: string, options: TopicInputOptions) {
     this.ensure(botId); content=text(content); clientId=text(clientId,200);
@@ -365,6 +407,7 @@ export class AgentModule {
         const nextInstructions = args.instructions !== undefined ? optionalText(args.instructions, 8000) : String(current.instructions ?? "");
         const expertise = Array.isArray(args.expertise) ? [...new Set(args.expertise.map((item) => text(item, 80)))] : undefined;
         this.store.run("UPDATE bots SET name=?,instructions=?,version=version+1 WHERE id=?", nextName, nextInstructions, targetId);
+        if (nextName !== current.name) this.onProfileChanged?.(targetId);
         if (expertise !== undefined) this.store.run("UPDATE bot_public_profiles SET expertise_json=? WHERE bot_id=?", JSON.stringify(expertise), targetId);
         const result = { updated: true, botId: targetId, name: nextName, instructions: nextInstructions, version: Number(current.version) + 1, ...(expertise !== undefined ? { expertise } : {}) };
         this.store.audit("steward.agent.update", "tool_call", String(call.id), { byBotId: call.bot_id, botId: targetId, result });
@@ -404,7 +447,7 @@ export class AgentModule {
   /** Durable, idempotent delivery. The scheduler also calls this after recovery. */
   reportRoutine(taskId: string) {
     return this.store.transaction(() => {
-      const task = this.store.get("SELECT t.*,c.title FROM tasks t JOIN agent_task_links l ON l.task_id=t.id JOIN conversations c ON c.id=t.conversation_id WHERE t.id=? AND l.origin='routine' AND t.ended_at IS NOT NULL", taskId);
+      const task = this.store.get("SELECT t.*,c.title FROM tasks t JOIN agent_task_links l ON l.task_id=t.id JOIN conversations c ON c.id=t.conversation_id WHERE t.id=? AND l.origin='routine' AND t.ended_at IS NOT NULL AND t.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", taskId);
       if (!task || this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", taskId)) return;
       // Upgrades already delivered old terminal answers/errors directly. Do not
       // replay the complete historical backlog under the new report key.
@@ -505,7 +548,7 @@ export class AgentModule {
   messagesAround(botId: string, messageId: string) {
     this.ensure(botId);
     const target=this.store.get("SELECT seq FROM " + visibleInbox + " m WHERE bot_id=? AND id=? AND content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=m.task_id)",botId,messageId);
-    if (!target) throw new Error('该消息已不存在或已遗忘');
+    if (!target) throw new IdentityError(404,'该消息已不存在或已遗忘');
     const before=this.store.all('SELECT * FROM (SELECT * FROM ' + visibleInbox + ' WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 40) ORDER BY seq',botId,target.seq);
     const after=this.store.all('SELECT * FROM ' + visibleInbox + ' WHERE bot_id=? AND seq>=? ORDER BY seq LIMIT 60',botId,target.seq);
     return this.projectMessages([...before,...after]);
@@ -516,13 +559,18 @@ export class AgentModule {
     if(conversationId) { this.topic(botId,conversationId); this.store.run('UPDATE agent_topics SET read_seq=MAX(read_seq,MIN(?,COALESCE((SELECT MAX(seq) FROM agent_messages WHERE conversation_id=?),0))) WHERE conversation_id=?',seq,conversationId,conversationId); return; }
     this.store.run("UPDATE agent_inboxes SET read_seq=MAX(read_seq,MIN(?,next_seq-1)) WHERE bot_id=?", seq, botId);
   }
-  messages(botId: string, before?: number) {
-    this.ensure(botId);
-    return this.projectMessages(this.store.all("SELECT * FROM (SELECT * FROM " + visibleInbox + " WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 100) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER));
+  historySeq(botId: string, conversationId?: string) {
+    const filter = conversationId ? " AND conversation_id=?" : withoutTopics;
+    return Number(this.store.get("SELECT COALESCE(MAX(seq),0) seq FROM " + visibleInbox + " agent_messages_scope WHERE bot_id=?" + filter, botId, ...(conversationId ? [conversationId] : []))?.seq ?? 0);
   }
-  messagesAfter(botId: string, after: number) {
+  messages(botId: string, before?: number, limit = 100, until?: number, mainOnly = false) {
     this.ensure(botId);
-    return this.projectMessages(this.store.all("SELECT * FROM " + visibleInbox + " WHERE bot_id=? AND seq>? ORDER BY seq LIMIT 200", botId, after));
+    const timeFilter = until === undefined ? "" : " AND created_at<=?";
+    return this.projectMessages(this.store.all("SELECT * FROM (SELECT * FROM " + visibleInbox + " agent_messages_scope WHERE bot_id=? AND seq<?" + (mainOnly ? withoutTopics : "") + timeFilter + " ORDER BY seq DESC LIMIT ?) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER, ...(until === undefined ? [] : [until]), limit));
+  }
+  messagesAfter(botId: string, after: number, limit = 200, mainOnly = false) {
+    this.ensure(botId);
+    return this.projectMessages(this.store.all("SELECT * FROM " + visibleInbox + " agent_messages_scope WHERE bot_id=? AND seq>?" + (mainOnly ? withoutTopics : "") + " ORDER BY seq LIMIT ?", botId, after, limit));
   }
   private projectMessages(messages: Row[]) {
     return messages.map((message) => {
@@ -585,7 +633,8 @@ export class AgentModule {
       return projected as Row;
     });
   }
-  contacts() {
-    return this.store.all("SELECT b.id,b.name,b.instructions,b.version,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM " + visibleInbox + " m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT content FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
+  contacts(compact = false) {
+    const preview = compact ? "SUBSTR(content,1,180)" : "content";
+    return this.store.all("SELECT (SELECT bot_id FROM bot_lifecycle_operations WHERE replacement_id=b.id) replaces_id,b.id,b.name,b.instructions,b.version,b.memory_epoch,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM " + visibleInbox + " m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT " + preview + " FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
   }
 }

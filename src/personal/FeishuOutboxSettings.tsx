@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { api } from './api';
 
@@ -16,8 +17,9 @@ function preview(content:string) {
 /** Owner settings only. Reconciliation never posts a diagnostic into the destination chat. */
 export function FeishuOutboxSettings({revision}:{revision:unknown}) {
   const [parts,setParts]=useState<Part[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
-  const reload=useCallback(async()=>{const result=await api<{parts:Part[]}>('feishu/deliveries');setParts(result.parts);},[]);
-  useEffect(()=>{void reload().catch(e=>setError(e instanceof Error?e.message:'无法读取投递状态'));},[revision,reload]);
+  // Only deliveries that need the owner's decision are shown; delivered and cancelled parts stay out of settings.
+  const reload=useCallback(async()=>{const result=await api<{parts:Part[]}>('feishu/deliveries');setParts(result.parts.filter(part=>part.state==='needs_reconciliation'));},[]);
+  useEffect(()=>{void reload().catch(e=>setError(userErrorText(e, '无法读取投递状态')));},[revision,reload]);
   function reconcile(event:FormEvent<HTMLFormElement>,part:Part) {
     event.preventDefault();
     const values=new FormData(event.currentTarget);
@@ -25,7 +27,7 @@ export function FeishuOutboxSettings({revision}:{revision:unknown}) {
     void api('feishu/deliveries/reconcile',{
       id:part.id,action:values.get('action'),messageId:values.get('messageId'),evidence:values.get('evidence'),
       confirmedNotDelivered:values.get('confirmedNotDelivered')==='on',
-    }).then(reload).catch(e=>setError(e instanceof Error?e.message:'对账失败')).finally(()=>setBusy(false));
+    }).then(reload).catch(e=>setError(userErrorText(e, '对账失败'))).finally(()=>setBusy(false));
   }
   if(!parts.length&&!error)return null;
   return <section className="connector-detail" aria-label="飞书投递对账">

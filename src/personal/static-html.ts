@@ -1,5 +1,6 @@
 import { sanitize, type Schema } from "hast-util-sanitize";
 import type { Element, Root, RootContent } from "hast";
+import { cliImageId } from "../../shared/cli-images";
 
 // Keep this policy aligned with NexMarkdown/StaticHTML.swift.
 export const staticHTMLTags = "a b strong i em s del u mark small sub sup span div p br hr h1 h2 h3 h4 h5 h6 blockquote pre code kbd ul ol li dl dt dd table caption thead tbody tfoot tr th td".split(" ");
@@ -49,7 +50,8 @@ export function rehypeStaticHTML() {
       const props = node.properties;
       if (typeof props.style === "string") props.style = staticHTMLStyle(props.style);
       if (typeof props.href === "string" && !staticHTMLLink(props.href)) delete props.href;
-      if (node.tagName === "img" && !(typeof props.src === "string" && /^\/api\/attachments\/[a-zA-Z0-9-]+$/.test(props.src))) {
+      if (node.tagName === "img" && !(typeof props.src === "string" &&
+        (/^\/api\/attachments\/[a-zA-Z0-9-]+$/.test(props.src) || cliImageId(props.src)))) {
         return [{ type: "text", value: String(props.alt ?? "图片") }];
       }
       if (node.tagName === "input") {

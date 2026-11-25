@@ -89,6 +89,7 @@ public struct AgentTask: RowBacked {
 /// `GET /api/state`. Unknown fields are ignored; collections are typed wrappers over open rows (`row` keeps every column).
 public struct WorkspaceState: Codable, Sendable {
     public var sync: SyncIdentity
+    public var historySeq: Int?
     public var bots: [Bot]
     public var approvals: [Approval]
     public var approvalRules: [ApprovalRule] = []
@@ -103,6 +104,8 @@ public struct WorkspaceState: Codable, Sendable {
     public var onlineDevices: [String]
     public var connectors: [ConnectorView]
     public var connectorCatalog: [ConnectorCatalogEntry] = []
+    /// GitHub 监视配置（docs/design/github-connector.md 第 7 节）。Absent on older Cores.
+    public var connectorMonitors: [ConnectorMonitor] = []
     public var gmailAvailable: Bool { connectorCatalog.first { $0.id == "gmail" }?.available == true }
     /// Feishu connection state (job, user auth, apps). Nil on older Cores.
     public var feishu: FeishuState?
@@ -142,6 +145,7 @@ public struct WorkspaceState: Codable, Sendable {
         func rows(_ key: String) -> [Row] { c.lenient(.init(key))?.arrayValue?.compactMap(\.objectValue) ?? [] }
         func object(_ key: String) -> Row? { c.lenient(.init(key))?.objectValue }
         sync = try c.decode(SyncIdentity.self, forKey: .init("sync"))
+        historySeq = c.lenient(.init("historySeq"))?.intValue
         bots = rows("bots").map(Bot.init); approvals = rows("approvals").map(Approval.init); tasks = rows("tasks").map(AgentTask.init)
         approvalRules = rows("approvalRules").map(ApprovalRule.init)
         conversations = rows("conversations"); routines = rows("routines").map(Routine.init); occurrences = rows("occurrences").map(RoutineOccurrence.init)
@@ -152,6 +156,7 @@ public struct WorkspaceState: Codable, Sendable {
         devices = rows("devices").map { Device(row: $0, online: online.contains($0.string("id") ?? "")) }
         connectors = rows("connectors").map(ConnectorView.init); memories = rows("memories").map(Memory.init)
         connectorCatalog = rows("connectorCatalog").map(ConnectorCatalogEntry.init)
+        connectorMonitors = (try? c.decodeIfPresent([ConnectorMonitor].self, forKey: .init("connectorMonitors"))) ?? []
         feishu = object("feishu").map(FeishuState.init)
         journal = rows("journal").map(JournalEntry.init); usage = rows("usage").map(Usage.init)
         config = object("config").map(ModelConfig.init); node = object("node").map(NodeState.init)
@@ -191,9 +196,9 @@ public struct WorkspaceState: Codable, Sendable {
     public var boundDevices: [Device] { devices.filter(\.isBound) }
     public var onlineDeviceCount: Int { onlineDevices.count }
     public var enabledConnectorCount: Int { connectors.filter(\.enabled).count }
-    /// Enabled connectors with at least one tool granted to the bot (web 工作 tab 连接器 list).
+    /// Enabled connectors, every one of which serves every bot (web 工作 tab 连接器 list).
     public func connectors(grantedTo botID: String) -> [ConnectorView] {
-        connectors.filter { $0.enabled && ($0.grant(for: botID)?.tools.isEmpty == false) }
+        connectors.filter(\.enabled)
     }
     public func isHost(_ device: Device) -> Bool { device.id == hostDeviceID }
 }
@@ -261,8 +266,9 @@ public struct Feed: Codable, Sendable {
     public var streaming: [StreamingText]
     public var sync: SyncIdentity
     public var hasMore: Bool
-    public init(messages: [AgentMessage] = [], streaming: [StreamingText] = [], sync: SyncIdentity, hasMore: Bool = false) {
-        self.messages = messages; self.streaming = streaming; self.sync = sync; self.hasMore = hasMore
+    public var hasOlder: Bool?
+    public init(messages: [AgentMessage] = [], streaming: [StreamingText] = [], sync: SyncIdentity, hasMore: Bool = false, hasOlder: Bool? = nil) {
+        self.messages = messages; self.streaming = streaming; self.sync = sync; self.hasMore = hasMore; self.hasOlder = hasOlder
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -270,6 +276,7 @@ public struct Feed: Codable, Sendable {
         messages = c.lenient(.init("messages"))?.arrayValue?.compactMap(\.objectValue).map(AgentMessage.init) ?? []
         streaming = (try? c.decodeIfPresent([StreamingText].self, forKey: .init("streaming"))) ?? []
         hasMore = c.lenient(.init("hasMore"))?.boolValue ?? false
+        hasOlder = c.lenient(.init("hasOlder"))?.boolValue
     }
 }
 

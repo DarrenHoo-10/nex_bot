@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useId, useState } from "react";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { api } from "./api";
@@ -25,7 +26,7 @@ function ModelForm({ kind, item, onSaved }: { kind: Kind; item: Item; onSaved: (
     setPending(true); setSaved(false); setError("");
     void api<RetrievalView>("memory/retrieval", { kind, version: item.version, ...data })
       .then((view) => { setSaved(true); setShowKey(false); onSaved(view); })
-      .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : "保存失败"))
+      .catch((failure: unknown) => setError(userErrorText(failure, "保存失败")))
       .finally(() => setPending(false));
   };
   const title = kind === "embedding" ? "向量模型" : "重排模型";
@@ -65,7 +66,7 @@ export function RetrievalSettings({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active) return;
     let current = true;
-    void api<RetrievalView>("memory/retrieval").then((result) => { if (current) { setView(result); setError(""); } }).catch((failure: unknown) => { if (current) setError(failure instanceof Error ? failure.message : "读取失败"); });
+    void api<RetrievalView>("memory/retrieval").then((result) => { if (current) { setView(result); setError(""); } }).catch((failure: unknown) => { if (current) setError(userErrorText(failure, "读取失败")); });
     return () => { current = false; };
   }, [active]);
   return <section className="preferences-section" aria-label="记忆检索" data-retrieval-settings>

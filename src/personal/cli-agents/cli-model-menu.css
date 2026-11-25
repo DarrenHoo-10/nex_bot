@@ -1,0 +1,36 @@
+/* The Agent model menu. It sits inside the composer and the new-session dialog, whose button rules
+   (centred, compact) must not reach it: every rule here is specific enough to win over them. */
+.model-menu.na-model-menu {
+  --mm-ink: var(--na-ink, #20362b); --mm-muted: var(--na-muted, #52685a); --mm-line: var(--na-line, #d2e1d6);
+  --mm-paper: var(--na-paper, #fff); --mm-hover: var(--na-inset, #eff6ef); --mm-soft: var(--na-soft, #cde8d8); --mm-accent: var(--na-accent, #176643);
+  gap: 0; padding: 6px; border: 1px solid var(--mm-line); border-radius: 14px; background: var(--mm-paper); color: var(--mm-ink);
+  box-shadow: 0 14px 36px rgba(23, 39, 27, .14), 0 2px 6px rgba(23, 39, 27, .06); font-size: 13px;
+}
+.model-menu.na-model-menu .na-model-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 6px; }
+.model-menu.na-model-menu .na-model-head span { font-size: 12px; font-weight: 600; color: var(--mm-muted); }
+.model-menu.na-model-menu .na-model-head small { font-size: 11px; color: var(--mm-muted); }
+
+.model-menu.na-model-menu .model-menu-search { margin: 0 4px 6px; padding: 0 9px; height: 32px; border: 1px solid var(--mm-line); border-radius: 9px; background: var(--mm-hover); color: var(--mm-muted); }
+.model-menu.na-model-menu .model-menu-search:focus-within { border-color: var(--mm-accent); background: var(--mm-paper); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mm-accent) 14%, transparent); }
+.model-menu.na-model-menu .model-menu-search input,
+.model-menu.na-model-menu .model-menu-search input:focus { height: 100%; border: 0; outline: 0; box-shadow: none; background: transparent; color: var(--mm-ink); font-size: 13px; }
+
+.model-menu.na-model-menu .model-menu-list { gap: 2px; max-height: 300px; padding: 0 2px; }
+.model-menu.na-model-menu button.model-menu-row.na-model-row {
+  display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; min-height: 38px; margin: 0; padding: 7px 10px;
+  border: 0; border-radius: 9px; background: transparent; color: var(--mm-ink); text-align: left; font-size: 13px; font-weight: 400; transform: none; cursor: pointer;
+}
+.model-menu.na-model-menu button.model-menu-row.na-model-row:hover:not(:disabled),
+.model-menu.na-model-menu button.model-menu-row.na-model-row:focus-visible { background: var(--mm-hover); color: var(--mm-ink); outline: 0; }
+.model-menu.na-model-menu button.model-menu-row.na-model-row[aria-selected="true"] { background: color-mix(in srgb, var(--mm-soft) 55%, transparent); }
+.model-menu.na-model-menu button.model-menu-row.na-model-row:disabled { opacity: .55; cursor: default; }
+.model-menu.na-model-menu .na-model-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.model-menu.na-model-menu .na-model-text .model-menu-name { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.model-menu.na-model-menu button[aria-selected="true"] .na-model-text .model-menu-name { font-weight: 600; }
+.model-menu.na-model-menu .na-model-text small { overflow: hidden; color: var(--mm-muted); font-size: 11.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.model-menu.na-model-menu .model-menu-check { flex: none; margin-left: auto; color: var(--mm-accent); }
+.model-menu.na-model-menu .na-model-divider { height: 1px; margin: 4px 8px; background: var(--mm-line); }
+.model-menu.na-model-menu .model-menu-status { padding: 10px; color: var(--mm-muted); font-size: 12px; }
+
+.model-menu.na-model-menu .model-menu-effort { --effort-wash: var(--mm-hover); --effort-paper: var(--mm-paper); --effort-accent: var(--mm-accent); }
+.model-menu.na-model-menu .na-model-note { margin: 6px 4px 2px; padding: 8px 8px 4px; border-top: 1px solid var(--mm-line); color: var(--mm-muted); font-size: 11.5px; }

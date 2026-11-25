@@ -1,3 +1,5 @@
+import { CLI_IMAGE_PREFIX, cliImageId, mapCliImageLinks } from "../../shared/cli-images";
+
 /**
  * Chat messages carry uploads and generated images as Markdown attachment
  * references. The workspace shows image references as thumbnails above the
@@ -21,7 +23,8 @@ export interface ParsedMessage {
 }
 
 const IMAGE_EXTENSIONS = new Set(["jpeg", "jpg", "png", "webp"]);
-const IMAGE_MARKDOWN = /!\[([^\]\n]*)\]\(\s*\/api\/attachments\/([A-Za-z0-9-]+)(?:\?[^)\s]*)?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g;
+const IMAGE_MARKDOWN = /!\[([^\]\n]*)\]\(\s*(\/api\/(?:attachments|cli-agents\/images)\/)([A-Za-z0-9-]+)(?:\?[^)\s]*)?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g;
+const STANDALONE_CLI_IMAGE = /^\s*(?:https?:\/\/[^/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f-]+)(?:\?ticket=[^\s)]+)?\s*$/;
 const ATTACHMENT_LINK = /\[([^\]\n]*)\]\(\s*\/api\/attachments\/([A-Za-z0-9-]+)(?:\?[^)\s]*)?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g;
 const DOWNLOAD_LABEL = /^(?:下载|下载图片|下载原图|保存图片|download(?:\s+image)?|save(?:\s+image)?)$/i;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
@@ -56,17 +59,23 @@ export function imageDownloadName(label: string): string {
   return imageExtension(cleaned) ? cleaned : `${cleaned}.png`;
 }
 
-function makeImage(id: string, label: string): MessageImage {
+function makeImage(id: string, label: string, cli: boolean): MessageImage {
   const alt = label.trim() || "图片";
   const url = `/api/attachments/${id}`;
+  if (cli) return { id: CLI_IMAGE_PREFIX + id, url: "", previewUrl: CLI_IMAGE_PREFIX + id, name: imageDownloadName(alt), alt };
   return { id, url, previewUrl: `${url}?preview=1`, name: imageDownloadName(alt), alt };
 }
 
 /** Markdown may put inline code beside attachment prose; never turn an example
  * in a code span into a live thumbnail. */
-function transformProse(segment: string, collect: (id: string, label: string) => void, seen: Set<string>): string {
-  let output = segment.replace(IMAGE_MARKDOWN, (_match, label: string, id: string) => {
-    collect(id, label);
+type CollectImage = (id: string, label: string, cli?: boolean) => void;
+
+function transformProse(segment: string, collect: CollectImage, seen: Set<string>, includeCli: boolean): string {
+  const normalized = includeCli ? mapCliImageLinks(segment, id => CLI_IMAGE_PREFIX + id) : segment;
+  let output = normalized.replace(IMAGE_MARKDOWN, (match, label: string, prefix: string, id: string) => {
+    const cli = prefix === CLI_IMAGE_PREFIX;
+    if (cli && (!includeCli || !cliImageId(prefix + id))) return match;
+    collect(id, label, cli);
     return "";
   });
   output = output.replace(ATTACHMENT_LINK, (match, label: string, id: string) => {
@@ -80,16 +89,16 @@ function transformProse(segment: string, collect: (id: string, label: string) =>
   return output;
 }
 
-function transformLine(line: string, collect: (id: string, label: string) => void, seen: Set<string>): string {
+function transformLine(line: string, collect: CollectImage, seen: Set<string>, includeCli: boolean): string {
   let output = "";
   let cursor = 0;
   while (cursor < line.length) {
     const open = line.indexOf("`", cursor);
     if (open < 0) {
-      output += transformProse(line.slice(cursor), collect, seen);
+      output += transformProse(line.slice(cursor), collect, seen, includeCli);
       break;
     }
-    output += transformProse(line.slice(cursor, open), collect, seen);
+    output += transformProse(line.slice(cursor, open), collect, seen, includeCli);
     let run = 1;
     while (line[open + run] === "`") run++;
     const marker = "`".repeat(run);
@@ -105,14 +114,14 @@ function transformLine(line: string, collect: (id: string, label: string) => voi
 }
 
 /** Extract image attachments and remove their Markdown from the display text. */
-export function parseMessageMedia(value: string): ParsedMessage {
+export function parseMessageMedia(value: string, includeCli = false): ParsedMessage {
   const images: MessageImage[] = [];
   const seen = new Set<string>();
-  const collect = (id: string, label: string) => {
-    const url = `/api/attachments/${id}`;
+  const collect: CollectImage = (id, label, cli = false) => {
+    const url = cli ? CLI_IMAGE_PREFIX + id : `/api/attachments/${id}`;
     if (!seen.has(url)) {
       seen.add(url);
-      images.push(makeImage(id, label));
+      images.push(makeImage(id, label, cli));
     }
   };
   const lines: string[] = [];
@@ -134,7 +143,13 @@ export function parseMessageMedia(value: string): ParsedMessage {
       lines.push(line);
       continue;
     }
-    lines.push(transformLine(line, collect, seen));
+    const standalone = includeCli ? STANDALONE_CLI_IMAGE.exec(line) : null;
+    const image = standalone && cliImageId(standalone[1]);
+    if (image) {
+      collect(image, "图片", true);
+      continue;
+    }
+    lines.push(transformLine(line, collect, seen, includeCli));
   }
   const text = lines
     .join("\n")

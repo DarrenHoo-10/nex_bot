@@ -177,13 +177,8 @@ struct PreviewCard: View {
     }
 
     private func code(_ text: String) -> some View {
-        ScrollView {
-            Text(text).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).padding(8)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxHeight: 220)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        ToolCodeBlock(text: text)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func copy() {

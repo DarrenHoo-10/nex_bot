@@ -292,12 +292,13 @@ struct JobIDBody: Encodable { let jobId: String }
 /// `todos/action` sent from a job's report card with the todo id and version the card shows.
 struct JobTodoAction: Encodable { let id: String; let version: Int; let action: String; let clientId: String; let feedback: String? }
 struct ConnectorToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
-struct ConnectorGrantBody: Encodable { let id: String; let version: Int; let botId: String; let tools: [String] }
 struct FeishuBotBody: Encodable { let botId: String }
 struct TopicBody: Encodable { let botId: String }
 struct FeishuIDBody: Encodable { let id: String }
 struct FeishuSaveBody: Encodable { let appId: String; let appSecret: String; let brand: String; let botId: String }
+struct FeishuReceiverBody: Encodable { let id: String; let version: Int; let botId: String }
 struct FeishuToggleBody: Encodable { let id: String; let version: Int; let enabled: Bool }
+struct FeishuGroupBody: Encodable { let id: String; let chatId: String; let trigger: String; let session: String; let context: String; let version: Int }
 struct EmptyPost: Encodable {}
 struct BindCodeResult: Decodable { let code: String }
 struct NameBody: Encodable { let name: String }
@@ -396,9 +397,6 @@ extension CoreClient {
     public func testConnector(id: String, version: Int) async throws -> Int {
         try await post("/api/connectors/test", IDVersion(id: id, version: version), timeout: 40, as: CountResult.self).count
     }
-    public func grantConnector(id: String, version: Int, botID: String, tools: [String]) async throws {
-        try await post("/api/connectors/grant", body: ConnectorGrantBody(id: id, version: version, botId: botID, tools: tools))
-    }
     public func toggleConnector(id: String, version: Int, enabled: Bool) async throws {
         try await post("/api/connectors/toggle", body: ConnectorToggleBody(id: id, version: version, enabled: enabled))
     }
@@ -416,10 +414,19 @@ extension CoreClient {
     public func feishuBindStart(id: String) async throws -> String { try await post("/api/feishu/bind/start", body: FeishuIDBody(id: id), as: BindCodeResult.self).code }
     public func feishuUserAuthStart(id: String) async throws { try await post("/api/feishu/user-auth/start", body: FeishuIDBody(id: id)) }
     public func feishuUserAuthCancel() async throws { try await post("/api/feishu/user-auth/cancel", body: EmptyPost()) }
+    public func feishuChangeReceiver(id: String, version: Int, botID: String) async throws {
+        try await post("/api/feishu/receiver", body: FeishuReceiverBody(id: id, version: version, botId: botID))
+    }
     public func feishuToggle(id: String, version: Int, enabled: Bool) async throws {
         try await post("/api/feishu/toggle", body: FeishuToggleBody(id: id, version: version, enabled: enabled))
     }
     public func feishuDelete(id: String, version: Int) async throws { try await post("/api/feishu/delete", body: IDVersion(id: id, version: version)) }
+    /// `GET /api/feishu/groups?id=`: groups the app's bot is in. `error` carries a failed refresh; the cached list is still returned.
+    public func feishuGroups(id: String) async throws -> FeishuGroupList { try await get("/api/feishu/groups", query: [("id", id)]) }
+    /// `POST /api/feishu/groups/save`: one group's reply mode and context. Saving an unclaimed group claims it for the bound owner.
+    public func feishuSaveGroup(id: String, chatID: String, trigger: String, session: String, context: String, version: Int) async throws -> FeishuGroup {
+        try await post("/api/feishu/groups/save", body: FeishuGroupBody(id: id, chatId: chatID, trigger: trigger, session: session, context: context, version: version), as: FeishuGroup.self)
+    }
 
     // Chat attachments and permission mode
     /// `POST /api/attachments`: uploads one file (base64 in JSON) for `botID`. At most 5 MiB and not empty; the 5-per-message

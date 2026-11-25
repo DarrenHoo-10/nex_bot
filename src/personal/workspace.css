@@ -106,6 +106,13 @@
 .rk-workspace .approval strong { font-size: 13px; }.rk-workspace .approval small, .rk-workspace .approval summary { font-size: 11px; color: var(--muted-foreground); }
 .rk-workspace .approval pre { overflow: auto; max-height: 180px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rk-workspace .step-row { background: none; border: 0; font-size: 11px; width: 100%; display: flex; padding: 6px 0; gap: 6px; }.rk-workspace .step-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.rk-workspace .step-row small { margin-left: auto; }
+.rk-workspace .step-detail { margin: 0 0 6px 5px; padding: 2px 0 2px 12px; border-left: 2px solid var(--input); display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
+.rk-workspace .step-detail .step-block { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; }
+.rk-workspace .step-detail .step-block-label { font-size: 10px; color: var(--muted-foreground); }
+.rk-workspace .step-detail p { margin: 0; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rk-workspace .step-detail pre { box-sizing: border-box; margin: 0; padding: 8px 11px; background: var(--secondary); border-radius: 9px; font-size: 11px; line-height: 1.55; max-height: min(260px, 35vh); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rk-workspace .step-detail-empty { margin: 2px 0 8px 5px; font-size: 11px; color: var(--muted-foreground); }
+.rk-workspace .step-detail-empty p { margin: 0 0 4px; font-size: 11px; color: var(--muted-foreground); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Inspector */
 .rk-workspace .ds-look-picker { grid-column: 1 / -1; width: 100%; }
@@ -223,3 +230,30 @@
 .search-message-target { border-radius: 12px; outline: 2px solid var(--primary); outline-offset: 5px; scroll-margin-block: 24px; }
 .rk-workspace .update-banner { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 7px 12px; background: var(--secondary); color: var(--foreground); font-size: 13px; }
 .rk-workspace .update-banner button { padding: 3px 12px; border: 0; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12px; }
+
+.assistant-contact-row { position: relative; }
+.assistant-contact-row:has(.assistant-more) .contact-item-heading { padding-right: 27px; }
+.contact-item-preview time { flex: none; font-size: 10px; color: var(--muted-foreground); }
+.assistant-more { position:absolute; right:4px; top:1px; width:28px; height:25px; display:grid; place-items:center; border:0; border-radius:7px; color:var(--muted-foreground); background:transparent; }
+.assistant-more:hover,.assistant-more:focus-visible { background:var(--secondary); }
+.assistant-actions-menu { color:var(--foreground);background:var(--background, Canvas);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px #17263428; }
+.assistant-actions-menu { position:fixed;z-index:1200;padding:4px;min-width:130px; }
+.assistant-actions-menu button { display:block;width:100%;padding:8px 12px;text-align:left;background:transparent;border:0;border-radius:8px;color:inherit; }
+.assistant-actions-menu button:focus,.assistant-actions-menu button:hover { background:var(--secondary); }
+.assistant-actions-menu .danger-link { color:var(--destructive,#bc3447); }
+
+/* NexBot / NexAgent switch in the brand corner */
+.workspace-brand { position: relative; }
+.rk-workspace .workspace-brand:has(.mode-switcher) { gap: 4px; }
+.mode-switcher { flex: 1; min-width: 0; display: flex; }
+.mode-switcher-button { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; height: 38px; margin-left: -6px; padding: 0 5px 0 6px; border: 0; border-radius: 12px; background: transparent; color: inherit; cursor: pointer; }
+.mode-switcher-button:hover, .mode-switcher-button[aria-expanded="true"] { background: var(--wash, var(--secondary)); }
+.workspace-brand .mode-switcher-button strong { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mode-switcher-chevron { flex-shrink: 0; margin-left: -2px; color: var(--muted-foreground); transition: transform .15s; }
+.mode-switcher-button[aria-expanded="true"] .mode-switcher-chevron { transform: rotate(180deg); }
+.mode-switcher-badge { flex-shrink: 0; line-height: 17px; }
+.mode-menu { top: calc(100% + 4px); bottom: auto; right: auto; width: 224px; }
+.rk-workspace .mode-menu button { min-height: 40px; padding: 8px 10px; }
+.mode-menu .contact-unread { flex: 0 0 auto; line-height: 17px; }
+.mode-menu button[aria-checked="true"] > svg:last-child { color: var(--foreground); }
+.rk-workspace .mode-menu button .nex-brand-mark { flex: 0 0 auto; }

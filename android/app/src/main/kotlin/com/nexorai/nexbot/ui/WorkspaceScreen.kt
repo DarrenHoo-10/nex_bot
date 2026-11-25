@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
+import android.util.Base64
 import android.webkit.WebMessage
 import android.webkit.WebMessagePort
 import android.webkit.ValueCallback
@@ -32,6 +33,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.nexorai.nexbot.core.CliStreamRelay
 import com.nexorai.nexbot.core.LiveFrame
 import com.nexorai.nexbot.core.WorkspaceTransport
 import com.nexorai.nexbot.sync.Repository
@@ -92,8 +94,16 @@ fun WorkspaceScreen(state: Repository.UiState, repository: Repository) {
 internal class AndroidWorkspace(private val context: Context, private val repository: Repository, private val origin: String, coreOrigin: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val transport = repository.workspaceTransport()
-    private val subscriptions = mutableSetOf<String>()
+    private val subscriptions = mutableMapOf<String, String>()
     private val streams = mutableMapOf<String, Job>()
+    // Agent mode socket. The page owns reconnecting (see CliStreamRelay); this only
+    // relays frames and ends every socket when the screen stops, so none outlives it.
+    private val cliStream = repository.workspaceCliStream(object : CliStreamRelay.Sink {
+        override fun opened(id: String) = streamEvent(id, "open")
+        override fun text(id: String, text: String) = streamEvent(id, "text", text)
+        override fun binary(id: String, base64: String) = streamEvent(id, "binary", base64)
+        override fun closed(id: String, code: Int) = streamEvent(id, "close", code.toString())
+    })
     private var active = true
     private var closed = false
     private var pendingBot: String? = null
@@ -141,16 +151,18 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                 if (uri.scheme == "data") return null
                 val path = uri.path.orEmpty()
                 // Image previews come from Core with the native token; storage URLs never reach the page.
-                if (request.method == "GET" && "https://${uri.host}" == origin && WorkspaceTransport.isAttachmentPreview(path, uri.query)) {
+                if (request.method == "GET" && uri.scheme == "https" && "https://${uri.host}" == origin &&
+                    (WorkspaceTransport.isAttachmentPreview(path, uri.query) || WorkspaceTransport.isGroupAvatar(path, uri.query) ||
+                     WorkspaceTransport.isCliImagePreview(path, uri.query))) {
                     return try {
-                        val reply = transport.request("$path?preview=1", "GET", "")
+                        val reply = transport.request(path + uri.encodedQuery?.let { "?$it" }.orEmpty(), "GET", "")
                         val mime = reply.contentType.substringBefore(';').trim()
                         if (reply.status == 200 && mime.startsWith("image/")) response(200, mime, ByteArrayInputStream(reply.body))
                         else response(404, "text/plain", ByteArrayInputStream(ByteArray(0)))
                     } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
                 }
                 if (uri.scheme != "https" || "https://${uri.host}" != origin || request.method != "GET" ||
-                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path == "/html-preview.html" || path.startsWith("/assets/") || (path.startsWith("/companions/") && path.endsWith(".png")))) {
+                    path.contains("..") || path.contains('\\') || !(path == "/" || path == "/index.html" || path == "/html-preview.html" || path == "/feishu-logo.png" || path.startsWith("/assets/") || (path.startsWith("/companions/") && path.endsWith(".png")))) {
                     return response(403, "text/plain", ByteArrayInputStream(ByteArray(0)))
                 }
                 return try {
@@ -165,6 +177,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
             override fun onPageFinished(view: WebView?, url: String?) {
                 if (url != "$origin/index.html" || view == null) return
                 bridgePort?.close()
+                cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = false) // the new page knows none of the old ids
                 val channel = view.createWebMessageChannel()
                 bridgePort = channel[0]
                 channel[0].setWebMessageCallback(object : WebMessagePort.WebMessageCallback() {
@@ -176,8 +189,9 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                             when (data.getString("method")) {
                                 "request" -> request(args.getString(0), args.getString(1), args.getString(2), args.getString(3))
                                 "action" -> action(args.getString(0), args.getString(1), args.getString(2))
-                                "subscribe" -> subscribe(args.getString(0))
+                                "subscribe" -> subscribe(args.getString(0), args.optString(1))
                                 "unsubscribe" -> unsubscribe(args.getString(0))
+                                else -> cliStream.dispatch(data.getString("method"), List(args.length()) { args.getString(it) })
                             }
                         } catch (_: Exception) { /* Ignore malformed bridge messages. */ }
                     }
@@ -202,11 +216,26 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private fun event(id: String, type: String, data: String = "") {
         if (!closed) web.evaluateJavascript("window.__nexEvent?.(${JSONObject.quote(id)},${JSONObject.quote(type)},${JSONObject.quote(data)})", null)
     }
+    /** Frames arrive on OkHttp threads; the WebView is only touched from the main one. */
+    private fun streamEvent(id: String, type: String, data: String = "") {
+        scope.launch {
+            if (!closed) web.evaluateJavascript("window.__nexStream?.(${JSONObject.quote(id)},${JSONObject.quote(type)},${JSONObject.quote(data)})", null)
+        }
+    }
     private fun request(id: String, path: String, method: String, body: String) {
         scope.launch {
             try {
-                val result = withContext(Dispatchers.IO) { transport.request(path, method, body) }
-                reply(id, JSONObject().put("status", result.status).put("body", result.body.toString(Charsets.UTF_8)))
+                val result = withContext(Dispatchers.IO) {
+                    val response = transport.request(path, method, body)
+                    val preview = method == "GET" && WorkspaceTransport.isAttachmentPreview(path.substringBefore('?'), path.substringAfter('?', ""))
+                    val mime = response.contentType.substringBefore(';').trim()
+                    if (preview && response.status == 200 && mime in setOf("image/png", "image/jpeg", "image/webp")) {
+                        if (response.body.size <= 2 * 1024 * 1024) JSONObject().put("status", 200).put("mime", mime)
+                            .put("binary", Base64.encodeToString(response.body, Base64.NO_WRAP))
+                        else JSONObject().put("status", 413)
+                    } else JSONObject().put("status", response.status).put("body", response.body.toString(Charsets.UTF_8))
+                }
+                reply(id, result)
             } catch (failure: Exception) {
                 if (failure is CancellationException) throw failure
                 reply(id, JSONObject().put("error", failure.message ?: "连接失败"))
@@ -265,24 +294,31 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private fun external(url: String) {
         openWorkspaceExternal(context, url)
     }
-    private fun subscribe(id: String) { scope.launch { subscriptions.add(id); startStream(id) } }
+    private fun subscribe(id: String, query: String) { scope.launch { subscriptions[id] = query; startStream(id) } }
     private fun unsubscribe(id: String) { scope.launch { subscriptions.remove(id); streams.remove(id)?.cancel() } }
     private fun startStream(id: String) {
         if (!active || streams[id]?.isActive == true) return
+        val query = subscriptions[id] ?: return
         streams[id] = scope.launch {
             var cursor: String? = null
+            var assetGeneration: Triple<String, String, Long>? = null
             while (isActive) {
                 try {
-                    repository.workspaceEvents(cursor).collect { frame ->
-                        event(id, "open")
+                    var opened = false
+                    repository.workspaceEvents(cursor, query).collect { frame ->
+                        if (!opened) { opened = true; event(id, "open") }
                         when (frame) {
                             is LiveFrame.Change -> {
                                 cursor = frame.cursor.toString()
+                                val generation = Triple(frame.coreId, frame.bootId, frame.privacyEpoch)
+                                if (frame.reset || (assetGeneration != null && assetGeneration != generation)) transport.clearAssets()
+                                assetGeneration = generation
                                 event(id, "change", JSONObject().put("cursor", frame.cursor).put("privacyEpoch", frame.privacyEpoch)
-                                    .put("coreId", frame.coreId).put("bootId", frame.bootId).put("reset", frame.reset).toString())
+                                    .put("coreId", frame.coreId).put("bootId", frame.bootId).put("reset", frame.reset)
+                                    .put("revision", frame.revision ?: JSONObject.NULL).toString())
                             }
                             LiveFrame.Revoked -> event(id, "revoked", "{}")
-                            is LiveFrame.Unknown -> Unit
+                            is LiveFrame.Unknown -> if (frame.event == "delta") event(id, "delta", frame.data) else Unit
                         }
                     }
                 } catch (failure: Exception) { if (failure is CancellationException) throw failure }
@@ -295,9 +331,10 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
         pendingBot = id
         if (loaded) web.evaluateJavascript("window.dispatchEvent(new CustomEvent('nex-android-agent',{detail:${JSONObject.quote(id)}}))", null)
     }
-    fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); web.onPause(); web.pauseTimers() }
-    fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'))", null) }
-    fun close() { closed = true; bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
+    // The page hears about each ended socket before it is paused, then reconnects on resume ('online' skips its backoff).
+    fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = true); web.onPause(); web.pauseTimers() }
+    fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.keys.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('online'))", null) }
+    fun close() { closed = true; transport.clearAssets(); cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = false); bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
 }
 
 internal fun openWorkspaceExternal(context: Context, url: String) {

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { WebSocket } from "ws";
 import { afterEach, expect, it } from "vitest";
 import { createPersonalApp } from "./index.ts";
 import { createWorkspaceService } from "./workspaces.ts";
+import { startFakeGithub } from "./testing/fake-github.ts";
 import { startFakeIdentity } from "./testing/fake-identity.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
 
@@ -17,12 +18,12 @@ interface FixtureBody {
   node: { connected: boolean }; onlineDevices: string[];
 }
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-async function fixture() {
+async function fixture(githubOrigin?: string) {
   const root = mkdtempSync(path.join(os.tmpdir(), "nex-accounts-fixture-"));
   cleanup.push(async () => { rmSync(root, { recursive: true, force: true }); });
   const provider = await startFakeIdentity(), model = await startFakeModel();
   cleanup.push(() => provider.close(), () => model.close());
-  const options = { dir: root, key: randomBytes(32), token: "synthetic-bootstrap", identity: { fixtureOrigin: provider.origin } };
+  const options = { ...(githubOrigin ? { github: { fixtureOrigin: githubOrigin }, publicOrigin: "https://nex.example.test" } : {}), dir: root, key: randomBytes(32), token: "synthetic-bootstrap", identity: { fixtureOrigin: provider.origin } };
   const legacy = await createPersonalApp(options);
   const operator = legacy.store.get("SELECT * FROM user_sessions WHERE id=?", legacy.store.session)!;
   const challenge = legacy.identity!.start({ account: "owner@example.test", name: "Original owner" }, operator);
@@ -86,8 +87,8 @@ it("isolates actual model messages, memory, connectors and adversarial foreign o
   const connector = (await f.api("connectors/save", other.token, { name: "Other MCP", url: "https://example.test/mcp", transport: "http", token: "other-private-mcp" })).data;
   expect((await f.api("state", f.owner.token)).data.connectors).toEqual([]);
   expect((await f.api("connectors/delete", f.owner.token, { id: connector.id, version: connector.version })).status).toBe(400);
-  expect((await f.api("agents/input", other.token, { botId: original.id, text: "attack", clientId: "foreign-input" })).status).toBe(400);
-  expect((await f.api("agents/input", f.owner.token, { botId: bot.id, text: "attack", clientId: "foreign-input" })).status).toBe(400);
+  expect((await f.api("agents/input", other.token, { botId: original.id, text: "attack", clientId: "foreign-input" })).status).toBe(404);
+  expect((await f.api("agents/input", f.owner.token, { botId: bot.id, text: "attack", clientId: "foreign-input" })).status).toBe(404);
   f.model.scripts.push({ kind: "openai-text", text: "other-private-reply" });
   const sent = await f.api("agents/input", other.token, { botId: bot.id, text: "other-private-message", clientId: "own-input" });
   expect(sent.status).toBe(202);
@@ -132,4 +133,51 @@ it("keeps device pairing and revocation inside the selected account", async () =
   await f.api("auth/logout", other.token, {});
   expect((await f.api("state", other.token)).status).toBe(401);
   expect((await f.api("state", f.owner.token)).status).toBe(200);
+});
+
+it("routes signed GitHub deliveries to the account that created the monitor through atomic tools", async () => {
+  const github = await startFakeGithub();
+  cleanup.push(() => github.close());
+  const f = await fixture(github.origin);
+  const token = (await f.login()).data.token;
+  const bot = (await f.api("bots", token, { name: "接收 PR" })).data;
+  expect((await f.api("connectors/save", token, { provider: "github", token: "synthetic-hook-test" })).status).toBe(200);
+  const child = [...f.app.workspaces.values()][0];
+  const c = child.connectors.list()[0];
+  const repo = "example/nexbot";
+  async function call(tool: string, parameters: Record<string, unknown>) {
+    const result = await child.connectors.execute({ bot_id: bot.id, task_id: "fixture" }, {
+      action: "connector.call", connectorId: c.id, connectorVersion: c.version, tool, parameters,
+    }, async () => {});
+    return JSON.parse((result as { text: string }).text);
+  }
+  const { monitorId } = await call("monitor.create", { repo });
+  expect(await call("monitor.create", { repo })).toEqual({ created: false, monitorId });
+  expect(await call("monitor.list", { repo })).toMatchObject([{ id: monitorId, botId: bot.id }]);
+  expect(await call("github.webhook.list", { repo })).toMatchObject({ items: [] });
+  await expect(call("github.webhook.create", { repo: "other/repo", monitorId, events: ["pull_request"] })).rejects.toThrow();
+  expect(await call("github.webhook.create", { repo, monitorId, events: ["pull_request"] })).toEqual({ hookId: 1 });
+  const listed = await call("github.webhook.list", { repo });
+  expect(listed.items).toEqual([{ hookId: 1, active: true, events: ["pull_request"], monitorId }]);
+  const { url, secret } = github.hooks[0].config;
+  expect(url).toBe("https://nex.example.test/hooks/github/" + monitorId);
+  expect(await call("github.webhook.ping", { repo, hookId: 1 })).toMatchObject({ requested: true });
+  expect(await call("monitor.deliveries", { monitorId })).toEqual([]);
+  const post = async (event: string, payload: object, key = secret) => {
+    const body = JSON.stringify({ repository: { full_name: repo }, ...payload });
+    return fetch(f.app.origin + new URL(url).pathname, { method: "POST", body, headers: {
+      "Content-Type": "application/json", "X-GitHub-Event": event, "X-GitHub-Delivery": event, "X-GitHub-Hook-ID": "1",
+      "X-Hub-Signature-256": "sha256=" + createHmac("sha256", key).update(body).digest("hex"),
+    } });
+  };
+  expect((await post("ping", {}, "wrong")).status).toBe(401);
+  expect((await post("ping", {})).status).toBe(202);
+  const pr = { action: "opened", pull_request: { number: 19, title: "atomic PR", head: { ref: "branch" } } };
+  for (let i = 0; i < 2; i++) expect((await post("pull_request", pr)).status).toBe(202);
+  const records = await call("monitor.deliveries", { monitorId });
+  expect(records.map((r: { kind: string }) => r.kind).sort()).toEqual(["pr_opened", "webhook.ping", "webhook.pull_request"]);
+  expect(JSON.stringify(records)).not.toContain(secret);
+  const sql = "SELECT content FROM agent_messages WHERE content LIKE '%atomic PR%'";
+  expect(child.store.all(sql)).toHaveLength(1);
+  expect(f.app.store.all(sql)).toHaveLength(0);
 });

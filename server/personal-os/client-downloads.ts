@@ -14,7 +14,7 @@ interface GitHubAsset { name?: unknown; browser_download_url?: unknown; size?: u
 interface GitHubRelease { draft?: unknown; tag_name?: unknown; published_at?: unknown; assets?: unknown }
 
 const platforms = {
-  windows: /^NexBot-(\d+\.\d+\.\d+)-x64-Client-Portable\.exe$/,
+  windows: /^NexBot-(\d+\.\d+\.\d+)-x64-Client-(?:Setup|Portable)\.exe$/,
   // Unsigned APKs cannot be installed, so they are never offered.
   android: /^nexbot-(\d+\.\d+\.\d+)-(?!unsigned)[a-z]+\.apk$/,
 } as const;

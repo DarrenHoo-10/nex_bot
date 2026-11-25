@@ -1,26 +1,34 @@
+import { startWebUpdateChecks, webUpdates } from "./web-updates";
+import { userErrorText } from "../lib/http-errors";
+import { formatCompactTokens } from "../lib/token-count";
+import { AssistantActionDialog } from "./components/AssistantActions";
 import { TopicBubble, topicTimeline, type FinanceTopic } from './FinanceTopics';
 import { universalActions } from '../../shared/personal-capabilities';
-import { createContext, memo, useMemo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type ReactNode } from "react";
+import { createContext, lazy, memo, Suspense, useMemo, useCallback, useContext, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type ReactNode } from "react";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "../lib/bottom-follow";
 import Markdown, { type ExtraProps } from "react-markdown";
 import type { ComponentProps } from "react";
 import { ChatChart } from "./components/ChatChart";
 import { HtmlPreview } from "./components/HtmlPreview";
 import { htmlPreviewParts } from "../../shared/html-preview";
+import { cliImageId } from "../../shared/cli-images";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { rehypeStaticHTML } from "./static-html";
-import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, Share2, Shield, Sparkles, Square, X, Zap } from "lucide-react";
-import { api, desktop, jobStageLabels, modelName, openJob, reasoningLabels, resolveReasoning, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
+import { ArrowDown, ArrowUp, AtSign, Check, ChevronDown, CircleAlert, Clock, Copy, CornerUpLeft, FileText, Image as ImageIcon, Loader2, Plus, PanelLeft, PanelRight, Sparkles, Square, X } from "lucide-react";
+import { agentModeAvailable, api, desktop, jobStageLabels, modelName, openJob, statuses, str, taskPhrase, toolLabels, type ClientUpdateState, type Job, type PreviewItem, type ReasoningChoice, type RecordRow, type State, type ToolStep } from "./api";
 import { useAccount } from "./auth";
+import { usePersistentPreview } from "./use-persistent-preview";
+import { authorizeLocalCache, clearLocalCache, localCacheScope, queueLocalCache, readLocalCache } from "./local-content-cache";
 import { Confirm, Editor, SettingsPage, type SettingsCategory } from "./panels";
 import { ProviderSettings } from "./ProviderSettings";
 import { AvatarPicker } from "./components/AvatarPicker";
 import { AgentAvatar as Avatar } from "./components/AgentAvatar";
 import { TodoWorkspace } from "./todo/TodoWorkspace";
-import { ContactSidebar } from "./components/ContactSidebar";
+import { ContactSidebar, type AgentSidebarSlot } from "./components/ContactSidebar";
 import type { ConversationMatch } from "./components/ConversationSearch";
 import { ToolActivityDisclosure } from "./vendor/rakazo/ToolActivityDisclosure";
+import { ToolStepDetail } from "./components/ToolStepDetail";
 import { companionState, companionLabels, type CompanionState } from "./avatars/appearance";
 import { BrandMark } from "./components/BrandMark";
 import { ComposerControls } from "./components/ComposerControls";
@@ -29,14 +37,20 @@ import { replyLayout } from "./long-reply";
 import { MessageImages } from "./components/MessageImages";
 import { ImageLightbox } from "./components/ImageLightbox";
 import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
-import { ModelMenu, type ModelChoice } from "./components/ModelMenu";
+import { useModelChoice } from "./components/use-model-choice";
 import { BotIdentity } from "./components/BotIdentity";
 import { RoutineDetail, routineSchedule, routineEnded } from "./components/RoutineDetail";
 import { RoutineOccurrenceDetail } from "./components/RoutineOccurrenceDetail";
 import { JobChat } from "./components/JobChat";
+import { AssistantSwitcher } from "./components/AssistantSwitcher";
+import { ConversationActionButton } from "./components/ConversationActionButton";
 import { JobReportCard, type JobCardActions } from "./components/JobReportCard";
 import { copyText as writeCopyText } from "../lib/copy-text";
 import { imageFilesFromClipboard, optimisticOutgoing, transcriptMessageKey, withPendingOptimistic, withoutCommittedStreaming } from "./transcript-session";
+
+// Agent mode pulls in the terminal stack, so it loads only when opened.
+const agentSection = agentModeAvailable;
+const CliAgentsWorkspace = lazy(() => import("./cli-agents/CliAgentsWorkspace").then((module) => ({ default: module.CliAgentsWorkspace })));
 
 const terminal = ["succeeded", "failed", "cancelled", "rejected"];
 const formatTime = (value: RecordRow[string]) => value ? new Date(Number(value)).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -56,7 +70,7 @@ const formatDay = (value: RecordRow[string]) => {
 
 function AgentPolicyEditor({ bot, close, save }: { bot: RecordRow; close: () => void; save: (tools: string[]) => Promise<unknown> }) {
   const [tools, setTools] = useState<string[]>(JSON.parse(str(bot.policy_json) || "{}").tools ?? []);
-  const labels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "按需生成图片", "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看已授权连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
+  const labels: Record<string, string> = { "html.render": "展示交互内容", "image.models": "查看生图模型", "image.generate": "按需生成图片", "memory.search": "检索自身与共享记忆", "memory.reflect": "综合记忆并引用来源", "memory.read": "读取自身与共享记忆", "memory.write": "维护自身私有记忆", "memory.delete": "撤回自身私有记忆", "memory.forget": "彻底遗忘相关原文与副本", "tool.search": "查询工具", "todo.list": "查看待办", "todo.save": "保存待办", "todo.delete": "删除待办", "routine.list": "查看自己的计划", "routine.save": "安排或修改自己的计划", "routine.toggle": "暂停或恢复自己的计划", "routine.run": "立即运行自己的计划", "routine.delete": "删除自己的定时任务", "agent.directory": "读取 Agent 公开目录", "agent.delegate": "联系同伴", "agent.create": "按指示招募新同伴", "agent.update": "按指示更新同伴资料", "device.list": "查看已授权设备目录", "device.read": "读取已授权设备文件", "device.exec": "执行设备终端命令", "device.inventory": "识别设备与在线状态", "device.info": "读取设备系统信息", "device.computer": "使用获准的电脑窗口", "connector.list": "查看可用连接器", "connector.tools": "查看连接器工具", "connector.call": "调用连接器工具", "attachment.read": "读取对话附件", "skill.list": "查看通用技能目录", "skill.read": "阅读通用技能说明" };
   return <><div className="modal-heading"><h2>{bot.name} 的工具权限</h2><button aria-label="关闭" onClick={close}><X size={18}/></button></div><form onSubmit={(event) => { event.preventDefault(); void save(tools); }}><div className="policy-grid">{Object.entries(labels).map(([action, label]) => <label className="check-field" key={action}><input type="checkbox" checked={universalActions.some(tool => tool === action) || tools.includes(action)} disabled={universalActions.some(tool => tool === action)} onChange={(event) => setTools((current) => event.target.checked ? [...current, action] : current.filter((tool) => tool !== action))}/>{label}</label>)}</div><div className="actions"><button className="primary">保存</button><button type="button" onClick={close}>取消</button></div></form></>;
 }
 
@@ -72,9 +86,14 @@ const FilePreviewContext = createContext<((path: string) => void) | undefined>(u
 const imageName = /\.(?:png|jpe?g|webp|gif)$/i;
 /** Images are always served by Core; clients never receive storage URLs. */
 function AttachmentImage({ id, alt }: { id: string; alt: string }) {
-  return <img className="generated-chat-image" src={`/api/attachments/${id}?preview=1`} alt={alt} loading="lazy"/>;
+  const image = useRef<HTMLImageElement>(null);
+  const source = usePersistentPreview(`/api/attachments/${id}?preview=1`, image);
+  return <img ref={image} className="generated-chat-image" src={source} alt={alt} loading="lazy"/>;
 }
 function MarkdownImage({ src, alt }: ComponentProps<'img'> & ExtraProps) {
+  if (typeof src === "string" && cliImageId(src)) {
+    return <img className="generated-chat-image" src={src} alt={alt ?? "图片"} loading="lazy"/>;
+  }
   const id = typeof src === "string" ? /^\/api\/attachments\/([a-zA-Z0-9-]+)$/.exec(src)?.[1] : undefined;
   return id ? <AttachmentImage id={id} alt={alt ?? "生成图片"}/> : <span>{alt ?? "图片"}</span>;
 }
@@ -103,20 +122,43 @@ export const RichText = memo(function RichText({ value, onPreviewFile, pending =
     : <Markdown key={index} remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeStaticHTML]} components={markdownComponents}>{part.source}</Markdown>)}</FilePreviewContext.Provider></div>;
 });
 
+type LiveReply = { taskId: string; text: string };
+type HistoryFeed = { messages: RecordRow[]; streaming: LiveReply[]; sync: State["sync"]; hasMore: boolean; hasOlder?: boolean };
+type HistoryCursor = { after: number; at: number } | { before: number; at: number } | { around: string; at: number };
+
+function historyWindowPath(bot: string, conversation: string | undefined, cursor: HistoryCursor) {
+  const params = new URLSearchParams({ bot, ...(conversation ? { conversationId: conversation } : {}), view: "window" });
+  for (const [key, value] of Object.entries(cursor)) params.set(key, String(value));
+  return `agents/messages?${params}`;
+}
+const latestCursor = (at = Date.now()): HistoryCursor => ({ before: Number.MAX_SAFE_INTEGER, at });
+const afterMessage = (last: RecordRow | undefined): HistoryCursor => ({ after: Number(last?.seq ?? 0), at: Number(last?.created_at ?? 0) });
+
 export function AgentDesktop() {
   const { status: accountStatus, logout } = useAccount();
   const [state, setState] = useState<State>();
-  const [page, setPage] = useState(() => new URLSearchParams(window.location.search).get("settings") === "feishu" ? "settings" : "agent");
+  const [page, setPage] = useState(() => new URLSearchParams(window.location.search).get("settings") === "feishu" ? "settings" : new URLSearchParams(location.search).get("workspace") === "nexagent-review" && agentSection ? "cli" : "agent");
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>(page === "settings" ? "connectors" : "account");
   const openSettings = (category: SettingsCategory = "account") => { setSettingsCategory(category); setPage("settings"); setSidebarOpen(false); };
   const [financeBotId,setFinanceBotId]=useState<string>();
   const [botId, setBotId] = useState(localStorage.getItem("nexbot.selectedAgent") ?? "");
-  const finance = Boolean(financeBotId && financeBotId === botId);
+  const bot = state?.bots.find((entry) => entry.id === botId);
+  const connections = state?.connections ?? [];
+  const defaultConnection = connections.find((item) => item.isDefault);
+  const selectedConnection = connections.find((item) => item.id === str(bot?.selected_connection) && item.enabled) ?? defaultConnection;
+  const modelSelection = useModelChoice(botId, bot, {
+    connectionId: selectedConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null,
+  }, connections);
+  // topics are the finance assistant's; a session handed to another assistant opens one there too
+  const [forkBotId, setForkBotId] = useState<string>();
+  const finance = Boolean((financeBotId && financeBotId === botId) || (forkBotId && forkBotId === botId));
+  // An assistant that receives a Feishu app shows its Feishu topics the way the finance assistant does; its main chat stays continuous.
+  const topicMode = finance || Boolean(botId && state?.feishu?.apps.some((app) => app.botId === botId));
   const [topicId, setTopicId] = useState<string>();
   const [topics,setTopics] = useState<FinanceTopic[]>([]);
   const [olderEnd,setOlderEnd] = useState(false);
   const [editInput,setEditInput] = useState<string>();
-  const conversation = finance ? topicId : undefined;
+  const conversation = topicMode ? topicId : undefined;
   const draftKey = conversation ? JSON.stringify([botId,conversation]) : botId;
   const destination = useRef(draftKey);
   destination.current = draftKey;
@@ -155,7 +197,7 @@ export function AgentDesktop() {
       setFiles(target, [...(attachmentDrafts.current.get(target) ?? []), { ...uploaded, mime: uploaded.mime || item.file.type, previewUrl }]);
     } catch (error) {
       if (item.controller.signal.aborted) return;
-      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: error instanceof Error ? error.message : "上传失败，请重试" } : entry));
+      setPendingFiles(target, (pendingDrafts.current.get(target) ?? []).map((entry) => entry.key === item.key ? { ...entry, error: userErrorText(error, "上传失败，请重试") } : entry));
     }
   };
   const upload = async (files: FileList | readonly File[] | null) => {
@@ -207,11 +249,32 @@ export function AgentDesktop() {
   const [quote, setQuote] = useState<{ author: string; text: string }>(), [copiedId, setCopiedId] = useState(""), [exported, setExported] = useState(false);
   // A reply to a background job goes straight to that job, not to the main chat.
   const [replyJob, setReplyJob] = useState<{ id: string; title: string }>(), [jobsOpen, setJobsOpen] = useState(false), [jobView, setJobView] = useState<string>();
+  const jobsAnchor = useRef<HTMLDivElement>(null);
+  // the background-task list closes on a press anywhere outside the pill and the list
+  useEffect(() => {
+    if (!jobsOpen) return;
+    const outside = (event: PointerEvent) => { if (!jobsAnchor.current?.contains(event.target as Node)) setJobsOpen(false); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [jobsOpen]);
   const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
+  const chatVisible = page === "agent" && !jobView;
+  const section = page === "settings" ? "settings" : page === "cli" ? "sessions" : page === "todo" || jobView ? "tasks"
+    : (detail && tab === "settings") || modelChooserOpen ? "chat-settings" : detail ? "work" : "chat";
+  const publishedSync = useRef<State["sync"] | undefined>(undefined);
+  const liveOffsets = useRef(new Map<string, number>());
+  const historyPageRequest = useRef<string | undefined>(undefined);
   const [focusedMessage,setFocusedMessage]=useState("");
-  const messages = useMemo(() => finance && !conversation && !focusedMessage ? topicTimeline(rawMessages,topics) : rawMessages, [finance, conversation, focusedMessage, rawMessages, topics]);
+  const messages = useMemo(() => topicMode && !conversation && !focusedMessage ? topicTimeline(rawMessages,topics) : rawMessages, [topicMode, conversation, focusedMessage, rawMessages, topics]);
+  const lastJobReply = useMemo(() => {
+    const replies = new Map<string, number>();
+    messages.forEach((message, index) => {
+      if (message.role === "user" && message.job_id) replies.set(str(message.job_id), index);
+    });
+    return replies;
+  }, [messages]);
   const historyTarget=useRef<{botId:string;id:string} | undefined>(undefined),scrolledTarget=useRef("");
   const selected = useRef(botId), pageRef = useRef(page), scroll = useRef<HTMLDivElement>(null), transcriptInner = useRef<HTMLDivElement>(null), composerRef = useRef<HTMLTextAreaElement>(null), serial = useRef(0);
   // Set once Core has accepted the send. Cleared only when a later reload publishes
@@ -221,7 +284,7 @@ export function AgentDesktop() {
   useEffect(() => {
     if (desktop?.platform !== "android") return;
     const back = () => {
-      const preview = document.querySelector<HTMLButtonElement>('.html-preview-fullscreen [aria-label="退出全屏"]');
+      const preview = document.querySelector<HTMLButtonElement>('.html-preview-dialog [aria-label="关闭全屏预览"]');
       if (preview) { preview.click(); return; }
       const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
       if (modal) { modal.dispatchEvent(new Event("cancel", { cancelable: true })); return; }
@@ -230,6 +293,11 @@ export function AgentDesktop() {
       const closeModal = document.querySelector<HTMLButtonElement>('.modal-backdrop button[aria-label^="关闭"]:not(:disabled)');
       if (closeModal) { closeModal.click(); return; }
       if (dialog) { setDialog(null); return; }
+      // Agent mode: the supervision popover, then the open session back to the list
+      const supervision = document.querySelector(".cli-supervision-panel");
+      if (supervision) { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return; }
+      const sessionBack = document.querySelector<HTMLButtonElement>('.cli-app[data-mobile="pane"] .cli-back');
+      if (sessionBack && sessionBack.offsetParent !== null) { sessionBack.click(); return; }
       if (detail) { setDetail(false); return; }
       if (page !== "agent") { setPage("agent"); return; }
       if (!sidebarOpen) { setSidebarOpen(true); return; }
@@ -250,10 +318,14 @@ export function AgentDesktop() {
   messagesRef.current = messages;
   useEffect(() => { void desktop?.workspaceReady?.(); }, []);
   const [update, setUpdate] = useState<ClientUpdateState>();
+  const updater = desktop ?? webUpdates;
   useEffect(() => {
-    void desktop?.updateState?.().then(setUpdate).catch(() => {});
-    return desktop?.onUpdateState?.(setUpdate) ?? undefined;
-  }, []);
+    let active = true, changed = false;
+    const unsubscribe = updater.onUpdateState?.(state => { changed = true; if (active) setUpdate(state); });
+    void updater.updateState?.().then(state => { if (active && !changed) setUpdate(state); }).catch(() => {});
+    const stop = desktop ? undefined : startWebUpdateChecks();
+    return () => { active = false; unsubscribe?.(); stop?.(); };
+  }, [updater]);
   useEffect(() => desktop?.onClipboardImage?.((image) => {
     const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array();
     if (!bytes.byteLength || !image.type.startsWith("image/")) return;
@@ -261,8 +333,20 @@ export function AgentDesktop() {
     new Uint8Array(blob).set(bytes);
     void uploadRef.current([new File([blob], image.name.trim() || "截图.png", { type: image.type })]);
   }), []);
-  const loaded = useRef<{ botId: string; messages: RecordRow[]; sync: State["sync"] } | undefined>(undefined);
-  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; pendingSend.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
+  type HistoryWindow = { botId: string; key: string; messages: RecordRow[]; sync: State["sync"]; olderEnd?: boolean };
+  const loaded = useRef<HistoryWindow | undefined>(undefined);
+  const localHistory = useRef(new Map<string, HistoryWindow>());
+  const lastCacheWrite = useRef<string | undefined>(undefined);
+  const historySync = useRef<State["sync"] | undefined>(undefined);
+  const sameHistory = (first: State["sync"] | undefined, second: State["sync"]) =>
+    first?.coreId === second.coreId && first.bootId === second.bootId && first.privacyEpoch === second.privacyEpoch;
+  const rememberHistory = (window: HistoryWindow) => {
+    const recent = localHistory.current;
+    recent.delete(window.key);
+    recent.set(window.key, { ...window, messages: window.messages.slice(-250), olderEnd: window.messages.length <= 250 && window.olderEnd });
+    if (recent.size > 12) recent.delete(recent.keys().next().value!);
+  };
+  const offline = useCallback(() => { ++serial.current; loaded.current = undefined; localHistory.current.clear(); historySync.current = undefined; pendingSend.current = undefined; setConnected(false); setMessages([]); setStreaming([]); setSendingBotId(undefined); setState(undefined); setDialog(null); setError("Core 连接中断，正在重新同步…"); }, []);
   const drafts = useRef(new Map<string, string>()), readPositions = useRef(new Map<string, number>()), retry = useRef<{ botId: string; text: string; id: string } | undefined>(undefined);
   selected.current = botId; pageRef.current = page;
 
@@ -271,8 +355,8 @@ export function AgentDesktop() {
     localStorage.setItem("nexbot.dark", dark ? "1" : "0");
   }, [dark]);
 
-  useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);if (!selected.current && result.botId) setBotId(result.botId);}}).catch((error:Error)=>setError(error.message));return()=>{stopped=true;};},[]);
-  const reload = useCallback(async () => {
+  useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);if (!selected.current && result.botId) setBotId(result.botId);}}).catch((error:Error)=>setError(userErrorText(error)));return()=>{stopped=true;};},[]);
+  const reload = useCallback(async (forceHistory = false, signal?: AbortSignal) => {
     if (destination.current !== draftKey || selected.current !== botId) return;
     const request = ++serial.current, current = selected.current;
     const releaseSend = () => {
@@ -281,21 +365,37 @@ export function AgentDesktop() {
       pendingSend.current = undefined;
       setSendingBotId((id) => id === pending.botId ? undefined : id);
     };
-    type Feed = { messages: RecordRow[]; streaming: Array<{ taskId: string; text: string }>; sync: State["sync"]; hasMore: boolean };
+    const valid = () => !signal?.aborted && request === serial.current && selected.current === current && destination.current === draftKey;
     const target=historyTarget.current?.botId===current?historyTarget.current:undefined;
-    const scope = conversation ? "&conversationId=" + encodeURIComponent(conversation) : "";
-    const base = `agents/messages?bot=${encodeURIComponent(current)}${scope}${target?`&around=${encodeURIComponent(target.id)}`:""}`;
-    // Over a slow link every round trip is visible, so the first page of messages is requested together with the state
-    // and checked against the state's sync identity afterwards.
-    const guess = !target && !conversation && loaded.current?.botId === current ? loaded.current : undefined;
-    const early = current ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
-    early?.catch(() => undefined);
+    const statePath = `state?view=workspace&page=${section}&bot=${encodeURIComponent(current)}`;
+    const conversationQuery = conversation ? "&conversationId=" + encodeURIComponent(conversation) : "";
+    const topicQuery = `bot=${encodeURIComponent(current)}&view=compact` + (conversation ? `&conversationId=${encodeURIComponent(conversation)}` : "");
+    const visible = loaded.current?.key === draftKey ? loaded.current : undefined;
+    const guess = !target ? (visible ?? localHistory.current.get(draftKey)) : undefined;
     const [next, topicList] = await Promise.all([
-      api<State>("state"),
-      finance ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`) : undefined,
+      api<State>(statePath + conversationQuery, undefined, signal),
+      chatVisible && current && topicMode ? api<{topics:FinanceTopic[]}>(`agents/topics?${topicQuery}`, undefined, signal).catch((error:Error)=>({topics:[],error})) : undefined,
     ]);
-    if (request !== serial.current) return;
-    if (conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
+    if (!valid()) return;
+    if (historySync.current && !sameHistory(historySync.current, next.sync)) {
+      localHistory.current.clear();
+      loaded.current = undefined;
+      setMessages([]);
+      setStreaming([]); liveOffsets.current.clear();
+    }
+    historySync.current = next.sync;
+    authorizeLocalCache(next.sync, accountStatus?.sessionId);
+    const persistedScope = accountStatus?.sessionId ? localCacheScope() : undefined;
+    if (current && !next.bots.some(bot=>bot.id===current)) {
+      const replacement=next.bots.find(bot=>bot.replaces_id===current);
+      if(finance)setFinanceBotId(replacement ? str(replacement.id) : undefined);
+      drafts.current.delete(draftKey); attachmentDrafts.current.delete(draftKey); pendingDrafts.current.delete(draftKey);
+      loaded.current=undefined; historyTarget.current=undefined; setDraft(""); setPreview(undefined); setDraftPreview(undefined);
+      publishedSync.current = next.sync; setState(next); setTopicId(undefined); setTopics([]); setBotId(str((replacement??next.bots[0])?.id)); setMessages([]); setStreaming([]); releaseSend(); return;
+    }
+    if(topicList && "error" in topicList)throw topicList.error;
+    if (chatVisible && conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
+      localHistory.current.delete(draftKey);
       loaded.current = undefined; setMessages([]); setStreaming([]);
       setTopics(topicList?.topics ?? []); setTopicId(undefined); setError("");
       return;
@@ -305,52 +405,77 @@ export function AgentDesktop() {
       if (updated) setMemoryNotice(str(updated.title));
     }
     memoryVersions.current = new Map(next.memories.map((m) => [str(m.id), `${m.version}:${m.updated_at}`]));
-    if (current && !next.bots.some((bot) => bot.id === current)) { setState(next); setBotId(str(next.bots[0]?.id)); setMessages([]); setStreaming([]); releaseSend(); return; }
-    if (current) {
+
+    if (chatVisible && current) {
       // Commit task state with its feed below, so the typing indicator cannot
       // disappear a network round trip before the final reply arrives.
-      const cached = guess;
-      const same = cached?.botId === current && cached.sync.privacyEpoch === next.sync.privacyEpoch && cached.sync.coreId === next.sync.coreId && cached.sync.bootId === next.sync.bootId;
+      const cacheKey = `history:${draftKey}`;
+      const available = guess && sameHistory(guess.sync, next.sync) ? guess : undefined;
+      const persisted = !available && !target ? await readLocalCache<HistoryWindow>(persistedScope, cacheKey) : undefined;
+      if (!valid()) return;
+      const cached = available ?? persisted;
+      const same = cached?.key === draftKey && sameHistory(cached.sync, next.sync) && cached.sync.cursor <= next.sync.cursor;
       let history = same ? cached.messages : [];
-      let feed: Feed;
-      // The prefetch can be served before this state snapshot. After a send, read the
-      // transcript again so the reply cannot lag behind the task that produced it.
+      // A reconnect can miss reply deltas even when there were no durable writes.
       const pending = pendingSend.current;
       const feedAfterAccept = !!pending && pending.botId === current && request > pending.acceptedAfter;
-      const freshFeed = () => api<Feed>(same && history.length ? `${base}&after=${history.at(-1)!.seq}` : base);
-      try { feed = await (feedAfterAccept ? freshFeed() : (same || !guess?.messages.length ? early! : api<Feed>(base))); }
+      const loadPage = (cursor: HistoryCursor) => api<HistoryFeed>(historyWindowPath(current, conversation, cursor), undefined, signal);
+      let feed: HistoryFeed | undefined;
+      const cursor = target ? { around: target.id, at: next.sync.at ?? Date.now() } : same ? afterMessage(history.at(-1)) : latestCursor(next.sync.at);
+      const advanced = next.historySeq === undefined ? cached?.sync.cursor !== next.sync.cursor || next.sync.revision === undefined
+        : Number(history.at(-1)?.seq ?? 0) < next.historySeq;
+      const liveCatchUp = forceHistory && next.tasks.some(task => task.bot_id === current && task.origin === "owner" && !terminal.includes(str(task.status)));
+      try {
+        if (!same || target || feedAfterAccept || advanced || liveCatchUp) feed = await loadPage(cursor);
+      }
       catch (failure) {
-        if (request !== serial.current || selected.current !== current) return;
+        if (!valid()) return;
         if (!target || !(failure instanceof Error) || failure.message !== '该消息已不存在或已遗忘') throw failure;
         historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;
-        feed=await api<Feed>(`agents/messages?bot=${encodeURIComponent(current)}`);
+        feed = await loadPage(latestCursor(next.sync.at));
       }
-      while (true) {
-        if (request !== serial.current || selected.current !== current) return;
-        if (feed.sync.privacyEpoch !== next.sync.privacyEpoch || feed.sync.bootId !== next.sync.bootId) {
+      const olderEnd = target && historyTarget.current ? true : same ? cached.olderEnd : !(feed?.hasOlder ?? (feed?.messages.length ?? 0) >= 40);
+      while (feed) {
+        if (!valid()) return;
+        if (!sameHistory(feed.sync, next.sync)) {
           const retry = !feedRetry.current;
           feedRetry.current = true;
           loaded.current = undefined;
-          if (retry) setTimeout(() => void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }), 0);
+          localHistory.current.clear();
+          setMessages([]); setStreaming([]);
+          if (retry) setTimeout(() => { if (!signal?.aborted) void reload(true, signal).catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }); }, 0);
           return;
         }
         history = [...history, ...feed.messages];
         if (!feed.hasMore) break;
-        feed = await api<Feed>(`${base}&after=${history.at(-1)!.seq}`);
+        if (!feed.messages.length) break;
+        feed = await loadPage(afterMessage(history.at(-1)));
       }
-      if (request !== serial.current || selected.current !== current) return;
-      if (conversation) {
-        const prior = loaded.current;
-        if (prior?.botId === current && prior.sync.privacyEpoch === feed.sync.privacyEpoch && prior.sync.bootId === feed.sync.bootId && history.length) {
-          history = [...prior.messages.filter(row => Number(row.seq) < Number(history[0].seq)), ...history];
-        }
-        if (feed.messages.length < 200) setOlderEnd(true);
+      if (!valid()) return;
+      setOlderEnd(!!olderEnd);
+      loaded.current = { botId: current, key: draftKey, messages: history, sync: feed?.sync ?? next.sync, olderEnd };
+      if (!target) rememberHistory(loaded.current);
+      const previousTail = same ? cached.messages.at(-1)?.seq : undefined;
+      const cacheBookmark = persistedScope ? JSON.stringify([persistedScope, cacheKey, history.at(-1)?.seq ?? 0]) : undefined;
+      if (!target && cacheBookmark && (lastCacheWrite.current !== cacheBookmark || !same || previousTail !== history.at(-1)?.seq)) {
+        lastCacheWrite.current = cacheBookmark;
+        queueLocalCache(persistedScope, cacheKey, { ...loaded.current, messages: history.slice(-200), olderEnd: history.length <= 200 && olderEnd });
       }
-      loaded.current = { botId: current, messages: history, sync: feed.sync };
       feedRetry.current = false;
       setMessages((shown) => withPendingOptimistic(history, shown));
       setTopics(topicList?.topics ?? []);
-      setStreaming(feed.streaming.filter((s) => s.text));
+      for (const taskId of liveOffsets.current.keys()) {
+        if (next.tasks.some(task => task.id === taskId && terminal.includes(str(task.status)))) liveOffsets.current.delete(taskId);
+      }
+      if (feed) {
+        const partials = feed.streaming.filter((item) => item.text);
+        for (const item of partials) liveOffsets.current.set(item.taskId, Math.max(liveOffsets.current.get(item.taskId) ?? 0, item.text.length));
+        setStreaming((shown) => partials.map((item) => {
+          const newer = shown.find((candidate) => candidate.taskId === item.taskId);
+          return newer?.text.startsWith(item.text) ? newer : item;
+        }).concat(shown.filter((item) => !partials.some((partial) => partial.taskId === item.taskId)
+          && next.tasks.some((task) => task.id === item.taskId && !terminal.includes(str(task.status))))));
+      }
       setHistoryLoading(false);
       const through = Number(history.at(-1)?.seq ?? 0);
       if (!target && pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(draftKey) ?? 0)) {
@@ -358,33 +483,109 @@ export function AgentDesktop() {
         void api("agents/read", { botId: current, seq: through, conversationId: conversation }).catch(() => { if (readPositions.current.get(draftKey) === through) readPositions.current.delete(draftKey); });
       }
     }
-    if (request === serial.current) { setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
-  }, [offline, finance, conversation, draftKey, botId]);
+    if (valid()) { publishedSync.current = next.sync; setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
+  }, [chatVisible, section, topicMode, conversation, draftKey, botId, accountStatus?.sessionId]);
   useEffect(() => {
-    // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
-    if (!selected.current) void reload().catch((e: Error) => setError(e.message));
-    const events = new EventSource("/api/events"); let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch((error: unknown) => { setError(error instanceof Error ? error.message : "操作失败"); setHistoryLoading(false); }); }, 150); };
-    const change = (event: MessageEvent) => {
-      const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
-      // A reconnect can report reset. Drop the incremental cursor and refetch,
-      // but leave the rows on screen until the next page arrives.
-      if (value.reset || (loaded.current && (loaded.current.sync.privacyEpoch !== value.privacyEpoch || loaded.current.sync.bootId !== value.bootId))) loaded.current = undefined;
-      refresh();
+    const query = new URLSearchParams({ incremental: "1" });
+    if (publishedSync.current?.cursor) query.set("after", String(publishedSync.current.cursor));
+    if (chatVisible && botId) {
+      query.set("bot", botId);
+      if (conversation) query.set("conversationId", conversation);
+    }
+    const events = new EventSource(`/api/events?${query}`);
+    const scope = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let running = false, stale = false, forceHistory = false, reopened = false, lastFrame = Date.now();
+    let lastEvent: (State["sync"] & { reset?: boolean }) | undefined;
+    const needed = () => {
+      const current = publishedSync.current;
+      return !lastEvent || !current || !sameHistory(current, lastEvent) || current.cursor < lastEvent.cursor
+        || (current.revision ?? -1) < (lastEvent.revision ?? 0) || lastEvent.revision === undefined;
     };
-    const expired = () => { offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
-    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired"))); events.onerror = () => refresh();
+    const drain = async () => {
+      // Electron can start its workspace with a hidden document. Let that
+      // first snapshot unlock the shell, then pause background refreshes.
+      if (running || scope.signal.aborted || (publishedSync.current && document.visibilityState === "hidden")) return;
+      running = true;
+      try {
+        while (stale && !scope.signal.aborted) {
+          stale = false;
+          const force = forceHistory; forceHistory = false;
+          try { await reload(force, scope.signal); }
+          catch (error) { if (!scope.signal.aborted) { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); } }
+          if (!forceHistory && !needed()) stale = false;
+        }
+      } finally { running = false; }
+    };
+    const refresh = (force = false) => {
+      stale = true; forceHistory ||= force;
+      if (!timer && !running) timer = setTimeout(() => { timer = undefined; void drain(); }, 180);
+    };
+    const change = (event: MessageEvent) => {
+      lastFrame = Date.now();
+      const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
+      lastEvent = value;
+      const generationChanged = historySync.current && !sameHistory(historySync.current, value);
+      if (generationChanged || (value.reset && (publishedSync.current?.cursor ?? 0) > value.cursor)) {
+        ++serial.current;
+        loaded.current = undefined;
+        localHistory.current.clear();
+        historySync.current = undefined;
+        liveOffsets.current.clear();
+        clearLocalCache();
+        setState(undefined); setMessages([]); setStreaming([]); setPreview(undefined);
+      }
+      if (needed() || value.reset) refresh(!!value.reset);
+    };
+    const delta = (event: MessageEvent) => {
+      lastFrame = Date.now();
+      if (!chatVisible || historyTarget.current || document.visibilityState === "hidden") return;
+      const frame = JSON.parse(event.data) as LiveReply & { offset: number };
+      if (typeof frame.text !== "string" || !Number.isSafeInteger(frame.offset) || frame.offset < 0) return;
+      const previous = liveOffsets.current.get(frame.taskId) ?? 0;
+      if (previous > frame.offset) return;
+      if (previous < frame.offset) { refresh(true); return; }
+      liveOffsets.current.set(frame.taskId, frame.offset + frame.text.length);
+      setStreaming((replies) => {
+        const existing = replies.find((reply) => reply.taskId === frame.taskId);
+        if (existing) return replies.map((reply) => reply === existing ? { ...reply, text: reply.text + frame.text } : reply);
+        return [...replies, { taskId: frame.taskId, text: frame.text }];
+      });
+    };
+    const expired = () => { scope.abort(); offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
+    const focused = () => {
+      if (stale) refresh();
+      if (Date.now() - lastFrame > 20_000 || events.readyState !== 1) refresh(true);
+    };
+    const visibilityChanged = () => {
+      if (document.visibilityState === "visible") refresh(true);
+    };
+    events.addEventListener("change", change as EventListener);
+    events.addEventListener("delta", delta as EventListener);
+    events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired")));
+    events.onopen = () => { lastFrame = Date.now(); if (reopened) refresh(true); reopened = true; };
+    events.onerror = () => { reopened = true; refresh(true); };
     window.addEventListener("nex-session-expired", expired);
-    window.addEventListener("focus", refresh);
-    const interval = setInterval(refresh, 10_000);
-    return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); window.removeEventListener("nex-session-expired", expired); };
-  }, [reload, offline]);
+    window.addEventListener("focus", focused);
+    document.addEventListener("visibilitychange", visibilityChanged);
+    const interval = setInterval(focused, 25_000);
+    stale = true;
+    void drain();
+    return () => {
+      scope.abort(); clearTimeout(timer); clearInterval(interval); events.close();
+      window.removeEventListener("focus", focused);
+      window.removeEventListener("nex-session-expired", expired);
+      document.removeEventListener("visibilitychange", visibilityChanged);
+    };
+  }, [reload, offline, chatVisible, botId, conversation]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
   useEffect(() => {
     const switched = loadedBot.current !== draftKey;
     loadedBot.current = draftKey;
     if (switched) {
-      loaded.current = undefined; setEditInput(undefined); setOlderEnd(false);
+      const entry = historyTarget.current ? undefined : localHistory.current.get(draftKey);
+      const cached = entry && historySync.current && sameHistory(entry.sync, historySync.current) ? entry : undefined;
+      loaded.current = cached; setEditInput(undefined); setOlderEnd(!!cached?.olderEnd);
       stickToBottom.current = !historyTarget.current;
       setShowScrollPill(false);
       setQuote(undefined);
@@ -393,30 +594,29 @@ export function AgentDesktop() {
       setJobView(undefined);
       setMemoryNotice("");
       setPreview(undefined);
-      setMessages([]);
-      setStreaming([]);
+      setMessages(cached?.messages ?? []);
+      setStreaming([]); liveOffsets.current.clear();
       setDraft(drafts.current.get(draftKey) ?? "");
       setAttachments(attachmentDrafts.current.get(draftKey) ?? []);
       setPending(pendingDrafts.current.get(draftKey) ?? []);
       setDraftPreview(undefined);
     }
     if (botId) {
-      if (switched) setHistoryLoading(true);
+      if (switched) setHistoryLoading(!loaded.current);
       localStorage.setItem("nexbot.selectedAgent", botId);
-      void reload().catch((e: Error) => { setError(e.message); setHistoryLoading(false); });
     }
-  }, [botId, reload]);
-  const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(e.message)); }, []);
-  const openStepPreview = (step: ToolStep) => { if (step.tool_name === "device.read" && step.summary) { openFilePreview(step.summary); return; } void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch(() => { setPreview({ kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at }); setTab("profile"); setDetail(true); }); };
-  const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); } finally { setBusy(false); } };
-  const changeDraft = (value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); };
-  const copyText = async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); };
-  const deleteMessageImage = async (messageId: string, image: MessageImage) => {
+  }, [botId, draftKey]);
+  const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(userErrorText(e))); }, []);
+  const run = useCallback(async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(userErrorText(e, "操作失败")); } finally { setBusy(false); } }, [reload]);
+  const changeDraft = useCallback((value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); }, [draftKey]);
+  const copyText = useCallback(async (id: string, value: string) => { if (await writeCopyText(value) !== "copied") return; setCopiedId(id); setTimeout(() => setCopiedId((current) => current === id ? "" : current), 1800); }, []);
+  const deleteMessageImage = useCallback(async (messageId: string, image: MessageImage) => {
     await api("agents/messages/image/delete", { botId, messageId, attachmentId: image.id });
     loaded.current = undefined;
+    localHistory.current.delete(draftKey);
     await reload();
-  };
-  const openTopic = (id?: string) => {
+  }, [botId, draftKey, reload]);
+  const openTopic = useCallback((id?: string) => {
     if (id === conversation && !historyTarget.current) return;
     ++serial.current;
     historyTarget.current = undefined;
@@ -425,9 +625,9 @@ export function AgentDesktop() {
     setMessages([]); setStreaming([]); setEditInput(undefined);
     setTopicId(id);
     stickToBottom.current = true;
-  };
+  }, [conversation]);
   const send = (event: FormEvent) => {
-    event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || !state?.bots.some((agent) => agent.id === target)) return;
+    event.preventDefault(); const raw = draft.trim(), target = botId; if ((!raw && !attachments.length) || busy || uploading || modelSelection.isSaving() || !bot) return;
     if (editInput && attachments.length) { setError("编辑排队消息时请先移除附件"); return; }
     if (replyJob) { sendJobReply(raw, target, replyJob); return; }
     const replyConversation = conversation ?? (focusedMessage ? topics.find(t => t.conversationId === rawMessages.find(m => m.id === focusedMessage)?.conversation_id)?.conversationId : undefined);
@@ -450,7 +650,7 @@ export function AgentDesktop() {
         const result = await api<{conversationId?:string}>(editInput ? "agents/edit" : "agents/input", {
           botId:target, text:content, clientId, attachments:attachmentIds,
           ...(editInput ? {messageId:editInput} : {}),
-          ...(finance ? replyConversation ? {conversationId:replyConversation} : {newConversation:true, sourceContext:{channel:"nexbot"}} : {}),
+          ...(topicMode && replyConversation ? {conversationId:replyConversation} : finance ? {newConversation:true, sourceContext:{channel:"nexbot"}} : {}),
         });
         if (destination.current === draftKey) {
           setEditInput(undefined);
@@ -492,9 +692,10 @@ export function AgentDesktop() {
     });
   };
   // The chat's working state and its stop key follow the main chat only: background jobs, routines and delegated children have their own.
-  const bot = state?.bots.find((b) => b.id === botId), tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status)) && (!finance || (conversation ? topic?.activeTask?.id === t.id : !topics.some(item => item.activeTask?.id === t.id)))) ?? [];
+  const tasks = state?.tasks.filter((t) => t.bot_id === botId && t.origin === "owner" && !terminal.includes(str(t.status)) && (!topicMode || (conversation ? topic?.activeTask?.id === t.id : !topics.some(item => item.activeTask?.id === t.id)))) ?? [];
   const botJobs = state?.jobs?.filter((job) => job.botId === botId) ?? [], openJobs = botJobs.filter(openJob);
-  const jobById = new Map((state?.jobs ?? []).map((job) => [job.id, job]));
+  const workspaceJobs = state?.jobs;
+  const jobById = useMemo(() => new Map((workspaceJobs ?? []).map((job) => [job.id, job])), [workspaceJobs]);
   useEffect(() => {
     const previous = previousTask.current;
     previousTask.current = tasks[0] ? { botId, taskId: str(tasks[0].id) } : undefined;
@@ -509,7 +710,7 @@ export function AgentDesktop() {
     }
   }, [botId, tasks[0]?.id]);
   const avatarState = !connected ? "offline" : tasks.length ? companionState(tasks[0], state?.approvals.some((a) => a.bot_id === botId), connected) : sendingBotId === botId ? "thinking" : settledState;
-  const liveStreaming = withoutCommittedStreaming(messages, finance && !conversation ? streaming.filter(s => !topics.some(item => item.activeTask?.id === s.taskId)) : streaming);
+  const liveStreaming = withoutCommittedStreaming(messages, topicMode && !conversation ? streaming.filter(s => !topics.some(item => item.activeTask?.id === s.taskId)) : streaming);
   const processing = connected && !liveStreaming.length && (sendingBotId === botId || tasks.some((task) => ["queued", "running", "cancelling"].includes(str(task.status))));
   const setFollowing = useCallback((next: boolean) => {
     stickToBottom.current = next;
@@ -557,26 +758,28 @@ export function AgentDesktop() {
     const message=scroll.current?.querySelector<HTMLElement>('[data-search-match="true"]');
     if(message){message.scrollIntoView({block:'center'});scrolledTarget.current=focusedMessage;}
   },[focusedMessage,messages,page]);
-  const latestMessages=()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});};
+  const latestMessages=useCallback(()=>{historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;setMessages([]);setHistoryLoading(true);void reload().catch((e:Error)=>{setError(userErrorText(e));setHistoryLoading(false);});}, [reload]);
   const openSearchResult=(match:ConversationMatch)=>{
     setTopicId(undefined);
     ++serial.current;
     historyTarget.current={botId:match.botId,id:match.id};scrolledTarget.current='';setFocusedMessage(match.id);loaded.current=undefined;stickToBottom.current=false;
     setMessages([]);setStreaming([]);setHistoryLoading(true);setError('');setPage('agent');setSidebarOpen(false);
-    if(selected.current===match.botId && !conversation)void reload().catch((e:Error)=>{setError(e.message);setHistoryLoading(false);});
+    if(selected.current===match.botId && !conversation)void reload().catch((e:Error)=>{setError(userErrorText(e));setHistoryLoading(false);});
     else setBotId(match.botId);
   };
-  const closeDialog = () => setDialog(null), select = (target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); };
+  const closeDialog = useCallback(() => setDialog(null), []);
+  const select = useCallback((target: string) => { setTopicId(undefined); if(historyTarget.current && target===selected.current)latestMessages();historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage(''); setBotId(target); setPage("agent"); setSidebarOpen(false); setError(""); }, [latestMessages]);
+  const assistantAction=(id:string,action:"reset_memory"|"delete")=>setDialog(<AssistantActionDialog botId={id} action={action} updated={reload} close={closeDialog}/>);
   const editAvatar = () => { if (bot && state) setDialog(<AvatarPicker bot={bot} firstId={str(state.bots[0]?.id)} onChange={async () => { setLookRevision((value) => value + 1); await reload(); }} close={closeDialog}/>); };
   const editBot = (existing?: RecordRow) => setDialog(<Editor title={existing ? "Agent 身份" : "添加 Agent"} onClose={closeDialog} fields={[{ name: "name", label: "名字", value: str(existing?.name), required: true }, { name: "instructions", label: "补充身份、职责与沟通方式（选填）", value: str(existing?.instructions), multiline: true, hint: "名字也是身份的一部分，留空也可以。修改后，其他 Agent 会自动获取最新资料。" }]} onSubmit={(data) => run(async () => { const result = await api<{ id: string }>(existing ? "bots/update" : "bots", { ...data, id: existing?.id, version: existing?.version }); if (!existing) { await reload(); select(result.id); } closeDialog(); })}/>);
   const editMemory = (existing?: RecordRow) => setDialog(<Editor title={existing ? "编辑记忆" : "添加记忆"} onClose={closeDialog} fields={[{ name: "title", label: "标题", value: str(existing?.title), required: true }, { name: "content", label: "记忆内容", value: str(existing?.content), multiline: true, required: true }, { name: "scope", label: "可见范围", value: str(existing?.scope) || "bot", choices: [{ value: "bot", label: `仅 ${bot?.name}` }, { value: "workspace", label: "与所有 Agent 共享" }] }]} onSubmit={(data) => run(async () => { await api("memory", { ...data, botId: existing?.bot_id ?? botId, documentId: existing?.id, expectedVersion: existing?.version ?? 0 }); closeDialog(); })}/>);
   const viewRoutine = (routine: RecordRow) => setDialog(<RoutineDetail routine={routine} latest={state?.occurrences.find((o) => o.routine_id === routine.id)} close={closeDialog} showResult={(id) => openOccurrence(id)} disable={async () => { await api("routines/toggle", { id: routine.id, version: routine.version, enabled: false }); await reload(); closeDialog(); }} remove={async () => { await api("routines/delete", { id: routine.id, version: routine.version }); await reload(); closeDialog(); }}/>);
   const openOccurrence = (id: string) => setDialog(<RoutineOccurrenceDetail key={id} id={id} close={closeDialog} renderContent={(value, pending) => <RichText value={value} pending={pending}/>}/>);
   // A job opens as its own conversation in place of the main chat; on a narrow window the profile drawer closes for it.
-  const openJobDetail = (id: string) => { setJobsOpen(false); setJobView(id); if (!wide) setDetail(false); };
-  const stopJob = (job: Job) => void run(() => api("jobs/stop", { jobId: job.id }));
+  const openJobDetail = useCallback((id: string) => { setJobsOpen(false); setJobView(id); if (!wide) setDetail(false); }, [wide]);
+  const stopJob = useCallback((job: Job) => void run(() => api("jobs/stop", { jobId: job.id })), [run]);
   // The card's acceptance and revision are the todo panel's own versioned actions.
-  const jobActions: JobCardActions = {
+  const jobActions = useMemo<JobCardActions>(() => ({
     open: openJobDetail,
     reply: (job) => { setQuote(undefined); setReplyJob({ id: job.id, title: job.title }); composerRef.current?.focus(); },
     stop: stopJob,
@@ -584,16 +787,54 @@ export function AgentDesktop() {
     retry: (job) => void run(() => api("jobs/input", { jobId: job.id, text: "再试一次", clientId: crypto.randomUUID() })),
     accept: (job) => void run(() => api("todos/action", { id: job.todoId, version: job.todoVersion, action: "complete" })),
     revise: (job) => setDialog(<Editor title="继续修改" onClose={closeDialog} fields={[{ name: "feedback", label: "告诉 AI 要调整什么", multiline: true, required: true }]} onSubmit={(data) => run(async () => { await api("todos/action", { id: job.todoId, version: job.todoVersion, action: "start", clientId: crypto.randomUUID(), feedback: data.feedback }); closeDialog(); })}/>),
-  };
+  }), [openJobDetail, stopJob, run, closeDialog]);
+  const bots = state?.bots;
+  const showingChat = page === "agent" && !!bot && !jobView;
+  // Composer-only changes, including a model choice, can reuse the history subtree.
+  const historyRows = useMemo(() => {
+    if (!showingChat || !bots) return null;
+    const detach = () => setFollowing(false);
+    const quoteMessage = (message: RecordRow) => {
+      const author = senderLabel(message, bot, bots), parsed = parseMessageMedia(str(message.content));
+      setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") });
+      composerRef.current?.focus();
+    };
+    return messages.map((m, idx) => {
+      const prev = messages[idx - 1], next = messages[idx + 1], curDay = formatDay(m.created_at);
+      const prevDay = prev ? formatDay(prev.created_at) : "";
+      const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
+      return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
+        {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
+        {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} hasJobReply={(lastJobReply.get(str(m.job_id)) ?? -1) > idx} bot={bot} bots={bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onDeleteImage={deleteMessageImage} onDetach={detach} onQuote={quoteMessage}/>}
+        {conversation && m.input_status === "pending" ? <button type="button" onClick={() => { setEditInput(str(m.id)); changeDraft(str(m.content)); }}>编辑排队消息</button> : null}
+      </div>;
+    });
+  }, [showingChat, bots, bot, messages, lastJobReply, conversation, focusedMessage, jobById, jobActions, busy, copiedId, select, openTopic, changeDraft, copyText, openFilePreview, deleteMessageImage, setFollowing]);
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
-    const result = await api<{ messages: RecordRow[]; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${snapshot.messages[0].seq}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
+    type HistoryPage = Pick<HistoryFeed, "messages" | "sync" | "hasOlder">;
+    const first = snapshot.messages[0], before = Number(first.seq);
+    const scope = localCacheScope(), key = `history:${draftKey}:before:${before}`;
+    if (historyPageRequest.current === key) return;
+    historyPageRequest.current = key;
+    let cached: HistoryPage | undefined;
+    let result: HistoryPage;
+    try {
+      cached = await readLocalCache<HistoryPage>(scope, key);
+      result = cached ?? await api<HistoryPage>(historyWindowPath(snapshot.botId, conversation, { before, at: Number(first.created_at ?? 0) }));
+    } finally {
+      if (historyPageRequest.current === key) historyPageRequest.current = undefined;
+    }
     const current = loaded.current;
-    if (destination.current !== draftKey || !current || current.botId !== snapshot.botId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
-    if (conversation && result.messages.length < 200) setOlderEnd(true);
+    if (destination.current !== draftKey || !current || current.botId !== snapshot.botId || current.sync.coreId !== result.sync.coreId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
+    if (!cached) queueLocalCache(scope, key, { messages: result.messages, sync: result.sync, hasOlder: result.hasOlder });
+    const olderEnd = !(result.hasOlder ?? result.messages.length >= 40);
+    if (olderEnd) setOlderEnd(true);
     const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];
-    loaded.current = { ...current, messages: merged };
+    const window = { ...current, messages: merged, olderEnd };
+    loaded.current = window;
+    if (!historyTarget.current) rememberHistory(window);
     setMessages((shown) => withPendingOptimistic(merged, shown));
   };
   if (!state) return <div className="boot"><BrandMark size={44}/><h1>NexBot</h1><p>{error || "正在连接你的 Agent…"}</p>{desktop?.mode === "client" ? <button onClick={() => void desktop?.disconnect?.()}>返回连接页</button> : null}</div>;
@@ -605,16 +846,16 @@ export function AgentDesktop() {
   };
   const downloadTranscript = async () => {
     const target = botId, rows: RecordRow[] = [];
-    let after = 0;
+    let cursor = afterMessage(undefined);
     const initial = state.sync;
     for (;;) {
-      const feed = await api<{ messages: RecordRow[]; hasMore: boolean; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(target)}&after=${after}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
+      const feed = await api<HistoryFeed>(historyWindowPath(target, conversation, cursor));
       if (destination.current !== draftKey || feed.sync.coreId !== initial.coreId || feed.sync.privacyEpoch !== initial.privacyEpoch) throw new Error("对话已变化，请重新导出");
       rows.push(...feed.messages);
       if (!feed.hasMore || !feed.messages.length) break;
-      after = Number(feed.messages.at(-1)!.seq);
+      cursor = afterMessage(feed.messages.at(-1));
     }
-    const current = await api<State>("state?view=summary");
+    const current = await api<State>("state?view=workspace&page=tasks");
     if (selected.current !== target || current.sync.coreId !== initial.coreId || current.sync.privacyEpoch !== initial.privacyEpoch) throw new Error("对话已变化，请重新导出");
     const content = rows.map((m) => `### ${senderLabel(m, bot, state.bots)} · ${formatTime(m.created_at)}\n\n${str(m.content)}`).join("\n\n---\n\n");
     const name = `${str(bot?.name).replace(/[\\/:*?"<>|]/g, "_") || "NexBot"}-对话.md`;
@@ -626,52 +867,66 @@ export function AgentDesktop() {
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   };
   const signOut = () => { void logout().catch(() => setError("退出登录未完成，请重试")); };
-  const enabledTools: string[] = (() => { try { return JSON.parse(str(bot?.policy_json) || "{}").tools ?? []; } catch { return []; } })();
   // The assistant's provider, model (or that provider's default model) and reasoning effort.
-  const connections = state.connections ?? [];
-  const botConnection = connections.find((item) => item.id === str(bot?.selected_connection) && item.enabled) ?? connections.find((item) => item.isDefault);
-  const modelChoice: ModelChoice = { connectionId: botConnection?.id ?? "", model: str(bot?.selected_model), reasoning: (bot?.selected_reasoning ?? null) as ReasoningChoice | null };
+  const modelChoice = modelSelection.choice;
+  const botConnection = connections.find((item) => item.id === modelChoice.connectionId) ?? defaultConnection;
   const chosenModel = modelChoice.model || botConnection?.defaultModel || str(state.config?.default_model);
-  const effort = resolveReasoning(modelChoice.reasoning, botConnection?.options[chosenModel]?.reasoning ?? []);
-  const modelLabel = chosenModel ? `${modelName(botConnection, chosenModel)}${effort !== "off" ? ` · ${reasoningLabels[effort]}` : ""}` : "未连接模型";
-  const chooseModel = (choice: ModelChoice) => void run(() => api("bots/model", { id: botId, connectionId: choice.connectionId, model: choice.model, ...(choice.reasoning ? { reasoning: choice.reasoning } : {}), version: Number(bot?.model_selection_version ?? 0) }));
+  const openForkedTopic = (target: string, conversationId: string) => { setForkBotId(target); select(target); openTopic(conversationId); };
+  const modelLabel = chosenModel ? modelName(botConnection, chosenModel) : "未连接模型";
+  const openToolPolicy = () => {
+    if (!bot) return;
+    setDialog(<AgentPolicyEditor bot={bot} close={closeDialog} save={tools => run(async () => {
+      await api("bots/policy", { id: bot.id, version: bot.policy_version, tools });
+      closeDialog();
+    })}/>);
+  };
   const userDisplayName = accountStatus?.account?.displayName || "个人账号";
   const panelOpen = page === "agent" && detail && !!bot, railClosed = !rail && wide;
   const routines = state.routines.filter((r) => r.bot_id === botId);
   const heroState = !connected ? companionLabels.offline : tasks.length ? taskPhrase(tasks[0]) : avatarState === "idle" ? "在线" : companionLabels[avatarState];
   void lookRevision;
 
-  if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={<ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={(target) => { if(target === "todo") {setPage("todo");setSidebarOpen(false);} else openSettings();}} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
+  const navigate = (target: string) => {
+    if (target === "todo" || target === "agent" || (target === "cli" && agentSection)) { setPage(target); setSidebarOpen(false); }
+    else openSettings();
+  };
+  const renderSidebar = (agent?: AgentSidebarSlot) => <ContactSidebar agent={agent} onAction={assistantAction} state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={navigate} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>;
+  const sidebarNode = renderSidebar();
+
+  if (page === "cli" && agentSection) return <Suspense fallback={null}><CliAgentsWorkspace key={`${state.sync.coreId}:${state.sync.bootId}:${state.sync.privacyEpoch}`} dark={dark} collapsed={railClosed} sidebar={renderSidebar} sidebarList={wide} onNavigation={() => setSidebarOpen(true)} bots={state.bots.map((entry) => ({ id: str(entry.id), name: str(entry.name) }))} onOpenTopic={openForkedTopic} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/></Suspense>;
+
+  if (page === "todo") return <TodoWorkspace key={`${state.sync.coreId}:${state.sync.privacyEpoch}`} state={state} dark={dark} collapsed={railClosed} sidebar={sidebarNode} onNavigation={()=>setSidebarOpen(true)} onOpenAgent={select} overlay={dialog ? <div className="modal-backdrop" onKeyDown={(e) => { if (e.key === "Escape") closeDialog(); }}><div className="modal" role="dialog" aria-modal="true">{dialog}</div></div> : null}/>;
 
   return <div className="workspace-stage" data-dark={dark ? "1" : "0"} data-shell={desktop?.mode === "client" ? "1" : "0"}>
     <div className={`app rk-workspace ${panelOpen ? "with-detail" : ""}`} data-left={railClosed ? "closed" : "open"} data-right={panelOpen ? "open" : "closed"} data-page={page} data-motion={motion ? "on" : "off"} data-theme="studio" data-dark={dark ? "1" : "0"}>
-    <ContactSidebar state={state} selectedId={botId} page={page} search={search} pinned={pinned} dark={dark} connected={connected} userName={userDisplayName} open={sidebarOpen} collapsed={railClosed} onToggle={toggleRail} onSearch={setSearch} onSearchResult={openSearchResult} onSelect={select} onPage={(target) => { if(target === "todo") {setPage("todo");setSidebarOpen(false);} else openSettings();}} onCreate={() => editBot()} onTheme={() => setDark((value) => !value)} onLogout={signOut} onClose={() => setSidebarOpen(false)}/>
+    {sidebarNode}
 
     <main>
       <header>
         <div className="header-side"><button className="icon-button mobile-menu" aria-label="展开联系人列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={19}/></button></div>
         {page === "agent" && bot
-          ? <button type="button" className="contact-heading clickable who glass" inert={panelOpen} title="打开 Agent 资料" onClick={() => setDetail(true)}>
+          ? <AssistantSwitcher key={botId} assistants={state.bots} activeId={botId} onSelect={select}>
               <Avatar bot={bot} allBots={state.bots} size={30} state={avatarState} animate/>
               <strong>{bot.name}</strong>
-              <span className={tasks.length ? "active-phrase" : ""}>{tasks.length ? `${taskPhrase(tasks[0])}${tasks.length > 1 ? ` · ${tasks.length} 项工作正在进行` : ""}` : companionLabels[avatarState]}</span>
-            </button>
+            </AssistantSwitcher>
           : <div className="contact-heading who"><strong>{page === "settings" ? "设置" : "你的 Agent"}</strong></div>}
         <div className="header-actions">
-          {page === "agent" && bot && openJobs.length > 0 ? <div className="jobs-pill-anchor">
+          {page === "agent" && bot && !jobView && openJobs.length > 0 ? <div className="jobs-pill-anchor" ref={jobsAnchor}>
             <button type="button" className="jobs-pill glass" aria-expanded={jobsOpen} aria-haspopup="dialog" onClick={() => setJobsOpen((open) => !open)}>{openJobs.length} 项后台任务</button>
             {jobsOpen ? <div className="jobs-popover glass" role="dialog" aria-label="后台任务" onKeyDown={(event) => { if (event.key === "Escape") setJobsOpen(false); }}>
               {openJobs.map((job) => <div className="jobs-popover-row" key={job.id}><button type="button" className="jobs-popover-title" onClick={() => openJobDetail(job.id)}>{job.title}</button><span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span></div>)}
             </div> : null}
           </div> : null}
           {page === "agent" && bot && memoryNotice ? <span className="memory-pill" role="status"><Sparkles size={13}/>已更新记忆：{memoryNotice}</span> : null}
-          {page === "agent" && bot && messages.length > 0 ? <button type="button" className="bt-round glass" title="复制对话记录" aria-label="复制对话记录" onClick={() => exportTranscript()}>{exported ? <Check size={16}/> : <Share2 size={16}/>}</button> : null}
+          {page === "agent" && bot ? <button type="button" className="bt-round glass assistant-inspector-toggle"
+            aria-label={panelOpen ? "收起助手详情" : "助手详情"} title={panelOpen ? "收起助手详情" : "打开助手详情"}
+            aria-expanded={panelOpen} aria-controls="assistant-inspector" onClick={() => setDetail(!detail)}><PanelRight size={18} aria-hidden="true"/></button> : null}
         </div>
       </header>
-      {page === "agent" && bot ? <button type="button" aria-label="助手详情" aria-pressed={panelOpen} title={panelOpen ? "收起 Agent 资料" : "展开 Agent 资料"} className="panel-handle glass" onClick={() => setDetail(!detail)}>{panelOpen ? <ChevronRight size={15}/> : <ChevronLeft size={15}/>}</button> : null}
 
-      {update?.status === "ready" ? <div role="status" className="update-banner">新版本 {update.version} 已就绪<button type="button" onClick={() => void desktop?.installUpdate?.().catch((e: Error) => setError(e.message))}>立即更新</button></div> : null}
+      {update?.status === "ready" && updater.installUpdate && !(page === "settings" && settingsCategory === "about") ? <div role="status" className="update-banner">{desktop ? `新版本 ${update.version} 已就绪` : "网页有新版本"}<button type="button" onClick={() => void updater.installUpdate?.().catch((e: Error) => setError(userErrorText(e)))}>{desktop ? "立即更新" : "刷新页面"}</button></div> : null}
       {error ? <div role="alert" className="error-banner">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X size={16}/></button></div> : null}
+      {page === "agent" && modelSelection.error ? <div role="alert" className="error-banner">{modelSelection.error}<button onClick={modelSelection.dismissError} aria-label="关闭模型错误"><X size={16}/></button></div> : null}
       {!state.config && page !== "settings" ? <div className="notice model-chooser-notice"><div>连接模型后，Agent 就能开始工作。<button type="button" aria-expanded={modelChooserOpen} onClick={() => setModelChooserOpen((open) => !open)}>选择模型</button></div>{modelChooserOpen && <ProviderSettings state={state} refresh={reload} active={modelChooserOpen}/>}</div> : null}
 
       {page === "agent" && !bot ? <div className="welcome">
@@ -685,7 +940,7 @@ export function AgentDesktop() {
         <div className="transcript" ref={scroll} onPointerDown={(event) => { const el = scroll.current; if (el && event.target === el && event.nativeEvent.offsetX >= el.clientWidth) setFollowing(false); }} onWheel={(event) => { if (event.deltaY < 0) setFollowing(false); else if (atEnd()) setFollowing(true); }} onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={(event) => { const y = event.touches[0]?.clientY ?? 0; if (y > touchY.current + 4) setFollowing(false); else if (atEnd()) setFollowing(true); }} onScroll={() => { const el = scroll.current; if (!el) return; const scrollTop = el.scrollTop; const resume = shouldResumeBottomFollow({ following: stickToBottom.current, previousScrollTop: previousScrollTop.current, scrollTop, distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight }); previousScrollTop.current = scrollTop; if (resume) setFollowing(true); }}>
           <div className="transcript-inner" ref={transcriptInner}>
           {focusedMessage ? <button type="button" className="older" onClick={latestMessages}>返回最新消息</button> : null}
-          {!focusedMessage && !(conversation && olderEnd) && Number(rawMessages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
+          {!focusedMessage && !olderEnd && Number(rawMessages[0]?.seq) > 1 ? <button className="older" onClick={() => void loadOlder().catch((failure: unknown) => setError(userErrorText(failure, "加载失败")))}>加载更早的消息</button> : null}
           {!messages.length && !processing && historyLoading ? <div className="history-loading" role="status"><span className="spin"/>正在载入历史会话…</div> : !messages.length && !processing ? <div className="welcome ds-welcome">
             <Avatar bot={bot} allBots={state.bots} large size={84} animate/>
             <h1>{bot?.name}</h1>
@@ -695,16 +950,7 @@ export function AgentDesktop() {
               <button type="button" onClick={() => editMemory()}><Sparkles size={13}/>添加长期记忆</button>
               {peers.length ? <button type="button" onClick={() => { changeDraft(`@${peers[0].name} `); composerRef.current?.focus(); }}><AtSign size={13}/>让 {peers[0].name} 协作</button> : null}
             </div>
-          </div> : messages.map((m, idx) => {
-            const prev = messages[idx - 1], next = messages[idx + 1], curDay = formatDay(m.created_at);
-            const prevDay = prev ? formatDay(prev.created_at) : "";
-            const joined = sameGroup(prev, m) && prevDay === curDay, ends = !(next && sameGroup(m, next) && formatDay(next.created_at) === curDay);
-            return <div key={transcriptMessageKey(m)} data-search-match={m.id===focusedMessage?"true":undefined} className={m.id===focusedMessage?"search-message-target":undefined}>
-              {curDay && curDay !== prevDay ? <div className="day-divider"><span>{curDay}</span></div> : null}
-              {m.kind === "finance-topic" ? <TopicBubble row={m} open={() => openTopic(str(m.id))}/> : <AgentMessage message={m} bot={bot} bots={state.bots} jobs={jobById} jobActions={jobActions} busy={busy} select={select} copiedId={copiedId} joined={joined} groupEnd={ends} onCopy={copyText} onPreviewFile={openFilePreview} onPreviewStep={openStepPreview} onDeleteImage={deleteMessageImage} onDetach={() => setFollowing(false)} onQuote={(msg) => { const author = senderLabel(msg, bot, state.bots), parsed = parseMessageMedia(str(msg.content)); setQuote({ author, text: parsed.text || (parsed.images.length ? "图片" : "") }); composerRef.current?.focus(); }}/>}
-              {conversation && m.input_status === "pending" ? <button type="button" onClick={() => { setEditInput(str(m.id)); changeDraft(str(m.content)); }}>编辑排队消息</button> : null}
-            </div>;
-          })}
+          </div> : historyRows}
           {liveStreaming.map((s) => {
             const link = state.delegations.find((d) => d.child_task_id === s.taskId), peer = state.bots.find((b) => b.id === link?.sender_bot_id);
             return <article className={`message assistant streaming ${link ? "a2a-reply" : ""}`} key={s.taskId}>
@@ -727,7 +973,7 @@ export function AgentDesktop() {
         <div className="composer-dock">
           {showScrollPill && !focusedMessage ? <button type="button" className="scroll-pill" aria-label="回到底部" onClick={() => { setFollowing(true); scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" }); }}><ArrowDown size={22} strokeWidth={1.5} aria-hidden="true"/></button> : null}
         <div className="composer-area">
-          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准{(() => { const job = botJobs.find((item) => item.taskId === a.task_id); return job ? ` · 后台任务「${job.title}」` : ""; })()}</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</button><button disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</button><button disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</button></div></section>)}
+          {state.approvals.filter((a) => a.bot_id === botId).map((a) => <section className="approval" key={str(a.id)}><strong>{bot?.name} 需要你的批准{(() => { const job = botJobs.find((item) => item.taskId === a.task_id); return job ? ` · 后台任务「${job.title}」` : ""; })()}</strong><small>{a.remember_label ?? ({ "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明", "memory.write": "写入长期记忆", "memory.forget": "彻底遗忘原文与相关副本（相关工作会停止）", "device.read": "读取设备文件", "device.list": "查看设备目录", "device.exec": "执行终端命令", "device.computer": "操作电脑窗口", "connector.call": "调用连接器工具" } as Record<string, string>)[str(a.tool_name)] ?? a.tool_name}</small><details><summary>查看具体操作</summary><pre>{JSON.stringify({ ...JSON.parse(str(a.arguments_json)), ...(a.tool_name === "memory.forget" ? { 清理范围: JSON.parse(str(a.authorization_snapshot_json)).forgetCounts } : {}) }, null, 2)}</pre></details><div className="actions"><ConversationActionButton disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true }))}>允许一次</ConversationActionButton><ConversationActionButton disabled={busy} title={`始终允许当前 Agent：${a.remember_label ?? a.tool_name}`} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: true, remember: true }))}>始终允许</ConversationActionButton><ConversationActionButton tone="dark" disabled={busy} onClick={() => void run(() => api("approvals", { id: a.id, hash: a.argument_hash, allow: false }))}>拒绝</ConversationActionButton></div></section>)}
           {waitingPeers.map((approval) => <div className="task-status" key={str(approval.id)}><span>{state.bots.find((peer) => peer.id === approval.bot_id)?.name ?? "同伴"} 等待你的批准</span><button onClick={() => select(str(approval.bot_id))}>前往处理</button></div>)}
           {replyJob ? <div className="quote-bar reply-job-bar"><div><strong>回复后台任务：{replyJob.title}</strong></div><button type="button" aria-label="取消回复" onClick={() => setReplyJob(undefined)}><X size={14}/></button></div> : null}
           {quote ? <div className="quote-bar"><div><strong>引用 {quote.author}</strong><span>{quote.text}</span></div><button type="button" aria-label="取消引用" onClick={() => setQuote(undefined)}><X size={14}/></button></div> : null}
@@ -765,19 +1011,22 @@ export function AgentDesktop() {
                     </div>)}
             </div>}
             <textarea ref={composerRef} aria-label="发送给 Agent 的消息" placeholder={editInput ? "编辑排队消息…" : replyJob ? `回复后台任务：${replyJob.title}` : `给 ${bot?.name ?? "Agent"} 发消息…`} value={draft} onChange={(e) => changeDraft(e.target.value)} onCompositionEnd={() => { imeEndedAt.current = Date.now(); }} onPaste={pasteImages} onKeyDown={(e) => { if (e.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return; if (e.key === "Enter" && e.shiftKey) return; if (matchingPeers.length > 0) { if (e.key === "ArrowDown") { e.preventDefault(); setAtIndex((i) => (i + 1) % matchingPeers.length); return; } if (e.key === "ArrowUp") { e.preventDefault(); setAtIndex((i) => (i - 1 + matchingPeers.length) % matchingPeers.length); return; } if (e.key === "Tab") { e.preventDefault(); applyMention(str(matchingPeers[atIndex]?.name ?? matchingPeers[0].name)); return; } if (e.key === "Escape") { e.preventDefault(); setAtDismissed(true); return; } } if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && Date.now() - imeEndedAt.current >= 150) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} rows={Math.min(5, Math.max(1, draft.split("\n").length))}/>
-            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={chooseModel} onExport={() => void run(downloadTranscript)} onNewTopic={() => finance ? (openTopic(), composerRef.current?.focus()) : void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}>
+            <ComposerControls approvalRules={state.approvalRules?.filter((rule) => rule.bot_id === botId)} onRevokeRule={(id) => void run(() => api("approvals/revoke", { id, botId }))} key={JSON.stringify([botId,state.config?.provider_id,state.config?.endpoint])} connections={connections} choice={modelChoice} modelLabel={modelLabel} mode={str(bot?.approval_setting) || "standard"} disabled={busy || !connected || !bot} uploading={uploading} canExport={messages.length > 0} onFile={() => { if (replyJob) setError("回复后台任务时不能附带文件"); else fileInput.current?.click(); }} onModel={modelSelection.choose} onExport={() => void run(downloadTranscript)} onNewTopic={() => finance ? (openTopic(), composerRef.current?.focus()) : void run(() => api("agents/topic", { botId }))} onMode={(mode) => void run(() => api("bots/approval-mode", { id: botId, mode, version: Number(bot?.approval_setting_version ?? 0) }))}
+              onToolPolicy={openToolPolicy} context={{ botId, conversationId: conversation, connected: connected && !!bot,
+                modelKey: JSON.stringify([botConnection?.id, botConnection?.version, chosenModel]),
+                activityKey: JSON.stringify([rawMessages.at(-1)?.id, tasks.map(task => [task.id, task.status])]) }}>
               {/* While the Agent works and nothing is typed, the send key stops it; typing turns it back into send. */}
               {tasks.length > 0 && !draft.trim() && !attachments.length && !pending.length
                 ? <button type="button" className="send stop" aria-label="停止任务" title="停止任务" disabled={busy || !connected || tasks.every((task) => task.status === "cancelling")} onClick={() => void run(async () => { if (conversation) await api("agents/cancel",{botId,conversationId:conversation}); else for (const task of tasks) await api("cancel", { taskId: task.id }); })}><Square size={14} fill="currentColor"/></button>
-                : <button className="send" aria-label="发送消息" disabled={busy || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
+                : <button className="send" aria-label="发送消息" disabled={busy || modelSelection.saving || uploading || (!draft.trim() && !attachments.length) || !state.config || !bot}><ArrowUp size={19}/></button>}
             </ComposerControls>
           </form>
         </div>
         </div>
-      </> : <SettingsPage state={state} financeBotId={financeBotId} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
+      </> : <SettingsPage state={state} run={run} category={settingsCategory} onCategory={setSettingsCategory} refresh={reload} setDialog={setDialog} closeDialog={closeDialog}/> }
     </main>
 
-    {page === "agent" && bot ? <aside className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="收起助手详情" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
+    {page === "agent" && bot ? <aside id="assistant-inspector" className="inspector ds-drawer glass" aria-label="Agent 资料" inert={!panelOpen}><div className="inspector-heading"><button aria-label="关闭助手详情面板" className="icon-button" onClick={() => setDetail(false)}><X size={17}/></button></div>
       <div className="profile-top">
         <button type="button" className="profile-avatar-button" title="更换头像" aria-label={`更换 ${bot.name} 的头像`} onClick={editAvatar}><span className="hero-halo"><Avatar bot={bot} allBots={state.bots} size={96} state={avatarState} animate/></span></button>
         <strong>{bot.name}</strong>
@@ -815,27 +1064,12 @@ export function AgentDesktop() {
           </div>
 
           <div className="ds-field-group">
-            <div className="ds-field-label">能力</div>
-            <div className="ds-field-card ds-kv-list">
-              <div className="ds-kv-row">
-                <span><Zap size={13}/>驱动模型</span>
-                <ModelMenu key={botId} label="驱动模型" triggerClassName="ds-pill-btn inspector-model-trigger" displayValue={modelLabel} connections={connections} choice={modelChoice} disabled={busy || !connected} onChange={chooseModel}/>
-              </div>
-              <div className="ds-kv-row">
-                <span><Shield size={13}/>工具权限</span>
-                <button type="button" className="ds-pill-btn" onClick={() => setDialog(<AgentPolicyEditor bot={bot} close={closeDialog} save={(tools) => run(async () => { await api("bots/policy", { id: bot.id, version: bot.policy_version, tools }); closeDialog(); })}/>)}>已授权 {enabledTools.length} 项 · 配置</button>
-              </div>
-
-            </div>
-          </div>
-
-          <div className="ds-field-group">
             <div className="ds-field-label">用量</div>
             <div className="ds-field-card usage-card">
               <div className="ds-usage-grid">
                 <div><small>累计调用</small><strong>{Number(botUsage?.calls ?? 0)} 次</strong></div>
-                <div><small>输入 Token</small><strong>{Number(botUsage?.input_tokens ?? 0).toLocaleString()}</strong></div>
-                <div><small>输出 Token</small><strong>{Number(botUsage?.output_tokens ?? 0).toLocaleString()}</strong></div>
+                <div><small>输入 Token</small><strong>{formatCompactTokens(Number(botUsage?.input_tokens ?? 0))}</strong></div>
+                <div><small>输出 Token</small><strong>{formatCompactTokens(Number(botUsage?.output_tokens ?? 0))}</strong></div>
               </div>
             </div>
           </div>
@@ -872,11 +1106,19 @@ function senderLabel(m: RecordRow, bot: RecordRow | undefined, bots: RecordRow[]
 function JobMarker({ message, job, open }: { message: RecordRow; job?: Job; open: (id: string) => void }) {
   return <div className="a2a-marker job-marker"><span>已交给后台</span><button type="button" className="a2a-contact" aria-label={`查看后台任务：${job?.title ?? str(message.job_title)}`} onClick={() => open(str(message.job_id))}><span>{job?.title ?? str(message.job_title)}</span></button><time title={message.created_at ? new Date(Number(message.created_at)).toLocaleString("zh-CN") : undefined}>{formatTime(message.created_at)}</time></div>;
 }
-function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onPreviewStep, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; bot?: RecordRow; bots: RecordRow[]; jobs: Map<string, Job>; jobActions: JobCardActions; busy: boolean; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onPreviewStep: (step: ToolStep) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
+function AgentMessage({ message: m, hasJobReply, bot, bots, jobs, jobActions, busy, select, copiedId, joined = false, groupEnd = true, onCopy, onQuote, onPreviewFile, onDeleteImage, onDetach }: { message: RecordRow & { tool_steps?: ToolStep[] }; hasJobReply: boolean; bot?: RecordRow; bots: RecordRow[]; jobs: Map<string, Job>; jobActions: JobCardActions; busy: boolean; select: (id: string) => void; copiedId: string; joined?: boolean; groupEnd?: boolean; onCopy: (id: string, text: string) => void; onQuote: (msg: RecordRow) => void; onPreviewFile: (path: string) => void; onDeleteImage: (messageId: string, image: MessageImage) => Promise<void>; onDetach: () => void }) {
+  const [stepDetail, setStepDetail] = useState<{ id: string; loading?: boolean; item?: PreviewItem }>();
+  const toggleStep = (step: ToolStep) => {
+    if (step.tool_name === "device.read" && step.summary) { onPreviewFile(step.summary); return; }
+    if (stepDetail?.id === step.id) { setStepDetail(undefined); return; }
+    setStepDetail({ id: step.id, loading: true });
+    void api<PreviewItem>(`preview?callId=${encodeURIComponent(step.id)}`).then((item) => setStepDetail((current) => current?.id === step.id ? { id: step.id, item } : current))
+      .catch(() => setStepDetail((current) => current?.id === step.id ? { id: step.id, item: { kind: "tool", id: step.id, title: toolLabels[step.tool_name] ?? step.tool_name, status: step.status, content: step.preview || "暂无输出内容", createdAt: step.created_at } } : current));
+  };
   const direction = str(m.a2a_direction), peer = bots.find((b) => b.id === (m.a2a_peer_id ?? m.sender_bot_id));
   const jobId = str(m.job_id), job = jobId ? jobs.get(jobId) : undefined;
   if (jobId && str(m.source_key).startsWith("job-start:")) return <JobMarker message={m} job={job} open={jobActions.open}/>;
-  if (jobId && m.job_state) return <article className="message assistant job-report" data-message-id={str(m.id)}><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><JobReportCard message={m} job={job} busy={busy} actions={jobActions} renderContent={(value) => <RichText value={value} onPreviewFile={onPreviewFile}/>} onDeleteImage={(image) => onDeleteImage(str(m.id), image)}/><div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time></div></div></article>;
+  if (jobId && m.job_state) return <article className="message assistant job-report group-end" data-message-id={str(m.id)}><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><JobReportCard message={m} job={job} hasReply={hasJobReply} busy={busy} actions={jobActions} renderContent={(value) => <RichText value={value} onPreviewFile={onPreviewFile}/>} onDeleteImage={(image) => onDeleteImage(str(m.id), image)}/><div className="message-meta"><time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time></div></div></article>;
   if (direction === "sent" || direction === "returned") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "received") return <A2AMarker direction={direction} peer={peer} bots={bots} timestamp={m.created_at} select={select}/>;
   if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;
@@ -889,10 +1131,10 @@ function AgentMessage({ message: m, bot, bots, jobs, jobActions, busy, select, c
     <div className="message-body">
       {m.role === "user" && jobId ? <div className="job-reply-label">回复后台任务：{job?.title ?? str(m.job_title)}</div> : null}
       {m.role === "peer" ? <div className="message-author"><Avatar bot={peer} allBots={bots} size={22}/>{peer?.name ?? "Agent"} · {m.kind === "request" ? "发来任务" : "返回结果"}</div> : null}
-      {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length} steps={steps}><div className="step-list">{steps.map((step) => <button type="button" key={step.id} className="step-row" onClick={() => onPreviewStep(step)} title="点击在右侧面板查看详情"><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>)}</div></ToolActivityDisclosure> : null}
+      {steps.length > 0 ? <ToolActivityDisclosure live={false} stepCount={steps.length} steps={steps}><div className="step-list">{steps.map((step) => <div className="step-item" key={step.id}><button type="button" className="step-row" aria-expanded={stepDetail?.id === step.id ? "true" : undefined} onClick={() => toggleStep(step)} title={stepDetail?.id === step.id ? "点击收起" : "点击展开详情"}><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>{stepDetail?.id === step.id ? <div className="step-detail"><ToolStepDetail tool={step.tool_name} item={stepDetail.item} loading={stepDetail.loading}/></div> : null}</div>)}</div></ToolActivityDisclosure> : null}
       <MessageImages images={images} onDelete={(image) => onDeleteImage(str(m.id), image)}/>
       {text ? document ? <DocumentCard onExpand={onDetach}><RichText value={text} onPreviewFile={onPreviewFile}/></DocumentCard> : <div className="bubble"><RichText value={text} onPreviewFile={onPreviewFile}/></div> : null}
-      <div className="message-meta">{groupEnd || !assistant ? <time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time> : null}{canAct ? <span className="message-tools"><button type="button" className="tool-link" onClick={() => onQuote(m)} title="引用回复"><CornerUpLeft size={11}/>引用</button><button type="button" className="tool-link" onClick={() => onCopy(str(m.id), str(m.content))} title="复制内容">{copiedId === str(m.id) ? <><Check size={11}/>已复制</> : <><Copy size={11}/>复制</>}</button></span> : null}</div>
+      <div className="message-meta">{m.role !== "user" && (groupEnd || !assistant) ? <time title={formatTime(m.created_at)}>{formatShortTime(m.created_at)}</time> : null}{canAct ? <span className="message-tools"><button type="button" className="tool-link" onClick={() => onQuote(m)} title="引用回复"><CornerUpLeft size={11}/>引用</button><button type="button" className="tool-link" onClick={() => onCopy(str(m.id), str(m.content))} title="复制内容">{copiedId === str(m.id) ? <><Check size={11}/>已复制</> : <><Copy size={11}/>复制</>}</button></span> : null}</div>
     </div>
   </article>;
 }

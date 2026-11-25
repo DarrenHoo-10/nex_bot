@@ -1,4 +1,4 @@
-// Reasoning effort ("思考强度"). A model offers the levels its provider settings tick; "off" is always available.
+// Reasoning effort ("思考强度"). Every chat model has the same five choices.
 // The values are the agent SDK's thinking levels, which it turns into OpenAI reasoning_effort or Anthropic thinking.
 export const reasoningLevels = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningLevel = typeof reasoningLevels[number];
@@ -21,11 +21,11 @@ export function parseReasoningChoice(value: unknown): ReasoningChoice | undefine
 
 /**
  * The level a request uses: the assistant's choice when the model offers it, otherwise the nearest level the model
- * offers (the lower one on a tie). With no choice yet the middle one is aimed for. A model offering no levels is off.
+ * offers (the lower one on a tie). With no choice yet, aim for high. A model offering no levels is off.
  */
 export function resolveReasoning(choice: string | null | undefined, offered: readonly ReasoningLevel[]): ReasoningChoice {
   if (!offered.length || choice === "off") return "off";
-  const wanted = (reasoningLevels as readonly string[]).includes(String(choice)) ? String(choice) as ReasoningLevel : "medium";
+  const wanted = (reasoningLevels as readonly string[]).includes(String(choice)) ? String(choice) as ReasoningLevel : "high";
   if (offered.includes(wanted)) return wanted;
   const at = reasoningLevels.indexOf(wanted);
   return [...offered].sort((a, b) => Math.abs(reasoningLevels.indexOf(a) - at) - Math.abs(reasoningLevels.indexOf(b) - at) || reasoningLevels.indexOf(a) - reasoningLevels.indexOf(b))[0];

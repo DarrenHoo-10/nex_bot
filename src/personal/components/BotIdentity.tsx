@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useRef, useState } from "react";
 import { api, str, type RecordRow } from "../api";
 
@@ -11,7 +12,7 @@ export function BotIdentity({ bot, refresh }: { bot: RecordRow; refresh(): Promi
     try {
       await api("bots/update", { id: original.current.id, name: original.current.name, version: original.current.version, instructions: draft });
       await refresh(); setEditing(false);
-    } catch (e) { setError(e instanceof Error ? e.message : "保存失败，请重试"); }
+    } catch (e) { setError(userErrorText(e, "保存失败，请重试")); }
     finally { setPending(false); }
   }
   if (!editing) return <button type="button" className="bot-identity-link" aria-label="编辑 bot身份信息" onClick={() => { original.current = bot; setDraft(str(bot.instructions)); setError(""); setEditing(true); }}>{str(bot.instructions).trim() ? str(bot.instructions) : "bot身份信息"}</button>;

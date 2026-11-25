@@ -1,28 +1,28 @@
 import SwiftUI
 import NexClientKit
 
-/// The chat model sheet (web `ModelMenu`): the assistant's provider (switch it from a menu), that provider's enabled
-/// models, and the 思考强度 slider when the chosen model offers reasoning levels. Every choice saves at once.
 struct ChatModelSheet: View {
     let workspace: WorkspaceStore
     let botID: String
     var onError: (String) -> Void = { _ in }
+    var composer = false
     @Environment(\.dismiss) private var dismiss
     @State private var viewedID = ""
     @State private var catalogs: [String: [String]] = [:]
     @State private var loadError = ""
     @State private var query = ""
-    @State private var level = 0.0
 
     private var state: WorkspaceState? { workspace.state }
-    private var bot: Bot? { workspace.bot(botID) }
+    private var choice: AgentModelChoice? { workspace.agentModelChoice(botID) }
     private var usable: [ModelConnection] { (state?.connections ?? []).filter(\.usable) }
-    private var current: ModelConnection? { state?.connection(forBot: bot) }
+    private var current: ModelConnection? { usable.first { $0.id == choice?.connectionID } ?? usable.first(where: \.isDefault) ?? usable.first }
     private var viewed: ModelConnection? { usable.first { $0.id == viewedID } ?? current }
-    private var chosenModel: String { state?.modelChoice(forBot: bot).model ?? "" }
-    private var offered: [ReasoningLevel] { current?.options[chosenModel]?.reasoning ?? [] }
-    private var stops: [String] { ["off"] + offered.map(\.rawValue) }
-    private var resolved: String { ReasoningLevel.resolve(bot?.selectedReasoning, offered: offered) }
+    private var chosenModel: String {
+        if let model = choice?.model, !model.isEmpty { return model }
+        return current?.defaultModel ?? ""
+    }
+    private var offered: [ReasoningLevel] { chosenModel.isEmpty ? [] : ReasoningLevel.defaults }
+    private var resolved: String { ReasoningLevel.chatLevel(choice?.reasoning).rawValue }
     private var models: [String] {
         guard let viewed else { return [] }
         var seen = Set<String>()
@@ -35,7 +35,7 @@ struct ChatModelSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("选择聊天模型").font(.headline)
+                Text("模型").font(.headline)
                 Spacer()
                 Button("关闭") { dismiss() }.font(.subheadline).foregroundStyle(Theme.muted)
             }
@@ -61,7 +61,8 @@ struct ChatModelSheet: View {
                     .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .disabled(usable.count < 2).padding(.horizontal, 16).accessibilityLabel("供应商：\(viewed?.name ?? "")")
-                if models.count > 8 || !query.isEmpty {
+                if !offered.isEmpty && viewed?.id == current?.id { effort }
+                if composer || models.count > 8 || !query.isEmpty {
                     TextField("搜索模型", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .padding(.horizontal, 12).padding(.vertical, 9)
                         .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -86,26 +87,17 @@ struct ChatModelSheet: View {
                     }
                     .padding(.top, 6)
                 }
-                if !offered.isEmpty && viewed?.id == current?.id { effort }
             }
         }
         .background(Theme.background)
-        .onAppear { viewedID = current?.id ?? ""; level = Double(stops.firstIndex(of: resolved) ?? 0) }
+        .onAppear { viewedID = current?.id ?? "" }
         .task(id: viewed?.id) { await loadCatalog() }
     }
 
     private var effort: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-            HStack(spacing: 8) {
-                Text("思考强度").font(.subheadline).foregroundStyle(Theme.muted)
-                Text(ReasoningLevel.label(stops[Int(level.rounded())])).font(.subheadline.weight(.semibold))
-            }
-            Slider(value: $level, in: 0...Double(max(1, stops.count - 1)), step: 1) { editing in if !editing { commitLevel() } }
-                .tint(Theme.brand).accessibilityLabel("思考强度").accessibilityValue(ReasoningLevel.label(stops[Int(level.rounded())]))
-            HStack { ForEach(stops, id: \.self) { stop in Text(ReasoningLevel.label(stop)).font(.caption2).foregroundStyle(Theme.muted); if stop != stops.last { Spacer() } } }
-        }
-        .padding(.horizontal, 16).padding(.bottom, 16)
+        ChatEffortChoices(levels: offered.map(\.rawValue), selection: resolved,
+                          label: ReasoningLevel.label, tint: composer ? .blue : Theme.brand, choose: commitLevel)
+            .padding(.horizontal, 16).padding(.vertical, 6)
     }
 
     private func loadCatalog() async {
@@ -117,20 +109,14 @@ struct ChatModelSheet: View {
 
     private func pick(_ model: String) {
         guard let viewed else { return }
-        dismiss()
+        if !composer { dismiss() }
         if viewed.id == current?.id && model == chosenModel { return }
-        Task {
-            do { try await workspace.setAgentModel(botID: botID, connectionID: viewed.id, model: model, reasoning: nil) }
-            catch { onError((error as? CoreError)?.message ?? error.localizedDescription) }
-        }
+        workspace.chooseAgentModel(botID, .init(connectionID: viewed.id, model: model,
+                                                 reasoning: viewed.id == current?.id ? choice?.reasoning : nil), onError: onError)
     }
 
-    private func commitLevel() {
-        let next = stops[min(stops.count - 1, max(0, Int(level.rounded())))]
-        guard next != resolved, let current else { return }
-        Task {
-            do { try await workspace.setAgentModel(botID: botID, connectionID: current.id, model: bot?.selectedModel ?? "", reasoning: next) }
-            catch { onError((error as? CoreError)?.message ?? error.localizedDescription) }
-        }
+    private func commitLevel(_ next: String) {
+        guard let current, next != resolved else { return }
+        workspace.chooseAgentModel(botID, .init(connectionID: current.id, model: choice?.model ?? "", reasoning: next), onError: onError)
     }
 }

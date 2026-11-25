@@ -120,7 +120,7 @@ public final class AppModel {
 
     /// Signs out: tells Core (best effort), deletes the credential, drops all cached content.
     public func logout() async {
-        workspace?.stop(); workspace = nil; credential = nil
+        workspace?.clearContent(); workspace?.stop(); workspace = nil; credential = nil
         await service.logout()
         hasSavedLogin = false
         phase = .loggedOut(error: nil)
@@ -136,6 +136,7 @@ public final class AppModel {
 
     private func connect(_ connection: Connection) {
         let store = WorkspaceStore(client: connection.client, timing: timing)
+        store.cacheSessionID = connection.credential.sessionId
         store.onSessionEnded = { [weak self] end in self?.sessionEnded(end) }
         store.enableSessionRefresh(expiresAt: connection.credential.expiresAt, coreID: connection.credential.coreId) { [weak self, weak store] granted in
             guard let self, self.workspace === store else { return }

@@ -2,6 +2,7 @@ import { CoreStore, id, now } from './store.ts';
 import { toAnthropic, fromAnthropic } from './memory-gateway.ts';
 
 import { tokens } from './token-estimate.ts';
+import { openAiBase } from '../../shared/model-catalog.mjs';
 export { tokens } from './token-estimate.ts';
 export function jsonObject(value: string): Record<string, unknown> {
   const result = JSON.parse(value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
@@ -60,7 +61,7 @@ export async function assistantCompletion(store: CoreStore, args: CompletionArgs
       payload = toAnthropic(payload); suffix = new URL(model.endpoint).pathname.replace(/\/$/, '').endsWith('/v1') ? '/messages' : '/v1/messages';
       headers = { 'Content-Type': 'application/json', 'x-api-key': model.apiKey, 'anthropic-version': '2023-06-01' };
     }
-    const response = await fetch(model.endpoint.replace(/\/$/, '') + suffix, { method: 'POST', headers, body: JSON.stringify(payload), redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(90000), ...(args.signal ? [args.signal] : [])]) });
+    const response = await fetch((model.provider === 'anthropic' ? model.endpoint.replace(/\/$/, '') : openAiBase(model.endpoint)) + suffix, { method: 'POST', headers, body: JSON.stringify(payload), redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(90000), ...(args.signal ? [args.signal] : [])]) });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`模型服务返回 ${response.status}`); }
     const body = await response.text(); if (body.length > 2_000_000) throw new Error('模型响应过大');
     const raw = JSON.parse(body);

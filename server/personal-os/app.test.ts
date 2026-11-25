@@ -138,7 +138,8 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   }, 60_000);
   it("upgrades an untouched previous default policy, preserves identical user-edited restrictions and freezes the shipped migration", async () => {
     const f = await fixture(), untouched = String(f.bots[1].id), edited = String(f.bots[2].id);
-    const tools = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", untouched)?.policy_json)).tools.filter((tool: string) => tool !== "device.exec");
+    // a default from before migration 8: no device.exec, and none of the tools added since (routine.delete)
+    const tools = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", untouched)?.policy_json)).tools.filter((tool: string) => tool !== "device.exec" && tool !== "routine.delete");
     f.app.agents.updatePolicy({ id: edited, version: 1, tools });
     f.app.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools }), untouched);
     const previousHash = f.app.store.get("SELECT checksum FROM schema_migrations WHERE version=7")?.checksum;
@@ -510,7 +511,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.fake.scripts.push({ kind: "openai-text", text: "我会按照私人秘书的身份工作" });
     const task = f.app.agents.send(botId, "你叫什么，是什么身份？", "named-agent").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
-    const prompt = JSON.parse(f.fake.requests[0].body).messages.find((m: { role: string }) => m.role === "system").content;
+    const prompt = JSON.parse(f.fake.requests[0].body).messages.find((m: { role: string }) => (m.role === "system" || m.role === "developer")).content;
     expect(prompt).toContain('"name":"我的私人秘书"'); expect(prompt).toContain('"instructions":""');
   }, 40_000);
   it("silently refreshes self and peer identity in a running worker after approval, retaining IDs, privacy and restart continuity", async () => {

@@ -1,5 +1,7 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, ChevronDown, Search, Square } from 'lucide-react';
+import { useCompactComposer } from "./use-compact-composer";
 
 type Catalog = { models: string[]; hasMore: boolean };
 export function ModelList({ models, value, selected, onSelect, onBulk, emptyLabel, allowCustom = false, autoFocus = false }: {
@@ -63,6 +65,7 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
   value: string; onChange: (model: string) => void; models?: string[] | null; loadModels?: () => Promise<Catalog>;
   label?: string; emptyLabel?: string; name?: string; disabled?: boolean; open?: boolean; onOpenChange?: (open: boolean) => void;
 }) {
+  const compact = useCompactComposer();
   const [localOpen, setLocalOpen] = useState(false), [catalog, setCatalog] = useState<Catalog>(), [loading, setLoading] = useState(false), [error, setError] = useState('');
   const open = controlledOpen ?? localOpen, setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null), loader = useRef(loadModels), generation = useRef(0);
@@ -72,7 +75,7 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
     if (!loader.current || loading) return;
     const request = ++generation.current; setLoading(true); setError('');
     try { const result = await loader.current(); if (request === generation.current) setCatalog(result); }
-    catch (error) { if (request === generation.current) setError(error instanceof Error ? error.message : '获取模型失败'); }
+    catch (error) { if (request === generation.current) setError(userErrorText(error, '获取模型失败')); }
     finally { if (request === generation.current) setLoading(false); }
   };
   useEffect(() => { if (open && models == null && !catalog && !loading && !error) void load(); }, [open, models, catalog, loading, error]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -93,14 +96,16 @@ export function ModelPicker({ value, onChange, models, loadModels, label = '选�
     window.addEventListener('resize', position); document.addEventListener('scroll', scroll, true);
     const outside = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setOpen(false); };
     document.addEventListener('pointerdown', outside);
-    el.querySelector('input')?.focus();
+    // Opening the list on a phone should leave text entry to an explicit search tap.
+    if (compact) el.focus({ preventScroll: true });
+    else el.querySelector('input')?.focus();
     return () => { observer.disconnect(); window.removeEventListener('resize', position); document.removeEventListener('scroll', scroll, true); document.removeEventListener('pointerdown', outside); if (el.isConnected) el.hidePopover(); };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, compact]); // eslint-disable-line react-hooks/exhaustive-deps
   const options = useMemo(() => [...new Set([...(value ? [value] : []), ...(models ?? catalog?.models ?? []), ...(selected ?? [])])], [value, selected, models, catalog]);
   return <div className={anchorRef ? "model-picker model-picker-menu-only" : "model-picker"} ref={root}>
     {name && <input type="hidden" name={name} value={value}/>}
     {!anchorRef && <button ref={trigger} type="button" className={triggerClassName ?? "model-picker-trigger"} title={displayValue || value || emptyLabel} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}><span>{displayValue || value || emptyLabel || label}</span><ChevronDown size={15}/></button>}
-    {open && <div ref={panel} popover="manual" className="model-picker-popover" role="dialog" aria-label={label} onKeyDown={e => { if (e.key === 'Escape' || e.key === 'Tab') { if (e.key === 'Escape') e.preventDefault(); e.stopPropagation(); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}>
+    {open && <div ref={panel} popover="manual" className="model-picker-popover" role="dialog" aria-label={label} tabIndex={-1} onKeyDown={e => { if (e.key === 'Escape' || (!compact && e.key === 'Tab')) { if (e.key === 'Escape') e.preventDefault(); e.stopPropagation(); setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}>
       <ModelList models={options} value={value} selected={selected} onBulk={disabled ? undefined : onBulk} emptyLabel={emptyLabel} allowCustom={allowCustom} onSelect={model => { if (disabled) return; onChange(model); if (!selected) { setOpen(false); (anchorRef?.current ?? trigger.current)?.focus(); } }}/>
       {loading && <div className="model-picker-status" role="status">正在获取模型…</div>}
       {error && <div className="model-picker-status" role="alert">{error}</div>}

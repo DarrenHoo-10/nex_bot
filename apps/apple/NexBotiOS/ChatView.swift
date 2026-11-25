@@ -12,6 +12,7 @@ struct ChatView: View {
     @State private var modelForm = ModelForm(config: nil)
     @State private var composerMenu: ComposerMenu?
     @State private var showMemory = false
+    @State private var switchingAssistant = false
     @State private var atBottom = true
     @State private var knownMemories: [String: String]?
     @State private var memoryNotice: String?
@@ -183,12 +184,7 @@ struct ChatView: View {
                     }
                     .accessibilityLabel("\(openJobs.count) 项后台任务")
                 }
-                if let transcript = workspace.exportTranscript(botID: botID) {
-                    ShareLink(item: transcript) { Image(systemName: "square.and.arrow.up").font(.system(size: 14, weight: .medium)).frame(width: 32, height: 32) }
-                        .accessibilityLabel("复制对话记录")
-                }
-                Button { nav.openAgentDetail(botID) } label: { Image(systemName: "sidebar.right").font(.system(size: 14, weight: .medium)).frame(width: 32, height: 32) }
-                    .accessibilityLabel("助手详情")
+                RoundGlassButton(symbol: "sidebar.right", label: "助手详情", size: 32) { nav.openAgentDetail(botID) }
             }
             ToolbarItem(placement: .principal) { titleView }
         }
@@ -239,28 +235,26 @@ struct ChatView: View {
 
     // MARK: Header
 
-    private var subtitle: String {
-        guard let first = tasks.first else { return workspace.companionState(of: botID).label }
-        return tasks.count > 1 ? "\(first.phrase) · \(tasks.count) 项工作正在进行" : first.phrase
-    }
-
-    /// The compact title capsule: avatar, name and status; it opens the agent detail.
+    /// The compact title capsule opens the assistant switcher.
     private var titleView: some View {
-        Button { nav.openAgentDetail(botID) } label: {
-            HStack(spacing: 8) {
+        Button { switchingAssistant.toggle() } label: {
+            HStack(spacing: 7) {
                 if let bot { workspace.avatar(of: bot, size: 28, animated: true) }
-                VStack(alignment: .leading, spacing: 0) {
-                    nameText
-                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(tasks.isEmpty ? Theme.muted : Theme.identityAccent).lineLimit(1)
-                }
-                .frame(maxWidth: 150, alignment: .leading)
+                nameText
             }
-            .padding(.leading, 5).padding(.trailing, 14).padding(.vertical, 4)
+            .padding(.leading, 5).padding(.trailing, 10).padding(.vertical, 4)
             .glass(Capsule(), lift: .card)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(bot?.name ?? "Agent") 助手详情")
+        .accessibilityLabel("\(bot?.name ?? "Agent")，切换助手")
+        .popover(isPresented: $switchingAssistant, arrowEdge: .top) {
+            AssistantSwitcher(workspace: workspace, selectedID: botID) { id in
+                switchingAssistant = false
+                if id != botID { nav.openChat(id) }
+            }
+            .presentationCompactAdaptation(.popover)
+        }
     }
 
     private var nameText: some View { Text(bot?.name ?? "会话").font(.system(size: 13.5, weight: .semibold)).lineLimit(1) }

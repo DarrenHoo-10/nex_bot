@@ -3,7 +3,9 @@
     "cursor": 1,
     "privacyEpoch": 1,
     "coreId": "fixture-id-1",
-    "bootId": "fixture-id-7"
+    "bootId": "fixture-id-7",
+    "revision": 1,
+    "at": 1700000000000
   },
   "messages": [
     {
@@ -19,7 +21,8 @@
       "content": "帮我看看这周的发布清单。",
       "source_key": "fixture:user-1",
       "created_at": 1700000000000,
-      "conversation_id": null
+      "conversation_id": null,
+      "rowid": 1
     },
     {
       "id": "fixture-id-14",
@@ -34,9 +37,11 @@
       "content": "### 发布清单\n\n- 合并改动\n- 更新说明\n\n| 项 | 状态 |\n|---|---|\n| 构建 | 通过 |",
       "source_key": "fixture:assistant-1",
       "created_at": 1700000000000,
-      "conversation_id": null
+      "conversation_id": null,
+      "rowid": 2
     }
   ],
   "hasMore": false,
+  "hasOlder": false,
   "streaming": []
 }

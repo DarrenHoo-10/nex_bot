@@ -21,9 +21,10 @@ import { ModelCalibration } from "./calibration.ts";
 import { ModelLimits, modelLimitScope, parseModelLimit, validateModelLimits, type ModelCatalogConfig, type ModelLimitOverrides } from "./model-limits.ts";
 
 import { todoSchema } from "./todo-schema.ts";
+import { cliAgentNotesSchema, cliAgentRequestSchema, cliAgentSchema, cliAgentSessionsRebuild, cliAgentWorkbenchSchema } from "./cli-agents/schema.ts";
 import { jobSchema } from "./job-schema.ts";
 import { connectionSchema, modelNameSchema } from "./connection-schema.ts";
-import { parseReasoningChoice, parseReasoningLevels, resolveReasoning, type ReasoningLevel } from "./reasoning.ts";
+import { reasoningLevels, parseReasoningChoice, parseReasoningLevels, resolveReasoning } from "./reasoning.ts";
 
 export type Row = Record<string, string | number | null>;
 export const id = () => randomUUID();
@@ -141,6 +142,8 @@ export class CoreStore {
         this.insert("schema_migrations", { version: 4, checksum: hash(lifecycle), applied_at: now() });
       });
     }
+    // Preserve the policy sets and checksums used by historical migrations.
+    const preDeleteActions = basicActions.filter(action => action !== "routine.delete");
     if (!this.get("SELECT version FROM schema_migrations WHERE version=5")) {
       const clientSql = readFileSync(new URL("./client-schema.sql", import.meta.url), "utf8");
       this.transaction(() => {
@@ -161,7 +164,7 @@ export class CoreStore {
         for (const policy of this.all("SELECT * FROM bot_policies")) {
           const tools = (JSON.parse(String(policy.policy_json)) as { tools?: string[] }).tools ?? [];
           const normalized = [...new Set(tools)].sort().join(",");
-          if ([previous, [...previous, "device.list", "device.read", "device.exec"]].some((p) => [...p].sort().join(",") === normalized)) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...JSON.parse(String(policy.policy_json)), tools: [...tools, ...basicActions.filter((a) => a.startsWith("routine."))] }), policy.bot_id);
+          if ([previous, [...previous, "device.list", "device.read", "device.exec"]].some((p) => [...p].sort().join(",") === normalized)) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...JSON.parse(String(policy.policy_json)), tools: [...tools, ...preDeleteActions.filter((a) => a.startsWith("routine."))] }), policy.bot_id);
         }
         this.insert("schema_migrations", { version: 5, checksum: hash(clientSql), applied_at: now() });
       });
@@ -175,14 +178,14 @@ export class CoreStore {
         for (const policy of this.all("SELECT * FROM bot_policies WHERE version=1")) {
           const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
           if ([...new Set(value.tools ?? [])].sort().join(",") !== legacyTools.join(",")) continue;
-          this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools!, ...basicActions.filter((action) => action.startsWith("routine."))] }), policy.bot_id);
+          this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools!, ...preDeleteActions.filter((action) => action.startsWith("routine."))] }), policy.bot_id);
         }
-        this.insert("schema_migrations", { version: 6, checksum: hash(JSON.stringify({ legacyTools, added: basicActions.filter((action) => action.startsWith("routine.")), uneditedVersion: 1 })), applied_at: now() });
+        this.insert("schema_migrations", { version: 6, checksum: hash(JSON.stringify({ legacyTools, added: preDeleteActions.filter((action) => action.startsWith("routine.")), uneditedVersion: 1 })), applied_at: now() });
       });
     }
     if (!this.get("SELECT version FROM schema_migrations WHERE version=7")) {
       // Freeze the shipped migration; later defaults must not change its hash.
-      const version7Actions = basicActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action));
+      const version7Actions = preDeleteActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action));
       const oldBasic = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "routine.list", "routine.save", "routine.toggle", "routine.run"];
       const legacy = ["memory.search", "memory.read", "memory.write", "agent.delegate", "device.read", "device.list", "device.exec", "routine.list", "routine.save", "routine.toggle", "routine.run"];
       const standardSets = [oldBasic, [...oldBasic, "device.list", "device.read", "device.exec"], legacy].map((tools) => [...tools].sort().join(","));
@@ -197,8 +200,8 @@ export class CoreStore {
       });
     }
     if (!this.get("SELECT version FROM schema_migrations WHERE version=8")) {
-      const previous = basicActions.filter((action) => action !== "device.exec").sort().join(",");
-      const legacyPrevious = basicActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action)).sort().join(",");
+      const previous = preDeleteActions.filter((action) => action !== "device.exec").sort().join(",");
+      const legacyPrevious = preDeleteActions.filter((action) => !["device.exec", "agent.create", "agent.update"].includes(action)).sort().join(",");
       this.transaction(() => {
         for (const policy of this.all("SELECT * FROM bot_policies")) {
           if (this.get("SELECT id FROM audit_records WHERE action='agent.policy.update' AND entity_id=?", policy.bot_id)) continue;
@@ -241,7 +244,7 @@ export class CoreStore {
       this.db.exec(schema);
       for (const policy of this.all("SELECT * FROM bot_policies")) {
         const value = JSON.parse(String(policy.policy_json));
-        if ([...new Set(value.tools ?? [])].sort().join(",") === basicActions.filter((a) => a !== "attachment.read").sort().join(",")) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools, "attachment.read"] }), policy.bot_id);
+        if ([...new Set(value.tools ?? [])].sort().join(",") === preDeleteActions.filter((a) => a !== "attachment.read").sort().join(",")) this.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ ...value, tools: [...value.tools, "attachment.read"] }), policy.bot_id);
       }
       this.insert("schema_migrations", { version: 13, checksum: hash(schema), applied_at: now() });
     });
@@ -286,10 +289,10 @@ export class CoreStore {
       const schema = 'CREATE TABLE image_models(id TEXT PRIMARY KEY,name TEXT NOT NULL,endpoint TEXT NOT NULL,model TEXT NOT NULL,ciphertext TEXT NOT NULL,version INTEGER NOT NULL) STRICT;';
       this.db.exec(schema);
       for (const operation of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TRIGGER sync_image_models_${operation} AFTER ${operation} ON image_models BEGIN INSERT INTO sync_events(kind,created_at) VALUES('state',CAST(unixepoch('subsec')*1000 AS INTEGER)); END;`);
-      const oldDefault = basicActions.filter(action => !action.startsWith('image.')).sort().join(',');
+      const oldDefault = preDeleteActions.filter(action => !action.startsWith('image.')).sort().join(',');
       for (const policy of this.all('SELECT * FROM bot_policies')) {
         const value = JSON.parse(String(policy.policy_json)) as { tools?: string[] };
-        if ([...new Set(value.tools ?? [])].sort().join(',') === oldDefault) this.run('UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?', JSON.stringify({ ...value, tools: basicActions }), policy.bot_id);
+        if ([...new Set(value.tools ?? [])].sort().join(',') === oldDefault) this.run('UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?', JSON.stringify({ ...value, tools: preDeleteActions }), policy.bot_id);
       }
       this.insert('schema_migrations', { version: 19, checksum: hash(schema), applied_at: now() });
     });
@@ -474,6 +477,150 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
     });
     if(!this.all('PRAGMA table_info(agent_topic_inputs)').some(column=>column.name==='model_selection_json'))this.db.exec('ALTER TABLE agent_topic_inputs ADD COLUMN model_selection_json TEXT');
     this.db.exec('CREATE TABLE IF NOT EXISTS task_model_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id),selection_json TEXT NOT NULL) STRICT;');
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=48")) this.transaction(() => {
+      const schema = `ALTER TABLE bots ADD COLUMN memory_epoch INTEGER NOT NULL DEFAULT 0;
+        CREATE TABLE bot_lifecycle_operations(id TEXT PRIMARY KEY,preview_id TEXT NOT NULL UNIQUE,bot_id TEXT NOT NULL REFERENCES bots(id),created_at INTEGER NOT NULL) STRICT;
+        CREATE TABLE bot_lifecycle_objects(operation_id TEXT NOT NULL REFERENCES bot_lifecycle_operations(id),object_key TEXT NOT NULL,PRIMARY KEY(operation_id,object_key)) STRICT;
+        CREATE TABLE bot_lifecycle_banks(operation_id TEXT NOT NULL REFERENCES bot_lifecycle_operations(id),provider_bank_id TEXT NOT NULL,PRIMARY KEY(operation_id,provider_bank_id)) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 48, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=49")) this.transaction(() => {
+      // Version 48 operations had already committed their local cleanup when they were recorded.
+      const schema = `ALTER TABLE bot_lifecycle_operations ADD COLUMN phase TEXT NOT NULL DEFAULT 'done';
+        ALTER TABLE bot_lifecycle_operations ADD COLUMN replacement_id TEXT REFERENCES bots(id);
+        ALTER TABLE bot_lifecycle_operations ADD COLUMN page_cursor TEXT NOT NULL DEFAULT '';
+        ALTER TABLE bot_lifecycle_operations ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX bot_lifecycle_pending ON bot_lifecycle_operations(retry_at,created_at) WHERE phase!='done';
+        CREATE UNIQUE INDEX bot_lifecycle_replacement ON bot_lifecycle_operations(replacement_id);
+        CREATE INDEX lifecycle_task_page ON tasks(bot_id,id);
+        CREATE INDEX lifecycle_attachment_page ON chat_attachments(bot_id);
+        CREATE INDEX lifecycle_routine_occurrences ON routine_occurrences(routine_id);
+        CREATE INDEX lifecycle_conversations ON conversations(bot_id);
+        CREATE INDEX lifecycle_memory_uses ON assistant_memory_uses(message_id);
+        CREATE INDEX lifecycle_runtime_sessions ON runtime_sessions(bot_id,id);
+        CREATE INDEX lifecycle_attachment_message ON chat_attachments(message_id);
+        CREATE INDEX lifecycle_job_message ON agent_job_reports(message_id);
+        CREATE INDEX lifecycle_doc_page ON memory_documents(bot_id,scope,id);
+        CREATE INDEX lifecycle_busy_tasks ON tasks(bot_id) WHERE ended_at IS NULL;
+        CREATE INDEX lifecycle_unknown_calls ON tool_calls(bot_id) WHERE status='unknown';`;
+      // A preview is short lived. Track changes to its scope so confirmation never walks the history.
+      // A separate revision table keeps ordinary message inserts from firing bot/profile sync triggers.
+      const revisions = `CREATE TABLE bot_lifecycle_revisions(bot_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0) STRICT;`;
+      const triggers = ["agent_messages","conversations","memory_documents","assistant_memories","agent_routines","todos","tasks","chat_attachments","memory_bank_bindings","assistant_topics"].flatMap(table =>
+        (["INSERT","DELETE","UPDATE"] as const).map(event=>{
+          const before = event==="INSERT" ? [] : ["OLD"], after = event==="DELETE" ? [] : ["NEW"];
+          const ids = [...before,...after].map(row=>row+".bot_id");
+          const sql = `INSERT INTO bot_lifecycle_revisions(bot_id,revision) SELECT id,1 FROM bots WHERE status='active' AND id IN (${ids.join(",")})
+            ON CONFLICT(bot_id) DO UPDATE SET revision=revision+1;`;
+          return `CREATE TRIGGER lifecycle_scope_${table}_${event} AFTER ${event} ON ${table} BEGIN ${sql} END;`;
+        })).join("\n");
+      this.db.exec(schema+revisions+triggers);
+      this.insert("schema_migrations", { version: 49, checksum: hash(schema+revisions+triggers), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=50")) this.transaction(() => {
+      // Agent mode: terminal coding-agent sessions, their cached transcript and device operations; see cli-agents/schema.ts. New tables only.
+      this.db.exec(cliAgentSchema);
+      this.insert("schema_migrations", { version: 50, checksum: hash(cliAgentSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=51")) this.transaction(() => {
+      // Agent mode phase 2: pending requests, supervision settings and action log; see cli-agents/schema.ts. New tables only.
+      this.db.exec(cliAgentRequestSchema);
+      this.insert("schema_migrations", { version: 51, checksum: hash(cliAgentRequestSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=52")) this.transaction(() => {
+      // Per-bot connector grants retired: every enabled connector serves every bot in the workspace.
+      const dropGrants = "DROP TABLE IF EXISTS personal_connector_grants";
+      this.db.exec(dropGrants);
+      this.insert("schema_migrations", { version: 52, checksum: hash(dropGrants), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=53")) this.transaction(() => {
+      // GitHub joins Gmail as a first-class provider: rebuild the table without the two-provider CHECK.
+      const schema = `CREATE TABLE personal_connectors_v53 (
+ id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, owner_user_id TEXT NOT NULL,
+ name TEXT NOT NULL, url TEXT NOT NULL, transport TEXT NOT NULL CHECK(transport IN ('http','sse')),
+ provider TEXT NOT NULL DEFAULT 'mcp' CHECK(provider IN ('mcp','gmail','github')),
+ account TEXT, kind TEXT NOT NULL DEFAULT 'mcp',
+ enabled INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1,
+ credential TEXT, tools_json TEXT NOT NULL DEFAULT '[]', checked_at INTEGER,
+ error TEXT, created_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO personal_connectors_v53 (id,workspace_id,owner_user_id,name,url,transport,provider,account,kind,enabled,version,credential,tools_json,checked_at,error,created_at)
+ SELECT id,workspace_id,owner_user_id,name,url,transport,provider,account,kind,enabled,version,credential,tools_json,checked_at,error,created_at FROM personal_connectors;
+DROP TABLE personal_connectors;
+ALTER TABLE personal_connectors_v53 RENAME TO personal_connectors;
+CREATE UNIQUE INDEX personal_connector_account ON personal_connectors(workspace_id,owner_user_id,provider,account) WHERE provider!='mcp';`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 53, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=54")) this.transaction(() => {
+      // GitHub 监视配置与投递账本（设计 docs/design/github-connector.md 第 7 节）。
+      const schema = `CREATE TABLE personal_connector_monitors (
+ id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, owner_user_id TEXT NOT NULL,
+ connector_id TEXT NOT NULL REFERENCES personal_connectors(id) ON DELETE CASCADE,
+ bot_id TEXT NOT NULL, name TEXT NOT NULL, repos_json TEXT NOT NULL DEFAULT '[]',
+ ci_mode TEXT NOT NULL DEFAULT 'mine' CHECK(ci_mode IN ('default_branch','mine','all','off')),
+ muted_repos_json TEXT NOT NULL DEFAULT '[]',
+ ignore_branches_json TEXT NOT NULL DEFAULT '[]',
+ delivery TEXT NOT NULL DEFAULT 'notify' CHECK(delivery IN ('notify','task')),
+ enabled INTEGER NOT NULL DEFAULT 1, interval_seconds INTEGER NOT NULL DEFAULT 300,
+ secret_enc TEXT, last_run_at INTEGER, last_error TEXT,
+ state_json TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE personal_connector_deliveries (
+ monitor_id TEXT NOT NULL REFERENCES personal_connector_monitors(id) ON DELETE CASCADE,
+ fingerprint TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL,
+ delivered_at INTEGER NOT NULL, task_id TEXT, PRIMARY KEY(monitor_id, fingerprint)
+) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 54, checksum: hash(schema), applied_at: now() });
+    });
+
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=55")) {
+      // Agent mode workbench (P1, number 55: 53 and 54 are the connector rebuilds on main): the sessions table loses its fixed engine CHECK so any
+      // registered Harness id can be stored, and the workbench gains logical sessions, the
+      // outbox queue and per-queue state; see cli-agents/schema.ts. The rebuild copies every
+      // row, so the guarded drop must not cascade into the cached items: foreign keys step
+      // out for this one migration and the copy is verified before the commit.
+      this.db.exec("PRAGMA foreign_keys=OFF");
+      try {
+        this.transaction(() => {
+          const before = Number(this.get("SELECT COUNT(*) n FROM cli_agent_sessions")?.n ?? 0);
+          this.db.exec(cliAgentSessionsRebuild);
+          const after = Number(this.get("SELECT COUNT(*) n FROM cli_agent_sessions")?.n ?? 0);
+          if (before !== after) throw new Error(`cli_agent_sessions rebuild lost rows (${before} -> ${after})`);
+          this.db.exec(cliAgentWorkbenchSchema);
+          this.insert("schema_migrations", { version: 55, checksum: hash(cliAgentSessionsRebuild + cliAgentWorkbenchSchema), applied_at: now() });
+        });
+      } finally {
+        this.db.exec("PRAGMA foreign_keys=ON");
+      }
+    }
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=56")) this.transaction(() => {
+      // Agent mode workbench: persisted message annotations, keyed by logical session; see cli-agents/schema.ts. New table only.
+      this.db.exec(cliAgentNotesSchema);
+      this.insert("schema_migrations", { version: 56, checksum: hash(cliAgentNotesSchema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=57")) this.transaction(() => {
+      const schema = `CREATE TABLE cli_translation_settings (
+        id INTEGER PRIMARY KEY CHECK(id=1),
+        connection_id TEXT REFERENCES model_connections(id),
+        model TEXT,
+        version INTEGER NOT NULL,
+        CHECK((connection_id IS NULL) = (model IS NULL))
+      ) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 57, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=58")) this.transaction(() => {
+      const schema = `CREATE TABLE cli_agent_images (
+        id TEXT PRIMARY KEY, device_id TEXT NOT NULL, origin TEXT NOT NULL, mime TEXT NOT NULL,
+        size INTEGER NOT NULL, ciphertext TEXT NOT NULL, object_key TEXT, ciphertext_hash TEXT,
+        created_at INTEGER NOT NULL, published INTEGER NOT NULL DEFAULT 0
+      ) STRICT;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 58, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -622,7 +769,7 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
       const order = Number(this.get("SELECT COALESCE(MAX(sort_order),0)+1 next FROM model_connections")?.next ?? 1);
       this.run("INSERT INTO model_connections(id,workspace_id,owner_user_id,display_name,provider_id,endpoint,credential_ref,default_model,status,created_at,enabled,is_default,sort_order) VALUES(?,?,?,?,?,?,?,?,'active',?,?,?,?) ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,provider_id=excluded.provider_id,endpoint=excluded.endpoint,credential_ref=excluded.credential_ref,default_model=excluded.default_model,status='active',enabled=excluded.enabled,is_default=excluded.is_default,version=version+1", connectionId, this.workspace, this.owner, value.name, value.provider, value.endpoint, credential, defaultModel, now(), value.enabled ? 1 : 0, fresh ? 1 : 0, order);
     }
-    if (fresh) this.run("UPDATE bots SET model_connection_id=? WHERE model_connection_id IS NULL", connectionId);
+    if (fresh) this.run("UPDATE bots SET model_connection_id=? WHERE model_connection_id IS NULL AND status='active'", connectionId);
     return connectionId;
   }
   /** Makes a provider the default: new assistants and the legacy single-connection API use it. */
@@ -658,17 +805,18 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
     const secret = row?.credential_ref ? this.get("SELECT ciphertext FROM secrets WHERE id=?", row.credential_ref) : undefined;
     return row && secret ? { provider: String(row.provider_id), endpoint: String(row.endpoint), apiKey: this.decrypt(String(secret.ciphertext)) } : undefined;
   }
-  /** A model's settings on a provider: image input (null: not set) and the reasoning levels it offers. */
+  /** A model's image input setting and the reasoning levels shared by all models. */
   modelOptions(connectionId: string, model: string) {
-    const row = this.get("SELECT image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=? AND model=?", connectionId, model);
-    return { imageInput: row?.image_input == null ? null : !!row.image_input, reasoning: row ? parseReasoningLevels(JSON.parse(String(row.reasoning_levels_json))) : [] as ReasoningLevel[], version: Number(row?.version ?? 0) };
+    const row = this.get("SELECT image_input,version FROM model_options WHERE connection_id=? AND model=?", connectionId, model);
+    return { imageInput: row?.image_input == null ? true : !!row.image_input, reasoning: [...reasoningLevels], version: Number(row?.version ?? 0) };
   }
   saveModelOptions(value: Record<string, unknown>) {
     const row = this.connection(text(value.connectionId, 100));
     if (!row) throw new Error("供应商不存在或已删除");
     const model = text(value.model, 200), previous = this.modelOptions(String(row.id), model);
     if (value.version !== previous.version) throw new Error("模型设置已在其他设备修改，请刷新后再试");
-    const reasoning = value.reasoning === undefined ? previous.reasoning : parseReasoningLevels(value.reasoning);
+    if (value.reasoning !== undefined) parseReasoningLevels(value.reasoning);
+    const reasoning = previous.reasoning;
     const imageInput = value.imageInput === undefined ? previous.imageInput : value.imageInput === null ? null : !!value.imageInput;
     // The model's context window and output ceiling may be set here too (null: automatic); its budget is kept.
     const scope = modelLimitScope({ provider: row.provider_id, endpoint: row.endpoint, model });
@@ -704,7 +852,7 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
   connections() {
     return this.connectionRows().map((row) => {
       const visibility = this.modelVisibility(String(row.id));
-      const options = Object.fromEntries(this.all("SELECT model,image_input,reasoning_levels_json,version FROM model_options WHERE connection_id=?", row.id).map((option) => [String(option.model), { imageInput: option.image_input == null ? null : !!option.image_input, reasoning: parseReasoningLevels(JSON.parse(String(option.reasoning_levels_json))), version: Number(option.version) }]));
+      const options = Object.fromEntries(this.all("SELECT model,image_input,version FROM model_options WHERE connection_id=?", row.id).map((option) => [String(option.model), { imageInput: option.image_input == null ? null : !!option.image_input, reasoning: reasoningLevels, version: Number(option.version) }]));
       const names = Object.fromEntries(this.all("SELECT model,display_name FROM model_display_names WHERE provider=? AND endpoint=?", row.provider_id, String(row.endpoint).replace(/\/+$/, "")).map((item) => [String(item.model), String(item.display_name)]));
       return { id: String(row.id), name: String(row.display_name), names, ...(row.provider_id === "openai" ? { imageModels: this.imageModelSelection(String(row.id)) } : {}), provider: String(row.provider_id), endpoint: String(row.endpoint), defaultModel: String(row.default_model), enabled: !!row.enabled, isDefault: !!row.is_default, configured: !!(row.credential_ref && this.get("SELECT id FROM secrets WHERE id=?", row.credential_ref)), version: Number(row.version), models: visibility.models, modelsVersion: visibility.version, options };
     });
@@ -753,8 +901,10 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
     const scope = modelLimitScope({ provider: usable.provider_id, endpoint: usable.endpoint, model });
     const limits = this.modelLimitSettings(scope);
     validateModelLimits(limits);
-    const reasoning = resolveReasoning(selection?.reasoning == null ? null : String(selection.reasoning), this.modelOptions(String(usable.id), model).reasoning);
-    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(usable.version), connectionId: String(usable.id), reasoning };
+    const { imageInput, reasoning: offered } = this.modelOptions(String(usable.id), model);
+    const savedReasoning = selection?.reasoning;
+    const reasoning = resolveReasoning(savedReasoning == null || savedReasoning === "off" ? null : String(savedReasoning), offered);
+    return { ...scope, contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens, contextBudget: limits.contextBudget, apiKey: this.decrypt(String(secret.ciphertext)), version: Number(usable.version), connectionId: String(usable.id), reasoning, imageInput };
   }
   /** Resolve a turn override through the same owned provider/configuration entry points as normal chat. No secret is persisted. */
   resolveInputModel(botId:string,value:unknown){
@@ -769,7 +919,6 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
     if(enabled&&!enabled.includes(model.model))throw new Error('此模型未在本人连接中启用');
     if(input.provider!==undefined&&input.provider!==model.provider||input.endpoint!==undefined&&input.endpoint!==model.endpoint)throw new Error('单轮模型连接已变化');
     const reasoning=input.reasoning===undefined?model.reasoning:parseReasoningChoice(input.reasoning)!;
-    if(reasoning!=='off'&&!this.modelOptions(connectionId,model.model).reasoning.includes(reasoning))throw new Error('此模型不支持指定的思考强度');
     return {connectionId,model:model.model,reasoning,provider:model.provider,endpoint:model.endpoint};
   }
   taskModelConfig(taskId:string){
@@ -806,10 +955,10 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
   accept(conversationId: string, content: string, clientId: string, sessionId = this.session, modelUse?:{connectionId?:string;model?:string}) {
     content = text(content); clientId = text(clientId, 200);
     const requestHash = hash(content);
+    const conv = this.get("SELECT * FROM conversations WHERE id=? AND status='open' AND bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')", conversationId);
+    if (!conv) throw new Error("对话不存在");
     const old = this.get("SELECT * FROM conversation_inputs WHERE conversation_id=? AND client_message_id=?", conversationId, clientId);
     if (old) { if (old.request_hash !== requestHash) throw new Error("消息标识已用于不同内容"); return String(old.task_id); }
-    const conv = this.get("SELECT * FROM conversations WHERE id=? AND status='open'", conversationId);
-    if (!conv) throw new Error("对话不存在");
     this.modelConfig(String(conv.bot_id),modelUse);
     return this.transaction(() => {
       let task = this.get("SELECT * FROM tasks WHERE conversation_id=? AND ended_at IS NULL", conversationId);
@@ -844,19 +993,19 @@ CREATE TABLE IF NOT EXISTS agent_topic_inputs(position INTEGER PRIMARY KEY AUTOI
   audit(action: string, entityType: string, entityId: string, details: unknown) {
     this.insert("audit_records", { id: id(), workspace_id: this.workspace, actor_user_id: this.owner, action, entity_type: entityType, entity_id: entityId, details_json: JSON.stringify(details), created_at: now() });
   }
-  state() {
+  state(includeMemoryBodies = true) {
     return {
       config: this.config(),
       connections: this.connections(),
       modelVisibility: this.modelVisibility(),
       imageModelSelection: this.imageModelSelection(),
       bots: this.all("SELECT id,name,instructions,version FROM bots WHERE status='active'"),
-      conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' ORDER BY c.created_at DESC"),
-      approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' ORDER BY a.created_at"),
-      delegations: this.all("SELECT * FROM a2a_messages ORDER BY created_at DESC LIMIT 100"),
-      memories: this.all("SELECT d.id,d.scope,d.bot_id,d.title,d.version,d.updated_at,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' ORDER BY d.updated_at DESC"),
+      conversations: this.all("SELECT c.id,c.bot_id,c.title,c.created_at,t.id task_id,t.status task_status FROM conversations c LEFT JOIN tasks t ON t.conversation_id=c.id AND t.ended_at IS NULL WHERE c.status='open' AND c.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY c.created_at DESC"),
+      approvals: this.all("SELECT a.id,a.argument_hash,a.expires_at,t.tool_name,t.arguments_json,t.authorization_snapshot_json,t.bot_id,t.conversation_id,t.task_id,t.id call_id FROM approvals a JOIN tool_calls t ON t.id=a.tool_call_id WHERE a.status='pending' AND t.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY a.created_at"),
+      delegations: this.all("SELECT * FROM a2a_messages WHERE sender_bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND receiver_bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 100"),
+      memories: this.all(`SELECT d.id,d.scope,d.bot_id,d.title,d.version,d.updated_at${includeMemoryBodies ? ",c.content" : ""} FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.status='active' AND (d.scope='workspace' OR d.bot_id NOT IN (SELECT id FROM bots WHERE status='deleted')) ORDER BY d.updated_at DESC`),
       devices: this.all("SELECT id,name,status,capabilities_json FROM devices"),
-      tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at,(SELECT origin FROM agent_task_links WHERE task_id=tasks.id) origin,(SELECT tool_name FROM tool_calls WHERE task_id=tasks.id AND status IN ('proposed','awaiting_approval','ready','executing','unknown') ORDER BY created_at DESC LIMIT 1) active_tool FROM tasks ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200"),
+      tasks: this.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at,(SELECT origin FROM agent_task_links WHERE task_id=tasks.id) origin,(SELECT tool_name FROM tool_calls WHERE task_id=tasks.id AND status IN ('proposed','awaiting_approval','ready','executing','unknown') ORDER BY created_at DESC LIMIT 1) active_tool FROM tasks WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY ended_at IS NULL DESC,created_at DESC LIMIT 200"),
       usage: this.all("SELECT r.bot_id,COUNT(m.id) calls,COALESCE(SUM(m.input_tokens),0) input_tokens,COALESCE(SUM(m.output_tokens),0) output_tokens FROM model_invocations m JOIN task_runs r ON r.id=m.run_id WHERE m.status='succeeded' GROUP BY r.bot_id"),
     };
   }

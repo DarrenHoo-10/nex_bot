@@ -1,3 +1,4 @@
+import { userErrorText } from "../lib/http-errors";
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, LoaderCircle, Plus } from "lucide-react";
 import type { ConnectorOAuthView } from "../../shared/personal-connectors";
@@ -45,7 +46,7 @@ export function GmailConnect({ connector, available, label = "连接 Gmail", var
         timer = setTimeout(() => void poll(), 1200);
       } catch (failure) {
         if (stopped) return;
-        active.current = null; setFlow(null); setError(failure instanceof Error ? failure.message : "连接失败，请重试");
+        active.current = null; setFlow(null); setError(userErrorText(failure, "连接失败，请重试"));
         void api("connectors/oauth/cancel", { id: flow.id }).catch(() => {});
       } finally { polling = false; }
     };
@@ -57,7 +58,7 @@ export function GmailConnect({ connector, available, label = "连接 Gmail", var
   const cancel = async () => {
     const pending = active.current;
     generation.current++; active.current = null; setFlow(null); setError("");
-    if (pending) try { await api("connectors/oauth/cancel", { id: pending.id }); } catch (failure) { if (mounted.current) setError(failure instanceof Error ? failure.message : "取消失败，请重试"); }
+    if (pending) try { await api("connectors/oauth/cancel", { id: pending.id }); } catch (failure) { if (mounted.current) setError(userErrorText(failure, "取消失败，请重试")); }
   };
   const start = async () => {
     if (opening.current) return;
@@ -75,7 +76,7 @@ export function GmailConnect({ connector, available, label = "连接 Gmail", var
       if (desktop?.openExternal) await desktop.openExternal(created.authorizationUrl);
       else if (page && !page.closed) { page.location.replace(created.authorizationUrl); navigated = true; }
     } catch (failure) {
-      if (mounted.current && run === generation.current) setError(failure instanceof Error ? failure.message : "无法打开授权页面，请重试");
+      if (mounted.current && run === generation.current) setError(userErrorText(failure, "无法打开授权页面，请重试"));
       if (created && active.current?.id !== created.id) void api("connectors/oauth/cancel", { id: created.id }).catch(() => {});
     } finally { if (!navigated) page?.close(); opening.current = false; if (mounted.current) setStarting(false); }
   };

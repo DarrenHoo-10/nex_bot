@@ -53,3 +53,16 @@ it("visible models persist by connection, fence stale saves and preserve active 
     expect(app.store.modelVisibility()).toEqual({ models: null, version: 3 });
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+it("an OpenAI-format address saved as a bare host is used under /v1, like the Anthropic paths", async () => {
+  const { openAiBase, fetchModelCatalog } = await import("../../shared/model-catalog.mjs");
+  expect(openAiBase("https://api.example.com")).toBe("https://api.example.com/v1");
+  expect(openAiBase("https://api.example.com/")).toBe("https://api.example.com/v1");
+  expect(openAiBase("https://api.example.com/v1")).toBe("https://api.example.com/v1");
+  expect(openAiBase("https://open.example.cn/api/paas/v4/")).toBe("https://open.example.cn/api/paas/v4");
+  const fake = await startFakeModel();
+  try {
+    // the saved address has no /v1: the list still comes from /v1/models
+    expect((await fetchModelCatalog({ provider: "openai", endpoint: fake.origin, apiKey: "synthetic-key" })).models).toEqual(["fixture-model", "fixture-reasoning"]);
+  } finally { await fake.close(); }
+});

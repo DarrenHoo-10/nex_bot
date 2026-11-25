@@ -5,7 +5,7 @@ final class FinanceTopicsTests:XCTestCase {
     func testTopicIdentityAudienceAndPreview() throws {
         let topic=try JSONDecoder().decode(FinanceTopic.self,from:Data(#"{"conversationId":"topic-a","title":"收盘","audience":"public","unread_count":2,"message_count":4,"sourceContext":{"channel":"feishu","chatType":"group","chatId":"group-a"},"messages":[{"id":"m1","seq":1,"role":"assistant","content":"公开复盘"}],"activeTask":{"id":"task-a","status":"running"}}"#.utf8))
         XCTAssertEqual(topic.id,"topic-a");XCTAssertEqual(topic.unread,2);XCTAssertEqual(topic.messages.first?.content,"公开复盘")
-        XCTAssertEqual(topic.destinationLabel,"回复到飞书群 · group-a");XCTAssertEqual(topic.activeTask?.string("id"),"task-a")
+        XCTAssertEqual(topic.destinationLabel,"飞书 · group-a");XCTAssertEqual(topic.activeTask?.string("id"),"task-a")
     }
     func testStableFirstSendAndQueuedReplyContracts() async throws {
         let core=StubCore()
@@ -38,9 +38,9 @@ final class FinanceTopicsTests:XCTestCase {
         let store=WorkspaceStore(client:core.client())
         await store.refresh();await store.loadFinanceAssistant()
         XCTAssertEqual(store.financeBotID,"finance-role");XCTAssertEqual(store.selectedBotID,"finance-role")
-        XCTAssertEqual(store.feishuReceiverID(selection: ""), "finance-role")
+        XCTAssertEqual(store.feishuReceiverID(selection: ""), "")
         XCTAssertEqual(store.feishuReceiverID(selection: "first"), "first")
-        XCTAssertEqual(store.feishuReceiverID(selection: "deleted"), "finance-role")
+        XCTAssertEqual(store.feishuReceiverID(selection: "deleted"), "")
         XCTAssertEqual(core.recorded("/api/agents/finance").count,1)
         store.stop()
     }

@@ -15,6 +15,30 @@ struct LocalDeviceState: Equatable, Sendable {
     var paused = false
     var deviceID = ""
     var unknownCalls: [UnknownCall] = []
+    var agentSessions = AgentSessions()
+
+    /// The Agent session switch and what the executor found: `ClientDevice.state().cliAgents`.
+    struct AgentSessions: Equatable, Sendable {
+        struct Engine: Equatable, Sendable { var engine: String; var version: String }
+        /// False when the executor build has no Agent session support.
+        var available = false
+        /// The user's switch for this device; on by default, kept while control is paused.
+        var enabled = true
+        /// herdr-core: `starting`, `ready` or `error`.
+        var hc = "starting"
+        var engines: [Engine] = []
+
+        init() {}
+        init(json: JSONValue?) {
+            guard let row = json?.objectValue else { return }
+            available = row.bool("available") ?? false
+            enabled = row.bool("enabled") ?? true
+            hc = row.string("hc") ?? "starting"
+            engines = row["engines"]?.arrayValue?.compactMap(\.objectValue).compactMap { item in
+                item.string("engine").map { Engine(engine: $0, version: item.string("version") ?? "") }
+            } ?? []
+        }
+    }
 
     /// Builds the state from the host's `ClientDevice.state()` JSON.
     init(json: JSONValue? = nil) {
@@ -27,6 +51,7 @@ struct LocalDeviceState: Equatable, Sendable {
         paused = row.bool("paused") ?? false
         deviceID = row.string("deviceId") ?? ""
         unknownCalls = row["unknownCalls"]?.arrayValue?.compactMap(\.objectValue).map(UnknownCall.init) ?? []
+        agentSessions = AgentSessions(json: row["cliAgents"])
     }
 }
 
@@ -100,6 +125,12 @@ final class LocalDeviceController {
     func setPaused(_ paused: Bool) async throws {
         guard session != nil else { throw CoreError(kind: .unsupported, message: "请等待此电脑完成登录") }
         apply(try await call(["op": "pause", "paused": paused], timeout: 60))
+    }
+
+    /// The "Agent 会话" switch: starts or stops Agent sessions on this Mac. Works while control is paused.
+    func setAgentSessions(enabled: Bool) async throws {
+        guard session != nil else { throw CoreError(kind: .unsupported, message: "请等待此电脑完成登录") }
+        apply(try await call(["op": "cliAgents", "enabled": enabled], timeout: 60))
     }
 
     /// Clears an interrupted call after the user confirmed it stopped; never replays it.
@@ -233,7 +264,9 @@ final class LocalDeviceController {
         guard let bundle else { throw CoreError(kind: .unsupported, message: "此版本未包含本机执行器") }
         let key = try masterKey(), directory = try dataDirectory()
         let source = ProcessInfo.processInfo.environment
-        let environment = ["PATH", "HOME", "TMPDIR"].reduce(into: [String: String]()) { if let v = source[$1] { $0[$1] = v } }
+        // Minimal on purpose: no secrets from the app's own environment. The host asks the user's login shell (SHELL)
+        // for the environment Agent sessions run in.
+        let environment = ["PATH", "HOME", "TMPDIR", "SHELL", "USER", "LOGNAME", "LANG"].reduce(into: [String: String]()) { if let v = source[$1] { $0[$1] = v } }
         let next = try ExecutorHost(node: bundle.node, script: bundle.script, directory: bundle.directory, data: directory, environment: environment,
                                     onLine: { [weak self] line in self?.receive(line) },
                                     onExit: { [weak self] host, code in self?.hostExited(host, code: code) })

@@ -1,0 +1,32 @@
+/* Interaction states shared by the workspace and its portalled action panels. */
+.na-stage :is(button,summary):focus-visible,.na-menu button:focus-visible,.na-note-editor button:focus-visible,.na-dialog button:focus-visible {
+  outline:2px solid var(--na-accent,#176643);outline-offset:2px;
+}
+.na-stage .cli-app :is(.cli-open-local.na-square,.na-workspace-toggle,.cli-supervision>.icon-button){display:grid;place-items:center;width:32px;height:32px;border-radius:8px}
+.na-stage .cli-app .cli-composer-actions button[aria-expanded="true"]{background:var(--na-soft);color:var(--na-accent)}
+.na-stage .cli-app .cli-row .na-more{width:28px;height:28px}
+.na-stage .cli-app .na-info-card header button,.na-stage .na-side-tabs button:not([role="tab"]){min-width:26px;min-height:26px}
+.na-stage .cli-app .na-message-box .primary[aria-busy="true"]{background:var(--na-soft);color:var(--na-accent)}
+.na-menu{border-radius:10px;border-color:#cbdace;box-shadow:0 6px 22px #1636231a}
+.na-menu button{display:flex;justify-content:flex-start;align-items:center;gap:9px;min-height:32px;text-align:left}
+.na-menu button:disabled{opacity:.56}
+.na-menu .na-danger{margin-top:3px;border-top:1px solid #e8e4e2;border-radius:0 0 5px 5px}
+.na-menu .na-danger:hover,.na-note-editor .na-delete-note:hover{background:#fff0ee;color:#982e25}
+.na-dialog button.na-confirm-delete{background:#a33730;color:white}
+.na-note-editor footer .na-save-note{background:#176643;color:white}
+.na-note-editor footer .na-save-note:disabled{background:#edf1ed;color:#78837a;cursor:default}
+.na-note-editor footer button{min-height:30px}
+@media(pointer:coarse){
+  .na-stage .cli-app .cli-row{min-height:40px}
+  .na-stage .cli-app :is(button.na-twist,.cli-row .na-more,.cli-device>header .icon-button){min-width:32px;min-height:36px}
+  .na-stage .cli-app :is(.cli-open-local.na-square,.na-workspace-toggle,.cli-supervision>.icon-button),.na-stage .cli-app .na-message-box .cli-composer-actions button{min-width:36px;min-height:36px}
+  .na-stage .cli-app .cli-row .na-more{opacity:1}
+  .na-menu button,.na-note-editor button,.na-stage .na-add-menu button{min-height:38px}
+}
+@media(prefers-reduced-motion:no-preference){
+  .na-stage .cli-composer-actions button:active:enabled,.na-stage .cli-pane-head button:active:enabled,.na-menu button:active:enabled,.na-note-editor button:active:enabled{transform:translateY(1px)}
+  .na-menu,.na-note-editor,.na-compose-pop{animation:na-action-appear 120ms ease-out}
+  .na-busy-icon{animation:na-button-spin 850ms linear infinite}
+}
+@keyframes na-action-appear{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@keyframes na-button-spin{to{transform:rotate(360deg)}}

@@ -38,6 +38,9 @@ public final class WorkspaceStore {
     /// Latest snapshot; nil until the first sync and while resyncing.
     public private(set) var state: WorkspaceState?
     public private(set) var sync: SyncIdentity?
+    var cacheSessionID: String?
+    @ObservationIgnored var diskCacheScope: String?
+    public var contentCacheScope: String? { state == nil ? nil : diskCacheScope }
     public private(set) var connection: ConnectionStatus = .connecting
     /// Human-readable status such as "正在重新同步…"; nil when healthy.
     public private(set) var notice: String?
@@ -48,15 +51,59 @@ public final class WorkspaceStore {
     public private(set) var currentSessionID: String?
     /// The signed-in NexorAI account (display name), loaded when the store starts; nil until then or if unavailable.
     public private(set) var account: AccountStatus?
+    var pendingAgentModels: [String: AgentModelChoice] = [:]
+    var savedAgentModels: [String: AgentModelReceipt] = [:]
     /// Called once when the session ends (expired, revoked, identity unavailable).
+    @ObservationIgnored private var memoryEpochs: [String: Int] = [:]
     @ObservationIgnored public var onSessionEnded: (@MainActor (SessionEnd) -> Void)?
+
+    @ObservationIgnored private var topicWindows: [String: [AgentMessage]] = [:]
+    @ObservationIgnored private var recentTopicKeys: [String] = []
+
+    public func cachedTopicMessages(botID: String, topicID: String) -> [AgentMessage] {
+        topicWindows[botID + ":" + topicID] ?? []
+    }
+
+    public func rememberTopicMessages(_ messages: [AgentMessage], botID: String, topicID: String, generation: SyncIdentity) {
+        guard sync?.sameGeneration(as: generation) == true else { return }
+        let key = botID + ":" + topicID
+        topicWindows[key] = Array(messages.suffix(250))
+        recentTopicKeys.removeAll { $0 == key }
+        recentTopicKeys.append(key)
+        if recentTopicKeys.count > 12 { topicWindows.removeValue(forKey: recentTopicKeys.removeFirst()) }
+    }
+
+    @ObservationIgnored var feishuGroupLists: [String: (expires: Date, value: FeishuGroupList)] = [:]
+
+    @ObservationIgnored private var assetEpoch = 0
+    @ObservationIgnored private var localAssets: [String: (expires: Date, data: Data, filename: String)] = [:]
+
+    func cachedAsset(_ key: String, load: () async throws -> (data: Data, filename: String)) async throws -> (data: Data, filename: String) {
+        let now = Date()
+        if let cached = localAssets[key], cached.expires > now { return (cached.data, cached.filename) }
+        let epoch = assetEpoch
+        let result = try await load()
+        guard assetEpoch == epoch else { throw CancellationError() }
+        if result.data.count <= 2 * 1024 * 1024 {
+            localAssets = localAssets.filter { $0.value.expires > now }
+            if localAssets.count >= 16, let oldest = localAssets.min(by: { $0.value.expires < $1.value.expires })?.key {
+                localAssets.removeValue(forKey: oldest)
+            }
+            localAssets[key] = (Date().addingTimeInterval(300), result.data, result.filename)
+        }
+        return result
+    }
+
+    func clearLocalAssets() {
+        assetEpoch += 1
+        localAssets.removeAll()
+        feishuGroupLists.removeAll()
+    }
 
     public var bots: [Bot] { state?.bots ?? [] }
 
     public func feishuReceiverID(selection: String) -> String {
-        if bots.contains(where: { $0.id == selection }) { return selection }
-        if let financeBotID, bots.contains(where: { $0.id == financeBotID }) { return financeBotID }
-        return bots.first?.id ?? ""
+        bots.contains(where: { $0.id == selection }) ? selection : ""
     }
     public var approvals: [Approval] { state?.approvals ?? [] }
     public func approvalRules(botID: String) -> [ApprovalRule] { state?.approvalRules.filter { $0.botID == botID } ?? [] }
@@ -72,6 +119,24 @@ public final class WorkspaceStore {
     @ObservationIgnored private var timerTask: Task<Void, Never>?
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     @ObservationIgnored private var lastEventID: String?
+    @ObservationIgnored private var lastFrame: Date?
+    @ObservationIgnored private var chatVisible = true
+    @ObservationIgnored private var visibleResources: Set<String> = []
+
+    public func setResourceVisible(_ resource: String, _ visible: Bool) {
+        let changed = visible ? visibleResources.insert(resource).inserted : visibleResources.remove(resource) != nil
+        if changed { serial += 1; scheduleRefresh(after: 0) }
+    }
+    @ObservationIgnored private var activeTopic: (bot: String, id: String)?
+    @ObservationIgnored private var needsLiveCatchUp = true
+    @ObservationIgnored private var refreshQueued = false
+    public private(set) var topicLiveReplies: [StreamingText] = []
+    public private(set) var topicRecovery = 0
+    @ObservationIgnored var topicCatchUpRequired = true
+
+    func didSyncTopic(botID: String, conversationID: String) {
+        if activeTopic?.bot == botID && activeTopic?.id == conversationID { topicCatchUpRequired = false }
+    }
     @ObservationIgnored private var streamEpoch = 0
     @ObservationIgnored private var tokenGeneration = 0
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -110,7 +175,39 @@ public final class WorkspaceStore {
         for (id, c) in conversations where id != botID && c.focusedMessageID != nil { leaveHistory(id, reload: false) }
         guard botID != selectedBotID else { return }
         selectedBotID = botID
-        if started { scheduleRefresh(after: 0) }
+        if started { openStream(); scheduleRefresh(after: 0) }
+    }
+
+    public func setChatVisible(_ visible: Bool) {
+        guard chatVisible != visible else { return }
+        chatVisible = visible
+        serial += 1
+        if started { openStream(); scheduleRefresh(after: 0) }
+    }
+
+    public func watchTopic(botID: String, conversationID: String?) {
+        let id = conversationID ?? ""
+        guard activeTopic?.bot != botID || activeTopic?.id != id else { return }
+        activeTopic = (botID, id)
+        topicLiveReplies = []
+        serial += 1
+        if started { openStream(); scheduleRefresh(after: 0) }
+    }
+
+    public func leaveTopics(botID: String) {
+        guard activeTopic?.bot == botID else { return }
+        activeTopic = nil
+        topicLiveReplies = []
+        serial += 1
+        if started { openStream(); scheduleRefresh(after: 0) }
+    }
+
+    public func updateTopicLiveReplies(_ replies: [StreamingText], botID: String, conversationID: String) {
+        guard activeTopic?.bot == botID, activeTopic?.id == conversationID else { return }
+        topicLiveReplies = replies.map { reply in
+            if let live = topicLiveReplies.first(where: { $0.taskId == reply.taskId }), live.text.hasPrefix(reply.text) { return live }
+            return reply
+        }
     }
 
     /// Opens the conversation around a search hit: the window from 40 messages before it to 60 from it, see
@@ -122,7 +219,7 @@ public final class WorkspaceStore {
         conv.reset()
         conv.focusedMessageID = match.id
         selectedBotID = match.botID
-        if started { scheduleRefresh(after: 0) }
+        if started { openStream(); scheduleRefresh(after: 0) }
     }
 
     /// Ends the search-result view of `botID` and loads the latest messages.
@@ -155,7 +252,7 @@ public final class WorkspaceStore {
                 // Rotate a near-expiry token first, so the poll below already uses the new one.
                 await self.refreshSessionIfNeeded()
                 guard !Task.isCancelled else { return }
-                self.scheduleRefresh()
+                if self.lastFrame.map({ Date().timeIntervalSince($0) < 25 }) != true { self.scheduleRefresh() }
             }
         }
         scheduleRefresh(after: 0)
@@ -167,7 +264,18 @@ public final class WorkspaceStore {
         streamTask?.cancel()
         streamEpoch += 1
         let epoch = streamEpoch
-        let stream = EventStream(client: client, lastEventID: lastEventID, backoff: timing.backoff)
+        lastFrame = nil
+        needsLiveCatchUp = true
+        topicCatchUpRequired = true
+        var query = [("incremental", "1")]
+        if chatVisible {
+            if let topic = activeTopic {
+                if !topic.id.isEmpty { query += [("bot", topic.bot), ("conversationId", topic.id)] }
+            } else if let bot = selectedBotID, bot != financeBotID {
+                query.append(("bot", bot))
+            }
+        }
+        let stream = EventStream(client: client, query: query, lastEventID: lastEventID, backoff: timing.backoff)
         streamTask = Task { [weak self] in
             for await event in stream.events() { guard let self, self.streamEpoch == epoch else { return }; self.handle(event) }
         }
@@ -251,47 +359,77 @@ public final class WorkspaceStore {
     }
 
     func scheduleRefresh(after delay: Double? = nil) {
-        guard started, !ended, debounceTask == nil else { return }
+        guard started, !ended else { return }
+        if debounceTask != nil { refreshQueued = true; return }
         let wait = delay ?? timing.debounce
         debounceTask = Task { [weak self] in
             if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
             guard !Task.isCancelled, let self else { return }
-            self.debounceTask = nil
             await self.reload()
+            guard !Task.isCancelled else { return }
+            self.debounceTask = nil
+            if self.refreshQueued {
+                self.refreshQueued = false
+                self.scheduleRefresh()
+            }
         }
     }
 
     func handle(_ event: StreamEvent) {
         switch event {
-        case .connected: break
+        case .connected:
+            needsLiveCatchUp = true
+            if activeTopic?.id.isEmpty == false { topicCatchUpRequired = true; topicRecovery += 1 }
         case .event(let e):
+            lastFrame = Date()
             if let id = e.id { lastEventID = id }
             switch e.event {
             case "change":
                 guard let data = e.data.data(using: .utf8), let change = try? JSONDecoder().decode(ChangeEvent.self, from: data) else { return }
                 handleChange(change)
+            case "delta":
+                struct Delta: Decodable { var taskId: String; var offset: Int; var text: String }
+                guard chatVisible, let delta = try? JSONDecoder().decode(Delta.self, from: Data(e.data.utf8)) else { return }
+                let applied: Bool
+                if activeTopic != nil {
+                    applied = ConversationStore.applyDelta(to: &topicLiveReplies, taskID: delta.taskId, offset: delta.offset, text: delta.text)
+                } else if let botID = selectedBotID {
+                    applied = conversation(for: botID).appendLiveReply(taskID: delta.taskId, offset: delta.offset, text: delta.text)
+                } else { return }
+                if !applied {
+                    if activeTopic != nil {
+                        if !topicCatchUpRequired { topicCatchUpRequired = true; topicRecovery += 1 }
+                    } else if !needsLiveCatchUp { needsLiveCatchUp = true; scheduleRefresh() }
+                }
             case "revoked": endSession(SessionEnd(message: Self.expiredMessage, deleteCredential: true))
             default: break
             }
-        case .disconnected: offline()
+        case .disconnected: lastFrame = nil; offline()
         case .failed(let error): _ = report(error)
         }
     }
 
     func handleChange(_ change: ChangeEvent) {
-        if change.reset || (sync.map { !$0.sameGeneration(as: change.sync) } ?? false) { clearContent() }
-        scheduleRefresh()
+        if (change.reset && change.sync.revision == nil)
+            || sync.map({ !$0.sameGeneration(as: change.sync) || $0.cursor > change.sync.cursor }) == true { clearContent() }
+        if needsLiveCatchUp || change.sync.revision == nil || sync != change.sync { scheduleRefresh() }
     }
 
     /// Drops every cached message, streaming text and snapshot; in-flight responses become stale.
-    func clearContent() {
+    func clearContent(invalidateDisk: Bool = true) {
         serial += 1
+        if invalidateDisk, let scope = diskCacheScope {
+            diskCacheScope = nil
+            Task { await LocalContentCache.shared.clear(scope) }
+        }
         state = nil; sync = nil; sessions = []; financeBotID = nil
+        clearLocalAssets()
+        topicWindows.removeAll(); recentTopicKeys.removeAll(); topicLiveReplies = []
         for c in conversations.values { c.reset() }
     }
 
     func offline() {
-        clearContent()
+        clearContent(invalidateDisk: false)
         connection = .resyncing; notice = Self.resyncMessage
     }
 
@@ -331,67 +469,98 @@ public final class WorkspaceStore {
     private func performReload() async throws {
         serial += 1
         let request = serial, current = selectedBotID
-        let conv = current.map(conversation(for:))
-        // The feed request goes out together with the state; its sync identity is checked against the state afterwards.
+        let showingChat = chatVisible && activeTopic == nil && (current == nil || current != financeBotID)
+        let conv = showingChat ? current.map(conversation(for:)) : nil
         let target = conv?.focusedMessageID
-        let guess = (target == nil && conv?.loadedSync != nil && conv?.messages.isEmpty == false) ? conv : nil
-        let afterSeq = guess?.messages.last?.seq
-        async let early = Self.capture(client, bot: current, after: afterSeq, around: target)
-        let next = try await client.state(view: .summary)
+        let topic = activeTopic.flatMap { $0.id.isEmpty ? nil : $0 }
+        let next = try await client.workspaceState(page: chatVisible ? "chat" : "tasks",
+            botID: chatVisible ? topic?.bot ?? current : nil, conversationID: topic?.id, resources: visibleResources.sorted())
         guard request == serial else { return }
-        if let old = sync, !old.sameGeneration(as: next.sync) { for c in conversations.values { c.reset() } }
+        if let sessionID = cacheSessionID, !sessionID.isEmpty, !next.sync.coreId.isEmpty, !next.sync.bootId.isEmpty {
+            let scope = LocalContentCache.digest("\(sessionID):\(next.sync.coreId):\(next.sync.bootId):\(next.sync.privacyEpoch)")
+            if diskCacheScope != scope {
+                await LocalContentCache.shared.authorize(scope)
+                guard request == serial else { return }
+                diskCacheScope = scope
+            }
+        }
+        let nextEpochs = Dictionary(uniqueKeysWithValues: next.bots.map { ($0.id, $0.row.int("memory_epoch") ?? 0) })
+        for (id, epoch) in memoryEpochs where nextEpochs[id] != epoch {
+            conversations[id]?.discardDraft()
+            conversations[id]?.focusedMessageID = nil
+        }
+        memoryEpochs = nextEpochs
+        if let old = sync, !old.sameGeneration(as: next.sync) {
+            clearLocalAssets()
+            topicWindows.removeAll(); recentTopicKeys.removeAll(); topicLiveReplies = []
+            for c in conversations.values { c.reset() }
+        }
         if let current, let conv {
             if !next.bots.contains(where: { $0.id == current }) {
                 state = next; sync = next.sync; connection = .connected
-                conv.focusedMessageID = nil; conv.reset(); selectedBotID = next.bots.first?.id; notice = nil
+                conv.focusedMessageID = nil; conv.reset(); selectedBotID = next.bots.first(where: { $0.row.string("replaces_id") == current })?.id ?? next.bots.first?.id; notice = nil
                 releaseAcceptedSends(request)
                 if selectedBotID != nil { scheduleRefresh(after: 0) }
                 return
             }
-            let same = conv.loadedSync?.sameGeneration(as: next.sync) == true && guess != nil
-            var history = same ? conv.messages : []
-            var feed: Feed
-            // The prefetch can be served before this state snapshot. After a send, read the transcript again.
+            let memoryHit = target == nil && conv.loadedSync?.sameGeneration(as: next.sync) == true
+            let cached = !memoryHit && target == nil ? await cachedHistory(for: current) : nil
+            guard request == serial, selectedBotID == current else { return }
+            let cacheHit = cached?.sync.sameGeneration(as: next.sync) == true && (cached?.sync.cursor ?? 0) <= next.sync.cursor
+            let same = memoryHit || cacheHit
+            var history = memoryHit ? conv.messages : cacheHit ? cached?.messages ?? [] : []
+            let known = memoryHit ? conv.loadedSync : cacheHit ? cached?.sync : nil
             let feedAfterAccept = target == nil && conv.sendAcceptedSerial.map { request > $0 } == true
-            do {
-                if feedAfterAccept {
-                    if let prefetched = await early { _ = try? prefetched.get() }
-                    feed = try await client.feed(bot: current, after: same ? history.last?.seq : nil)
-                } else {
-                    feed = try await (same || guess == nil ? early!.get() : client.feed(bot: current))
+            let advanced = next.historySeq.map { $0 > (history.last?.seq ?? 0) } ?? (known?.cursor != next.sync.cursor)
+            var feed: Feed?
+            if !same || target != nil || feedAfterAccept || advanced
+                || (needsLiveCatchUp && (next.unfinishedTask(botID: current) != nil || !conv.streaming.isEmpty)) || next.sync.revision == nil {
+                do {
+                    feed = try await client.feed(bot: current, after: same ? (history.last?.seq ?? 0) : nil, around: target,
+                        at: target != nil || !same ? next.sync.at : history.last?.row.int("created_at") ?? 0)
+                } catch {
+                    guard target != nil, CoreError.wrap(error).message == messageGoneMessage else { throw error }
+                    guard request == serial, selectedBotID == current else { return }
+                    conv.focusedMessageID = nil
+                    feed = try await client.feed(bot: current, at: next.sync.at)
                 }
             }
-            catch {
-                // The searched message was forgotten or its assistant archived: fall back to the latest messages.
-                guard target != nil, CoreError.wrap(error).message == messageGoneMessage else { throw error }
+            let older = same ? (memoryHit ? conv.hasOlder : cached?.hasOlder) : feed.map { $0.hasOlder ?? ($0.messages.count >= 100) }
+            while let page = feed {
                 guard request == serial, selectedBotID == current else { return }
-                conv.focusedMessageID = nil
-                feed = try await client.feed(bot: current)
-            }
-            let fresh = !same, firstCount = feed.messages.count
-            while true {
-                guard request == serial, selectedBotID == current else { return }
-                guard feed.sync.sameGeneration(as: next.sync) else { clearContent(); scheduleRefresh(after: 0); return }
+                guard page.sync.sameGeneration(as: next.sync) else { clearContent(); scheduleRefresh(after: 0); return }
                 let last = history.last?.seq ?? 0
-                history += feed.messages.filter { $0.seq > last }
-                if !feed.hasMore { break }
-                feed = try await client.feed(bot: current, after: history.last?.seq ?? 0)
+                history += page.messages.filter { $0.seq > last }
+                guard page.hasMore, let lastRow = page.messages.last, lastRow.seq > last else { break }
+                feed = try await client.feed(bot: current, after: lastRow.seq, at: lastRow.row.int("created_at") ?? 0)
             }
             guard request == serial, selectedBotID == current else { return }
-            conv.commit(history, sync: feed.sync, streaming: feed.streaming, hasOlder: fresh ? firstCount >= 100 : nil)
+            let feedSync = feed?.sync ?? next.sync
+            let streaming = feed.map { page in
+                page.streaming.map { partial in
+                    conv.streaming.first(where: { $0.taskId == partial.taskId && $0.text.hasPrefix(partial.text) }) ?? partial
+                }
+            } ?? conv.streaming
+            conv.commit(history, sync: feedSync, streaming: streaming, hasOlder: older)
+            if target == nil, feed != nil, let scope = diskCacheScope {
+                let page = Feed(messages: Array(history.suffix(200)), sync: feedSync, hasOlder: history.count > 200 || (older ?? false))
+                Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: "history:" + current) }
+            }
             if conv.focusedMessageID == nil { Task { await conv.markReadIfNeeded() } }
         }
         // Publish task status and the matching transcript in one MainActor turn.
         // Otherwise a finished task hides the typing row while its reply is still loading.
         if request == serial {
+            needsLiveCatchUp = false
             state = next; sync = next.sync; connection = .connected; notice = nil
             releaseAcceptedSends(request)
         }
     }
 
-    private static func capture(_ client: CoreClient, bot: String?, after: Int?, around: String?) async -> Result<Feed, CoreError>? {
-        guard let bot else { return nil }
-        do { return .success(try await client.feed(bot: bot, after: after, around: around)) } catch { return .failure(CoreError.wrap(error)) }
+    private func cachedHistory(for bot: String) async -> Feed? {
+        guard let scope = diskCacheScope else { return nil }
+        let cached = await LocalContentCache.shared.load(Feed.self, scope: scope, key: "history:" + bot)
+        return scope == diskCacheScope ? cached : nil
     }
 
     // MARK: Actions

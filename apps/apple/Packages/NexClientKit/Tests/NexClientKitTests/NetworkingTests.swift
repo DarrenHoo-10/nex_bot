@@ -37,7 +37,7 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(req.headers["Authorization"], "Bearer secret")
         XCTAssertNil(req.headers["Cookie"]); XCTAssertNil(req.headers["Origin"])
         do { try await client.cancel(task: "t"); XCTFail() } catch let e as CoreError {
-            XCTAssertEqual(e.status, 503); XCTAssertEqual(e.code, "identity_unavailable"); XCTAssertEqual(e.message, "无权限"); XCTAssertTrue(e.endsSession)
+            XCTAssertEqual(e.status, 503); XCTAssertEqual(e.code, "identity_unavailable"); XCTAssertEqual(e.message, "无权限"); XCTAssertFalse(e.endsSession)
         }
         XCTAssertEqual(core.recorded("/api/cancel")[0].json["taskId"] as? String, "t")
     }
@@ -51,10 +51,10 @@ final class NetworkingTests: XCTestCase {
     func testFeedQuery() async throws {
         let core = StubCore()
         core.handle { _ in .json(feedJSON([1])) }
-        _ = try await core.client().feed(bot: "a b&c", before: 10)
-        _ = try await core.client().feed(bot: "x", after: 3)
+        _ = try await core.client().feed(bot: "a b&c", before: 10, at: 123)
+        _ = try await core.client().feed(bot: "x", after: 3, at: 456)
         let q = core.recorded("/api/agents/messages").map(\.query)
-        XCTAssertEqual(q, ["bot=a%20b%26c&before=10", "bot=x&after=3"])
+        XCTAssertEqual(q, ["bot=a%20b%26c&view=window&at=123&before=10", "bot=x&view=window&at=456&after=3"])
     }
 
     func testEventStreamReconnectSendsLastEventID() async throws {

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, copyFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 
-const versionPattern = /^\d+\.\d+\.\d+$/;
-export const portablePattern = /^NexBot-\d+\.\d+\.\d+-x64-Client-Portable(?: \(\d+\))?\.exe$/i;
+const setupPattern = /^NexBot-(\d+\.\d+\.\d+)-x64-Client-Setup\.exe$/;
 
 /**
  * Checks Core for a newer Windows client, downloads it in the background and
@@ -26,15 +26,17 @@ export class ClientUpdater {
     try {
       const url = new URL("/api/client/update", origin);
       url.searchParams.set("platform", "windows"); url.searchParams.set("version", this.version);
+      url.searchParams.set("format", "nsis");
       const response = await this.transport(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const offer = await response.json();
       if (offer.available === false) { this.offer = undefined; this.set("current", { error: undefined, progress: undefined }); return this.state(); }
       if (offer.available !== true) throw new Error("更新信息无效");
-      if (!versionPattern.test(offer.version) || !portablePattern.test(offer.file) || !/^[a-f0-9]{64}$/.test(offer.sha256) || !Number.isSafeInteger(offer.size) || !String(offer.url).startsWith("https://")) throw new Error("更新信息无效");
+      const installer = setupPattern.exec(offer.file);
+      if (!installer || installer[1] !== offer.version || !/^[a-f0-9]{64}$/.test(offer.sha256) || !Number.isSafeInteger(offer.size) || offer.size < 1 || !String(offer.url).startsWith("https://")) throw new Error("更新信息无效");
       this.offer = offer;
       this.file = path.join(this.directory, offer.file);
-      if (existsSync(this.file) && this.digest(this.file) === offer.sha256) { this.set("ready", { error: undefined }); return this.state(); }
+      if (existsSync(this.file) && this.digest(this.file) === offer.sha256) { this.set("ready", { progress: 1, error: undefined }); return this.state(); }
       await this.download(offer);
       this.set("ready", { progress: 1, error: undefined });
     } catch (error) {
@@ -67,20 +69,22 @@ export class ClientUpdater {
   }
 }
 
-/**
- * Places the verified portable next to the running one and returns the
- * PowerShell script that waits for this client to exit, starts the new
- * version with the same profile/origin arguments and removes the old file.
- */
-export function portableHandoff({ downloaded, currentExe, pids, args }) {
-  const directory = path.dirname(currentExe), target = path.join(directory, path.basename(downloaded));
-  if (path.resolve(target) !== path.resolve(currentExe)) copyFileSync(downloaded, target);
+/** Wait for the client to exit before NSIS replaces files in its registered directory. */
+export async function runInstallerAfterExit({ downloaded, currentExe, pid, args }) {
+  if (!existsSync(downloaded)) throw new Error("更新文件已丢失，请重新下载");
   const quote = (value) => `'${String(value).replace(/'/g, "''")}'`;
-  const removeOld = path.resolve(target) !== path.resolve(currentExe) && portablePattern.test(path.basename(currentExe));
-  const argumentList = args.length ? ` -ArgumentList ${args.map(quote).join(",")}` : "";
-  return [
-    `Wait-Process -Id ${pids.map(Number).filter(Number.isSafeInteger).join(",")} -Timeout 60 -ErrorAction SilentlyContinue`,
-    `Start-Process -FilePath ${quote(target)}${argumentList}`,
-    ...(removeOld ? [`Start-Sleep -Seconds 3`, `Remove-Item -LiteralPath ${quote(currentExe)} -Force -ErrorAction SilentlyContinue`] : []),
-  ].join("; ");
+  const launchArgs = args.map((arg) => {
+    const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/\\+$/, "$&$&");
+    return `"${escaped}"`;
+  }).join(" ");
+  const argumentList = launchArgs ? ` -ArgumentList ${quote(launchArgs)}` : "";
+  const script = [
+    `Wait-Process -Id ${pid} -Timeout 60 -ErrorAction SilentlyContinue`,
+    `if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { exit 1 }`,
+    `try { Start-Process -FilePath ${quote(downloaded)} -ArgumentList '/S --updated' -Wait -ErrorAction Stop }`,
+    `finally { if (Test-Path -LiteralPath ${quote(currentExe)}) { Start-Process -FilePath ${quote(currentExe)}${argumentList} } }`,
+  ].join("\n");
+  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { detached: true, stdio: "ignore", windowsHide: true });
+  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  child.unref();
 }

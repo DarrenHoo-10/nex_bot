@@ -4,14 +4,14 @@ import { ClientIdentity } from "./clients.ts";
 import { identityBase, IdentityError, NexUserProvider, NEX_USER_ORIGIN, type UpstreamSession } from "./identity-provider.ts";
 
 /** Longest a Core login lives without a refresh; the upstream session can end it sooner. */
-export const SESSION_MAX_MS = 7 * 24 * 60 * 60_000;
+export const SESSION_MAX_MS = 90 * 24 * 60 * 60_000;
 
 interface LoginSecret { account: string; name: string; nonce: string; version: number; purpose: "login" | "link"; operator?: string }
 export class CoreIdentity {
   private readonly controller = new AbortController();
   private readonly checked = new Map<string, { version: number; wall: number; mono: number }>();
   private readonly checking = new Map<string, Promise<Row | undefined>>();
-  onSessionLost?: (sessionId: string) => void;
+  onSessionLost?: (sessionId: string, temporary?: boolean) => void;
   /** Server-owned routing after successful upstream password/session verification. */
   routeVerified?: (session: UpstreamSession, name: string) => Promise<ReturnType<CoreIdentity["acceptVerified"]>>;
   /** Core-owned work whose authorization anchor is a live channel (e.g. a connected Feishu app), not a client session. */
@@ -151,7 +151,7 @@ export class CoreIdentity {
       } catch (error) {
         if (this.closed) return undefined;
         if (error instanceof IdentityError && error.status === 401) { this.revokeLocal(sessionId); return undefined; }
-        this.onSessionLost?.(sessionId); throw error;
+        this.onSessionLost?.(sessionId, true); throw error;
       }
     })();
     this.checking.set(sessionId, check);
@@ -195,8 +195,7 @@ export class CoreIdentity {
   }
   /**
    * Extend one already-authenticated client session without asking for the
-   * password again. This is what lets a phone keep working past the eight-hour
-   * local session without storing a password.
+   * password again. The device can rotate its login without storing a password.
    *
    * The presented bearer is rotated, so a copy taken from a backup stops
    * working the next time the real device refreshes. The upstream session is

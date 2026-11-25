@@ -1,8 +1,10 @@
-import { useEffect, useLayoutEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Check, Download, MessageSquarePlus, Paperclip, Plus, Settings2, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useEffect, useLayoutEffect, useId, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from "react";
+import { Check, Cpu, Download, MessageSquarePlus, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
 
 import type { Connection } from "../api";
 import { ModelMenu, type ModelChoice } from "./ModelMenu";
+import { ComposerContext } from "./ComposerContext";
+import { useCompactComposer } from "./use-compact-composer";
 
 type Props = {
   mode: string; disabled: boolean; uploading: boolean; canExport: boolean;
@@ -10,17 +12,19 @@ type Props = {
   connections: Connection[]; choice: ModelChoice; modelLabel: string;
   onExport: () => void; onNewTopic?: () => void; children: ReactNode;
   approvalRules?: Array<{ id: string; label: string; active?: boolean }>; onRevokeRule?: (id: string) => void;
+  context: Omit<ComponentProps<typeof ComposerContext>, "open" | "onOpenChange">; onToolPolicy?: () => void;
 };
 
-export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, onNewTopic, children, connections, choice, modelLabel, approvalRules = [], onRevokeRule }: Props) {
-  const [menu, setMenu] = useState<"add" | "permissions" | "models" | null>(null);
+export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, onNewTopic, children, connections, choice, modelLabel, approvalRules = [], onRevokeRule, context, onToolPolicy }: Props) {
+  const compact = useCompactComposer();
+  const [menu, setMenu] = useState<"add" | "permissions" | "models" | "context" | null>(null);
   const root = useRef<HTMLDivElement>(null), add = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null), id = useId();
   const full = mode === "full", ModeIcon = full ? ShieldAlert : ShieldCheck;
   const close = () => { add.current?.focus(); setMenu(null); };
   useLayoutEffect(() => {
     const panel = menuRef.current;
-    if (!menu || menu === "models" || !panel) return;
+    if ((menu !== "add" && menu !== "permissions") || !panel) return;
     panel.showPopover();
     const position = () => {
       const anchor = (menu === "permissions" ? add.current : root.current?.closest("form"))?.getBoundingClientRect();
@@ -34,7 +38,7 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
     return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); if (panel.isConnected) panel.hidePopover(); };
   }, [menu]);
   useEffect(() => {
-    if (!menu || menu === "models") return;
+    if (menu !== "add" && menu !== "permissions") return;
     const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setMenu(null); };
     document.addEventListener("pointerdown", outside);
     const frame = requestAnimationFrame(() => (menuRef.current?.querySelector<HTMLInputElement>("input") ?? menuRef.current?.querySelector<HTMLButtonElement>("[aria-checked=true]") ?? menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus());
@@ -55,6 +59,7 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
       <button ref={add} type="button" className="composer-add" aria-label="添加文件或指令" aria-haspopup="menu" aria-expanded={menu === "add"} aria-controls={menu === "add" ? `${id}-add` : undefined} disabled={disabled || uploading} onClick={() => setMenu(menu === "add" ? null : "add")}><Plus size={20}/></button>
         {menu === "permissions" && <div ref={menuRef} id={`${id}-permissions`} className="composer-popover permission-popover" popover="manual" role="menu" aria-label="选择操作权限" onKeyDown={navigate}>
           {[{ value: "standard", label: "标准权限", Icon: ShieldCheck }, { value: "full", label: "完全权限", Icon: ShieldAlert }].map(({ value, label, Icon }) => <button type="button" key={value} role="menuitemradio" aria-checked={mode === value} disabled={disabled} onClick={() => { close(); if (mode !== value) onMode(value); }}><Icon size={18}/><span>{label}</span>{mode === value && <Check size={17} className="menu-check"/>}</button>)}
+          {onToolPolicy && <button type="button" role="menuitem" disabled={disabled} onClick={() => { close(); onToolPolicy(); }}><Shield size={18}/><span>工具权限</span></button>}
           {approvalRules.length > 0 && <div className="composer-menu-heading" role="presentation">始终允许</div>}
           {approvalRules.map((rule) => <button type="button" role="menuitem" key={rule.id} disabled={disabled} aria-label={`撤销授权：${rule.label}`} onClick={() => { close(); onRevokeRule?.(rule.id); }}><span className="approval-rule-label">{rule.label}{rule.active === false && <small> · 已失效</small>}</span><small className="menu-value">撤销</small></button>)}
         </div>}
@@ -63,12 +68,16 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
       <div className="composer-menu-heading" role="presentation">添加</div>
       <button type="button" role="menuitem" disabled={disabled || uploading} onClick={() => { close(); onFile(); }}><Paperclip size={18}/><span>文件</span><small>file</small></button>
       <div className="composer-menu-heading" role="presentation">指令</div>
+      {compact && <button type="button" role="menuitem" disabled={disabled} onClick={() => { add.current?.focus(); setMenu("models"); }}><Cpu size={18}/><span>模型</span></button>}
       <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("permissions")}><ModeIcon size={18}/><span>权限</span><small>permission</small><span className="menu-value">{full ? "完全权限" : "标准权限"}</span></button>
-      <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("models")}><Settings2 size={18}/><span>模型</span><small>model</small><span className="menu-value">{modelLabel}</span></button>
       {onNewTopic && <button type="button" role="menuitem" disabled={disabled || !canExport} onClick={() => { close(); onNewTopic(); }}><MessageSquarePlus size={18}/><span>新话题</span><small>topic</small></button>}
       <button type="button" role="menuitem" disabled={disabled || !canExport} onClick={() => { close(); onExport(); }}><Download size={18}/><span>导出对话</span><small>export</small><span className="menu-value">Markdown</span></button>
     </div>}
-    <ModelMenu anchorRef={add} label="选择聊天模型" connections={connections} choice={choice} onChange={onModel} disabled={disabled} open={menu === "models"} onOpenChange={open => setMenu(open ? "models" : null)}/>
+    <div className="composer-model-controls">
+      <ComposerContext {...context} open={menu === "context"} onOpenChange={open => setMenu(current => open ? "context" : current === "context" ? null : current)}/>
+      <ModelMenu composer label="选择模型" anchorRef={compact ? add : undefined} triggerClassName="composer-model-trigger" displayValue={modelLabel} connections={connections} choice={choice}
+        onChange={onModel} disabled={disabled} open={menu === "models"} onOpenChange={open => setMenu(current => open ? "models" : current === "models" ? null : current)}/>
+    </div>
     {children}
   </div>;
 }

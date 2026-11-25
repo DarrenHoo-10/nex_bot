@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createAgentSession, DefaultResourceLoader, defineTool, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type FileEntry } from "@earendil-works/pi-coding-agent";
 import type { ModelPermit, RuntimeInput, WorkerConfig, WorkerEvent, WorkerReply } from "./contracts.ts";
-import { modelConnectionError } from "./model-errors.ts";
+import { MODEL_CONNECTION_FAILURE, modelConnectionError } from "./model-errors.ts";
 import { modelInputBudget } from "./model-limits.ts";
 import { brokerDescription, brokerParameters } from "./broker-tool.ts";
 import { Check, Errors } from "typebox/value";
@@ -11,6 +11,7 @@ import { toolFields } from "./tool-fields.ts";
 import { isImagePart, tokens } from './token-estimate.ts';
 import { CONTEXT_OVERHEAD, OUTPUT_TRUNCATED, digestCandidates, dropStaleSystemEntries, editedTargets, entryPage, entryTarget, entryText, episodeStart, foldBlocked, foldable, historySource, hygieneScope, imageCandidates, rangeTarget, reductionLimits, systemMessage, systemPromptText, tailBudgetFor, tailCut, type SourceItem } from './context-tools.ts';
 import { applyRequestPrompt } from './request-prompt.ts';
+import { openAiBase } from '../../shared/model-catalog.mjs';
 
 let session: AgentSession | undefined;
 const replies = new Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
@@ -354,10 +355,10 @@ async function main(value: WorkerConfig) {
   for (const input of config.inputs) project(input, false);
   const runtime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const api = config.provider === "anthropic" ? "anthropic-messages" : "openai-completions";
-  runtime.registerProvider("nex", { name: "NexBot API", apiKey: config.apiKey, baseUrl: config.endpoint, api,
-    // Reasoning is declared only for a model whose provider settings offer levels; otherwise nothing is sent, so a
-    // service without reasoning support never receives reasoning_effort or thinking.
-    models: [{ id: config.model, name: config.model, api, reasoning: !!config.reasoning && config.reasoning !== "off", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: config.contextWindow, maxTokens: config.maxOutputTokens }] });
+  runtime.registerProvider("nex", { name: "NexBot API", apiKey: config.apiKey, baseUrl: config.provider === "anthropic" ? config.endpoint : openAiBase(config.endpoint), api,
+    models: [{ id: config.model, name: config.model, api, reasoning: !!config.reasoning && config.reasoning !== "off",
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" }, input: config.imageInput === false ? ["text"] : ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: config.contextWindow, maxTokens: config.maxOutputTokens }] });
   const model = runtime.getModel("nex", config.model);
   if (!model) throw new Error("Model registration failed");
   const broker = defineTool({ name: "broker", label: "Core Broker", description: brokerDescription,
@@ -403,11 +404,26 @@ async function main(value: WorkerConfig) {
   // The SDK reads this from the request options (or, only as a fallback, from PI_CACHE_RETENTION); other protocols have no marker to set.
   if (config.provider === "anthropic") {
     const stream = session.agent.streamFunction;
-    session.agent.streamFunction = (requestModel, context, options) => stream(requestModel, context, { ...options, cacheRetention: "long" });
+    // The SDK's budget-based Anthropic requests use the high budget for both extended levels.
+    const extendedBudget = config.reasoning === "max" ? 32768 : config.reasoning === "xhigh" ? 24576 : undefined;
+    session.agent.streamFunction = (requestModel, context, options) => stream(requestModel, context, {
+      ...options, cacheRetention: "long",
+      ...(extendedBudget && { thinkingBudgets: { ...options?.thinkingBudgets, high: extendedBudget } }),
+    });
   }
+  let hasStreamedText = false;
+  let startsParagraph = false;
   session.subscribe((event) => {
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") send({ type: "delta", text: event.assistantMessageEvent.delta });
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      const delta = event.assistantMessageEvent.delta;
+      if (delta) {
+        send({ type: "delta", text: startsParagraph ? "\n\n" + delta : delta });
+        hasStreamedText = true;
+        startsParagraph = false;
+      }
+    }
     if (event.type === "message_end" && event.message.role === "assistant") {
+      startsParagraph = hasStreamedText;
       send({ type: "snapshot", invokeId: activeInvoke, inputTokens: event.message.usage.input + event.message.usage.cacheRead + event.message.usage.cacheWrite, estimatedTokens: requestEstimate, cacheRead:event.message.usage.cacheRead,cacheWrite:event.message.usage.cacheWrite,outputTokens: event.message.usage.output, modelStatus: event.message.stopReason === "error" ? "failed" : event.message.stopReason === "aborted" ? "cancelled" : "succeeded" });
     }
   });
@@ -459,6 +475,7 @@ async function main(value: WorkerConfig) {
     await session.agent.continue();
     const last = manager.buildSessionContext().messages.at(-1);
     if (last?.role !== "assistant" || last.stopReason !== "stop") {
+      if (httpFailure && httpFailure.status >= 500) throw new Error(MODEL_CONNECTION_FAILURE);
       const detail = last?.role === "assistant" ? last.errorMessage ?? "Model did not finish" : "Model did not finish";
       if (httpFailure?.status === 404) throw new Error(`模型服务返回 404。请求地址：${httpFailure.address}。请检查 API 基础地址（OpenAI 兼容地址通常包含 /v1）、API 协议和模型 ID。服务响应：${detail}`);
       throw requestFailure ?? new Error(detail);

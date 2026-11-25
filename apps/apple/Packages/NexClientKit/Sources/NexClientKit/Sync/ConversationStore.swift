@@ -63,6 +63,23 @@ public final class ConversationStore {
         if let hasOlder { self.hasOlder = hasOlder }
     }
 
+    static func applyDelta(to replies: inout [StreamingText], taskID: String, offset: Int, text: String) -> Bool {
+        if let index = replies.firstIndex(where: { $0.taskId == taskID }) {
+            let length = replies[index].text.utf16.count
+            if offset < length { return offset + text.utf16.count <= length }
+            guard offset == length else { return false }
+            replies[index].text += text
+        } else {
+            guard offset == 0 else { return false }
+            replies.append(StreamingText(taskId: taskID, text: text))
+        }
+        return true
+    }
+
+    func appendLiveReply(taskID: String, offset: Int, text: String) -> Bool {
+        Self.applyDelta(to: &streaming, taskID: taskID, offset: offset, text: text)
+    }
+
     func finishSending() {
         isSending = false
         sendAcceptedSerial = nil
@@ -113,18 +130,30 @@ public final class ConversationStore {
         attachments[i].state = state
     }
 
-    /// Fetches the 100 messages before the oldest loaded one.
+    /// Loads a cached or bounded page before the oldest visible message.
     public func loadOlder() async {
-        guard hasOlder, focusedMessageID == nil, !isLoadingOlder, let first = messages.first?.seq, let sync = loadedSync else { return }
+        guard hasOlder, focusedMessageID == nil, !isLoadingOlder, let oldest = messages.first, let sync = loadedSync else { return }
+        let first = oldest.seq
         isLoadingOlder = true
         let gen = generation
         defer { if gen == generation { isLoadingOlder = false } }
         do {
-            let feed = try await workspace.client.feed(bot: botID, before: first)
+            let scope = workspace.contentCacheScope
+            let key = "history:" + botID + ":before:" + String(first)
+            var cached: Feed?
+            if let scope { cached = await LocalContentCache.shared.load(Feed.self, scope: scope, key: key) }
+            guard gen == generation, scope == workspace.contentCacheScope else { return }
+            let feed: Feed
+            if let cached { feed = cached }
+            else { feed = try await workspace.client.feed(bot: botID, before: first, at: oldest.row.int("created_at")) }
             guard gen == generation else { return }
             guard feed.sync.sameGeneration(as: sync) else { workspace.clearContent(); await workspace.refresh(); return }
             messages = feed.messages.filter { $0.seq < first } + messages
-            hasOlder = feed.messages.count >= 100
+            hasOlder = feed.hasOlder ?? (feed.messages.count >= 100)
+            if cached == nil, let scope {
+                let page = Feed(messages: feed.messages, sync: feed.sync, hasOlder: feed.hasOlder)
+                Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: key) }
+            }
         } catch {
             guard gen == generation else { return }
             sendError = workspace.report(error).message
@@ -195,6 +224,7 @@ public final class ConversationStore {
     /// Deletes one image from a sent message. Text and other attachments stay; an image-only message disappears.
     public func deleteImage(_ link: AttachmentLink, messageID: String) async throws {
         try await workspace.client.deleteMessageImage(bot: botID, messageID: messageID, attachmentID: link.id)
+        workspace.clearLocalAssets()
         await workspace.refresh()
     }
 

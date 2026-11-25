@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState } from 'react';
 import { api, type State } from '../api';
 export type ConversationMatch = { id:string; botId:string; botName:string; createdAt:number; snippet:string };
@@ -12,7 +13,7 @@ export function ConversationSearch({query,sync,onSelect}:{query:string;sync:Stat
       if(!alive.current)return;
       if(next.sync.coreId!==sync.coreId||next.sync.bootId!==sync.bootId||next.sync.privacyEpoch!==sync.privacyEpoch){setResult(undefined);setError('会话记录已变化，请重新搜索');return;}
       setResult(previous=>({...next,results:before&&previous?[...previous.results,...next.results]:next.results}));
-    }catch(failure){if(alive.current)setError(failure instanceof Error?failure.message:'搜索失败');}
+    }catch(failure){if(alive.current)setError(userErrorText(failure, '搜索失败'));}
     finally{pending.current=false;if(alive.current)setBusy(false);}
   }
   useEffect(()=>{

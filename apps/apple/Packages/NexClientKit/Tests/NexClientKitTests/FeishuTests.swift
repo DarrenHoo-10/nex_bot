@@ -12,9 +12,14 @@ nonisolated(unsafe) private let feishuState: [String: Any] = [
         "job": ["stage": "qr", "url": "https://open.feishu.cn/page/cli?x=1", "expiresAt": 1_760_000_000_000],
         "userAuth": ["stage": "error", "error": "授权账号与应用主人不一致"],
         "apps": [["id": "f1", "appId": "cli_a", "brand": "feishu", "status": "connected", "error": NSNull(), "ownerBound": true, "botId": "b1", "botName": "秘书",
-                  "enabled": true, "version": 2, "userAuthorized": true, "userScopes": ["docx:document", "offline_access"], "userExpiresAt": 1_760_000_000_000]],
+                  "enabled": true, "version": 2, "userAuthorized": true, "userScopes": ["docx:document", "offline_access"], "userExpiresAt": 1_760_000_000_000,
+                  "name": "Nex 金融", "avatarUrl": "https://example.invalid/a.png", "groupCount": 3],
+                 ["id": "f2", "appId": "cli_b", "brand": "lark", "status": "error", "error": "App Secret 已失效", "ownerBound": false, "botId": "b1", "botName": "秘书",
+                  "enabled": true, "version": 5, "userAuthorized": false, "userScopes": [], "userExpiresAt": NSNull()]],
     ],
 ]
+
+nonisolated(unsafe) private let feishuGroup: [String: Any] = ["chatId": "oc_1", "name": "投研群", "kind": "group", "members": 5, "claimed": false, "trigger": "topic", "session": "new-topic", "context": "", "version": 1]
 
 @MainActor
 final class FeishuTests: XCTestCase {
@@ -46,6 +51,9 @@ final class FeishuTests: XCTestCase {
         XCTAssertTrue(app.userAuthorized); XCTAssertEqual(app.userScopes, ["docx:document", "offline_access"])
         XCTAssertEqual(app.userAuthLabel, "已授权 · 2 项权限")
         XCTAssertNotNil(app.userExpiresAt)
+        XCTAssertEqual(app.displayName, "Nex 金融"); XCTAssertEqual(app.groupCount, 3)
+        XCTAssertEqual(feishu.apps.count, 2)
+        XCTAssertEqual(feishu.app("f2")?.displayName, "秘书"); XCTAssertEqual(feishu.app("f2")?.groupCount, 0)
     }
 
     func testFeishuCalls() async throws {
@@ -56,26 +64,48 @@ final class FeishuTests: XCTestCase {
             default: .json(["ok": true])
             }
         }
-        // Core refuses a second register while an app exists; the no-app path is covered below.
+        try await store.startFeishuRegister(botID: "b1") // several apps are allowed
+        XCTAssertEqual(core.recorded("/api/feishu/register/start").count, 1)
         try await store.cancelFeishuRegister()
         XCTAssertEqual(core.recorded("/api/feishu/register/cancel").count, 1)
         let newID = try await store.saveFeishuApp(appID: "cli_x", secret: "s", brand: "lark", botID: "b1")
         XCTAssertEqual(newID, "f9")
         var j = core.recorded("/api/feishu/save")[0].json
         XCTAssertEqual(j["appId"] as? String, "cli_x"); XCTAssertEqual(j["appSecret"] as? String, "s"); XCTAssertEqual(j["brand"] as? String, "lark"); XCTAssertEqual(j["botId"] as? String, "b1")
-        let code = try await store.startFeishuBind()
+        let code = try await store.startFeishuBind(appID: "f2")
         XCTAssertEqual(code, "123456")
-        XCTAssertEqual(core.recorded("/api/feishu/bind/start")[0].json["id"] as? String, "f1")
-        try await store.startFeishuUserAuth()
+        XCTAssertEqual(core.recorded("/api/feishu/bind/start")[0].json["id"] as? String, "f2")
+        try await store.startFeishuUserAuth(appID: "f1")
         XCTAssertEqual(core.recorded("/api/feishu/user-auth/start")[0].json["id"] as? String, "f1")
         try await store.cancelFeishuUserAuth()
         XCTAssertEqual(core.recorded("/api/feishu/user-auth/cancel").count, 1)
-        try await store.setFeishuEnabled(false)
+        try await store.setFeishuEnabled(appID: "f2", false)
         j = core.recorded("/api/feishu/toggle")[0].json
-        XCTAssertEqual(j["id"] as? String, "f1"); XCTAssertEqual(j["version"] as? Int, 2); XCTAssertEqual(j["enabled"] as? Bool, false)
-        try await store.removeFeishu()
+        XCTAssertEqual(j["id"] as? String, "f2"); XCTAssertEqual(j["version"] as? Int, 5); XCTAssertEqual(j["enabled"] as? Bool, false)
+        try await store.removeFeishu(appID: "f1")
         j = core.recorded("/api/feishu/delete")[0].json
         XCTAssertEqual(j["id"] as? String, "f1"); XCTAssertEqual(j["version"] as? Int, 2)
+    }
+
+    func testFeishuGroups() async throws {
+        let (core, store) = await loaded { r in
+            switch r.path {
+            case "/api/feishu/groups": .json(["groups": [feishuGroup, ["chatId": "oc_2", "name": "盯盘", "kind": "topic", "members": NSNull(), "claimed": true, "trigger": "always", "session": "chat", "context": "只谈港股", "version": 3]], "error": NSNull()])
+            case "/api/feishu/groups/save": .json(feishuGroup.merging(["claimed": true, "trigger": "ambient", "session": "chat-topic", "context": "先给结论", "version": 2]) { $1 })
+            default: .json(["ok": true])
+            }
+        }
+        let list = try await store.feishuGroups(appID: "f1")
+        XCTAssertNil(list.error)
+        XCTAssertEqual(list.groups.map(\.chatID), ["oc_1", "oc_2"])
+        XCTAssertEqual(list.groups[0].summary, "普通群 · 5 人 · 未开放")
+        XCTAssertEqual(list.groups[1].summary, "话题群 · 必须 @ · 每个话题一个会话 · 已设上下文")
+        XCTAssertTrue(list.groups[1].isTopicGroup)
+        let saved = try await store.saveFeishuGroup(appID: "f1", group: list.groups[0], trigger: "ambient", session: "chat-topic", context: "先给结论")
+        let j = core.recorded("/api/feishu/groups/save")[0].json
+        XCTAssertEqual(j["id"] as? String, "f1"); XCTAssertEqual(j["chatId"] as? String, "oc_1"); XCTAssertEqual(j["trigger"] as? String, "ambient")
+        XCTAssertEqual(j["session"] as? String, "chat-topic"); XCTAssertEqual(j["context"] as? String, "先给结论"); XCTAssertEqual(j["version"] as? Int, 1)
+        XCTAssertEqual(saved.summary, "普通群 · 5 人 · 默认应答 · 群聊共享，话题独立 · 已设上下文")
     }
 
     func testFeishuGuardsWithoutApp() async throws {
@@ -83,8 +113,8 @@ final class FeishuTests: XCTestCase {
         let core = StubCore()
         core.handle { r in r.path == "/api/state" ? .json(bare) : .json(["ok": true]) }
         let store = makeStore(core); await store.refresh()
-        await XCTAssertThrowsErrorAsync(try await store.startFeishuBind())
-        await XCTAssertThrowsErrorAsync(try await store.setFeishuEnabled(false))
+        await XCTAssertThrowsErrorAsync(try await store.startFeishuBind(appID: "f1"))
+        await XCTAssertThrowsErrorAsync(try await store.setFeishuEnabled(appID: "f1", false))
         try await store.startFeishuRegister(botID: "b1") // no app → allowed
         XCTAssertEqual(core.recorded("/api/feishu/register/start").count, 1)
     }

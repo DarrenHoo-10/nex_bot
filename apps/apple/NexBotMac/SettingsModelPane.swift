@@ -36,6 +36,8 @@ struct SettingsModelPane: View {
                 ImageModelSection(workspace: workspace, active: active).id("\(workspace.state?.config?.providerID ?? "")|\(workspace.state?.config?.endpoint ?? "")")
             }
             Hairline().padding(.vertical, 28)
+            TranslationModelSection(workspace: workspace, active: active)
+            Hairline().padding(.vertical, 28)
             RetrievalSection(workspace: workspace, active: active)
         }
         .onAppear { if connection == nil { selected = connections.first?.id ?? "new" } }
@@ -248,23 +250,27 @@ private struct ProviderModels: View {
 
     @ViewBuilder private func row(_ model: String) -> some View {
         let options = connection.options[model], on = enabled.contains(model), isDefault = model == connection.defaultModel
+        let name = connection.displayName(model)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(connection.displayName(model)).font(.system(size: 12.5, weight: .medium)).foregroundStyle(on ? Theme.foreground : Theme.muted).lineLimit(1).truncationMode(.middle)
-                    if connection.displayName(model) != model { Text(model).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle) }
+                ScrollView(.horizontal) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(name).font(.system(size: 12.5, weight: .medium)).foregroundStyle(on ? Theme.foreground : Theme.muted)
+                        if name != model { Text(model).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted) }
+                    }
+                    .fixedSize()
                 }
+                .scrollIndicators(.hidden)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 if isDefault { tag("默认", accent: true) }
-                if options?.imageInput == true { tag("视觉") }
-                if let levels = options?.reasoning, let first = levels.first { tag("推理 \(first.label)\(levels.count > 1 ? "–\(levels.last!.label)" : "")") }
-                Spacer(minLength: 6)
+                if options?.imageInput != false { tag("视觉") }
                 if !isDefault {
                     Button { Task { try? await workspace.updateConnection(connection, defaultModel: model) } } label: { Image(systemName: "star").font(.system(size: 12)).foregroundStyle(Theme.muted).frame(width: 26, height: 26) }
                         .buttonStyle(.plain).help("设为默认模型").accessibilityLabel("设为默认模型：\(model)")
                 }
                 Button { editing = editing == model ? "" : model } label: { Image(systemName: "pencil").font(.system(size: 12)).foregroundStyle(Theme.muted).frame(width: 26, height: 26) }
                     .buttonStyle(.plain).help("编辑").accessibilityLabel("编辑 \(model)")
-                Toggle("", isOn: Binding(get: { on }, set: { _ in autosave?.toggle(model, all: all) })).toggleStyle(.switch).labelsHidden().controlSize(.mini).accessibilityLabel("启用 \(model)")
+                Toggle("", isOn: Binding(get: { on }, set: { _ in autosave?.toggle(model, all: all) })).toggleStyle(.switch).labelsHidden().controlSize(.mini).fixedSize().accessibilityLabel("启用 \(model)")
             }
             .padding(.leading, 12).padding(.trailing, 8).frame(minHeight: 40)
             if editing == model { ModelOptionsEditor(workspace: workspace, connection: connection, model: model) { editing = "" } }
@@ -310,8 +316,7 @@ private struct ModelOptionsEditor: View {
     @State private var info: ModelLimitInfo?
     @State private var context = ""
     @State private var output = ""
-    @State private var imageInput = false
-    @State private var levels: [ReasoningLevel] = []
+    @State private var imageInput = true
     @State private var saving = false
     @State private var error = ""
 
@@ -321,26 +326,18 @@ private struct ModelOptionsEditor: View {
                 limitField("上下文窗口", text: $context, automatic: info?.automatic.contextWindow)
                 limitField("最大输出", text: $output, automatic: info?.automatic.maxOutputTokens)
             }
-            HStack(spacing: 14) {
-                Toggle("支持图片输入", isOn: $imageInput).toggleStyle(.checkbox)
-                Text("推理档位").foregroundStyle(Theme.muted)
-                ForEach(ReasoningLevel.allCases, id: \.self) { level in
-                    Toggle(level.label, isOn: Binding(get: { levels.contains(level) }, set: { on in levels = ReasoningLevel.allCases.filter { $0 == level ? on : levels.contains($0) } })).toggleStyle(.checkbox)
-                }
-            }
-            .font(.system(size: 12))
+            Toggle("支持图片输入", isOn: $imageInput).toggleStyle(.checkbox).font(.system(size: 12))
             if !error.isEmpty { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled) }
             HStack { Spacer(); MBButton(title: "取消", action: close); MBButton(title: saving ? "保存中…" : "保存", kind: .brand, busy: saving, action: save) }
         }
         .padding(12).background(Theme.wash)
         .task {
             let stored = connection.options[model]
-            imageInput = stored?.imageInput ?? false; levels = stored?.reasoning ?? []
+            imageInput = stored?.imageInput ?? true
             guard let result = try? await workspace.modelLimits(provider: connection.provider, endpoint: connection.endpoint, model: model) else { return }
             info = result
             context = result.manual.contextWindow.map(String.init) ?? ""; output = result.manual.maxOutputTokens.map(String.init) ?? ""
             // A model never configured starts from what the catalog says it can do.
-            if stored == nil, let capabilities = result.capabilities { imageInput = capabilities.imageInput; if capabilities.reasoning { levels = [.low, .medium, .high] } }
         }
     }
 
@@ -362,7 +359,7 @@ private struct ModelOptionsEditor: View {
         Task {
             defer { saving = false }
             do {
-                try await workspace.saveModelOptions(connectionID: connection.id, model: model, version: connection.options[model]?.version ?? 0, imageInput: imageInput, reasoning: levels,
+                try await workspace.saveModelOptions(connectionID: connection.id, model: model, version: connection.options[model]?.version ?? 0, imageInput: imageInput, reasoning: ReasoningLevel.defaults,
                                                      contextWindow: Int(trimmedContext), maxOutputTokens: Int(trimmedOutput))
                 close()
             } catch { self.error = mbFallbackMessage(error) }

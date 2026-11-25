@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { build } from "esbuild";
 import { build as viteBuild } from "vite";
 import react from "@vitejs/plugin-react";
@@ -9,14 +10,15 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
+import { buildFeishuAvatars } from "./build-feishu-avatars.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const config = parse(readFileSync(path.join(root, "electron-builder.client.yml"), "utf8"));
 const { shell: htmlPreviewShell } = await import('./build-html-preview.mjs');
 const output = path.join(root, "dist-personal");
 const coreOnly = process.argv.includes("--core");
 const shellOnly = process.argv.includes("--shell");
 if (coreOnly && shellOnly) throw new Error("Choose either --core or --shell");
 if (!coreOnly) {
-const config = parse(readFileSync(path.join(root, "electron-builder.client.yml"), "utf8"));
 const platform = process.platform, arch = process.arch;
 if (!["win32", "darwin"].includes(platform)) throw new Error("Personal desktop packaging supports Windows and macOS");
 const electronDir = path.join(root, config.electronDist);
@@ -37,7 +39,15 @@ const serverOutput = path.join(output, "server");
 mkdirSync(path.join(serverOutput, "core"), { recursive: true });
 if (process.platform === "win32") await import("./build-personal-computer.mjs");
 await viteBuild({ configFile: false, root, plugins: [react(), tailwindcss()], build: { outDir: path.join(serverOutput, "ui"), emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
-copyFileSync(path.join(serverOutput, "ui", "personal.html"), path.join(serverOutput, "ui", "index.html"));
+await buildFeishuAvatars(root, path.join(serverOutput, "ui"));
+const webVersion = config.extraMetadata.version;
+if (typeof webVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(webVersion)) throw new Error("Invalid NexBot release version");
+const personalHtml = path.join(serverOutput, "ui", "personal.html");
+const html = readFileSync(personalHtml, "utf8");
+const revision = createHash("sha256").update(webVersion).update(html).digest("hex").slice(0, 16);
+const versionedHtml = html.replace("</head>", `<meta name="nexbot-web-version" content="${webVersion}"><meta name="nexbot-web-revision" content="${revision}"></head>`);
+writeFileSync(personalHtml, versionedHtml);
+writeFileSync(path.join(serverOutput, "ui", "index.html"), versionedHtml);
 writeFileSync(path.join(serverOutput, "ui", "html-preview.html"), htmlPreviewShell);
 // The Feishu SDK reads its own package.json relative to its CommonJS entry at load time.
 const larkPackage = realpathSync(path.join(root, "node_modules/@larksuiteoapi/node-sdk/package.json"));

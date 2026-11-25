@@ -85,9 +85,16 @@ public struct SyncIdentity: Codable, Sendable, Equatable {
     public var privacyEpoch: Int
     public var coreId: String
     public var bootId: String
+    public var revision: Int?
+    public var at: Int?
 
-    public init(cursor: Int = 0, privacyEpoch: Int = 0, coreId: String, bootId: String) {
+    public init(cursor: Int = 0, privacyEpoch: Int = 0, coreId: String, bootId: String, revision: Int? = nil, at: Int? = nil) {
         self.cursor = cursor; self.privacyEpoch = privacyEpoch; self.coreId = coreId; self.bootId = bootId
+        self.revision = revision; self.at = at
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.cursor == rhs.cursor && lhs.revision == rhs.revision && lhs.sameGeneration(as: rhs)
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -95,6 +102,8 @@ public struct SyncIdentity: Codable, Sendable, Equatable {
         privacyEpoch = c.lenient(.init("privacyEpoch"))?.intValue ?? 0
         coreId = c.lenient(.init("coreId"))?.stringValue ?? ""
         bootId = c.lenient(.init("bootId"))?.stringValue ?? ""
+        revision = c.lenient(.init("revision"))?.intValue
+        at = c.lenient(.init("at"))?.intValue
     }
     /// True when cached content from `self` may be merged with content from `other` (cursor may differ).
     public func sameGeneration(as other: SyncIdentity) -> Bool {

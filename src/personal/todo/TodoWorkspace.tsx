@@ -1,3 +1,4 @@
+import { userErrorText } from "../../lib/http-errors";
 import {
   useCallback,
   useEffect,
@@ -184,7 +185,7 @@ export function TodoWorkspace({
         setItems(response.items);
     } catch (e) {
       if (mounted.current && seq === generation.current)
-        setError(e instanceof Error ? e.message : "读取待办失败");
+        setError(userErrorText(e, "读取待办失败"));
     } finally {
       if (mounted.current && seq === generation.current) setLoading(false);
     }
@@ -224,7 +225,7 @@ export function TodoWorkspace({
       return true;
     } catch (e) {
       if (mounted.current)
-        setError(e instanceof Error ? e.message : "操作失败，请重试");
+        setError(userErrorText(e, "操作失败，请重试"));
       await load();
       return false;
     } finally {

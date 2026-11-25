@@ -32,7 +32,9 @@ final class UIState {
     var accountMenuOpen = false
     /// The sidebar search text; non-empty replaces the contact list with message hits.
     var contactSearch = ""
-    var todosVisible = false
+    /// 待办 and Agent 会话 take the place of the conversation; only one of them at a time.
+    var todosVisible = false { didSet { if todosVisible { agentsVisible = false } } }
+    var agentsVisible = false { didSet { if agentsVisible { todosVisible = false } } }
     /// The open composer popover (＋ menu, permission or model); DEBUG commands set it for screenshots.
     var composerMenu: ComposerMenuKind?
     /// The in-app 退出当前账号？ dialog of the main window.
@@ -200,14 +202,6 @@ extension WorkspaceStore {
         CompanionState(task: state?.avatarTask(botID: botID), approval: approvals.contains { $0.botID == botID }, connected: connection == .connected)
     }
     func appearance(_ bot: Bot) -> AgentAppearance { AgentAppearance.of(bot, firstID: bots.first?.id) }
-}
-
-/// A 1pt hairline in the web UI's border color.
-struct Hairline: View {
-    var vertical = false
-    var body: some View {
-        Theme.border.frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
-    }
 }
 
 /// Gives the main window the web UI's 1440 x 960 on first launch, then lets AppKit remember the user's size.

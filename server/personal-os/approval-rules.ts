@@ -2,16 +2,25 @@ import { id, now, text, type CoreStore } from "./store.ts";
 
 export function approvalRuleScope(args: Record<string, unknown>) {
   const action = text(args.action, 40);
+  // A session key stands for one session, a device id for starting new ones there.
   const target = action.startsWith("device.") ? text(args.deviceId, 100)
+    : action === "cli.start" ? text(args.deviceId, 128)
+      : action.startsWith("cli.") ? text(args.key, 400)
     : action === "connector.call" ? text(args.connectorId, 100)
       : action === "agent.update" ? text(args.botId, 100) : "";
   const operation = action === "device.computer" ? text(args.operation, 80)
+    : action === "cli.start" ? `${text(args.engine, 20)} ${text(args.cwd, 1000)}`
     : action === "connector.call" ? text(args.tool, 200) : "";
   return { action, target, operation };
 }
 
 export function approvalRuleLabel(store: CoreStore, scope: ReturnType<typeof approvalRuleScope>): string {
-  const labels: Record<string, string> = { "device.exec": "执行终端命令", "device.computer": "操作电脑", "connector.call": "调用连接器", "agent.create": "创建 Agent", "agent.update": "更新 Agent", "memory.delete": "撤回记忆", "memory.forget": "清理记忆" };
+  const labels: Record<string, string> = { "device.exec": "执行终端命令", "device.computer": "操作电脑", "connector.call": "调用连接器", "agent.create": "创建 Agent", "agent.update": "更新 Agent", "memory.delete": "撤回记忆", "memory.forget": "清理记忆", "cli.start": "启动 Agent 会话", "cli.send": "给 Agent 会话发消息", "cli.interrupt": "中断 Agent 会话" };
+  if (scope.action.startsWith("cli.")) {
+    const device = scope.action === "cli.start" ? scope.target : scope.target.split(":")[0];
+    const name = device ? store.get("SELECT name FROM devices WHERE id=?", device)?.name ?? device : "";
+    return [labels[scope.action] ?? scope.action, name, scope.action === "cli.start" ? scope.operation : ""].filter(Boolean).join(" · ");
+  }
   const table = scope.action.startsWith("device.") ? "devices" : scope.action === "connector.call" ? "personal_connectors" : "bots";
   const name = scope.target ? store.get(`SELECT name FROM ${table} WHERE id=?`, scope.target)?.name ?? scope.target : "";
   return [labels[scope.action] ?? scope.action, name, scope.operation].filter(Boolean).join(" · ");
@@ -33,7 +42,8 @@ export function approvalRules(store: CoreStore) {
         const grant = store.get("SELECT g.policy_version FROM device_local_grants g JOIN devices d ON d.id=g.device_id WHERE g.device_id=? AND g.local_grant_id='shared' AND g.status='active' AND d.status='bound'", row.target_id);
         active = active && grant?.policy_version === row.resource_version;
       } else if (row.action === "connector.call") {
-        const connector = store.get("SELECT c.version,g.tools_json FROM personal_connectors c JOIN personal_connector_grants g ON g.connector_id=c.id WHERE c.id=? AND g.bot_id=? AND c.enabled=1", row.target_id, row.bot_id);
+        // Grants are gone; a remembered rule stays valid while the connector is enabled, unchanged and still lists the tool.
+        const connector = store.get("SELECT version,tools_json FROM personal_connectors WHERE id=? AND enabled=1", row.target_id);
         active = active && connector?.version === row.resource_version && JSON.parse(String(connector.tools_json)).includes(row.operation);
       } else if (row.action === "agent.update") active = active && !!store.get("SELECT id FROM bots WHERE id=? AND status='active'", row.target_id);
       return { ...row, id: String(row.id), bot_id: String(row.bot_id), active, label: approvalRuleLabel(store, { action: String(row.action), target: String(row.target_id), operation: String(row.operation) }) };

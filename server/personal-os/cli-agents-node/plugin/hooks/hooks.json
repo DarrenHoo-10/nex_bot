@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$NEXBOT_HOOK_NODE\" ] || ELECTRON_RUN_AS_NODE=1 \"$NEXBOT_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs\" question || true",
+            "timeout": 1800
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$NEXBOT_HOOK_NODE\" ] || ELECTRON_RUN_AS_NODE=1 \"$NEXBOT_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs\" permission || true",
+            "timeout": 1800
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$NEXBOT_HOOK_NODE\" ] || ELECTRON_RUN_AS_NODE=1 \"$NEXBOT_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs\" post || true",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$NEXBOT_HOOK_NODE\" ] || ELECTRON_RUN_AS_NODE=1 \"$NEXBOT_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.mjs\" stop || true",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

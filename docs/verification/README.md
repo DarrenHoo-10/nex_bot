@@ -1,5 +1,46 @@
 # Verifying OpenMausBot
 
+- [NexAgent 图片预览和 0.9.51 全平台发布（2026-11-25）](nexagent-images-0951-20261125.md)
+
+- [NexAgent 输入框模型显示、Codex 新建会话修复与 0.9.50 预览发布（2026-11-25）](nexagent-composer-model-0950-20261125.md)
+
+- [工作区按需同步、历史消息本地缓存与 0.9.49 预览发布（2026-11-25）](workspace-history-sync-20261125.md)
+
+- [NexAgent 翻译回退与 Token 用量简写 · 全平台发布 0.9.47（2026-11-25）](nexagent-jev-release-20261125.md)
+
+- [NexBot 会话操作与移动端审批：全平台发布 0.9.48（2026-11-25）](nexbot-0948-release-20261125.md)
+
+- [GitHub 监视与 Webhook 原子工具](github-webhook-tools.md)
+
+- [NexAgent 权限确认卡与默认完全访问：开发验证（2026-11-24）](nexagent-permission-prompts-20261124.md)
+- [NexAgent 权限确认送达各端、新会话默认完全访问：全平台发布 0.9.46（2026-11-24）](nexagent-permission-release-20261124.md)
+- [NexAgent 发送体验、可读错误与模型失败提醒：全平台发布 0.9.45（2026-11-24）](nexagent-errors-release-20261124.md)
+- [NexAgent 会话翻译：全平台发布 0.9.44（2026-11-22）](nexagent-translation-release-20261122.md)
+- [NexAgent 会话翻译配置与验证](nexagent-translation.md)
+- [NexAgent 历史分页、远程消息、上下文窗口与单按钮输入框：全平台发布 0.9.43（2026-11-22）](nexagent-0943-release-20261122.md)
+- [更新清单按平台记录发布标签与说明：Core 部署（2026-11-22）](update-manifest-per-platform-20261122.md)
+- [NexAgent 新建会话页、侧栏与上下文用量：Mac / iPhone 发布 0.2.34（2026-11-22）](nexagent-apple-ui-release-20261122.md)
+- [NexAgent 新建会话页、侧栏与上下文用量：全平台发布 0.9.42（2026-11-22）](nexagent-ui-release-20261122.md)
+- [NexAgent 模型清单与即时新建会话：全平台发布 0.9.41（2026-11-22）](nexagent-launch-release-20261122.md)
+- [NexAgent 发往跳过权限模式 Claude 会话的消息：全平台发布 0.9.40（2026-11-21）](nexagent-inbox-release-20261121.md)
+- [NexAgent 排序、搜索、模型与图片：全平台发布（2026-11-21）](nexagent-1121-release-20261121.md)
+
+- [飞书多应用与按群回复设置：全平台发布（2026-11-21）](feishu-multi-app-release-20261121.md)
+
+- [飞书多应用与按群回复设置：本地验证（2026-11-21）](feishu-multi-app-20261121.md)
+
+- [html.render 预览卡拓宽:本地验证(2026-11-15)](html-preview-width-20261115.md)
+
+- [工具步骤就地展开:本地验证(2026-11-15)](tool-step-inline-20261115.md)
+
+- [Gmail connector catalog fix: production deploy (2026-11-15)](gmail-connector-catalog-fix-20261115.md)
+
+- [Connectors default-open: per-bot grants retired (2026-11-15)](connector-default-open-20261115.md)
+
+- [Agent 会话发布验收（0.9.35，2026-11-15）](agent-mode-release-20261115.md)
+
+- [助手重置和后台删除发布验收（2026-11-15）](assistant-lifecycle-release-20261115.md)
+
 - [话题栏固定：全平台发布（2026-11-14）](topic-header-release-20261114.md)
 
 - [话题栏固定：本地验证（2026-11-14）](topic-header-20261114.md)
@@ -459,3 +500,32 @@ model picker, model settings order, 生图模型, the stop key and pasted images
 
 The [client update record](client-updates.md) covers the OSS installer mirror,
 the update API and the Windows portable updater.
+
+The [Agent mode spike](agent-mode-spike-20261115.md) covers herdr-core on Windows
+(start, attach, survive restarts), and the
+[draft record](agent-mode-draft-20261115.md) covers sending while a person is
+typing at the computer. The [Agent mode MVP record](agent-mode-mvp-20261115.md)
+covers the browser smoke and the Agent mode test suites.
+
+The [GitHub connector records](github-connector-phase1.md) cover the connector's
+auth (OAuth app, device flow, PAT), tool catalog, the phase-two watchers
+(notifications + PR list diff + checks fingerprint dedupe, webhook HMAC) and the
+production deploy ([phase 2 record](github-connector-phase2.md),
+[deploy record](github-connector-deploy-20261115.md)).
+
+The [NexAgent workbench dev record](nexagent-workbench-mvp-dev-20261115.md) covers
+the workbench MVP development slice on `codex/nexagent-project-ui-review`: the
+protocol/storage migration, the queue scheduler, the harness adapters (including
+ZCode), the composer over the real outbox and the workbench on Core data. The
+real-product matrix (P0) and the dual-client release acceptance (P8) stay open
+there, with retest conditions. The [Core deploy record](nexagent-workbench-deploy-20261116.md)
+covers the production rollout (migration 55 rehearsed on real data copies, Mac Air
+switch and public verification); the device-executor upgrade stays with the next
+client release. The [0.9.36 release record](nexagent-workbench-release-20261119.md)
+covers the post-launch fixes and the remaining workbench features (repo grouping,
+forks, side chats, persisted notes, Chinese-first replies), migration 56, the Core
+deploy, Windows 0.9.36 and Android 0.2.35, and what stays unverified. The
+[0.9.37 release record](nexagent-desktop-sidebar-release-20261120.md) covers the
+session list following the Claude desktop app's sidebar (after nwverse/persona:
+one row per session, archived and deleted sessions left out, recorded lineage
+only, Stop through the inbox), Windows 0.9.37 and Android 0.2.36.
