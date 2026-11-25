@@ -608,8 +608,23 @@ private struct AgentComposer: View {
     private var claudeInbox: Bool {
         session.engine == .claude && session.sendVia == "inbox" && model.device(session.deviceId)?.cliAgents?.features.contains("inboxSteer") == true
     }
+    private var pendingRequests: [CliRequestRecord] { model.cards(session.key).filter { model.cardState($0) == .pending } }
+    private var steerQuestionId: String? {
+        guard canSetOnSend else { return nil }
+        let pending = pendingRequests
+        guard pending.count == 1, let question = pending.first?.view,
+              question.kind == .question, question.tool == "AskUserQuestion" else { return nil }
+        return question.id
+    }
+    private var interruptWaiting: Bool { canSetOnSend && session.state == .waiting && pendingRequests.isEmpty }
     private var canSteer: Bool {
-        session.state == .running && ((session.liveIn == .nexbot && session.terminal != nil) || claudeInbox)
+        guard session.online else { return false }
+        if steerQuestionId != nil || interruptWaiting { return true }
+        return pendingRequests.isEmpty && session.state == .running && ((session.liveIn == .nexbot && session.terminal != nil) || claudeInbox)
+    }
+    private var steerLabel: String {
+        if steerQuestionId != nil { return "取消提问并引导" }
+        return interruptWaiting ? "中断并引导" : "引导"
     }
     private var composerMode: CliComposerMode {
         if claudeInbox && session.online && session.state != .stopped {
@@ -696,7 +711,11 @@ private struct AgentComposer: View {
             if canSetOnSend && !effortLevels.isEmpty { effortButton }
             #endif
             if canSteer && canSend {
-                Button("引导") { Task { await send(steer: true) } }
+                let questionId = steerQuestionId
+                let shouldInterrupt = interruptWaiting
+                Button(steerLabel) {
+                    Task { await send(steer: true, questionId: questionId, interruptWaiting: shouldInterrupt) }
+                }
                     .buttonStyle(ConversationActionButtonStyle(size: .compact))
             }
             // one button: Stop while a turn runs and the box is empty, Send once there is something to send
@@ -745,8 +764,12 @@ private struct AgentComposer: View {
     }
 
     /// The box empties and the message shows in the conversation at once; a failure puts it back.
-    private func send(steer: Bool = false) async {
-        guard canSend, !steer || canSteer else { return }
+    private func send(steer: Bool = false, questionId: String? = nil, interruptWaiting: Bool = false) async {
+        guard canSend else { return }
+        if steer && (!canSteer || questionId != steerQuestionId || interruptWaiting != self.interruptWaiting) {
+            error = "当前轮次已变更"
+            return
+        }
         deliveryNotice = nil
         let text = draft
         let submittedImages = images
@@ -773,7 +796,7 @@ private struct AgentComposer: View {
             entry = echo
             if draft == text { draft = "" }
             if steer {
-                deliveryNotice = try await model.steer(session.key, text: message)
+                deliveryNotice = try await model.steer(session.key, text: message, questionId: questionId, interruptWaiting: interruptWaiting)
             } else {
                 try await model.send(session.key, text: message)
             }

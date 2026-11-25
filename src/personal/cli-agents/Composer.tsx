@@ -69,11 +69,13 @@ export interface ComposerProps {
   onCancelRevision?(): void;
   onQueueWithdraw?(entryId: string, version: number): Promise<void>;
   onQueueEdit?(entryId: string, version: number, text: string): Promise<void>;
+  steerQuestionId?: string;
+  interruptWaiting?: boolean;
   onQueueSteer?(entryId: string, version: number): Promise<void>;
   onQueueResume?(): Promise<void>;
 }
 
-export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, starter, features, launch, onLaunch, queue=null, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, onQueueSteer, onQueueResume }: ComposerProps) {
+export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, starter, features, launch, onLaunch, queue=null, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, steerQuestionId, interruptWaiting, onQueueSteer, onQueueResume }: ComposerProps) {
   const mode = draft || starter ? {kind:"send",running:false,outside:false} as const : composerMode(session);
   const review=useReview(), details=draft?undefined:review?.records[session.key];
   const model=draft?.model || details?.model || review?.models[session.engine]?.[0] || session.model?.trim() || "";
@@ -81,13 +83,13 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const [panel,setPanel]=useState<"add"|"skill"|"model"|"notes"|"context"|null>(null);
   const compact = useCompactComposer();
   const addTrigger = useRef<HTMLButtonElement>(null);
-  const [delivery,setDelivery]=useState("queue");
+  const [steerSelection, setSteerSelection] = useState<string>();
   const [skill,setSkill]=useState("");
   const [editingQueue,setEditingQueue]=useState<{id:string;version:number;text:string}|null>(null);
   const running=session.state==="running"&&!draft;
   const context=draft||starter?undefined:session.context;
   const [sentAt,setSentAt]=useState(0);
-  const active=!draft && (running||(!!review&&sentAt>Date.now()-9000));
+  const active=!draft && (running||!!steerQuestionId||interruptWaiting||(!!review&&sentAt>Date.now()-9000));
   const realQueue = !draft ? (queue?.entries ?? []).filter(isVisibleQueueEntry) : [];
   const draftRef=useRef<HTMLTextAreaElement>(null);
   const formRef=useRef<HTMLFormElement>(null);
@@ -194,7 +196,12 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const managedTerminal = !draft && session.liveIn === "nexbot" && !!session.terminal;
   const claudeInbox = !draft && session.engine === "claude" && session.sendVia === "inbox";
   const queuesWhileBusy = !revision && (managedTerminal || claudeInbox) && (running || session.state === "waiting");
-  const canSteer = running && queue?.pauseReason !== "stopped" && (managedTerminal || (claudeInbox && features?.includes("inboxSteer")));
+  const canSteer = session.online && queue?.pauseReason !== "stopped" && (
+    (managedTerminal && (steerQuestionId || interruptWaiting)) || (running && (managedTerminal || (claudeInbox && features?.includes("inboxSteer"))))
+  );
+  const steerLabel = steerQuestionId ? "取消提问并引导" : interruptWaiting ? "中断并引导" : "引导";
+  const steerSelectionKey = steerQuestionId ?? steerLabel;
+  const delivery = steerSelection === steerSelectionKey ? "steer" : "queue";
   const offersDelivery = active && (!!review || canSteer) && !!(body || extra.files.length) && !revision;
   // the paused note matters only while something waits in the queue
   const pausedNote = !review && queue?.paused && realQueue.length > 0;
@@ -283,7 +290,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           {entry.status==="uncertain" ? <small className="na-queued-state" role="status">待确认</small> : null}
           {entry.status==="failed" ? <small className="na-queued-state" data-tone="error" role="alert">发送失败</small> : null}
           {entry.status==="pending" || entry.status==="failed" ? <span className="na-queued-actions">
-            {entry.status==="pending" && onQueueSteer && canSteer ? <button type="button" onClick={()=>void run(()=>onQueueSteer(entry.id, entry.version))}><CornerUpRight size={14} aria-hidden="true"/>引导</button> : null}
+            {entry.status==="pending" && onQueueSteer && canSteer ? <button type="button" onClick={()=>void run(()=>onQueueSteer(entry.id, entry.version))}><CornerUpRight size={14} aria-hidden="true"/>{steerLabel}</button> : null}
             {onQueueEdit ? <button type="button" className="is-icon" aria-label={"编辑排队消息 "+(i+1)} data-tip="编辑" onClick={()=>setEditingQueue({id:entry.id,version:entry.version,text:entry.text})}><Pencil size={13}/></button> : null}
             {onQueueWithdraw ? <button type="button" className="is-icon" aria-label="撤销" data-tip="撤销" onClick={()=>void run(()=>onQueueWithdraw(entry.id, entry.version))}><Undo2 size={14}/></button> : null}
           </span> : null}
@@ -340,11 +347,11 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
             choice={choice} onChange={choose} running={session.model} disabled={pickerOff} note={pickerNote}/>}
         </>
         {offersDelivery && <div className="na-delivery" role="radiogroup" aria-label="发送方式">
-          {([["queue","排队"],["steer","引导"]] as const).map(([value,text])=><button key={value} type="button" role="radio" aria-checked={delivery===value} onClick={()=>setDelivery(value)}>{text}</button>)}
+          {([["queue","排队"],["steer",steerLabel]] as const).map(([value,text])=><button key={value} type="button" role="radio" aria-checked={delivery===value} onClick={()=>setSteerSelection(value === "steer" ? steerSelectionKey : undefined)}>{text}</button>)}
         </div>}
         {/* one button: Stop while a turn runs and the box is empty, Send once there is something to send */}
         {stopOnly ? <button type="button" className="na-stop" aria-label={review?"中断":"停止"} title={review?"中断":"停止当前运行并暂停队列"} disabled={busy} onClick={() => void run(onInterrupt)}><Square size={12} fill="currentColor" strokeWidth={0}/></button> : null}
-        {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":offersDelivery && delivery==="steer" ? "引导当前任务" : queuesWhileBusy ? "排队发送" : "发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
+        {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":offersDelivery && delivery==="steer" ? steerLabel : queuesWhileBusy ? "排队发送" : "发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
       </div>
       {tooLarge ? <small role="alert" className="cli-composer-error">内容太长</small> : error ? <small role="alert" className="cli-composer-error">{error}</small> : null}
       {mode.kind==="send" && mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}

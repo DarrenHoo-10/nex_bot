@@ -4,7 +4,7 @@
 // records the revised message.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
-import { modelFailureReason, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { cliQuestionToSteer, modelFailureReason, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { ModelFailureDialog } from "./ModelFailureDialog";
 import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
@@ -91,8 +91,12 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const {notes,update:updateNotes,error:noteError,dismissError:dismissNoteError}=useNotes(session.key,!review);
   const [items,setItems]=useState<CliItem[]>([]);
   const cards = [...requests].sort((a, b) => Number(a.closed) - Number(b.closed));
-  const pending = requests.filter((record) => cardState(record, now) === "pending").length;
-  const shown = askedSession(session, pending);
+  const pendingRequests = requests.filter((record) => cardState(record, now) === "pending");
+  const shown = askedSession(session, pendingRequests.length);
+  const managedClaude = session.engine === "claude" && session.liveIn === "nexbot" && !!session.terminal;
+  const steerQuestionId = managedClaude ? cliQuestionToSteer(pendingRequests.map((record) => record.view)) : undefined;
+  const interruptWaiting = managedClaude && session.state === "waiting" && pendingRequests.length === 0;
+  const waitingSteer = { questionId: steerQuestionId, ...(interruptWaiting ? { interruptWaiting: true } : {}) };
   const resumedKey = useRef<CliSessionKey|null>(null);
   const { queue, refreshQueue } = useCliQueue(stream, session.key);
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
@@ -193,6 +197,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
         delivery: delivery ?? "send",
         clientMessageId: crypto.randomUUID(),
         requestId: crypto.randomUUID(),
+        ...(delivery === "steer" ? waitingSteer : {}),
         ...(revision ? { revisesMessageId: revision.messageId } : {}),
       });
       // a queued entry is not delivered yet: the queue strip shows it instead
@@ -246,7 +251,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
         </div>}
       </div>
       <Composer
-        session={session} notes={notes} onNotes={updateNotes}
+        session={shown} notes={notes} onNotes={updateNotes}
         features={features} launch={launch} onLaunch={chooseLaunch}
         onSend={send}
         onInterrupt={() => review ? interruptSession(session.key) : stop()}
@@ -255,7 +260,12 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
         onCancelRevision={cancelEdit}
         onQueueWithdraw={async (entryId, version) => { await withdrawQueued(entryId, version); }}
         onQueueEdit={async (entryId, version, text) => { await editQueued(entryId, version, text); }}
-        onQueueSteer={async (entryId, version) => { await steerQueued(entryId, version); }}
+        steerQuestionId={steerQuestionId} interruptWaiting={interruptWaiting}
+        onQueueSteer={async (entryId, version) => {
+          const { entry } = await steerQueued(entryId, version, waitingSteer);
+          if (entry.status === "pending") throw new Error("引导失败，消息仍在队列中");
+          if (entry.status === "uncertain") throw new Error("引导结果待确认");
+        }}
         onQueueResume={async () => { await resume(); }}
       />
       {failure && !compact ? <ModelFailureDialog reason={failure} onClose={() => setFailure(null)}/> : null}

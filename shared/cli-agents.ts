@@ -320,6 +320,12 @@ export interface CliRequestView {
   expiresAt: number;
 }
 
+/** The sole pending Claude question can be replaced with guidance. */
+export function cliQuestionToSteer(requests: readonly CliRequestView[]): string | undefined {
+  const [request] = requests;
+  return requests.length === 1 && request?.kind === "question" && request.tool === "AskUserQuestion" ? request.id : undefined;
+}
+
 export type CliAnswerDecision = "allow" | "deny";
 
 // ---------------------------------------------------------------------------

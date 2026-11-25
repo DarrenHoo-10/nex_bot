@@ -13,6 +13,8 @@ private struct CliStartBody: Encodable {
 private struct CliSendBody: Encodable {
     let key: String; let text: String
     var delivery: String? = nil; var clientMessageId: String? = nil; var requestId: String? = nil
+    var questionId: String? = nil
+    var interruptWaiting: Bool? = nil
 }
 private struct CliImageResult: Decodable, Sendable { let path: String }
 private struct CliHideBody: Encodable { let key: String; let hidden: Bool }
@@ -121,8 +123,8 @@ extension CoreClient {
     }
 
     /// Returns the delivery notice when Core cannot confirm immediate steering.
-    public func cliSteer(key: CliSessionKey, text: String) async throws -> String? {
-        let body = CliSendBody(key: key, text: text, delivery: "steer", clientMessageId: UUID().uuidString, requestId: UUID().uuidString)
+    public func cliSteer(key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
+        let body = CliSendBody(key: key, text: text, delivery: "steer", clientMessageId: UUID().uuidString, requestId: UUID().uuidString, questionId: questionId, interruptWaiting: interruptWaiting ? true : nil)
         let result: CliSendResult = try await post(Self.cliBase + "/send", body: body)
         switch result.status {
         case "failed": return "引导失败，消息已保留"

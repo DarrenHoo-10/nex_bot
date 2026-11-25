@@ -193,6 +193,8 @@ export interface SendOptions {
   delivery?: "send" | "queue" | "steer";
   clientMessageId?: string;
   requestId?: string;
+  questionId?: string;
+  interruptWaiting?: boolean;
   /** edit-and-resend: the transcript message this send revises */
   revisesMessageId?: string;
 }
@@ -202,7 +204,7 @@ export async function sendMessage(key: CliSessionKey, text: string, options: Sen
   const data = await call<Record<string, unknown>>(
     "/send",
     withContract
-      ? { key, text, delivery: options.delivery ?? "send", clientMessageId: options.clientMessageId, requestId: options.requestId, ...(options.revisesMessageId ? { revisesMessageId: options.revisesMessageId } : {}) }
+      ? { key, text, delivery: options.delivery ?? "send", clientMessageId: options.clientMessageId, requestId: options.requestId, questionId: options.questionId, interruptWaiting: options.interruptWaiting, ...(options.revisesMessageId ? { revisesMessageId: options.revisesMessageId } : {}) }
       : { key, text },
   );
   return {
@@ -225,8 +227,8 @@ export const editQueued = (entryId: string, expectedVersion: number, text: strin
   call<{ entry: unknown }>("/queue/edit", { entryId, expectedVersion, text });
 export const withdrawQueued = (entryId: string, expectedVersion: number) =>
   call<{ entry: unknown }>("/queue/withdraw", { entryId, expectedVersion });
-export const steerQueued = (entryId: string, expectedVersion: number) =>
-  call<{ entry: unknown }>("/queue/steer", { entryId, expectedVersion });
+export const steerQueued = (entryId: string, expectedVersion: number, options: Pick<SendOptions, "questionId" | "interruptWaiting"> = {}) =>
+  call<{ entry: { status: string } }>("/queue/steer", { entryId, expectedVersion, ...options });
 export const interruptSession = (key: CliSessionKey) => call<{ outcome: string }>("/interrupt", { key });
 export const openLocal = (key: CliSessionKey) => call<{ ok: boolean }>("/open-local", { key });
 export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: boolean }>("/hide", { key, hidden });

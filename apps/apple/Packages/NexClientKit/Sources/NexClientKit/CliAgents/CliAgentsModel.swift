@@ -309,8 +309,8 @@ public final class CliAgentsModel {
         try await clientProvider().cliSend(key: key, text: trimmed)
     }
 
-    public func steer(_ key: CliSessionKey, text: String) async throws -> String? {
-        try await clientProvider().cliSteer(key: key, text: text)
+    public func steer(_ key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
+        try await clientProvider().cliSteer(key: key, text: text, questionId: questionId, interruptWaiting: interruptWaiting)
     }
 
     public func imageMessage(_ key: CliSessionKey, text: String, images: [CliImageUpload]) async throws -> String {

@@ -228,6 +228,60 @@ describe("queue delivery", () => {
     expect(late.data.code).toBe("turn_changed");
   });
 
+  it("replaces a pending Claude question with a queued instruction without typing into the terminal", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "question-steer");
+    const key = await sessionOn(f, device, "q1", "waiting");
+    device.send({
+      type: "cli.request", ref: "claude:q1", id: "question-1", kind: "question", tool: "AskUserQuestion", summary: "Which color?",
+      questions: [{ question: "Which color?", options: [{ label: "red" }, { label: "blue" }] }], expiresAt: Date.now() + 60_000,
+    });
+    await until(() => f.app.cliHub.requests(key).length === 1, "question stored");
+    const queued = (await f.call("cli-agents/send", { key, text: "Use green", delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() })).data;
+    const selection = { entryId: queued.messageId, expectedVersion: queued.version };
+    const stale = await f.call("cli-agents/queue/steer", { ...selection, questionId: "other-question" });
+    expect(stale.data.code).toBe("turn_changed");
+    const interrupt = await f.call("cli-agents/queue/steer", { ...selection, interruptWaiting: true });
+    expect(interrupt.data.code).toBe("turn_changed");
+    expect(device.ops("answer")).toHaveLength(0);
+    expect(device.ops("interrupt")).toHaveLength(0);
+
+    const steered = await f.call("cli-agents/queue/steer", { ...selection, questionId: "question-1" });
+    expect(steered.data.entry.status).toBe("sent");
+    expect(device.ops("answer")).toHaveLength(1);
+    expect(device.ops("answer")[0].args).toMatchObject({ id: "question-1", decision: "deny", message: expect.stringContaining("Use green") });
+    expect(f.app.cliHub.requests(key)).toHaveLength(0);
+    expect(device.ops("steer")).toHaveLength(0);
+    expect(device.ops("send")).toHaveLength(0);
+  });
+
+  it("sends guidance after interrupting a waiting terminal when no interactive request exists", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "wait-steer");
+    const key = await sessionOn(f, device, "w1", "waiting");
+    let interrupted = false;
+    device.onOp = (message) => {
+      if (message.op === "interrupt") return { ok: true, result: { outcome: interrupted ? "interrupted" : "unknown" } };
+      if (message.op === "send") return { ok: true, result: { turn: 2, started: true } };
+      return { ok: true, result: {} };
+    };
+    const queued = (await f.call("cli-agents/send", { key, text: "New direction", delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() })).data;
+    const selection = { entryId: queued.messageId, expectedVersion: queued.version };
+    const implicit = await f.call("cli-agents/queue/steer", selection);
+    expect(implicit.data.code).toBe("turn_changed");
+    expect(device.ops("interrupt")).toHaveLength(0);
+
+    const held = await f.call("cli-agents/queue/steer", { ...selection, interruptWaiting: true });
+    expect(held.data.entry.status).toBe("pending");
+    expect(device.ops("send")).toHaveLength(0);
+
+    interrupted = true;
+    const steered = await f.call("cli-agents/queue/steer", { ...selection, expectedVersion: held.data.entry.version, interruptWaiting: true });
+    expect(steered.data.entry.status).toBe("sent");
+    expect(device.ops("interrupt")).toHaveLength(2);
+    expect(device.ops("send").map((op) => op.args.text)).toEqual(["New direction"]);
+  });
+
   it("steers the edited queue entry only at its current version", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "queue-steer");

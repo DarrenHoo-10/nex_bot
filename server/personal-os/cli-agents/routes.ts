@@ -203,7 +203,9 @@ export class CliAgentRoutes {
     const input = this.entryInput(data);
     if (!input) return cliErrorResult("invalid");
     const expectedTurnId = typeof data.expectedTurnId === "string" ? data.expectedTurnId : undefined;
-    const entry = await workbench.steerEntry(input, expectedTurnId);
+    const waitingSteer = cliWaitingSteer(data);
+    if (!waitingSteer) return cliErrorResult("invalid");
+    const entry = await workbench.steerEntry(input, expectedTurnId, waitingSteer);
     return { status: 200, body: { entry } };
   }
 
@@ -558,6 +560,8 @@ export class CliAgentRoutes {
     this.store.audit("cli.send", "cli_session", key, { sessionId: request.sessionId, length: text.length });
     const workbench = this.extras.workbench;
     const delivery = data.delivery;
+    const waitingSteer = cliWaitingSteer(data);
+    if (!waitingSteer || ((waitingSteer.questionId || waitingSteer.interruptWaiting) && (!workbench || delivery !== "steer"))) return cliErrorResult("invalid");
     const contract = typeof data.clientMessageId === "string" || typeof data.requestId === "string" || delivery !== undefined;
     if (contract && workbench) {
       if (!isCliDelivery(delivery)) return cliErrorResult("invalid");
@@ -574,6 +578,7 @@ export class CliAgentRoutes {
         delivery,
         clientMessageId,
         requestId,
+        ...waitingSteer,
         ...(typeof revisesMessageId === "string" ? { revisesMessageId } : {}),
         ...(Array.isArray(attachments) ? { attachments: attachments as string[] } : {}),
       });
@@ -664,6 +669,14 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/models",
   "/api/cli-agents/dirs",
 ]);
+
+function cliWaitingSteer(data: Record<string, unknown>): { questionId?: string; interruptWaiting?: boolean } | null {
+  const { questionId, interruptWaiting } = data;
+  if (interruptWaiting !== undefined && typeof interruptWaiting !== "boolean") return null;
+  if (questionId === undefined) return interruptWaiting ? { interruptWaiting } : {};
+  if (interruptWaiting || typeof questionId !== "string" || !questionId.length || questionId.length > CLI_LIMITS.requestId) return null;
+  return { questionId };
+}
 
 /** The delivery a workbench submit carries; absent means the legacy contract. */
 function isCliDelivery(value: unknown): value is CliDeliveryAction {
