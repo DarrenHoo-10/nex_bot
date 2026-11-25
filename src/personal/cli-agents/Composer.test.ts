@@ -7,6 +7,8 @@ import { CliApiError } from "./api";
 
 const uploadAttachment = vi.hoisted(() => vi.fn(async () => ({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" })));
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), uploadAttachment }));
+const layout = vi.hoisted(() => ({ compact: false }));
+vi.mock("../components/use-compact-composer", () => ({ useCompactComposer: () => layout.compact }));
 import { Composer, deliveryNote, OUTSIDE_NOTE, UNCONFIRMED_NOTE, WAITING_NOTE } from "./Composer";
 import { session } from "./fixtures";
 
@@ -26,6 +28,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  layout.compact = false;
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
@@ -158,5 +161,70 @@ describe("images", () => {
     expect(container.querySelector(".na-file-chip")).toBeTruthy();
     await submit();
     expect(onSend.mock.calls[0][0]).toBe("![shot.png](/api/cli-agents/images/12345678-0000-4000-8000-000000000000)");
+  });
+});
+
+describe("the toolbar under the message", () => {
+  const actionLabels = () => [...container.querySelectorAll(".cli-composer-actions button")].map((entry) => entry.getAttribute("aria-label"));
+  const press = async (target: Element) => { await act(async () => { target.dispatchEvent(new Event("pointerdown", { bubbles: true })); }); };
+  const click = async (label: string) => { await act(async () => { container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click(); }); };
+  const menu = () => document.querySelector(".na-model-menu");
+
+  it("shows the model on one button just left of the context ring", async () => {
+    await show(session({ model: "claude-opus-5" }));
+    const labels = actionLabels();
+    expect(labels.indexOf("模型设置")).toBe(labels.indexOf("上下文用量") - 1);
+    expect(container.querySelector('button[aria-label="模型设置"] span')?.textContent).toBe("claude-opus-5");
+  });
+
+  it("on a phone shows only the model name there, and no model entry under +", async () => {
+    layout.compact = true;
+    await show(session({ model: "claude-opus-5" }));
+    const trigger = container.querySelector('button[aria-label="模型设置"]')!;
+    expect(trigger.classList.contains("na-model-chip")).toBe(true);
+    await click("添加");
+    expect([...container.querySelectorAll(".na-add-menu button")].map((entry) => entry.textContent)).not.toContain("模型");
+    await click("模型设置");
+    expect(menu()).toBeTruthy();
+  });
+
+  it("closes the context details on a press anywhere but the details, the message field included", async () => {
+    await show(session());
+    await click("上下文用量");
+    expect(container.querySelector(".na-context-detail")).toBeTruthy();
+    await press(container.querySelector(".na-context-detail")!);
+    expect(container.querySelector(".na-context-detail")).toBeTruthy();
+    await press(area());
+    expect(container.querySelector(".na-context-detail")).toBeNull();
+    await click("上下文用量");
+    await press(document.body);
+    expect(container.querySelector(".na-context-detail")).toBeNull();
+  });
+
+  it("closes the + menu on a press in the message field, and its button still toggles it", async () => {
+    await show(session());
+    await click("添加");
+    expect(container.querySelector(".na-add-menu")).toBeTruthy();
+    await press(container.querySelector('button[aria-label="添加"]')!);
+    await click("添加");
+    expect(container.querySelector(".na-add-menu")).toBeNull();
+    await click("添加");
+    await press(area());
+    expect(container.querySelector(".na-add-menu")).toBeNull();
+  });
+
+  it("closes the model menu on a press outside it, and swaps it for the context details in one tap", async () => {
+    await show(session());
+    await click("模型设置");
+    expect(menu()).toBeTruthy();
+    await press(menu()!);
+    expect(menu()).toBeTruthy();
+    await press(area());
+    expect(menu()).toBeNull();
+    await click("模型设置");
+    await press(container.querySelector('button[aria-label="上下文用量"]')!);
+    await click("上下文用量");
+    expect(menu()).toBeNull();
+    expect(container.querySelector(".na-context-detail")).toBeTruthy();
   });
 });

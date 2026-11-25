@@ -2,7 +2,7 @@
 // (and interrupt while running), continue a stopped session, or a plain hint
 // when the session cannot be driven from here.
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Cpu, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2 } from "lucide-react";
+import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2 } from "lucide-react";
 import { MAX_SEND_TEXT, utf8ByteLength, type CliContextUsage, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
@@ -82,7 +82,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const effort=draft?.effort || details?.effort || "标准";
   const [panel,setPanel]=useState<"add"|"skill"|"model"|"notes"|"context"|null>(null);
   const compact = useCompactComposer();
-  const addTrigger = useRef<HTMLButtonElement>(null);
+  const modelTrigger = compact ? "na-model-button na-model-chip" : "na-model-button";
   const [steerSelection, setSteerSelection] = useState<string>();
   const [skill,setSkill]=useState("");
   const [editingQueue,setEditingQueue]=useState<{id:string;version:number;text:string}|null>(null);
@@ -96,12 +96,19 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   useEffect(()=>{
     if(!panel)return;
     if(panel==="add")formRef.current?.querySelector<HTMLButtonElement>(".na-add-menu button")?.focus();
-    const dismiss=(e:PointerEvent)=>{if(!formRef.current?.contains(e.target as Node))setPanel(null)};
+    // A press anywhere but the open panel and the button that opened it closes the panel, the
+    // message field included. The CLI model menu is its own popover and closes itself.
+    const dismiss=(e:PointerEvent)=>{
+      if(panel==="model"&&!review)return;
+      const form=formRef.current,target=e.target as Node;
+      const inside=[form?.querySelector(".na-compose-pop"),form?.querySelector(`[data-panel-trigger="${panel}"]`),panel==="skill"?draftRef.current:null];
+      if(!inside.some(node=>node?.contains(target)))setPanel(null);
+    };
     const escape=(e:KeyboardEvent)=>{if(e.key==="Escape"){setPanel(null);if(panel==="add")formRef.current?.querySelector<HTMLButtonElement>(".na-add-trigger")?.focus();else draftRef.current?.focus()}};
     document.addEventListener("pointerdown",dismiss);
     document.addEventListener("keydown",escape);
     return ()=>{document.removeEventListener("pointerdown",dismiss);document.removeEventListener("keydown",escape)};
-  },[panel]);
+  },[panel,review]);
   const key = draft?.id ?? session.key;
   const [extra,setExtra]=useState(()=>getExtras(key));
   const picker=useRef<HTMLInputElement>(null),imagePicker=useRef<HTMLInputElement>(null),goalField=useRef<HTMLInputElement>(null);
@@ -297,7 +304,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         </div>
       ))}
       {skill?<button className="na-skill-chip" type="button" onClick={()=>setSkill("")}>{skill} ×</button>:null}
-      {notes.length?<button className="na-skill-chip" type="button" title={notes.map(n=>n.quote+" — "+n.body).join("\n")} onClick={()=>setPanel(panel==="notes"?null:"notes")}>{notes.length} 条注释</button>:null}
+      {notes.length?<button className="na-skill-chip" type="button" data-panel-trigger="notes" title={notes.map(n=>n.quote+" — "+n.body).join("\n")} onClick={()=>setPanel(panel==="notes"?null:"notes")}>{notes.length} 条注释</button>:null}
       <textarea ref={draftRef} autoFocus={!!draft || !!starter} readOnly={!!draft && (busy || draft.busy)}
         aria-label="发送给 Agent 的消息"
         placeholder={starter?"要做什么？":review?"发消息，或输入 / 选择技能":draft?"发消息":"发消息，或输入 / 使用技能"}
@@ -327,7 +334,6 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         }} aria-label="添加到消息">
           <button type="button" onClick={()=>{setPanel(null);imagePicker.current?.click()}}><ImagePlus size={16}/><span>图片</span></button>
           <button type="button" onClick={()=>{setPanel(null);picker.current?.click()}}><Paperclip size={16}/><span>文件</span></button>
-          {compact && canOpenModelMenu && <button type="button" onClick={()=>{addTrigger.current?.focus();setPanel("model")}}><Cpu size={16}/><span>模型</span></button>}
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
         </div>}
         {panel==="context"?<ContextDetail usage={context}/>:null}
@@ -337,14 +343,15 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       </div>:null}
       <div className="cli-composer-actions">
         <>
-          <button ref={addTrigger} type="button" className="na-add-trigger" disabled={busy || draft?.busy} aria-label="添加" title="添加" aria-expanded={panel==="add"} onClick={()=>setPanel(panel==="add"?null:"add")}><Plus size={20}/></button>
+          <button type="button" className="na-add-trigger" data-panel-trigger="add" disabled={busy || draft?.busy} aria-label="添加" title="添加" aria-expanded={panel==="add"} onClick={()=>setPanel(panel==="add"?null:"add")}><Plus size={20}/></button>
           <span className="na-grow"/>
-          {draft||starter ? null : <button type="button" className="na-context" aria-label="上下文用量" title={contextSummary(context)} data-level={contextLevel(context)} aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><ContextRing usage={context}/></button>}
-          {review ? !compact && <button type="button" className="na-model-button" aria-label="模型设置" aria-expanded={panel==="model"} onClick={()=>setPanel(panel==="model"?null:"model")}>
+          {/* the model sits left of the context ring on one line; a phone shows only its name */}
+          {review ? <button type="button" className={modelTrigger} data-panel-trigger="model" aria-label="模型设置" aria-expanded={panel==="model"} title={model} onClick={()=>setPanel(panel==="model"?null:"model")}>
             <span>{model}</span><span className="na-effort">{effort}</span><ChevronDown size={13}/>
           </button> : !canOpenModelMenu ? null : <CliModelMenu deviceId={session.deviceId} engine={session.engine} live={!!features?.includes("models")}
-            anchorRef={compact ? addTrigger : undefined} open={panel === "model"} onOpenChange={open => setPanel(current => open ? "model" : current === "model" ? null : current)}
+            triggerClassName={modelTrigger} open={panel === "model"} onOpenChange={open => setPanel(current => open ? "model" : current === "model" ? null : current)}
             choice={choice} onChange={choose} running={session.model} disabled={pickerOff} note={pickerNote}/>}
+          {draft||starter ? null : <button type="button" className="na-context" data-panel-trigger="context" aria-label="上下文用量" title={contextSummary(context)} data-level={contextLevel(context)} aria-expanded={panel==="context"} onClick={()=>setPanel(panel==="context"?null:"context")}><ContextRing usage={context}/></button>}
         </>
         {offersDelivery && <div className="na-delivery" role="radiogroup" aria-label="发送方式">
           {([["queue","排队"],["steer",steerLabel]] as const).map(([value,text])=><button key={value} type="button" role="radio" aria-checked={delivery===value} onClick={()=>setSteerSelection(value === "steer" ? steerSelectionKey : undefined)}>{text}</button>)}
