@@ -422,7 +422,8 @@ public struct Usage: RowBacked {
     public var compactInputTokens: String { Self.compactTokens(inputTokens) }
     public var compactOutputTokens: String { Self.compactTokens(outputTokens) }
 
-    private static func compactTokens(_ tokens: Int) -> String {
+    /// 950, 47.5K, 475K, 1M, 2.3B: the one token unit every screen uses.
+    static func compactTokens(_ tokens: Int) -> String {
         guard tokens >= 1_000 else { return String(tokens) }
         let unit: (scale: Double, suffix: String)
         if tokens >= 1_000_000_000 {

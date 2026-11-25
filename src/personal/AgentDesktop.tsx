@@ -250,6 +250,14 @@ export function AgentDesktop() {
   const [quote, setQuote] = useState<{ author: string; text: string }>(), [copiedId, setCopiedId] = useState(""), [exported, setExported] = useState(false);
   // A reply to a background job goes straight to that job, not to the main chat.
   const [replyJob, setReplyJob] = useState<{ id: string; title: string }>(), [jobsOpen, setJobsOpen] = useState(false), [jobView, setJobView] = useState<string>();
+  const jobsAnchor = useRef<HTMLDivElement>(null);
+  // the background-task list closes on a press anywhere outside the pill and the list
+  useEffect(() => {
+    if (!jobsOpen) return;
+    const outside = (event: PointerEvent) => { if (!jobsAnchor.current?.contains(event.target as Node)) setJobsOpen(false); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [jobsOpen]);
   const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -906,7 +914,7 @@ export function AgentDesktop() {
             </AssistantSwitcher>
           : <div className="contact-heading who"><strong>{page === "settings" ? "设置" : "你的 Agent"}</strong></div>}
         <div className="header-actions">
-          {page === "agent" && bot && !jobView && openJobs.length > 0 ? <div className="jobs-pill-anchor">
+          {page === "agent" && bot && !jobView && openJobs.length > 0 ? <div className="jobs-pill-anchor" ref={jobsAnchor}>
             <button type="button" className="jobs-pill glass" aria-expanded={jobsOpen} aria-haspopup="dialog" onClick={() => setJobsOpen((open) => !open)}>{openJobs.length} 项后台任务</button>
             {jobsOpen ? <div className="jobs-popover glass" role="dialog" aria-label="后台任务" onKeyDown={(event) => { if (event.key === "Escape") setJobsOpen(false); }}>
               {openJobs.map((job) => <div className="jobs-popover-row" key={job.id}><button type="button" className="jobs-popover-title" onClick={() => openJobDetail(job.id)}>{job.title}</button><span className={`job-stage ${job.stage}`}>{jobStageLabels[job.stage]}</span></div>)}

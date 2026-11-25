@@ -654,10 +654,11 @@ private struct AgentComposer: View {
             case .stopped(let hint):
                 HStack {
                     #if os(iOS)
-                    if hint == nil && canSetOnResume { modelAdd }
+                    if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error) }
                     #endif
                     Text(hint ?? "会话已停止").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
+                    if hint == nil && canSetOnResume { modelChip }
                     #if os(macOS)
                     if hint == nil && canSetOnResume && !effortLevels.isEmpty { effortButton }
                     #endif
@@ -682,8 +683,8 @@ private struct AgentComposer: View {
             let options = await model.models(deviceId: session.deviceId, engine: session.engine)
             if !Task.isCancelled { catalog = options }
         }
-        #if os(iOS)
         .onChange(of: chosenModel) { _, name in AgentDrafts.models[session.key] = name }
+        #if os(iOS)
         .sheet(isPresented: $showingModels) {
             AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort, chooseEffort: setEffort)
         }
@@ -695,17 +696,14 @@ private struct AgentComposer: View {
 
     private func sendRow(running: Bool) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            #if os(iOS)
-            modelAdd
-            #else
             AgentComposerAdd(images: $images, error: $error)
-            #endif
             TextField("发消息", text: $draft, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain)
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(Theme.wash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .onSubmit { if canSend { Task { await send() } } }
             if tooLong { Text("内容太长").font(.caption).foregroundStyle(Theme.danger) }
+            modelChip
             AgentContextRing(usage: session.context)
             #if os(macOS)
             if canSetOnSend && !effortLevels.isEmpty { effortButton }
@@ -730,9 +728,46 @@ private struct AgentComposer: View {
         }
     }
 
-    #if os(iOS)
-    private var modelAdd: some View {
-        AgentComposerAdd(images: $images, error: $error, openModels: canSetOnResume || canSetOnSend ? { showingModels = true } : nil)
+    /// The model the next message or continue uses, by the name the catalog gives it.
+    private var modelTitle: String {
+        let id = chosenModel.isEmpty ? (session.model ?? catalog.current ?? "") : chosenModel
+        guard !id.isEmpty else { return "默认模型" }
+        return catalog.models.first { $0.id == id }?.label ?? id
+    }
+
+    /// The model on one line left of the context ring, cut at its width; it opens the model choices.
+    @ViewBuilder private var modelChip: some View {
+        if canSetOnResume || canSetOnSend {
+            #if os(iOS)
+            Button { showingModels = true } label: { modelChipLabel }
+                .buttonStyle(.plain)
+                .accessibilityLabel("模型设置").accessibilityValue(modelTitle)
+            #else
+            Menu {
+                modelRow("", title: "默认模型")
+                ForEach(catalog.models) { option in modelRow(option.id, title: option.label) }
+            } label: { modelChipLabel }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .frame(maxWidth: 180)
+                .accessibilityLabel("模型设置").accessibilityValue(modelTitle)
+            #endif
+        }
+    }
+
+    private var modelChipLabel: some View {
+        Text(modelTitle).font(.footnote).foregroundStyle(Theme.muted)
+            .lineLimit(1).truncationMode(.tail)
+            #if os(iOS)
+            .frame(maxWidth: 110, alignment: .trailing)
+            #endif
+            .frame(height: 34).contentShape(Rectangle())
+    }
+
+    #if os(macOS)
+    private func modelRow(_ id: String, title: String) -> some View {
+        Button { chosenModel = id } label: {
+            if chosenModel == id { Label(title, systemImage: "checkmark") } else { Text(title) }
+        }
     }
     #endif
 

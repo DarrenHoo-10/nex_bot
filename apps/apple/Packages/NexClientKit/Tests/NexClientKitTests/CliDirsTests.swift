@@ -29,12 +29,14 @@ final class CliPathsTests: XCTestCase {
     func testContextUsage() throws {
         let usage = CliContextUsage(used: 776_256, window: 1_000_000)
         XCTAssertEqual(CliContext.level(usage), .high)
-        XCTAssertEqual(CliContext.summary(usage), "上下文 78% · 77.6 万 / 100 万")
+        XCTAssertEqual(CliContext.summary(usage), "上下文 78% · 776K / 1M")
         XCTAssertEqual(CliContext.level(CliContextUsage(used: 950_000, window: 1_000_000)), .full)
         XCTAssertEqual(CliContext.level(CliContextUsage(used: 5_000)), .none)
         XCTAssertEqual(CliContext.summary(nil), "上下文用量：暂无记录")
-        XCTAssertEqual(CliContext.tokens(8123), "8,123")
-        XCTAssertEqual(CliContext.tokens(1_000_000), "100 万")
+        XCTAssertEqual(CliContext.tokens(950), "950")
+        XCTAssertEqual(CliContext.tokens(8123), "8.1K")
+        XCTAssertEqual(CliContext.tokens(475_000), "475K")
+        XCTAssertEqual(CliContext.tokens(1_000_000), "1M")
         // a usage this side cannot read is left out, the row stays
         var row = cliSessionJSON()
         row["context"] = ["used": 5100, "window": 200_000]

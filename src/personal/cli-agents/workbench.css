@@ -189,6 +189,15 @@
 .na-stage .cli-app .na-message-box .cli-composer-actions button{min-height:30px;padding:5px 6px}
 .na-message-box .na-effort{color:var(--na-muted);font-weight:400}
 .na-stage .cli-app .na-message-box .na-model-button{color:var(--na-ink);font-size:13px}
+/* one row: the model button gives way first, cut at its maximum width and never wrapped */
+.na-stage .cli-app .na-message-box .cli-composer-actions{flex-wrap:nowrap}
+.na-stage .cli-app .na-message-box .cli-composer-actions>*{flex-shrink:0}
+.na-stage .cli-app .na-message-box .cli-composer-actions .na-grow{flex:1 1 0;min-width:0}
+.na-stage .cli-app .na-message-box .cli-composer-actions .na-model-button{flex:0 1 auto;min-width:0;max-width:min(240px,48%);overflow:hidden;white-space:nowrap}
+.na-stage .cli-app .na-message-box .na-model-button>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.na-stage .cli-app .na-message-box .na-model-button>:not(:first-child){flex:none}
+.na-stage .cli-app .na-message-box .cli-composer-actions .na-model-chip{max-width:min(160px,42%);color:var(--na-muted);font-size:12.5px}
+.na-stage .cli-app .na-message-box .na-model-chip>:not(:first-child){display:none}
 .na-stage .cli-app .na-message-box .cli-composer-actions .primary{margin-left:4px;width:33px;min-width:33px;height:33px;padding:0;border-radius:50%;color:var(--na-paper);background:var(--na-ink)}
 .na-stage .cli-app .na-message-box .cli-composer-actions .primary:hover:enabled{background:var(--na-accent);color:white}
 .na-stage .cli-app .na-message-box .cli-composer-actions .primary:disabled{background:var(--na-control);color:var(--na-muted)}
@@ -277,9 +286,10 @@
 .na-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2f9e5f}.na-dot[data-tone="waiting"]{background:#d68a12}
 .na-stage .cli-app button.na-section-head{padding:4px 8px 3px;color:var(--na-muted);font-size:11px;font-weight:650;letter-spacing:.03em;line-height:1.4}
 .na-stage .cli-app button.na-section-head svg{flex:none}
-/* the queued card's icon buttons say what they do on hover or keyboard focus, at once */
+/* the queued card's icon buttons say what they do on hover or keyboard focus, at once; a touch
+   screen keeps :hover after a tap, so there the label shows only for keyboard focus */
 .na-stage .cli-app .na-queued .na-queued-actions button[data-tip]{position:relative}
-.na-stage .cli-app .na-queued .na-queued-actions button[data-tip]:hover::after,
+@media (hover:hover){.na-stage .cli-app .na-queued .na-queued-actions button[data-tip]:hover::after{content:attr(data-tip);position:absolute;right:0;bottom:calc(100% + 7px);z-index:5;padding:5px 9px;border-radius:7px;background:#20362b;color:#fff;font-size:12px;font-weight:500;line-height:1.4;white-space:nowrap;box-shadow:0 4px 14px #17271b33;pointer-events:none}}
 .na-stage .cli-app .na-queued .na-queued-actions button[data-tip]:focus-visible::after{content:attr(data-tip);position:absolute;right:0;bottom:calc(100% + 7px);z-index:5;padding:5px 9px;border-radius:7px;background:#20362b;color:#fff;font-size:12px;font-weight:500;line-height:1.4;white-space:nowrap;box-shadow:0 4px 14px #17271b33;pointer-events:none}
 
 /* context ring: how much of the window the last request used */
