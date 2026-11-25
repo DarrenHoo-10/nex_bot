@@ -60,6 +60,14 @@ it("requires timestamp cursors, bounds history, and catches up backdated message
     for (let seq = 1; seq <= 90; seq++) add(bot, seq, 500);
     add(other, 1, 500);
     const get = (route: string) => fetch(app.origin + route, { headers: { Authorization: "Bearer synthetic-transport-owner" } });
+    expect((await get("/api/state")).status).toBe(200);
+    expect((await get("/api/state?view=workspace&page=tasks")).status).toBe(200);
+    const stream = await get("/api/events?incremental=1");
+    expect(stream.status).toBe(200);
+    const reader = stream.body!.getReader();
+    const firstFrame = await reader.read();
+    expect(Buffer.from(firstFrame.value ?? []).toString()).toContain("event: change");
+    await reader.cancel();
     const route = "/api/agents/messages?view=window&bot=" + bot;
     expect((await get(route)).status).toBe(400);
     expect((await get(route + "&at=500")).status).toBe(400);

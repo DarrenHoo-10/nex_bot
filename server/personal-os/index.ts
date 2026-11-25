@@ -6,7 +6,7 @@ import { networkInterfaces } from "node:os";
 import os from "node:os";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { CoreStore, text, id } from "./store.ts";
+import { CoreStore, text, optionalText, id } from "./store.ts";
 import { catalogSettings, fetchModelCatalog } from "../../shared/model-catalog.mjs";
 import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
@@ -527,12 +527,14 @@ export async function createPersonalApp(options: AppOptions) {
         response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", ...(preview ? cache : { "Cache-Control": "no-store" }), "Content-Length": bytes.length }); response.end(bytes); return;
       }
       if (url.pathname === "/api/events") {
-        response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
+        const scope = url.searchParams.get("incremental") === "1" ? {
+          botId: optionalText(url.searchParams.get("bot"), 100),
+          conversationId: optionalText(url.searchParams.get("conversationId"), 100),
+        } : undefined;
         const event = sync.event(Number(request.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0));
+        response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
         streams.set(response, token);
-        if (url.searchParams.get("incremental") === "1") incrementalStreams.set(response, {
-          botId: text(url.searchParams.get("bot"), 100), conversationId: text(url.searchParams.get("conversationId"), 100),
-        });
+        if (scope) incrementalStreams.set(response, scope);
         response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`);
         response.once("close", () => { streams.delete(response); incrementalStreams.delete(response); }); return;
       }
@@ -571,7 +573,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/state") {
         const requested = url.searchParams.get("view");
         const view = requested === "summary" || requested === "workspace" ? requested : "full";
-        json(response, 200, stateBody(view, requestOrigin, url.searchParams.get("page") ?? "", text(url.searchParams.get("bot"), 100), text(url.searchParams.get("conversationId"), 100), text(url.searchParams.get("resources"), 40))); return;
+        json(response, 200, stateBody(view, requestOrigin, url.searchParams.get("page") ?? "", optionalText(url.searchParams.get("bot"), 100), optionalText(url.searchParams.get("conversationId"), 100), optionalText(url.searchParams.get("resources"), 40))); return;
       }
       if (url.pathname === "/api/agents/search" && request.method === "GET") {
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有搜索会话的权限'});return;}
@@ -594,7 +596,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === '/api/agents/topics' && request.method === 'GET') {
         const botId = text(url.searchParams.get('bot'), 100);
         if (finance.hasBinding() && agents.finance().botId === botId) stockHistory.schedule(String(session.id));
-        json(response, 200, {topics: agents.topics(botId, url.searchParams.get("view") === "compact", text(url.searchParams.get("conversationId"), 100) || undefined)}); return;
+        json(response, 200, {topics: agents.topics(botId, url.searchParams.get("view") === "compact", optionalText(url.searchParams.get("conversationId"), 100) || undefined)}); return;
       }
       if (url.pathname === "/api/agents/context" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100);
