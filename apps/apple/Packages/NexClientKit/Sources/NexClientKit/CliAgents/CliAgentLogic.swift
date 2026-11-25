@@ -476,8 +476,12 @@ public struct CliRequestStore: Sendable, Equatable {
 
     // MARK: Questions
 
+    /// Sentinel stored in Selection when the user picks the inline "其他" custom input.
+    public static let otherChoice = "__other__"
     /// Chosen labels per question index.
     public typealias Selection = [Int: [String]]
+    /// Custom free-text answers per question index for the "其他" choice.
+    public typealias OtherAnswers = [Int: String]
 
     public static func toggle(_ selection: Selection, index: Int, label: String, multi: Bool) -> Selection {
         var next = selection
@@ -487,16 +491,30 @@ public struct CliRequestStore: Sendable, Equatable {
         return next
     }
 
-    public static func answersComplete(_ questions: [CliQuestion]?, _ selection: Selection) -> Bool {
+    public static func answersComplete(_ questions: [CliQuestion]?, _ selection: Selection, other: OtherAnswers = [:]) -> Bool {
         guard let questions, !questions.isEmpty else { return false }
-        return questions.indices.allSatisfy { !(selection[$0] ?? []).isEmpty }
+        return questions.indices.allSatisfy { index in
+            let chosen = selection[index] ?? []
+            guard !chosen.isEmpty else { return false }
+            let hasPreset = chosen.contains { $0 != otherChoice }
+            let hasOther = chosen.contains(otherChoice)
+            let custom = (other[index] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if hasOther && custom.isEmpty { return hasPreset }
+            return hasPreset || (hasOther && !custom.isEmpty)
+        }
     }
 
     /// The `answers` Core takes: the question text to the chosen label, several labels joined by ", ".
-    public static func answers(_ questions: [CliQuestion], _ selection: Selection) -> [String: String] {
+    public static func answers(_ questions: [CliQuestion], _ selection: Selection, other: OtherAnswers = [:]) -> [String: String] {
         var out: [String: String] = [:]
         for (index, q) in questions.enumerated() {
-            out[q.question] = q.options.map(\.label).filter { selection[index]?.contains($0) == true }.joined(separator: ", ")
+            let chosen = selection[index] ?? []
+            var labels = q.options.map(\.label).filter { chosen.contains($0) }
+            if chosen.contains(otherChoice) {
+                let custom = (other[index] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !custom.isEmpty { labels.append(custom) }
+            }
+            out[q.question] = labels.joined(separator: ", ")
         }
         return out
     }

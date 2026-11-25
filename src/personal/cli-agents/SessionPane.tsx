@@ -258,11 +258,6 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
           <List size={18}/>
         </button>}
       </header>
-      {cards.length && onAnswer ? (
-        <div className="cli-requests" role="region" aria-label="等你处理的请求">
-          {cards.map((record) => <RequestCard key={record.view.id} record={record} now={now} onAnswer={onAnswer} />)}
-        </div>
-      ) : null}
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
@@ -272,6 +267,11 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
         </div>}
       </div>
+      {cards.length && onAnswer ? (
+        <div className="cli-requests" role="region" aria-label="等你处理的请求">
+          {cards.map((record) => <RequestCard key={record.view.id} record={record} now={now} onAnswer={onAnswer} />)}
+        </div>
+      ) : null}
       <Composer
         session={shown} notes={notes} onNotes={updateNotes}
         features={features} launch={launch} onLaunch={chooseLaunch}

@@ -139,7 +139,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   /** a Claude in a NexBot terminal switches at once (/model, /effort); anything else on its next start */
   const switchesNow=!draft && !starter && mode.kind==="send" && !mode.outside && session.engine==="claude";
   const pickerOff=!launchOptions && !switchesNow;
-  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : draft || starter ? "" : switchesNow ? "下条消息生效" : mode.kind==="stopped" ? "继续会话时生效" : "下次在 NexBot 中继续时生效";
+  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : "";
   const canOpenModelMenu = !!review || session.engine !== "zcode";
   function choose(next:LaunchChoice){if(draft)draft.configure(next.model,next.effort);else onLaunch?.(next)}
   function configure(nextModel:string,nextEffort:string) {
@@ -357,7 +357,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":queuesWhileBusy ? "排队发送" : "发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
       </div>
       {tooLarge ? <small role="alert" className="cli-composer-error">内容太长</small> : error ? <small role="alert" className="cli-composer-error">{error}</small> : null}
-      {mode.kind==="send" && mode.outside ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note || OUTSIDE_NOTE}</small> : null}
+      {mode.kind==="send" && mode.outside && note ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note}</small> : null}
     </form>
   );
 }
@@ -391,7 +391,7 @@ function ContextRing({ usage }: { usage: CliContextUsage | undefined }) {
 }
 
 function ContextDetail({ usage }: { usage: CliContextUsage | undefined }) {
-  if (!usage) return <div className="na-context-detail"><b>上下文用量</b><small role="status">还没有记录：会话回复过一次后显示</small></div>;
+  if (!usage) return <div className="na-context-detail"><b>上下文用量</b><small role="status">暂无记录</small></div>;
   const share = contextShare(usage);
   return <div className="na-context-detail" data-level={contextLevel(usage)}>
     <div className="na-context-head"><b>上下文</b>{share === null ? null : <strong>{Math.round(share * 100)}%</strong>}</div>

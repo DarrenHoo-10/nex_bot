@@ -152,8 +152,13 @@ export function nextExpiry(store: RequestStore, now: number): number | null {
 // ---------------------------------------------------------------------------
 // Questions
 
+/** Sentinel stored in Selection when the user picks the inline "其他" custom input. */
+export const OTHER_CHOICE = "__other__";
+
 /** Chosen labels per question index. */
 export type Selection = Readonly<Record<number, readonly string[]>>;
+/** Custom free-text answers per question index for the "其他" choice. */
+export type OtherAnswers = Readonly<Record<number, string>>;
 
 export function toggleChoice(selection: Selection, index: number, label: string, multi: boolean): Selection {
   const chosen = selection[index] ?? [];
@@ -161,16 +166,37 @@ export function toggleChoice(selection: Selection, index: number, label: string,
   return { ...selection, [index]: chosen.includes(label) ? chosen.filter((entry) => entry !== label) : [...chosen, label] };
 }
 
-export function answersComplete(questions: readonly CliRequestQuestion[] | undefined, selection: Selection): boolean {
+export function answersComplete(
+  questions: readonly CliRequestQuestion[] | undefined,
+  selection: Selection,
+  other: OtherAnswers = {},
+): boolean {
   if (!questions?.length) return false;
-  return questions.every((_, index) => (selection[index]?.length ?? 0) > 0);
+  return questions.every((_, index) => {
+    const chosen = selection[index] ?? [];
+    if (!chosen.length) return false;
+    const hasPreset = chosen.some((entry) => entry !== OTHER_CHOICE);
+    const hasOther = chosen.includes(OTHER_CHOICE);
+    const otherText = (other[index] ?? "").trim();
+    if (hasOther && !otherText) return hasPreset;
+    return hasPreset || (hasOther && otherText.length > 0);
+  });
 }
 
 /** The `answers` Core takes: the question text to the chosen label, several labels joined by ", ". */
-export function answersFor(questions: readonly CliRequestQuestion[], selection: Selection): Record<string, string> {
+export function answersFor(
+  questions: readonly CliRequestQuestion[],
+  selection: Selection,
+  other: OtherAnswers = {},
+): Record<string, string> {
   const out: Record<string, string> = {};
   questions.forEach((question, index) => {
-    const labels = question.options.map((option) => option.label).filter((label) => selection[index]?.includes(label));
+    const chosen = selection[index] ?? [];
+    const labels = question.options.map((option) => option.label).filter((label) => chosen.includes(label));
+    if (chosen.includes(OTHER_CHOICE)) {
+      const custom = (other[index] ?? "").trim();
+      if (custom) labels.push(custom);
+    }
     out[question.question] = labels.join(", ");
   });
   return out;

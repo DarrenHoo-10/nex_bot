@@ -3,7 +3,7 @@ import { permissionRequest, questionRequest } from "./fixtures";
 import { newRequests, requestBody } from "./notifications";
 import {
   answersComplete, answersFor, cardState, CLOSED_KEEP, dropOpen, EMPTY_STORE, EXPIRY_GRACE_MS, markAnswered, mergePending,
-  nextExpiry, pendingCounts, pendingViews, resolveRequest, setPending, toggleChoice,
+  nextExpiry, OTHER_CHOICE, pendingCounts, pendingViews, resolveRequest, setPending, toggleChoice,
 } from "./requests";
 import { askedSession, waitingCount } from "./session-model";
 import { session } from "./fixtures";
@@ -125,6 +125,14 @@ describe("questions", () => {
 
   it("answers by question text with several labels joined in option order", () => {
     expect(answersFor(questions, { 0: ["Vue"], 1: ["测试", "路由"] })).toEqual({ "用哪个框架？": "Vue", "要哪些功能？": "路由, 测试" });
+  });
+
+  it("supports custom OTHER_CHOICE text for single and multi choice questions", () => {
+    expect(answersComplete(questions, { 0: [OTHER_CHOICE], 1: ["路由"] }, { 0: "   " })).toBe(false);
+    expect(answersComplete(questions, { 0: [OTHER_CHOICE], 1: ["路由"] }, { 0: "Svelte" })).toBe(true);
+    expect(answersComplete(questions, { 0: [OTHER_CHOICE], 1: ["路由", OTHER_CHOICE] }, { 0: "Svelte", 1: "" })).toBe(true);
+    expect(answersFor(questions, { 0: [OTHER_CHOICE], 1: ["路由", OTHER_CHOICE] }, { 0: " Svelte ", 1: " 深色模式 " }))
+      .toEqual({ "用哪个框架？": "Svelte", "要哪些功能？": "路由, 深色模式" });
   });
 });
 

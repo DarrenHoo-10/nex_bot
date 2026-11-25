@@ -31,7 +31,7 @@ private struct AgentChip: View {
             Text(text).font(.system(size: 12)).lineLimit(1)
                 .foregroundStyle(on ? Color.white : Theme.foreground)
                 .padding(.horizontal, 10).padding(.vertical, 5)
-                .background(on ? Theme.identityAccent : Theme.wash, in: Capsule())
+                .background(on ? Theme.nexAgentSolid : Theme.wash, in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -155,7 +155,7 @@ struct AgentForkSheet: View {
                 Spacer()
                 Button("取消") { dismiss() }.buttonStyle(.bordered)
                 Button(busy ? "正在创建…" : title) { Task { await fork() } }
-                    .buttonStyle(.borderedProminent).tint(Theme.identityAccent).disabled(busy || botId.isEmpty)
+                    .buttonStyle(.borderedProminent).tint(Theme.nexAgentSolid).disabled(busy || botId.isEmpty)
             }
         }
         .onAppear {
@@ -197,7 +197,7 @@ struct AgentSupervisionSheet: View {
                 Button("重试") { Task { await load() } }.buttonStyle(.bordered)
             }
             if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(Theme.danger) }
-            HStack { Spacer(); Button("完成") { dismiss() }.buttonStyle(.borderedProminent).tint(Theme.identityAccent) }
+            HStack { Spacer(); Button("完成") { dismiss() }.buttonStyle(.borderedProminent).tint(Theme.nexAgentSolid) }
         }
         .task { await load() }
     }

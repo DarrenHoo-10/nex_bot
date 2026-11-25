@@ -18,7 +18,6 @@ export function ModelFailureDialog({ reason, onClose }: { reason: string; onClos
         <span className="na-failure-mark" aria-hidden="true"><CircleAlert size={22}/></span>
         <h3 id="na-failure-title">模型调用失败</h3>
         <p id="na-failure-reason">{reason}</p>
-        <small>任务已停在这里</small>
         <footer><button ref={close} type="button" className="primary" onClick={onClose}>知道了</button></footer>
       </div>
     </div>,

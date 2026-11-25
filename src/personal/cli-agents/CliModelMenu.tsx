@@ -6,8 +6,6 @@ import { CLI_MODELS, CLI_REASONING_LEVELS, cliReasoningChoice, type CliEngine, t
 import { EffortChoices } from "../components/EffortChoices";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import { useCompactComposer } from "../components/use-compact-composer";
-import "../components/model-menu.css";
-import "./cli-model-menu.css";
 import { cliErrorText, fetchModels } from "./api";
 
 /** The model and reasoning effort a session runs with; empty strings leave the CLI's own default. */
@@ -102,13 +100,13 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
       <span>{title}</span>{engine !== "zcode" && <span className="na-effort">{effortLabel(selectedEffort)}</span>}<ChevronDown size={13}/>
     </button>}
     {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); anchor()?.focus(); } }}>
-      <div className="na-model-head"><span>模型</span>{live && !loading && !error ? <small>来自这台电脑</small> : null}</div>
+      <div className="na-model-head"><span>模型</span></div>
       {engine !== "zcode" && <EffortChoices levels={CLI_REASONING_LEVELS} value={selectedEffort} label={effortLabel} onChange={commitLevel} disabled={disabled}/>}
       {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)}/></label> : null}
       <div className="model-menu-list" role="listbox" aria-label="可用模型">
         {!query ? <>
           <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick("")} title={fallback || undefined}>
-            <span className="na-model-text"><span className="model-menu-name">默认</span><small>{fallback ? label(fallback) : "CLI 自己的默认模型"}</small></span>
+            <span className="na-model-text"><span className="model-menu-name">默认</span>{fallback ? <small>{label(fallback)}</small> : null}</span>
             {!choice.model ? <Check size={15} className="model-menu-check"/> : null}
           </button>
           {shown.length ? <div className="na-model-divider" role="presentation"/> : null}

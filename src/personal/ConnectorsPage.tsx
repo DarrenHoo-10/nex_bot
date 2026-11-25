@@ -166,7 +166,7 @@ export function ConnectorsPage({ state, refresh }: { state: State; refresh(): Pr
     {remove(item)}
   </>;
   return <div className="connectors-page" ref={page}>
-    {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation">{view === "feishu" && feishuApp ? <button className="connector-back" onClick={() => setFeishuAppId("")}><ChevronLeft size={20}/>飞书</button> : <button className="connector-back" onClick={() => { setView("catalog"); setFeishuAppId(""); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button>}</div>}
+    {view === "catalog" ? <div className="connector-catalog-heading"><h1>连接器</h1><button className="primary" onClick={() => { setEditing("new"); setError(""); }}><Plus size={16}/>添加连接器</button></div> : <div className="connector-navigation">{view === "feishu" && feishuApp ? <button className="connector-back" onClick={() => setFeishuAppId("")}><ChevronLeft size={20}/>飞书</button> : <button className="connector-back" onClick={() => { setView("catalog"); setFeishuAppId(""); setError(""); setNotice(""); }}><ChevronLeft size={20}/>连接器</button>}</div>}
     {error && <div className="connector-feedback is-error" role="alert">{error}</div>}{notice && <div className="connector-feedback" role="status"><Check size={16}/>{notice}</div>}
     {view === "feishu" && (feishuApp ? <FeishuAppDetail key={feishuApp.id} app={feishuApp} bots={state.bots} cache={groupsCache} refresh={refresh}/> : <FeishuCard state={state} refresh={refresh} onOpenApp={setFeishuAppId}/>)}
     {view === "catalog" && <section className="connector-catalog" aria-label="连接器列表">

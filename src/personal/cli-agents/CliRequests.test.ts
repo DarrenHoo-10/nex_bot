@@ -170,11 +170,11 @@ describe("request cards in the workspace", () => {
     expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("allowed");
   });
 
-  it("shows the full arguments and allows for the rest of the session when the request offers it", async () => {
+  it("omits raw parameter details and allows for the rest of the session when the request offers it", async () => {
     await open();
     await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r1", detail: JSON.stringify({ command: "rm -rf build" }, null, 2), always: true })] });
     const card = container.querySelector(".cli-request")!;
-    expect(card.querySelector(".cli-request-detail pre")!.textContent).toContain('"command": "rm -rf build"');
+    expect(card.querySelector(".cli-request-detail")).toBeNull();
     await click(button("本会话总是允许"));
     await flush();
     expect(fixture.answerRequest).toHaveBeenCalledWith("r1", "allow", undefined, true);
@@ -220,6 +220,43 @@ describe("request cards in the workspace", () => {
     await flush();
     expect(fixture.answerRequest).toHaveBeenCalledWith("q1", "allow", { "用哪个框架？": "Vue", "要哪些功能？": "路由, 测试" }, undefined);
     expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("answered");
+  });
+
+  it("supports custom '其他' input for single-choice and multi-choice questions", async () => {
+    await open();
+    await push({
+      type: "requests",
+      key: KEY,
+      requests: [
+        questionRequest({
+          id: "q-other",
+          questions: [
+            {
+              question: "用哪个框架？",
+              header: "框架",
+              options: [
+                { label: "React", description: "组件化" },
+                { label: "Vue", description: "渐进式" },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+    const otherButton = container.querySelector(".na-island-other-trigger")!;
+    await click(otherButton);
+    expect(button("提交")!.hasAttribute("disabled")).toBe(true);
+    const customInput = container.querySelector<HTMLInputElement>(".na-island-other-input")!;
+    expect(customInput).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(customInput, "SolidJS");
+      customInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(button("提交")!.hasAttribute("disabled")).toBe(false);
+    await click(button("提交"));
+    await flush();
+    expect(fixture.answerRequest).toHaveBeenCalledWith("q-other", "allow", { "用哪个框架？": "SolidJS" }, undefined);
+    expect(container.querySelector(".cli-request.is-resolved")?.getAttribute("data-state")).toBe("answered");
   });
 
   it("expires a card whose time ran out", async () => {

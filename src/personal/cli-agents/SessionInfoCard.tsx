@@ -5,7 +5,6 @@ import {AGENT_LABEL,canAttach,folderLabel,samePath,worktreeName} from "./session
 import {sessionActivity,type ActivityEntry} from "./session-activity";
 import {useReview} from "./WorkbenchReview";
 import { fetchGit, type CliGitInfo } from "./api";
-import "./session-info.css";
 
 interface GitInfo {branch:string;head:string;files:string[];added:number;removed:number;worktree?:string;source?:string;error?:string;project?:string}
 function ActivityGroup({title,entries,icon:Icon,compact}:{title:string;entries:ActivityEntry[];icon:typeof Activity;compact?:boolean}) {

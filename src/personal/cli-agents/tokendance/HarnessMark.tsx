@@ -1,4 +1,3 @@
-import './marks.css';
 import type { ReactNode, SVGProps } from 'react';
 import { resolveHarnessBrand } from './harnessBrand';
 

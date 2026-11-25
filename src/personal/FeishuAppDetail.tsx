@@ -3,7 +3,6 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, MessagesSquare, UsersRound } from "lucide-react";
 import { FeishuAvatar, FeishuProfileStatus, FeishuStatus } from "./FeishuCard";
 import { api, type FeishuAppView, type State, type FeishuGroupView } from "./api";
-import "./components/model-picker.css";
 
 type Option<T extends string> = [T, string, string];
 export const feishuTriggers: Option<FeishuGroupView["trigger"]>[] = [
