@@ -248,14 +248,14 @@ public enum CliTranscript {
     }
 
     /// An id already shown is replaced in place; a new id goes after the last item that is not newer. `reset` swaps the list.
-    public static func merge(_ existing: [CliItem], _ incoming: [CliItem], reset: Bool = false) -> [CliItem] {
+    public static func merge(_ existing: [CliItem], _ incoming: [CliItem], reset: Bool = false, appendInRecordOrder: Bool = false) -> [CliItem] {
         if reset { return dedupe(incoming) }
         var out = existing
         var index = Dictionary(out.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
         for item in incoming {
             if let at = index[item.id] { out[at] = item; continue }
             var position = out.count
-            while position > 0 && out[position - 1].ts > item.ts { position -= 1 }
+            while !appendInRecordOrder && position > 0 && out[position - 1].ts > item.ts { position -= 1 }
             if position == out.count {
                 out.append(item); index[item.id] = position
             } else {

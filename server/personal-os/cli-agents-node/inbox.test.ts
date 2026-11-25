@@ -206,6 +206,16 @@ describe("sendToInbox", () => {
     expect(message).toMatchObject({ type: "user", msg_id: "stop-1", priority: "now", session_id: SESSION, message: { role: "user", content: INBOX_STOP } });
   });
 
+  it("steers with native send-now priority and the original words", async () => {
+    const inbox = await listen();
+    writeKey(inbox.socketPath);
+    await sendToInbox(target(inbox.socketPath), "先看日志", { platform: process.platform, steer: true });
+    await settle(inbox, 2);
+    expect(JSON.parse(inbox.lines[1])).toMatchObject({
+      priority: "now", session_id: SESSION, message: { role: "user", content: inboxMessageText("先看日志") },
+    });
+  });
+
   it("confirms delivery when the transcript shows a queue entry", async () => {
     const transcript = path.join(root, "t.jsonl");
     writeFileSync(transcript, '{"type":"user","uuid":"old"}\n');

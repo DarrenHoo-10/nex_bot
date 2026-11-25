@@ -237,7 +237,7 @@ export class CliAgentStream {
       const last = index === parts.length - 1;
       this.send(connection, {
         type: "items", key: key as CliSessionKey, items: part,
-        ...(first ? { reset: true } : {}), ...(more || !last ? { more: true } : {}),
+        ...(first ? { reset: true } : {}), ...(more ? { more: true } : {}), ...(!last ? { continues: true } : {}),
       });
       first = false;
     });
@@ -258,15 +258,17 @@ export class CliAgentStream {
     try {
       const page = await this.hub.items(connection.sessionId, key);
       if (connection.subscriptions.get(key) !== subscription) return;
-      if (known && page.items.length <= 200) {
-        const snapshot = page.items.map((item) => `${createHash("sha256").update(JSON.stringify(item)).digest("hex")}:${item.id}`);
-        const have = new Set(known);
-        const missing = page.items.filter((_, index) => !have.has(snapshot[index]));
-        const frame = { type: "items" as const, key: key as CliSessionKey, items: missing, reset: true, more: page.more, snapshot };
-        if (snapshot.every(mark => mark.length <= 512) && Buffer.byteLength(JSON.stringify(frame)) <= MESSAGE_BYTES) {
-          this.send(connection, frame);
+      if (!subscription.queue.some(message => message.type === "items" && message.reset)) {
+        if (known && page.items.length <= 200) {
+          const snapshot = page.items.map((item) => `${createHash("sha256").update(JSON.stringify(item)).digest("hex")}:${item.id}`);
+          const have = new Set(known);
+          const missing = page.items.filter((_, index) => !have.has(snapshot[index]));
+          const frame = { type: "items" as const, key: key as CliSessionKey, items: missing, reset: true, more: page.more, snapshot };
+          if (snapshot.every(mark => mark.length <= 512) && Buffer.byteLength(JSON.stringify(frame)) <= MESSAGE_BYTES) {
+            this.send(connection, frame);
+          } else this.sendItems(connection, key, page.items, page.more);
         } else this.sendItems(connection, key, page.items, page.more);
-      } else this.sendItems(connection, key, page.items, page.more);
+      }
     } catch (error) {
       if (connection.subscriptions.get(key) !== subscription) return;
       this.sendError(connection, error instanceof CliOpError ? error.code : "unknown", undefined, key);

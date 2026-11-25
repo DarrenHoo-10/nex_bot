@@ -103,7 +103,7 @@ class DispatchFailure extends Error {
 }
 
 /** What a successful send to a session outside nex_bot's terminals reported back. */
-interface DispatchOutcome { delivery?: CliDelivery; waiting?: boolean }
+interface DispatchOutcome { started?: boolean; delivery?: CliDelivery; waiting?: boolean }
 
 /** Outbox statuses a browser is shown, oldest queue position first. */
 const LIVE_STATUSES: readonly CliQueueStatus[] = ["pending", "claimed", "sent", "uncertain", "failed"];
@@ -124,7 +124,6 @@ export class CliAgentWorkbench {
   private readonly repump = new Set<string>();
   private readonly interruptingForSteer = new Set<string>();
   /** The last dispatch's device answer: did this message begin a turn? */
-  private lastDispatchStarted = false;
   /** Queues whose dispatched message started a turn: the next entry waits for
    * that turn's end, whatever the session rows say in between. */
   private readonly awaitingTurnEnd = new Set<string>();
@@ -429,9 +428,10 @@ export class CliAgentWorkbench {
     if (!session) throw new CliOpError("not_found");
     const queueState = this.queueState(workbenchId);
     const outside = OUTSIDE_VIA.has(session.sendVia ?? "");
+    const endedGuide = input.delivery === "steer" && session.state === "idle" && !input.questionId && !input.interruptWaiting && !this.pendingRequests(key).length;
     if (input.delivery === "steer") {
       if (queueState.paused && queueState.pauseReason === "stopped") throw new CliOpError("busy", "停止受理中，引导已拒绝");
-      this.requireSteering(session, input, input.text);
+      if (!endedGuide) this.requireSteering(session, input, input.text);
     }
     if (input.delivery === "send" && !outside) {
       if (this.interruptingForSteer.has(key)) throw new CliOpError("busy");
@@ -444,7 +444,7 @@ export class CliAgentWorkbench {
       this.images?.publish(input.text, session.deviceId);
       return this.insertEntry(workbenchId, key, input, { status: "pending" });
     });
-    if (input.delivery === "queue") {
+    if (input.delivery === "queue" || endedGuide) {
       this.pushQueue(workbenchId);
       this.pump(workbenchId);
       return this.submitResult(this.entryRow(entryId), null);
@@ -518,7 +518,7 @@ export class CliAgentWorkbench {
 
   /** Sends or steers one recorded entry and settles it. Returns null on
    * success, otherwise the failure code (with the op id when the device
-   * actually got the command). Sets `lastDispatchStarted` to the device's
+   * actually got the command). Records in the caller’s outcome the device’s
    * "this began a turn" answer, which the consumer uses to wait or advance. */
   private async dispatch(actor: string, key: string, deviceId: string, op: "send" | "steer", entryId: string, outcome?: DispatchOutcome, { questionId, interruptWaiting }: WaitingSteer = {}): Promise<DispatchFailure | null> {
     const ref = parseCliKey(key)?.ref ?? "";
@@ -541,8 +541,9 @@ export class CliAgentWorkbench {
         }
       }
       const { result, opId } = await this.hub.opTracked(actor, deviceId, key, interruptWaiting ? "send" : op, { ref, text });
-      this.lastDispatchStarted = (result as { started?: boolean }).started === true;
-      if (interruptWaiting && this.lastDispatchStarted) this.awaitingTurnEnd.add(String(entry.workbench_id));
+      const started = (result as { started?: boolean }).started === true;
+      if (outcome) outcome.started = started;
+      if (interruptWaiting && started) this.awaitingTurnEnd.add(String(entry.workbench_id));
       const { delivery, waiting } = result as { delivery?: unknown; waiting?: unknown };
       if (outcome && (delivery === "confirmed" || delivery === "unconfirmed")) outcome.delivery = delivery;
       if (outcome && waiting === true) outcome.waiting = true;
@@ -639,7 +640,8 @@ export class CliAgentWorkbench {
   async steerEntry(input: WorkbenchEntryInput, expectedTurnId?: string, waitingSteer: WaitingSteer = {}): Promise<CliQueueEntryView> {
     void expectedTurnId;
     const row = this.entryRow(input.entryId);
-    if (String(row.status) !== "pending") throw new CliOpError("conflict", "条目已投递");
+    if (["claimed", "sent", "confirmed"].includes(String(row.status))) return this.entryView(row);
+    if (row.status !== "pending" || Number(row.version) !== input.expectedVersion) throw this.staleEntry(input.entryId);
     const workbenchId = String(row.workbench_id);
     const wb = this.rowOf(workbenchId);
     const key = String(wb?.session_key ?? row.session_key);
@@ -647,13 +649,19 @@ export class CliAgentWorkbench {
     if (!session) throw new CliOpError("not_found");
     const queue = this.queueState(workbenchId);
     if (queue.paused && queue.pauseReason === "stopped") throw new CliOpError("busy", "停止受理中，引导已拒绝");
+    if (session.state === "idle" && !waitingSteer.questionId && !waitingSteer.interruptWaiting && !this.pendingRequests(key).length) {
+      this.pump(workbenchId);
+      return this.entryView(this.entryRow(input.entryId));
+    }
     this.requireSteering(session, waitingSteer, this.entryText(row));
     const claimed = Number(this.store.run(
       "UPDATE cli_agent_outbox SET status='claimed',version=version+1,updated_at=? WHERE id=? AND status='pending' AND version=?",
       now(), input.entryId, input.expectedVersion,
     ).changes);
     if (!claimed) throw this.staleEntry(input.entryId);
-    const failure = await this.dispatch("workbench", key, session.deviceId, "steer", input.entryId, undefined, waitingSteer);
+    const outcome: DispatchOutcome = {};
+    const failure = await this.dispatch("workbench", key, session.deviceId, "steer", input.entryId, outcome, waitingSteer);
+    if (outcome.started) this.awaitingTurnEnd.add(workbenchId);
     if (!failure) {
       this.pushQueue(workbenchId);
       return this.entryView(this.entryRow(input.entryId));
@@ -666,6 +674,8 @@ export class CliAgentWorkbench {
       this.store.run("UPDATE cli_agent_outbox SET status='pending',version=version+1,updated_at=? WHERE id=?", now(), input.entryId);
     }
     this.pushQueue(workbenchId);
+    if (failure.code === "turn_changed" && !waitingSteer.questionId && !waitingSteer.interruptWaiting) this.pump(workbenchId);
+    else if (!waitingSteer.questionId && !waitingSteer.interruptWaiting && failure.code !== "unknown") throw new CliOpError(failure.code, "引导未送达，消息仍在队列中");
     return this.entryView(this.entryRow(input.entryId));
   }
 
@@ -836,12 +846,13 @@ export class CliAgentWorkbench {
       now(), head.id,
     ).changes);
     if (!claimed) return;
-    const failure = await this.dispatch("workbench", key, session.deviceId, "send", String(head.id));
+    const outcome: DispatchOutcome = {};
+    const failure = await this.dispatch("workbench", key, session.deviceId, "send", String(head.id), outcome);
     if (!failure) {
       this.pushQueue(workbenchId);
       // the dispatch started a turn: the next entry waits for its end; a
       // delivery that started no turn (inbox append, daemon) advances at once
-      if (this.lastDispatchStarted) this.awaitingTurnEnd.add(workbenchId);
+      if (outcome.started) this.awaitingTurnEnd.add(workbenchId);
       else this.pump(workbenchId);
       return;
     }

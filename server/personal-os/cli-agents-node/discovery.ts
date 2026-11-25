@@ -390,7 +390,7 @@ export class SessionDiscovery {
         const address = terminals.get(ref);
         if (!address) continue;
         const next: Row = { ...row, liveIn: "nexbot", terminal: address, sendVia: "terminal" };
-        delete next.route;
+        if (next.route?.via !== "inbox") delete next.route;
         // a session in a live nex_bot terminal is not stopped, whatever its files say
         if (next.state === "stopped") next.state = "idle";
         delete next.writerUnknown;

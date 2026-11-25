@@ -211,7 +211,7 @@ describe("queue delivery", () => {
     expect(seen.data).toMatchObject({ status: "confirmed", delivery: "confirmed" });
   });
 
-  it("steers a running turn and refuses when the turn has ended", async () => {
+  it("steers a running turn and sends normally after that turn ends", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "steer");
     const key = await sessionOn(f, device, "t1", "running");
@@ -224,8 +224,9 @@ describe("queue delivery", () => {
     device.sessions([runningWire("t1", { state: "idle", terminal: "hc://t1", liveIn: "nexbot" })]);
     await until(() => f.app.cliHub.list().sessions.find((s) => s.key === key)?.state === "idle", "idle");
     const late = await f.call("cli-agents/send", { key, text: "晚了", delivery: "steer", clientMessageId: ids.client(), requestId: ids.request() });
-    expect(late.status).toBe(409);
-    expect(late.data.code).toBe("turn_changed");
+    expect(late.status).toBe(200);
+    await until(() => device.ops("send").length === 1, "late guide sent normally");
+    expect(device.ops("send")[0].args.text).toBe("晚了");
   });
 
   it("replaces a pending Claude question with a queued instruction without typing into the terminal", async () => {
@@ -325,6 +326,23 @@ describe("queue delivery", () => {
 });
 
 describe("idempotency and races", () => {
+  it("reuses the queued entry if the device reports the turn ended during steering", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "late-guide");
+    const key = await sessionOn(f, device, "race", "running");
+    const queued = await f.call("cli-agents/send", { key, text: "补充", delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() });
+    const entry = { entryId: queued.data.messageId, expectedVersion: queued.data.version };
+    const defaultOp = device.onOp;
+    device.onOp = message => message.op === "steer" ? { ok: false, error: { code: "turn_changed" } } : defaultOp(message);
+    const guide = await f.call("cli-agents/queue/steer", entry);
+    expect(guide.status).toBe(200);
+    expect(guide.data.entry).toMatchObject({ id: entry.entryId, status: "pending" });
+    device.sessions([runningWire("race", { state: "idle" })]);
+    await until(() => device.ops("send").length === 1, "ordinary send");
+    expect((await f.call("cli-agents/queue/steer", entry)).status).toBe(200);
+    expect(device.ops("send").map(op => op.args.text)).toEqual(["补充"]);
+  });
+
   it("returns the first entry for a repeated clientMessageId and conflicts on a changed requestId shape", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "double");

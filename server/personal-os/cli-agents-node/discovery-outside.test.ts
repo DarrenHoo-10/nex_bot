@@ -94,7 +94,7 @@ describe("sendVia", () => {
     const discovery = make({ nexbotTerminals: () => new Map([[`claude:${CID}`, "term-1"]]) });
     await discovery.refresh();
     expect(discovery.get(`claude:${CID}`)?.sendVia).toBe("terminal");
-    expect(discovery.routeFor(`claude:${CID}`)).toBeNull();
+    expect(discovery.routeFor(`claude:${CID}`)).toMatchObject({ via: "inbox", sessionId: CID });
   });
 
   it("is daemon for a Codex thread the shared daemon has loaded, and not before it answers", async () => {

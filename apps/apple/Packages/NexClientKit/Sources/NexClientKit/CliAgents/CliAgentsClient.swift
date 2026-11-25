@@ -117,6 +117,27 @@ extension CoreClient {
         return r.key
     }
 
+    public func cliEnqueue(key: CliSessionKey, text: String) async throws {
+        struct Body: Encodable { let key: String; let text: String; let delivery = "queue"; let requestId = UUID(); let clientMessageId = UUID() }
+        try await post(Self.cliBase + "/send", body: Body(key: key, text: text))
+    }
+
+    public func cliEditQueued(_ entry: CliQueuedEntry, text: String) async throws {
+        struct Body: Encodable { let entryId: String; let expectedVersion: Int; let text: String }
+        try await post(Self.cliBase + "/queue/edit", body: Body(entryId: entry.id, expectedVersion: entry.version, text: text))
+    }
+
+    public func cliSteerQueued(_ entry: CliQueuedEntry, questionId: String?, interruptWaiting: Bool) async throws -> CliQueuedEntry {
+        struct Body: Encodable { let entryId: String; let expectedVersion: Int; let questionId: String?; let interruptWaiting: Bool? }
+        struct Response: Decodable, Sendable { let entry: CliQueuedEntry }
+        let result: Response = try await post(Self.cliBase + (questionId != nil || interruptWaiting ? "/steer-waiting" : "/queue/steer"), body: Body(entryId: entry.id, expectedVersion: entry.version, questionId: questionId, interruptWaiting: interruptWaiting ? true : nil))
+        return result.entry
+    }
+
+    public func cliResumeQueue(key: CliSessionKey) async throws {
+        try await post(Self.cliBase + "/queue/resume", body: CliKeyBody(key: key))
+    }
+
     public func cliSend(key: CliSessionKey, text: String) async throws {
         let r: CliSendResult = try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text))
         _ = r

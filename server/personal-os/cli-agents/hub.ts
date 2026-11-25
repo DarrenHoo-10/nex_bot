@@ -486,7 +486,7 @@ export class CliAgentHub {
     if (!this.sessionRow(key)) return;
     const items = message.items.map(privateImageItem);
     this.cacheItems(key, items, message.reset === true);
-    this.notify(key, { type: "items", key: asKey(key), items, ...(message.reset ? { reset: true } : {}), ...(message.more ? { more: true } : {}) });
+    this.notify(key, { type: "items", key: asKey(key), items, ...(message.reset ? { reset: true } : {}), ...(message.more ? { more: true } : {}), ...(message.continues ? { continues: true } : {}) });
   }
 
   /** Items are encrypted at rest; the cache keeps the newest CORE_ITEM_CACHE per session. */
@@ -1082,11 +1082,9 @@ export class CliAgentHub {
     let set = this.watchers.get(key);
     if (!set) { set = new Set(); this.watchers.set(key, set); }
     set.add(listener);
-    if (set.size === 1) {
-      this.watchOp("watch", key);
-      const queue = this.workbench?.queueForSessionKey(key);
-      if (queue) listener({ type: "queue", queue });
-    }
+    if (set.size === 1) this.watchOp("watch", key);
+    const queue = this.workbench?.queueForSessionKey(key);
+    if (queue) listener({ type: "queue", queue });
     return () => {
       const current = this.watchers.get(key);
       if (!current?.delete(listener) || current.size) return;

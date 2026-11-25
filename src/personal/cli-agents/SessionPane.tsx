@@ -6,7 +6,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
 import { cliQuestionToSteer, modelFailureReason, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { ModelFailureDialog } from "./ModelFailureDialog";
-import { continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
+import { CliApiError, continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
 import { useNotes } from "./use-notes";
 import {getLaunch,saveLaunch,transferGoal} from "./composer-additions";
@@ -16,6 +16,7 @@ import { RequestCard } from "./RequestCard";
 import { askedSession, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
 import type { CliStream } from "./stream";
 import { SessionInfoCard } from "./SessionInfoCard";
+import type { GuideMessage } from "./transcript";
 import { TranscriptView } from "./TranscriptView";
 import { isVisibleQueueEntry, useCliQueue } from "./use-queue";
 
@@ -102,6 +103,24 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const waitingSteer = { questionId: steerQuestionId, ...(interruptWaiting ? { interruptWaiting: true } : {}) };
   const resumedKey = useRef<CliSessionKey|null>(null);
   const { queue, refreshQueue } = useCliQueue(stream, session.key);
+  const [guides, setGuides] = useState<GuideMessage[]>([]);
+  async function guideEntry(id: string) {
+    const entry = queue?.entries.find(row => row.id === id);
+    if (!entry) return;
+    const tail = items.filter(item => item.kind === "assistant").at(-1);
+    const guide = { id, text: entry.text, at: Date.now(), after: items.at(-1)?.id, known: new Set(items.map(item => item.id)),
+      ...(tail?.kind === "assistant" ? { tail } : {}) };
+    setGuides(previous => [...previous.filter(row => row.id !== id), guide]);
+    try {
+      const result = await steerQueued(id, entry.version, waitingSteer);
+      if (result.entry.status === "pending" && (waitingSteer.questionId || waitingSteer.interruptWaiting)) throw new Error("引导未送达，消息仍在队列中");
+      if (result.entry.status === "uncertain") setGuides(list => list.map(row => row.id === id ? { ...row, uncertain: true } : row));
+    } catch (error) {
+      const uncertain = error instanceof CliApiError && (!error.status || error.code === "unknown" || error.status >= 500);
+      setGuides(previous => uncertain ? previous.map(row => row.id === id ? { ...row, uncertain: true } : row) : previous.filter(row => row.id !== id));
+      throw error;
+    }
+  }
   const [revision, setRevision] = useState<{ messageId: string; text: string } | null>(null);
   // A message being edited leaves the conversation; its resend takes its place.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => readHidden(session.key));
@@ -247,7 +266,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} pending={visibleEchoes} working={working} onItems={compact?undefined:setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} guides={guides} queueEntries={queue?.entries} pending={visibleEchoes.filter(row => !guides.some(guide => guide.id === row.queueId))} working={working} onItems={setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div ref={workspaceLayer} id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
@@ -264,11 +283,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
         onQueueWithdraw={async (entryId, version) => { await withdrawQueued(entryId, version); }}
         onQueueEdit={async (entryId, version, text) => { await editQueued(entryId, version, text); }}
         steerQuestionId={steerQuestionId} interruptWaiting={interruptWaiting}
-        onQueueSteer={async (entryId, version) => {
-          const { entry } = await steerQueued(entryId, version, waitingSteer);
-          if (entry.status === "pending") throw new Error("引导失败，消息仍在队列中");
-          if (entry.status === "uncertain") throw new Error("引导结果待确认");
-        }}
+        onQueueSteer={guideEntry} guided={new Set(guides.map(guide => guide.id))}
         onQueueResume={async () => { await resume(); }}
       />
       {failure && !compact ? <ModelFailureDialog reason={failure} onClose={() => setFailure(null)}/> : null}

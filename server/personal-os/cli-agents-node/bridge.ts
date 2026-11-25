@@ -1022,6 +1022,7 @@ export class CliAgentBridge {
         ref,
         items: chunk,
         ...(options.reset && index === 0 ? { reset: true } : {}),
+        ...(options.reset && index + 1 < messages.length ? { continues: true } : {}),
         ...(options.more && index === 0 ? { more: true } : {}),
       });
     });
@@ -1228,8 +1229,8 @@ export class CliAgentBridge {
     const existing = this.watches.get(args.ref);
     if (existing?.reader || existing?.app) {
       // Core asks again after a reconnect: send the newest page once more
-      const app = existing.app ? this.discovery.appChatFor(args.ref) : null;
-      const page = existing.reader ? await existing.reader.page({ limit: PAGE_SIZE }) : app ? await app.db.page(app.chat.threadId, { limit: PAGE_SIZE }) : { items: [], more: false };
+      const page = await this.opRead({ ref: args.ref, limit: PAGE_SIZE });
+      if (this.watches.get(args.ref) !== existing) return {};
       this.sendItems(args.ref, page.items, { reset: true, more: page.more });
       return {};
     }
@@ -1560,29 +1561,36 @@ export class CliAgentBridge {
   private async opSteer(args: CliOpArgs["steer"]): Promise<CliOpResult["steer"]> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
-    const address = this.addressFor(args.ref);
-    if (address) {
-      const hc = await this.requireHc();
-      try {
-        const result = await hc.sendGuarded({ terminal: address, text: args.text });
-        return { accepted: result.started !== false };
-      } catch (error) {
-        if ((error as { kind?: string }).kind === "hc_draft") throw new OpFailure("busy", "电脑上有人正在输入");
-        throw error;
-      }
-    }
     const row = this.discovery.get(args.ref);
-    const caps = row ? harnessFor(row.engine)?.caps(row) : undefined;
+    // A shared Codex daemon can bind the input to one exact turn even if
+    // discovery also knows the address of the CLI's terminal.
+    if (row?.engine === "codex" && this.codexDaemons.threads(row.configDir)?.has(row.nativeId)) {
+      return this.codexDaemons.steer(row.configDir, row.nativeId, args.text);
+    }
     const route = this.discovery.routeFor(args.ref);
+    if (this.addressFor(args.ref)) {
+      if (row?.engine === "claude" && route?.via === "inbox" && !args.text.trimStart().startsWith("/")) {
+        try {
+          const receipt = await sendToInbox(route, args.text, { steer: true, platform: this.platform,
+            state: row.state, transcript: this.discovery.transcriptFor(args.ref),
+            ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }) });
+          return { accepted: true, delivery: receipt.delivery };
+        } catch (error) {
+          // No authenticated connection was established. A partial write or a
+          // missing receipt must never cause a second submission.
+          if (!(error instanceof InboxError) || (error.code !== "not_in_terminal" && error.code !== "stopped")) throw error;
+        }
+      }
+      const result = await this.opSend(args);
+      return { accepted: true, started: result.started };
+    }
     if (route?.via === "inbox" && row?.engine === "claude" && row.sendVia === "inbox") {
       if (row.state !== "running") throw new OpFailure("turn_changed");
       const { delivery } = await this.sendOutside(args, row, true);
       return { accepted: true, ...(delivery ? { delivery } : {}) };
     }
     if (route?.via === "daemon" && row?.sendVia === "daemon") {
-      if (caps && !caps.steer) throw new OpFailure("invalid", "此入口不支持引导");
-      const sent = await this.codexDaemons.send(route.home, route.threadId, args.text);
-      return { accepted: sent.steered === true };
+      return this.codexDaemons.steer(route.home, route.threadId, args.text);
     }
     if (route?.via === "host" && row?.sendVia === "host") {
       if (!this.options.zcodeHost) throw new OpFailure("read_only");

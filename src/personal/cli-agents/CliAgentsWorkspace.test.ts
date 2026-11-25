@@ -441,12 +441,8 @@ describe("session pane", () => {
     expect(box.querySelector("select")).toBeNull();
     expect(box.querySelector("[role=radiogroup]")).toBeNull();
     expect(box.querySelector(".na-stop")?.getAttribute("aria-label")).toBe("停止");
-    // a message typed while the agent works chooses between queueing and steering
     await typeText(box.querySelector("textarea")!, "再加个暂停键");
-    const radios = [...box.querySelectorAll('[role=radiogroup][aria-label="发送方式"] [role=radio]')];
-    expect(radios.map((el) => [el.textContent, el.getAttribute("aria-checked")])).toEqual([["排队", "true"], ["引导", "false"]]);
-    await click(radios[1]);
-    expect(radios[1].getAttribute("aria-checked")).toBe("true");
+    expect(box.querySelector("[role=radiogroup]")).toBeNull();
   });
 
   it("queues behind a busy Claude inbox without offering an unsupported steer", async () => {
@@ -640,6 +636,36 @@ describe("session pane", () => {
     await click(button("引导"));
     // a running turn with no open question: the steer carries no question to cancel
     expect(fixture.steerQueued).toHaveBeenCalledWith("q1", 1, { questionId: undefined });
+  });
+
+  it("renders a guide before acknowledgement and keeps one bubble through echo and split reset", async () => {
+    const key = session().key;
+    const reply = { kind: "assistant", id: "reply", text: "正在查", ts: 5 };
+    const guide = { kind: "user", id: "guide", text: "先查日志", ts: 4 };
+    const entry = { id: "entry", seq: 1, version: 2, text: guide.text, status: "pending", createdAt: 1, updatedAt: 2 };
+    const queue = { workbenchId: "wb", sessionKey: key, paused: false, entries: [entry] };
+    fixture.fetchItems.mockResolvedValue({ items: [reply], more: false });
+    fixture.fetchQueue.mockResolvedValue(queue);
+    let acknowledge!: (value: unknown) => void;
+    fixture.steerQueued.mockReturnValue(new Promise(resolve => { acknowledge = resolve; }));
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, key);
+    await act(async () => socket.open());
+    await click(button("引导"));
+    expect(fixture.steerQueued).toHaveBeenCalledWith("entry", 2, { questionId: undefined });
+    expect(container.querySelector(".na-queued-text")).toBeNull();
+    expect(container.querySelector("[data-testid=cli-user] .cli-bubble")?.textContent).toBe(guide.text);
+    await act(async () => acknowledge({ entry: { ...entry, status: "sent" } }));
+    await act(async () => socket.push({ type: "queue", queue: { ...queue, entries: [{ ...entry, status: "sent" }] } }));
+    expect(container.querySelector("[data-testid=cli-user] .cli-bubble")?.textContent).toBe(guide.text);
+    await act(async () => socket.push({ type: "items", key, items: [guide] }));
+    expect(container.querySelector(".na-queued-text")).toBeNull();
+    const messages = () => [...container.querySelectorAll(".cli-transcript .cli-msg:not(.na-working)")].map(node => node.getAttribute("data-testid"));
+    const expected = ["cli-assistant", "cli-user"];
+    expect(messages()).toEqual(expected);
+    await act(async () => socket.push({ type: "items", key, items: [reply], reset: true, continues: true }));
+    expect(messages()).toEqual(expected);
+    await act(async () => socket.push({ type: "items", key, items: [guide] }));
+    expect(messages()).toEqual(expected);
   });
 
   it("renders the transcript the Core returned", async () => {

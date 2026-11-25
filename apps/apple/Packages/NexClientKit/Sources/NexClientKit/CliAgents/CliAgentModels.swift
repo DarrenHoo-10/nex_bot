@@ -378,12 +378,26 @@ struct CliKeyResult: Decodable, Sendable { let key: String }
 struct CliSendResult: Decodable, Sendable { let turn: Int?; let started: Bool?; let status: String?; let delivery: String? }
 struct CliOutcomeResult: Decodable, Sendable { let outcome: String? }
 
+public struct CliQueuedEntry: Decodable, Identifiable, Sendable {
+    public let id: String
+    public let version: Int
+    public let text: String
+    public let status: String
+}
+public struct CliSessionQueue: Decodable, Sendable {
+    public let sessionKey: String
+    public let entries: [CliQueuedEntry]
+    public let paused: Bool
+}
+
 // MARK: WebSocket messages
 
 public enum CliServerMessage: Sendable {
+    case queue(CliSessionQueue)
     case list(devices: [CliDevice], sessions: [CliSession])
     case listDelta(upserts: [CliSession], removes: [CliSessionKey], devices: [CliDevice]?)
     case items(key: CliSessionKey, items: [CliItem], reset: Bool, more: Bool?)
+    case itemFragment(key: CliSessionKey, items: [CliItem], reset: Bool, more: Bool?)
     case cachedItems(key: CliSessionKey, items: [CliItem], more: Bool, snapshot: [String])
     case termOpened(req: String, sid: UInt32, cols: Int, rows: Int, observe: Bool)
     case termSize(sid: UInt32, cols: Int, rows: Int)
@@ -397,7 +411,7 @@ public enum CliServerMessage: Sendable {
     private struct Envelope: Decodable { let type: String }
     private struct ListBody: Decodable { let devices: LossyList<CliDevice>; let sessions: LossyList<CliSession> }
     private struct DeltaBody: Decodable { let upserts: LossyList<CliSession>; let removes: [String]; let devices: LossyList<CliDevice>? }
-    private struct ItemsBody: Decodable { let key: String; let items: LossyList<CliItem>; let reset: Bool?; let more: Bool?; let snapshot: [String]? }
+    private struct ItemsBody: Decodable { let key: String; let items: LossyList<CliItem>; let reset: Bool?; let more: Bool?; let continues: Bool?; let snapshot: [String]? }
     private struct OpenedBody: Decodable { let req: String; let sid: UInt32; let cols: Int; let rows: Int; let observe: Bool }
     private struct SizeBody: Decodable { let sid: UInt32; let cols: Int; let rows: Int }
     private struct ClosedBody: Decodable { let sid: UInt32; let reason: String }
@@ -412,10 +426,14 @@ public enum CliServerMessage: Sendable {
         guard let type = (try? decoder.decode(Envelope.self, from: data))?.type else { return nil }
         func body<T: Decodable>(_ kind: T.Type) -> T? { try? decoder.decode(kind, from: data) }
         switch type {
+        case "queue":
+            struct QueueBody: Decodable { let queue: CliSessionQueue }
+            return body(QueueBody.self).map { .queue($0.queue) }
         case "list": return body(ListBody.self).map { .list(devices: $0.devices.values, sessions: $0.sessions.values) }
         case "list.delta": return body(DeltaBody.self).map { .listDelta(upserts: $0.upserts.values, removes: $0.removes, devices: $0.devices?.values) }
         case "items": return body(ItemsBody.self).map {
             if let snapshot = $0.snapshot { return .cachedItems(key: $0.key, items: $0.items.values, more: $0.more == true, snapshot: snapshot) }
+            if $0.continues == true { return .itemFragment(key: $0.key, items: $0.items.values, reset: $0.reset ?? false, more: $0.more) }
             return .items(key: $0.key, items: $0.items.values, reset: $0.reset ?? false, more: $0.more)
         }
         case "term.opened": return body(OpenedBody.self).map { .termOpened(req: $0.req, sid: $0.sid, cols: $0.cols, rows: $0.rows, observe: $0.observe) }

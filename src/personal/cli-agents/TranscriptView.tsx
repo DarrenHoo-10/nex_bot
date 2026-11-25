@@ -16,7 +16,8 @@ import { ToolActivityDisclosure } from "../vendor/rakazo/ToolActivityDisclosure"
 import { cliErrorText, fetchItems, translateReply } from "./api";
 import type { CliStream } from "./stream";
 import { localCacheScope, queueLocalCache, readLocalCache } from "../local-content-cache";
-import { activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
+import type { CliQueueEntry } from "./api";
+import { guideTimeline, type GuideMessage, activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem, type Block } from "./transcript";
 
 type StoredTail = { marks: string[]; items: CliItem[]; translationEnabled?: boolean | null };
 
@@ -145,7 +146,7 @@ export function ReplyText({ source, supplied, local = true, core, actions, onBra
   </>;
 }
 
-function BlockView({ block, engine, translations, onEdit, byline = true, local, core, onBranch }: { block: Block; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; local: boolean; core?: CoreReply; onBranch?(): void }) {
+function BlockView({ block, engine, translations, onEdit, guideStatus, byline = true, local, core, onBranch }: { block: Block; guideStatus?:string; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; local: boolean; core?: CoreReply; onBranch?(): void }) {
   // onEdit is passed only for a message that may still be revised
   switch (block.kind) {
     case "user":
@@ -154,6 +155,7 @@ function BlockView({ block, engine, translations, onEdit, byline = true, local, 
         <div className="cli-msg is-user" data-testid="cli-user">
           <UserMessageContent text={block.item.text}/>
           {onEdit ? <div className="na-user-actions"><button type="button" className="text-button na-edit-resend" aria-label="编辑并重发这条消息" title="编辑并重发" onClick={()=>onEdit(block.item.id, block.item.text)}>编辑并重发</button></div> : null}
+          {guideStatus && <small>{guideStatus}</small>}
           {block.item.queued ? <small>排队中</small> : null}
         </div>
       );
@@ -231,7 +233,7 @@ export function EchoMessage({ text }: { text: string }) {
   );
 }
 
-export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,onBranch,echo,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; onBranch?(messageId: string): void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,onBranch,echo,guides,queueEntries,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { guides?:readonly GuideMessage[]; queueEntries?:readonly CliQueueEntry[]; active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; onBranch?(messageId: string): void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState<boolean | null>();
@@ -250,11 +252,13 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   const latestTranscript = useRef({ sessionKey, items, more, translationEnabled });
   latestTranscript.current = { sessionKey, items, more, translationEnabled };
   const fetchedAt = useRef(0);
+  const streamResets = useRef(0);
   const generation = useRef(0);
   const localTail = useRef<StoredTail | undefined>(undefined);
 
   const loadFirst = useCallback(async () => {
     const mine = ++generation.current;
+    const resetAtStart = streamResets.current;
     const scope = localCacheScope();
     setLoading(true);
     setError("");
@@ -262,8 +266,10 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
       const page = await fetchItems(sessionKey);
       if (generation.current !== mine) return;
       // pushes that arrived while the page was loading stay
-      setItems((current) => mergeItems(current, page.items));
-      setMore(page.more);
+      if (streamResets.current === resetAtStart) {
+        setItems(current => mergeItems(page.items, current, false, true));
+        setMore(page.more);
+      }
       setTranslationEnabled(page.translationEnabled ?? null);
       fetchedAt.current = Date.now();
       if (localTail.current) {
@@ -305,10 +311,14 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     };
     if (scope) void readLocalCache<StoredTail>(scope, key).then(open);
     else open();
+    let batch: { items: CliItem[]; more?: boolean } | undefined;
     const off = stream.on((event) => {
+      if (event.type === "status") batch = undefined;
       if (event.type !== "message" || event.message.type !== "items" || event.message.key !== sessionKey) return;
       const message = event.message;
       if (message.snapshot) {
+        batch = undefined;
+        streamResets.current++;
         clearTimeout(fallback);
         const previous = localTail.current;
         const byMark = new Map(previous?.marks.map((mark, index) => [mark, previous.items[index]]));
@@ -332,11 +342,17 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
         return;
       }
       if (message.reset) clearTimeout(fallback);
-      if (!message.reset) { setItems((current) => mergeItems(current, message.items)); return; }
+      if (message.reset) batch = { items: [], more: message.more };
+      if (!batch) { setItems(current => mergeItems(current, message.items, false, true)); return; }
+      batch.items.push(...message.items);
+      if (message.continues) return;
+      const page = batch;
+      batch = undefined;
+      streamResets.current++;
       // the newest page again (a reconnect, a rewritten file, a changed App chat): earlier pages stay
       setItems((current) => {
-        const next = resetItems(current, message.items);
-        if (!next.kept) setMore(message.more === true);
+        const next = resetItems(current, page.items);
+        if (!next.kept) setMore(page.more === true);
         return next.items;
       });
     });
@@ -368,7 +384,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
       return;
     }
     followBottomGrowth(scroller, followingRef.current);
-  }, [items, !!working, pending.length]);
+  }, [items, !!working, pending.length, guides?.length]);
 
   useBottomFollowResize(scrollRef, listRef, followingRef, sessionKey);
 
@@ -416,7 +432,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   }, [items, more, loading, loadingOlder, error, olderError, loadOlder]);
 
   const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
-  const blocks = useMemo(() => withoutHidden(groupItems(details?.history?.length?mergeItems(details.history,items):items), hidden), [items,details?.history,hidden]);
+  const blocks = useMemo(() => withoutHidden(groupItems(guideTimeline(details?.history?.length?mergeItems(details.history,items):items, guides ?? [])), hidden), [items,details?.history,hidden,guides]);
   const { heads, replying } = useMemo(() => replyHeads(blocks), [blocks]);
   const completed = useMemo(() => completedCliReplies(items, active), [items, active]);
   const echoShown = !!echo && !items.some((item) => item.kind === "user");
@@ -437,11 +453,17 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
         </button> : null}
         {more && olderError ? <div className="cli-notice" data-level="error" role="alert">{olderError}</div> : null}
         {blocks.map(block => {
-          const complete = block.kind === "assistant" && completed.has(block.id);
+          const localOnly = block.id.startsWith("guide:") || block.id.startsWith("after-guide:");
+          const complete = block.kind === "assistant" && completed.has(block.id) &&
+            (!guides?.length || items.some(item => item.kind === "assistant" && item.id === block.id && item.text === block.item.text));
+
           const core = translationEnabled && complete ? { key: sessionKey, id: block.id } : undefined;
-          const message = <BlockView key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={editable.ids.has(block.id) ? onEdit : undefined} onBranch={complete && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
+          const guide = block.kind === "user" ? guides?.find(row => "guide:" + row.id === block.id) : undefined;
+          const status = guide && queueEntries?.find(entry => entry.id === guide.id)?.status;
+          const guideStatus = status === "failed" ? "发送失败" : status === "uncertain" || guide?.uncertain ? "待确认" : undefined;
+          const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} onBranch={complete && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
-          return onNotes ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
+          return onNotes && !localOnly ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
         })}
         {echoShown && echo ? <EchoMessage text={echo.text}/> : null}
         {pending.map((entry) => <EchoMessage key={entry.id} text={entry.text}/>)}

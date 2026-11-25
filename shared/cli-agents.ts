@@ -700,7 +700,7 @@ export interface CliOpResult {
   start: { ref: CliSessionRef; terminal: string; cwd?: string };
   continue: { ref: CliSessionRef; terminal: string };
   send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean };
-  steer: { accepted: boolean; delivery?: CliDelivery };
+  steer: { accepted: boolean; started?: boolean; delivery?: CliDelivery };
   interrupt: { outcome: string };
   open_local: Record<string, never>;
   answer: { outcome: string };
@@ -808,7 +808,7 @@ export interface CliQueueView {
 
 export type DeviceCliMessage =
   | { type: "cli.sessions"; full: boolean; upserts: CliSessionWire[]; removes: CliSessionRef[]; seq: number }
-  | { type: "cli.items"; ref: CliSessionRef; items: CliItem[]; reset?: boolean; more?: boolean }
+  | { type: "cli.items"; ref: CliSessionRef; items: CliItem[]; reset?: boolean; more?: boolean; continues?: boolean }
   | { type: "cli.turn"; ref: CliSessionRef; turn: number; endedAt: number; reason: CliTurnReason; error?: string }
   | ({ type: "cli.request" } & CliRequestWire)
   | { type: "cli.request.resolved"; id: string; by: CliRequestResolvedBy }
@@ -843,7 +843,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: "list"; devices: CliDeviceView[]; sessions: CliSessionView[] }
   | { type: "list.delta"; upserts: CliSessionView[]; removes: CliSessionKey[]; devices?: CliDeviceView[] }
-  | { type: "items"; key: CliSessionKey; items: CliItem[]; reset?: boolean; more?: boolean; snapshot?: string[] }
+  | { type: "items"; key: CliSessionKey; items: CliItem[]; reset?: boolean; more?: boolean; continues?: boolean; snapshot?: string[] }
   | { type: "term.opened"; req: string; sid: number; cols: number; rows: number; observe: boolean }
   | { type: "term.size"; sid: number; cols: number; rows: number }
   | { type: "term.closed"; sid: number; reason: string }
@@ -1466,7 +1466,7 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
       delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined,
       waiting: optBool(o, "waiting"),
     }),
-  steer: (o) => pick({ accepted: bool(o.accepted), delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined }),
+  steer: (o) => pick({ accepted: bool(o.accepted), started: optBool(o, "started"), delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined }),
   interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),
   open_local: () => ({}),
   // a device that answers with an empty result still counts as delivered
@@ -1623,6 +1623,7 @@ export function parseDeviceCliMessage(value: unknown): DeviceCliMessage | null {
           items: items(o.items),
           reset: optBool(o, "reset"),
           more: optBool(o, "more"),
+          continues: optBool(o, "continues"),
         });
       case "cli.turn":
         return pick({
@@ -1776,6 +1777,7 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
           items: items(o.items),
           reset: optBool(o, "reset"),
           more: optBool(o, "more"),
+          continues: optBool(o, "continues"),
           snapshot: present(o, "snapshot") ? arr(o.snapshot, 200).map(v => str(v, 512, 66)) : undefined,
         });
       case "term.opened":

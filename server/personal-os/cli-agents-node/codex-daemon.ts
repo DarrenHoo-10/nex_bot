@@ -67,7 +67,7 @@ interface RpcHandler {
 
 class Rpc {
   private nextId = 1;
-  private readonly waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  private readonly waiting = new Map<number, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private ended = false;
 
   constructor(
@@ -91,7 +91,7 @@ class Rpc {
         reject(new DaemonError("unknown", "会话没有响应"));
       }, ms);
       timer.unref?.();
-      this.waiting.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
+      this.waiting.set(id, { method, resolve: resolve as (value: unknown) => void, reject, timer });
       if (!this.peer.send(JSON.stringify({ id, method, params }))) {
         clearTimeout(timer);
         this.waiting.delete(id);
@@ -122,7 +122,8 @@ class Rpc {
     this.ended = true;
     for (const [id, entry] of this.waiting) {
       clearTimeout(entry.timer);
-      entry.reject(new DaemonError("stopped", "会话已停止"));
+      const submitted = entry.method === "turn/steer" || entry.method === "turn/start";
+      entry.reject(submitted ? new DaemonError("unknown", "消息的投递结果待确认") : new DaemonError("stopped", "会话已停止"));
       this.waiting.delete(id);
     }
     this.handler.closed();
@@ -152,8 +153,13 @@ class Rpc {
     this.waiting.delete(id);
     clearTimeout(entry.timer);
     const failure = rec(message.error);
-    if (failure) entry.reject(new DaemonError("unknown", clipUnits(`Codex: ${str(failure.message) ?? "request failed"}`, 200)));
-    else entry.resolve(message.result ?? {});
+    if (!failure) { entry.resolve(message.result ?? {}); return; }
+    const detail = str(failure.message) ?? "request failed";
+    // Only an explicit rejection is safe to convert to a second submission.
+    const ended = entry.method === "turn/steer" && /^no active turn to steer\b/i.test(detail);
+    const replaced = entry.method === "turn/steer" && /^expected active turn id .* but found /i.test(detail);
+    const code = replaced ? "busy" : ended ? "turn_changed" : "unknown";
+    entry.reject(new DaemonError(code, clipUnits(`Codex: ${detail}`, 200)));
   }
 }
 
@@ -481,6 +487,17 @@ export class CodexDaemons {
     }
   }
 
+  /** Receipt for an explicit guide, including a guide that arrived after completion. */
+  async steer(home: string, threadId: string, text: string): Promise<{ accepted: boolean; started: boolean }> {
+    try {
+      const { steered } = await this.send(home, threadId, text);
+      return { accepted: true, started: !steered };
+    } catch (error) {
+      if (error instanceof DaemonError && error.code === "busy") throw new DaemonError("turn_changed", error.message);
+      throw error;
+    }
+  }
+
   /** Puts a message into the thread: steers the running turn, or starts a new one. */
   async send(home: string, threadId: string, text: string): Promise<{ steered: boolean }> {
     await this.join(home, threadId);
@@ -493,8 +510,9 @@ export class CodexDaemons {
         return { steered: true };
       } catch (error) {
         // the turn may have ended in the meantime; a lost connection is not that
-        if (!rpc.open) throw error;
-        state.active.delete(threadId);
+        if (!rpc.open) throw new DaemonError("unknown", "引导的投递结果待确认");
+        if (!(error instanceof DaemonError) || error.code !== "turn_changed") throw error;
+        if (state.active.get(threadId) === running) state.active.delete(threadId);
         this.log("debug", `steering ${threadId} failed, starting a turn instead: ${String(error)}`);
       }
     }
@@ -514,7 +532,8 @@ export class CodexDaemons {
       const id = str(rec(params.turn)?.id);
       if (id) state.active.set(threadId, id);
     } else if (method === "turn/completed" && threadId) {
-      state.active.delete(threadId);
+      const finished = str(rec(params.turn)?.id);
+      if (!finished || state.active.get(threadId) === finished) state.active.delete(threadId);
     } else if (method === "serverRequest/resolved") {
       const rpcId = params.requestId;
       for (const tracked of this.requests.values()) {

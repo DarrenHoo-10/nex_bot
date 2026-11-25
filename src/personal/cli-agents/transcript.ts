@@ -9,7 +9,7 @@ export type ActivityItem = ToolItem | ThinkingItem;
 /** Adds pushed items. An id already shown is replaced in place (a tool call
  * gains its output and status); a new id goes after the last item that is not
  * newer than it. `reset` swaps the whole list for the pushed one. */
-export function mergeItems(existing: readonly CliItem[], incoming: readonly CliItem[], reset = false): CliItem[] {
+export function mergeItems(existing: readonly CliItem[], incoming: readonly CliItem[], reset = false, appendInRecordOrder = false): CliItem[] {
   if (reset) return dedupe(incoming);
   const out = [...existing];
   const index = new Map(out.map((item, at) => [item.id, at]));
@@ -17,7 +17,7 @@ export function mergeItems(existing: readonly CliItem[], incoming: readonly CliI
     const at = index.get(item.id);
     if (at !== undefined) { out[at] = item; continue; }
     let position = out.length;
-    while (position > 0 && out[position - 1].ts > item.ts) position--;
+    while (!appendInRecordOrder && position > 0 && out[position - 1].ts > item.ts) position--;
     if (position === out.length) {
       out.push(item);
       index.set(item.id, position);
@@ -63,6 +63,63 @@ function dedupe(items: readonly CliItem[]): CliItem[] {
     out.push(item);
   }
   return out;
+}
+
+/** Captured synchronously on the guide click. The tail can still grow in place
+ * under the same native ID after the user speaks. */
+export interface GuideMessage {
+  id: string;
+  text: string;
+  at: number;
+  uncertain?: boolean;
+  known: ReadonlySet<string>;
+  after?: string;
+  tail?: Extract<CliItem, {kind: "assistant"}>;
+}
+
+export function guideTimeline(items: readonly CliItem[], guides: readonly GuideMessage[]): CliItem[] {
+  if (!guides.length) return [...items];
+  const echoes = new Set<string>();
+  const rows: Array<{item: CliItem; rank: number}> = [];
+  guides.forEach((guide, i) => {
+    const boundary = guide.after ? items.findIndex(item => item.id === guide.after) : -1;
+    const echo = items.find((item, index) => index > boundary && item.kind === "user" && item.text === guide.text &&
+      !guide.known.has(item.id) && !echoes.has(item.id));
+    if (echo) echoes.add(echo.id);
+    rows.push({ item: { ...echo, kind: "user", id: echo?.id ?? "guide:" + guide.id, ts: guide.at, text: guide.text, queued: false }, rank: 2*i+1 });
+  });
+  for (const item of items) {
+    if (echoes.has(item.id)) continue;
+    const seen = guides.findIndex(guide => guide.known.has(item.id));
+    let rank = 2 * (seen < 0 ? guides.length : seen);
+    if (item.kind !== "assistant") { rows.push({ item, rank }); continue; }
+    let offset = 0;
+    let startAt = -Infinity;
+    let id = item.id, ts = item.ts;
+    for (const [i, guide] of guides.entries()) {
+      const tail = guide.tail;
+      if (tail?.id !== item.id || tail.text.length < offset || !item.text.startsWith(tail.text)) continue;
+      if (tail.text.length > offset) {
+        rows.push({ item: { ...item, id, ts: Math.min(guide.at, Math.max(startAt, tail.ts)), text: item.text.slice(offset, tail.text.length) }, rank });
+      }
+      offset = tail.text.length;
+      id = "after-guide:" + guide.id;
+      startAt = guide.at;
+      ts = Math.max(item.ts, guide.at);
+      rank = 2*i+2;
+    }
+    if (offset < item.text.length) rows.push({ item: { ...item, id, ts, text: item.text.slice(offset) }, rank });
+  }
+  // Keep the history that was already on screen in CLI record order. Only
+  // the timeline from the first guide onward needs timestamp ordering.
+  const first = guides[0];
+  const before: CliItem[] = [];
+  const after: typeof rows = [];
+  for (const row of rows) {
+    if (row.item.ts < first.at || first.known.has(row.item.id)) before.push(row.item);
+    else after.push(row);
+  }
+  return before.concat(after.sort((a, b) => a.item.ts - b.item.ts || a.rank - b.rank).map(row => row.item));
 }
 
 export type Block =

@@ -54,6 +54,7 @@ struct AgentSessionDetail: View {
     @State private var forkItemId: String?
     @State private var branchedChat: CliForkResult?
     @State private var actionError = ""
+    @State private var guides: [AgentGuide] = []
     @State private var pending: [AgentPendingSend] = []
     /// A model call that failed for good while this screen was open.
     @State private var failure: String?
@@ -132,7 +133,7 @@ struct AgentSessionDetail: View {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
                 } else {
-                    AgentTranscript(model: model, key: key, expandedActivities: $expandedActivities, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending,
+                    AgentTranscript(model: model, key: key, expandedActivities: $expandedActivities, guides: guides.filter { $0.key == key }, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending,
                                     branch: workspace.bots.isEmpty ? nil : { itemId in
                                         forkItemId = itemId
                                         forking = true
@@ -140,7 +141,7 @@ struct AgentSessionDetail: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            AgentComposer(model: model, session: session, pending: $pending) { next in onKeyChange(next) }
+            AgentComposer(model: model, session: session, pending: $pending, guides: $guides) { next in onKeyChange(next) }
         }
     }
 
@@ -258,10 +259,70 @@ private struct AgentTerminalPane: View {
 
 // MARK: Transcript
 
+private struct AgentGuide {
+    let key: CliSessionKey
+    let id: String
+    let text: String
+    let at: Int
+    let known: Set<String>
+    let after: String?
+    let tail: CliItem?
+    var uncertain = false
+
+    static func timeline(_ items: [CliItem], _ guides: [Self]) -> [CliItem] {
+        guard let first = guides.first else { return items }
+        var echoes = Set<String>()
+        var rows: [(item: CliItem, rank: Int)] = []
+        for (index, guide) in guides.enumerated() {
+            let boundary = guide.after.flatMap { id in items.firstIndex { $0.id == id } } ?? -1
+            let echo = items.dropFirst(boundary + 1).first { $0.kind == .user && $0.text == guide.text && !guide.known.contains($0.id) && !echoes.contains($0.id) }
+            if let echo { echoes.insert(echo.id) }
+            var row = echo ?? CliItem(id: "guide:" + guide.id, ts: guide.at, kind: .user, text: guide.text)
+            row.ts = guide.at
+            row.queued = false
+            rows.append((row, 2 * index + 1))
+        }
+        for item in items where !echoes.contains(item.id) {
+            var rank = 2 * (guides.firstIndex { $0.known.contains(item.id) } ?? guides.count)
+            guard item.kind == .assistant else { rows.append((item, rank)); continue }
+            var part = item
+            var offset = item.text.startIndex
+            var startAt = Int.min
+            for (index, guide) in guides.enumerated() {
+                guard let tail = guide.tail, tail.id == item.id, item.text.hasPrefix(tail.text) else { continue }
+                let cut = item.text.index(item.text.startIndex, offsetBy: tail.text.count)
+                guard cut >= offset else { continue }
+                if cut > offset {
+                    part.ts = min(guide.at, max(startAt, tail.ts))
+                    part.text = String(item.text[offset..<cut])
+                    rows.append((part, rank))
+                }
+                offset = cut
+                part.id = "after-guide:" + guide.id
+                startAt = guide.at
+                part.ts = max(item.ts, guide.at)
+                rank = 2 * index + 2
+            }
+            if offset < item.text.endIndex {
+                part.text = String(item.text[offset...])
+                rows.append((part, rank))
+            }
+        }
+        var before: [CliItem] = []
+        var after: [(item: CliItem, rank: Int)] = []
+        for row in rows {
+            if row.item.ts < first.at || first.known.contains(row.item.id) { before.append(row.item) }
+            else { after.append(row) }
+        }
+        return before + after.sorted { ($0.item.ts, $0.rank) < ($1.item.ts, $1.rank) }.map(\.item)
+    }
+}
+
 private struct AgentTranscript: View {
     let model: CliAgentsModel
     let key: CliSessionKey
     @Binding var expandedActivities: Set<String>
+    var guides: [AgentGuide] = []
     var engine: CliEngine = .claude
     var active = false
     /// what the agent is doing while the turn runs; shown as dots under the last message
@@ -274,7 +335,7 @@ private struct AgentTranscript: View {
         let t = model.transcript(key)
         let sent = pending.filter { $0.waiting(in: t.items) }
         let working = self.working ?? (sent.isEmpty ? nil : "等待回复")
-        let blocks = CliTranscript.group(t.items)
+        let blocks = CliTranscript.group(AgentGuide.timeline(t.items, guides))
         let completed = CliTranscript.completedReplies(t.items, active: active)
         let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
         Group {
@@ -313,7 +374,9 @@ private struct AgentTranscript: View {
                                 }
                             }
                             ForEach(blocks) { block in
-                                AgentBlockView(block: block, expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) ? { item in
+                                let guide = guides.first { "guide:" + $0.id == block.id }
+                                let state = guide.flatMap { guide in model.queues[key]?.entries.first { $0.id == guide.id }?.status }
+                                AgentBlockView(block: block, guideStatus: state == "failed" ? "发送失败" : (state == "uncertain" || guide?.uncertain == true ? "待确认" : nil), expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) && !guides.contains(where: { $0.tail?.id == block.id }) ? { item in
                                     try await model.translateReply(key, item: item)
                                 } : nil, branch: completed.contains(block.id) ? branch : nil)
                             }
@@ -338,6 +401,7 @@ private struct AgentTranscript: View {
 
 private struct AgentBlockView: View {
     let block: CliBlock
+    var guideStatus: String? = nil
     @Binding var expandedActivities: Set<String>
     let loadImage: (String) async throws -> Data
     var translate: ((CliItem) async throws -> String?)?
@@ -350,6 +414,7 @@ private struct AgentBlockView: View {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 2) {
                     AgentImageMessage(text: item.text, load: loadImage)
+                    if let guideStatus { Text(guideStatus).font(.caption2).foregroundStyle(Theme.muted) }
                     if item.queued { Text("排队中").font(.caption2).foregroundStyle(Theme.muted) }
                 }
             }
@@ -574,6 +639,9 @@ private struct AgentComposer: View {
     let model: CliAgentsModel
     let session: CliSession
     @Binding var pending: [AgentPendingSend]
+    @Binding var guides: [AgentGuide]
+    @State private var editing: CliQueuedEntry?
+    @State private var editedText = ""
     let onKeyChange: (CliSessionKey) -> Void
     @State private var draft = ""
     @State private var sending = false
@@ -628,6 +696,7 @@ private struct AgentComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if !error.isEmpty { Text(error).font(.caption).foregroundStyle(Theme.danger) }
+            if let queue = model.queues[session.key] { queueRows(queue) }
             if let deliveryNotice { Text(deliveryNotice).font(.caption).foregroundStyle(Theme.muted) }
             AgentImageDrafts(images: $images)
             switch composerMode {
@@ -676,6 +745,64 @@ private struct AgentComposer: View {
     private var tooLong: Bool { draft.utf8.count > CoreClient.cliMaxSendBytes }
     private var canSend: Bool { (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && !tooLong && !sending }
 
+    private func queueRows(_ queue: CliSessionQueue) -> some View {
+        let hidden = Set(guides.filter { $0.key == session.key }.map(\.id))
+        return VStack(alignment: .leading) {
+            ForEach(queue.entries.filter { !hidden.contains($0.id) && ["pending", "claimed", "uncertain", "failed"].contains($0.status) }) { entry in
+                HStack {
+                    if let original = editing, original.id == entry.id, entry.status == "pending" {
+                        TextField("编辑排队消息", text: $editedText)
+                        Button("保存") { queueAction { try await model.editQueued(original, text: editedText); editing = nil } }
+                            .disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("取消") { editing = nil }
+                    } else {
+                        Text(entry.text).lineLimit(3)
+                        Spacer()
+                        if entry.status == "pending" {
+                            if canSteer && queue.pauseReason != "stopped" {
+                                Button(steerLabel) {
+                                    let items = model.transcript(session.key).items
+                                    let guide = AgentGuide(key: session.key, id: entry.id, text: entry.text,
+                                        at: Int(Date().timeIntervalSince1970 * 1000), known: Set(items.map(\.id)),
+                                        after: items.last?.id, tail: items.last { $0.kind == .assistant })
+                                    guides.append(guide)
+                                    queueAction {
+                                        do {
+                                            let sent = try await model.steerQueued(entry, questionId: steerQuestionId, interruptWaiting: interruptWaiting)
+                                            if sent.status == "pending", steerQuestionId != nil || interruptWaiting { guides.removeAll { $0.id == entry.id } }
+                                            if sent.status == "uncertain", let at = guides.firstIndex(where: { $0.id == entry.id }) { guides[at].uncertain = true }
+                                        }
+                                        catch {
+                                            let failure = CoreError.wrap(error)
+                                            if failure.kind == .network || failure.code == "unknown" || (failure.status ?? 0) >= 500 {
+                                                if let at = guides.firstIndex(where: { $0.id == entry.id }) { guides[at].uncertain = true }
+                                            } else { guides.removeAll { $0.id == entry.id } }
+                                            throw error
+                                        }
+                                    }
+                                }
+                            }
+                            Button("编辑") { editing = entry; editedText = entry.text }
+                        } else {
+                            Text(["uncertain": "待确认", "claimed": "投递中", "failed": "发送失败"][entry.status] ?? "投递中")
+                        }
+                    }
+                }
+            }
+            if queue.paused && queue.entries.contains(where: { $0.status == "pending" }) {
+                Button("继续队列") { queueAction { try await model.resumeQueue(session.key) } }
+            }
+        }.font(.caption).disabled(sending)
+    }
+
+    private func queueAction(_ action: @escaping @MainActor () async throws -> Void) {
+        sending = true
+        Task {
+            defer { sending = false }
+            do { try await action() } catch { self.error = CliErrorText.text(for: error, fallback: "操作失败") }
+        }
+    }
+
     private func sendRow(running: Bool) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
             AgentComposerAdd(images: $images, error: $error)
@@ -690,14 +817,6 @@ private struct AgentComposer: View {
             #if os(macOS)
             if canSetOnSend && !effortLevels.isEmpty { effortButton }
             #endif
-            if canSteer && canSend {
-                let questionId = steerQuestionId
-                let shouldInterrupt = interruptWaiting
-                Button(steerLabel) {
-                    Task { await send(steer: true, questionId: questionId, interruptWaiting: shouldInterrupt) }
-                }
-                    .buttonStyle(ConversationActionButtonStyle(size: .compact))
-            }
             // one button: Stop while a turn runs and the box is empty, Send once there is something to send
             if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty {
                 Button { Task { await interrupt() } } label: { Image(systemName: "stop.circle.fill").font(.system(size: 26)) }
@@ -781,12 +900,8 @@ private struct AgentComposer: View {
     }
 
     /// The box empties and the message shows in the conversation at once; a failure puts it back.
-    private func send(steer: Bool = false, questionId: String? = nil, interruptWaiting: Bool = false) async {
+    private func send() async {
         guard canSend else { return }
-        if steer && (!canSteer || questionId != steerQuestionId || interruptWaiting != self.interruptWaiting) {
-            error = "当前轮次已变更"
-            return
-        }
         deliveryNotice = nil
         let text = draft
         let submittedImages = images
@@ -795,7 +910,7 @@ private struct AgentComposer: View {
         defer { sending = false }
         do {
             let message = try await model.imageMessage(session.key, text: text, images: submittedImages)
-            if !steer && canSetOnSend {
+            if canSetOnSend {
                 let applied = AgentDrafts.appliedModels[session.key]
                 let wanted = chosenModel.isEmpty ? (applied == nil ? nil : catalog.current) : chosenModel
                 if let wanted, wanted != applied {
@@ -804,19 +919,17 @@ private struct AgentComposer: View {
                     AgentDrafts.appliedEfforts[session.key] = nil
                 }
             }
-            if !steer && canSetOnSend, let level = resolvedEffort, AgentDrafts.appliedEfforts[session.key] != level {
+            if canSetOnSend, let level = resolvedEffort, AgentDrafts.appliedEfforts[session.key] != level {
                 try await model.send(session.key, text: "/effort " + level)
                 AgentDrafts.appliedEfforts[session.key] = level
             }
             let echo = AgentPendingSend(text: message, known: Set(model.transcript(session.key).items.map(\.id)))
-            pending.append(echo)
+            let queued = (session.state == .running || session.state == .waiting) && ((session.liveIn == .nexbot && session.terminal != nil) || (session.engine == .claude && session.sendVia == "inbox"))
+            if !queued { pending.append(echo) }
             entry = echo
             if draft == text { draft = "" }
-            if steer {
-                deliveryNotice = try await model.steer(session.key, text: message, questionId: questionId, interruptWaiting: interruptWaiting)
-            } else {
-                try await model.send(session.key, text: message)
-            }
+            if queued { try await model.enqueue(session.key, text: message) }
+            else { try await model.send(session.key, text: message) }
             images.removeAll { submittedImages.contains($0) }
         } catch {
             if let entry {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CliItem } from "../../../shared/cli-agents";
 import { assistantItem, toolItem, userItem } from "./fixtures";
-import { activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
+import { guideTimeline, activityStats, groupItems, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
 
 const ids = (items: readonly CliItem[]) => items.map((item) => item.id);
 const thinking = (id: string, ts: number): CliItem => ({ kind: "thinking", id, ts, text: "想一想" });
@@ -17,6 +17,14 @@ describe("mergeItems", () => {
 
   it("puts a new item after the last one that is not newer", () => {
     expect(ids(mergeItems([userItem("u1", 1), assistantItem("a1", 5)], [toolItem("t1", 3)]))).toEqual(["u1", "t1", "a1"]);
+  });
+
+  it("keeps the CLI record order for live guidance with an older timestamp", () => {
+    const reply = assistantItem("reply", 5);
+    const guide = userItem("guide", 3);
+    const live = mergeItems([reply], [guide], false, true);
+    expect(ids(live)).toEqual(["reply", "guide"]);
+    expect(resetItems(live, [reply, guide]).items).toEqual(live);
   });
 
   it("appends newer items at the end", () => {
@@ -57,6 +65,18 @@ describe("resetItems", () => {
   it("replaces everything when the page shares nothing with the list", () => {
     expect(resetItems([userItem("old", 1)], [userItem("u1", 2)])).toEqual({ items: [userItem("u1", 2)], kept: false });
     expect(resetItems([userItem("old", 1)], [])).toEqual({ items: [], kept: false });
+  });
+});
+
+describe("guideTimeline", () => {
+  it("keeps the text already shown above the click and subsequent streamed text below it", () => {
+    const tail = { kind: "assistant" as const, id: "a", text: "正在查。", ts: 10 };
+    const guide = { id: "1", text: "先查日志", at: 20, known: new Set(["a"]), tail };
+    const updated = { ...tail, text: "正在查。找到原因了。", ts: 30 };
+    const rows = guideTimeline([updated, userItem("echo", 50, guide.text)], [guide]);
+    expect(rows.map(row => [row.kind, row.ts, "text" in row && row.text])).toEqual([
+      ["assistant", 10, "正在查。"], ["user", 20, guide.text], ["assistant", 30, "找到原因了。"],
+    ]);
   });
 });
 

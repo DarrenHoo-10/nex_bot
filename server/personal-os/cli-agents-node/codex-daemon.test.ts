@@ -70,7 +70,7 @@ class FakeServer {
     if (method === undefined || id === undefined) return;
     if (this.silentMethods.has(method)) return;
     if (this.failMethods.has(method)) {
-      this.push({ id, error: { code: -32600, message: `${method} refused` } });
+      this.push({ id, error: { code: -32600, message: method === "turn/steer" ? "no active turn to steer" : `${method} refused` } });
       return;
     }
     const params = (message.params ?? {}) as Rec;
@@ -232,6 +232,12 @@ describe("sending through the daemon", () => {
     expect(server.find("turn/steer")).toBeUndefined();
   });
 
+  it("starts one ordinary turn for explicit guidance after completion", async () => {
+    const { daemons, server } = track(setup());
+    await expect(daemons.steer(HOME, THREAD, "补充")).resolves.toEqual({ accepted: true, started: true });
+    expect(server.methods().filter(method => method === "turn/start")).toHaveLength(1);
+  });
+
   it("joins a thread only once", async () => {
     const { daemons, server } = track(setup());
     await daemons.send(HOME, THREAD, "one");
@@ -273,6 +279,15 @@ describe("sending through the daemon", () => {
     const result = await daemons.send(HOME, THREAD, "late");
     expect(result).toEqual({ steered: false });
     expect(server.find("turn/start")).toBeDefined();
+  });
+
+  it("does not submit a second copy if steering times out with the connection open", async () => {
+    const { daemons, server } = track(setup(s => {
+      s.latestTurn = { id: "turn-7", status: "inProgress" };
+      s.silentMethods.add("turn/steer");
+    }));
+    await expect(daemons.send(HOME, THREAD, "补充")).rejects.toMatchObject({ code: "unknown" });
+    expect(server.find("turn/start")).toBeUndefined();
   });
 
   it("reports a refused start with the daemon's message", async () => {

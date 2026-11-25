@@ -27,6 +27,8 @@ public final class CliAgentsModel {
     public private(set) var devices: [CliDevice] = []
     public private(set) var sessions: [CliSession] = []
     public private(set) var requests = CliRequestStore()
+    @ObservationIgnored private var fragments: [CliSessionKey: (items: [CliItem], more: Bool?)] = [:]
+    public private(set) var queues: [CliSessionKey: CliSessionQueue] = [:]
     public private(set) var transcripts: [CliSessionKey: Transcript] = [:]
     @ObservationIgnored private var closedTranscripts: [CliSessionKey: Date] = [:]
     public private(set) var supervision: CliSupervision?
@@ -238,6 +240,8 @@ public final class CliAgentsModel {
                     transcripts.removeValue(forKey: oldest)
                 }
             } else { transcripts[key] = nil }
+            queues[key] = nil
+            fragments[key] = nil
             if let stream { Task { await stream.unsubscribeSession(key) } }
         } else { subscribed[key] = count - 1 }
     }
@@ -325,6 +329,22 @@ public final class CliAgentsModel {
 
     public func steer(_ key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
         try await clientProvider().cliSteer(key: key, text: text, questionId: questionId, interruptWaiting: interruptWaiting)
+    }
+
+    public func editQueued(_ entry: CliQueuedEntry, text: String) async throws {
+        try await clientProvider().cliEditQueued(entry, text: text)
+    }
+
+    public func steerQueued(_ entry: CliQueuedEntry, questionId: String?, interruptWaiting: Bool) async throws -> CliQueuedEntry {
+        try await clientProvider().cliSteerQueued(entry, questionId: questionId, interruptWaiting: interruptWaiting)
+    }
+
+    public func resumeQueue(_ key: CliSessionKey) async throws {
+        try await clientProvider().cliResumeQueue(key: key)
+    }
+
+    public func enqueue(_ key: CliSessionKey, text: String) async throws {
+        try await clientProvider().cliEnqueue(key: key, text: text)
     }
 
     public func imageMessage(_ key: CliSessionKey, text: String, images: [CliImageUpload]) async throws -> String {
@@ -586,6 +606,7 @@ public final class CliAgentsModel {
     func handle(_ event: CliAgentStream.Event) {
         switch event {
         case .status(let status):
+            fragments.removeAll()
             link = status
             terminal?.handle(event)
         case .output:
@@ -603,6 +624,8 @@ public final class CliAgentsModel {
 
     private func apply(_ message: CliServerMessage) {
         switch message {
+        case .queue(let queue):
+            if subscribed[queue.sessionKey] != nil { queues[queue.sessionKey] = queue }
         case .list(let newDevices, let newSessions):
             generation += 1
             devices = newDevices; sessions = newSessions
@@ -644,7 +667,15 @@ public final class CliAgentsModel {
                 await stream?.updateSessionKnown(key, known: snapshot)
                 await LocalContentCache.shared.enqueue(tail.persistable, scope: scope, key: "cli-tail:" + key)
             }
-        case .items(let key, let items, let reset, let more):
+        case .itemFragment(let key, let items, let reset, let more):
+            guard subscribed[key] != nil else { return }
+            if reset { fragments[key] = ([], more) }
+            fragments[key]?.items.append(contentsOf: items)
+        case .items(let key, let tail, let startsPage, let tailMore):
+            let batch = fragments.removeValue(forKey: key)
+            let reset = startsPage || batch != nil
+            let items = startsPage ? tail : (batch?.items ?? []) + tail
+            let more = startsPage ? tailMore : batch?.more ?? tailMore
             guard subscribed[key] != nil, !awaitingCacheAuthorization else { return }
             var t = transcript(key)
             if reset {
@@ -653,7 +684,7 @@ public final class CliAgentsModel {
                 t.items = next.items
                 if !next.kept { t.more = more ?? false }
             } else {
-                t.items = CliTranscript.merge(t.items, items)
+                t.items = CliTranscript.merge(t.items, items, appendInRecordOrder: true)
                 if let more { t.more = more }
             }
             t.loaded = true; t.error = nil
