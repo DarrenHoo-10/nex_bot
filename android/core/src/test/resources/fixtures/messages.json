@@ -3,7 +3,9 @@
     "cursor": 1,
     "privacyEpoch": 1,
     "coreId": "fixture-id-1",
-    "bootId": "fixture-id-7"
+    "bootId": "fixture-id-7",
+    "revision": 1,
+    "at": 1700000000000
   },
   "messages": [
     {
@@ -40,5 +42,6 @@
     }
   ],
   "hasMore": false,
+  "hasOlder": false,
   "streaming": []
 }
