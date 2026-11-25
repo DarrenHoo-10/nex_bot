@@ -15,6 +15,7 @@ struct MBButton: View {
     let action: () -> Void
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         Button(action: action) {
             HStack(spacing: 6) {
                 if busy { ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14) }
@@ -23,12 +24,12 @@ struct MBButton: View {
             }
             .foregroundStyle(foreground)
             .padding(.horizontal, 14).frame(minWidth: minWidth).frame(height: 34)
-            .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(kind == .secondary || kind == .danger ? Theme.border : .clear))
+            .background(background, in: shape)
+            .overlay(shape.strokeBorder(kind == .secondary || kind == .danger ? Theme.border : .clear))
             .opacity(enabled ? 1 : 0.5)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .plainActionFeedback(in: shape)
         .disabled(!enabled || busy)
     }
 

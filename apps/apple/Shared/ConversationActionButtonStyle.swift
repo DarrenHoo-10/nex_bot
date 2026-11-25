@@ -1,5 +1,47 @@
 import SwiftUI
 
+extension View {
+    /// Keep the native button and its keyboard focus, with app-drawn feedback on macOS.
+    func plainActionFeedback<S: InsettableShape>(in shape: S) -> some View {
+        #if os(macOS)
+        buttonStyle(ActionPressStyle()).actionFocusOutline(in: shape)
+        #else
+        buttonStyle(.plain)
+        #endif
+    }
+
+    func actionFocusOutline<S: InsettableShape>(in shape: S) -> some View {
+        #if os(macOS)
+        modifier(ActionFocusOutline(shape: shape))
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(macOS)
+private struct ActionPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.78 : 1)
+    }
+}
+
+private struct ActionFocusOutline<S: InsettableShape>: ViewModifier {
+    let shape: S
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content.focused($focused).focusEffectDisabled()
+            .overlay {
+                if focused {
+                    shape.strokeBorder(Theme.identityAccent, lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+#endif
+
 struct ConversationActionButtonStyle: ButtonStyle {
     enum Tone { case light, dark }
     enum Size { case regular, compact }

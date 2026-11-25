@@ -108,6 +108,15 @@ button {
 }
 button:hover { background: var(--bt-hover); }
 button:disabled { opacity: 0.42; cursor: default; }
+/* Use the app's pressed and focus states on controls, including portalled menus. */
+:where(button, summary, [role="button"], [role="menuitem"], [role="menuitemradio"], [role="option"], [role="radio"], [role="switch"], [role="tab"]) {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+:where(a[href], input[type="checkbox"], input[type="radio"]) {
+  -webkit-tap-highlight-color: transparent;
+}
 button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input, textarea, select {
   border: 1px solid var(--bt-border-strong);
