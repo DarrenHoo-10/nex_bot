@@ -10,6 +10,7 @@ import {fileReference,getExtras,isPickedImage,recallSent,rememberSent,saveExtras
 import { composerMode } from "./session-model";
 import { CliModelMenu, type LaunchChoice } from "./CliModelMenu";
 import { useCompactComposer } from "../components/use-compact-composer";
+import { formatCompactTokens } from "../../lib/token-count";
 import type { CliQueue } from "./api";
 import { isVisibleQueueEntry } from "./use-queue";
 
@@ -366,12 +367,8 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   );
 }
 
-/** Tokens in the unit people read: 8,123 below ten thousand, else 万 with one decimal. */
-export function tokenText(value: number): string {
-  if (value < 10_000) return value.toLocaleString("zh-CN");
-  const wan = value / 10_000;
-  return (wan >= 100 ? Math.round(wan).toString() : wan.toFixed(1).replace(/\.0$/, "")) + " 万";
-}
+/** Tokens as the CLIs and the assistant's usage show them: 950, 47.5K, 475K, 1M. */
+export const tokenText = formatCompactTokens;
 export function contextShare(usage: CliContextUsage | undefined): number | null {
   return usage?.window ? Math.min(1, usage.used / usage.window) : null;
 }

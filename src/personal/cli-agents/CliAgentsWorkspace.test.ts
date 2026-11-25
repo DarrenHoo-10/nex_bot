@@ -315,11 +315,11 @@ describe("session pane", () => {
     await mount({ devices: [device()], sessions: [session({ context: { used: 776256, window: 1000000 } })] }, "dev1:claude:s1");
     const ring = container.querySelector<HTMLButtonElement>("button[aria-label=上下文用量]")!;
     expect(ring.getAttribute("data-level")).toBe("high");
-    expect(ring.getAttribute("title")).toBe("上下文 78% · 77.6 万 / 100 万");
+    expect(ring.getAttribute("title")).toBe("上下文 78% · 776K / 1M");
     expect(ring.querySelector(".na-context-fill")).toBeTruthy();
     await click(ring);
     expect(container.querySelector(".na-context-detail strong")?.textContent).toBe("78%");
-    expect(container.querySelector(".na-context-detail small")?.textContent).toBe("已用 77.6 万 / 100 万 tokens");
+    expect(container.querySelector(".na-context-detail small")?.textContent).toBe("已用 776K / 1M tokens");
   });
 
   it("says there is no usage yet before the session has answered", async () => {

@@ -122,18 +122,8 @@ public enum CliContext {
         return s >= 0.9 ? .full : s >= 0.7 ? .high : .low
     }
 
-    /// Tokens as people read them: 8,123 below ten thousand, else 万 with one decimal.
-    public static func tokens(_ value: Int) -> String {
-        if value < 10_000 {
-            let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = Locale(identifier: "zh-CN")
-            return f.string(from: NSNumber(value: value)) ?? String(value)
-        }
-        let wan = Double(value) / 10_000
-        if wan >= 100 { return "\(Int(wan.rounded())) 万" }
-        var text = String(format: "%.1f", wan)
-        if text.hasSuffix(".0") { text.removeLast(2) }
-        return text + " 万"
-    }
+    /// Tokens in K/M like the CLIs and the assistant's usage: 950, 47.5K, 475K, 1M.
+    public static func tokens(_ value: Int) -> String { Usage.compactTokens(value) }
 
     public static func summary(_ usage: CliContextUsage?) -> String {
         guard let usage else { return "上下文用量：暂无记录" }
