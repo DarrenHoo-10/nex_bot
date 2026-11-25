@@ -65,7 +65,6 @@
   object-fit: contain; border-radius: 10px; box-shadow: 0 18px 48px rgb(0 0 0 / 24%);
 }
 .rk-workspace .image-lightbox-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 8px; }
-.cli-app.rk-workspace .image-lightbox-actions { left: 8px; right: auto; }
 .rk-workspace .image-lightbox-actions button {
   display: grid; place-items: center;
   width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%;

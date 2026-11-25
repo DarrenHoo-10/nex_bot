@@ -85,12 +85,12 @@ async function pickEffort(label: string) {
   await click(button ?? null);
 }
 
-async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[]; workbench?: unknown[] }, selected?: string, navigation?: { sidebarList: boolean; onNavigation: () => void }) {
+async function mount(rows: { devices: ReturnType<typeof device>[]; sessions: ReturnType<typeof session>[]; workbench?: unknown[] }, selected?: string, navigation?: { sidebarList: boolean; onSwitchMode: () => void }) {
   fixture.fetchSnapshot.mockResolvedValue(rows);
   fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ ...rows, workbench: rows.workbench ?? [], queues: [] });
   if (selected) localStorage.setItem("nexbot.cliSelected", selected);
   await act(async () => {
-    root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div", { "data-testid": "sidebar" }), dark: false, collapsed: false, onNavigation: () => {}, stream, ...navigation }));
+    root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div", { "data-testid": "sidebar" }), dark: false, collapsed: false, onSwitchMode: () => {}, stream, ...navigation }));
   });
   await flush();
 }
@@ -124,15 +124,15 @@ afterEach(async () => {
 });
 
 describe("session list", () => {
-  it("opens the mobile directory from the new-session title without a separate navigation row or losing the draft", async () => {
-    const onNavigation = vi.fn();
-    await mount({ devices: [device()], sessions: [session({ state: "idle" })] }, undefined, { sidebarList: false, onNavigation });
+  it("switches to NexBot from the mobile directory brand and reopens the directory from the new-session title without losing the draft", async () => {
+    const onSwitchMode = vi.fn();
+    await mount({ devices: [device()], sessions: [session({ state: "idle" })] }, undefined, { sidebarList: false, onSwitchMode });
     await act(async () => socket.open());
     const app = container.querySelector(".cli-app")!;
     const brand = () => container.querySelector(".na-workspace-status button");
     expect(brand()?.textContent).toBe("NexAgent");
     await click(brand());
-    expect(onNavigation).toHaveBeenCalledTimes(1);
+    expect(onSwitchMode).toHaveBeenCalledTimes(1);
 
     await click(button("新建会话"));
     expect(app.getAttribute("data-mobile")).toBe("pane");
@@ -146,7 +146,7 @@ describe("session list", () => {
     await click(header.querySelector('button[aria-label="打开会话目录"]'));
     expect(app.getAttribute("data-mobile")).toBe("list");
     expect(brand()?.textContent).toBe("NexAgent");
-    expect(onNavigation).toHaveBeenCalledTimes(1);
+    expect(onSwitchMode).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".cli-side .na-new-session")?.textContent).toBe("新建会话");
     await click(button("新建会话"));
     expect(app.getAttribute("data-mobile")).toBe("pane");
@@ -205,7 +205,7 @@ describe("session list", () => {
   it("shows the Core error text when the first read fails", async () => {
     fixture.fetchSnapshot.mockRejectedValue(new CliApiError("raw", "device_offline", 502));
     fixture.fetchSnapshotWithWorkbench.mockRejectedValue(new CliApiError("raw", "device_offline", 502));
-    await act(async () => { root.render(createElement(CliAgentsWorkspace, { sidebar: null, dark: false, collapsed: false, onNavigation: () => {}, stream })); });
+    await act(async () => { root.render(createElement(CliAgentsWorkspace, { sidebar: null, dark: false, collapsed: false, onSwitchMode: () => {}, stream })); });
     await flush();
     expect(container.querySelector("[role=alert]")?.textContent).toContain("电脑离线");
     fixture.fetchSnapshot.mockResolvedValue({ devices: [device()], sessions: [session()] });
@@ -773,7 +773,7 @@ describe("new session", () => {
     let sent!: (value: { status: string }) => void;
     fixture.startSession.mockResolvedValue({ key: launched.key });
     fixture.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { sent = resolve; }));
-    await mount({ devices: [computer], sessions: [existing] }, undefined, { sidebarList: false, onNavigation: () => {} });
+    await mount({ devices: [computer], sessions: [existing] }, undefined, { sidebarList: false, onSwitchMode: () => {} });
     const page = await openNew();
     await typeInto(page.querySelector("textarea")!, "请检查一下");
     await click(page.querySelector('button[type="submit"]'));
@@ -872,7 +872,9 @@ describe("new session", () => {
     const picker = page.querySelector<HTMLInputElement>("input[aria-label=选择图片]")!;
     Object.defineProperty(picker, "files", { configurable: true, value: [new File([new Uint8Array([137, 80])], "shot.png", { type: "image/png" })] });
     await act(async () => { picker.dispatchEvent(new Event("change", { bubbles: true })); });
-    expect(page.querySelector(".na-file-chip")?.textContent).toContain("shot.png");
+    // an image shows only its thumbnail: the name is its label, not text in the box
+    expect(page.querySelector(".na-file-chip")?.textContent).not.toContain("shot.png");
+    expect(page.querySelector(".na-file-chip .na-file-view")?.getAttribute("aria-label")).toBe("查看图片 shot.png");
     await typeInto(page.querySelector("textarea")!, "看看这张图");
     await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();
@@ -933,7 +935,7 @@ describe("side chats from Core", () => {
     fixture.fetchSnapshot.mockResolvedValue(rows);
     fixture.fetchSnapshotWithWorkbench.mockResolvedValue({ ...rows, workbench, queues: [] });
     localStorage.setItem("nexbot.cliSelected", "dev1:claude:s1");
-    const render = () => act(async () => { root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div"), dark: false, collapsed: false, onNavigation: () => {}, stream })); });
+    const render = () => act(async () => { root.render(createElement(CliAgentsWorkspace, { sidebar: createElement("div"), dark: false, collapsed: false, onSwitchMode: () => {}, stream })); });
     await render();
     await flush();
     // never in the left tree

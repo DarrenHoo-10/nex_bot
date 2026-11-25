@@ -214,7 +214,13 @@
 .na-file-list{flex-wrap:wrap}.na-file-chip,.na-goal-field{border:1px solid var(--na-line);background:var(--na-inset);border-radius:8px;padding:5px 7px;font-size:12px}
 .na-file-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%}.na-file-chip>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .na-file-thumb{width:28px;height:28px;border-radius:5px;object-fit:cover;flex:none}
-.na-file-chip[data-image]{padding:3px 7px 3px 3px}
+/* an image to send: just its thumbnail, which opens it, with a remove button on the corner */
+.na-stage .cli-app .na-file-chip[data-image]{position:relative;padding:0;border:0;background:transparent;border-radius:9px}
+.na-stage .cli-app .na-file-chip[data-image] .na-file-view{display:block;width:48px;height:48px;min-height:0;padding:0;border:1px solid var(--na-line);border-radius:9px;overflow:hidden;background:var(--na-inset);color:var(--na-muted);cursor:zoom-in;transform:none}
+.na-stage .cli-app .na-file-chip[data-image] .na-file-view:disabled{cursor:default}
+.na-stage .cli-app .na-file-chip[data-image] .na-file-thumb{display:block;width:100%;height:100%;border-radius:0}
+.na-stage .cli-app .na-file-chip[data-image] .na-file-remove{position:absolute;top:-6px;right:-6px;display:grid;place-items:center;width:18px;height:18px;min-height:0;padding:0;border:1.5px solid var(--na-paper);border-radius:50%;background:var(--na-ink);color:var(--na-paper);transform:none}
+@media(pointer:coarse){.na-stage .cli-app .na-file-chip[data-image] .na-file-remove{width:22px;height:22px;top:-8px;right:-8px}}
 .na-model-row .na-model-text{display:flex;flex-direction:column;gap:1px;min-width:0}
 .na-model-row .na-model-text small{overflow:hidden;color:var(--muted-foreground,#647287);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .na-file-chip button,.na-goal-field button{display:grid;place-items:center;padding:3px;background:transparent;color:var(--na-muted);border:0}

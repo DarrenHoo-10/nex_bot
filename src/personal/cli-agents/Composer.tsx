@@ -13,6 +13,7 @@ import { useCompactComposer } from "../components/use-compact-composer";
 import { formatCompactTokens } from "../../lib/token-count";
 import type { CliQueue } from "./api";
 import { isVisibleQueueEntry } from "./use-queue";
+import { ImageLightbox } from "../components/ImageLightbox";
 
 // Drafts live as long as the page, one per session.
 const drafts = new Map<string, string>();
@@ -274,7 +275,12 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       <input type="file" hidden multiple accept="image/*" ref={imagePicker} aria-label="选择图片" onChange={e=>{
         const files=Array.from(e.currentTarget.files||[]);e.currentTarget.value="";addFiles(files);
       }}/>
-      {!!extra.files.length && <div className="na-file-list">{extra.files.map(entry=><span key={entry.id} className="na-file-chip" data-image={entry.file.type.startsWith("image/")||undefined}>{entry.file.type.startsWith("image/")?<FileThumb file={entry.file}/>:<Paperclip size={14}/>}<span title={entry.file.name}>{entry.file.name}</span><button type="button" disabled={busy} aria-label={"移除 "+entry.file.name} onClick={()=>changeExtra({...extra,files:extra.files.filter(f=>f.id!==entry.id)})}><X size={12}/></button></span>)}</div>}
+      {!!extra.files.length && <div className="na-file-list">{extra.files.map(entry=>{
+        const remove=()=>changeExtra({...extra,files:extra.files.filter(f=>f.id!==entry.id)});
+        // images show only their thumbnail, which opens the picture; other files keep their name
+        return entry.file.type.startsWith("image/")?<ImageDraft key={entry.id} file={entry.file} busy={busy} onRemove={remove}/>
+          :<span key={entry.id} className="na-file-chip"><Paperclip size={14}/><span title={entry.file.name}>{entry.file.name}</span><button type="button" disabled={busy} aria-label={"移除 "+entry.file.name} onClick={remove}><X size={12}/></button></span>;
+      })}</div>}
       {extra.goal!==null && <div className="na-goal-field"><Target size={15}/><label>目标<input autoFocus ref={goalField} aria-label="会话目标" placeholder="想持续完成什么？" value={extra.goal} disabled={busy} onChange={e=>changeExtra({...extra,goal:e.target.value})}/></label><button type="button" disabled={busy} aria-label="退出目标模式" onClick={()=>changeExtra({...extra,goal:null})}><X size={13}/></button></div>}
       {draft?.quote && <details className="na-selected-fragment"><summary><MessageSquareText size={14}/>1 个已选文本片段</summary><blockquote>{draft.quote}</blockquote></details>}
       {review&&details?.queue?.map((entry,i)=><div className="na-queued" key={entry.id}>
@@ -402,14 +408,21 @@ function ContextDetail({ usage }: { usage: CliContextUsage | undefined }) {
   </div>;
 }
 
-/** A small preview of an image about to be sent. A data: URL, since the page's CSP refuses blob: images. */
-function FileThumb({file}:{file:File}) {
+/** An image about to be sent: its thumbnail, which opens the full picture (closed from its top-right corner),
+ * and a remove button on the thumbnail's corner.
+ * A data: URL, since the page's CSP refuses blob: images. */
+function ImageDraft({file,busy,onRemove}:{file:File;busy:boolean;onRemove():void}) {
   const [url,setUrl]=useState("");
+  const [open,setOpen]=useState(false);
   useEffect(()=>{
     let live=true;const reader=new FileReader();
     reader.onload=()=>{if(live&&typeof reader.result==="string")setUrl(reader.result)};
     reader.readAsDataURL(file);
     return ()=>{live=false;reader.abort()};
   },[file]);
-  return url?<img className="na-file-thumb" src={url} alt=""/>:<Paperclip size={14}/>;
+  return <span className="na-file-chip" data-image>
+    <button type="button" className="na-file-view" disabled={!url} aria-label={"查看图片 "+file.name} title={file.name} onClick={()=>setOpen(true)}>{url?<img className="na-file-thumb" src={url} alt=""/>:<ImagePlus size={16}/>}</button>
+    <button type="button" className="na-file-remove" disabled={busy} aria-label={"移除 "+file.name} onClick={onRemove}><X size={11}/></button>
+    {open&&url?<ImageLightbox src={url} alt={file.name} onClose={()=>setOpen(false)}/>:null}
+  </span>;
 }

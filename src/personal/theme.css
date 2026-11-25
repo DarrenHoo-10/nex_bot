@@ -1925,6 +1925,10 @@
     background: var(--na-paper);
     border-bottom: 1px solid var(--na-line);
   }
+  /* the phone directory's NexAgent brand runs straight into its 新建会话 button */
+  .na-stage .cli-app .cli-main > header.na-workspace-status {
+    border-bottom: 0;
+  }
 
   /* NexAgent Sidebar & Session List */
   .na-stage .cli-app .na-new-session {
@@ -2858,6 +2862,10 @@
   }
 
   /* NexAgent Composer Capsule */
+  /* the box itself shows focus; a second ring around the text inside it is noise */
+  .na-stage .cli-app .na-message-box textarea:focus-visible {
+    outline: none;
+  }
   .na-stage .cli-app form.na-message-box {
     width: min(820px, calc(100% - clamp(24px, 5vw, 80px)));
     margin: 10px auto 18px;

@@ -72,7 +72,7 @@ async function open(rows: Rows = { devices: [device()], sessions: [session()] },
   fixture.fetchSnapshot.mockResolvedValue(rows);
   localStorage.setItem("nexbot.cliSelected", KEY);
   await act(async () => {
-    root.render(createElement(CliAgentsWorkspace, { sidebar: null, dark: false, collapsed: false, onNavigation: () => {}, stream, ...extra }));
+    root.render(createElement(CliAgentsWorkspace, { sidebar: null, dark: false, collapsed: false, onSwitchMode: () => {}, stream, ...extra }));
   });
   await flush();
   await act(async () => { socket.open(); });

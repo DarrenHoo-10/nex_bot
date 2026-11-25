@@ -637,8 +637,6 @@ setInterval(() => {}, 60_000);
 
   await step("NexAgent switch and grouped session list", async () => {
     await click(".mode-switcher-button");
-    await until(() => evaluate("!!document.querySelector('.mode-menu')"), "mode menu");
-    await evaluate("document.querySelectorAll('.mode-menu [role=menuitemradio]')[1].click(),true");
     await until(() => evaluate("!!document.querySelector('.cli-app') && !!document.querySelector('.cli-row')"), "Agent session list", 30_000);
     await until(async () => (await evaluate("document.querySelectorAll('.cli-row').length")) >= 3, "three synthetic rows", 30_000);
     const groups = await rows();

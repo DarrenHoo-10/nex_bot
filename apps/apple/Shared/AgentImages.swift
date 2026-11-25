@@ -76,23 +76,67 @@ struct AgentComposerAdd: View {
     }
 }
 
+/// Images about to be sent: only their thumbnails, which open the picture, each with a remove button on its corner.
 struct AgentImageDrafts: View {
     @Binding var images: [CliImageUpload]
 
     var body: some View {
         if !images.isEmpty {
             ScrollView(.horizontal) {
-                HStack(spacing: 6) {
+                HStack(spacing: 10) {
                     ForEach(images) { image in
-                        Button { images.removeAll { $0.id == image.id } } label: {
-                            Label(image.name, systemImage: "xmark.circle").lineLimit(1).font(.caption)
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("移除 " + image.name)
+                        AgentImageDraft(image: image) { images.removeAll { $0.id == image.id } }
                     }
                 }
+                // room for the corner buttons, which sit half outside each thumbnail
+                .padding(.top, 8).padding(.trailing, 8)
             }
             .scrollIndicators(.hidden)
+        }
+    }
+}
+
+private struct AgentImageDraft: View {
+    let image: CliImageUpload
+    let remove: () -> Void
+    @State private var thumbnail: CGImage?
+    @State private var open = false
+
+    var body: some View {
+        Button { open = true } label: {
+            Group {
+                if let thumbnail {
+                    Image(thumbnail, scale: 1, label: Text(image.name)).resizable().scaledToFill()
+                } else {
+                    Theme.card.overlay { Image(systemName: "photo").foregroundStyle(Theme.muted) }
+                }
+            }
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.border))
+        }
+        .buttonStyle(.plain)
+        .disabled(thumbnail == nil)
+        .accessibilityLabel("查看图片 " + image.name)
+        .overlay(alignment: .topTrailing) {
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(.black.opacity(0.72), in: Circle())
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                    .contentShape(Circle().inset(by: -6))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 7, y: -7)
+            .accessibilityLabel("移除 " + image.name)
+        }
+        .task(id: image.id) {
+            let bytes = image.data
+            let preview = await Task.detached { agentPreview(bytes, pixels: 160) }.value
+            if !Task.isCancelled { thumbnail = preview }
+        }
+        .sheet(isPresented: $open) {
+            if let thumbnail { AgentImageViewer(data: image.data, thumbnail: thumbnail, name: image.name) }
         }
     }
 }
@@ -201,7 +245,7 @@ private struct AgentImageViewer: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
             Image(large ?? thumbnail, scale: 1, label: Text(name)).resizable().scaledToFit()
                 .frame(maxWidth: .infinity, maxHeight: .infinity).padding(12)

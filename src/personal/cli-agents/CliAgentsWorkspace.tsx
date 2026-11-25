@@ -120,7 +120,8 @@ export interface CliAgentsWorkspaceProps {
   overlay?: ReactNode;
   dark: boolean;
   collapsed: boolean;
-  onNavigation(): void;
+  /** the NexAgent brand above the phone list: straight back to NexBot */
+  onSwitchMode(): void;
   /** the user's assistants, for "交给助手" */
   bots?: readonly CliBotChoice[];
   /** after a fork: open the assistant's new topic */
@@ -132,7 +133,7 @@ export interface CliAgentsWorkspaceProps {
 export function CliAgentsWorkspace(props:CliAgentsWorkspaceProps) {
   return <WorkbenchProvider><Workspace {...props}/></WorkbenchProvider>;
 }
-function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNavigation, bots, onOpenTopic, stream: provided }: CliAgentsWorkspaceProps) {
+function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSwitchMode, bots, onOpenTopic, stream: provided }: CliAgentsWorkspaceProps) {
   const review=useReview();
   const [railWidth,setRailWidth]=useState(()=>{try{return Number(localStorage.getItem("nexagent.railWidth"))||272}catch{return 272}});
   const didSelect=useRef(false);
@@ -331,7 +332,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
         {!collapsed&&slotted?<div className="na-resize" role="separator" aria-label="调整会话栏宽度" aria-orientation="vertical" aria-valuenow={railWidth} tabIndex={0} onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);e.preventDefault()}} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))resize(e.clientX)}} onKeyDown={e=>{if(e.key==="ArrowRight"||e.key==="ArrowLeft"){e.preventDefault();resize(railWidth+(e.key==="ArrowRight"?12:-12))}}}/>:null}
         <main className="cli-main">
           {(showDirectoryHeader || linkText) && <header className="na-workspace-status">
-            {showDirectoryHeader && <button type="button" className="na-directory-brand" aria-label="NexAgent，打开应用导航" onClick={onNavigation}><BrandMark agent size={23}/><strong>NexAgent</strong></button>}
+            {showDirectoryHeader && <button type="button" className="na-directory-brand" aria-label="切换到 NexBot" title="切换到 NexBot" onClick={onSwitchMode}><BrandMark agent size={23}/><strong>NexAgent</strong></button>}
             {linkText && <span className="cli-link-state" role="status">{linkText}</span>}
           </header>}
           {error ? (

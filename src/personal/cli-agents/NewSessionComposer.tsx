@@ -93,9 +93,9 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
             <HarnessPicker engines={engines} value={engine} onChange={setEngine} disabled={!device?.online || !device.cliAgents} agyNeedsUpdate={device?.cliAgents?.agyNeedsUpdate}/>
             {git ? <BranchChip branch={branch} onChange={setBranch} problem={branchError}/> : null}
             {canChoosePermissions ? <PermissionChip value={selectedPermissions} onChange={engine === "agy" ? setAgyPermissions : setPermissions}/> : null}
-            {/* only what needs attention; the folder's full path is on its chip */}
-            {status ? <span className="na-new-path" role="alert">{status}</span> : null}
           </div>
+          {/* only what needs attention; the folder's full path is on its chip */}
+          {status ? <span className="na-new-path" role="alert">{status}</span> : null}
           <Composer key={draft.key} session={draft} features={features} launch={choice} onLaunch={setChoice}
             starter={{ ready, onStart: start }} onSend={async () => undefined} onInterrupt={async () => undefined}/>
         </div>

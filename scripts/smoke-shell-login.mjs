@@ -72,15 +72,14 @@ try {
     if (!await first.evaluate("document.title==='NexBot'")) throw new Error("Window title is not NexBot");
     cases.push("local-ui-with-remote-api");
     // NexAgent: the bundled UI offers the switch, and the session stream reaches Core with the client's session
-    const pickMode = async (index, label) => {
+    // the brand switches straight to the other mode
+    const pickMode = async (label) => {
       await first.evaluate("document.querySelector('.mode-switcher-button').click();true");
-      await until(() => first.evaluate("!!document.querySelector('.mode-menu')"));
-      await first.evaluate(`document.querySelectorAll('.mode-menu [role=menuitemradio]')[${index}].click();true`);
       await until(() => first.evaluate(`document.querySelector('.mode-switcher-button strong')?.textContent===${JSON.stringify(label)}`));
     };
-    await pickMode(1, "NexAgent");
+    await pickMode("NexAgent");
     await until(() => first.evaluate("[...document.querySelectorAll('.cli-device header strong')].some(el=>el.textContent==='示例电脑')&&!document.querySelector('.cli-link-state')"));
-    await pickMode(0, "NexBot");
+    await pickMode("NexBot");
     cases.push("nexagent-switch-and-session-stream");
     await first.evaluate("document.querySelector('.workspace-account-name').click();true");
     await first.evaluate("[...document.querySelectorAll('.account-menu button')].find(el=>el.textContent==='设置').click();true");
