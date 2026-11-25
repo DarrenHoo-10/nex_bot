@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 接入 Antigravity CLI · 0.9.54 四端发布（2026-11-26）](nexagent-agy-0954-20261126.md)
+
 - [双品牌界面重构、悬浮动作岛与桌面托盘 · 0.9.53 四端发布（2026-11-26）](nexbot-ui-redesign-0953-20261126.md)
 
 - [NexAgent 引导消息与 Windows 安装向导 · 0.9.52 四端发布（2026-11-26）](nexagent-guide-0952-20261126.md)
