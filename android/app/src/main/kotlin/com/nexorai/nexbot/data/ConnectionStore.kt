@@ -2,6 +2,7 @@ package com.nexorai.nexbot.data
 
 import android.content.Context
 import com.nexorai.nexbot.core.CoreJson
+import java.util.UUID
 import kotlinx.serialization.Serializable
 
 /**
@@ -21,6 +22,8 @@ data class StoredConnection(
 )
 
 interface ConnectionStore {
+    fun clientInstanceId(): String? = null
+
     fun load(): StoredConnection?
 
     fun save(connection: StoredConnection)
@@ -37,6 +40,9 @@ interface SecretBox {
 
 class PrefsConnectionStore(context: Context, private val box: SecretBox) : ConnectionStore {
     private val prefs = context.getSharedPreferences("nexbot", Context.MODE_PRIVATE)
+
+    override fun clientInstanceId(): String = prefs.getString(INSTANCE_KEY, null)
+        ?: UUID.randomUUID().toString().also { prefs.edit().putString(INSTANCE_KEY, it).apply() }
 
     override fun load(): StoredConnection? {
         val sealed = prefs.getString(KEY, null) ?: return null
@@ -60,5 +66,6 @@ class PrefsConnectionStore(context: Context, private val box: SecretBox) : Conne
 
     private companion object {
         const val KEY = "connection"
+        const val INSTANCE_KEY = "client_instance_id"
     }
 }

@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, lstatSync } from "node:fs";
 import path from "node:path";
 import { createPersonalApp, type AppOptions } from "./index.ts";
 import { hash } from "./store.ts";
-import { IdentityError, type UpstreamSession } from "./identity-provider.ts";
+import { IdentityError } from "./identity-provider.ts";
 import { requestBody } from "./http-body.ts";
 import { FeishuWorkspaceRouter } from "./feishu/workspace-router.ts";
 import { feishuScanToken } from "./feishu/module.ts";
@@ -68,11 +68,11 @@ export async function createWorkspaceService(options: AppOptions) {
       const session = await target.finance.accept(grant, () => target.agents.finance().botId, target !== primary);
       target.runtime.startRecovered(); target.changed(); return session;
     };
-    primary.identity!.routeVerified = async (upstream: UpstreamSession, name: string) => {
+    primary.identity!.routeVerified = async (upstream, client) => {
       if (closing) throw new IdentityError(503, "服务正在重启，请稍后重试");
       const target = existingSubject(primary) === upstream.subject ? primary : await load(workspaceKey(upstream.subject));
       if (closing) throw new IdentityError(503, "服务正在重启，请稍后重试");
-      const login = target.identity!.acceptVerified(upstream, name);
+      const login = target.identity!.acceptVerified(upstream, client);
       target.runtime.startRecovered(); target.changed(); return login;
     };
     primary.setRequestRouter(async (request, response) => {

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from "electron";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -22,6 +22,7 @@ let device, updater, shuttingDown = false, installing = false;
 let window, saved, origin, connectionError = "", resuming = false, loginEpoch = 0, repointed = false;
 const cancelled = Object.assign(new Error("已取消"), { cancelled: true });
 const credentials = path.join(app.getPath("userData"), "connection.bin");
+const clientInstanceFile = path.join(app.getPath("userData"), "client-instance-id");
 const connectionPage = pathToFileURL(path.join(root, "electron", "client", "index.html")).href;
 function validate(event, localOnly = false) {
   const url = event.senderFrame?.url;
@@ -50,6 +51,12 @@ async function sessionRefreshed(next) {
   writeFileSync(credentials, safeStorage.encryptString(JSON.stringify(saved)), { mode: 0o600 });
   if (origin === saved.origin) await setSessionCookie(saved.origin, saved.token);
 }
+function clientInstanceId() {
+  if (existsSync(clientInstanceFile)) return readFileSync(clientInstanceFile, "utf8").trim();
+  const id = randomUUID();
+  writeFileSync(clientInstanceFile, id, { mode: 0o600 });
+  return id;
+}
 async function login(settings) {
   await device?.stop();
   const old = saved, epoch = loginEpoch;
@@ -77,7 +84,7 @@ async function login(settings) {
     if (!address.startsWith("https:") && !localFixture) throw new Error("账号登录需要 HTTPS 后端地址，请为服务配置 HTTPS 连接");
     if (identity.loginRequired !== true || !identity.loginMethods?.includes("password")) throw new Error("后端须启用 NexorAI 账号登录");
     if (!identity.initialized) throw new Error("后端尚未关联账号，请先在服务器运行 init 完成初始化");
-    const transaction = await request(address, "/api/auth/start", { account: settings.email, name: settings.name });
+    const transaction = await request(address, "/api/auth/start", { account: settings.email, name: settings.name, clientInstanceId: clientInstanceId() });
     session = await request(address, "/api/auth/respond", { ...transaction, password: settings.password });
     if (epoch !== loginEpoch) throw cancelled;
     if (session.coreId !== identity.coreId) throw new Error("Core 身份在登录期间发生变化");

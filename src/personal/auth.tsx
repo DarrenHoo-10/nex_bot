@@ -50,6 +50,16 @@ export function AccountControls() {
 }
 
 function isHomeRoute() { return !desktop && ["#home", "#top", "#features", "#platforms", "#start", "#login"].includes(window.location.hash); }
+function browserClientInstanceId(): string | undefined {
+  try {
+    const key = "nexbot.clientInstanceId";
+    const saved = localStorage.getItem(key);
+    if (saved) return saved;
+    const instanceId = crypto.randomUUID();
+    localStorage.setItem(key, instanceId);
+    return instanceId;
+  } catch { return undefined; }
+}
 
 export function LoginGate({ children }: { children: ReactNode }) {
   const [home, setHome] = useState(isHomeRoute);
@@ -165,7 +175,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
     event.preventDefault(); const form = event.currentTarget, data = new FormData(form); setBusy(true); setError("");
     void (async () => {
       try {
-        const transaction = await api<LoginTransaction>("auth/start", { account: data.get("email"), name: desktop?.mode === "client" ? "NexBot Client" : "主设备" });
+        const transaction = await api<LoginTransaction>("auth/start", { account: data.get("email"), name: desktop?.mode === "client" ? "NexBot Client" : "网页浏览器", clientInstanceId: browserClientInstanceId() });
         const session = await api<LoginSession>("auth/respond", { ...transaction, password: data.get("password") });
         form.reset();
         await desktop?.rememberLogin?.(session);
