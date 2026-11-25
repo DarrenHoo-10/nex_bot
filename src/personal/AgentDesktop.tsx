@@ -544,7 +544,13 @@ export function AgentDesktop() {
       });
     };
     const expired = () => { scope.abort(); offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
-    const focused = () => { if (Date.now() - lastFrame > 20_000 || events.readyState !== 1) refresh(true); };
+    const focused = () => {
+      if (stale) refresh();
+      if (Date.now() - lastFrame > 20_000 || events.readyState !== 1) refresh(true);
+    };
+    const visibilityChanged = () => {
+      if (document.visibilityState === "visible") refresh(true);
+    };
     events.addEventListener("change", change as EventListener);
     events.addEventListener("delta", delta as EventListener);
     events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired")));
@@ -552,7 +558,7 @@ export function AgentDesktop() {
     events.onerror = () => { reopened = true; refresh(true); };
     window.addEventListener("nex-session-expired", expired);
     window.addEventListener("focus", focused);
-    document.addEventListener("visibilitychange", focused);
+    document.addEventListener("visibilitychange", visibilityChanged);
     const interval = setInterval(focused, 25_000);
     stale = true;
     void drain();
@@ -560,7 +566,7 @@ export function AgentDesktop() {
       scope.abort(); clearTimeout(timer); clearInterval(interval); events.close();
       window.removeEventListener("focus", focused);
       window.removeEventListener("nex-session-expired", expired);
-      document.removeEventListener("visibilitychange", focused);
+      document.removeEventListener("visibilitychange", visibilityChanged);
     };
   }, [reload, offline, chatVisible, botId, conversation]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);

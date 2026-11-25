@@ -55,7 +55,7 @@ it("requires timestamp cursors, bounds history, and catches up backdated message
     const other = app.store.createBot("Synthetic hidden bot");
     const insert = app.store.db.prepare("INSERT INTO agent_messages(id,bot_id,workspace_id,owner_user_id,seq,role,kind,content,source_key,created_at) VALUES(?,?,?, ?,?,'user','message',?,?,?)");
     const add = (botId: string, seq: number, createdAt: number) => {
-      insert.run(botId + seq, botId, app.store.workspace, app.store.owner, seq, "x".repeat(240), "synthetic:" + seq, createdAt);
+      insert.run(botId + seq, botId, app.store.workspace, app.store.owner, seq, "x".repeat(240), "synthetic:" + botId + ":" + seq, createdAt);
     };
     for (let seq = 1; seq <= 90; seq++) add(bot, seq, 500);
     add(other, 1, 500);

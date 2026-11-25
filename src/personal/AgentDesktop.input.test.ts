@@ -174,7 +174,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     const history = [{ id: "rich-history", role: "assistant", kind: "message", content, created_at: 1, seq: 1 }];
     fixture.api.mockImplementation(async (route: string) => {
       if (route.startsWith("state?view=workspace")) return { ...state };
-      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
+      if (route.startsWith("agents/messages")) return { sync, messages: /[?&]after=[1-9]/.test(route) ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
       return {};
     });
     await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 200)); });
@@ -503,7 +503,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     state = { ...state, jobs, tasks } as State;
     fixture.api.mockImplementation(async (route: string) => {
       if (route.startsWith("state?view=workspace")) return state;
-      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : messages, streaming: [], hasMore: false };
+      if (route.startsWith("agents/messages")) return { sync, messages: /[?&]after=[1-9]/.test(route) ? [] : messages, streaming: [], hasMore: false };
       return {};
     });
     await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 250)); });
@@ -643,7 +643,7 @@ it("opens an inline finance topic in the shared chat and replies to its original
     if (route === "agents/finance") return {botId:"agent"};
     if (route.startsWith("agents/topics?")) return {topics:[topic]};
     if (route.startsWith("agents/tasks?")) return {tasks:[]};
-    if (route.startsWith("agents/messages?")) return {messages: route.includes("after=") ? [] : [message], sync, streaming:[], hasMore:false};
+    if (route.startsWith("agents/messages?")) return {messages: /[?&]after=[1-9]/.test(route) ? [] : [message], sync, streaming:[], hasMore:false};
     return {conversationId:topic.conversationId};
   });
   await act(async () => { root.render(createElement(AgentDesktop, {key:"finance-inline"})); });
@@ -663,7 +663,7 @@ describe("Tool steps in the chat (Web, Electron and Android WebView)", () => {
     const base = fixture.api.getMockImplementation()!;
     fixture.api.mockImplementation(async (route: string, ...rest: unknown[]) => {
       if (route.startsWith("state?view=workspace")) return { ...state };
-      if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
+      if (route.startsWith("agents/messages")) return { sync, messages: /[?&]after=[1-9]/.test(route) ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
       if (route.startsWith("preview?callId=call1")) return { kind: "tool", id: "call1", title: "memory.write", status: "succeeded", arguments: JSON.stringify({ title: "写作偏好", content: "报告用中文写，先给结论再给依据。" }), content: JSON.stringify({ saved: true, version: 2 }, null, 2) };
       return base(route, ...rest);
     });
