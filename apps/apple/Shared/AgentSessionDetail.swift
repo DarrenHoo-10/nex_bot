@@ -610,7 +610,7 @@ private struct AgentComposer: View {
     }
     private var pendingRequests: [CliRequestRecord] { model.cards(session.key).filter { model.cardState($0) == .pending } }
     private var steerQuestionId: String? {
-        guard canSetOnSend else { return nil }
+        guard canSetOnSend, session.state == .running || session.state == .waiting else { return nil }
         let pending = pendingRequests
         guard pending.count == 1, let question = pending.first?.view,
               question.kind == .question, question.tool == "AskUserQuestion" else { return nil }

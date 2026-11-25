@@ -125,7 +125,8 @@ extension CoreClient {
     /// Returns the delivery notice when Core cannot confirm immediate steering.
     public func cliSteer(key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
         let body = CliSendBody(key: key, text: text, delivery: "steer", clientMessageId: UUID().uuidString, requestId: UUID().uuidString, questionId: questionId, interruptWaiting: interruptWaiting ? true : nil)
-        let result: CliSendResult = try await post(Self.cliBase + "/send", body: body)
+        let route = questionId != nil || interruptWaiting ? "/steer-waiting" : "/send"
+        let result: CliSendResult = try await post(Self.cliBase + route, body: body)
         switch result.status {
         case "failed": return "引导失败，消息已保留"
         case "uncertain": return "引导结果待确认"

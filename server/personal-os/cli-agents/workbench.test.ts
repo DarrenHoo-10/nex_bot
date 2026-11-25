@@ -239,20 +239,46 @@ describe("queue delivery", () => {
     await until(() => f.app.cliHub.requests(key).length === 1, "question stored");
     const queued = (await f.call("cli-agents/send", { key, text: "Use green", delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() })).data;
     const selection = { entryId: queued.messageId, expectedVersion: queued.version };
-    const stale = await f.call("cli-agents/queue/steer", { ...selection, questionId: "other-question" });
+    const stale = await f.call("cli-agents/steer-waiting", { ...selection, questionId: "other-question" });
     expect(stale.data.code).toBe("turn_changed");
-    const interrupt = await f.call("cli-agents/queue/steer", { ...selection, interruptWaiting: true });
+    const interrupt = await f.call("cli-agents/steer-waiting", { ...selection, interruptWaiting: true });
     expect(interrupt.data.code).toBe("turn_changed");
     expect(device.ops("answer")).toHaveLength(0);
     expect(device.ops("interrupt")).toHaveLength(0);
 
-    const steered = await f.call("cli-agents/queue/steer", { ...selection, questionId: "question-1" });
+    const steered = await f.call("cli-agents/steer-waiting", { ...selection, questionId: "question-1" });
     expect(steered.data.entry.status).toBe("sent");
     expect(device.ops("answer")).toHaveLength(1);
     expect(device.ops("answer")[0].args).toMatchObject({ id: "question-1", decision: "deny", message: expect.stringContaining("Use green") });
     expect(f.app.cliHub.requests(key)).toHaveLength(0);
     expect(device.ops("steer")).toHaveLength(0);
     expect(device.ops("send")).toHaveLength(0);
+  });
+
+  it("steers directly against the current question while leaving permissions untouched", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "direct-question-steer");
+    const key = await sessionOn(f, device, "q2", "running");
+    device.send({
+      type: "cli.request", ref: "claude:q2", id: "permission-1", kind: "permission", tool: "Bash",
+      summary: "Run a command", expiresAt: Date.now() + 60_000,
+    });
+    await until(() => f.app.cliHub.requests(key).length === 1, "permission stored");
+    const message = { key, text: "Use green", clientMessageId: ids.client(), requestId: ids.request() };
+    const blocked = await f.call("cli-agents/steer-waiting", { ...message, questionId: "permission-1" });
+    expect(blocked.data.code).toBe("turn_changed");
+    expect(device.ops("answer")).toHaveLength(0);
+
+    device.send({ type: "cli.request.resolved", id: "permission-1", by: "terminal" });
+    device.send({
+      type: "cli.request", ref: "claude:q2", id: "question-2", kind: "question", tool: "AskUserQuestion", summary: "Which color?",
+      questions: [{ question: "Which color?", options: [{ label: "red" }, { label: "blue" }] }], expiresAt: Date.now() + 60_000,
+    });
+    await until(() => f.app.cliHub.requests(key)[0]?.id === "question-2", "question stored");
+    const steered = await f.call("cli-agents/steer-waiting", { ...message, questionId: "question-2" });
+    expect(steered.data.status).toBe("sent");
+    expect(device.ops("answer")[0].args).toMatchObject({ id: "question-2", decision: "deny", message: expect.stringContaining("Use green") });
+    expect(device.ops("steer")).toHaveLength(0);
   });
 
   it("sends guidance after interrupting a waiting terminal when no interactive request exists", async () => {
@@ -271,12 +297,12 @@ describe("queue delivery", () => {
     expect(implicit.data.code).toBe("turn_changed");
     expect(device.ops("interrupt")).toHaveLength(0);
 
-    const held = await f.call("cli-agents/queue/steer", { ...selection, interruptWaiting: true });
+    const held = await f.call("cli-agents/steer-waiting", { ...selection, interruptWaiting: true });
     expect(held.data.entry.status).toBe("pending");
     expect(device.ops("send")).toHaveLength(0);
 
     interrupted = true;
-    const steered = await f.call("cli-agents/queue/steer", { ...selection, expectedVersion: held.data.entry.version, interruptWaiting: true });
+    const steered = await f.call("cli-agents/steer-waiting", { ...selection, expectedVersion: held.data.entry.version, interruptWaiting: true });
     expect(steered.data.entry.status).toBe("sent");
     expect(device.ops("interrupt")).toHaveLength(2);
     expect(device.ops("send").map((op) => op.args.text)).toEqual(["New direction"]);

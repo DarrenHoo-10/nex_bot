@@ -94,7 +94,8 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   const pendingRequests = requests.filter((record) => cardState(record, now) === "pending");
   const shown = askedSession(session, pendingRequests.length);
   const managedClaude = session.engine === "claude" && session.liveIn === "nexbot" && !!session.terminal;
-  const steerQuestionId = managedClaude ? cliQuestionToSteer(pendingRequests.map((record) => record.view)) : undefined;
+  const steerQuestionId = managedClaude && (session.state === "running" || session.state === "waiting")
+    ? cliQuestionToSteer(pendingRequests.map((record) => record.view)) : undefined;
   const interruptWaiting = managedClaude && session.state === "waiting" && pendingRequests.length === 0;
   const waitingSteer = { questionId: steerQuestionId, ...(interruptWaiting ? { interruptWaiting: true } : {}) };
   const resumedKey = useRef<CliSessionKey|null>(null);

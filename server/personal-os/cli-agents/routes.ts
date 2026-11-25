@@ -29,7 +29,7 @@ import { forkToTopic, type ForkAgents } from "./fork.ts";
 import { CliOpError, type CliAgentHub } from "./hub.ts";
 import { parseSettings, type CliAgentSupervisor } from "./supervisor.ts";
 import { MAX_TRANSLATION_SOURCE, CliTranslation } from "./translation.ts";
-import type { CliAgentWorkbench } from "./workbench.ts";
+import type { CliAgentWorkbench, WaitingSteer } from "./workbench.ts";
 import type { CliImages } from "./images.ts";
 
 export interface CliRouteRequest {
@@ -138,6 +138,7 @@ export class CliAgentRoutes {
         case "/api/cli-agents/start": return await this.start(request, data);
         case "/api/cli-agents/continue": return await this.continueSession(request, data);
         case "/api/cli-agents/send": return await this.send(request, data);
+        case "/api/cli-agents/steer-waiting": return await this.steerWaiting(request, data);
         case "/api/cli-agents/interrupt": return await this.interrupt(request, data);
         case "/api/cli-agents/open-local": return await this.openLocal(request, data);
         case "/api/cli-agents/answer": return await this.answer(request, data);
@@ -197,14 +198,12 @@ export class CliAgentRoutes {
     return { status: 200, body: { entry: workbench.withdrawEntry(input) } };
   }
 
-  private async queueSteer(data: Record<string, unknown>): Promise<CliRouteResult> {
+  private async queueSteer(data: Record<string, unknown>, waitingSteer?: WaitingSteer): Promise<CliRouteResult> {
     const workbench = this.extras.workbench;
     if (!workbench) return cliErrorResult("not_found");
     const input = this.entryInput(data);
     if (!input) return cliErrorResult("invalid");
     const expectedTurnId = typeof data.expectedTurnId === "string" ? data.expectedTurnId : undefined;
-    const waitingSteer = cliWaitingSteer(data);
-    if (!waitingSteer) return cliErrorResult("invalid");
     const entry = await workbench.steerEntry(input, expectedTurnId, waitingSteer);
     return { status: 200, body: { entry } };
   }
@@ -551,7 +550,23 @@ export class CliAgentRoutes {
     return { status: 200, body: { key: continued.key } };
   }
 
-  private async send(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
+  /** A separate route makes older Cores reject waiting actions instead of typing into the terminal. */
+  private async steerWaiting(request: CliRouteRequest, data: Record<string, unknown>): Promise<CliRouteResult> {
+    if (!this.extras.workbench) return cliErrorResult("not_found");
+    const { questionId, interruptWaiting } = data;
+    let waitingSteer: WaitingSteer;
+    if (questionId === undefined && interruptWaiting === true) {
+      waitingSteer = { interruptWaiting };
+    } else if (interruptWaiting === undefined && typeof questionId === "string" && questionId.length > 0 && questionId.length <= CLI_LIMITS.requestId) {
+      waitingSteer = { questionId };
+    } else {
+      return cliErrorResult("invalid");
+    }
+    if ("entryId" in data) return this.queueSteer(data, waitingSteer);
+    return this.send(request, { ...data, delivery: "steer" }, waitingSteer);
+  }
+
+  private async send(request: CliRouteRequest, data: Record<string, unknown>, waitingSteer?: WaitingSteer): Promise<CliRouteResult> {
     const key = this.key(data.key);
     const text = data.text;
     if (!key || typeof text !== "string" || text.length < 1) return cliErrorResult("invalid");
@@ -560,8 +575,6 @@ export class CliAgentRoutes {
     this.store.audit("cli.send", "cli_session", key, { sessionId: request.sessionId, length: text.length });
     const workbench = this.extras.workbench;
     const delivery = data.delivery;
-    const waitingSteer = cliWaitingSteer(data);
-    if (!waitingSteer || ((waitingSteer.questionId || waitingSteer.interruptWaiting) && (!workbench || delivery !== "steer"))) return cliErrorResult("invalid");
     const contract = typeof data.clientMessageId === "string" || typeof data.requestId === "string" || delivery !== undefined;
     if (contract && workbench) {
       if (!isCliDelivery(delivery)) return cliErrorResult("invalid");
@@ -634,6 +647,7 @@ const POST_ROUTES = new Set([
   "/api/cli-agents/start",
   "/api/cli-agents/continue",
   "/api/cli-agents/send",
+  "/api/cli-agents/steer-waiting",
   "/api/cli-agents/interrupt",
   "/api/cli-agents/open-local",
   "/api/cli-agents/hide",
@@ -669,14 +683,6 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/models",
   "/api/cli-agents/dirs",
 ]);
-
-function cliWaitingSteer(data: Record<string, unknown>): { questionId?: string; interruptWaiting?: boolean } | null {
-  const { questionId, interruptWaiting } = data;
-  if (interruptWaiting !== undefined && typeof interruptWaiting !== "boolean") return null;
-  if (questionId === undefined) return interruptWaiting ? { interruptWaiting } : {};
-  if (interruptWaiting || typeof questionId !== "string" || !questionId.length || questionId.length > CLI_LIMITS.requestId) return null;
-  return { questionId };
-}
 
 /** The delivery a workbench submit carries; absent means the legacy contract. */
 function isCliDelivery(value: unknown): value is CliDeliveryAction {

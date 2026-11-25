@@ -201,10 +201,11 @@ export interface SendOptions {
 
 export async function sendMessage(key: CliSessionKey, text: string, options: SendOptions = {}): Promise<SendOutcome> {
   const withContract = options.clientMessageId !== undefined || options.requestId !== undefined || options.delivery !== undefined;
+  const waiting = options.delivery === "steer" && (options.questionId || options.interruptWaiting);
   const data = await call<Record<string, unknown>>(
-    "/send",
+    waiting ? "/steer-waiting" : "/send",
     withContract
-      ? { key, text, delivery: options.delivery ?? "send", clientMessageId: options.clientMessageId, requestId: options.requestId, questionId: options.questionId, interruptWaiting: options.interruptWaiting, ...(options.revisesMessageId ? { revisesMessageId: options.revisesMessageId } : {}) }
+      ? { key, text, ...options, delivery: options.delivery ?? "send" }
       : { key, text },
   );
   return {
@@ -228,7 +229,7 @@ export const editQueued = (entryId: string, expectedVersion: number, text: strin
 export const withdrawQueued = (entryId: string, expectedVersion: number) =>
   call<{ entry: unknown }>("/queue/withdraw", { entryId, expectedVersion });
 export const steerQueued = (entryId: string, expectedVersion: number, options: Pick<SendOptions, "questionId" | "interruptWaiting"> = {}) =>
-  call<{ entry: { status: string } }>("/queue/steer", { entryId, expectedVersion, ...options });
+  call<{ entry: { status: string } }>(options.questionId || options.interruptWaiting ? "/steer-waiting" : "/queue/steer", { entryId, expectedVersion, ...options });
 export const interruptSession = (key: CliSessionKey) => call<{ outcome: string }>("/interrupt", { key });
 export const openLocal = (key: CliSessionKey) => call<{ ok: boolean }>("/open-local", { key });
 export const hideSession = (key: CliSessionKey, hidden: boolean) => call<{ ok: boolean }>("/hide", { key, hidden });

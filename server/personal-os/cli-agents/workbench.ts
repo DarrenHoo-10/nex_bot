@@ -26,7 +26,7 @@ import { id, now, type CoreStore, type Row } from "../store.ts";
 import { CliOpError, TrackedOpError, type CliAgentHub, type CliTurnEvent } from "./hub.ts";
 import type { CliImages } from "./images.ts";
 
-interface WaitingSteer {
+export interface WaitingSteer {
   questionId?: string;
   interruptWaiting?: boolean;
 }
@@ -524,7 +524,8 @@ export class CliAgentWorkbench {
     const ref = parseCliKey(key)?.ref ?? "";
     if (interruptWaiting) this.interruptingForSteer.add(key);
     try {
-      const message = this.entryText(this.entryRow(entryId));
+      const entry = this.entryRow(entryId);
+      const message = this.entryText(entry);
       if (questionId !== undefined) {
         // Claude receives the deny reason as tool feedback within the current turn.
         await this.hub.answer(actor, questionId, "deny", undefined, questionGuidance(message));
@@ -535,15 +536,13 @@ export class CliAgentWorkbench {
       if (interruptWaiting) {
         const { outcome: interrupted } = await this.hub.interrupt(actor, key);
         if (interrupted !== "interrupted") throw new CliOpError("turn_changed");
-        if (this.queueState(String(this.entryRow(entryId).workbench_id)).pauseReason === "stopped" || this.pendingRequests(key).length) {
+        if (this.queueState(String(entry.workbench_id)).pauseReason === "stopped" || this.pendingRequests(key).length) {
           throw new CliOpError("turn_changed");
         }
       }
       const { result, opId } = await this.hub.opTracked(actor, deviceId, key, interruptWaiting ? "send" : op, { ref, text });
-      if (interruptWaiting && (result as { started?: boolean }).started === true) {
-        this.awaitingTurnEnd.add(String(this.entryRow(entryId).workbench_id));
-      }
       this.lastDispatchStarted = (result as { started?: boolean }).started === true;
+      if (interruptWaiting && this.lastDispatchStarted) this.awaitingTurnEnd.add(String(entry.workbench_id));
       const { delivery, waiting } = result as { delivery?: unknown; waiting?: unknown };
       if (outcome && (delivery === "confirmed" || delivery === "unconfirmed")) outcome.delivery = delivery;
       if (outcome && waiting === true) outcome.waiting = true;
