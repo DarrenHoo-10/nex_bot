@@ -235,9 +235,10 @@ export interface CliSessionView extends CliSessionWire {
 export type CliToolStatus = "running" | "ok" | "error";
 export type CliNoticeLevel = "info" | "error";
 export type CliTurnPhase = "started" | "ended" | "aborted";
+export interface CliTaskEnd { id: string; state: "completed" | "failed" | "cancelled" }
 
 export type CliItem =
-  | { kind: "user"; id: string; ts: number; text: string; images?: string[]; queued?: boolean }
+  | { kind: "user"; id: string; ts: number; text: string; images?: string[]; queued?: boolean; queuedByUser?: boolean }
   | { kind: "assistant"; id: string; ts: number; text: string }
   | { kind: "thinking"; id: string; ts: number; text: string }
   | {
@@ -249,8 +250,52 @@ export type CliItem =
       status: CliToolStatus;
       output?: string;
     }
-  | { kind: "notice"; id: string; ts: number; level: CliNoticeLevel; text: string }
+  | { kind: "notice"; id: string; ts: number; level: CliNoticeLevel; text: string; taskEnd?: CliTaskEnd }
   | { kind: "turn"; id: string; ts: number; phase: CliTurnPhase };
+
+export function cliTaskEnd(id: unknown, status: unknown): CliTaskEnd | undefined {
+  if (typeof id !== "string" || typeof status !== "string" || !/^[\w./:-]{1,128}$/.test(id)) return undefined;
+  switch (status.toLowerCase()) {
+    case "completed": return { id, state: "completed" };
+    case "failed": case "errored": return { id, state: "failed" };
+    case "cancelled": case "canceled": case "stopped": case "shutdown": case "not_found": return { id, state: "cancelled" };
+    default: return undefined;
+  }
+}
+
+function cliTaskHeader(text: string): string {
+  return text.slice(0, 2048).split(/<(?:summary|result|output)>/, 1)[0]!;
+}
+
+function taskIdInHeader(header: string): string | undefined {
+  return header.match(/^\s*<task-notification>\s*<task-id>\s*([\w./:-]{1,128})\s*<\/task-id>/)?.[1];
+}
+
+export function parseCliTaskNotification(text: string): CliTaskEnd | undefined {
+  const header = cliTaskHeader(text);
+  const status = header.match(/<status>\s*([\w-]+)\s*<\/status>/)?.[1];
+  return cliTaskEnd(taskIdInHeader(header), status);
+}
+
+export function cliTaskNotice(id: string, ts: number, taskEnd?: CliTaskEnd): Extract<CliItem, { kind: "notice" }> {
+  // V1 peers can still decode the notice, without receiving the original payload.
+  return { kind: "notice", id, ts, level: "info", text: "", ...(taskEnd ? { taskEnd } : {}) };
+}
+
+export function normalizeCliTaskItem(item: CliItem): CliItem {
+  if (item.kind === "notice" && item.taskEnd) return item.text ? cliTaskNotice(item.id, item.ts, item.taskEnd) : item;
+  if (item.kind !== "user" && item.kind !== "notice") return item;
+  if (!item.text.trimStart().startsWith("<task-notification>")) return item;
+  if (item.kind === "notice" && item.level === "info") return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(item.text));
+  if (item.kind === "user" && item.queued && !item.queuedByUser && !item.images?.length) {
+    const head = cliTaskHeader(item.text);
+    // Cached V1 queue items lack provenance. Require a runtime field as well as the task envelope.
+    if (taskIdInHeader(head) && /<(tool-use-id|output-file)>[^<]+<\/\1>/.test(head)) {
+      return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(head));
+    }
+  }
+  return item;
+}
 
 // ---------------------------------------------------------------------------
 // Turn ends and pending requests (design sections 8 and 9)
@@ -1040,14 +1085,15 @@ function item(value: unknown): CliItem {
       if (present(o, "images")) {
         images = arr(o.images, CLI_LIMITS.images).map((path) => str(path, CLI_LIMITS.imagePath, 1));
       }
-      return pick({
+      return normalizeCliTaskItem(pick({
         kind: "user" as const,
         id,
         ts,
         text: str(o.text, ITEM_TEXT_MAX),
         images,
         queued: optBool(o, "queued"),
-      });
+        queuedByUser: optBool(o, "queuedByUser"),
+      }));
     }
     case "assistant":
       return { kind: "assistant", id, ts, text: str(o.text, ITEM_TEXT_MAX) };
@@ -1063,14 +1109,18 @@ function item(value: unknown): CliItem {
         status: oneOf(o.status, ["running", "ok", "error"] as const),
         output: optStr(o, "output", TOOL_OUTPUT_MAX),
       });
-    case "notice":
-      return {
+    case "notice": {
+      const info = present(o, "taskEnd") ? guard(() => rec(o.taskEnd)) : undefined;
+      const taskEnd = info && cliTaskEnd(info.id, info.state);
+      return normalizeCliTaskItem({
         kind: "notice",
         id,
         ts,
         level: oneOf(o.level, ["info", "error"] as const),
         text: str(o.text, CLI_LIMITS.noticeText),
-      };
+        ...(taskEnd ? { taskEnd } : {}),
+      });
+    }
     case "turn":
       return { kind: "turn", id, ts, phase: oneOf(o.phase, ["started", "ended", "aborted"] as const) };
     default:

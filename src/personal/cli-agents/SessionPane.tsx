@@ -51,6 +51,8 @@ const NO_REQUESTS: readonly RequestRecord[] = [];
 export interface PendingSend { id: string; text: string; at: number; known: ReadonlySet<string>; queueId?: string }
 
 const plain = (text: string) => text.replace(/\s+/g, " ").trim();
+const isNewAgentItem = (item: CliItem, known: ReadonlySet<string>) =>
+  item.kind !== "user" && item.kind !== "turn" && (item.kind !== "notice" || !!item.text) && !known.has(item.id);
 
 /** Drops each pending message once the records hold it: a user item that was not there at its
  * send with the same text, or (once the agent has answered after it) the earliest such item.
@@ -61,7 +63,7 @@ export function settlePending(list: readonly PendingSend[], items: readonly CliI
   const next = list.filter((entry) => {
     const fresh = items.filter((item): item is Extract<CliItem, { kind: "user" }> => item.kind === "user" && !entry.known.has(item.id) && !claimed.has(item.id));
     const text = plain(entry.text);
-    const answered = items.some((item) => item.kind !== "user" && item.kind !== "turn" && !entry.known.has(item.id));
+    const answered = items.some((item) => isNewAgentItem(item, entry.known));
     const hit = fresh.find((item) => plain(item.text) === text) ?? (answered ? fresh[0] : undefined);
     if (!hit) return true;
     claimed.add(hit.id);
@@ -142,7 +144,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     if (!awaiting) return;
     if (session.state === "waiting" || !session.online) { setAwaiting(null); return; }
     // the device clock may differ from this one: a reply is an item that was not there at send time
-    if (items.some((item) => item.kind !== "user" && item.kind !== "turn" && !awaiting.known.has(item.id))) setAwaiting(null);
+    if (items.some((item) => isNewAgentItem(item, awaiting.known))) setAwaiting(null);
   }, [awaiting, items, session.state, session.online]);
   // Messages sent from this page show at once, before the session's records hold them.
   const [echoes, setEchoes] = useState<PendingSend[]>([]);

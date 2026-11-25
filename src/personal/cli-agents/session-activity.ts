@@ -1,4 +1,4 @@
-import type { CliItem, CliSessionState } from "../../../shared/cli-agents";
+import { normalizeCliTaskItem, type CliItem, type CliSessionState } from "../../../shared/cli-agents";
 
 export interface ActivityEntry { title: string; state: string }
 type Fields = Record<string, unknown>;
@@ -62,27 +62,43 @@ export function sessionActivity(items: readonly CliItem[], state: CliSessionStat
   const foreground = new Map<string, ActivityEntry>();
   const agents = new Map<string, ActivityEntry>();
   const jobs = new Map<string, ActivityEntry>();
+  const failedJobs = new Map<string, ActivityEntry>();
+  const failedAgents = new Map<string, ActivityEntry>();
   const inTurn = state === "running" || state === "waiting";
 
-  for (const item of items) {
+  for (const raw of items) {
+    const item = normalizeCliTaskItem(raw);
     if (item.kind === "turn") {
       // Foreground calls and plans belong to their turn. Detached processes can outlive it.
       foreground.clear();
       plan = [];
+      failedJobs.clear();
+      failedAgents.clear();
+      continue;
+    }
+    if (item.kind === "notice" && item.taskEnd) {
+      const { id, state: result } = item.taskEnd;
+      const job = jobs.get(id), agent = agents.get(id);
+      if (inTurn && result === "failed") {
+        if (job) failedJobs.set(id, { ...job, state: "失败" });
+        if (agent) failedAgents.set(id, { ...agent, state: "失败" });
+      } else {
+        failedJobs.delete(id);
+        failedAgents.delete(id);
+      }
+      jobs.delete(id);
+      agents.delete(id);
       continue;
     }
     if (item.kind === "user" || item.kind === "notice") {
-      if (item.text.trimStart().startsWith("<task-notification>")) {
-        const id = item.text.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
-        const status = item.text.match(/<status>([^<]+)<\/status>/)?.[1];
-        if (id && status && finished.test(status)) { agents.delete(id); jobs.delete(id); }
-      }
-      else if (item.text.trimStart().startsWith("<subagent_notification>")) {
+      if (item.text.trimStart().startsWith("<subagent_notification>")) {
         const json = parse(item.text.replace(/<\/?subagent_notification>/g, "").trim());
         if (typeof json.agent_path === "string" && Object.keys(fields(json.status)).some(k => finished.test(k))) agents.delete(json.agent_path);
       } else if (item.kind === "user" && !item.queued) {
         foreground.clear();
         plan = [];
+        failedJobs.clear();
+        failedAgents.clear();
       }
       continue;
     }
@@ -142,7 +158,7 @@ export function sessionActivity(items: readonly CliItem[], state: CliSessionStat
   const todos = [...plan, ...tasks.values()];
   return {
     todos: inTurn && todos.some(entry => entry.state !== "已完成") ? todos : [],
-    agents: [...(inTurn ? foreground.values() : []), ...agents.values()],
-    jobs: [...jobs.values()],
+    agents: [...(inTurn ? foreground.values() : []), ...agents.values(), ...failedAgents.values()],
+    jobs: [...jobs.values(), ...failedJobs.values()],
   };
 }

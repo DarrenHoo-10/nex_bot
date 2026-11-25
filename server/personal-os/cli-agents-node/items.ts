@@ -6,7 +6,10 @@ import {
   ITEM_TEXT_MAX,
   SUMMARY_MAX,
   TOOL_OUTPUT_MAX,
+  cliTaskEnd,
+  cliTaskNotice,
   isCliCommandRecord,
+  parseCliTaskNotification,
   truncateUtf8,
   type CliItem,
   type CliSessionWire,
@@ -269,7 +272,8 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
       const origin = isRec(record.origin) ? record.origin : undefined;
       const remote = origin?.kind === "peer" && typeof origin.body === "string" ? inboxWords(origin.body) : null;
       if (remote) return { items: ["stop" in remote ? notice(baseId, ts, "info", REMOTE_STOP_TEXT) : { kind: "user", id: baseId, ts, text: itemText(remote.text) }] };
-      return text.trimStart().startsWith("<task-notification>") ? { items: [notice(baseId, ts, "info", text)] } : none;
+      const task = parseCliTaskNotification(text);
+      return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
     }
     return { items: claudeUser(record, message, ctx, baseId, ts) };
   }
@@ -278,14 +282,19 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
 
   if (type === "attachment") {
     const attachment = isRec(record.attachment) ? record.attachment : undefined;
-    if (attachment?.type === "task_notification" && typeof attachment.taskId === "string" && typeof attachment.status === "string") {
-      return { items: [notice(baseId, ts, "info", `<task-notification><task-id>${attachment.taskId}</task-id><status>${attachment.status}</status></task-notification>`)] };
+    if (attachment?.type === "task_notification") {
+      const task = cliTaskEnd(attachment.taskId, attachment.status);
+      return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
     }
     if (!attachment || attachment.type !== "queued_command") return none;
     const raw = attachment.prompt ?? attachment.content ?? attachment.text;
     const text = blocksText(raw);
+    if (attachment.commandMode === "task-notification") {
+      const task = parseCliTaskNotification(text);
+      return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
+    }
     if (!text.trim()) return none;
-    return { items: [{ kind: "user", id: baseId, ts, text: itemText(text), queued: true }] };
+    return { items: [{ kind: "user", id: baseId, ts, text: itemText(text), queued: true, ...(attachment.commandMode === "prompt" ? { queuedByUser: true } : {}) }] };
   }
 
   // system

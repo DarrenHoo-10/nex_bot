@@ -89,6 +89,21 @@ describe("groupItems", () => {
     expect(blocks[2]).not.toHaveProperty("failure");
   });
 
+  it("hides task notices and legacy queued notifications, but renders user-pasted XML", () => {
+    const text = "<task-notification><task-id>task-1</task-id><output-file>/private/task.log</output-file><status>completed</status><summary>private output</summary></task-notification>";
+    const blocks = groupItems([
+      toolItem("t1", 1),
+      { kind: "notice", id: "event", ts: 2, text: "", level: "info", taskEnd: { id: "task-1", state: "completed" } },
+      { kind: "notice", id: "old-notice", ts: 3, text, level: "info" },
+      { kind: "user", id: "old-queued", ts: 4, text, queued: true },
+      toolItem("t2", 5),
+      { kind: "user", id: "input", ts: 6, text },
+      { kind: "user", id: "queued-input", ts: 7, text, queued: true, queuedByUser: true },
+    ]);
+    expect(blocks.map(block => block.id)).toEqual(["t1", "input", "queued-input"]);
+    expect(blocks[0]).toMatchObject({ kind: "activity", items: [{ id: "t1" }, { id: "t2" }] });
+  });
+
   it("merges adjacent tool and thinking items into one activity block", () => {
     const blocks = groupItems([userItem("u1", 1), thinking("k1", 2), toolItem("t1", 3), assistantItem("a1", 4), toolItem("t2", 5)]);
     expect(blocks.map((block) => block.kind)).toEqual(["user", "activity", "assistant", "activity"]);

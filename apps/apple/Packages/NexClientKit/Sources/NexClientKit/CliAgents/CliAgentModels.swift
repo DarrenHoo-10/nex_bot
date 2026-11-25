@@ -163,6 +163,7 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
     public var text: String
     public var images: [String]
     public var queued: Bool
+    public var queuedByUser: Bool?
     public var name: String
     public var input: String
     public var status: CliToolStatus
@@ -173,22 +174,27 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
     public init(id: String, ts: Int, kind: CliItemKind, text: String = "", images: [String] = [], queued: Bool = false, name: String = "",
                 input: String = "", status: CliToolStatus = .running, output: String? = nil, level: CliNoticeLevel = .info, phase: CliTurnPhase = .started) {
         self.id = id; self.ts = ts; self.kind = kind; self.text = text; self.images = images; self.queued = queued; self.name = name
+        self.queuedByUser = nil
         self.input = input; self.status = status; self.output = output; self.level = level; self.phase = phase
     }
 
-    enum CodingKeys: String, CodingKey { case id, ts, kind, text, images, queued, name, input, status, output, level, phase }
+    enum CodingKeys: String, CodingKey { case id, ts, kind, text, images, queued, queuedByUser, name, input, status, output, level, phase }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         ts = try c.decode(Int.self, forKey: .ts)
         kind = try c.decode(CliItemKind.self, forKey: .kind)
-        text = ""; images = []; queued = false; name = ""; input = ""; status = .running; output = nil; level = .info; phase = .started
+        text = ""; images = []; queued = false; queuedByUser = nil; name = ""; input = ""; status = .running; output = nil; level = .info; phase = .started
         switch kind {
         case .user:
             text = try c.decode(String.self, forKey: .text)
             images = try c.decodeIfPresent([String].self, forKey: .images) ?? []
             queued = try c.decodeIfPresent(Bool.self, forKey: .queued) ?? false
+            queuedByUser = try c.decodeIfPresent(Bool.self, forKey: .queuedByUser)
+            if queued, queuedByUser != true, images.isEmpty, Self.isLegacyTaskNotification(text) {
+                kind = .notice; text = ""; queued = false
+            }
         case .assistant, .thinking:
             text = try c.decode(String.self, forKey: .text)
         case .tool:
@@ -199,9 +205,18 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
         case .notice:
             level = try c.decode(CliNoticeLevel.self, forKey: .level)
             text = try c.decode(String.self, forKey: .text)
+            if level == .info, text.drop(while: \.isWhitespace).hasPrefix("<task-notification>") { text = "" }
         case .turn:
             phase = try c.decode(CliTurnPhase.self, forKey: .phase)
         }
+    }
+
+    private static func isLegacyTaskNotification(_ text: String) -> Bool {
+        let header = String(text.prefix(2048))
+        let payload = header.range(of: #"<(summary|result|output)>"#, options: .regularExpression)?.lowerBound ?? header.endIndex
+        let fields = String(header[..<payload])
+        return fields.range(of: #"^\s*<task-notification>\s*<task-id>\s*[A-Za-z0-9_./:-]{1,128}\s*</task-id>"#, options: .regularExpression) != nil
+            && fields.range(of: #"<(tool-use-id|output-file)>[^<]+</\1>"#, options: .regularExpression) != nil
     }
 }
 

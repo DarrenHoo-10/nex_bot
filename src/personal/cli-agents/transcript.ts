@@ -1,6 +1,6 @@
 // Pure helpers for the conversation view: merging item pages and pushes by id,
 // and grouping the flat item list into what the view renders.
-import { isCliCommandRecord, modelFailureReason, type CliItem } from "../../../shared/cli-agents";
+import { isCliCommandRecord, modelFailureReason, normalizeCliTaskItem, type CliItem } from "../../../shared/cli-agents";
 
 type ToolItem = Extract<CliItem, { kind: "tool" }>;
 type ThinkingItem = Extract<CliItem, { kind: "thinking" }>;
@@ -76,7 +76,8 @@ export type Block =
  * the turn was interrupted. */
 export function groupItems(items: readonly CliItem[]): Block[] {
   const blocks: Block[] = [];
-  for (const item of items) {
+  for (const raw of items) {
+    const item = normalizeCliTaskItem(raw);
     switch (item.kind) {
       case "user":
         // a `/model` switch and other commands leave bookkeeping records, not the user's words
@@ -94,6 +95,7 @@ export function groupItems(items: readonly CliItem[]): Block[] {
         break;
       }
       case "notice": {
+        if (!item.text) break;
         const reason = item.level === "error" ? modelFailureReason(item.text) : null;
         blocks.push(reason
           ? { kind: "notice", id: item.id, level: "error", text: "模型调用失败：" + reason, failure: true }

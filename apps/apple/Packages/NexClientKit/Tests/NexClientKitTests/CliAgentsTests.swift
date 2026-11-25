@@ -58,6 +58,20 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliTranscript.modelFailureReason("API Error: 529 {\"type\":\"overloaded_error\"}"), "模型服务暂时不可用")
     }
 
+    func testTaskNotificationsDoNotBecomeChatBubblesOrUserTurns() throws {
+        let text = "<task-notification><task-id>task-1</task-id><output-file>/private/task.log</output-file><status>completed</status><summary>private output</summary></task-notification>"
+        let items = try decode([CliItem].self, [
+            ["kind": "notice", "id": "new", "ts": 1, "level": "info", "text": "", "taskEnd": ["id": "task-1", "state": "completed"]],
+            ["kind": "notice", "id": "legacy-notice", "ts": 2, "level": "info", "text": text],
+            ["kind": "user", "id": "legacy-queued", "ts": 3, "queued": true, "text": text],
+            ["kind": "user", "id": "pasted", "ts": 4, "text": text],
+            ["kind": "user", "id": "queued-input", "ts": 5, "queued": true, "queuedByUser": true, "text": text],
+        ])
+        XCTAssertEqual(CliTranscript.group(items).map(\.id), ["pasted", "queued-input"])
+        XCTAssertEqual(CliTranscript.userTurns(items), 2)
+        XCTAssertTrue(items.prefix(3).allSatisfy(\.text.isEmpty))
+    }
+
     func testHTTPStatusWordingWithoutServerText() {
         XCTAssertEqual(CoreClient.httpError(status: 502, data: Data("<html><h1>502 Bad Gateway</h1></html>".utf8)).message, "服务暂时不可用，可能正在更新，请稍后重试")
         XCTAssertEqual(CoreClient.httpError(status: 400, data: Data(#"{"error":"名称不能为空"}"#.utf8)).message, "名称不能为空")

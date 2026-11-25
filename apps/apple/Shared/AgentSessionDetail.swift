@@ -34,6 +34,7 @@ struct AgentPendingSend: Identifiable, Equatable {
             switch item.kind {
             case .user: return item.text.trimmingCharacters(in: .whitespacesAndNewlines) == plain
             case .turn: return false
+            case .notice: return !item.text.isEmpty
             default: return true
             }
         }

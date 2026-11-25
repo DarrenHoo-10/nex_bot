@@ -182,8 +182,23 @@ describe("claude: system, attachment, sidechain, metadata, ignored", () => {
 
   it("maps an attachment queued_command to a queued user item", () => {
     const { items } = claude({ type: "attachment", uuid: "t1", timestamp: TS, attachment: { type: "queued_command", prompt: "do it next", commandMode: "prompt" } });
-    expect(items).toEqual([{ kind: "user", id: "t1", ts: MS, text: "do it next", queued: true }]);
+    expect(items).toEqual([{ kind: "user", id: "t1", ts: MS, text: "do it next", queued: true, queuedByUser: true }]);
     expect(claude({ type: "attachment", uuid: "t2", attachment: { type: "hook_success" } }).items).toEqual([]);
+  });
+
+  it("maps all task notification sources to a text-free completion event", () => {
+    const text = "<task-notification>\n<task-id>job-1</task-id>\n<tool-use-id>call-1</tool-use-id>\n<output-file>C:\\private\\task.log</output-file>\n<status>completed</status>\n<summary>internal command and result</summary>\n</task-notification>";
+    const event = { kind: "notice", id: "n1", ts: MS, level: "info", text: "", taskEnd: { id: "job-1", state: "completed" } };
+    for (const record of [
+      { type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", prompt: text } },
+      { type: "attachment", attachment: { type: "task_notification", taskId: "job-1", status: "completed", summary: text } },
+      { type: "user", isMeta: true, message: { content: [{ type: "text", text }] } },
+    ]) {
+      expect(claude({ ...record, uuid: "n1", timestamp: TS }).items).toEqual([event]);
+    }
+    const prompt = { type: "queued_command", commandMode: "prompt", prompt: text };
+    expect(claude({ type: "attachment", attachment: prompt }).items).toMatchObject([{ kind: "user", text, queued: true, queuedByUser: true }]);
+    expect(claude({ type: "attachment", attachment: { ...prompt, commandMode: "task-notification", prompt: "malformed payload" } }).items).toEqual([]);
   });
 
   it("skips every isSidechain record", () => {

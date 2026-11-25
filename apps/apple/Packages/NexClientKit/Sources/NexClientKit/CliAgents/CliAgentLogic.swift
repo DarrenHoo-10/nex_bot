@@ -303,6 +303,7 @@ public enum CliTranscript {
                 if case .activity(let id, let run)? = blocks.last { blocks[blocks.count - 1] = .activity(id: id, items: run + [item]) }
                 else { blocks.append(.activity(id: item.id, items: [item])) }
             case .notice:
+                guard !item.text.isEmpty else { continue }
                 if item.level == .error, let reason = modelFailureReason(item.text) { blocks.append(.notice(id: item.id, level: .error, text: "模型调用失败：" + reason)) }
                 else { blocks.append(.notice(id: item.id, level: item.level, text: item.text)) }
             case .turn: if item.phase == .aborted { blocks.append(.notice(id: item.id, level: .info, text: "已中断")) }

@@ -31,6 +31,17 @@ describe("session activity", () => {
     expect(sessionActivity([job], "stopped", true).jobs).toEqual([]);
   });
 
+  it("keeps only a matched failure in the current activity and does not read its payload", () => {
+    const job = tool("Bash", { description: "静态检查", run_in_background: true }, "ok", "Command running in background with ID: test-1");
+    const failed: CliItem = { kind: "notice", id: "failed", ts: 2, level: "info", text: "", taskEnd: { id: "test-1", state: "failed" } };
+    expect(sessionActivity([job, failed], "running", true).jobs).toEqual([{ title: "静态检查", state: "失败" }]);
+    expect(sessionActivity([failed], "running", true).jobs).toEqual([]);
+    expect(sessionActivity([job, failed], "idle", true).jobs).toEqual([]);
+    expect(sessionActivity([job, failed, { kind: "turn", id: "next", phase: "started", ts: 3 }], "running", true).jobs).toEqual([]);
+    const pasted: CliItem = { kind: "user", id: "pasted", ts: 2, text: "<task-notification><task-id>test-1</task-id><status>completed</status></task-notification>" };
+    expect(sessionActivity([job, pasted], "running", true).jobs).toEqual([{ title: "静态检查", state: "运行中" }]);
+  });
+
   it("shows a task description or a short command name for detached shells", () => {
     const output = "Command running in background with ID: check-1";
     const command = 'cd "D:/temporary worktree" && corepack pnpm exec vite --port 5199 --strictPort --host 127.0.0.1';

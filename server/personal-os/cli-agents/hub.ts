@@ -24,6 +24,7 @@ import {
   cliKey,
   cliRef,
   hasCliFeature,
+  normalizeCliTaskItem,
   parseCliKey,
   parseCliOpArgs,
   parseCliOpResult,
@@ -505,6 +506,10 @@ export class CliAgentHub {
     });
   }
 
+  private decodeCachedItem(body: unknown): CliItem {
+    return normalizeCliTaskItem(JSON.parse(this.store.decrypt(String(body))) as CliItem);
+  }
+
   private cachedPage(key: string, before?: string): { items: CliItem[]; more: boolean } {
     let boundary: { ts: number; rowid: number } | null = null;
     if (before !== undefined) {
@@ -516,7 +521,7 @@ export class CliAgentHub {
     const args = boundary ? [boundary.ts, boundary.ts, boundary.rowid] : [];
     const rows = this.store.all(`SELECT body FROM cli_agent_items WHERE session_key=? ${where} ORDER BY ts DESC,rowid DESC LIMIT ?`, key, ...args, PAGE_SIZE + 1);
     const more = rows.length > PAGE_SIZE;
-    const items = rows.slice(0, PAGE_SIZE).reverse().map((row) => JSON.parse(this.store.decrypt(String(row.body))) as CliItem);
+    const items = rows.slice(0, PAGE_SIZE).reverse().map((row) => this.decodeCachedItem(row.body));
     return { items, more };
   }
 
@@ -760,7 +765,7 @@ export class CliAgentHub {
   /** Newest first. Reads the encrypted cache only; the device is not asked. */
   recentItems(key: string, limit = PAGE_SIZE): CliItem[] {
     const rows = this.store.all("SELECT body FROM cli_agent_items WHERE session_key=? ORDER BY ts DESC,rowid DESC LIMIT ?", key, limit);
-    return rows.map((row) => JSON.parse(this.store.decrypt(String(row.body))) as CliItem);
+    return rows.map((row) => this.decodeCachedItem(row.body));
   }
 
   private emitRequests(key: string) {
@@ -1052,13 +1057,12 @@ export class CliAgentHub {
     if (!session) return null;
     const row = this.store.get("SELECT body,ts,rowid FROM cli_agent_items WHERE session_key=? AND item_id=?", key, itemId);
     if (!row) return null;
-    const decode = (body: unknown) => JSON.parse(this.store.decrypt(String(body))) as CliItem;
-    const item = decode(row.body);
+    const item = this.decodeCachedItem(row.body);
     if (item.kind !== "assistant" || item.text !== source) return null;
     const following = this.store.all(
       "SELECT body FROM cli_agent_items WHERE session_key=? AND (ts>? OR (ts=? AND rowid>?)) ORDER BY ts,rowid",
       key, Number(row.ts), Number(row.ts), Number(row.rowid),
-    ).map(entry => decode(entry.body));
+    ).map(entry => this.decodeCachedItem(entry.body));
     const active = session.state === "running" || session.state === "waiting";
     return completedCliReplies([item, ...following], active).has(item.id) ? item.text : null;
   }
