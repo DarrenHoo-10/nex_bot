@@ -346,8 +346,6 @@ private struct AgentBlockView: View {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 2) {
                     AgentImageMessage(text: item.text, load: loadImage)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     if item.queued { Text("排队中").font(.caption2).foregroundStyle(Theme.muted) }
                 }
             }

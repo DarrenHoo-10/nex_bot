@@ -2,7 +2,8 @@
 // from the stream. Older pages load on request and keep the reader's place.
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { completedCliReplies, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
-import { CLI_IMAGE_PREFIX } from "../../../shared/cli-images";
+import { MessageImages } from "../components/MessageImages";
+import { parseMessageMedia } from "../message-media";
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
 import {HarnessMark} from "./tokendance/HarnessMark";
@@ -122,9 +123,12 @@ export function ReplyText({ source, supplied, local = true, core, actions, onBra
   const request = core ? () => retry(value => value + 1) : localReply.request;
   const shown = original ? source : translation || source;
   const copied = useCopyFeedback(shown);
+  const media = useMemo(() => parseMessageMedia(shown, true), [shown]);
+  const text = media.images.length ? media.text : shown;
   const CopyIcon = copied.state === "copied" ? Check : copied.state === "failed" ? X : Copy;
   return <>
-    <Suspense fallback={<p className="cli-plain">{shown}</p>}><RichText value={shown}/></Suspense>
+    <MessageImages images={media.images}/>
+    {text ? <Suspense fallback={<p className="cli-plain">{text}</p>}><RichText value={text}/></Suspense> : null}
     {translation ? <button type="button" className="text-button na-original" onClick={() => setOriginal(!original)}>
       <Languages size={12}/>{original ? "查看中文" : "查看原文"}
     </button> : status !== "idle" && <button type="button" className="text-button na-original" disabled={status === "working"} onClick={request}>
@@ -148,7 +152,7 @@ function BlockView({ block, engine, translations, onEdit, byline = true, local, 
       if(block.item.text.trim()==="[Request interrupted by user]")return <div className="cli-notice">你已中断本次请求</div>;
       return (
         <div className="cli-msg is-user" data-testid="cli-user">
-          <div className="cli-bubble">{block.item.text.includes(CLI_IMAGE_PREFIX) ? <Suspense fallback={null}><RichText value={block.item.text}/></Suspense> : block.item.text}</div>
+          <UserMessageContent text={block.item.text}/>
           {onEdit ? <div className="na-user-actions"><button type="button" className="text-button na-edit-resend" aria-label="编辑并重发这条消息" title="编辑并重发" onClick={()=>onEdit(block.item.id, block.item.text)}>编辑并重发</button></div> : null}
           {block.item.queued ? <small>排队中</small> : null}
         </div>
@@ -209,11 +213,20 @@ export function editableMessages(blocks: readonly Block[], now: number): { ids: 
   return { ids, next };
 }
 
+function UserMessageContent({ text }: { text: string }) {
+  const media = useMemo(() => parseMessageMedia(text, true), [text]);
+  const caption = media.images.length ? media.text : text;
+  return <>
+    <MessageImages images={media.images}/>
+    {caption ? <div className="cli-bubble">{caption}</div> : null}
+  </>;
+}
+
 /** A message the user sent that the session's records do not hold yet. */
 export function EchoMessage({ text }: { text: string }) {
   return (
     <div className="cli-msg is-user" data-testid="cli-user-echo">
-      <div className="cli-bubble">{text}</div>
+      <UserMessageContent text={text}/>
     </div>
   );
 }

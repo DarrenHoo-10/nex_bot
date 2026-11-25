@@ -106,9 +106,14 @@ struct AgentImageMessage: View {
         let images = text.matches(of: Self.pattern)
         let caption = text.replacing(Self.pattern, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         VStack(alignment: .trailing, spacing: 6) {
-            if !caption.isEmpty { Text(caption).font(.system(size: 14)).textSelection(.enabled) }
             ForEach(Array(images.enumerated()), id: \.offset) { _, match in
-                AgentImagePreview(name: String(match.output.1), path: String(match.output.2), load: load)
+                let path = String(match.output.2)
+                AgentImagePreview(name: String(match.output.1), path: path, load: load).id(path)
+            }
+            if !caption.isEmpty {
+                Text(caption).font(.system(size: 14)).textSelection(.enabled)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Theme.chatUser, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         }
     }
@@ -118,20 +123,82 @@ private struct AgentImagePreview: View {
     let name: String
     let path: String
     let load: (String) async throws -> Data
-    @State private var image: Image?
+    @State private var thumbnail: CGImage?
+    @State private var data: Data?
+    @State private var failed = false
+    @State private var open = false
 
     var body: some View {
-        Group {
-            if let image { image.resizable().scaledToFit().frame(maxWidth: 240, maxHeight: 180).accessibilityLabel(name) }
-            else { Label(name, systemImage: "photo").font(.caption).lineLimit(1) }
+        Button { open = true } label: {
+            RoundedRectangle(cornerRadius: 12).fill(Theme.card)
+                .overlay {
+                    if let thumbnail { Image(thumbnail, scale: 1, label: Text(name)).resizable().scaledToFit() }
+                    else if failed { Image(systemName: "photo").foregroundStyle(Theme.muted) }
+                    else { ProgressView().controlSize(.small) }
+                }
+                .frame(width: 240, height: 160)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
         }
+        .buttonStyle(.plain)
+        .disabled(thumbnail == nil)
+        .accessibilityLabel(failed ? "图片无法显示：\(name)" : "查看图片 \(name)")
         .task(id: path) {
-            guard let bytes = try? await load(path), !Task.isCancelled else { return }
-            #if os(iOS)
-            if let photo = UIImage(data: bytes) { image = Image(uiImage: photo) }
-            #else
-            if let photo = NSImage(data: bytes) { image = Image(nsImage: photo) }
-            #endif
+            do {
+                let bytes = try await load(path)
+                let preview = await Task.detached { agentPreview(bytes, pixels: 480) }.value
+                guard !Task.isCancelled else { return }
+                thumbnail = preview
+                data = preview == nil ? nil : bytes
+                failed = preview == nil
+            } catch {
+                if !Task.isCancelled { failed = true }
+            }
+        }
+        .sheet(isPresented: $open) {
+            if let data, let thumbnail { AgentImageViewer(data: data, thumbnail: thumbnail, name: name) }
         }
     }
+}
+
+private struct AgentImageViewer: View {
+    let data: Data
+    let thumbnail: CGImage
+    let name: String
+    @State private var large: CGImage?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.ignoresSafeArea()
+            Image(large ?? thumbnail, scale: 1, label: Text(name)).resizable().scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity).padding(12)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark").font(.system(size: 15, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .foregroundStyle(.white)
+                    .background(.black.opacity(0.65), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭图片预览")
+            .keyboardShortcut(.cancelAction)
+            .padding(12)
+        }
+        #if os(macOS)
+        .frame(minWidth: 640, minHeight: 420)
+        #endif
+        .task {
+            let bytes = data
+            let preview = await Task.detached { agentPreview(bytes, pixels: 3200) }.value
+            if !Task.isCancelled { large = preview }
+        }
+    }
+}
+
+private func agentPreview(_ data: Data, pixels: Int) -> CGImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+    return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: pixels,
+    ] as CFDictionary)
 }

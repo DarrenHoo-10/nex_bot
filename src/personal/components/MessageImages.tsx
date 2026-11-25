@@ -98,6 +98,7 @@ function MessageImageTile({ image, onDelete }: { image: MessageImage; onDelete?:
   }, [menu]);
 
   const openMenu = (x: number, y: number, guard = false) => {
+    if (!image.url) return;
     if (guard || menuGuard.current > Date.now()) menuGuard.current = Date.now() + 450;
     setMenu({ x, y });
   };
@@ -129,7 +130,7 @@ function MessageImageTile({ image, onDelete }: { image: MessageImage; onDelete?:
     clearLongPress();
   };
   const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.pointerType === "mouse") return;
+    if (!image.url || event.pointerType === "mouse") return;
     clearLongPress();
     longPress.current = {
       timer: window.setTimeout(() => {

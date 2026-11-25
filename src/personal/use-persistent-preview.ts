@@ -1,16 +1,17 @@
 import { useEffect, useState, type RefObject } from "react";
+import { cliImageId } from "../../shared/cli-images";
 import { localCacheScope, queueLocalCache, readLocalCache } from "./local-content-cache";
 
 export function usePersistentPreview(url: string, target: RefObject<HTMLElement | null>) {
   const [preview, setPreview] = useState<{ url: string; source: string; scope: string | undefined }>();
   const scope = localCacheScope();
-  const eligible = !!scope && /^\/api\/attachments\/[a-zA-Z0-9_-]+\?preview=1$/.test(url);
+  const eligible = !!scope && (!!cliImageId(url) || /^\/api\/attachments\/[a-zA-Z0-9_-]+\?preview=1$/.test(url));
   useEffect(() => {
     if (!eligible) return;
     const abort = new AbortController();
     let objectUrl: string | undefined;
     const load = async () => {
-      let bytes = await readLocalCache<Blob>(scope, "image:" + url);
+      let bytes = await readLocalCache<Blob>(scope, "image:" + url, true);
       if (abort.signal.aborted || scope !== localCacheScope()) return;
       if (!bytes) {
         const response = await fetch(url, { signal: abort.signal, credentials: "same-origin", redirect: "error" });

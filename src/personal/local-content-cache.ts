@@ -122,8 +122,13 @@ export function queueLocalCache(scope: string | undefined, key: string, value: u
   schedule();
 }
 
-export async function readLocalCache<T>(scope: string | undefined, key: string): Promise<T | undefined> {
+export async function readLocalCache<T>(scope: string | undefined, key: string, includePending = false): Promise<T | undefined> {
   if (!scope || scope !== active) return;
+  if (includePending) {
+    const fullKey = JSON.stringify([scope, key]);
+    const pending = queue.find((entry) => entry.key === fullKey);
+    if (pending) return pending.value as T;
+  }
   const lookup = async () => {
     const db = await database();
     if (!db || scope !== active) return;

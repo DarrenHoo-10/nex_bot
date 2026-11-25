@@ -1,6 +1,7 @@
 import {MAX_SEND_TEXT, type CliSessionKey} from "../../../shared/cli-agents";
 import {cliImageId, cliImageReference} from "../../../shared/cli-images";
 import {uploadAttachment} from "./api";
+import {localCacheScope, queueLocalCache} from "../local-content-cache";
 
 export interface PickedFile {id:string; file:File}
 export interface ComposerExtras {files:PickedFile[];goal:string|null}
@@ -41,8 +42,11 @@ export async function fileReference(entry:PickedFile,key:CliSessionKey,upload:bo
   const cached=deliveredFiles.get(file);
   if(cached?.key===key)return cached.reference;
   if(typeof upload==="function" || (upload===false && isPickedImage(file))){
+    const scope = localCacheScope();
     const {path}=await (typeof upload==="function" ? upload(file) : uploadAttachment(key,file));
-    const reference=cliImageId(path) ? cliImageReference(file.name,path) : "附件："+file.name+"\n"+path;
+    const image = cliImageId(path);
+    if (image && file.size < 2 * 1024 * 1024) queueLocalCache(scope, "image:" + path, file);
+    const reference=image ? cliImageReference(file.name,path) : "附件："+file.name+"\n"+path;
     deliveredFiles.set(file,{key,reference});return reference;
   }
   if(!upload){
