@@ -99,16 +99,17 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
     if(panel==="add")formRef.current?.querySelector<HTMLButtonElement>(".na-add-menu button")?.focus();
     // A press anywhere but the open panel and the button that opened it closes the panel, the
     // message field included. The CLI model menu is its own popover and closes itself.
-    const dismiss=(e:PointerEvent)=>{
+    const dismiss=(e:Event)=>{
       if(panel==="model"&&!review)return;
       const form=formRef.current,target=e.target as Node;
       const inside=[form?.querySelector(".na-compose-pop"),form?.querySelector(`[data-panel-trigger="${panel}"]`),panel==="skill"?draftRef.current:null];
       if(!inside.some(node=>node?.contains(target)))setPanel(null);
     };
     const escape=(e:KeyboardEvent)=>{if(e.key==="Escape"){setPanel(null);if(panel==="add")formRef.current?.querySelector<HTMLButtonElement>(".na-add-trigger")?.focus();else draftRef.current?.focus()}};
-    document.addEventListener("pointerdown",dismiss);
+    document.addEventListener("pointerdown",dismiss,true);
+    document.addEventListener("click",dismiss,true);
     document.addEventListener("keydown",escape);
-    return ()=>{document.removeEventListener("pointerdown",dismiss);document.removeEventListener("keydown",escape)};
+    return ()=>{document.removeEventListener("pointerdown",dismiss,true);document.removeEventListener("click",dismiss,true);document.removeEventListener("keydown",escape)};
   },[panel,review]);
   const key = draft?.id ?? session.key;
   const [extra,setExtra]=useState(()=>getExtras(key));

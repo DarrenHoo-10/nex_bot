@@ -99,8 +99,9 @@ afterEach(async () => {
 });
 
 describe("request cards in the workspace", () => {
-  it("shows a pushed permission request on the session and in the list", async () => {
-    await open();
+  it.each([true, false])("keeps the approval card in chat and the waiting tag on its session row (sidebar list: %s)", async (sidebarList) => {
+    await open({ devices: [device()], sessions: [session(), session({ nativeId: "other", title: "另一条会话", lastActivityAt: Date.now() })] }, { sidebarList });
+    await click(container.querySelector('.cli-list button[aria-current="true"]'));
     await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r1" })] });
     const card = container.querySelector(".cli-request")!;
     expect(card.textContent).toContain("Bash");
@@ -108,17 +109,18 @@ describe("request cards in the workspace", () => {
     expect(card.getAttribute("data-state")).toBe("pending");
     expect([...card.querySelectorAll(".conversation-action")].map((button) => [button.textContent, button.getAttribute("data-tone")]))
       .toEqual([["拒绝", "dark"], ["允许", "light"]]);
-    expect(container.querySelector(".cli-row .cli-count")?.textContent).toBe("1");
-    expect(container.querySelector(".cli-row .cli-chip")?.textContent).toBe("等你处理");
-    expect(container.querySelector("[data-testid=cli-waiting]")?.textContent).toBe("等你处理 1");
+    expect(container.querySelector(".na-workspace-status")).toBeNull();
+    expect(container.querySelector('.cli-pane-head [data-tone="waiting"]')).toBeNull();
+    expect(container.querySelector('.cli-list [aria-current="true"] .cli-waiting-tag')?.textContent).toBe("等你处理");
+    const otherRow = container.querySelector('.cli-list button[title="另一条会话"]')!;
+    expect(otherRow.querySelector(".cli-waiting-tag")).toBeNull();
   });
 
   it("takes the pending requests of the first HTTP read", async () => {
     await open({ devices: [device()], sessions: [session()], requests: [permissionRequest({ id: "r1" }), permissionRequest({ id: "r2", tool: "Edit", summary: "a.ts" })] });
     expect(container.querySelectorAll(".cli-request")).toHaveLength(2);
-    expect(container.querySelector(".cli-row .cli-count")?.textContent).toBe("2");
-    // two requests of one session still make one waiting session
-    expect(container.querySelector("[data-testid=cli-waiting]")?.textContent).toBe("等你处理 1");
+    expect(container.querySelector(".cli-row .cli-waiting-tag")?.textContent).toBe("等你处理 2");
+    expect(container.querySelector(".na-workspace-status")).toBeNull();
   });
 
   it("replaces the pending list of a session without touching the others", async () => {
@@ -128,8 +130,7 @@ describe("request cards in the workspace", () => {
     await push({ type: "requests", key: other.key, requests: [permissionRequest({ id: "r3", key: other.key })] });
     await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r2" })] });
     expect(container.querySelectorAll(".cli-request")).toHaveLength(1);
-    expect([...container.querySelectorAll(".cli-device .cli-row .cli-count")].map((entry) => entry.textContent)).toEqual(["1", "1"]);
-    expect(container.querySelector("[data-testid=cli-waiting]")?.textContent).toBe("等你处理 2");
+    expect([...container.querySelectorAll(".cli-device .cli-row .cli-waiting-tag")].map((entry) => entry.textContent)).toEqual(["等你处理", "等你处理"]);
   });
 
   it("marks a request handled in the terminal and does not bring it back", async () => {
@@ -140,8 +141,7 @@ describe("request cards in the workspace", () => {
     expect(card.getAttribute("data-state")).toBe("terminal");
     expect(card.textContent).toContain("已在终端处理");
     expect(card.querySelector("button")).toBeNull();
-    expect(container.querySelector(".cli-count")).toBeNull();
-    expect(container.querySelector("[data-testid=cli-waiting]")).toBeNull();
+    expect(container.querySelector(".cli-waiting-tag")).toBeNull();
     await push({ type: "requests", key: KEY, requests: [permissionRequest({ id: "r1" })] });
     expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("terminal");
   });
@@ -164,7 +164,7 @@ describe("request cards in the workspace", () => {
     const card = container.querySelector(".cli-request")!;
     expect(card.getAttribute("data-state")).toBe("allowed");
     expect(card.textContent).toContain("已允许");
-    expect(container.querySelector(".cli-count")).toBeNull();
+    expect(container.querySelector(".cli-waiting-tag")).toBeNull();
     // Core's own request.resolved after the answer does not change what this page recorded
     await push({ type: "request.resolved", key: KEY, id: "r1", by: "nexbot" });
     expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("allowed");
@@ -231,7 +231,7 @@ describe("request cards in the workspace", () => {
       expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("pending");
       await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
       expect(container.querySelector(".cli-request")!.getAttribute("data-state")).toBe("expired");
-      expect(container.querySelector(".cli-count")).toBeNull();
+      expect(container.querySelector(".cli-waiting-tag")).toBeNull();
     } finally {
       vi.useRealTimers();
     }

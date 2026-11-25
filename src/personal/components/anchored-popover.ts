@@ -1,14 +1,20 @@
 import { useLayoutEffect, useRef, type RefObject } from "react";
 
+const activePopover = new WeakMap<Document, () => void>();
+
 /**
- * Shows `panel` (a `popover="manual"` element) next to its anchor while `open`: below it when there is room,
- * otherwise above, kept inside the window. A pointer down outside `inside()` and the panel calls `close`.
+ * Shows one anchored popover per document, next to its anchor and within the viewport.
+ * Opening another popover or activating something outside the panel and its triggers calls `close`.
  */
 export function useAnchoredPopover(open: boolean, panel: RefObject<HTMLElement | null>, anchor: () => HTMLElement | null | undefined, inside: () => readonly (Node | null | undefined)[], close: () => void, width: number | "content" = 320, align: "start" | "end" = "start", focusPanel = false): void {
   const latest = useRef({ anchor, inside, close });
   latest.current = { anchor, inside, close };
   useLayoutEffect(() => {
     const el = panel.current; if (!open || !el) return;
+    const doc = el.ownerDocument;
+    const dismiss = () => latest.current.close();
+    activePopover.get(doc)?.();
+    activePopover.set(doc, dismiss);
     el.showPopover();
     if (focusPanel) el.focus({ preventScroll: true });
     const position = () => {
@@ -22,11 +28,19 @@ export function useAnchoredPopover(open: boolean, panel: RefObject<HTMLElement |
     };
     position(); const observer = new ResizeObserver(position); observer.observe(el);
     window.addEventListener("resize", position);
-    const outside = (event: PointerEvent) => {
+    const outside = (event: Event) => {
       const target = event.target as Node;
-      if (!el.contains(target) && !latest.current.inside().some((node) => node?.contains(target))) latest.current.close();
+      if (!el.contains(target) && !latest.current.inside().some((node) => node?.contains(target))) dismiss();
     };
-    document.addEventListener("pointerdown", outside);
-    return () => { observer.disconnect(); window.removeEventListener("resize", position); document.removeEventListener("pointerdown", outside); if (el.isConnected) el.hidePopover(); };
+    doc.addEventListener("pointerdown", outside, true);
+    doc.addEventListener("click", outside, true);
+    return () => {
+      if (activePopover.get(doc) === dismiss) activePopover.delete(doc);
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      doc.removeEventListener("pointerdown", outside, true);
+      doc.removeEventListener("click", outside, true);
+      if (el.isConnected) el.hidePopover();
+    };
   }, [open, panel, width, align, focusPanel]);
 }

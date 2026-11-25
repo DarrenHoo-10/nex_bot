@@ -159,10 +159,6 @@
 .cli-app .cli-choice input { margin-top: 2px; }
 .cli-app .cli-choice span { display: grid; gap: 1px; min-width: 0; }
 .cli-app .cli-choice small { color: var(--muted-foreground); font-size: 11px; }
-.cli-app .cli-count {
-  display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-  font-size: 10px; line-height: 1; color: #fff; background: #d99a2b;
-}
 
 /* supervision */
 .cli-app .cli-supervision { position: relative; }

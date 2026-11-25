@@ -77,7 +77,6 @@ struct AgentSessionsView: View {
         HStack(spacing: 10) {
             Text("Agent 会话").font(.title2.bold())
             if !linkText.isEmpty { Text(linkText).font(.caption).foregroundStyle(Theme.muted) }
-            if model.waitingCount > 0 { CliChip(text: "等你处理 \(model.waitingCount)", tone: .waiting) }
             Spacer()
             headerActions
         }
@@ -154,12 +153,7 @@ struct AgentSessionsView: View {
     #else
     private var layout: some View {
         VStack(spacing: 10) {
-            if !linkText.isEmpty || model.waitingCount > 0 {
-                HStack(spacing: 8) {
-                    if !linkText.isEmpty { Text(linkText).font(.caption).foregroundStyle(Theme.muted) }
-                    if model.waitingCount > 0 { CliChip(text: "等你处理 \(model.waitingCount)", tone: .waiting) }
-                }
-            }
+            if !linkText.isEmpty { Text(linkText).font(.caption).foregroundStyle(Theme.muted) }
             banner
             list { key in model.select(key); pushed = key }
         }
@@ -303,6 +297,8 @@ struct AgentSessionList: View {
 
     private func row(_ session: CliSession, asked: Int, context: String?) -> some View {
         let tone = CliSessions.tone(session)
+        let waiting = asked > 0 || tone == .waiting
+        let waitingLabel = asked > 1 ? "等你处理 \(asked)" : "等你处理"
         return HStack(spacing: 8) {
             Button { onSelect(session.key) } label: {
                 HStack(spacing: 8) {
@@ -312,16 +308,12 @@ struct AgentSessionList: View {
                         .foregroundStyle(Theme.foreground).lineLimit(1)
                     Spacer(minLength: 4)
                     if let context { Text(context).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1) }
-                    if asked > 0 {
-                        Text("\(asked)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                            .padding(.horizontal, 6).padding(.vertical, 1).background(Theme.approval, in: Capsule())
-                            .accessibilityLabel("\(asked) 个请求")
-                    }
+                    if waiting { CliChip(text: waitingLabel, tone: .waiting).fixedSize() }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(CliSessions.title(session))，\(agentName(session.engine))，\(CliSessions.statusLabel(session))")
+            .accessibilityLabel("\(CliSessions.title(session))，\(agentName(session.engine))，\(waiting ? waitingLabel : CliSessions.statusLabel(session))")
             Button { onHide(session, !session.hidden) } label: { Image(systemName: session.hidden ? "eye" : "eye.slash").font(.system(size: 11)) }
                 .buttonStyle(.plain).foregroundStyle(Theme.muted.opacity(0.7))
                 .accessibilityLabel(session.hidden ? "取消隐藏" : "隐藏")

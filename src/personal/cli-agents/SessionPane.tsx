@@ -230,7 +230,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
           <strong title={heading}>{heading}</strong>
 
         </div>
-        {(!shown.online||shown.state==="waiting"||shown.state==="running")?<span className="cli-chip" data-tone={sessionTone(shown)}>{sessionStatusLabel(shown)}</span>:null}
+        {(!shown.online||shown.state==="running")?<span className="cli-chip" data-tone={sessionTone(shown)}>{sessionStatusLabel(shown)}</span>:null}
         {sideCount>0 && onSideOpen && !compact ? <button type="button" className="cli-open-local na-side-count" title="侧边会话" aria-label={"侧边会话 "+sideCount} onClick={()=>void onSideOpen()}><MessageSquare size={14}/>{sideCount}</button> : null}
         {onFork ? <button type="button" className="cli-open-local na-square" title="交给助手" aria-label="交给助手" onClick={onFork}><Share2 size={15} /></button> : null}
         {!compact && <button type="button" ref={workspaceToggle} className="na-workspace-toggle"

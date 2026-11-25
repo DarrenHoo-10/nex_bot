@@ -666,6 +666,36 @@ describe("new session", () => {
   };
   beforeEach(() => { fixture.listDirs.mockReset(); fixture.listDirs.mockImplementation(async (_device: string, path: string) => listing(path)); });
 
+  it("replaces an open picker when another trigger is activated and dismisses on an outside tap", async () => {
+    await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    const trigger = (label: string) => page.querySelector(`button[aria-label="${label}"]`);
+    const openPickers = () => [...page.querySelectorAll('[role="dialog"]')].map(panel => panel.getAttribute("aria-label"));
+
+    await click(trigger("运行工具"));
+    expect(openPickers()).toEqual(["运行工具"]);
+    await click(trigger("模型设置"));
+    expect(openPickers()).toEqual(["模型设置"]);
+    expect(trigger("运行工具")?.getAttribute("aria-expanded")).toBe("false");
+    await click(page.querySelector('[role="dialog"] [role="option"]'));
+    expect(openPickers()).toEqual(["模型设置"]);
+    await click(trigger("运行工具"));
+    expect(openPickers()).toEqual(["运行工具"]);
+    const add = trigger("添加");
+    await click(add);
+    expect(openPickers()).toEqual([]);
+    expect(page.querySelector('[aria-label="添加到消息"]')).toBeTruthy();
+    await click(trigger("运行工具"));
+    expect(openPickers()).toEqual(["运行工具"]);
+    expect(page.querySelector('[aria-label="添加到消息"]')).toBeNull();
+
+    const outside = page.querySelector("textarea")!;
+    outside.addEventListener("pointerdown", event => event.stopPropagation(), { once: true });
+    await act(async () => { outside.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" })); });
+    expect(openPickers()).toEqual([]);
+    expect(trigger("运行工具")?.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("opens in the pane, not a dialog, and shows the session with its first message while it starts", async () => {
     let started!: (value: { key: string }) => void;
     fixture.startSession.mockReturnValue(new Promise((resolve) => { started = resolve; }));

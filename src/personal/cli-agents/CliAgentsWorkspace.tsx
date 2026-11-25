@@ -16,7 +16,7 @@ import { LaunchPane } from "./LaunchPane";
 import { isLaunchKey, launchRow, useLaunches } from "./use-launches";
 import { newRequests, newlyWaiting, notifyRequest, notifyWaiting, sessionStates } from "./notifications";
 import { pendingCounts, pendingViews } from "./requests";
-import { groupSessions, recentCwds, waitingCount } from "./session-model";
+import { groupSessions, recentCwds } from "./session-model";
 import { useWorkbenchTree } from "./use-workbench";
 import type { WorkbenchMeta } from "./SessionList";
 import { archiveWorkbenchSession, branchSession, deleteWorkbenchSession, renameWorkbenchSession, startSession, type WorkbenchRef } from "./api";
@@ -265,8 +265,6 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
   }
 
   const pending = useMemo(() => pendingCounts(requests.store, requests.now), [requests.store, requests.now]);
-  const asked = useMemo(() => new Set(pending.keys()), [pending]);
-  const waiting = waitingCount(sessions, asked);
 
   // one notification per new request, and per session that starts waiting, while the page is hidden
   const previous = useRef<Map<string, CliSessionView["state"]> | null>(null);
@@ -335,10 +333,9 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
         {sidebarNode}
         {!collapsed&&slotted?<div className="na-resize" role="separator" aria-label="调整会话栏宽度" aria-orientation="vertical" aria-valuenow={railWidth} tabIndex={0} onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);e.preventDefault()}} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))resize(e.clientX)}} onKeyDown={e=>{if(e.key==="ArrowRight"||e.key==="ArrowLeft"){e.preventDefault();resize(railWidth+(e.key==="ArrowRight"?12:-12))}}}/>:null}
         <main className="cli-main">
-          {(showDirectoryHeader || linkText || waiting > 0) && <header className="na-workspace-status">
+          {(showDirectoryHeader || linkText) && <header className="na-workspace-status">
             {showDirectoryHeader && <button type="button" className="na-directory-brand" aria-label="NexAgent，打开应用导航" onClick={onNavigation}><BrandMark agent size={23}/><strong>NexAgent</strong></button>}
             {linkText && <span className="cli-link-state" role="status">{linkText}</span>}
-            {waiting > 0 && <span className="cli-chip" data-tone="waiting" data-testid="cli-waiting">等你处理 {waiting}</span>}
           </header>}
           {error ? (
             <div role="alert" className="cli-banner">

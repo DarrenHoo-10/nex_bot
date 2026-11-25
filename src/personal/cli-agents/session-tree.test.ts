@@ -73,9 +73,50 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  document.getSelection()?.removeAllRanges();
   container.remove();
   document.body.querySelectorAll('[role="menu"]').forEach((entry) => entry.remove());
   vi.unstubAllGlobals();
+});
+
+describe("directory text selection", () => {
+  it("clears a title selection on an outside tap without blocking the tapped row", async () => {
+    const first = session({ nativeId: "first", title: "第一条会话", state: "running", lastActivityAt: recent(1) });
+    const next = session({ nativeId: "next", title: "下一条会话", lastActivityAt: recent(2) });
+    await mount([first, next]);
+    const title = container.querySelector('.na-active [title="第一条会话"] .cli-row-title')!;
+    const otherRow = container.querySelector('[title="下一条会话"]')!;
+    const selection = document.getSelection()!;
+    selection.selectAllChildren(title);
+    const rect = new DOMRect(10, 10, 40, 20);
+    vi.spyOn(selection.getRangeAt(0), "getClientRects").mockReturnValue(Object.assign([rect], { item: (index: number) => index === 0 ? rect : null }));
+    const tap = (target: Element, clientX: number) => target.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true, cancelable: true, pointerType: "touch", clientX, clientY: 15,
+    }));
+
+    await act(async () => {
+      tap(title, 15);
+      expect(selection.toString()).toBe("第一条会话");
+      expect(tap(otherRow, 60)).toBe(true);
+      expect(selection.rangeCount).toBe(0);
+    });
+    await click(otherRow);
+    expect(onSelect).toHaveBeenCalledWith(next.key);
+  });
+
+  it("does not clear text selected outside the directory", async () => {
+    await mount([session({ title: "第一条会话" })]);
+    const message = document.createElement("p");
+    message.textContent = "会话正文";
+    container.append(message);
+    const selection = document.getSelection()!;
+    selection.selectAllChildren(message);
+
+    await act(async () => {
+      container.querySelector(".cli-row-title")!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(selection.toString()).toBe("会话正文");
+  });
 });
 
 describe("project grouping", () => {

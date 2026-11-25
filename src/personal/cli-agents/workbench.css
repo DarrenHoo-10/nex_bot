@@ -260,7 +260,9 @@
 .na-section-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px 3px;color:var(--na-muted);font-size:11px;font-weight:650;letter-spacing:.03em}
 .na-section-head small{font-weight:500}
 .na-stage .cli-app .na-active .cli-row{padding-left:4px}
-.na-row-context{flex:none;max-width:42%;margin-left:auto;overflow:hidden;color:var(--na-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.na-row-context{max-width:42%;margin-inline-start:auto;overflow:hidden;color:var(--na-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.na-stage .cli-app .cli-waiting-tag{flex:none;margin-inline-start:auto}
+.na-stage .cli-app .na-row-context + .cli-waiting-tag{margin-inline-start:0}
 .na-sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 /* the dot on the CLI mark carries the state */
@@ -269,7 +271,7 @@
 .na-engine[data-tone="waiting"]::after{background:#d68a12}
 @media(prefers-reduced-motion:no-preference){.na-engine[data-tone="running"]::after{animation:na-breathe 1.8s ease-in-out infinite}}
 @keyframes na-breathe{0%,100%{box-shadow:0 0 0 2px var(--na-nav),0 0 0 2px #2f9e5f33}50%{box-shadow:0 0 0 2px var(--na-nav),0 0 0 5px #2f9e5f1f}}
-.na-stage .cli-app .cli-row .cli-count{min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#d68a12;color:#fff;font-size:10.5px;line-height:17px;text-align:center}
+
 
 /* projects are headings; sessions sit flush under them, tree lines only for forks */
 .na-stage .cli-app .cli-device[data-single]>.na-project{margin-left:0}

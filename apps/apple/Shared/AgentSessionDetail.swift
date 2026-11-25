@@ -153,7 +153,8 @@ struct AgentSessionDetail: View {
                         .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                CliChip(text: CliSessions.statusLabel(session), tone: CliSessions.tone(session))
+                let tone = CliSessions.tone(session)
+                if tone != .waiting { CliChip(text: CliSessions.statusLabel(session), tone: tone) }
                 actions(session)
             }
             if attach {

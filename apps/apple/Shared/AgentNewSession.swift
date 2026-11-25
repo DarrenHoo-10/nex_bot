@@ -52,13 +52,19 @@ struct AgentNewSessionPage: View {
     @State private var images: [CliImageUpload] = []
     @State private var imageError = ""
     #if os(iOS)
-    @State private var showingModels = false
     @Environment(\.dismiss) private var dismiss
     #endif
     @State private var catalog = CliModelCatalog()
-    @State private var browsing = false
-    @State private var editingBranch = false
+    private enum Picker { case directory, branch, model }
+    @State private var picker: Picker?
     @FocusState private var focused: Bool
+
+    private func presenting(_ target: Picker) -> Binding<Bool> {
+        Binding(get: { picker == target }, set: { open in
+            if open { picker = target }
+            else if picker == target { picker = nil }
+        })
+    }
 
     private var device: CliDevice? { model.device(deviceId) }
     private var engines: [CliEngine] { device?.cliAgents?.engines ?? [] }
@@ -132,8 +138,8 @@ struct AgentNewSessionPage: View {
 
     private var options: some View {
         HStack(spacing: 6) {
-            Button { browsing = true } label: {
-                AgentPickChip(active: browsing, dashed: dir == nil) {
+            Button { picker = picker == .directory ? nil : .directory } label: {
+                AgentPickChip(active: picker == .directory, dashed: dir == nil) {
                     Image(systemName: "folder").foregroundStyle(Theme.muted)
                     Text(dir.map { CliPaths.name($0.path) } ?? "选择目录")
                     if dir?.create == true { Text("新建").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.success).padding(.horizontal, 5).padding(.vertical, 1).background(Theme.successSoft, in: RoundedRectangle(cornerRadius: 5)) }
@@ -143,12 +149,13 @@ struct AgentNewSessionPage: View {
             .buttonStyle(.plain)
             .help(dir.map { ($0.create ? "将新建 " : "") + $0.path } ?? "选择工作目录")
             .accessibilityLabel("工作目录")
-            .popover(isPresented: $browsing, arrowEdge: .bottom) {
+            .popover(isPresented: presenting(.directory), arrowEdge: .bottom) {
                 AgentDirectoryBrowser(model: model, deviceId: $deviceId, start: dir) { choice in
-                    dir = choice; browsing = false
+                    dir = choice; picker = nil
                 }
                 #if os(iOS)
-                .presentationDetents([.medium, .large])
+                .frame(width: 310, height: 400)
+                .presentationCompactAdaptation(.popover)
                 #endif
             }
 
@@ -184,7 +191,10 @@ struct AgentNewSessionPage: View {
 
             if git {
                 // the "Worktree" checkbox: checked, the session starts in a new worktree on nexagent/<random>
-                Button { if branch == nil { branch = CliLaunches.randomBranch() } else { branch = nil; editingBranch = false } } label: {
+                Button {
+                    branch = branch == nil ? CliLaunches.randomBranch() : nil
+                    picker = nil
+                } label: {
                     AgentPickChip(dashed: branch == nil) {
                         Image(systemName: branch == nil ? "square" : "checkmark.square.fill")
                             .foregroundStyle(branch == nil ? Theme.muted : Theme.identityAccent)
@@ -194,14 +204,14 @@ struct AgentNewSessionPage: View {
                 .buttonStyle(.plain).help("在新的工作树里运行")
                 .accessibilityLabel("Worktree").accessibilityValue(branch == nil ? "未选中" : "已选中")
                 if let current = branch {
-                    Button { editingBranch = true } label: {
+                    Button { picker = picker == .branch ? nil : .branch } label: {
                         AgentPickChip(active: true) {
                             Image(systemName: "arrow.triangle.branch").foregroundStyle(Theme.muted)
                             Text(current.isEmpty ? "分支" : current).font(.system(size: 12, design: .monospaced))
                         }
                     }
                     .buttonStyle(.plain).accessibilityLabel("分支名称")
-                    .popover(isPresented: $editingBranch, arrowEdge: .bottom) {
+                    .popover(isPresented: presenting(.branch), arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("新工作树的分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
                             TextField("分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
@@ -209,7 +219,7 @@ struct AgentNewSessionPage: View {
                                 #if os(iOS)
                                 .textInputAutocapitalization(.never)
                                 #endif
-                                .onSubmit { editingBranch = false }
+                                .onSubmit { picker = nil }
                             if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
                         }
                         .padding(14).frame(width: 280)
@@ -243,10 +253,12 @@ struct AgentNewSessionPage: View {
             #endif
             HStack(spacing: 8) {
                 #if os(iOS)
-                AgentComposerAdd(images: $images, error: $imageError, openModels: canChoose ? { showingModels = true } : nil)
-                    .sheet(isPresented: $showingModels) {
-                    AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort) { effort = $0 }
-                }
+                AgentComposerAdd(images: $images, error: $imageError, openModels: canChoose ? { picker = .model } : nil)
+                    .popover(isPresented: presenting(.model), arrowEdge: .bottom) {
+                        AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort) { effort = $0 }
+                            .frame(width: 310, height: 360)
+                            .presentationCompactAdaptation(.popover)
+                    }
                 #else
                 AgentComposerAdd(images: $images, error: $imageError)
                 #endif

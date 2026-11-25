@@ -89,6 +89,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   const [order,setOrder]=useState<ProjectOrder>(readOrder);
   const [drag,setDrag]=useState<{device:string;key:string}|null>(null);
   const [drop,setDrop]=useState<{key:string;after:boolean}|null>(null);
+  const listRef=useRef<HTMLElement>(null);
   const searchRef=useRef<HTMLInputElement>(null);
   const [menu,setMenu]=useState<Selection|null>(null),[dialog,setDialog]=useState<{row:CliSessionView;action:Exclude<Action,"fork">}|null>(null);
   const [editing,setEditing]=useState<{key:CliSessionKey; title:string}|null>(null);
@@ -106,6 +107,24 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
     document.addEventListener("pointerdown",outside);document.addEventListener("keydown",escape);
     return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape)};
   },[menu,dialog,busy]);
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const doc = list.ownerDocument;
+    const clearOutsideSelection = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const selection = doc.getSelection();
+      if (!selection || selection.isCollapsed || !list.contains(selection.anchorNode)) return;
+      const range = selection.getRangeAt(0);
+      const { clientX, clientY, target } = event;
+      if (target instanceof Node && range.intersectsNode(target) && Array.from(range.getClientRects()).some(
+        ({ left, top, right, bottom }) => clientX >= left && clientX < right && clientY >= top && clientY < bottom,
+      )) return;
+      selection.removeAllRanges();
+    };
+    doc.addEventListener("pointerdown", clearOutsideSelection, true);
+    return () => doc.removeEventListener("pointerdown", clearOutsideSelection, true);
+  }, []);
   const meta=(key:CliSessionKey)=>review?.records[key] ?? workbench?.get(key);
   const label=(s:CliSessionView)=>{const own=meta(s.key);return (own&&"title" in own&&own.title)||sessionTitle(s)};
   // the older per-session "hidden" flag reads as archived: one place to put sessions away
@@ -217,6 +236,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
       const asked=pending?.get(s.key)||0;
       const shown=askedSession(s,asked), tone=sessionTone(shown);
       const status=["waiting","running","offline"].includes(tone)?sessionStatusLabel(shown):"";
+      const waiting=asked>0 || tone==="waiting";
       const snippet=query?contentHits.get(s.key):undefined;
       return <>
         <div className={"cli-row "+(s.key===selectedKey?"is-selected":"")} onContextMenu={e=>{e.preventDefault();trigger.current=e.currentTarget.querySelector(".na-more");setMenu({row:s,x:e.clientX,y:e.clientY})}}>
@@ -236,9 +256,9 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
             {/* the dot on the CLI's mark is the state: green breathing while it runs, amber while it waits for you */}
             <span className={"na-engine "+s.engine} data-tone={tone} title={AGENT_LABEL[s.engine]+(status?" · "+status:"")}><HarnessMark agentId={s.engine} size="sm"/></span>
             <span className="cli-row-title">{label(s)}</span>
-            {status?<span className="na-sr cli-chip" data-tone={tone}>{status}</span>:null}
+            {status&&tone!=="waiting"?<span className="na-sr cli-chip" data-tone={tone}>{status}</span>:null}
             {context?<small className="na-row-context">{context}</small>:null}
-            {asked>0?<b className="cli-count">{asked}</b>:null}
+            {waiting?<span className="cli-chip cli-waiting-tag" data-tone="waiting">{asked>1?`等你处理 ${asked}`:"等你处理"}</span>:null}
           </button>}
           <button type="button" className="icon-button na-more" title="会话操作" aria-haspopup="menu" aria-expanded={menu?.row.key===s.key} aria-label={label(s)+"的操作"} onClick={e=>{if(menu?.row.key===s.key){setMenu(null);return}trigger.current=e.currentTarget;const b=e.currentTarget.getBoundingClientRect();setMenu({row:s,x:b.right,y:b.bottom})}}><Ellipsis size={15}/></button>
         </div>
@@ -276,7 +296,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   }).sort((a,b)=>b.lastActivityAt-a.lastActivityAt);
   // one computer that is online needs no computer row: its projects are the list
   const single=groups.length===1&&groups[0].device.online;
-  return <nav className="cli-list" aria-label="Agent 会话">
+  return <nav ref={listRef} className="cli-list" aria-label="Agent 会话">
     {onCreate&&!archived?<button type="button" className="na-new-session" onClick={onCreate}><Plus size={15}/><span>新建会话</span></button>:null}
     <div className="na-nav-tools"><strong>{archived?"已归档":byTime?"按时间":"会话目录"}</strong>
       <span className="na-nav-icons">
