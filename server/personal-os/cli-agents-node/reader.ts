@@ -6,6 +6,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { MAX_ITEMS_PER_MESSAGE, PAGE_SIZE, type CliEngine, type CliItem } from "../../../shared/cli-agents.ts";
+import { agyRecordItems } from "./agy-native.ts";
 import { claudeRecordToItems, codexRecordToItems, type ItemContext, type RowUpdate, type ToolItem } from "./items.ts";
 
 export interface ReaderPage {
@@ -346,6 +347,7 @@ export class TranscriptReader {
       return null;
     }
     ctx.offset = offset;
+    if (this.engine === "agy") return { items: agyRecordItems(record, ctx.fallbackTs) };
     return this.engine === "claude" ? claudeRecordToItems(record, ctx) : codexRecordToItems(record, ctx);
   }
 

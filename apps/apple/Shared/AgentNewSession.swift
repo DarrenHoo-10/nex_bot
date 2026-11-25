@@ -17,8 +17,8 @@ struct AgentNewTarget: Hashable, Identifiable {
     let id = UUID()
 }
 
-private let startable: [CliEngine] = [.claude, .codex]
-func agentName(_ engine: CliEngine) -> String { engine == .claude ? "Claude Code" : "Codex" }
+private let startable: [CliEngine] = [.claude, .codex, .agy]
+func agentName(_ engine: CliEngine) -> String { engine == .claude ? "Claude Code" : engine.label }
 
 /// A rounded chip in the row above the box.
 private struct AgentPickChip<Label: View>: View {
@@ -49,6 +49,7 @@ struct AgentNewSessionPage: View {
     @State private var chosenModel = ""
     @State private var effort = ""
     @State private var permissions: CliPermissionMode = .full
+    @State private var agyPermissions: CliPermissionMode = .ask
     @State private var images: [CliImageUpload] = []
     @State private var imageError = ""
     #if os(iOS)
@@ -67,8 +68,9 @@ struct AgentNewSessionPage: View {
     }
 
     private var device: CliDevice? { model.device(deviceId) }
-    private var engines: [CliEngine] { device?.cliAgents?.engines ?? [] }
-    private var blocker: String? { CliSessions.deviceBlocker(device) }
+    private var engines: [CliEngine] { startable.filter { device?.cliAgents?.engines.contains($0) == true && CliSessions.deviceBlocker(device, engine: $0) == nil } }
+    private var blocker: String? { CliSessions.deviceBlocker(device, engine: engine) }
+    private var selectedPermissions: CliPermissionMode { engine == .agy ? agyPermissions : permissions }
     private var branchError: String? { branch.flatMap { CliLaunches.branchProblem($0) } }
     private var text: String { message.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var tooLong: Bool { text.utf8.count > CoreClient.cliMaxSendBytes }
@@ -76,8 +78,8 @@ struct AgentNewSessionPage: View {
     private var canChoosePermissions: Bool { device?.cliAgents?.features.contains("permissions") == true }
     private var fallbackModel: String { catalog.current ?? "" }
     private var offered: [String] { CliLaunches.efforts(engine: engine, models: catalog.models, model: chosenModel.isEmpty ? fallbackModel : chosenModel) }
-    private var effortLevels: [String] { CliLaunches.efforts[engine] == nil ? [] : CliLaunches.reasoningLevels }
-    private var selectedEffort: String { CliLaunches.reasoningChoice(effort) }
+    private var effortLevels: [String] { engine == .agy ? offered : CliLaunches.reasoningLevels }
+    private var selectedEffort: String { CliLaunches.reasoningChoice(effort.isEmpty && engine == .agy ? catalog.currentEffort : effort) }
     private var resolvedEffort: String? { CliLaunches.resolveEffort(engine: engine, offered: offered, preferred: selectedEffort) }
     private var ready: Bool { blocker == nil && device != nil && engines.contains(engine) && dir != nil && branchError == nil && !tooLong }
     private var status: String? { blocker ?? branchError ?? (tooLong ? "内容太长" : nil) ?? (dir == nil ? "先选择工作目录" : nil) }
@@ -163,7 +165,8 @@ struct AgentNewSessionPage: View {
                 ForEach(startable, id: \.self) { e in
                     let installed = engines.contains(e)
                     Button { engine = e } label: {
-                        if e == engine { Label(agentName(e), systemImage: "checkmark") } else { Text(installed ? agentName(e) : agentName(e) + " · 未安装") }
+                        if e == engine && installed { Label(agentName(e), systemImage: "checkmark") }
+                        else { Text(installed ? agentName(e) : agentName(e) + (e == .agy && device?.cliAgents?.agyNeedsUpdate == true ? " · 需更新" : " · 不可用")) }
                     }
                     .disabled(!installed)
                 }
@@ -179,14 +182,17 @@ struct AgentNewSessionPage: View {
 
             if canChoosePermissions {
                 // full access (the default) or the CLI's own prompts, which then arrive as cards
-                Button { permissions = permissions == .full ? .ask : .full } label: {
+                Button {
+                    let next: CliPermissionMode = selectedPermissions == .full ? .ask : .full
+                    if engine == .agy { agyPermissions = next } else { permissions = next }
+                } label: {
                     AgentPickChip {
-                        Image(systemName: permissions == .full ? "checkmark.shield" : "exclamationmark.shield").foregroundStyle(Theme.muted)
-                        Text(permissions == .full ? "完全访问" : "每次询问")
+                        Image(systemName: selectedPermissions == .full ? "checkmark.shield" : "exclamationmark.shield").foregroundStyle(Theme.muted)
+                        Text(selectedPermissions == .full ? "完全访问" : "每次询问")
                     }
                 }
-                .buttonStyle(.plain).help(permissions == .full ? "完全访问：不再逐项确认" : "每次询问：需要你确认")
-                .accessibilityLabel("权限").accessibilityValue(permissions == .full ? "完全访问" : "每次询问")
+                .buttonStyle(.plain).help(selectedPermissions == .full ? "完全访问：不再逐项确认" : "每次询问：需要你确认")
+                .accessibilityLabel("权限").accessibilityValue(selectedPermissions == .full ? "完全访问" : "每次询问")
             }
 
             if git {
@@ -302,7 +308,7 @@ struct AgentNewSessionPage: View {
         guard ready, let dir else { return }
         let key = model.launch(CliLaunchRequest(deviceId: deviceId, engine: engine, cwd: dir.path, branch: branch?.trimmingCharacters(in: .whitespacesAndNewlines),
                                                 message: text, model: canChoose ? chosenModel : "", effort: canChoose ? resolvedEffort ?? "" : "", createDir: dir.create,
-                                                permissions: canChoosePermissions ? permissions : nil, images: images))
+                                                permissions: canChoosePermissions ? selectedPermissions : nil, images: images))
         started(key)
     }
 }

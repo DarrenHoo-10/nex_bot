@@ -15,6 +15,7 @@ import {
   CLI_ATTACH_MAX_BYTES,
   CLI_ERROR_TEXT,
   CLI_FEATURES,
+  CLI_LIMITS,
   CLI_OP_MUTATING,
   CLI_OP_TIMEOUT_MS,
   HERDR_CORE_VERSION,
@@ -25,6 +26,7 @@ import {
   clampTermSize,
   cliModelEfforts,
   cliRef,
+  isCliEngine,
   parseCliOpResult,
   parseCliRef,
   parseCoreCliMessage,
@@ -45,6 +47,8 @@ import {
   type DeviceCliMessage,
 } from "../../../shared/cli-agents.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
+import { AgyError, AgyRuntime } from "./agy.ts";
+import { agyConfigDir, supportsAgyAcp, type agyWriters } from "./agy-native.ts";
 import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { CodexDesktopQueue } from "./codex-desktop-queue.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
@@ -52,6 +56,7 @@ import { harnessFor } from "./harness.ts";
 import { HookError, HookServer, TurnTracker, locateHookPlugin, platformPlugin } from "./hooks.ts";
 import { ScreenPromptError, ScreenPrompts, type ScreenTerminal } from "./screen-prompts.ts";
 import { InboxError, sendToInbox } from "./inbox.ts";
+import { clipUnits } from "./items.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import {
   HerdrCore,
@@ -121,6 +126,9 @@ export interface CliAgentBridgeOptions {
   codexHomes?: string[];
   /** ZCode database homes; defaults to ~/.zcode/cli */
   zcodeHomes?: string[];
+  /** Isolated Antigravity CLI profile, used by the release fixture. */
+  agyDir?: string;
+  agyWriters?: typeof agyWriters;
   /** The ZCode host channel this device has, if any; without one the ZCode
    * sessions stay read-only until the P0 verification provides it. */
   zcodeHost?: ZcodeHostChannel | null;
@@ -219,6 +227,7 @@ const normalizeDir = (dir: string, platform: NodeJS.Platform): string => {
 export class CliAgentBridge {
   private readonly platform: NodeJS.Platform;
   private readonly store: CliLocalStore;
+  private readonly agy: AgyRuntime;
   private readonly discovery: SessionDiscovery;
   private readonly streams: TermStreams;
   private readonly watches = new Map<string, Watch>();
@@ -228,6 +237,7 @@ export class CliAgentBridge {
   private readonly busyRefs = new Set<string>();
   private readonly tasks = new Set<Promise<unknown>>();
   private engines: Array<{ engine: CliEngine; version: string | null }> = [];
+  private agyNeedsUpdate = false;
   private prepared: Promise<void> | null = null;
   private scope: { origin: string; workspaceId: string } = { origin: "local", workspaceId: "local" };
   private hc: HcLike | null = null;
@@ -263,6 +273,17 @@ export class CliAgentBridge {
     this.store = new CliLocalStore(path.join(options.dir, "cli-agents.db"));
     this.turns = new TurnTracker((message) => this.sendJson(message));
     this.git = new DeviceGit({ platform: this.platform, ...(options.env ? { env: options.env } : {}) });
+    const agyDir = options.agyDir ?? agyConfigDir(options.env, options.homedir);
+    this.agy = new AgyRuntime({
+      dir: agyDir, platform: this.platform,
+      writers: options.agyWriters,
+      env: options.agyDir ? { ...(options.env ?? process.env), ANTIGRAVITY_CLI_CONFIG_DIR: agyDir } : options.env ?? process.env,
+      executable: () => this.cliPath("agy"),
+      origin: () => this.scope.origin,
+      changed: () => this.discovery.reapply({ flush: true }),
+      emit: (message) => { this.sendJson(message); },
+      ended: (id, reason, error) => { this.turns.report(cliRef("agy", id), reason, "agy", { error }); },
+    });
     this.codexDaemons = new CodexDaemons({
       connect: proxyConnector({ codexPath: () => this.findCli("codex"), ...(options.env ? { env: options.env } : {}), platform: this.platform }),
       emit: (message) => this.sendJson(message),
@@ -291,6 +312,7 @@ export class CliAgentBridge {
       ...(options.codexHomes ? { codexHomes: options.codexHomes } : {}),
       ...(options.zcodeHomes ? { zcodeHomes: options.zcodeHomes } : {}),
       ...(options.zcodeHost ? { zcode: { host: options.zcodeHost } } : {}),
+      agy: this.agy,
       // the real machine only when the Claude directories are the default ones: tests that name their own stay hermetic
       ...(options.claudeDirs ? {} : { repoRoots: new RepoRoots({ platform: this.platform, ...(options.homedir ? { home: options.homedir } : {}) }) }),
       codexDaemon: { threads: (home) => this.codexDaemons.threads(home), refresh: (home) => this.codexDaemons.refresh(home) },
@@ -325,10 +347,17 @@ export class CliAgentBridge {
       const version = this.options.cliVersion ?? ((file: string) => cliVersion(file, { platform: this.platform, timeoutMs: 3000, ...(this.options.env ? { env: this.options.env } : {}) }));
       const found: Array<{ engine: CliEngine; version: string | null }> = [];
       await Promise.all(
-        (["claude", "codex"] as const).map(async (engine) => {
+        (["claude", "codex", ...(!this.options.claudeDirs || this.options.agyDir ? ["agy" as const] : [])] as const).map(async (engine) => {
           try {
             const file = await find(engine);
-            if (file) found.push({ engine, version: await version(file).catch(() => null) });
+            if (!file) return;
+            const installed = await version(file).catch(() => null);
+            if (engine === "agy") {
+              this.agyNeedsUpdate = !supportsAgyAcp(installed);
+              if (this.agyNeedsUpdate) return;
+              this.agy.enable();
+            }
+            found.push({ engine, version: installed });
           } catch (error) {
             this.log("warn", `looking for ${engine} failed: ${String(error)}`);
           }
@@ -353,6 +382,7 @@ export class CliAgentBridge {
       engines: this.engines.map((entry) => entry.engine),
       forkEngines: this.engines.map((entry) => entry.engine).filter((engine) => FORK_ENGINES.includes(engine)),
       features: [...CLI_FEATURES],
+      ...(this.agyNeedsUpdate ? { agyNeedsUpdate: true } : {}),
       terminal: {
         name: "herdr-core",
         version: HERDR_CORE_VERSION,
@@ -389,6 +419,7 @@ export class CliAgentBridge {
     void this.warm();
     // Core dropped its copies of open approvals with the old link
     this.codexDaemons.relink();
+    this.agy.relink();
     // The hook listener comes up with the link, so terminals that survived a client restart keep forwarding;
     // prompts that came while the link was down are announced now.
     void this.ensureHooks().then((hooks) => hooks?.relink());
@@ -439,6 +470,7 @@ export class CliAgentBridge {
     if (hooks) this.track(hooks.close());
     for (const claim of this.pending.splice(0)) claim.waiter?.(null);
     this.codexDaemons.close();
+    this.track(this.agy.close());
     this.discovery.closeZcode();
     this.dropHc();
     await Promise.race([Promise.allSettled(this.tasks), new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
@@ -551,8 +583,8 @@ export class CliAgentBridge {
     for (const ref of diff.removes) this.dropObserved(ref);
     const mine = this.nexbotTerminals();
     for (const row of diff.upserts) {
-      if (row.engine !== "claude") continue;
-      const ref = cliRef("claude", row.nativeId);
+      if (row.engine !== "claude" && row.engine !== "agy") continue;
+      const ref = cliRef(row.engine, row.nativeId);
       const before = this.states.get(ref);
       this.states.set(ref, row.state);
       if (row.state === "running") this.cancelFallback(ref);
@@ -867,7 +899,7 @@ export class CliAgentBridge {
       const labels = terminal.labels ?? {};
       if (labels.nexbot !== "1") continue;
       const engine = labels["nexbot.engine"];
-      if (engine !== "claude" && engine !== "codex" && engine !== "zcode") continue;
+      if (!isCliEngine(engine)) continue;
       live.add(terminal.address);
       let nativeId: string | null = labels["nexbot.native"] ?? null;
       const known = this.terminals.get(terminal.address);
@@ -1061,6 +1093,10 @@ export class CliAgentBridge {
 
   private async startWatch(watch: Watch): Promise<void> {
     if (watch.reader || watch.app) return;
+    if (watch.engine === "agy") {
+      await this.startAppWatch(watch, { chat: { threadId: watch.ref.slice(4) }, db: this.agy });
+      return;
+    }
     const file = this.discovery.transcriptFor(watch.ref);
     if (!file) {
       const app = this.discovery.appChatFor(watch.ref);
@@ -1137,7 +1173,7 @@ export class CliAgentBridge {
   }
 
   private failure(error: unknown): { code: CliErrorCode; message: string } {
-    if (error instanceof OpFailure) return { code: error.code, message: error.message };
+    if (error instanceof OpFailure || error instanceof AgyError) return { code: error.code, message: clipUnits(error.message, CLI_LIMITS.message) };
     if (error instanceof DeadlineError) return { code: "unknown", message: CLI_ERROR_TEXT.unknown };
     if (error instanceof LaunchError) {
       const code: CliErrorCode = error.kind === "invalid_cwd" ? "cwd_missing" : error.kind === "cli_not_found" ? "cli_missing" : "invalid";
@@ -1179,6 +1215,7 @@ export class CliAgentBridge {
       case "attach":
         return this.opAttach(args as CliOpArgs["attach"]);
       case "models":
+        if ((args as CliOpArgs["models"]).engine === "agy") return this.agy.models();
         return cliModels((args as CliOpArgs["models"]).engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
       case "dirs":
         return listDirs((args as CliOpArgs["dirs"]).path, { platform: this.platform, ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
@@ -1207,6 +1244,7 @@ export class CliAgentBridge {
     const row = this.session(args.ref);
     const file = this.discovery.transcriptFor(args.ref);
     const limit = args.limit ?? PAGE_SIZE;
+    if (row.engine === "agy") return this.agy.page(row.nativeId, args.before ? { before: args.before } : {}, limit);
     if (!file) {
       const app = this.discovery.appChatFor(args.ref);
       if (app) return app.db.page(app.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
@@ -1271,6 +1309,7 @@ export class CliAgentBridge {
   private launchEnvironment(engine: CliEngine, configDir: string | undefined): Record<string, string> {
     const homedir = this.options.homedir ?? os.homedir();
     const env = launchEnv(engine, { platform: this.platform, homedir, ...(this.options.env ? { env: this.options.env } : {}) });
+    if (engine === "agy") return configDir ? { ...env, ANTIGRAVITY_CLI_CONFIG_DIR: configDir } : env;
     if (configDir) {
       const variable = engine === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
       const fallback = path.join(homedir, engine === "claude" ? ".claude" : ".codex");
@@ -1339,13 +1378,26 @@ export class CliAgentBridge {
     return { nativeId: parent.nativeId, row };
   }
 
-  private async opStart(args: CliOpArgs["start"], budget: number): Promise<{ ref: CliSessionRef; terminal: string; cwd?: string }> {
+  private async opStart(args: CliOpArgs["start"], budget: number): Promise<CliOpResult["start"]> {
     refuseZcodeOptions(args.engine, args);
     const fork = this.forkSource(args);
     if (args.createDir) {
       // a folder typed in the picker that did not exist yet; a worktree needs an existing repository
       if (fork || args.worktree) throw new OpFailure("invalid", "新建目录不能同时分叉或新建工作树");
       try { await ensureDir(args.cwd); } catch (error) { throw new OpFailure("invalid", "无法创建目录：" + String((error as NodeJS.ErrnoException).code ?? "error")); }
+    }
+    if (args.engine === "agy") {
+      let cwd = args.cwd;
+      if (args.worktree) {
+        const built = await this.git.worktree(cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform });
+        if (built.source === "failed" || !built.worktree) throw new OpFailure("invalid", built.error ?? "无法创建工作树");
+        cwd = built.worktree;
+      }
+      cwd = await validateCwd(cwd, { platform: this.platform, env: this.options.env });
+      const id = await this.agy.start(cwd, launchOptionsOf(args, "ask"));
+      const ref = cliRef("agy", id);
+      await this.awaitRow(ref, budget - 1000);
+      return { ref, cwd };
     }
     const size = clampTermSize(args.cols, args.rows);
     const claude = args.engine === "claude";
@@ -1428,11 +1480,18 @@ export class CliAgentBridge {
     this.expiryTimer.unref?.();
   }
 
-  private async opContinue(args: CliOpArgs["continue"], budget: number): Promise<{ ref: CliSessionRef; terminal: string }> {
+  private async opContinue(args: CliOpArgs["continue"], budget: number): Promise<CliOpResult["continue"]> {
     const parsed = parseCliRef(args.ref);
     if (!parsed) throw new OpFailure("invalid");
     refuseZcodeOptions(parsed.engine, args);
-    this.session(args.ref);
+    const existing = this.session(args.ref);
+    if (parsed.engine === "agy") {
+      const terminal = this.addressFor(args.ref);
+      if (terminal) return { ref: args.ref, terminal };
+      await validateCwd(existing.cwd, { platform: this.platform, env: this.options.env });
+      await this.agy.resume(existing, launchOptionsOf(args));
+      return { ref: args.ref };
+    }
     const hc = await this.requireHc();
     await this.refreshTerminals();
     const mapped = this.addressFor(args.ref);
@@ -1542,6 +1601,10 @@ export class CliAgentBridge {
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     if (!this.addressFor(args.ref)) {
       const row = this.discovery.get(args.ref);
+      if (row?.engine === "agy") {
+        if (row.sendVia !== "acp") throw new OpFailure(row.writerUnknown || row.liveIn ? "open_elsewhere" : "stopped");
+        return this.agy.send(row.nativeId, args.text);
+      }
       if (row && (row.sendVia === "inbox" || row.sendVia === "daemon" || row.sendVia === "host")) return this.sendOutside(args, row);
     }
     const address = this.terminalOf(args.ref);
@@ -1562,6 +1625,10 @@ export class CliAgentBridge {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     const row = this.discovery.get(args.ref);
+    if (row?.engine === "agy" && row.sendVia === "acp" && !this.addressFor(args.ref)) {
+      const result = await this.agy.send(row.nativeId, args.text, true);
+      return { accepted: true, started: result.started };
+    }
     // A shared Codex daemon can bind the input to one exact turn even if
     // discovery also knows the address of the CLI's terminal.
     if (row?.engine === "codex" && this.codexDaemons.threads(row.configDir)?.has(row.nativeId)) {
@@ -1606,6 +1673,7 @@ export class CliAgentBridge {
       // a session outside our terminals can only be stopped through its own
       // channel; the harness registry says which ones have one
       const row = this.discovery.get(args.ref);
+      if (row?.engine === "agy" && row.sendVia === "acp") return this.agy.interrupt(row.nativeId);
       const route = this.discovery.routeFor(args.ref);
       if (row && route?.via === "host" && row.sendVia === "host") {
         if (!this.options.zcodeHost) throw new OpFailure("read_only");
@@ -1685,7 +1753,26 @@ export class CliAgentBridge {
   }
 
   private async opOpenLocal(args: CliOpArgs["open_local"]): Promise<Record<string, never>> {
-    const address = this.terminalOf(args.ref);
+    const row = this.session(args.ref);
+    let address = this.addressFor(args.ref);
+    if (!address && row.engine === "agy") {
+      const hc = await this.requireHc();
+      await this.refreshTerminals();
+      address = this.addressFor(args.ref);
+      if (!address) {
+        const plan = await planLaunch({
+          engine: "agy", mode: "resume", nativeId: row.nativeId, key: row.nativeId,
+          cwd: row.cwd, executable: await this.cliPath("agy"),
+        }, { platform: this.platform, env: this.options.env, homedir: this.options.homedir });
+        plan.env = { ...plan.env, ...this.launchEnvironment("agy", row.configDir) };
+        await this.agy.handoff(row.nativeId);
+        const terminal = await this.runTerminal(hc, "agy", plan, clampTermSize(undefined, undefined));
+        this.register(terminal, "agy", row.nativeId, plan.cwd);
+        this.discovery.reapply({ flush: true });
+        address = terminal.address;
+      }
+    }
+    address ??= this.terminalOf(args.ref);
     const scope = this.hcScope ?? this.scopeFor();
     if (!scope.binary) throw new OpFailure("hc_unavailable");
     await openLocal(
@@ -1705,6 +1792,7 @@ export class CliAgentBridge {
 
   /** Core relays the answer to a pending request; it goes to the hook that waits for it. */
   private async opAnswer(args: CliOpArgs["answer"]): Promise<{ outcome: string }> {
+    if (this.agy.hasRequest(args.id)) return this.agy.answer(args);
     if (this.screens.owns(args.id)) {
       try {
         return { outcome: await this.screens.answer(args) };

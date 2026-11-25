@@ -90,11 +90,11 @@ export const CLI_LIMITS = {
 // ---------------------------------------------------------------------------
 // Basic vocabulary
 
-export type CliEngine = "claude" | "codex" | "zcode";
+export type CliEngine = "claude" | "codex" | "zcode" | "agy";
 export type CliSessionState = "running" | "waiting" | "idle" | "stopped";
 export type CliLiveIn = "nexbot" | "terminal" | "desktop" | "background";
 
-export const CLI_ENGINES: readonly CliEngine[] = ["claude", "codex", "zcode"];
+export const CLI_ENGINES: readonly CliEngine[] = ["claude", "codex", "zcode", "agy"];
 export const CLI_SESSION_STATES: readonly CliSessionState[] = ["running", "waiting", "idle", "stopped"];
 export const CLI_LIVE_IN: readonly CliLiveIn[] = ["nexbot", "terminal", "desktop", "background"];
 
@@ -102,8 +102,8 @@ export const CLI_LIVE_IN: readonly CliLiveIn[] = ["nexbot", "terminal", "desktop
  * inbox of a Claude session running on the computer, a Codex app-server daemon
  * the device joined, or the ZCode host the device attached to. Absent: the
  * session cannot be written to. */
-export type CliSendVia = "terminal" | "inbox" | "daemon" | "host";
-export const CLI_SEND_VIA: readonly CliSendVia[] = ["terminal", "inbox", "daemon", "host"];
+export type CliSendVia = "terminal" | "inbox" | "daemon" | "host" | "acp";
+export const CLI_SEND_VIA: readonly CliSendVia[] = ["terminal", "inbox", "daemon", "host", "acp"];
 
 /** How the user wants a composed message delivered (workbench plan section 3):
  * straight into the session, held in the outbox until the turn ends, or fed to
@@ -117,7 +117,7 @@ export type CliDelivery = "confirmed" | "unconfirmed";
 export const CLI_DELIVERY: readonly CliDelivery[] = ["confirmed", "unconfirmed"];
 
 export function isCliEngine(value: unknown): value is CliEngine {
-  return value === "claude" || value === "codex" || value === "zcode";
+  return (CLI_ENGINES as readonly unknown[]).includes(value);
 }
 
 /** Session id on the device link: `<engine>:<nativeId>`. The device never
@@ -217,7 +217,7 @@ export interface CliSessionWire {
   context?: CliContextUsage;
   /** epoch ms */
   lastActivityAt: number;
-  /** Codex only: who writes the session file could not be determined */
+  /** The device could not verify who writes the native session. */
   writerUnknown?: boolean;
 }
 
@@ -422,7 +422,7 @@ export const CLI_ERROR_TEXT: Record<CliErrorCode, string> = {
   paused: "本机控制已暂停",
   hc_unavailable: "终端组件不可用",
   hc_version: "终端组件版本不符",
-  cli_missing: "找不到 Claude 或 Codex",
+  cli_missing: "找不到所选运行工具",
   cwd_missing: "工作目录不存在",
   not_found: "会话不存在",
   not_in_terminal: "会话不在 nex_bot 终端里",
@@ -466,6 +466,8 @@ export interface CliAgentsCapability {
   version: 1;
   engines: CliEngine[];
   terminal: { name: "herdr-core"; version: string; ready: boolean; error?: string };
+  /** The CLI is installed but lacks the AGY version required for ACP. */
+  agyNeedsUpdate?: boolean;
   /** engines whose `start` honours `forkFrom`; absent on executors that predate
    * forks, which would otherwise ignore the field and start a blank session */
   forkEngines?: CliEngine[];
@@ -486,6 +488,7 @@ export const CLI_EFFORTS: Record<CliEngine, readonly string[]> = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   zcode: [],
+  agy: ["low", "medium", "high", "xhigh", "max"],
 };
 
 /** Suggestions for the model picker; any name matching CLI_MODEL_RE is accepted. */
@@ -498,6 +501,7 @@ export const CLI_MODELS: Record<CliEngine, readonly { id: string; label: string 
   ],
   codex: ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"].map((id) => ({ id, label: id })),
   zcode: [],
+  agy: [],
 };
 
 // an alias or full model name (`opus[1m]`, `gpt-6.2-sol`, a gateway's `auto/claude-opus-5-5[1m]`);
@@ -697,8 +701,8 @@ export interface CliOpResult {
   read: { items: CliItem[]; more: boolean };
   watch: Record<string, never>;
   unwatch: Record<string, never>;
-  start: { ref: CliSessionRef; terminal: string; cwd?: string };
-  continue: { ref: CliSessionRef; terminal: string };
+  start: { ref: CliSessionRef; terminal?: string; cwd?: string };
+  continue: { ref: CliSessionRef; terminal?: string };
   send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean };
   steer: { accepted: boolean; started?: boolean; delivery?: CliDelivery };
   interrupt: { outcome: string };
@@ -1166,7 +1170,8 @@ function capability(value: unknown): CliAgentsCapability {
       if ((CLI_FEATURES as readonly string[]).includes(name) && !features.includes(name as CliFeature)) features.push(name as CliFeature);
     }
   }
-  return { version: 1, engines, terminal, ...(forkEngines ? { forkEngines } : {}), ...(features ? { features } : {}) };
+  const agyNeedsUpdate = optBool(o, "agyNeedsUpdate");
+  return { version: 1, engines, terminal, ...(forkEngines ? { forkEngines } : {}), ...(features ? { features } : {}), ...(agyNeedsUpdate ? { agyNeedsUpdate } : {}) };
 }
 
 function deviceView(value: unknown): CliDeviceView {
@@ -1452,13 +1457,21 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
   read: (o) => ({ items: items(o.items), more: bool(o.more) }),
   watch: () => ({}),
   unwatch: () => ({}),
-  start: (o) =>
-    pick({
-      ref: ref(o.ref),
-      terminal: str(o.terminal, CLI_LIMITS.terminal, 1),
+  start: (o) => {
+    const session = ref(o.ref);
+    return pick({
+      ref: session,
+      terminal: session.startsWith("agy:") ? optStr(o, "terminal", CLI_LIMITS.terminal, 1) : str(o.terminal, CLI_LIMITS.terminal, 1),
       cwd: optStr(o, "cwd", CLI_LIMITS.cwd, 1),
-    }),
-  continue: (o) => ({ ref: ref(o.ref), terminal: str(o.terminal, CLI_LIMITS.terminal, 1) }),
+    });
+  },
+  continue: (o) => {
+    const session = ref(o.ref);
+    return pick({
+      ref: session,
+      terminal: session.startsWith("agy:") ? optStr(o, "terminal", CLI_LIMITS.terminal, 1) : str(o.terminal, CLI_LIMITS.terminal, 1),
+    });
+  },
   send: (o) =>
     pick({
       turn: int(o.turn, 0, COUNTER_MAX),

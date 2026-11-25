@@ -42,6 +42,7 @@ export interface SessionDiscoveryOptions {
   /** defaults to ~/.zcode/cli; tests pass temp directories */
   zcodeHomes?: string[];
   zcode?: ZcodeScannerOptions;
+  agy?: { scan(): Promise<void>; rows(): LocalSession[] };
   /** Claude desktop app data folders (the sessions' archive and fork state). Defaults to the
    * platform's own folders when `claudeDirs` is not overridden, and to none otherwise. */
   claudeDesktopRoots?: string[];
@@ -219,6 +220,7 @@ export class SessionDiscovery {
     const run = (async () => {
       await Promise.all([
         this.options.codexDesktopQueue?.refresh(),
+        this.options.agy?.scan().catch((error) => this.fail(error)),
         ...this.claudeDirs.map(async (dir) => {
           try {
             this.live.set(dir, await scanLive(dir, this.options.claudeLive));
@@ -319,6 +321,7 @@ export class SessionDiscovery {
     for (const entries of this.history.values()) for (const e of entries) if (e.cwd) cwds.add(e.cwd);
     for (const rows of this.codex.values()) for (const r of rows) cwds.add(r.cwd);
     for (const rows of this.zcodeRows.values()) for (const r of rows) cwds.add(r.cwd);
+    for (const row of this.options.agy?.rows() ?? []) cwds.add(row.cwd);
     try {
       await roots.warm(cwds);
     } catch (error) {
@@ -343,6 +346,7 @@ export class SessionDiscovery {
     }
     for (const rows of this.codex.values()) for (const row of rows) add(row);
     for (const rows of this.zcodeRows.values()) for (const row of rows) add(row);
+    for (const row of this.options.agy?.rows() ?? []) add(row);
 
     // the project each session belongs to (rows are copied: the scanners keep the originals in their caches)
     const roots = this.options.repoRoots;

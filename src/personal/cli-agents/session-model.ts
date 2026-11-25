@@ -2,9 +2,9 @@
 // composer may do. No React, no network.
 import { CLI_ENGINES, type CliDeviceView, type CliEngine, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 
-export const ENGINE_LABEL: Record<CliEngine, string> = { claude: "Claude", codex: "Codex", zcode: "ZCode" };
+export const ENGINE_LABEL: Record<CliEngine, string> = { claude: "Claude", codex: "Codex", zcode: "ZCode", agy: "Antigravity" };
 /** The agent names the session list groups by. */
-export const AGENT_LABEL: Record<CliEngine, string> = { claude: "Claude Code", codex: "Codex", zcode: "ZCode" };
+export const AGENT_LABEL: Record<CliEngine, string> = { claude: "Claude Code", codex: "Codex", zcode: "ZCode", agy: "Antigravity CLI" };
 
 export function sessionStatusLabel(session: Pick<CliSessionView, "state" | "online">): string {
   if (!session.online) return "电脑离线";
@@ -218,12 +218,15 @@ export function recentCwds(sessions: readonly CliSessionView[], deviceId: string
 }
 
 /** Why a new session cannot start on this computer, or null when it can. */
-export function deviceBlocker(device: CliDeviceView | undefined): string | null {
+export function deviceBlocker(device: CliDeviceView | undefined, engine?: CliEngine): string | null {
   if (!device) return "电脑离线";
   if (!device.online) return "电脑离线";
   if (!device.cliAgents) return "未开启 Agent 会话";
-  if (!device.cliAgents.terminal.ready) return device.cliAgents.terminal.error || "终端组件不可用";
-  if (!device.cliAgents.engines.length) return "找不到 Claude 或 Codex";
+  const { agyNeedsUpdate, engines, terminal } = device.cliAgents;
+  if (engine === "agy") return engines.includes("agy") ? null : agyNeedsUpdate ? "请更新 Antigravity CLI" : "找不到 Antigravity CLI";
+  if (!engine && engines.includes("agy")) return null;
+  if (!terminal.ready) return terminal.error || "终端组件不可用";
+  if (!engines.length) return agyNeedsUpdate ? "请更新 Antigravity CLI" : "找不到可用的运行工具";
   return null;
 }
 
@@ -244,7 +247,7 @@ export function canAttach(session: CliSessionView): boolean {
 
 /** The session runs on the computer outside nex_bot's terminals and takes messages through its own inbox or daemon. */
 export function sendsOutside(session: Pick<CliSessionView, "sendVia">): boolean {
-  return session.sendVia === "inbox" || session.sendVia === "daemon";
+  return session.sendVia === "inbox" || session.sendVia === "daemon" || session.sendVia === "acp";
 }
 
 export type ComposerMode =
@@ -257,6 +260,7 @@ export function composerMode(session: CliSessionView): ComposerMode {
   if (!session.online) return { kind: "blocked", hint: "电脑离线" };
   if (session.state === "stopped") return { kind: "stopped", hint: session.writerUnknown ? "可能在电脑上打开" : undefined };
   if (session.liveIn === "nexbot" && session.terminal) return { kind: "send", running: session.state === "running" };
+  if (session.sendVia === "acp") return { kind: "send", running: session.state === "running" || session.state === "waiting" };
   // A Claude's inbox takes Stop (a message at priority now); the Codex daemon has no stop path.
   if (sendsOutside(session)) return { kind: "send", running: session.engine === "claude" && session.sendVia === "inbox" && (session.state === "running" || session.state === "waiting"), outside: true };
   if (session.liveIn === "desktop" && session.engine === "claude") return { kind: "blocked", hint: "在 Claude 桌面应用中打开" };

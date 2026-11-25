@@ -894,7 +894,7 @@ export class CliAgentHub {
 
   /** `forkFrom` starts the session from that session's context. An executor that does not list the
    * engine in `forkEngines` would ignore the field and open a blank session, so it is refused here. */
-  async start(actor: string, deviceId: string, engine: "claude" | "codex" | "zcode", cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}, createDir = false): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
+  async start(actor: string, deviceId: string, engine: CliEngine, cwd: string, forkFrom?: CliSessionRef, launch: CliLaunchOptions = {}, createDir = false): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
     if (forkFrom) {
       const caps = this.caps.get(deviceId);
       if (caps && !caps.forkEngines?.includes(engine)) throw new CliOpError("invalid", FORK_UNSUPPORTED);
@@ -907,7 +907,7 @@ export class CliAgentHub {
 
   /** Starts a session inside a fresh worktree of the repository at `cwd`; the
    * device dedups by requestId, so a retry reuses the tree it built. */
-  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal: string; cwd?: string }> {
+  async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
     const options = this.launchOptions(deviceId, launch);
     const result = await this.op(actor, deviceId, null, "start", { engine, cwd, worktree: { branch, requestId }, ...options });
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
@@ -998,7 +998,7 @@ export class CliAgentHub {
     }
   }
 
-  async continueSession(actor: string, key: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal: string }> {
+  async continueSession(actor: string, key: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal?: string }> {
     const parsed = this.requireKey(key);
     const options = this.launchOptions(parsed.deviceId, launch);
     const result = await this.op(actor, parsed.deviceId, key, "continue", { ref: parsed.ref, ...options });

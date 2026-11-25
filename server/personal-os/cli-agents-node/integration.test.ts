@@ -6,7 +6,7 @@
 // runs and no home directory is read.
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -171,6 +171,69 @@ function claudeTranscript(claudeDir: string, id: string, text: string, cwd: stri
   const old = new Date(Date.now() - 60_000);
   utimesSync(file, old, old);
 }
+
+it("runs AGY through ACP without herdr and continues the native conversation once", async () => {
+  const root = tempDir("nex-agy-int-");
+  const agyDir = path.join(root, "agy-home");
+  const fixture = path.join(root, "fake-agy.mjs");
+  copyFileSync(fileURLToPath(new URL("./testdata/agy-acp-fixture.mjs", import.meta.url)), fixture);
+  chmodSync(fixture, 0o755);
+  const executable = process.platform === "win32" ? path.join(root, "agy.cmd") : fixture;
+  if (process.platform === "win32") writeFileSync(executable, '@node "%~dp0fake-agy.mjs" %*\r\n');
+  const nativeId = "c75d00aa-0000-4000-8000-000000000001";
+  const transcript = path.join(agyDir, "brain", nativeId, ".system_generated", "logs", "transcript_full.jsonl");
+  let writerOpen = true;
+  const s = await stack({
+    agyDir, binary: null,
+    resolveCli: async (engine: string) => engine === "agy" ? executable : null,
+    agyWriters: async () => ({ sessions: new Set(writerOpen ? [nativeId] : []), unknown: false }),
+  }, ({ workDir }) => {
+    mkdirSync(path.dirname(transcript), { recursive: true });
+    const at = new Date(Date.now() - 60_000).toISOString();
+    writeFileSync(transcript, JSON.stringify({ type: "USER_INPUT", step_index: 0, created_at: at, content: "native context" }) + "\n");
+    mkdirSync(path.join(agyDir, "cache"), { recursive: true });
+    writeFileSync(path.join(agyDir, "cache", "conversation_metadata.json"), JSON.stringify({
+      conversations: { [nativeId]: { summary: { Title: "Original AGY", UpdatedAt: at, WorkspaceURIs: [pathToFileURL(workDir).href] } } },
+    }));
+  }, root);
+  await s.listed(1);
+  const key = `${s.deviceId}:agy:${nativeId}`;
+  expect(s.hub.list().sessions).toContainEqual(expect.objectContaining({ key, state: "idle", liveIn: "terminal" }));
+  const refused = await s.call("cli-agents/continue", { key });
+  expect(refused.data.code).toBe("open_elsewhere");
+
+  const models = await s.call(`cli-agents/models?deviceId=${s.deviceId}&engine=agy`);
+  expect(models.data.models).toEqual([{ id: "gemini-fixture", label: "Gemini Fixture", efforts: ["low", "high"] }]);
+
+  writerOpen = false;
+  const continued = await s.call("cli-agents/continue", { key });
+  expect(continued).toEqual({ status: 200, data: { key } });
+  const payload = { key, text: "continue in NexAgent", delivery: "send", clientMessageId: "agy-message", requestId: "agy-request" };
+  const delivered = await s.call("cli-agents/send", payload);
+  expect(delivered).toMatchObject({ status: 200, data: { status: "sent" } });
+  const duplicate = await s.call("cli-agents/send", payload);
+  expect(duplicate.data.messageId).toBe(delivered.data.messageId);
+  await until(() => readFileSync(transcript, "utf8").includes("context native context"), "the native export");
+  expect(readFileSync(transcript, "utf8").match(/continue in NexAgent/g)).toHaveLength(1);
+  const history = await s.call(`cli-agents/items?key=${encodeURIComponent(key)}`);
+  expect(history.data.items.filter((item: { kind: string }) => item.kind === "user").map((item: { text: string }) => item.text))
+    .toEqual(["native context", "continue in NexAgent"]);
+
+  const created = await s.call("cli-agents/start", { deviceId: s.deviceId, engine: "agy", cwd: s.workDir, effort: "low" });
+  expect(created).toMatchObject({ status: 200, data: { key: `${s.deviceId}:agy:c75d00aa-0000-4000-8000-000000000002` } });
+  const freshKey = created.data.key as string;
+  const sent = await s.call("cli-agents/send", { key: freshKey, text: "request approval" });
+  expect(sent.status).toBe(200);
+  let approval: { id: string; kind: string; summary: string } | undefined;
+  for (const end = Date.now() + 8000; !approval && Date.now() < end; await wait(25)) {
+    approval = (await s.call(`cli-agents/requests?key=${encodeURIComponent(freshKey)}`)).data.requests?.[0];
+  }
+  expect(approval).toMatchObject({ kind: "permission", summary: "Read fixture.txt" });
+  expect((await s.call("cli-agents/answer", { id: approval!.id, decision: "allow" })).status).toBe(200);
+  await until(() => s.hub.list().sessions.find((row) => row.key === freshKey)?.state === "idle", "the approved turn to end");
+  const after = await s.call(`cli-agents/items?key=${encodeURIComponent(freshKey)}`);
+  expect(after.data.items).toContainEqual(expect.objectContaining({ kind: "assistant", text: "approved fixture" }));
+}, 40_000);
 
 describe("Agent mode through Core, a real node and a fake herdr-core", () => {
   it("lists sessions, starts one, streams its terminal both ways and keeps it alive when the node pauses", async () => {

@@ -112,7 +112,11 @@ describe("new session blockers", () => {
     expect(deviceBlocker(device())).toBeNull();
     expect(deviceBlocker(device({ online: false }))).toBe("电脑离线");
     expect(deviceBlocker(device({ cliAgents: null }))).toBe("未开启 Agent 会话");
-    expect(deviceBlocker(device({ cliAgents: { version: 1, engines: [], terminal: { name: "herdr-core", version: "0.1.21", ready: true } } }))).toBe("找不到 Claude 或 Codex");
+    expect(deviceBlocker(device({ cliAgents: { version: 1, engines: [], terminal: { name: "herdr-core", version: "0.1.21", ready: true } } }))).toBe("找不到可用的运行工具");
+    const agy = device({ cliAgents: { version: 1, engines: ["agy"], terminal: { name: "herdr-core", version: "0.1.21", ready: false } } });
+    expect(deviceBlocker(agy, "agy")).toBeNull();
+    expect(deviceBlocker(agy, "codex")).toBe("终端组件不可用");
+    expect(composerMode(session({ engine: "agy", sendVia: "acp", state: "waiting" }))).toEqual({ kind: "send", running: true });
     expect(deviceBlocker(device({ cliAgents: { version: 1, engines: ["claude"], terminal: { name: "herdr-core", version: "0.1.21", ready: false } } }))).toBe("终端组件不可用");
   });
 });

@@ -7,9 +7,9 @@ import { HarnessMark } from "./tokendance/HarnessMark";
 import { AGENT_LABEL } from "./session-model";
 
 /** The CLIs a new session can start in. */
-export const STARTABLE: readonly CliEngine[] = ["claude", "codex"];
+export const STARTABLE: readonly CliEngine[] = ["claude", "codex", "agy"];
 
-export function HarnessPicker({ engines, value, onChange, disabled }: { engines: readonly CliEngine[]; value: CliEngine; onChange(next: CliEngine): void; disabled?: boolean }) {
+export function HarnessPicker({ engines, value, onChange, disabled, agyNeedsUpdate }: { engines: readonly CliEngine[]; value: CliEngine; onChange(next: CliEngine): void; disabled?: boolean; agyNeedsUpdate?: boolean }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false), 260);
@@ -25,7 +25,7 @@ export function HarnessPicker({ engines, value, onChange, disabled }: { engines:
           return <button key={engine} type="button" role="option" aria-selected={engine === value} className="model-menu-row na-model-row" disabled={!installed}
             onClick={() => { onChange(engine); setOpen(false); trigger.current?.focus(); }}>
             <HarnessMark agentId={engine} size="sm"/>
-            <span className="na-model-text"><span className="model-menu-name">{AGENT_LABEL[engine]}</span>{installed ? null : <small>这台电脑上没有安装</small>}</span>
+            <span className="na-model-text"><span className="model-menu-name">{AGENT_LABEL[engine]}</span>{installed ? null : <small>{engine === "agy" && agyNeedsUpdate ? "需要更新" : "不可用"}</small>}</span>
             {engine === value ? <Check size={15} className="model-menu-check"/> : null}
           </button>;
         })}

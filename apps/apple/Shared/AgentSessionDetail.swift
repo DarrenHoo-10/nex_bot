@@ -171,14 +171,16 @@ struct AgentSessionDetail: View {
     @ViewBuilder
     private func actions(_ session: CliSession) -> some View {
         let canFork = !workspace.bots.isEmpty
+        let canOpenLocal = session.online && (session.engine != .agy || CliSessions.canAttach(session) ||
+            (!session.writerUnknown && (session.state == .stopped || (session.state == .idle && session.sendVia == "acp"))))
         #if os(macOS)
         if canFork { Button("交给助手") { forking = true }.buttonStyle(.bordered) }
-        if session.online { Button("在电脑上打开") { Task { await openLocal() } }.buttonStyle(.bordered) }
+        if canOpenLocal { Button("在电脑上打开") { Task { await openLocal() } }.buttonStyle(.bordered) }
         #else
-        if canFork || session.online {
+        if canFork || canOpenLocal {
             Menu {
                 if canFork { Button("交给助手") { forking = true } }
-                if session.online { Button("在电脑上打开") { Task { await openLocal() } } }
+                if canOpenLocal { Button("在电脑上打开") { Task { await openLocal() } } }
             } label: { Image(systemName: "ellipsis.circle") }
         }
         #endif
@@ -936,6 +938,8 @@ private struct AgentComposer: View {
     private var claudeInbox: Bool {
         session.engine == .claude && session.sendVia == "inbox" && model.device(session.deviceId)?.cliAgents?.features.contains("inboxSteer") == true
     }
+    private var managedAcp: Bool { session.engine == .agy && session.sendVia == "acp" }
+    private var canConfigureAgy: Bool { managedAcp && session.state == .idle && canSetOnResume }
     private var pendingRequests: [CliRequestRecord] { model.cards(session.key).filter { model.cardState($0) == .pending } }
     private var steerQuestionId: String? {
         guard canSetOnSend, session.state == .running || session.state == .waiting else { return nil }
@@ -948,7 +952,7 @@ private struct AgentComposer: View {
     private var canSteer: Bool {
         guard session.online else { return false }
         if steerQuestionId != nil || interruptWaiting { return true }
-        return pendingRequests.isEmpty && session.state == .running && ((session.liveIn == .nexbot && session.terminal != nil) || claudeInbox)
+        return pendingRequests.isEmpty && session.state == .running && ((session.liveIn == .nexbot && session.terminal != nil) || claudeInbox || managedAcp)
     }
     private var steerLabel: String {
         if steerQuestionId != nil { return "取消提问并引导" }
@@ -961,7 +965,7 @@ private struct AgentComposer: View {
         return CliSessions.composerMode(session)
     }
     private var canSetOnSend: Bool { session.engine == .claude && session.liveIn == .nexbot && session.terminal != nil }
-    private var effortLevels: [String] { CliLaunches.efforts[session.engine] == nil ? [] : CliLaunches.reasoningLevels }
+    private var effortLevels: [String] { session.engine == .agy ? offered : CliLaunches.reasoningLevels }
     private var selectedEffort: String { CliLaunches.reasoningChoice(effort) }
     private var offered: [String] {
         let effectiveModel = chosenModel.isEmpty ? session.model ?? catalog.current ?? "" : chosenModel
@@ -1093,7 +1097,7 @@ private struct AgentComposer: View {
             modelChip
             AgentContextRing(usage: session.context)
             #if os(macOS)
-            if canSetOnSend && !effortLevels.isEmpty { effortButton }
+            if (canSetOnSend || canConfigureAgy) && !effortLevels.isEmpty { effortButton }
             #endif
             // one button: Stop while a turn runs and the box is empty, Send once there is something to send
             if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty {
@@ -1116,7 +1120,9 @@ private struct AgentComposer: View {
 
     /// The model on one line left of the context ring, cut at its width; it opens the model choices.
     @ViewBuilder private var modelChip: some View {
-        if canSetOnResume || canSetOnSend {
+        if session.engine == .agy && session.state != .stopped && !canConfigureAgy {
+            modelChipLabel
+        } else if canSetOnResume || canSetOnSend {
             #if os(iOS)
             Button { showingModels = true } label: { modelChipLabel }
                 .buttonStyle(.plain)
@@ -1188,6 +1194,16 @@ private struct AgentComposer: View {
         defer { sending = false }
         do {
             let message = try await model.imageMessage(session.key, text: text, images: submittedImages)
+            if canConfigureAgy {
+                let previousModel = AgentDrafts.appliedModels[session.key]
+                let requestedModel = chosenModel.isEmpty ? (previousModel == nil ? nil : catalog.current) : chosenModel
+                let level = effort == nil ? nil : resolvedEffort
+                if (requestedModel != nil && requestedModel != previousModel) || (level != nil && level != AgentDrafts.appliedEfforts[session.key]) {
+                    _ = try await model.continueSession(session.key, effort: level, model: requestedModel)
+                    AgentDrafts.appliedModels[session.key] = requestedModel
+                    AgentDrafts.appliedEfforts[session.key] = level
+                }
+            }
             if canSetOnSend {
                 let applied = AgentDrafts.appliedModels[session.key]
                 let wanted = chosenModel.isEmpty ? (applied == nil ? nil : catalog.current) : chosenModel
@@ -1202,7 +1218,7 @@ private struct AgentComposer: View {
                 AgentDrafts.appliedEfforts[session.key] = level
             }
             let echo = AgentPendingSend(text: message, known: Set(model.transcript(session.key).items.map(\.id)))
-            let queued = (session.state == .running || session.state == .waiting) && ((session.liveIn == .nexbot && session.terminal != nil) || (session.engine == .claude && session.sendVia == "inbox"))
+            let queued = (session.state == .running || session.state == .waiting) && ((session.liveIn == .nexbot && session.terminal != nil) || (session.engine == .claude && session.sendVia == "inbox") || managedAcp)
             if !queued { pending.append(echo) }
             entry = echo
             if draft == text { draft = "" }

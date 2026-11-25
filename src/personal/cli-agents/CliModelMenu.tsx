@@ -2,7 +2,7 @@
 // composer, listing the rows the CLI's own `/model` picker shows on that computer.
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
-import { CLI_MODELS, CLI_REASONING_LEVELS, cliReasoningChoice, type CliEngine, type CliModelCatalog } from "../../../shared/cli-agents";
+import { CLI_MODELS, CLI_REASONING_LEVELS, cliReasoningChoice, resolveCliEffort, type CliEngine, type CliModelCatalog } from "../../../shared/cli-agents";
 import { EffortChoices } from "../components/EffortChoices";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import { useCompactComposer } from "../components/use-compact-composer";
@@ -84,31 +84,33 @@ export function CliModelMenu({ deviceId, engine, live, choice, onChange, running
       return terms.every((term) => search.includes(term));
     });
   }, [open, models, choice.model, query]);
-  const selectedEffort = cliReasoningChoice(choice.effort);
+  const levelsFor = (model: string) => models.find((row) => row.id === (model || fallback))?.efforts ?? [];
+  const levels = engine === "agy" ? levelsFor(choice.model) : CLI_REASONING_LEVELS;
+  const selectedEffort = engine === "agy" ? resolveCliEffort(engine, levels, choice.effort || catalog.currentEffort) ?? "" : cliReasoningChoice(choice.effort);
   const commitLevel = (next: string) => {
     if (!disabled && next !== choice.effort) onChange({ ...choice, effort: next });
   };
 
   const pick = (model: string) => {
     if (disabled || model === choice.model) return;
-    onChange({ model, effort: selectedEffort });
+    onChange({ model, effort: engine === "agy" ? resolveCliEffort(engine, levelsFor(model), selectedEffort) ?? "" : selectedEffort });
   };
 
   const title = choice.model ? label(choice.model) : fallback ? label(fallback) : "默认模型";
   return <div className="model-menu-root" ref={root}>
     {!anchorRef && <button ref={trigger} type="button" className={triggerClassName} aria-label="模型设置" aria-haspopup="dialog" aria-expanded={open} title={choice.model || fallback || undefined} onClick={() => setOpen(!open)}>
-      <span>{title}</span>{engine !== "zcode" && <span className="na-effort">{effortLabel(selectedEffort)}</span>}<ChevronDown size={13}/>
+      <span>{title}</span>{engine !== "zcode" && (engine !== "agy" || levels.length > 0) && <span className="na-effort">{effortLabel(selectedEffort)}</span>}<ChevronDown size={13}/>
     </button>}
     {open && <div ref={panel} popover="manual" className="model-menu na-model-menu" role="dialog" aria-label="模型设置" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); anchor()?.focus(); } }}>
       <div className="na-model-head"><span>模型</span></div>
-      {engine !== "zcode" && <EffortChoices levels={CLI_REASONING_LEVELS} value={selectedEffort} label={effortLabel} onChange={commitLevel} disabled={disabled}/>}
+      {engine !== "zcode" && levels.length > 0 && <EffortChoices levels={levels} value={selectedEffort} label={effortLabel} onChange={commitLevel} disabled={disabled}/>}
       {models.length > 8 || query ? <label className="model-menu-search"><Search size={14}/><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)}/></label> : null}
       <div className="model-menu-list" role="listbox" aria-label="可用模型">
         {!query ? <>
-          <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick("")} title={fallback || undefined}>
+          {!(engine === "agy" && running) && <button type="button" role="option" aria-selected={!choice.model} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick("")} title={fallback || undefined}>
             <span className="na-model-text"><span className="model-menu-name">默认</span>{fallback ? <small>{label(fallback)}</small> : null}</span>
             {!choice.model ? <Check size={15} className="model-menu-check"/> : null}
-          </button>
+          </button>}
           {shown.length ? <div className="na-model-divider" role="presentation"/> : null}
         </> : null}
         {shown.map((row) => <button type="button" role="option" aria-selected={row.id === choice.model} key={row.id} className="model-menu-row na-model-row" disabled={disabled} onClick={() => pick(row.id)} title={row.id}>

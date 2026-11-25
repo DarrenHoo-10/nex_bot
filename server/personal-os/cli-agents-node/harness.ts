@@ -72,7 +72,17 @@ const zcode: HarnessAdapter = {
   },
 };
 
-const ADAPTERS: readonly HarnessAdapter[] = [claude, codex, zcode];
+const agy: HarnessAdapter = {
+  id: "agy",
+  label: "Antigravity CLI",
+  caps(session) {
+    if (session.terminal) return { ...terminalCaps(session), fork: "none" };
+    if (session.sendVia === "acp") return { sendVia: "acp", steer: true, interrupt: true, terminal: false, fork: "none" };
+    return none();
+  },
+};
+
+const ADAPTERS: readonly HarnessAdapter[] = [claude, codex, zcode, agy];
 
 export function harnessFor(engine: CliEngine): HarnessAdapter | null {
   return ADAPTERS.find((adapter) => adapter.id === engine) ?? null;

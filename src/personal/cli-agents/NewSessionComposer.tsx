@@ -7,7 +7,7 @@ import { useAnchoredPopover } from "../components/anchored-popover";
 import type { LaunchChoice } from "./CliModelMenu";
 import { Composer } from "./Composer";
 import { DirectoryPicker, type DirectoryChoice } from "./DirectoryPicker";
-import { HarnessPicker } from "./HarnessPicker";
+import { HarnessPicker, STARTABLE } from "./HarnessPicker";
 import type { DirectorySource } from "./directory-source";
 import { deviceBlocker } from "./session-model";
 import { branchProblem, randomBranch, type LaunchRequest } from "./use-launches";
@@ -31,15 +31,17 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   const firstReady = devices.find((device) => !deviceBlocker(device));
   const [deviceId, setDeviceId] = useState(() => (initialDeviceId && devices.some((device) => device.id === initialDeviceId) ? initialDeviceId : firstReady?.id ?? devices[0]?.id ?? ""));
   const device = devices.find((entry) => entry.id === deviceId);
-  const blocker = deviceBlocker(device);
-  const engines = device?.cliAgents?.engines ?? [];
+  const engines = useMemo(() => STARTABLE.filter((engine) => device?.cliAgents?.engines.includes(engine) && !deviceBlocker(device, engine)), [device]);
   const [engine, setEngine] = useState<CliEngine>(engines[0] ?? "claude");
+  const blocker = deviceBlocker(device, engine);
   const recent = useMemo(() => recents(deviceId), [recents, deviceId]);
   const [dir, setDir] = useState<DirectoryChoice | null>(() => (initialCwd ? { path: initialCwd, create: false } : recent[0] ? { path: recent[0], create: false } : null));
   const [git, setGit] = useState(false);
   const [branch, setBranch] = useState<string | null>(null);
   const [choice, setChoice] = useState<LaunchChoice>({ model: "", effort: "" });
   const [permissions, setPermissions] = useState<CliPermissionMode>("full");
+  const [agyPermissions, setAgyPermissions] = useState<CliPermissionMode>("ask");
+  const selectedPermissions = engine === "agy" ? agyPermissions : permissions;
 
   useEffect(() => { if (engines.length && !engines.includes(engine)) setEngine(engines[0]); }, [engines, engine]);
   useEffect(() => { setChoice({ model: "", effort: "" }); }, [engine, deviceId]);
@@ -67,7 +69,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
       deviceId, engine, cwd: dir.path, message, files, attach: features.includes("attach"),
       ...(dir.create ? { createDir: true } : {}), ...(branch !== null ? { branch: branch.trim() } : {}),
       choice: features.includes("launchOptions") ? choice : { model: "", effort: "" },
-      ...(canChoosePermissions ? { permissions } : {}),
+      ...(canChoosePermissions ? { permissions: selectedPermissions } : {}),
     });
   };
 
@@ -88,9 +90,9 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
             <DirectoryPicker devices={devices.map((entry) => ({ id: entry.id, name: entry.name, online: entry.online && !deviceBlocker(entry) }))}
               deviceId={deviceId} onDevice={(id) => { setDeviceId(id); setDir(null); }} value={dir} onChange={setDir}
               source={source} recents={recent}/>
-            <HarnessPicker engines={engines} value={engine} onChange={setEngine} disabled={!!blocker}/>
+            <HarnessPicker engines={engines} value={engine} onChange={setEngine} disabled={!device?.online || !device.cliAgents} agyNeedsUpdate={device?.cliAgents?.agyNeedsUpdate}/>
             {git ? <BranchChip branch={branch} onChange={setBranch} problem={branchError}/> : null}
-            {canChoosePermissions ? <PermissionChip value={permissions} onChange={setPermissions}/> : null}
+            {canChoosePermissions ? <PermissionChip value={selectedPermissions} onChange={engine === "agy" ? setAgyPermissions : setPermissions}/> : null}
             {/* only what needs attention; the folder's full path is on its chip */}
             {status ? <span className="na-new-path" role="alert">{status}</span> : null}
           </div>

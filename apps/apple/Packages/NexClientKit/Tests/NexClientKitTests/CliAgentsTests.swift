@@ -249,7 +249,9 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliSessions.deviceBlocker(CliDevice(id: "d", name: "n", online: true)), "未开启 Agent 会话")
         XCTAssertEqual(CliSessions.deviceBlocker(CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [.claude], terminal: CliTerminalCapability(ready: false)))), "终端组件不可用")
         XCTAssertEqual(CliSessions.deviceBlocker(CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [.claude], terminal: CliTerminalCapability(ready: false, error: "版本过低")))), "版本过低")
-        XCTAssertEqual(CliSessions.deviceBlocker(CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [], terminal: CliTerminalCapability(ready: true)))), "找不到 Claude 或 Codex")
+        XCTAssertEqual(CliSessions.deviceBlocker(CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [], terminal: CliTerminalCapability(ready: true)))), "找不到可用的运行工具")
+        let agy = CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [.agy], terminal: CliTerminalCapability(ready: false)))
+        XCTAssertNil(CliSessions.deviceBlocker(agy, engine: .agy))
         let sessions = [cliSession("a", cwd: "/x", at: 1), cliSession("b", cwd: "/y", at: 9), cliSession("c", cwd: "/x", at: 5), cliSession("e", device: "other", cwd: "/z", at: 99)]
         XCTAssertEqual(CliSessions.recentCwds(sessions, deviceId: "d1"), ["/y", "/x"])
         XCTAssertEqual(CliSessions.recentCwds(sessions, deviceId: "d1", limit: 1), ["/y"])

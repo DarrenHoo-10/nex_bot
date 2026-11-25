@@ -129,6 +129,19 @@ export async function resolveCli(engine: CliEngine, options: PlatformOptions & {
   if (platform === "darwin") {
     for (const directory of macFallbackDirectories(home)) if (!directories.includes(directory)) directories.push(directory);
   }
+  if (engine === "agy" && isWindows(platform)) {
+    const local = envValue(env, "LOCALAPPDATA", platform);
+    if (local && path.isAbsolute(local)) directories.push(path.join(local, "Microsoft", "WinGet", "Links"), path.join(local, "agy", "bin"));
+    // The official Windows installer can also put a .cmd in ~/.local/bin.
+    // Prefer the real CLI so the long-running ACP process needs no shell.
+    for (const directory of directories) {
+      const executable = path.join(directory, "agy.exe");
+      if (await isExecutable(executable, platform)) {
+        if (useCache) resolveCache.set(key, executable);
+        return executable;
+      }
+    }
+  }
 
   let found: string | null = null;
   search: for (const directory of directories) {
@@ -285,6 +298,10 @@ export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: LaunchArgs = {
       assertSafeId(ids.nativeId, "the Codex session");
       args = ["resume", ids.nativeId];
     }
+  } else if (engine === "agy") {
+    if (mode !== "resume" || !ids.nativeId) throw new LaunchError("invalid_argument", "Antigravity terminal requires an existing session");
+    assertSafeId(ids.nativeId, "the Antigravity session");
+    args = ["--conversation", ids.nativeId];
   } else if (engine === "zcode") {
     if (mode === "fork") throw new LaunchError("invalid_argument", "ZCode cannot fork a session");
     // the installed ZCode CLI's resume flag still needs the live check P0 asks
@@ -383,6 +400,7 @@ const CONFIG_HOME_VARIABLES: Record<CliEngine, { variable: string; fallback: str
   claude: { variable: "CLAUDE_CONFIG_DIR", fallback: ".claude" },
   codex: { variable: "CODEX_HOME", fallback: ".codex" },
   zcode: { variable: "ZCODE_CONFIG_DIR", fallback: ".zcode" },
+  agy: { variable: "ANTIGRAVITY_CLI_CONFIG_DIR", fallback: ".gemini/antigravity-cli" },
 };
 
 /** The CLI keeps its sessions in a config home; when the user relocated it

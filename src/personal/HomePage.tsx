@@ -27,7 +27,7 @@ const writing: Appearance = { kind: "companion", shape: "pebble", color: "clay" 
 
 const features = [
   { icon: Bot, title: "专属助手", text: "为写作、研究、工作整理分别创建助手，选择专属角色头像，随任务状态显示表情与动作。" },
-  { icon: MonitorSmartphone, title: "跨设备接着聊", text: "用同一账号在电脑、手机和网页继续对话，或从 NexAgent 的一条回复创建独立聊天。" },
+  { icon: MonitorSmartphone, title: "跨设备接着聊", text: "用电脑、手机和网页继续对话。NexAgent 可新建或续接电脑上的 Antigravity CLI 会话。" },
   { icon: FileText, title: "处理文件", text: "上传文档、PDF 和图片，让助手阅读、总结和整理。" },
   { icon: SquareTerminal, title: "操作电脑", text: "Windows 和 Mac 客户端登录后连接本机，助手可读取文件、运行命令。" },
   { icon: Plug, title: "连接工具", text: "添加 MCP 连接器或连接 Gmail，所有助手即可使用。" },

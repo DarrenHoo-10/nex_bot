@@ -138,8 +138,9 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const launchOptions=!!features?.includes("launchOptions");
   /** a Claude in a NexBot terminal switches at once (/model, /effort); anything else on its next start */
   const switchesNow=!draft && !starter && mode.kind==="send" && !mode.outside && session.engine==="claude";
-  const pickerOff=!launchOptions && !switchesNow;
-  const pickerNote=pickerOff ? "电脑端版本过旧，升级后可用" : "";
+  const agyModelBlocked = !starter && !draft && session.engine === "agy" && session.state !== "stopped" && (session.sendVia !== "acp" || session.state !== "idle");
+  const pickerOff=(!launchOptions && !switchesNow) || agyModelBlocked;
+  const pickerNote=agyModelBlocked ? (session.sendVia === "acp" ? "会话空闲时可更改模型" : "可在终端里更改模型") : pickerOff ? "电脑端版本过旧，升级后可用" : "";
   const canOpenModelMenu = !!review || session.engine !== "zcode";
   function choose(next:LaunchChoice){if(draft)draft.configure(next.model,next.effort);else onLaunch?.(next)}
   function configure(nextModel:string,nextEffort:string) {
@@ -203,10 +204,11 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const canSubmit=(starter ? starter.ready : !!(body || extra.files.length)) && (extra.goal===null || !!goal);
   const stopOnly = mode.kind==="send" && mode.running && !sending && !(body || extra.files.length);
   const managedTerminal = !draft && session.liveIn === "nexbot" && !!session.terminal;
+  const managedAcp = !draft && session.sendVia === "acp";
   const claudeInbox = !draft && session.engine === "claude" && session.sendVia === "inbox";
-  const queuesWhileBusy = !revision && (managedTerminal || claudeInbox) && (running || session.state === "waiting");
+  const queuesWhileBusy = !revision && (managedTerminal || managedAcp || claudeInbox) && (running || session.state === "waiting");
   const canSteer = session.online && queue?.pauseReason !== "stopped" && (
-    (managedTerminal && (steerQuestionId || interruptWaiting)) || (running && (managedTerminal || (claudeInbox && features?.includes("inboxSteer"))))
+    (managedTerminal && (steerQuestionId || interruptWaiting)) || (running && (managedTerminal || (managedAcp && session.state === "running") || (claudeInbox && features?.includes("inboxSteer"))))
   );
   const steerLabel = steerQuestionId ? "取消提问并引导" : interruptWaiting ? "中断并引导" : "引导";
   // the paused note matters only while something waits in the queue

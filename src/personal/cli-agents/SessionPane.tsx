@@ -197,6 +197,10 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       applied.current = JSON.stringify(launch);
     }
     const key=resumedKey.current??session.key;
+    if (!review && session.sendVia === "acp" && session.state === "idle" && delivery !== "steer" && delivery !== "queue" && applied.current !== JSON.stringify(launch)) {
+      if (Object.keys(options).length) await continueSession(key, options);
+      applied.current = JSON.stringify(launch);
+    }
     // a Claude in a NexBot terminal takes the change at once, typed as its own commands
     if(delivery!=="steer" && !review && session.engine==="claude" && session.liveIn==="nexbot" && !!session.terminal && session.state!=="stopped" && applied.current!==JSON.stringify(launch)){
       const before = JSON.parse(applied.current) as LaunchChoice;

@@ -7,8 +7,14 @@ import Foundation
 public typealias CliSessionKey = String
 
 public enum CliEngine: String, Codable, Sendable, Hashable, CaseIterable {
-    case claude, codex
-    public var label: String { self == .claude ? "Claude" : "Codex" }
+    case claude, codex, agy
+    public var label: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "Codex"
+        case .agy: "Antigravity CLI"
+        }
+    }
 }
 
 public enum CliSessionState: String, Codable, Sendable, Hashable { case running, waiting, idle, stopped }
@@ -117,15 +123,19 @@ public struct CliTerminalCapability: Sendable, Hashable, Decodable {
 public struct CliCapability: Sendable, Hashable, Decodable {
     public var engines: [CliEngine]
     public var terminal: CliTerminalCapability
+    public var agyNeedsUpdate: Bool
     /// what the executor does beyond the first protocol (`launchOptions`, `models`, …); empty on older ones
     public var features: [String]
-    public init(engines: [CliEngine], terminal: CliTerminalCapability, features: [String] = []) { self.engines = engines; self.terminal = terminal; self.features = features }
-    enum CodingKeys: String, CodingKey { case engines, terminal, features }
+    public init(engines: [CliEngine], terminal: CliTerminalCapability, features: [String] = [], agyNeedsUpdate: Bool = false) {
+        self.engines = engines; self.terminal = terminal; self.features = features; self.agyNeedsUpdate = agyNeedsUpdate
+    }
+    enum CodingKeys: String, CodingKey { case engines, terminal, features, agyNeedsUpdate }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         engines = try c.decode(LossyList<CliEngine>.self, forKey: .engines).values
         terminal = try c.decode(CliTerminalCapability.self, forKey: .terminal)
         features = (try? c.decodeIfPresent(LossyList<String>.self, forKey: .features))?.values ?? []
+        agyNeedsUpdate = (try? c.decode(Bool.self, forKey: .agyNeedsUpdate)) ?? false
     }
 }
 

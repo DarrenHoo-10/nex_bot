@@ -4,7 +4,7 @@ import type {CliItem,CliSessionView} from "../../../shared/cli-agents";
 import {AGENT_LABEL,canAttach,folderLabel,samePath,worktreeName} from "./session-model";
 import {sessionActivity,type ActivityEntry} from "./session-activity";
 import {useReview} from "./WorkbenchReview";
-import { fetchGit, type CliGitInfo } from "./api";
+import { cliErrorText, fetchGit, openLocal, type CliGitInfo } from "./api";
 
 interface GitInfo {branch:string;head:string;files:string[];added:number;removed:number;worktree?:string;source?:string;error?:string;project?:string}
 function ActivityGroup({title,entries,icon:Icon,compact}:{title:string;entries:ActivityEntry[];icon:typeof Activity;compact?:boolean}) {
@@ -19,6 +19,8 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
   const review=useReview(), checkout=review?.checkouts?.[session.cwd];
   const [git,setGit]=useState<GitInfo|null>(null),[error,setError]=useState(""),[refresh,setRefresh]=useState(0);
   const [reading,setReading]=useState(false);
+  const [opening,setOpening]=useState(false);
+  const [terminalError,setTerminalError]=useState("");
   const activity=useMemo(()=>sessionActivity(items,session.state,session.online),[items,session.state,session.online]);
   useEffect(()=>{
     if(!open)return;
@@ -52,6 +54,14 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
     ? (git.project && samePath(git.project,git.worktree) ? "主工作树" : folderLabel(git.worktree))
     : checkout ? (checkout.worktree===checkout.project?"主工作树":folderLabel(checkout.worktree))
     : linked ?? (branch ? "主工作树" : "");
+  const canOpenLocal = session.engine === "agy" && session.online && !session.writerUnknown &&
+    (session.state === "stopped" || (session.state === "idle" && session.sendVia === "acp"));
+  const openTerminal = async () => {
+    setOpening(true);
+    setTerminalError("");
+    try { await openLocal(session.key); } catch (cause) { setTerminalError(cliErrorText(cause)); }
+    finally { setOpening(false); }
+  };
   return <aside className="na-info" aria-label="工作区信息">
     <section className="na-info-card" aria-label="会话概览">
       <header><GitBranch size={15}/><strong>Git 工作区</strong><small>{AGENT_LABEL[session.engine]}</small>
@@ -63,7 +73,11 @@ export function SessionInfoCard({session,items,open,onTerminalOpen}:{session:Cli
         <div className="na-info-row"><FileDiff size={15}/><span>更改</span><small>{reading ? "正在读取…" : error || "—"}</small></div>}
       {(activity.todos.length + activity.agents.length + activity.jobs.length > 0) && <div className="na-info-activity"><ActivityGroup title="待办" entries={activity.todos} icon={ListChecks}/>
         <ActivityGroup title="子代理" entries={activity.agents} icon={Network}/><ActivityGroup title="后台任务" entries={activity.jobs} icon={Activity} compact/></div>}
-      {onTerminalOpen && <footer><button disabled={!canAttach(session)} title={canAttach(session)?"连接当前会话的终端":"当前会话没有可连接的终端"} onClick={onTerminalOpen}><SquareTerminal size={15}/>打开远程终端</button></footer>}
+      {(onTerminalOpen || canOpenLocal) && <footer>
+        {onTerminalOpen && <button disabled={!canAttach(session)} title={canAttach(session)?"连接当前会话的终端":"当前会话没有可连接的终端"} onClick={onTerminalOpen}><SquareTerminal size={15}/>打开远程终端</button>}
+        {canOpenLocal && <button disabled={opening} onClick={() => void openTerminal()}><SquareTerminal size={15}/>{opening ? "正在打开…" : "在电脑上打开"}</button>}
+        {terminalError && <small role="alert">{terminalError}</small>}
+      </footer>}
     </section>
   </aside>;
 }

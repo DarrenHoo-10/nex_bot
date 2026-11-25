@@ -13,7 +13,7 @@ interface Snapshot {
   fileUpload?:boolean;
   checkouts?:Record<string,{project:string;worktree:string;branch:string}>;
   initial: CliSessionKey; records: Record<CliSessionKey, ReviewRecord>;
-  skills: string[]; models: Record<CliEngine, string[]>;
+  skills: string[]; models: Partial<Record<CliEngine, string[]>>;
 }
 // Translated source lines shipped with the local interactive preview, including fork history.
 const previewTranslations: Record<string, string> = {

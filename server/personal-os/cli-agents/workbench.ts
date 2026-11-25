@@ -498,7 +498,7 @@ export class CliAgentWorkbench {
       if (managed && session.engine === "claude" && session.state === "waiting") return;
       throw new CliOpError("turn_changed");
     }
-    if (managed && session.state === "running") return;
+    if ((managed || session.sendVia === "acp") && session.state === "running") return;
     if (session.engine === "claude" && session.sendVia === "inbox" && session.state === "running") {
       this.hub.requireFeature(session.deviceId, "inboxSteer");
       return;
@@ -847,12 +847,13 @@ export class CliAgentWorkbench {
     ).changes);
     if (!claimed) return;
     const outcome: DispatchOutcome = {};
+    const before = this.hub.lastTurn(key);
     const failure = await this.dispatch("workbench", key, session.deviceId, "send", String(head.id), outcome);
     if (!failure) {
       this.pushQueue(workbenchId);
       // the dispatch started a turn: the next entry waits for its end; a
       // delivery that started no turn (inbox append, daemon) advances at once
-      if (outcome.started) this.awaitingTurnEnd.add(workbenchId);
+      if (outcome.started && this.hub.lastTurn(key) === before) this.awaitingTurnEnd.add(workbenchId);
       else this.pump(workbenchId);
       return;
     }
@@ -874,6 +875,11 @@ export class CliAgentWorkbench {
     const row = this.store.get("SELECT id FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", event.key);
     if (!row) return;
     this.awaitingTurnEnd.delete(String(row.id));
+    if (event.reason === "error" && this.hub.session(event.key)?.engine === "agy" && this.headEntry(String(row.id))) {
+      this.pause(String(row.id), "failed");
+      this.pushQueue(String(row.id));
+      return;
+    }
     this.pump(String(row.id));
   }
 

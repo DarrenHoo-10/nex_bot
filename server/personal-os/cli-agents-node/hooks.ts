@@ -117,7 +117,7 @@ export function platformPlugin(source: string, dataDir: string, platform: NodeJS
 // ---------------------------------------------------------------------------
 // Turn ends
 
-export type TurnSource = "stop" | "status" | "codex";
+export type TurnSource = "stop" | "status" | "codex" | "agy";
 
 /** Numbers the turns of each session and reports `cli.turn` once per turn end,
  * whichever of the hook, the status fallback and the Codex rollout saw it. */
