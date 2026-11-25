@@ -89,7 +89,7 @@ final class SyncTests: XCTestCase {
         XCTAssertEqual(conv.messages.last?.seq, 900)
         XCTAssertEqual(conv.messages.count, 550, "351...900 via two after pages of 200 and 200 and 150")
         let afters = core.recorded("/api/agents/messages").map(\.query).filter { $0.contains("after=") }
-        XCTAssertEqual(afters, ["bot=b1&after=450", "bot=b1&after=650", "bot=b1&after=850"])
+        XCTAssertEqual(afters, ["bot=b1&view=window&at=1760000000450&after=450", "bot=b1&view=window&at=1760000000650&after=650", "bot=b1&view=window&at=1760000000850&after=850"])
     }
 
     func testLoadOlder() async throws {

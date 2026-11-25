@@ -410,7 +410,8 @@ public final class WorkspaceStore {
     }
 
     func handleChange(_ change: ChangeEvent) {
-        if sync.map({ !$0.sameGeneration(as: change.sync) || $0.cursor > change.sync.cursor }) == true { clearContent() }
+        if (change.reset && change.sync.revision == nil)
+            || sync.map({ !$0.sameGeneration(as: change.sync) || $0.cursor > change.sync.cursor }) == true { clearContent() }
         if needsLiveCatchUp || change.sync.revision == nil || sync != change.sync { scheduleRefresh() }
     }
 

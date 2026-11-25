@@ -496,7 +496,9 @@ export function AgentDesktop() {
         || (current.revision ?? -1) < (lastEvent.revision ?? 0) || lastEvent.revision === undefined;
     };
     const drain = async () => {
-      if (running || scope.signal.aborted || document.visibilityState === "hidden") return;
+      // Electron can start its workspace with a hidden document. Let that
+      // first snapshot unlock the shell, then pause background refreshes.
+      if (running || scope.signal.aborted || (publishedSync.current && document.visibilityState === "hidden")) return;
       running = true;
       try {
         while (stale && !scope.signal.aborted) {
@@ -517,7 +519,7 @@ export function AgentDesktop() {
       const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
       lastEvent = value;
       const generationChanged = historySync.current && !sameHistory(historySync.current, value);
-      if (generationChanged) {
+      if (generationChanged || (value.reset && (publishedSync.current?.cursor ?? 0) > value.cursor)) {
         ++serial.current;
         loaded.current = undefined;
         localHistory.current.clear();

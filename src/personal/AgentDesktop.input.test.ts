@@ -499,14 +499,22 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
 describe("Background jobs in the chat (Web, Electron and Android WebView)", () => {
   const job = (overrides: Record<string, unknown> = {}) => ({ id: "job-1", botId: "agent", title: "整理下载文件夹", stage: "running", taskId: "job-task", originTaskId: "owner-task", todoId: null, todoVersion: null, todoStatus: null, progress: null, latestReport: null, createdAt: 1, endedAt: null, ...overrides });
   const report = (state: string, extra: Record<string, unknown> = {}) => ({ id: "report-msg", task_id: "job-task", role: state === "blocked" || state === "failed" ? "system" : "assistant", kind: state === "question" ? "request" : state === "ready" ? "result" : "error", content: `后台任务「整理下载文件夹」\n已整理 12 个文件${state === "question" ? "\n\n要保留截图吗？" : ""}`, source_key: "job-report:r1", job_id: "job-1", job_title: "整理下载文件夹", job_state: state, created_at: 2, seq: 2, ...extra });
-  async function show(jobs: unknown[], messages: unknown[], tasks: State["tasks"] = []) {
-    state = { ...state, jobs, tasks } as State;
+  async function show(jobs: unknown[], messages: Array<{ seq: number; [key: string]: unknown }>, tasks: State["tasks"] = []) {
+    // This fixture rewrites its rows in place between stages. Core would then
+    // advance the privacy generation and invalidate the cached transcript.
+    const generation = { ...state.sync, privacyEpoch: state.sync.privacyEpoch + 1 };
+    state = { ...state, sync: generation, jobs, tasks } as State;
     fixture.api.mockImplementation(async (route: string) => {
       if (route.startsWith("state?view=workspace")) return state;
-      if (route.startsWith("agents/messages")) return { sync, messages: /[?&]after=[1-9]/.test(route) ? [] : messages, streaming: [], hasMore: false };
+      if (route.startsWith("agents/messages")) {
+        const after = Number(new URLSearchParams(route.split("?")[1]).get("after") ?? 0);
+        return { sync: generation, messages: messages.filter(message => message.seq > after), streaming: [], hasMore: false };
+      }
       return {};
     });
-    await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 250)); });
+    await act(async () => { sources.at(-1)!.emit("change", generation); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 280)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
   }
   const cardButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button, .job-card + .job-response-actions button")].map(button => button.textContent);
   const cardButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".job-card .actions button, .job-card + .job-response-actions button")].find(button => button.textContent === label)!;
@@ -588,7 +596,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     fixture.api.mockImplementation(async (route: string) => {
       if (route === "jobs/input") throw new Error("后台任务已停止，不能再补充");
       if (route.startsWith("state?view=workspace")) return state;
-      if (route.startsWith("agents/messages")) return { sync, messages: [report("question"), savedReply, nextReport], streaming: [], hasMore: false };
+      if (route.startsWith("agents/messages")) return { sync: state.sync, messages: [], streaming: [], hasMore: false };
       return {};
     });
     await act(async () => cardButton("回复").click());
@@ -714,4 +722,14 @@ it("streams text without refetching and keeps cached history when another worksp
   });
   expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?"))).toBe(true);
   expect(fixture.api.mock.calls.some(([route]) => route.startsWith("agents/messages"))).toBe(false);
+});
+
+it("loads the first workspace snapshot when the desktop document starts hidden", async () => {
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  await act(async () => { root.unmount(); });
+  fixture.api.mockClear();
+  root = createRoot(container);
+  await act(async () => { root.render(createElement(AgentDesktop)); });
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?view=workspace"))).toBe(true);
+  expect(container.querySelector(".workspace-brand")).not.toBeNull();
 });
