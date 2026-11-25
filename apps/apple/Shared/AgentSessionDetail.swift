@@ -58,8 +58,7 @@ struct AgentSessionDetail: View {
     @State private var failure: String?
     @State private var failuresSeen: Set<String>?
     @State private var openedAt = Date()
-    @State private var expandedActivity: String?
-    @State private var activityBounds: AgentActivityBounds.Region?
+    @State private var expandedActivities: Set<String> = []
 
     private var session: CliSession? { model.sessions.first { $0.key == key } }
 
@@ -132,7 +131,7 @@ struct AgentSessionDetail: View {
                 if shown == .terminal {
                     AgentTerminalPane(model: model, key: key)
                 } else {
-                    AgentTranscript(model: model, key: key, expandedActivity: $expandedActivity, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending,
+                    AgentTranscript(model: model, key: key, expandedActivities: $expandedActivities, engine: session.engine, active: session.state == .running || session.state == .waiting, working: session.online && session.state == .running ? "执行中" : nil, pending: pending,
                                     branch: workspace.bots.isEmpty ? nil : { itemId in
                                         forkItemId = itemId
                                         forking = true
@@ -142,13 +141,6 @@ struct AgentSessionDetail: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             AgentComposer(model: model, session: session, pending: $pending) { next in onKeyChange(next) }
         }
-        .contentShape(Rectangle())
-        .onPreferenceChange(AgentActivityBounds.self) { activityBounds = $0 }
-        .simultaneousGesture(SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
-            if let activityBounds, activityBounds.id == expandedActivity, !activityBounds.rect.contains(tap.location) {
-                expandedActivity = nil
-            }
-        })
     }
 
     private func header(_ session: CliSession, attach: Bool, shown: AgentTab) -> some View {
@@ -267,7 +259,7 @@ private struct AgentTerminalPane: View {
 private struct AgentTranscript: View {
     let model: CliAgentsModel
     let key: CliSessionKey
-    @Binding var expandedActivity: String?
+    @Binding var expandedActivities: Set<String>
     var engine: CliEngine = .claude
     var active = false
     /// what the agent is doing while the turn runs; shown as dots under the last message
@@ -315,7 +307,7 @@ private struct AgentTranscript: View {
                                     .onAppear { Task { await model.loadOlder(key) } }
                             }
                             ForEach(blocks) { block in
-                                AgentBlockView(block: block, expandedActivity: $expandedActivity, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) ? { item in
+                                AgentBlockView(block: block, expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) ? { item in
                                     try await model.translateReply(key, item: item)
                                 } : nil, branch: completed.contains(block.id) ? branch : nil)
                             }
@@ -340,7 +332,7 @@ private struct AgentTranscript: View {
 
 private struct AgentBlockView: View {
     let block: CliBlock
-    @Binding var expandedActivity: String?
+    @Binding var expandedActivities: Set<String>
     let loadImage: (String) async throws -> Data
     var translate: ((CliItem) async throws -> String?)?
     var branch: ((String) -> Void)?
@@ -360,9 +352,9 @@ private struct AgentBlockView: View {
         case .assistant(let item):
             AgentReplyText(item: item, translate: translate, branch: branch)
         case .activity(let id, let items):
-            AgentActivity(id: id, items: items, open: Binding(get: { expandedActivity == id }, set: { open in
-                if open { expandedActivity = id }
-                else if expandedActivity == id { expandedActivity = nil }
+            AgentActivity(items: items, open: Binding(get: { expandedActivities.contains(id) }, set: { open in
+                if open { expandedActivities.insert(id) }
+                else { expandedActivities.remove(id) }
             }))
         case .notice(_, let level, let text):
             Text(text).font(.caption).foregroundStyle(level == .error ? Theme.danger : Theme.muted).frame(maxWidth: .infinity, alignment: .center)
@@ -427,14 +419,7 @@ private struct AgentReplyText: View {
     }
 }
 
-private struct AgentActivityBounds: PreferenceKey {
-    struct Region: Equatable { let id: String; let rect: CGRect }
-    static let defaultValue: Region? = nil
-    static func reduce(value: inout Region?, nextValue: () -> Region?) { value = nextValue() ?? value }
-}
-
 private struct AgentActivity: View {
-    let id: String
     let items: [CliItem]
     @Binding var open: Bool
 
@@ -453,13 +438,6 @@ private struct AgentActivity: View {
         } label: {
             (Text(tools.isEmpty ? "思考" : "\(tools.count) 项操作") + (failed > 0 ? Text(" · \(failed) 项失败").foregroundStyle(Theme.danger) : Text("")))
                 .font(.system(size: 12)).foregroundStyle(Theme.muted)
-        }
-        .background {
-            if open {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: AgentActivityBounds.self, value: .init(id: id, rect: geometry.frame(in: .global)))
-                }
-            }
         }
     }
 }

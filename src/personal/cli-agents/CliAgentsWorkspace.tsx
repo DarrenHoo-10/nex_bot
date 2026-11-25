@@ -213,9 +213,15 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
     didSelect.current=true;
     setCreating(null);
     setSelectedKey(key);
-    // a session still starting has no key that outlives the page
-    if (!isLaunchKey(key)) writeSelected(key);
     if (key) setMobileView("pane");
+  }, []);
+
+  useEffect(() => {
+    if (!isLaunchKey(selectedKey)) writeSelected(selectedKey);
+  }, [selectedKey]);
+
+  const replaceSelection = useCallback((previous: CliSessionKey, next: CliSessionKey) => {
+    setSelectedKey((current) => current === previous ? next : current);
   }, []);
 
   // archived (and the older "hidden") sessions stay in the groups: the list shows them in its archive view
@@ -231,11 +237,11 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
   const dirSource = useCallback((deviceId: string) => apiDirectorySource(deviceId, () => devicesRef.current.find((device) => device.id === deviceId)?.cliAgents?.features), []);
   const recentFor = useCallback((deviceId: string) => recentCwds(sessions, deviceId), [sessions]);
   const create = useCallback((next: { deviceId?: string; cwd?: string }) => { setCreating(next); setMobileView("pane"); }, []);
-  // the real row took over: the pane follows it
+  // A background launch can replace the placeholder without taking the user out of the directory.
   useEffect(() => {
     const moved = launcher.done.find((launch) => launch.key === selectedKey);
-    if (moved?.target) select(moved.target);
-  }, [launcher.done, selectedKey, select]);
+    if (moved?.target) replaceSelection(moved.key, moved.target);
+  }, [launcher.done, selectedKey, replaceSelection]);
   const selected = sessions.find(s => s.key===selectedKey && !review?.records[s.key]?.deleted && !review?.records[s.key]?.archived && review?.records[s.key]?.kind!=="side" && (review || (listMeta.get(s.key)?.kind!=="side" && !s.sideOf))) ?? null;
   const openComposer = () => {
     if (!sidebarList && creating) setMobileView("pane");
@@ -367,7 +373,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onNa
                   onSideOpen={canSide(selected)?(q,m)=>sideChats.open(selected,q,m):undefined}
                   sideCount={sideChats.selected?0:sideChats.tabs.filter(t=>t.id!==sideChats.terminalId).length}
                   stream={stream}
-                  onKeyChange={select}
+                  onKeyChange={(next) => replaceSelection(selected.key, next)}
                   onBack={() => setMobileView("list")}
                   requests={requests.store.get(selected.key)}
                   now={requests.now}

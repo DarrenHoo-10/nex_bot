@@ -176,6 +176,7 @@ struct AgentSessionsView: View {
                     AgentLaunchDetail(model: model, launch: launch).id(launch.id)
                 } else {
                     AgentSessionDetail(model: model, workspace: workspace, key: key, openAssistant: openAssistant) { next in
+                        guard pushed == key else { return }
                         model.select(next); pushed = next
                     }
                     .id(key)
@@ -193,9 +194,8 @@ struct AgentSessionsView: View {
             .background { WorkspaceSurface(kind: .stage) }
             .toolbar(.visible, for: .navigationBar)
         }
-        // a started session takes the place of its placeholder
-        .onChange(of: model.selectedKey) { _, next in
-            if CliLaunches.isLaunchKey(pushed), pushed != next { pushed = next }
+        .onChange(of: model.selectedKey) { previous, next in
+            if CliLaunches.isLaunchKey(previous), pushed == previous { pushed = next }
         }
     }
     #endif

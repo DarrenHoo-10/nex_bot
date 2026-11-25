@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliApiError } from "./api";
-import { device, session } from "./fixtures";
+import { assistantItem, device, session, toolItem } from "./fixtures";
 import { CliStream, type SocketLike } from "./stream";
 
 const fixture = vi.hoisted(() => ({
@@ -559,6 +559,34 @@ describe("session pane", () => {
     expect(working.textContent).toBe("");
   });
 
+  it("only changes each operation list when its own summary is clicked", async () => {
+    const running = toolItem("t1", 1, "running");
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [running] });
+    await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
+    await act(async () => socket.open());
+    const lists = () => [...container.querySelectorAll<HTMLDetailsElement>("[data-testid=tool-activity]")];
+    const activity = lists()[0];
+    expect(activity.open).toBe(false);
+    expect(activity.querySelector("summary")?.textContent).toContain("正在执行");
+    await click(activity.querySelector("summary"));
+    expect(activity.open).toBe(true);
+    await click(container.querySelector("textarea"));
+    expect(activity.open).toBe(true);
+
+    await act(async () => socket.push({ type: "items", key: "dev1:claude:s1", items: [
+      { ...running, status: "ok", output: "完成" }, assistantItem("a1", 2), toolItem("t2", 3, "running"),
+    ] }));
+    const [first, second] = lists();
+    expect(first).toBe(activity);
+    expect(first.open).toBe(true);
+    expect(first.querySelector("summary")?.textContent).not.toContain("正在执行");
+    expect(second.open).toBe(false);
+    await click(second.querySelector("summary"));
+    expect([first.open, second.open]).toEqual([true, true]);
+    await click(first.querySelector("summary"));
+    expect([first.open, second.open]).toEqual([false, true]);
+  });
+
   it("does not claim delivery when the computer could not see the message arrive", async () => {
     fixture.sendMessage.mockResolvedValue({ status: "sent", delivery: "unconfirmed" });
     await mount({ devices: [device()], sessions: [session({ state: "idle", liveIn: "terminal", terminal: undefined, sendVia: "inbox" })] }, "dev1:claude:s1");
@@ -664,6 +692,36 @@ describe("new session", () => {
     expect(container.querySelector("[data-testid=cli-launch]")).toBeNull();
     expect(container.querySelector("[data-testid=cli-user-echo] .cli-bubble")?.textContent).toBe("修一下登录页");
     expect(localStorage.getItem("nexbot.cliSelected")).toBe("dev1:claude:new1");
+  });
+
+  it("stays in the mobile session list when a background launch is replaced by its real session", async () => {
+    const computer = capable();
+    const existing = session({ cwd: ALPHA });
+    const launched = session({ nativeId: "mobile-new", cwd: ALPHA, title: "手机新会话", lastActivityAt: Date.now() });
+    let sent!: (value: { status: string }) => void;
+    fixture.startSession.mockResolvedValue({ key: launched.key });
+    fixture.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { sent = resolve; }));
+    await mount({ devices: [computer], sessions: [existing] }, undefined, { sidebarList: false, onNavigation: () => {} });
+    const page = await openNew();
+    await typeInto(page.querySelector("textarea")!, "请检查一下");
+    await click(page.querySelector('button[type="submit"]'));
+    await flush();
+    expect(fixture.sendMessage).toHaveBeenCalledWith(launched.key, "请检查一下", expect.objectContaining({ delivery: "send" }));
+    await click(container.querySelector('[data-testid="cli-launch"] .cli-back'));
+    const app = container.querySelector(".cli-app")!;
+    expect(app.getAttribute("data-mobile")).toBe("list");
+
+    fixture.fetchSnapshot.mockResolvedValue({ devices: [computer], sessions: [existing, launched] });
+    fixture.fetchItems.mockResolvedValue({ more: false, items: [assistantItem("first-reply", Date.now(), "检查好了")] });
+    await act(async () => sent({ status: "sent" }));
+    await flush();
+    expect(container.querySelector('[data-testid="cli-launch"]')).toBeNull();
+    expect(localStorage.getItem("nexbot.cliSelected")).toBe(launched.key);
+    expect(app.getAttribute("data-mobile")).toBe("list");
+
+    await click(container.querySelector('.cli-side button[title="手机新会话"]'));
+    expect(app.getAttribute("data-mobile")).toBe("pane");
+    expect(container.querySelector('[data-testid="cli-assistant"]')?.textContent).toContain("检查好了");
   });
 
   it("browses up and down, and creates a typed folder that does not exist", async () => {
