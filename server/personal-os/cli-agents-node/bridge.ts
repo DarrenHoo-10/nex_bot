@@ -282,7 +282,12 @@ export class CliAgentBridge {
       origin: () => this.scope.origin,
       changed: () => this.discovery.reapply({ flush: true }),
       emit: (message) => { this.sendJson(message); },
-      ended: (id, reason, error) => { this.turns.report(cliRef("agy", id), reason, "agy", { error }); },
+      ended: (id, turn, reason, error) => {
+        this.sendJson({
+          type: "cli.turn", ref: cliRef("agy", id), turn, reason, endedAt: Date.now(),
+          ...(error ? { error: clipUnits(error, CLI_LIMITS.turnError) } : {}),
+        });
+      },
     });
     this.codexDaemons = new CodexDaemons({
       connect: proxyConnector({ codexPath: () => this.findCli("codex"), ...(options.env ? { env: options.env } : {}), platform: this.platform }),

@@ -103,7 +103,7 @@ class DispatchFailure extends Error {
 }
 
 /** What a successful send to a session outside nex_bot's terminals reported back. */
-interface DispatchOutcome { started?: boolean; delivery?: CliDelivery; waiting?: boolean }
+interface DispatchOutcome { started?: boolean; turn?: number; delivery?: CliDelivery; waiting?: boolean }
 
 /** Outbox statuses a browser is shown, oldest queue position first. */
 const LIVE_STATUSES: readonly CliQueueStatus[] = ["pending", "claimed", "sent", "uncertain", "failed"];
@@ -126,7 +126,7 @@ export class CliAgentWorkbench {
   /** The last dispatch's device answer: did this message begin a turn? */
   /** Queues whose dispatched message started a turn: the next entry waits for
    * that turn's end, whatever the session rows say in between. */
-  private readonly awaitingTurnEnd = new Set<string>();
+  private readonly awaitingTurnEnd = new Map<string, number | null>();
   private readonly detach = new Set<() => void>();
 
   constructor(
@@ -541,9 +541,12 @@ export class CliAgentWorkbench {
         }
       }
       const { result, opId } = await this.hub.opTracked(actor, deviceId, key, interruptWaiting ? "send" : op, { ref, text });
-      const started = (result as { started?: boolean }).started === true;
-      if (outcome) outcome.started = started;
-      if (interruptWaiting && started) this.awaitingTurnEnd.add(String(entry.workbench_id));
+      const { started, turn } = result as { started?: boolean; turn?: number };
+      if (outcome) {
+        outcome.started = started === true;
+        outcome.turn = turn;
+      }
+      if (interruptWaiting && started) this.awaitingTurnEnd.set(String(entry.workbench_id), null);
       const { delivery, waiting } = result as { delivery?: unknown; waiting?: unknown };
       if (outcome && (delivery === "confirmed" || delivery === "unconfirmed")) outcome.delivery = delivery;
       if (outcome && waiting === true) outcome.waiting = true;
@@ -661,7 +664,7 @@ export class CliAgentWorkbench {
     if (!claimed) throw this.staleEntry(input.entryId);
     const outcome: DispatchOutcome = {};
     const failure = await this.dispatch("workbench", key, session.deviceId, "steer", input.entryId, outcome, waitingSteer);
-    if (outcome.started) this.awaitingTurnEnd.add(workbenchId);
+    if (outcome.started) this.awaitingTurnEnd.set(workbenchId, null);
     if (!failure) {
       this.pushQueue(workbenchId);
       return this.entryView(this.entryRow(input.entryId));
@@ -851,9 +854,12 @@ export class CliAgentWorkbench {
     const failure = await this.dispatch("workbench", key, session.deviceId, "send", String(head.id), outcome);
     if (!failure) {
       this.pushQueue(workbenchId);
-      // the dispatch started a turn: the next entry waits for its end; a
-      // delivery that started no turn (inbox append, daemon) advances at once
-      if (outcome.started && this.hub.lastTurn(key) === before) this.awaitingTurnEnd.add(workbenchId);
+      // An ACP response can finish before its send receipt. Only an event
+      // for the turn this dispatch started can release the next message.
+      const turn = session.sendVia === "acp" ? outcome.turn ?? null : null;
+      const ended = this.hub.lastTurn(key);
+      const alreadyEnded = turn !== null && ended !== before && ended?.turn === turn;
+      if (outcome.started && !alreadyEnded) this.awaitingTurnEnd.set(workbenchId, turn);
       else this.pump(workbenchId);
       return;
     }
@@ -874,13 +880,16 @@ export class CliAgentWorkbench {
   private onTurnEnd(event: CliTurnEvent) {
     const row = this.store.get("SELECT id FROM cli_agent_workbench WHERE session_key=? AND deleted_at IS NULL", event.key);
     if (!row) return;
-    this.awaitingTurnEnd.delete(String(row.id));
-    if (event.reason === "error" && this.hub.session(event.key)?.engine === "agy" && this.headEntry(String(row.id))) {
-      this.pause(String(row.id), "failed");
-      this.pushQueue(String(row.id));
+    const id = String(row.id);
+    const expected = this.awaitingTurnEnd.get(id);
+    if (typeof expected === "number" && expected !== event.turn) return;
+    this.awaitingTurnEnd.delete(id);
+    if (event.reason === "error" && this.hub.session(event.key)?.engine === "agy" && this.headEntry(id)) {
+      this.pause(id, "failed");
+      this.pushQueue(id);
       return;
     }
-    this.pump(String(row.id));
+    this.pump(id);
   }
 
   /** A device came back: uncertain outcomes reconcile against the op rows the

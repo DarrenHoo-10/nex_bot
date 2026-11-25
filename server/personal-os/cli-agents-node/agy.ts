@@ -40,7 +40,7 @@ interface AgyOptions {
   origin: () => string;
   changed: () => void;
   emit: (message: DeviceCliMessage) => void;
-  ended: (id: string, reason: CliTurnReason, error?: string) => void;
+  ended: (id: string, turn: number, reason: CliTurnReason, error?: string) => void;
 }
 
 interface Session {
@@ -472,6 +472,7 @@ export class AgyRuntime {
       session.count += 1;
     }
     const active = turn;
+    const turnNumber = session.count;
     const ts = Date.now();
     session.title ||= clipUnits(content.text.trim().split("\n", 1)[0], CLI_LIMITS.title);
     session.at = ts;
@@ -486,7 +487,7 @@ export class AgyRuntime {
     );
     this.options.changed();
     try { await call.written; } catch { throw new AgyError("unknown", "写入 Antigravity CLI 的结果未知"); }
-    return { turn: session.count, started: !steer };
+    return { turn: turnNumber, started: !steer };
   }
 
   async interrupt(id: string): Promise<{ outcome: string }> {
@@ -534,7 +535,7 @@ export class AgyRuntime {
     session.at = Date.now();
     this.armIdle(session);
     this.options.changed();
-    this.options.ended(session.id, turn.stopping ? "interrupted" : turn.error ? "error" : "end", turn.error);
+    this.options.ended(session.id, session.count, turn.stopping ? "interrupted" : turn.error ? "error" : "end", turn.error);
   }
 
   private onRpc(session: Session, acp: AgyAcp, method: string, params: AgyRecord, rpcId: string | number | undefined): void {

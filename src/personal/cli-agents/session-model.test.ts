@@ -116,7 +116,7 @@ describe("new session blockers", () => {
     const agy = device({ cliAgents: { version: 1, engines: ["agy"], terminal: { name: "herdr-core", version: "0.1.21", ready: false } } });
     expect(deviceBlocker(agy, "agy")).toBeNull();
     expect(deviceBlocker(agy, "codex")).toBe("终端组件不可用");
-    expect(composerMode(session({ engine: "agy", sendVia: "acp", state: "waiting" }))).toEqual({ kind: "send", running: true });
+    expect(composerMode(session({ engine: "agy", liveIn: "background", terminal: undefined, sendVia: "acp", state: "waiting" }))).toEqual({ kind: "send", running: true });
     expect(deviceBlocker(device({ cliAgents: { version: 1, engines: ["claude"], terminal: { name: "herdr-core", version: "0.1.21", ready: false } } }))).toBe("终端组件不可用");
   });
 });

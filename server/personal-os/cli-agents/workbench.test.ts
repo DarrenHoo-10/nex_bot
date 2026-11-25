@@ -15,7 +15,7 @@ const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 const OWNER = "synthetic-workbench-owner";
-const CAP = { version: 1, engines: ["claude", "codex", "zcode"], terminal: { name: "herdr-core", version: "0.1.21", ready: true } };
+const CAP = { version: 1, engines: ["claude", "codex", "zcode", "agy"], terminal: { name: "herdr-core", version: "0.1.21", ready: true } };
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until<T>(read: () => T | undefined | null | false, what = "condition", ms = 4000): Promise<T> {
@@ -69,7 +69,7 @@ interface Device {
   onOp: (message: Record<string, any>) => Record<string, any> | undefined;
   send(message: unknown): void;
   sessions(upserts: unknown[], extra?: { full?: boolean; removes?: string[]; seq?: number }): void;
-  turn(ref: string, turn: number): void;
+  turn(nativeId: string, turn: number, engine?: string): void;
   ops(op: string): Array<Record<string, any>>;
   kill(): void;
 }
@@ -92,8 +92,8 @@ async function connectDevice(f: Awaited<ReturnType<typeof fixture>>, name: strin
     sessions(upserts, extra = {}) {
       device.send({ type: "cli.sessions", full: extra.full ?? false, upserts, removes: extra.removes ?? [], seq: extra.seq ?? ++device.seq });
     },
-    turn(nativeId, turn) {
-      device.send({ type: "cli.turn", ref: `claude:${nativeId}`, turn, endedAt: Date.now(), reason: "end" });
+    turn(nativeId, turn, engine = "claude") {
+      device.send({ type: "cli.turn", ref: `${engine}:${nativeId}`, turn, endedAt: Date.now(), reason: "end" });
     },
     ops: (op) => device.msgs.filter((m) => m.type === "cli.op" && (!op || m.op === op)),
     kill: () => ws.terminate(),
@@ -163,6 +163,40 @@ describe("queue delivery", () => {
     device.turn("q1", 2);
     await until(() => device.ops("send").length >= 2, "second dispatch");
     expect(device.ops("send")[1].args.text).toBe("C");
+  });
+
+  it("releases the ACP queue only for the matching turn, even when it finishes before the receipt", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "agy-queue");
+    const nativeId = "c75d00aa-0000-4000-8000-000000000001";
+    const key = keyOf(device, nativeId, "agy");
+    const wire = runningWire(nativeId, { engine: "agy", sendVia: "acp", liveIn: "background", terminal: undefined });
+    device.sessions([wire], { full: true });
+    await until(() => f.app.cliHub.session(key), "ACP session listed");
+    const reply = device.onOp;
+    device.onOp = (message) => {
+      if (message.op !== "send") return reply(message);
+      const turn = device.ops("send").length + 1;
+      if (turn === 2) device.turn(nativeId, 1, "agy");
+      if (turn === 3) device.turn(nativeId, 3, "agy");
+      return { ok: true, result: { turn, started: true } };
+    };
+    for (const text of ["B", "C", "D"]) {
+      const result = await f.call("cli-agents/send", { key, text, delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() });
+      expect(result.data.status).toBe("pending");
+    }
+
+    device.sessions([{ ...wire, state: "idle" }]);
+    await until(() => f.app.cliHub.lastTurn(key)?.turn === 1, "previous turn ended during dispatch");
+    await wait(60);
+    expect(device.ops("send").map((op) => op.args.text)).toEqual(["B"]);
+    device.turn(nativeId, 1, "agy");
+    await wait(60);
+    expect(device.ops("send").map((op) => op.args.text)).toEqual(["B"]);
+
+    device.turn(nativeId, 2, "agy");
+    await until(() => device.ops("send").length === 3, "ACP queue released");
+    expect(device.ops("send").map((op) => op.args.text)).toEqual(["B", "C", "D"]);
   });
 
   it("rejects a plain send to a running session and keeps the queue out of a stopped one", async () => {

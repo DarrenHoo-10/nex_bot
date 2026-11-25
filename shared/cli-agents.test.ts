@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLI_ATTACH_MAX_BYTES,
   CLI_EFFORTS,
+  CLI_ENGINES,
   CLI_LINK_FRAME_MAX,
   CLI_MODELS,
   CLI_OUTDATED_TEXT,
@@ -458,7 +459,7 @@ describe("parseCliAgentsCapability", () => {
       { ...capability, version: "1" },
       { ...capability, engines: ["gemini"] },
       { ...capability, engines: "claude" },
-      { ...capability, engines: ["claude", "codex", "zcode", "claude", "codex", "zcode", "claude"] },
+      { ...capability, engines: Array.from({ length: CLI_ENGINES.length * 2 + 1 }, () => "claude") },
       { ...capability, terminal: { ...capability.terminal, name: "tmux" } },
       { ...capability, terminal: { ...capability.terminal, ready: 1 } },
       { ...capability, terminal: { ...capability.terminal, version: "" } },

@@ -199,12 +199,12 @@ describe("harness registry", () => {
     engine: "zcode" as const, nativeId: "n", configDir: "c", cwd: "w", title: "t", state: "idle" as const, lastActivityAt: 1, ...extra,
   });
 
-  it("registers every shipped harness exactly once and covers the three ids", () => {
-    expect(allHarnesses().map((harness) => harness.id)).toEqual(["claude", "codex", "zcode"]);
+  it("registers every shipped harness exactly once", () => {
+    expect(allHarnesses().map((harness) => harness.id)).toEqual(["claude", "codex", "zcode", "agy"]);
   });
 
   it("a terminal session of any harness gets every capability", () => {
-    for (const engine of ["claude", "codex", "zcode"] as const) {
+    for (const engine of ["claude", "codex", "zcode", "agy"] as const) {
       const caps = harnessFor(engine)!.caps(session({ engine, terminal: "hc://x", liveIn: "nexbot" }) as never);
       expect(caps).toMatchObject({ sendVia: "terminal", steer: true, interrupt: true, terminal: true });
     }
