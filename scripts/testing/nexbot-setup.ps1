@@ -25,7 +25,9 @@ if ((Install-Candidate $occupied.FullName) -eq 0 -or (Get-Content $marker) -ne '
 $target = Join-Path $env:RUNNER_TEMP 'NexBot custom installation'
 if ((Install-Candidate $target) -ne 0) { throw 'Custom installation failed.' }
 $exe = Get-Item (Join-Path $target 'NexBot Client.exe')
-if ($exe.VersionInfo.ProductVersion -ne $version) { throw 'Installed version mismatch.' }
+if ($exe.VersionInfo.FileVersion -ne $version -or $exe.VersionInfo.ProductVersion -notin @($version, ($version + '.0'))) {
+    throw "Installed version mismatch: $($exe.VersionInfo.FileVersion) / $($exe.VersionInfo.ProductVersion), expected $version."
+}
 $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
     Where-Object { $_.DisplayName -eq 'NexBot' -and $_.DisplayVersion -eq $version }
 if (!$entry) { throw 'Installed apps registration missing.' }

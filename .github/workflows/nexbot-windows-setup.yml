@@ -1,5 +1,11 @@
 name: Verify NexBot Windows Setup
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Optional full SHA on main to package and verify
+        required: false
+        type: string
 permissions:
   contents: read
 
@@ -12,6 +18,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Select the pushed release source
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          Copy-Item scripts/testing/nexbot-setup.ps1 "$env:RUNNER_TEMP/verify-setup.ps1"
+          if ($env:SOURCE_COMMIT) {
+            if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source SHA' }
+            git merge-base --is-ancestor $env:SOURCE_COMMIT HEAD
+            if ($LASTEXITCODE) { throw 'Release source must be on main' }
+            git checkout --detach $env:SOURCE_COMMIT
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          git rev-parse HEAD
       - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -21,7 +41,8 @@ jobs:
       - run: node scripts/build-nexbot-icons.mjs
       - run: pnpm package:client:win
       - run: node scripts/build-personal.mjs --core
-      - run: ./scripts/testing/nexbot-setup.ps1
+      - run: |
+          & "$env:RUNNER_TEMP/verify-setup.ps1"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: verified-nexbot-setup
