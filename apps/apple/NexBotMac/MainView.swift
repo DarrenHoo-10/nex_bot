@@ -65,6 +65,7 @@ struct MainView: View {
         .task { await runDebugCommands(workspace: workspace, ui: ui) }
         #endif
         .onAppear { agents.installNotifier(); AppUpdater.shared.start { workspace.client } }
+        .onChange(of: ui.todosVisible || ui.agentsVisible, initial: true) { _, hidden in workspace.setChatVisible(!hidden) }
         .onChange(of: workspace.contentCacheScope) { old, new in
             if old != nil || new != nil { agents.invalidateCachedTranscripts(waitForScope: new == nil) }
         }

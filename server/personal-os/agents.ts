@@ -12,6 +12,7 @@ import { parseAppearance } from "../../shared/personal-appearance.ts";
 export type TopicInputOptions = { conversationId?: string; newConversation?: boolean; sourceContext?: Record<string, unknown>; audience?: 'private' | 'public';modelSelection?:{connectionId?:string;model?:string;reasoning?:string} };
 export type PublishedMessage = { botId: string; messageId: string; conversationId: string | null; taskId: string | null };
 // Keep receipts and referenced rows in storage while excluding removed conversations from inbox reads.
+const withoutTopics = " AND NOT EXISTS (SELECT 1 FROM agent_topics p WHERE p.conversation_id=agent_messages_scope.conversation_id)";
 const visibleInbox = "(SELECT m.*,m.rowid AS rowid FROM agent_messages m WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=m.conversation_id AND c.status='deleted'))";
 export class AgentModule {
   beforeTopicInput?: (botId:string,conversationId:string)=>void;
@@ -237,13 +238,13 @@ export class AgentModule {
     if (!topic||topic.status==='deleted') throw new Error('话题不存在');
     return topic;
   }
-  topics(botId: string) {
+  topics(botId: string, compact = false, conversationId?: string) {
     this.ensure(botId);
-    return this.store.all(`SELECT p.*,c.title,c.status,COALESCE(MAX(m.created_at),p.created_at) last_activity_at,COUNT(m.id) message_count,SUM(CASE WHEN m.role!='user' AND m.source_key NOT LIKE 'stock-history:%' AND m.seq>p.read_seq THEN 1 ELSE 0 END) unread_count FROM agent_topics p JOIN conversations c ON c.id=p.conversation_id LEFT JOIN agent_messages m ON m.conversation_id=p.conversation_id AND m.bot_id=p.bot_id WHERE p.bot_id=? AND c.status!='deleted' GROUP BY p.conversation_id ORDER BY last_activity_at DESC`,botId).map(row => ({...row, conversationId:row.conversation_id,unread_count:Number(row.unread_count??0),sourceContext:JSON.parse(String(row.source_context)),messages:this.topicMessages(botId,String(row.conversation_id),undefined,undefined,2),activeTask:this.store.get('SELECT id,status FROM tasks WHERE (conversation_id=? OR conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?)) AND ended_at IS NULL ORDER BY created_at LIMIT 1',row.conversation_id,row.conversation_id)??null}));
+    return this.store.all(`SELECT p.*,c.title,c.status,COALESCE(MAX(m.created_at),p.created_at) last_activity_at,COUNT(m.id) message_count,COALESCE(MAX(m.seq),0) last_seq,SUM(CASE WHEN m.role!='user' AND m.source_key NOT LIKE 'stock-history:%' AND m.seq>p.read_seq THEN 1 ELSE 0 END) unread_count FROM agent_topics p JOIN conversations c ON c.id=p.conversation_id LEFT JOIN agent_messages m ON m.conversation_id=p.conversation_id AND m.bot_id=p.bot_id WHERE p.bot_id=? AND c.status!='deleted' ${conversationId ? 'AND p.conversation_id=?' : ''} GROUP BY p.conversation_id ORDER BY last_activity_at DESC`,botId,...(conversationId ? [conversationId] : [])).map(row => ({...row, conversationId:row.conversation_id,unread_count:Number(row.unread_count??0),sourceContext:JSON.parse(String(row.source_context)),messages:compact ? (conversationId ? [] : this.store.all("SELECT id,role,SUBSTR(content,1,180) content FROM agent_messages WHERE bot_id=? AND conversation_id=? ORDER BY seq DESC LIMIT 2",botId,row.conversation_id).reverse()) : this.topicMessages(botId,String(row.conversation_id),undefined,undefined,2),activeTask:this.store.get('SELECT id,status FROM tasks WHERE (conversation_id=? OR conversation_id IN (SELECT conversation_id FROM agent_topic_children WHERE root_conversation_id=?)) AND ended_at IS NULL ORDER BY created_at LIMIT 1',row.conversation_id,row.conversation_id)??null}));
   }
-  topicMessages(botId: string, conversationId: string, before = Number.MAX_SAFE_INTEGER, after = -1, limit = 200) {
+  topicMessages(botId: string, conversationId: string, before = Number.MAX_SAFE_INTEGER, after = -1, limit = 200, until?: number) {
     this.topic(botId,conversationId);
-    return this.projectMessages(this.store.all(`SELECT m.*,(SELECT status FROM agent_topic_inputs i WHERE i.message_id=m.id) input_status FROM (SELECT * FROM agent_messages WHERE bot_id=? AND conversation_id=? AND seq<? AND seq>? ORDER BY seq ${after>=0?'ASC':'DESC'} LIMIT ?) m ORDER BY seq`,botId,conversationId,before,after,limit));
+    return this.projectMessages(this.store.all(`SELECT m.*,(SELECT status FROM agent_topic_inputs i WHERE i.message_id=m.id) input_status FROM (SELECT * FROM agent_messages WHERE bot_id=? AND conversation_id=? AND seq<? AND seq>? ${until === undefined ? '' : 'AND created_at<=?'} ORDER BY seq ${after>=0?'ASC':'DESC'} LIMIT ?) m ORDER BY seq`,botId,conversationId,before,after,...(until === undefined ? [] : [until]),limit));
   }
   contextUsage(botId: string, topicId?: string) {
     if (topicId) this.topic(botId, topicId);
@@ -558,13 +559,18 @@ export class AgentModule {
     if(conversationId) { this.topic(botId,conversationId); this.store.run('UPDATE agent_topics SET read_seq=MAX(read_seq,MIN(?,COALESCE((SELECT MAX(seq) FROM agent_messages WHERE conversation_id=?),0))) WHERE conversation_id=?',seq,conversationId,conversationId); return; }
     this.store.run("UPDATE agent_inboxes SET read_seq=MAX(read_seq,MIN(?,next_seq-1)) WHERE bot_id=?", seq, botId);
   }
-  messages(botId: string, before?: number) {
-    this.ensure(botId);
-    return this.projectMessages(this.store.all("SELECT * FROM (SELECT * FROM " + visibleInbox + " WHERE bot_id=? AND seq<? ORDER BY seq DESC LIMIT 100) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER));
+  historySeq(botId: string, conversationId?: string) {
+    const filter = conversationId ? " AND conversation_id=?" : withoutTopics;
+    return Number(this.store.get("SELECT COALESCE(MAX(seq),0) seq FROM " + visibleInbox + " agent_messages_scope WHERE bot_id=?" + filter, botId, ...(conversationId ? [conversationId] : []))?.seq ?? 0);
   }
-  messagesAfter(botId: string, after: number) {
+  messages(botId: string, before?: number, limit = 100, until?: number, mainOnly = false) {
     this.ensure(botId);
-    return this.projectMessages(this.store.all("SELECT * FROM " + visibleInbox + " WHERE bot_id=? AND seq>? ORDER BY seq LIMIT 200", botId, after));
+    const timeFilter = until === undefined ? "" : " AND created_at<=?";
+    return this.projectMessages(this.store.all("SELECT * FROM (SELECT * FROM " + visibleInbox + " agent_messages_scope WHERE bot_id=? AND seq<?" + (mainOnly ? withoutTopics : "") + timeFilter + " ORDER BY seq DESC LIMIT ?) ORDER BY seq", botId, before ?? Number.MAX_SAFE_INTEGER, ...(until === undefined ? [] : [until]), limit));
+  }
+  messagesAfter(botId: string, after: number, limit = 200, mainOnly = false) {
+    this.ensure(botId);
+    return this.projectMessages(this.store.all("SELECT * FROM " + visibleInbox + " agent_messages_scope WHERE bot_id=? AND seq>?" + (mainOnly ? withoutTopics : "") + " ORDER BY seq LIMIT ?", botId, after, limit));
   }
   private projectMessages(messages: Row[]) {
     return messages.map((message) => {
@@ -627,7 +633,8 @@ export class AgentModule {
       return projected as Row;
     });
   }
-  contacts() {
-    return this.store.all("SELECT (SELECT bot_id FROM bot_lifecycle_operations WHERE replacement_id=b.id) replaces_id,b.id,b.name,b.instructions,b.version,b.memory_epoch,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM " + visibleInbox + " m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT content FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
+  contacts(compact = false) {
+    const preview = compact ? "SUBSTR(content,1,180)" : "content";
+    return this.store.all("SELECT (SELECT bot_id FROM bot_lifecycle_operations WHERE replacement_id=b.id) replaces_id,b.id,b.name,b.instructions,b.version,b.memory_epoch,i.read_seq,a.appearance_json,COALESCE(a.version,0) appearance_version,(SELECT COUNT(*) FROM " + visibleInbox + " m WHERE m.bot_id=b.id AND m.seq>i.read_seq AND m.role!='user' AND m.source_key NOT LIKE 'stock-history:%') unread_count,(SELECT " + preview + " FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message,(SELECT created_at FROM " + visibleInbox + " WHERE bot_id=b.id ORDER BY seq DESC LIMIT 1) last_message_at FROM bots b JOIN agent_inboxes i ON i.bot_id=b.id LEFT JOIN bot_appearance a ON a.bot_id=b.id WHERE b.status='active' ORDER BY b.created_at");
   }
 }

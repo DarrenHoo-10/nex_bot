@@ -82,13 +82,14 @@ public struct EventStream: Sendable {
     public typealias Sleeper = @Sendable (Double) async throws -> Void
     let client: CoreClient
     let path: String
+    let query: [(String, String)]
     let backoff: Backoff
     let sleep: Sleeper
     let initialLastEventID: String?
 
-    public init(client: CoreClient, path: String = "/api/events", lastEventID: String? = nil, backoff: Backoff = Backoff(),
+    public init(client: CoreClient, path: String = "/api/events", query: [(String, String)] = [], lastEventID: String? = nil, backoff: Backoff = Backoff(),
                 sleep: @escaping Sleeper = { try await Task.sleep(for: .seconds($0)) }) {
-        self.client = client; self.path = path; self.initialLastEventID = lastEventID; self.backoff = backoff; self.sleep = sleep
+        self.client = client; self.path = path; self.query = query; self.initialLastEventID = lastEventID; self.backoff = backoff; self.sleep = sleep
     }
 
     public func events() -> AsyncStream<StreamEvent> {
@@ -103,7 +104,7 @@ public struct EventStream: Sendable {
         while !Task.isCancelled {
             var failure: CoreError
             do {
-                let bytes = try await client.openStream(path, lastEventID: parser.lastEventID)
+                let bytes = try await client.openStream(path, lastEventID: parser.lastEventID, query: query)
                 out.yield(.connected); attempt = 0
                 for try await byte in bytes {
                     if let e = parser.feed(byte: byte) { out.yield(.event(e)) }

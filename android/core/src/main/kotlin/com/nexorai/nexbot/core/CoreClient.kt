@@ -125,14 +125,18 @@ class CoreClient(
         CoreState.serializer(),
     )
 
-    suspend fun messages(botId: String, after: Long? = null, before: Long? = null): MessageFeed {
+    suspend fun workspaceStatus(): CoreState = get("/api/state?view=workspace&page=tasks", CoreState.serializer())
+
+    suspend fun messages(botId: String, after: Long? = null, before: Long? = null, at: Long = System.currentTimeMillis()): MessageFeed {
         require(after == null || before == null) { "after and before are exclusive" }
         require(after == null || after >= 0) { "after must not be negative" }
         require(before == null || before > 0) { "before must be positive" }
         val params = buildMap {
             put("bot", botId)
+            put("view", "window")
+            put("at", at.toString())
             if (after != null) put("after", after.toString())
-            if (before != null) put("before", before.toString())
+            else put("before", (before ?: 9_007_199_254_740_991L).toString())
         }
         return get(withQuery("/api/agents/messages", params), MessageFeed.serializer())
     }
@@ -225,10 +229,11 @@ class CoreClient(
      * The flow completes when the server ends the response and fails on a
      * transport error, except when the collector cancelled it.
      */
-    fun events(lastEventId: String? = null): Flow<LiveFrame> = callbackFlow {
+    fun events(lastEventId: String? = null, query: String = ""): Flow<LiveFrame> = callbackFlow {
+        require(query.isEmpty() || query.startsWith("?"))
         val bearer = token
         val request = Request.Builder()
-            .url(origin + "/api/events")
+            .url(origin + "/api/events" + query)
             .apply {
                 if (!lastEventId.isNullOrEmpty()) header("Last-Event-ID", lastEventId)
                 if (!bearer.isNullOrEmpty()) header("Authorization", "Bearer $bearer")

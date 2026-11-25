@@ -115,6 +115,8 @@ class Repository(
 
     private var selectedSeq = 0L
     private var lastSnapshotAt = 0L
+    private var lastStreamFrameAt: Long? = null
+    private var nativeChatVisible = false
     private var snapshotWanted = false
     private var pendingBotId: String? = null
     private var pendingSend: Pair<Pair<String, String>, String>? = null
@@ -224,7 +226,7 @@ class Repository(
         startPolling()
         pendingBotId?.let { botId ->
             pendingBotId = null
-            selectBot(botId)
+            _state.update { it.copy(selectedBotId = botId) }
         }
     }
 
@@ -265,11 +267,12 @@ class Repository(
         return com.nexorai.nexbot.core.CliStreamRelay(saved.origin, { workspaceToken(saved) }, sink)
     }
 
-    fun workspaceEvents(cursor: String?) = requireNotNull(client).events(cursor)
+    fun workspaceEvents(cursor: String?, query: String) = requireNotNull(client).events(cursor, query)
 
     fun forgetWorkspace() { expire(_state.value.connection, null) }
 
     fun selectBot(botId: String) {
+        nativeChatVisible = true
         scope.launch {
             val cached = localHistory[botId]
             selectedSeq = cached?.messages?.lastOrNull()?.seq ?: 0L
@@ -282,7 +285,7 @@ class Repository(
             }
             val core = client ?: return@launch
             try {
-                val feed = core.messages(botId)
+                val feed = core.messages(botId, at = loadedSync?.at ?: clock())
                 if (client !== core || _state.value.selectedBotId != botId) return@launch
                 if (selectedSeq == 0L && matchesHistory(feed)) applyFeed(feed, replace = true)
             } catch (failure: Exception) {
@@ -296,10 +299,13 @@ class Repository(
     /** A notification tap that arrives before the session is ready. */
     fun openBotWhenReady(botId: String) {
         val ready = _state.value
-        if (ready.phase == Phase.Ready && ready.bots.any { it.id == botId }) selectBot(botId) else pendingBotId = botId
+        if (ready.phase == Phase.Ready && ready.bots.any { it.id == botId }) {
+            _state.update { it.copy(selectedBotId = botId) }
+        } else pendingBotId = botId
     }
 
     fun clearSelection() {
+        nativeChatVisible = false
         _state.update { it.copy(selectedBotId = null, messages = emptyList(), streaming = emptyList(), hasMore = false) }
     }
 
@@ -372,14 +378,16 @@ class Repository(
         val initial = loadedSync ?: throw CoreException(0, "状态尚未加载")
         val rows = mutableListOf<MessageRow>()
         var after = 0L
+        var at = 0L
         while (true) {
-            val feed = core.messages(botId, after = after)
+            val feed = core.messages(botId, after = after, at = at)
             if (feed.sync.coreId != initial.coreId || feed.sync.privacyEpoch != initial.privacyEpoch) {
                 throw CoreException(0, "对话已变化，请重新导出")
             }
             rows += feed.messages
             if (!feed.hasMore || feed.messages.isEmpty()) break
             after = feed.messages.last().seq
+            at = feed.messages.last().createdAt
         }
         val formatter = DateTimeFormatter.ofPattern("M月d日 HH:mm")
         return rows.joinToString("\n\n---\n\n") { message ->
@@ -414,12 +422,13 @@ class Repository(
 
     fun loadOlder() {
         val botId = _state.value.selectedBotId ?: return
-        val firstSeq = _state.value.messages.firstOrNull()?.seq?.takeIf { it > 1 } ?: return
+        val oldest = _state.value.messages.firstOrNull()?.takeIf { it.seq > 1 } ?: return
+        val firstSeq = oldest.seq
         scope.launch {
             try {
                 val core = client ?: return@launch
                 val expected = loadedSync
-                val feed = core.messages(botId, before = firstSeq)
+                val feed = core.messages(botId, before = firstSeq, at = oldest.createdAt)
                 val current = _state.value
                 if (client !== core || current.selectedBotId != botId || loadedSync != expected) return@launch
                 if (!matchesHistory(feed)) { requestReload(forceSnapshot = true); return@launch }
@@ -481,7 +490,7 @@ class Repository(
             clock() - lastSnapshotAt >= snapshotMinIntervalMs
         if (snapshotDue) {
             try {
-                val snapshot = core.state(summary = true)
+                val snapshot = core.workspaceStatus()
                 if (client !== core) return
                 applyState(snapshot)
                 lastSnapshotAt = clock()
@@ -497,9 +506,11 @@ class Repository(
             }
         }
         val botId = _state.value.selectedBotId ?: return
+        if (!nativeChatVisible) return
         val after = selectedSeq
         try {
-            val feed = if (after > 0) core.messages(botId, after = after) else core.messages(botId)
+            val feed = if (after > 0) core.messages(botId, after = after, at = _state.value.messages.lastOrNull()?.createdAt ?: 0)
+                else core.messages(botId, at = loadedSync?.at ?: clock())
             if (client !== core || _state.value.selectedBotId != botId) return
             if (!matchesHistory(feed)) {
                 localHistory.clear()
@@ -572,7 +583,7 @@ class Repository(
         }
         val lastSeq = merged.lastOrNull()?.seq ?: 0L
         selectedSeq = maxOf(selectedSeq, lastSeq)
-        val hasMore = if (replace) (feed.messages.firstOrNull()?.seq ?: 1L) > 1L else current.hasMore
+        val hasMore = if (replace) (feed.hasOlder ?: ((feed.messages.firstOrNull()?.seq ?: 1L) > 1L)) else current.hasMore
         _state.update {
             it.copy(
                 messages = merged,
@@ -619,7 +630,8 @@ class Repository(
             android.util.Log.d("NexBotRepo", "stream starting cursor=$cursor")
             while (isActive && foreground) {
                 try {
-                    core.events(cursor).collect { frame ->
+                    core.events(cursor, "incremental=1").collect { frame ->
+                        lastStreamFrameAt = clock()
                         when (frame) {
                             is LiveFrame.Change -> {
                                 attempt = 0
@@ -632,8 +644,9 @@ class Repository(
                                         it.copy(messages = emptyList(), streaming = emptyList(), hasMore = false)
                                     }
                                 }
-                                snapshotWanted = true
-                                requestReload()
+                                if (frame.revision == null || frame.revision != loadedSync?.revision || frame.cursor != loadedSync?.cursor) {
+                                    requestReload(forceSnapshot = true)
+                                }
                             }
 
                             LiveFrame.Revoked -> throw StreamStopped()
@@ -675,7 +688,7 @@ class Repository(
                 val current = _state.value
                 if (!foreground || current.phase != Phase.Ready) continue
                 refreshSessionIfNeeded()
-                requestReload(forceSnapshot = true)
+                if (lastStreamFrameAt?.let { clock() - it >= 25_000L } != false) requestReload(forceSnapshot = true)
             }
         }
     }
@@ -707,6 +720,8 @@ class Repository(
         reloadJob?.cancel()
         backgroundJob?.cancel()
         streamJob = null
+        nativeChatVisible = false
+        lastStreamFrameAt = null
         pollJob = null
         reloadJob = null
         backgroundJob = null

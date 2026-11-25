@@ -56,6 +56,7 @@ export function resolveReasoning(choice: string | null | undefined, offered: rea
 /** The models a provider lists, with its saved key unless one is typed. */
 export const listConnectionModels = (connectionId: string, apiKey = "") => api<{ models: string[]; hasMore: boolean; names?: Record<string, string> }>("models/list", { connectionId, ...(apiKey.trim() ? { apiKey } : {}) });
 export interface State {
+  historySeq?: number;
   connections?: Connection[];
   imageModelSelection?: { models: string[]; version: number };
   modelVisibility?: { models: string[] | null; version: number };
@@ -63,7 +64,7 @@ export interface State {
   connectorCatalog?: ConnectorCatalogEntry[];
   connectorMonitors?: ConnectorMonitorView[];
   feishu?: FeishuState;
-  sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string };
+  sync: { cursor: number; privacyEpoch: number; coreId: string; bootId: string; revision?: number; at?: number };
   config?: RecordRow; bots: RecordRow[]; conversations: RecordRow[]; approvals: RecordRow[];
   approvalRules?: Array<{ id: string; bot_id: string; label: string; active?: boolean }>;
   memories: RecordRow[]; delegations: RecordRow[]; devices: RecordRow[]; tasks: RecordRow[]; onlineDevices: string[];

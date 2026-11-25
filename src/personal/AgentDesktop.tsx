@@ -123,6 +123,18 @@ export const RichText = memo(function RichText({ value, onPreviewFile, pending =
     : <Markdown key={index} remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeStaticHTML]} components={markdownComponents}>{part.source}</Markdown>)}</FilePreviewContext.Provider></div>;
 });
 
+type LiveReply = { taskId: string; text: string };
+type HistoryFeed = { messages: RecordRow[]; streaming: LiveReply[]; sync: State["sync"]; hasMore: boolean; hasOlder?: boolean };
+type HistoryCursor = { after: number; at: number } | { before: number; at: number } | { around: string; at: number };
+
+function historyWindowPath(bot: string, conversation: string | undefined, cursor: HistoryCursor) {
+  const params = new URLSearchParams({ bot, ...(conversation ? { conversationId: conversation } : {}), view: "window" });
+  for (const [key, value] of Object.entries(cursor)) params.set(key, String(value));
+  return `agents/messages?${params}`;
+}
+const latestCursor = (at = Date.now()): HistoryCursor => ({ before: Number.MAX_SAFE_INTEGER, at });
+const afterMessage = (last: RecordRow | undefined): HistoryCursor => ({ after: Number(last?.seq ?? 0), at: Number(last?.created_at ?? 0) });
+
 export function AgentDesktop() {
   const { status: accountStatus, logout } = useAccount();
   const [state, setState] = useState<State>();
@@ -241,6 +253,12 @@ export function AgentDesktop() {
   const [showScrollPill, setShowScrollPill] = useState(false);
   const [memoryNotice, setMemoryNotice] = useState(""), [atIndex, setAtIndex] = useState(0), [atDismissed, setAtDismissed] = useState(false), [preview, setPreview] = useState<PreviewItem>();
   const [historyLoading, setHistoryLoading] = useState(true);
+  const chatVisible = page === "agent" && !jobView;
+  const section = page === "settings" ? "settings" : page === "cli" ? "sessions" : page === "todo" || jobView ? "tasks"
+    : (detail && tab === "settings") || modelChooserOpen ? "chat-settings" : detail ? "work" : "chat";
+  const publishedSync = useRef<State["sync"] | undefined>(undefined);
+  const liveOffsets = useRef(new Map<string, number>());
+  const historyPageRequest = useRef<string | undefined>(undefined);
   const [focusedMessage,setFocusedMessage]=useState("");
   const messages = useMemo(() => topicMode && !conversation && !focusedMessage ? topicTimeline(rawMessages,topics) : rawMessages, [topicMode, conversation, focusedMessage, rawMessages, topics]);
   const lastJobReply = useMemo(() => {
@@ -311,6 +329,7 @@ export function AgentDesktop() {
   type HistoryWindow = { botId: string; key: string; messages: RecordRow[]; sync: State["sync"]; olderEnd?: boolean };
   const loaded = useRef<HistoryWindow | undefined>(undefined);
   const localHistory = useRef(new Map<string, HistoryWindow>());
+  const lastCacheWrite = useRef<string | undefined>(undefined);
   const historySync = useRef<State["sync"] | undefined>(undefined);
   const sameHistory = (first: State["sync"] | undefined, second: State["sync"]) =>
     first?.coreId === second.coreId && first.bootId === second.bootId && first.privacyEpoch === second.privacyEpoch;
@@ -330,7 +349,7 @@ export function AgentDesktop() {
   }, [dark]);
 
   useEffect(()=>{let stopped=false;void api<{botId:string}>('agents/finance').then(result=>{if(!stopped){setFinanceBotId(result.botId);if (!selected.current && result.botId) setBotId(result.botId);}}).catch((error:Error)=>setError(userErrorText(error)));return()=>{stopped=true;};},[]);
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (forceHistory = false, signal?: AbortSignal) => {
     if (destination.current !== draftKey || selected.current !== botId) return;
     const request = ++serial.current, current = selected.current;
     const releaseSend = () => {
@@ -339,26 +358,23 @@ export function AgentDesktop() {
       pendingSend.current = undefined;
       setSendingBotId((id) => id === pending.botId ? undefined : id);
     };
-    type Feed = { messages: RecordRow[]; streaming: Array<{ taskId: string; text: string }>; sync: State["sync"]; hasMore: boolean };
+    const valid = () => !signal?.aborted && request === serial.current && selected.current === current && destination.current === draftKey;
     const target=historyTarget.current?.botId===current?historyTarget.current:undefined;
-    const scope = conversation ? "&conversationId=" + encodeURIComponent(conversation) : "";
-    const base = `agents/messages?bot=${encodeURIComponent(current)}${scope}${target?`&around=${encodeURIComponent(target.id)}`:""}`;
-    // Over a slow link every round trip is visible, so the first page of messages is requested together with the state
-    // and checked against the state's sync identity afterwards.
+    const statePath = `state?view=workspace&page=${section}&bot=${encodeURIComponent(current)}`;
+    const conversationQuery = conversation ? "&conversationId=" + encodeURIComponent(conversation) : "";
+    const topicQuery = `bot=${encodeURIComponent(current)}&view=compact` + (conversation ? `&conversationId=${encodeURIComponent(conversation)}` : "");
     const visible = loaded.current?.key === draftKey ? loaded.current : undefined;
     const guess = !target ? (visible ?? localHistory.current.get(draftKey)) : undefined;
-    const early = current && (guess || !accountStatus?.sessionId || target) ? api<Feed>(guess?.messages.length ? `${base}&after=${guess.messages.at(-1)!.seq}` : base) : undefined;
-    early?.catch(() => undefined);
     const [next, topicList] = await Promise.all([
-      api<State>("state"),
-      topicMode ? api<{topics:FinanceTopic[]}>(`agents/topics?bot=${encodeURIComponent(current)}`).catch((error:Error)=>({topics:[],error})) : undefined,
+      api<State>(statePath + conversationQuery, undefined, signal),
+      chatVisible && current && topicMode ? api<{topics:FinanceTopic[]}>(`agents/topics?${topicQuery}`, undefined, signal).catch((error:Error)=>({topics:[],error})) : undefined,
     ]);
-    if (request !== serial.current) return;
+    if (!valid()) return;
     if (historySync.current && !sameHistory(historySync.current, next.sync)) {
       localHistory.current.clear();
       loaded.current = undefined;
       setMessages([]);
-      setStreaming([]);
+      setStreaming([]); liveOffsets.current.clear();
     }
     historySync.current = next.sync;
     authorizeLocalCache(next.sync, accountStatus?.sessionId);
@@ -368,10 +384,10 @@ export function AgentDesktop() {
       if(finance)setFinanceBotId(replacement ? str(replacement.id) : undefined);
       drafts.current.delete(draftKey); attachmentDrafts.current.delete(draftKey); pendingDrafts.current.delete(draftKey);
       loaded.current=undefined; historyTarget.current=undefined; setDraft(""); setPreview(undefined); setDraftPreview(undefined);
-      setState(next); setTopicId(undefined); setTopics([]); setBotId(str((replacement??next.bots[0])?.id)); setMessages([]); setStreaming([]); releaseSend(); return;
+      publishedSync.current = next.sync; setState(next); setTopicId(undefined); setTopics([]); setBotId(str((replacement??next.bots[0])?.id)); setMessages([]); setStreaming([]); releaseSend(); return;
     }
     if(topicList && "error" in topicList)throw topicList.error;
-    if (conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
+    if (chatVisible && conversation && !topicList?.topics.some(topic => topic.conversationId === conversation)) {
       localHistory.current.delete(draftKey);
       loaded.current = undefined; setMessages([]); setStreaming([]);
       setTopics(topicList?.topics ?? []); setTopicId(undefined); setError("");
@@ -383,57 +399,76 @@ export function AgentDesktop() {
     }
     memoryVersions.current = new Map(next.memories.map((m) => [str(m.id), `${m.version}:${m.updated_at}`]));
 
-    if (current) {
+    if (chatVisible && current) {
       // Commit task state with its feed below, so the typing indicator cannot
       // disappear a network round trip before the final reply arrives.
       const cacheKey = `history:${draftKey}`;
-      const persisted = !guess && !target && !early ? await readLocalCache<HistoryWindow>(persistedScope, cacheKey) : undefined;
-      if (request !== serial.current || selected.current !== current) return;
-      const cached = guess ?? persisted;
-      const same = cached?.key === draftKey && sameHistory(cached.sync, next.sync);
+      const available = guess && sameHistory(guess.sync, next.sync) ? guess : undefined;
+      const persisted = !available && !target ? await readLocalCache<HistoryWindow>(persistedScope, cacheKey) : undefined;
+      if (!valid()) return;
+      const cached = available ?? persisted;
+      const same = cached?.key === draftKey && sameHistory(cached.sync, next.sync) && cached.sync.cursor <= next.sync.cursor;
       let history = same ? cached.messages : [];
-      let feed: Feed;
-      // The prefetch can be served before this state snapshot. After a send, read the
-      // transcript again so the reply cannot lag behind the task that produced it.
+      // A reconnect can miss reply deltas even when there were no durable writes.
       const pending = pendingSend.current;
       const feedAfterAccept = !!pending && pending.botId === current && request > pending.acceptedAfter;
-      const freshFeed = () => api<Feed>(history.length ? `${base}&after=${history.at(-1)!.seq}` : base);
-      try { feed = await (feedAfterAccept || !early || (!same && guess?.messages.length) ? freshFeed() : early); }
+      const loadPage = (cursor: HistoryCursor) => api<HistoryFeed>(historyWindowPath(current, conversation, cursor), undefined, signal);
+      let feed: HistoryFeed | undefined;
+      const cursor = target ? { around: target.id, at: next.sync.at ?? Date.now() } : same ? afterMessage(history.at(-1)) : latestCursor(next.sync.at);
+      const advanced = next.historySeq === undefined ? cached?.sync.cursor !== next.sync.cursor || next.sync.revision === undefined
+        : Number(history.at(-1)?.seq ?? 0) < next.historySeq;
+      const liveCatchUp = forceHistory && next.tasks.some(task => task.bot_id === current && task.origin === "owner" && !terminal.includes(str(task.status)));
+      try {
+        if (!same || target || feedAfterAccept || advanced || liveCatchUp) feed = await loadPage(cursor);
+      }
       catch (failure) {
-        if (request !== serial.current || selected.current !== current) return;
+        if (!valid()) return;
         if (!target || !(failure instanceof Error) || failure.message !== '该消息已不存在或已遗忘') throw failure;
         historyTarget.current=undefined;scrolledTarget.current='';setFocusedMessage('');loaded.current=undefined;stickToBottom.current=true;
-        feed=await api<Feed>(`agents/messages?bot=${encodeURIComponent(current)}`);
+        feed = await loadPage(latestCursor(next.sync.at));
       }
-      const firstPageCount = feed.messages.length;
-      while (true) {
-        if (request !== serial.current || selected.current !== current) return;
+      const olderEnd = target && historyTarget.current ? true : same ? cached.olderEnd : !(feed?.hasOlder ?? (feed?.messages.length ?? 0) >= 40);
+      while (feed) {
+        if (!valid()) return;
         if (!sameHistory(feed.sync, next.sync)) {
           const retry = !feedRetry.current;
           feedRetry.current = true;
           loaded.current = undefined;
           localHistory.current.clear();
           setMessages([]); setStreaming([]);
-          if (retry) setTimeout(() => void reload().catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }), 0);
+          if (retry) setTimeout(() => { if (!signal?.aborted) void reload(true, signal).catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }); }, 0);
           return;
         }
         history = [...history, ...feed.messages];
         if (!feed.hasMore) break;
-        feed = await api<Feed>(`${base}&after=${history.at(-1)!.seq}`);
+        if (!feed.messages.length) break;
+        feed = await loadPage(afterMessage(history.at(-1)));
       }
-      if (request !== serial.current || selected.current !== current) return;
-      const olderEnd = conversation ? (same ? cached.olderEnd : firstPageCount < 200) : undefined;
-      if (conversation) setOlderEnd(!!olderEnd);
-      loaded.current = { botId: current, key: draftKey, messages: history, sync: feed.sync, olderEnd };
+      if (!valid()) return;
+      setOlderEnd(!!olderEnd);
+      loaded.current = { botId: current, key: draftKey, messages: history, sync: feed?.sync ?? next.sync, olderEnd };
       if (!target) rememberHistory(loaded.current);
       const previousTail = same ? cached.messages.at(-1)?.seq : undefined;
-      if (!target && history.length && previousTail !== history.at(-1)?.seq) {
+      const cacheBookmark = persistedScope ? JSON.stringify([persistedScope, cacheKey, history.at(-1)?.seq ?? 0]) : undefined;
+      if (!target && cacheBookmark && (lastCacheWrite.current !== cacheBookmark || !same || previousTail !== history.at(-1)?.seq)) {
+        lastCacheWrite.current = cacheBookmark;
         queueLocalCache(persistedScope, cacheKey, { ...loaded.current, messages: history.slice(-200), olderEnd: history.length <= 200 && olderEnd });
       }
       feedRetry.current = false;
       setMessages((shown) => withPendingOptimistic(history, shown));
       setTopics(topicList?.topics ?? []);
-      setStreaming(feed.streaming.filter((s) => s.text));
+      for (const taskId of liveOffsets.current.keys()) {
+        if (next.tasks.some(task => task.id === taskId && terminal.includes(str(task.status)))) liveOffsets.current.delete(taskId);
+      }
+      if (feed) {
+        const partials = feed.streaming.filter((item) => item.text);
+        for (const item of partials) liveOffsets.current.set(item.taskId, Math.max(liveOffsets.current.get(item.taskId) ?? 0, item.text.length));
+        setStreaming((shown) => partials.map((item) => {
+          const newer = shown.find((candidate) => candidate.taskId === item.taskId);
+          return newer?.text.startsWith(item.text) ? newer : item;
+        }).concat(shown.filter((item) => !partials.some((partial) => partial.taskId === item.taskId)
+          && next.tasks.some((task) => task.id === item.taskId && !terminal.includes(str(task.status))))));
+      }
       setHistoryLoading(false);
       const through = Number(history.at(-1)?.seq ?? 0);
       if (!target && pageRef.current === "agent" && document.hasFocus() && through > (readPositions.current.get(draftKey) ?? 0)) {
@@ -441,35 +476,93 @@ export function AgentDesktop() {
         void api("agents/read", { botId: current, seq: through, conversationId: conversation }).catch(() => { if (readPositions.current.get(draftKey) === through) readPositions.current.delete(draftKey); });
       }
     }
-    if (request === serial.current) { setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
-  }, [offline, finance, topicMode, conversation, draftKey, botId, accountStatus?.sessionId]);
+    if (valid()) { publishedSync.current = next.sync; setState(next); setConnected(true); setError(""); setHistoryLoading(false); releaseSend(); }
+  }, [chatVisible, section, topicMode, conversation, draftKey, botId, accountStatus?.sessionId]);
   useEffect(() => {
-    // A remembered Agent is loaded by the selection effect below; reloading here too would only be superseded.
-    if (!selected.current) void reload().catch((e: Error) => setError(userErrorText(e)));
-    const events = new EventSource("/api/events"); let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => { if (!timer) timer = setTimeout(() => { timer = undefined; void reload().catch((error: unknown) => { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); }); }, 150); };
+    const query = new URLSearchParams({ incremental: "1" });
+    if (publishedSync.current?.cursor) query.set("after", String(publishedSync.current.cursor));
+    if (chatVisible && botId) {
+      query.set("bot", botId);
+      if (conversation) query.set("conversationId", conversation);
+    }
+    const events = new EventSource(`/api/events?${query}`);
+    const scope = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let running = false, stale = false, forceHistory = false, reopened = false, lastFrame = Date.now();
+    let lastEvent: (State["sync"] & { reset?: boolean }) | undefined;
+    const needed = () => {
+      const current = publishedSync.current;
+      return !lastEvent || !current || !sameHistory(current, lastEvent) || current.cursor < lastEvent.cursor
+        || (current.revision ?? -1) < (lastEvent.revision ?? 0) || lastEvent.revision === undefined;
+    };
+    const drain = async () => {
+      if (running || scope.signal.aborted || document.visibilityState === "hidden") return;
+      running = true;
+      try {
+        while (stale && !scope.signal.aborted) {
+          stale = false;
+          const force = forceHistory; forceHistory = false;
+          try { await reload(force, scope.signal); }
+          catch (error) { if (!scope.signal.aborted) { setError(userErrorText(error, "操作失败")); setHistoryLoading(false); } }
+          if (!forceHistory && !needed()) stale = false;
+        }
+      } finally { running = false; }
+    };
+    const refresh = (force = false) => {
+      stale = true; forceHistory ||= force;
+      if (!timer && !running) timer = setTimeout(() => { timer = undefined; void drain(); }, 180);
+    };
     const change = (event: MessageEvent) => {
+      lastFrame = Date.now();
       const value = JSON.parse(event.data) as State["sync"] & { reset?: boolean };
+      lastEvent = value;
       const generationChanged = historySync.current && !sameHistory(historySync.current, value);
-      if (value.reset || generationChanged) {
+      if (generationChanged) {
         ++serial.current;
         loaded.current = undefined;
         localHistory.current.clear();
         historySync.current = undefined;
-        if (generationChanged) {
-          clearLocalCache();
-          setState(undefined); setMessages([]); setStreaming([]); setPreview(undefined);
-        }
+        liveOffsets.current.clear();
+        clearLocalCache();
+        setState(undefined); setMessages([]); setStreaming([]); setPreview(undefined);
       }
-      refresh();
+      if (needed() || value.reset) refresh(!!value.reset);
     };
-    const expired = () => { offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
-    events.addEventListener("change", change as EventListener); events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired"))); events.onerror = () => refresh();
+    const delta = (event: MessageEvent) => {
+      lastFrame = Date.now();
+      if (!chatVisible || historyTarget.current || document.visibilityState === "hidden") return;
+      const frame = JSON.parse(event.data) as LiveReply & { offset: number };
+      if (typeof frame.text !== "string" || !Number.isSafeInteger(frame.offset) || frame.offset < 0) return;
+      const previous = liveOffsets.current.get(frame.taskId) ?? 0;
+      if (previous > frame.offset) return;
+      if (previous < frame.offset) { refresh(true); return; }
+      liveOffsets.current.set(frame.taskId, frame.offset + frame.text.length);
+      setStreaming((replies) => {
+        const existing = replies.find((reply) => reply.taskId === frame.taskId);
+        if (existing) return replies.map((reply) => reply === existing ? { ...reply, text: reply.text + frame.text } : reply);
+        return [...replies, { taskId: frame.taskId, text: frame.text }];
+      });
+    };
+    const expired = () => { scope.abort(); offline(); events.close(); setError("此设备的登录已过期或被撤销，请重新连接。"); };
+    const focused = () => { if (Date.now() - lastFrame > 20_000 || events.readyState !== 1) refresh(true); };
+    events.addEventListener("change", change as EventListener);
+    events.addEventListener("delta", delta as EventListener);
+    events.addEventListener("revoked", () => window.dispatchEvent(new Event("nex-session-expired")));
+    events.onopen = () => { lastFrame = Date.now(); if (reopened) refresh(true); reopened = true; };
+    events.onerror = () => { reopened = true; refresh(true); };
     window.addEventListener("nex-session-expired", expired);
-    window.addEventListener("focus", refresh);
-    const interval = setInterval(refresh, 10_000);
-    return () => { clearTimeout(timer); clearInterval(interval); events.close(); window.removeEventListener("focus", refresh); window.removeEventListener("nex-session-expired", expired); };
-  }, [reload, offline]);
+    window.addEventListener("focus", focused);
+    document.addEventListener("visibilitychange", focused);
+    const interval = setInterval(focused, 25_000);
+    stale = true;
+    void drain();
+    return () => {
+      scope.abort(); clearTimeout(timer); clearInterval(interval); events.close();
+      window.removeEventListener("focus", focused);
+      window.removeEventListener("nex-session-expired", expired);
+      document.removeEventListener("visibilitychange", focused);
+    };
+  }, [reload, offline, chatVisible, botId, conversation]);
   useEffect(() => { if (state && !state.bots.some((b) => b.id === botId)) setBotId(str(state.bots[0]?.id)); }, [state, botId]);
   useEffect(() => {
     const switched = loadedBot.current !== draftKey;
@@ -487,7 +580,7 @@ export function AgentDesktop() {
       setMemoryNotice("");
       setPreview(undefined);
       setMessages(cached?.messages ?? []);
-      setStreaming([]);
+      setStreaming([]); liveOffsets.current.clear();
       setDraft(drafts.current.get(draftKey) ?? "");
       setAttachments(attachmentDrafts.current.get(draftKey) ?? []);
       setPending(pendingDrafts.current.get(draftKey) ?? []);
@@ -496,9 +589,8 @@ export function AgentDesktop() {
     if (botId) {
       if (switched) setHistoryLoading(!loaded.current);
       localStorage.setItem("nexbot.selectedAgent", botId);
-      void reload().catch((e: Error) => { setError(userErrorText(e)); setHistoryLoading(false); });
     }
-  }, [botId, reload]);
+  }, [botId, draftKey]);
   const openFilePreview = useCallback((targetPath: string) => { void api<PreviewItem>(`preview?path=${encodeURIComponent(targetPath)}`).then((item) => { setPreview(item); setTab("profile"); setDetail(true); }).catch((e: Error) => setError(userErrorText(e))); }, []);
   const run = useCallback(async (operation: () => Promise<unknown>) => { setBusy(true); setError(""); try { await operation(); await reload(); } catch (e) { setError(userErrorText(e, "操作失败")); } finally { setBusy(false); } }, [reload]);
   const changeDraft = useCallback((value: string) => { setDraft(value); drafts.current.set(draftKey, value); setAtDismissed(false); setAtIndex(0); }, [draftKey]);
@@ -706,15 +798,23 @@ export function AgentDesktop() {
   const loadOlder = async () => {
     const snapshot = loaded.current;
     if (!snapshot?.messages.length) return;
-    type HistoryPage = { messages: RecordRow[]; sync: State["sync"] };
-    const before = snapshot.messages[0].seq;
+    type HistoryPage = Pick<HistoryFeed, "messages" | "sync" | "hasOlder">;
+    const first = snapshot.messages[0], before = Number(first.seq);
     const scope = localCacheScope(), key = `history:${draftKey}:before:${before}`;
-    const cached = await readLocalCache<HistoryPage>(scope, key);
-    const result = cached ?? await api<HistoryPage>(`agents/messages?bot=${encodeURIComponent(snapshot.botId)}&before=${before}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
+    if (historyPageRequest.current === key) return;
+    historyPageRequest.current = key;
+    let cached: HistoryPage | undefined;
+    let result: HistoryPage;
+    try {
+      cached = await readLocalCache<HistoryPage>(scope, key);
+      result = cached ?? await api<HistoryPage>(historyWindowPath(snapshot.botId, conversation, { before, at: Number(first.created_at ?? 0) }));
+    } finally {
+      if (historyPageRequest.current === key) historyPageRequest.current = undefined;
+    }
     const current = loaded.current;
     if (destination.current !== draftKey || !current || current.botId !== snapshot.botId || current.sync.coreId !== result.sync.coreId || current.sync.privacyEpoch !== result.sync.privacyEpoch || current.sync.bootId !== result.sync.bootId) return;
-    if (!cached) queueLocalCache(scope, key, { messages: result.messages, sync: result.sync });
-    const olderEnd = !!conversation && result.messages.length < 200;
+    if (!cached) queueLocalCache(scope, key, { messages: result.messages, sync: result.sync, hasOlder: result.hasOlder });
+    const olderEnd = !(result.hasOlder ?? result.messages.length >= 40);
     if (olderEnd) setOlderEnd(true);
     const merged = [...result.messages, ...current.messages.filter((m) => !result.messages.some((old) => old.id === m.id))];
     const window = { ...current, messages: merged, olderEnd };
@@ -731,16 +831,16 @@ export function AgentDesktop() {
   };
   const downloadTranscript = async () => {
     const target = botId, rows: RecordRow[] = [];
-    let after = 0;
+    let cursor = afterMessage(undefined);
     const initial = state.sync;
     for (;;) {
-      const feed = await api<{ messages: RecordRow[]; hasMore: boolean; sync: State["sync"] }>(`agents/messages?bot=${encodeURIComponent(target)}&after=${after}${conversation ? "&conversationId="+encodeURIComponent(conversation) : ""}`);
+      const feed = await api<HistoryFeed>(historyWindowPath(target, conversation, cursor));
       if (destination.current !== draftKey || feed.sync.coreId !== initial.coreId || feed.sync.privacyEpoch !== initial.privacyEpoch) throw new Error("对话已变化，请重新导出");
       rows.push(...feed.messages);
       if (!feed.hasMore || !feed.messages.length) break;
-      after = Number(feed.messages.at(-1)!.seq);
+      cursor = afterMessage(feed.messages.at(-1));
     }
-    const current = await api<State>("state?view=summary");
+    const current = await api<State>("state?view=workspace&page=tasks");
     if (selected.current !== target || current.sync.coreId !== initial.coreId || current.sync.privacyEpoch !== initial.privacyEpoch) throw new Error("对话已变化，请重新导出");
     const content = rows.map((m) => `### ${senderLabel(m, bot, state.bots)} · ${formatTime(m.created_at)}\n\n${str(m.content)}`).join("\n\n---\n\n");
     const name = `${str(bot?.name).replace(/[\\/:*?"<>|]/g, "_") || "NexBot"}-对话.md`;
@@ -827,7 +927,7 @@ export function AgentDesktop() {
         <div className="transcript" ref={scroll} onPointerDown={(event) => { const el = scroll.current; if (el && event.target === el && event.nativeEvent.offsetX >= el.clientWidth) setFollowing(false); }} onWheel={(event) => { if (event.deltaY < 0) setFollowing(false); else if (atEnd()) setFollowing(true); }} onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={(event) => { const y = event.touches[0]?.clientY ?? 0; if (y > touchY.current + 4) setFollowing(false); else if (atEnd()) setFollowing(true); }} onScroll={() => { const el = scroll.current; if (!el) return; const scrollTop = el.scrollTop; const resume = shouldResumeBottomFollow({ following: stickToBottom.current, previousScrollTop: previousScrollTop.current, scrollTop, distanceFromBottom: el.scrollHeight - scrollTop - el.clientHeight }); previousScrollTop.current = scrollTop; if (resume) setFollowing(true); }}>
           <div className="transcript-inner" ref={transcriptInner}>
           {focusedMessage ? <button type="button" className="older" onClick={latestMessages}>返回最新消息</button> : null}
-          {!focusedMessage && !(conversation && olderEnd) && Number(rawMessages[0]?.seq) > 1 ? <button className="older" onClick={() => void run(loadOlder)}>加载更早的消息</button> : null}
+          {!focusedMessage && !olderEnd && Number(rawMessages[0]?.seq) > 1 ? <button className="older" onClick={() => void loadOlder().catch((failure: unknown) => setError(userErrorText(failure, "加载失败")))}>加载更早的消息</button> : null}
           {!messages.length && !processing && historyLoading ? <div className="history-loading" role="status"><span className="spin"/>正在载入历史会话…</div> : !messages.length && !processing ? <div className="welcome ds-welcome">
             <Avatar bot={bot} allBots={state.bots} large size={84} animate/>
             <div className="ds-welcome-badge" style={{ color: botLook.ink.solid, background: botLook.ink.soft }}>长期陪伴，随时开始</div>

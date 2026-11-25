@@ -48,6 +48,10 @@ struct SettingsView: View {
         .padding(.horizontal, 40).padding(.top, 34)
         .frame(width: 1080, height: 860, alignment: .topLeading)
         .background(Theme.background)
+        .onChange(of: category, initial: true) { _, category in
+            model.workspace?.setResourceVisible("settings", category == .connectors || category == .devices)
+        }
+        .onDisappear { model.workspace?.setResourceVisible("settings", false) }
         .logoutConfirmation(isPresented: $confirmingLogout) { await device.stop(revoke: true); await model.logout(); return model.workspace == nil }
     }
 

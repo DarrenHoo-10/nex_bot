@@ -48,3 +48,33 @@ it("supports an explicitly pinned HTTPS reverse proxy origin and sets Secure cli
     expect((await http(app.origin, "unlisted.example", "/api/state", "synthetic-transport-owner")).status).toBe(403);
   });
 });
+
+it("requires timestamp cursors, bounds history, and catches up backdated messages by sequence", async () => {
+  await fixture({}, async (app) => {
+    const bot = app.store.createBot("Synthetic transport bot");
+    const other = app.store.createBot("Synthetic hidden bot");
+    const insert = app.store.db.prepare("INSERT INTO agent_messages(id,bot_id,workspace_id,owner_user_id,seq,role,kind,content,source_key,created_at) VALUES(?,?,?, ?,?,'user','message',?,?,?)");
+    const add = (botId: string, seq: number, createdAt: number) => {
+      insert.run(botId + seq, botId, app.store.workspace, app.store.owner, seq, "x".repeat(240), "synthetic:" + seq, createdAt);
+    };
+    for (let seq = 1; seq <= 90; seq++) add(bot, seq, 500);
+    add(other, 1, 500);
+    const get = (route: string) => fetch(app.origin + route, { headers: { Authorization: "Bearer synthetic-transport-owner" } });
+    const route = "/api/agents/messages?view=window&bot=" + bot;
+    expect((await get(route)).status).toBe(400);
+    expect((await get(route + "&at=500")).status).toBe(400);
+    const latest = await (await get(route + "&at=500&before=9007199254740991")).json() as { messages: {seq:number}[]; hasOlder: boolean };
+    expect(latest.messages.map(row => row.seq)).toEqual(Array.from({length:40}, (_,index) => index + 51));
+    expect(latest.hasOlder).toBe(true);
+    const older = await (await get(route + "&at=500&before=51")).json() as typeof latest;
+    expect(older.messages[0]?.seq).toBe(11);
+    expect(older.messages.at(-1)?.seq).toBe(50);
+    add(bot, 91, 250);
+    const delta = await (await get(route + "&at=500&after=90")).json() as typeof latest;
+    expect(delta.messages.map(row => row.seq)).toEqual([91]);
+    const workspace = await (await get("/api/state?view=workspace&page=chat&bot=" + bot)).json() as { historySeq: number; bots: { last_message: string }[]; journal?: unknown };
+    expect(workspace.historySeq).toBe(91);
+    expect(workspace.bots.every(row => row.last_message.length <= 180)).toBe(true);
+    expect(workspace.journal).toBeUndefined();
+  });
+});

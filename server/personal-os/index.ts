@@ -68,18 +68,22 @@ export async function createPersonalApp(options: AppOptions) {
     return session;
   };
   const streams = new Map<ServerResponse, string>();
+  const incrementalStreams = new Map<ServerResponse, { botId: string; conversationId: string }>();
+  let lastLegacyStreamRefresh = 0;
   const verifyingStreams = new Set<ServerResponse>();
   let closing = false;
   let feishu!: FeishuModule;
   let feishuAccounts: ((action:string,data:Record<string,unknown>)=>unknown|Promise<unknown>) | undefined;
   const endEventStream = (response: ServerResponse, revoked: boolean) => {
     streams.delete(response);
+    incrementalStreams.delete(response);
     response.end(revoked ? "event: revoked\ndata: {}\n\n" : undefined);
   };
-  const changed = () => {
+  const broadcast = (legacyOnly = false) => {
     if (closing) return;
     sync.prune(); const snapshot = sync.snapshot();
     for (const [response, token] of streams) {
+      if (legacyOnly && incrementalStreams.has(response)) continue;
       if (finance.hasBinding() && identity) {
         if (!verifyingStreams.has(response)) {
           verifyingStreams.add(response);
@@ -94,12 +98,31 @@ export async function createPersonalApp(options: AppOptions) {
         }
         continue;
       }
-      if (!(token.startsWith("stock_") ? finance.locallyAllowed(token) : identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { response.write("event: revoked\ndata: {}\n\n"); response.end(); streams.delete(response); }
+      if (!(token.startsWith("stock_") ? finance.locallyAllowed(token) : identity ? identity.locallyAllowed(token) : clients.authenticate(token))) endEventStream(response, true);
       else response.write(`id: ${snapshot.cursor}\nevent: change\ndata: ${JSON.stringify(snapshot)}\n\n`);
     }
     feishu?.scanApprovals();
   };
+  const changed = () => { sync.revision++; broadcast(); };
   const runtime = new TaskRuntime(store, changed);
+  runtime.onStreamDelta = ({ botId, conversationId, ...delta }) => {
+    if (closing) return;
+    const isTopic = !!store.get("SELECT 1 FROM agent_topics WHERE conversation_id=?", conversationId);
+    const payload = `event: delta\ndata: ${JSON.stringify(delta)}\n\n`;
+    for (const [response, scope] of incrementalStreams) {
+      if (scope.botId !== botId || (scope.conversationId ? scope.conversationId !== conversationId : isTopic)) continue;
+      const token = streams.get(response);
+      if (!token || response.destroyed) continue;
+      if (!(identity ? identity.locallyAllowed(token) : clients.authenticate(token))) { endEventStream(response, true); continue; }
+      // A stalled client reconnects and catches up from the active reply in its next window.
+      if (response.writableLength > 256_000) { endEventStream(response, false); continue; }
+      response.write(payload);
+    }
+    if (streams.size > incrementalStreams.size && Date.now() - lastLegacyStreamRefresh >= 1000) {
+      lastLegacyStreamRefresh = Date.now();
+      broadcast(true);
+    }
+  };
   runtime.memory.retrieval.config.defaults = options.retrieval ?? {};
   const connectors = new ConnectorModule(store, changed, options.gmail, options.github, options.publicOrigin);
   runtime.connectorExecutor = (call, args, authorize) => finance.handles(args) ? finance.execute(call, args, authorize, runtime.isTopicTask(String(call.task_id))?.audience === "public" ? "public" : "private") : feishu?.handles(args) ? feishu.execute(call, args, authorize) : connectors.execute(call, args, authorize);
@@ -212,25 +235,40 @@ export async function createPersonalApp(options: AppOptions) {
    * itself so a client can tell that its request was understood. Everything
    * else, including the default when `view` is absent or unknown, is what
    * every existing client already receives. */
-  function stateBody(view: "full" | "summary", requestOrigin: string) {
-    const base = store.state();
+  function stateBody(view: "full" | "summary" | "workspace", requestOrigin: string, page?: string, botId?: string, conversationId?: string, resources?: string) {
+    const scoped = view === "workspace";
+    const chat = !scoped || page === "chat" || page === "work" || page === "chat-settings";
+    const taskStatus = chat || page === "tasks";
+    const settings = !scoped || page === "settings" || page === "chat-settings" || resources?.split(",").includes("settings");
+    const work = !scoped || page === "work" || resources?.split(",").includes("work");
+    const base = store.state(view === "full");
+    const tasks = scoped ? (taskStatus ? [
+      ...base.tasks.filter(task => task.ended_at == null),
+      ...base.tasks.filter(task => task.ended_at != null && task.bot_id === botId && task.origin === "owner").slice(0, 12),
+    ] : []) : base.tasks;
     return {
       ...base,
-      ...(view === "summary" ? { view: "summary", memories: base.memories.map(({ content: _content, ...memory }) => memory) } : {}),
-      connectors: connectors.list(), connectorCatalog: connectors.catalog(), connectorMonitors: monitors.list(),
+      ...(view === "full" ? {} : { view }),
+      ...(scoped ? {
+        tasks, conversations: [],
+        ...(chat && botId ? { historySeq: agents.historySeq(botId, conversationId) } : {}), approvals: chat ? base.approvals : [],
+        delegations: chat ? base.delegations : [], memories: chat ? base.memories : [],
+        devices: settings ? base.devices : [],
+      } : {}),
+      ...(settings ? { connectors: connectors.list(), connectorCatalog: connectors.catalog(), connectorMonitors: monitors.list() } : {}),
       feishu: feishu.state(),
       sync: sync.snapshot(),
       hostDeviceId: gateway.hostDeviceId,
       memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
       memoryPlugin: memoryPlugin.status(),
-      bots: agents.contacts().map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      bots: agents.contacts(scoped).map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
       approvalRules: approvalRules(store),
-      approvals: base.approvals.map((approval) => ({ ...approval, remember_label: approvalRuleLabel(store, approvalRuleScope(JSON.parse(String(approval.arguments_json)))) })),
-      directory: directory(store),
-      routines: routines.list(),
-      occurrences: routines.occurrences(),
-      jobs: jobs.list(),
-      ...(view === "summary" ? {} : { journal: store.all("SELECT * FROM agent_journal WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 100") }),
+      approvals: (taskStatus ? base.approvals : []).map((approval) => ({ ...approval, remember_label: approvalRuleLabel(store, approvalRuleScope(JSON.parse(String(approval.arguments_json)))) })),
+      ...(settings ? { directory: directory(store) } : {}),
+      routines: work ? routines.list().filter(row => !scoped || !botId || row.bot_id === botId) : [],
+      occurrences: work ? routines.occurrences().filter(row => !scoped || !botId || row.bot_id === botId) : [],
+      jobs: chat ? jobs.list().filter(job => !scoped || job.botId === botId || job.endedAt == null) : [],
+      ...(view !== "full" ? {} : { journal: store.all("SELECT * FROM agent_journal WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') ORDER BY created_at DESC LIMIT 100") }),
       onlineDevices: [...gateway.sockets.keys()],
       cliAgents: cliHub.summary(),
       node: { ...node.publicState(), hosted: options.hostDevice === false },
@@ -256,7 +294,7 @@ export async function createPersonalApp(options: AppOptions) {
   void lifecycle.sweep();
   const heartbeat = setInterval(() => {
     void lifecycle.sweep();
-    changed(); if (!identity || checkingSessions || closing) return;
+    broadcast(); if (!identity || checkingSessions || closing) return;
     checkingSessions = true;
     heartbeatJob = (async () => {
       await identity.retryRevocations();
@@ -491,7 +529,12 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
         const event = sync.event(Number(request.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0));
-        streams.set(response, token); response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); request.once("close", () => streams.delete(response)); return;
+        streams.set(response, token);
+        if (url.searchParams.get("incremental") === "1") incrementalStreams.set(response, {
+          botId: text(url.searchParams.get("bot"), 100), conversationId: text(url.searchParams.get("conversationId"), 100),
+        });
+        response.write(`id: ${event.cursor}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`);
+        response.once("close", () => { streams.delete(response); incrementalStreams.delete(response); }); return;
       }
       if (url.pathname === "/api/clients" && request.method === "GET") { json(response, 200, { sessions: clients.list(), currentSessionId: session.id }); return; }
       if (url.pathname === "/api/memory/retrieval" && request.method === "GET") {
@@ -526,8 +569,9 @@ export async function createPersonalApp(options: AppOptions) {
       if(url.pathname === "/api/feishu/groups" && request.method === "GET") {json(response,200,await feishu.groups({id:url.searchParams.get("id")??""}));return;}
       if(url.pathname === "/api/feishu/accounts" && request.method === "GET") {json(response,200,await feishuAccounts?.("list",{}) ?? []);return;}
       if (url.pathname === "/api/state") {
-        const view = url.searchParams.get("view") === "summary" ? "summary" : "full";
-        json(response, 200, stateBody(view, requestOrigin)); return;
+        const requested = url.searchParams.get("view");
+        const view = requested === "summary" || requested === "workspace" ? requested : "full";
+        json(response, 200, stateBody(view, requestOrigin, url.searchParams.get("page") ?? "", text(url.searchParams.get("bot"), 100), text(url.searchParams.get("conversationId"), 100), text(url.searchParams.get("resources"), 40))); return;
       }
       if (url.pathname === "/api/agents/search" && request.method === "GET") {
         if(session.user_id!==store.owner){json(response,403,{error:'此账号没有搜索会话的权限'});return;}
@@ -550,7 +594,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (url.pathname === '/api/agents/topics' && request.method === 'GET') {
         const botId = text(url.searchParams.get('bot'), 100);
         if (finance.hasBinding() && agents.finance().botId === botId) stockHistory.schedule(String(session.id));
-        json(response, 200, {topics: agents.topics(botId)}); return;
+        json(response, 200, {topics: agents.topics(botId, url.searchParams.get("view") === "compact", text(url.searchParams.get("conversationId"), 100) || undefined)}); return;
       }
       if (url.pathname === "/api/agents/context" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100);
@@ -561,13 +605,29 @@ export async function createPersonalApp(options: AppOptions) {
         const botId = text(url.searchParams.get("bot"), 100), before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
         if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("消息位置无效");
         const after = url.searchParams.has("after") ? Number(url.searchParams.get("after")) : undefined;
+        const windowed = url.searchParams.get("view") === "window";
         if (after !== undefined && (!Number.isSafeInteger(after) || after < 0 || before !== undefined)) throw new Error("消息位置无效");
         const around=url.searchParams.get('around');
         if(around&&(before!==undefined||after!==undefined))throw new Error('消息位置无效');
         const conversationId=url.searchParams.get('conversationId');
         if(conversationId && around) throw new Error('话题内不支持 around');
-        const messages = conversationId ? agents.topicMessages(botId,text(conversationId,100),before,after) : around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before) : agents.messagesAfter(botId, after);
-        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && messages.length === 200, streaming: [...runtime.workers.values()].filter((w) => store.get("SELECT t.bot_id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='owner'", w.taskId)?.bot_id === botId && (!conversationId || store.get("SELECT conversation_id FROM tasks WHERE id=?",w.taskId)?.conversation_id===conversationId)).map((w) => ({ taskId: w.taskId, text: w.streaming })) }); return;
+        const at = Number(url.searchParams.get("at") || -1);
+        if (windowed && (!Number.isSafeInteger(at) || at < 0 || (before === undefined && after === undefined && !around))) throw new Error("需要消息时间戳游标");
+        const limit = windowed ? 40 : undefined;
+        // An initial page is bounded by wall time. Between pages the sequence is
+        // authoritative so delayed imports with older timestamps are still delivered.
+        const until = windowed && before === Number.MAX_SAFE_INTEGER ? at : undefined;
+        const rows = conversationId ? agents.topicMessages(botId,text(conversationId,100),before,after,limit === undefined ? undefined : limit + 1,until) : around ? agents.messagesAround(botId,text(around,100)) : after === undefined ? agents.messages(botId, before, limit === undefined ? undefined : limit + 1, until, windowed) : agents.messagesAfter(botId, after, limit === undefined ? undefined : limit + 1, windowed);
+        const extra = limit !== undefined && !around && rows.length > limit;
+        const messages = extra ? (after === undefined ? rows.slice(1) : rows.slice(0, limit)) : rows;
+        const streaming = [...runtime.workers.values()].flatMap(worker => {
+          const task = store.get("SELECT t.bot_id,t.conversation_id FROM tasks t JOIN agent_task_links l ON l.task_id=t.id WHERE t.id=? AND l.origin='owner'", worker.taskId);
+          if (task?.bot_id !== botId) return [];
+          if (conversationId ? task.conversation_id !== conversationId
+            : windowed && !around && store.get("SELECT 1 FROM agent_topics WHERE conversation_id=?", task.conversation_id)) return [];
+          return [{ taskId: worker.taskId, text: worker.streaming }];
+        });
+        json(response, 200, { sync: sync.snapshot(), messages, hasMore: after !== undefined && (windowed ? extra : messages.length === 200), ...(windowed && before !== undefined ? { hasOlder: extra } : {}), streaming }); return;
       }
       if (url.pathname === "/api/routines/occurrence" && request.method === "GET") {
         json(response, 200, routines.occurrence(text(url.searchParams.get("id"), 256))); return;

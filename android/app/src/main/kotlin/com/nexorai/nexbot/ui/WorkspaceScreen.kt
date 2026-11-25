@@ -94,7 +94,7 @@ fun WorkspaceScreen(state: Repository.UiState, repository: Repository) {
 internal class AndroidWorkspace(private val context: Context, private val repository: Repository, private val origin: String, coreOrigin: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val transport = repository.workspaceTransport()
-    private val subscriptions = mutableSetOf<String>()
+    private val subscriptions = mutableMapOf<String, String>()
     private val streams = mutableMapOf<String, Job>()
     // Agent mode socket. The page owns reconnecting (see CliStreamRelay); this only
     // relays frames and ends every socket when the screen stops, so none outlives it.
@@ -189,7 +189,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                             when (data.getString("method")) {
                                 "request" -> request(args.getString(0), args.getString(1), args.getString(2), args.getString(3))
                                 "action" -> action(args.getString(0), args.getString(1), args.getString(2))
-                                "subscribe" -> subscribe(args.getString(0))
+                                "subscribe" -> subscribe(args.getString(0), args.optString(1))
                                 "unsubscribe" -> unsubscribe(args.getString(0))
                                 else -> cliStream.dispatch(data.getString("method"), List(args.length()) { args.getString(it) })
                             }
@@ -294,17 +294,19 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     private fun external(url: String) {
         openWorkspaceExternal(context, url)
     }
-    private fun subscribe(id: String) { scope.launch { subscriptions.add(id); startStream(id) } }
+    private fun subscribe(id: String, query: String) { scope.launch { subscriptions[id] = query; startStream(id) } }
     private fun unsubscribe(id: String) { scope.launch { subscriptions.remove(id); streams.remove(id)?.cancel() } }
     private fun startStream(id: String) {
         if (!active || streams[id]?.isActive == true) return
+        val query = subscriptions[id] ?: return
         streams[id] = scope.launch {
             var cursor: String? = null
             var assetGeneration: Triple<String, String, Long>? = null
             while (isActive) {
                 try {
-                    repository.workspaceEvents(cursor).collect { frame ->
-                        event(id, "open")
+                    var opened = false
+                    repository.workspaceEvents(cursor, query).collect { frame ->
+                        if (!opened) { opened = true; event(id, "open") }
                         when (frame) {
                             is LiveFrame.Change -> {
                                 cursor = frame.cursor.toString()
@@ -312,10 +314,11 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                                 if (frame.reset || (assetGeneration != null && assetGeneration != generation)) transport.clearAssets()
                                 assetGeneration = generation
                                 event(id, "change", JSONObject().put("cursor", frame.cursor).put("privacyEpoch", frame.privacyEpoch)
-                                    .put("coreId", frame.coreId).put("bootId", frame.bootId).put("reset", frame.reset).toString())
+                                    .put("coreId", frame.coreId).put("bootId", frame.bootId).put("reset", frame.reset)
+                                    .put("revision", frame.revision ?: JSONObject.NULL).toString())
                             }
                             LiveFrame.Revoked -> event(id, "revoked", "{}")
-                            is LiveFrame.Unknown -> Unit
+                            is LiveFrame.Unknown -> if (frame.event == "delta") event(id, "delta", frame.data) else Unit
                         }
                     }
                 } catch (failure: Exception) { if (failure is CancellationException) throw failure }
@@ -330,7 +333,7 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
     }
     // The page hears about each ended socket before it is paused, then reconnects on resume ('online' skips its backoff).
     fun pause() { active = false; streams.values.forEach { it.cancel() }; streams.clear(); cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = true); web.onPause(); web.pauseTimers() }
-    fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('online'))", null) }
+    fun resume() { active = true; web.resumeTimers(); web.onResume(); subscriptions.keys.toList().forEach(::startStream); web.evaluateJavascript("window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('online'))", null) }
     fun close() { closed = true; transport.clearAssets(); cliStream.closeAll(CliStreamRelay.CLOSE_GOING_AWAY, report = false); bridgePort?.close(); updater.stop(); scope.cancel(); fileCallback?.onReceiveValue(null); save = null; web.resumeTimers(); web.stopLoading(); web.destroy() }
 }
 

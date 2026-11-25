@@ -619,10 +619,22 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
       }
     });
   }
+  onStreamDelta?: (message: { botId: string; conversationId: string; taskId: string; offset: number; text: string }) => void;
+
   async event(worker: Running, event: WorkerEvent) {
-    this.assert(worker);
+    const running = this.assert(worker);
     if (["request", "tool", "compact"].includes(event.type)) await this.requireIdentity(worker);
-    if (event.type === "delta") { worker.streaming += event.text ?? ""; this.changed(); return; }
+    if (event.type === "delta") {
+      const text = event.text ?? "";
+      const offset = worker.streaming.length;
+      worker.streaming += text;
+      if (this.onStreamDelta) {
+        if (text && this.taskOrigin(worker.taskId) === "owner") {
+          this.onStreamDelta({ botId: String(running.bot_id), conversationId: String(running.conversation_id), taskId: worker.taskId, offset, text });
+        }
+      } else this.changed();
+      return;
+    }
     if (event.type === "error") { this.fail(worker, new Error(event.error ?? "运行错误")); return; }
     this.persist(worker, event);
     if(event.type==='snapshot' && event.requestId)this.reply(worker,event.requestId,{saved:true});

@@ -95,8 +95,8 @@ public struct CoreClient: Sendable {
     }
 
     /// Opens a long-lived SSE response. The request timeout is long because Core sends no heartbeat.
-    func openStream(_ path: String, lastEventID: String?) async throws -> URLSession.AsyncBytes {
-        var r = try request(path, query: [], body: nil, timeout: 3600)
+    func openStream(_ path: String, lastEventID: String?, query: [(String, String)] = []) async throws -> URLSession.AsyncBytes {
+        var r = try request(path, query: query, body: nil, timeout: 3600)
         r.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         if let lastEventID { r.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID") }
         do {
@@ -145,14 +145,26 @@ extension CoreClient {
     public func state(view: StateView = .full) async throws -> WorkspaceState {
         try await get("/api/state", query: view == .summary ? [("view", "summary")] : [])
     }
-    /// Latest 100 messages, or the 100 before `before`, or the next 200 after `after`, or up to 40 messages before and 60 from
-    /// the message `around` (a search hit; 400 "该消息已不存在或已遗忘" when it is gone). `around` excludes the other two.
-    public func feed(bot: String, before: Int? = nil, after: Int? = nil, around: String? = nil) async throws -> Feed {
-        var q = [("bot", bot)]
-        if let before { q.append(("before", String(before))) }
-        if let after { q.append(("after", String(after))) }
-        if let around { q.append(("around", around)) }
-        return try await get("/api/agents/messages", query: q)
+    public func workspaceState(page: String, botID: String? = nil, conversationID: String? = nil, resources: [String] = []) async throws -> WorkspaceState {
+        var query = [("view", "workspace"), ("page", page)]
+        if let botID { query.append(("bot", botID)) }
+        if let conversationID { query.append(("conversationId", conversationID)) }
+        if !resources.isEmpty { query.append(("resources", resources.joined(separator: ","))) }
+        return try await get("/api/state", query: query)
+    }
+
+    public func feed(bot: String, before: Int? = nil, after: Int? = nil, around: String? = nil, at: Int? = nil) async throws -> Feed {
+        try await historyFeed(bot: bot, before: before, after: after, around: around, at: at)
+    }
+
+    func historyFeed(bot: String, conversationID: String? = nil, before: Int?, after: Int?, around: String? = nil, at: Int?) async throws -> Feed {
+        let timestamp = at ?? Int(Date().timeIntervalSince1970 * 1000)
+        var query = [("bot", bot), ("view", "window"), ("at", String(timestamp))]
+        if let conversationID { query.append(("conversationId", conversationID)) }
+        if let around { query.append(("around", around)) }
+        else if let after { query.append(("after", String(after))) }
+        else { query.append(("before", String(before ?? 9_007_199_254_740_991))) }
+        return try await get("/api/agents/messages", query: query)
     }
     /// `POST /api/agents/input`. `attachments` are ids from ``uploadAttachment(botID:name:data:)``; text may be empty
     /// when at least one is given. The same `clientID` is idempotent.

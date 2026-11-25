@@ -105,7 +105,7 @@ final class SearchTests: XCTestCase {
         await store.refresh()
         XCTAssertEqual(conv.messages.first?.seq, 60)
         await conv.loadOlder()
-        XCTAssertFalse(core.recorded("/api/agents/messages").last!.query.contains("before="))
+        XCTAssertTrue(core.recorded("/api/agents/messages").last!.query.contains("before=9007199254740991"))
     }
 
     func testShowLatestReloadsLatestPage() async throws {

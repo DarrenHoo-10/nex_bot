@@ -3,7 +3,7 @@ import type { SocketLike } from "./cli-agents/stream";
 interface NativeWorkspace {
   request(id: string, path: string, method: string, body: string): void;
   action(id: string, action: string, value: string): void;
-  subscribe(id: string): void;
+  subscribe(id: string, query?: string): void;
   unsubscribe(id: string): void;
   /** Agent mode socket relay: the native side owns the WebSocket and the bearer. */
   streamOpen(id: string): void;
@@ -48,7 +48,7 @@ export function installAndroidBridge() {
   });
   const native: NativeWorkspace = {
     request: (...args) => send('request', args), action: (...args) => send('action', args),
-    subscribe: (...args) => send('subscribe', args), unsubscribe: (...args) => send('unsubscribe', args),
+    subscribe: (id, query) => send('subscribe', query === undefined ? [id] : [id, query]), unsubscribe: (...args) => send('unsubscribe', args),
     streamOpen: (...args) => send('streamOpen', args), streamText: (...args) => send('streamText', args),
     streamBinary: (...args) => send('streamBinary', args), streamClose: (...args) => send('streamClose', args),
   };
@@ -92,8 +92,10 @@ export function installAndroidBridge() {
     onmessage: ((event: MessageEvent) => void) | null = null;
     constructor(url: string | URL) {
       super(); this.url = String(url);
-      if (this.url !== "/api/events") throw new Error("不支持的事件地址");
-      streams.set(this.id, this); native.subscribe(this.id);
+      const events = new URL(this.url, location.origin);
+      if (events.origin !== location.origin || events.pathname !== "/api/events") throw new Error("不支持的事件地址");
+      streams.set(this.id, this);
+      if (events.search) native.subscribe(this.id, events.search); else native.subscribe(this.id);
     }
     close() { this.readyState = 2; streams.delete(this.id); native.unsubscribe(this.id); }
     dispatchEvent(event: Event) {

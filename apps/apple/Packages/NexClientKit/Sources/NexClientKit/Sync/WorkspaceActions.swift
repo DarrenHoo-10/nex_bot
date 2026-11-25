@@ -83,26 +83,44 @@ extension WorkspaceStore {
             return (data: result.data, filename: "")
         }.data
     }
-    public func cachedTopicFeed(botID: String, conversationID: String, before: Int? = nil) async throws -> Feed {
-        guard let scope = contentCacheScope, let expected = sync else {
-            return try await client.topicFeed(botID: botID, conversationID: conversationID, before: before)
+    public func cachedTopicFeed(botID: String, conversationID: String, before: Int? = nil, at: Int? = nil) async throws -> Feed {
+        guard let expected = sync else {
+            return try await client.topicFeed(botID: botID, conversationID: conversationID, before: before, at: at)
         }
+        let scope = contentCacheScope
         let key = "topic:" + botID + ":" + conversationID + ":" + (before.map { String($0) } ?? "recent")
-        let memory = before == nil ? cachedTopicMessages(botID: botID, topicID: conversationID) : []
-        let cached = memory.isEmpty ? await LocalContentCache.shared.load([AgentMessage].self, scope: scope, key: key) : memory
+        let cached = if let scope { await LocalContentCache.shared.load(Feed.self, scope: scope, key: key) } else { nil as Feed? }
         guard scope == contentCacheScope else { throw CancellationError() }
-        if before != nil, let cached { return Feed(messages: cached, sync: expected) }
-        var messages = cached ?? []
-        var feed = try await client.topicFeed(botID: botID, conversationID: conversationID, before: before, after: before == nil ? messages.last?.seq : nil)
+        if let cached, cached.sync.sameGeneration(as: expected) {
+            if before != nil { return cached }
+            let topicHead = state?.historySeq ?? -1
+            if !topicCatchUpRequired && (cached.sync.cursor == expected.cursor || topicHead == (cached.messages.last?.seq ?? 0)) {
+                var current = cached
+                current.streaming = topicLiveReplies
+                return current
+            }
+        }
+        let cachedRows = cached?.sync.sameGeneration(as: expected) == true ? cached?.messages ?? [] : []
+        let memory = before == nil ? cachedTopicMessages(botID: botID, topicID: conversationID) : []
+        var messages = memory.isEmpty ? cachedRows : memory
+        let watermark = at ?? messages.last?.row.int("created_at") ?? expected.at
+        let after = before == nil && (cached != nil || !messages.isEmpty) ? (messages.last?.seq ?? 0) : nil
+        var feed = try await client.topicFeed(botID: botID, conversationID: conversationID, before: before, after: after, at: watermark)
+        let hasOlder = after == nil ? feed.hasOlder : cached?.hasOlder
         while true {
             guard scope == contentCacheScope, feed.sync.sameGeneration(as: expected) else { throw CancellationError() }
-            messages += feed.messages
-            guard before == nil, feed.hasMore, let last = feed.messages.last?.seq else { break }
-            feed = try await client.topicFeed(botID: botID, conversationID: conversationID, after: last)
+            let previous = messages.last?.seq ?? 0
+            messages += feed.messages.filter { $0.seq > previous }
+            guard before == nil, feed.hasMore, let last = feed.messages.last, last.seq > previous else { break }
+            feed = try await client.topicFeed(botID: botID, conversationID: conversationID, after: last.seq, at: last.row.int("created_at"))
         }
-        let page = Array(messages.suffix(200))
-        if cached != page { Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: key) } }
-        feed.messages = page
+        feed.messages = messages
+        feed.hasOlder = hasOlder
+        if let scope {
+            let page = Feed(messages: Array(messages.suffix(200)), sync: feed.sync, hasOlder: messages.count > 200 || (hasOlder ?? false))
+            Task { await LocalContentCache.shared.enqueue(page, scope: scope, key: key) }
+        }
+        didSyncTopic(botID: botID, conversationID: conversationID)
         return feed
     }
 

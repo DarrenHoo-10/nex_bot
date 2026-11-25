@@ -16,6 +16,7 @@ sealed interface LiveFrame {
         val coreId: String,
         val bootId: String,
         val reset: Boolean,
+        val revision: Long? = null,
     ) : LiveFrame
 
     /** The session behind this stream is gone; clear private state and re-pair. */
@@ -28,7 +29,7 @@ sealed interface LiveFrame {
 fun SseFrame.toLiveFrame(): LiveFrame = when (event) {
     "change" -> try {
         val value = CoreJson.decodeFromString(SyncEvent.serializer(), data)
-        LiveFrame.Change(value.cursor, value.privacyEpoch, value.coreId, value.bootId, value.reset)
+        LiveFrame.Change(value.cursor, value.privacyEpoch, value.coreId, value.bootId, value.reset, value.revision)
     } catch (_: Exception) {
         LiveFrame.Unknown(event, data)
     }

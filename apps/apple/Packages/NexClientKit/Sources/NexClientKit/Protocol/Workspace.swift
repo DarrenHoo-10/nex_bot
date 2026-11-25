@@ -89,6 +89,7 @@ public struct AgentTask: RowBacked {
 /// `GET /api/state`. Unknown fields are ignored; collections are typed wrappers over open rows (`row` keeps every column).
 public struct WorkspaceState: Codable, Sendable {
     public var sync: SyncIdentity
+    public var historySeq: Int?
     public var bots: [Bot]
     public var approvals: [Approval]
     public var approvalRules: [ApprovalRule] = []
@@ -144,6 +145,7 @@ public struct WorkspaceState: Codable, Sendable {
         func rows(_ key: String) -> [Row] { c.lenient(.init(key))?.arrayValue?.compactMap(\.objectValue) ?? [] }
         func object(_ key: String) -> Row? { c.lenient(.init(key))?.objectValue }
         sync = try c.decode(SyncIdentity.self, forKey: .init("sync"))
+        historySeq = c.lenient(.init("historySeq"))?.intValue
         bots = rows("bots").map(Bot.init); approvals = rows("approvals").map(Approval.init); tasks = rows("tasks").map(AgentTask.init)
         approvalRules = rows("approvalRules").map(ApprovalRule.init)
         conversations = rows("conversations"); routines = rows("routines").map(Routine.init); occurrences = rows("occurrences").map(RoutineOccurrence.init)
@@ -264,8 +266,9 @@ public struct Feed: Codable, Sendable {
     public var streaming: [StreamingText]
     public var sync: SyncIdentity
     public var hasMore: Bool
-    public init(messages: [AgentMessage] = [], streaming: [StreamingText] = [], sync: SyncIdentity, hasMore: Bool = false) {
-        self.messages = messages; self.streaming = streaming; self.sync = sync; self.hasMore = hasMore
+    public var hasOlder: Bool?
+    public init(messages: [AgentMessage] = [], streaming: [StreamingText] = [], sync: SyncIdentity, hasMore: Bool = false, hasOlder: Bool? = nil) {
+        self.messages = messages; self.streaming = streaming; self.sync = sync; self.hasMore = hasMore; self.hasOlder = hasOlder
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -273,6 +276,7 @@ public struct Feed: Codable, Sendable {
         messages = c.lenient(.init("messages"))?.arrayValue?.compactMap(\.objectValue).map(AgentMessage.init) ?? []
         streaming = (try? c.decodeIfPresent([StreamingText].self, forKey: .init("streaming"))) ?? []
         hasMore = c.lenient(.init("hasMore"))?.boolValue ?? false
+        hasOlder = c.lenient(.init("hasOlder"))?.boolValue
     }
 }
 

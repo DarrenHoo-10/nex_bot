@@ -41,12 +41,14 @@ extension CoreClient {
         try await get("/api/agents/context", query: [("bot", botID)])
     }
     public func financeAssistant() async throws -> FinanceAssistant { try await get("/api/agents/finance") }
-    public func financeTopics(botID: String) async throws -> [FinanceTopic] { let result: FinanceTopicList = try await get("/api/agents/topics", query: [("bot",botID)]); return result.topics }
-    public func topicFeed(botID: String, conversationID: String, before: Int? = nil, after: Int? = nil) async throws -> Feed {
-        var query = [("bot",botID),("conversationId",conversationID)]
-        if let before { query.append(("before",String(before))) }
-        if let after { query.append(("after",String(after))) }
-        return try await get("/api/agents/messages",query:query)
+    public func financeTopics(botID: String, conversationID: String? = nil) async throws -> [FinanceTopic] {
+        var query = [("bot", botID), ("view", "compact")]
+        if let conversationID { query.append(("conversationId", conversationID)) }
+        let result: FinanceTopicList = try await get("/api/agents/topics", query: query)
+        return result.topics
+    }
+    public func topicFeed(botID: String, conversationID: String, before: Int? = nil, after: Int? = nil, at: Int? = nil) async throws -> Feed {
+        try await historyFeed(bot: botID, conversationID: conversationID, before: before, after: after, at: at)
     }
     public func sendTopic(_ input: TopicInput) async throws -> TopicInputResult { try await post(input.messageId == nil ? "/api/agents/input" : "/api/agents/edit",body:input) }
     public func topicTasks(botID:String,conversationID:String) async throws -> [AgentTask] {let result:FinanceTopicTasks=try await get("/api/agents/tasks",query:[("bot",botID),("conversationId",conversationID)]);return result.tasks}

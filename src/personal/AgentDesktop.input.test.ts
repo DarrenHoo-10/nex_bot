@@ -51,7 +51,7 @@ beforeEach(async () => {
   localStorage.clear();
   localStorage.setItem("nexbot.selectedAgent", "agent");
   fixture.api.mockReset().mockImplementation(async (route: string) => {
-    if (route === "state") return state;
+    if (route.startsWith("state?view=workspace")) return state;
     if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
     return {};
   });
@@ -85,7 +85,7 @@ it("opens the authenticated Feishu settings from a Stock management link", async
   try {
     history.replaceState(null, "", "?settings=feishu");
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [] };
       if (route === "clients") return { sessions: [] };
       if (route === "feishu/deliveries") return { parts: [] };
@@ -149,7 +149,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     }];
     let rejectSave: (error: Error) => void;
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
       if (route === "bots/model") return new Promise((_resolve, reject) => { rejectSave = reject; });
       return {};
@@ -173,7 +173,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     const content = "## 已有结果\n\n| 项目 | 状态 |\n| --- | --- |\n| 设备 | 在线 |";
     const history = [{ id: "rich-history", role: "assistant", kind: "message", content, created_at: 1, seq: 1 }];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return { ...state };
+      if (route.startsWith("state?view=workspace")) return { ...state };
       if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
       return {};
     });
@@ -193,7 +193,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     state = { ...state, tasks: [{ id: "t1", bot_id: "agent", origin: "owner", status: "succeeded" }] };
     let finishFeed!: (value: unknown) => void;
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return new Promise(resolve => { finishFeed = resolve; });
       return {};
     });
@@ -289,7 +289,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
       { id: "m2", role: "assistant", kind: "message", content: "更早的回答", created_at: 2, seq: 2 },
     ];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [], hasMore: false };
       return {};
     });
@@ -309,7 +309,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("shows the outgoing message immediately and replaces it once when the server row arrives", async () => {
     const history = [{ id: "m1", role: "user", kind: "message", content: "更早的问题", created_at: 1, seq: 1, source_key: "older" }];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [], hasMore: false };
       return {};
     });
@@ -318,7 +318,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
     let clientId = "";
     let releaseInput: () => void = () => {};
     fixture.api.mockImplementation((route: string, body?: { clientId?: string }) => {
-      if (route === "state") return Promise.resolve(state);
+      if (route.startsWith("state?view=workspace")) return Promise.resolve(state);
       if (route === "agents/input") {
         clientId = String(body?.clientId ?? "");
         return new Promise((resolve) => { releaseInput = () => resolve({}); });
@@ -350,7 +350,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("keeps the in-progress row when a newer sync supersedes the send reload", async () => {
     const gates: Array<(value: State) => void> = [];
     fixture.api.mockImplementation((route: string) => {
-      if (route === "state") return new Promise<State>((resolve) => { gates.push(resolve); });
+      if (route.startsWith("state?view=workspace")) return new Promise<State>((resolve) => { gates.push(resolve); });
       if (route === "agents/input") return Promise.resolve({});
       if (route.startsWith("agents/messages")) return Promise.resolve({ sync, messages: [], streaming: [], hasMore: false });
       return Promise.resolve({});
@@ -381,7 +381,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("does not paint the live reply again once that text is in the transcript", async () => {
     const history = [{ id: "answer", role: "assistant", kind: "message", content: "完整回复", created_at: 2, seq: 2, task_id: "t1" }];
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded", origin: "owner" }] };
+      if (route.startsWith("state?view=workspace")) return { ...state, tasks: [{ id: "t1", bot_id: "agent", status: "succeeded", origin: "owner" }] };
       if (route.startsWith("agents/messages")) return { sync, messages: history, streaming: [{ taskId: "t1", text: "完整回复" }, { taskId: "t2", text: "另一段" }], hasMore: false };
       return {};
     });
@@ -434,7 +434,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
 
   it("attaches a pasted screenshot and leaves a text paste alone", async () => {
     fixture.api.mockImplementation(async (route: string, body?: { name?: string }) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
       if (route === "attachments") return { id: "file-1", botId: "agent", name: body?.name, size: 4 };
       return {};
@@ -474,7 +474,7 @@ describe("Personal composer (Web, Electron and Android WebView)", () => {
   it("shows only a pulsing gray placeholder until the upload succeeds", async () => {
     let finish!: (value: unknown) => void;
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [], streaming: [], hasMore: false };
       if (route === "attachments") return new Promise((resolve) => { finish = resolve; });
       return {};
@@ -502,7 +502,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
   async function show(jobs: unknown[], messages: unknown[], tasks: State["tasks"] = []) {
     state = { ...state, jobs, tasks } as State;
     fixture.api.mockImplementation(async (route: string) => {
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : messages, streaming: [], hasMore: false };
       return {};
     });
@@ -587,7 +587,7 @@ describe("Background jobs in the chat (Web, Electron and Android WebView)", () =
     // A refused reply (a stopped job) restores the draft and the reply target.
     fixture.api.mockImplementation(async (route: string) => {
       if (route === "jobs/input") throw new Error("后台任务已停止，不能再补充");
-      if (route === "state") return state;
+      if (route.startsWith("state?view=workspace")) return state;
       if (route.startsWith("agents/messages")) return { sync, messages: [report("question"), savedReply, nextReport], streaming: [], hasMore: false };
       return {};
     });
@@ -639,7 +639,7 @@ it("opens an inline finance topic in the shared chat and replies to its original
   const topic = {conversationId:"finance-test-thread", title:"示例讨论", audience:"private", sourceContext:{}, last_activity_at:1, message_count:1, unread_count:0, activeTask:null};
   const message = {id:"original", seq:1, role:"user", kind:"message", content:"主题内容", conversation_id:topic.conversationId, created_at:1};
   fixture.api.mockImplementation(async (route:string) => {
-    if (route === "state") return state;
+    if (route.startsWith("state?view=workspace")) return state;
     if (route === "agents/finance") return {botId:"agent"};
     if (route.startsWith("agents/topics?")) return {topics:[topic]};
     if (route.startsWith("agents/tasks?")) return {tasks:[]};
@@ -662,7 +662,7 @@ describe("Tool steps in the chat (Web, Electron and Android WebView)", () => {
     const history = [{ id: "m1", role: "assistant", kind: "message", content: "已写入长期记忆。", created_at: 1, seq: 1, tool_steps: [{ id: "call1", tool_name: "memory.write", status: "succeeded", summary: "写作偏好", preview: "", created_at: 1 }] }];
     const base = fixture.api.getMockImplementation()!;
     fixture.api.mockImplementation(async (route: string, ...rest: unknown[]) => {
-      if (route === "state") return { ...state };
+      if (route.startsWith("state?view=workspace")) return { ...state };
       if (route.startsWith("agents/messages")) return { sync, messages: route.includes("after=") ? [] : history.map(row => ({ ...row })), streaming: [], hasMore: false };
       if (route.startsWith("preview?callId=call1")) return { kind: "tool", id: "call1", title: "memory.write", status: "succeeded", arguments: JSON.stringify({ title: "写作偏好", content: "报告用中文写，先给结论再给依据。" }), content: JSON.stringify({ saved: true, version: 2 }, null, 2) };
       return base(route, ...rest);
@@ -682,4 +682,36 @@ describe("Tool steps in the chat (Web, Electron and Android WebView)", () => {
     await act(async () => { container.querySelector<HTMLButtonElement>(".step-row")!.click(); });
     expect(container.querySelector(".step-detail")).toBeNull();
   });
+});
+
+it("streams text without refetching and keeps cached history when another workspace resource changes", async () => {
+  const versioned = { ...sync, revision: 2, at: 2000 };
+  const history = [{ id: "saved", role: "assistant", kind: "message", content: "历史消息", created_at: 1200, seq: 8 }];
+  fixture.api.mockImplementation(async (route: string) => {
+    if (route.startsWith("state?view=workspace")) return { ...state, historySeq: 8, sync: versioned };
+    if (route.startsWith("agents/messages")) return { sync: versioned, messages: history, streaming: [], hasMore: false };
+    return {};
+  });
+  await act(async () => {
+    sources.at(-1)!.emit("change", versioned);
+    await new Promise(resolve => setTimeout(resolve, 240));
+  });
+  const first = fixture.api.mock.calls.filter(([route]) => route.startsWith("agents/messages")).at(-1)?.[0] as string;
+  expect(first).toContain("view=window");
+  expect(first).toMatch(/[?&]at=\d+/);
+  expect(first).toMatch(/[?&](before|after)=\d+/);
+  fixture.api.mockClear();
+  await act(async () => {
+    sources.at(-1)!.emit("delta", { taskId: "streaming-1", offset: 0, text: "新" });
+    sources.at(-1)!.emit("delta", { taskId: "streaming-1", offset: 1, text: "回复" });
+    sources.at(-1)!.emit("change", versioned);
+    await new Promise(resolve => setTimeout(resolve, 240));
+  });
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?") || route.startsWith("agents/messages"))).toBe(false);
+  await act(async () => {
+    sources.at(-1)!.emit("change", { ...versioned, cursor: 2, revision: 3 });
+    await new Promise(resolve => setTimeout(resolve, 240));
+  });
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("state?"))).toBe(true);
+  expect(fixture.api.mock.calls.some(([route]) => route.startsWith("agents/messages"))).toBe(false);
 });
