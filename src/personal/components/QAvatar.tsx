@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { qCrop, qFrame, qSheets } from '../q-avatar-motion';
 import { SpriteTransition } from './SpriteTransition';
-import './q-avatar.css';
 
 const base = '/companions/blue-q/';
 let decoded: Promise<void> | undefined;

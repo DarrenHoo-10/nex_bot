@@ -1,0 +1,1029 @@
+/* ============================================================================
+   NexBot Design System — Tailwind CSS v4 + Bright-Blue Token Architecture
+   Cascade order: theme < base (Preflight) < legacy < components < utilities
+   ============================================================================ */
+
+@layer theme, base, legacy, components, utilities;
+
+@import "tailwindcss" source(".");
+@import "./agent.css" layer(legacy);
+@import "./workspace.css" layer(legacy);
+@import "./message-media.css" layer(legacy);
+@import "./identity.css" layer(legacy);
+@import "./settings.css" layer(legacy);
+@import "./home.css" layer(legacy);
+@import "../../electron/client/style.css" layer(legacy);
+@import "./atmosphere.css" layer(legacy);
+@import "./glass.css" layer(legacy);
+@import "./connectors.css" layer(legacy);
+@import "./provider-settings.css" layer(legacy);
+@import "./components/model-picker.css" layer(legacy);
+@import "./components/model-menu.css" layer(legacy);
+@import "./components/html-preview.css" layer(legacy);
+@import "./components/q-avatar.css" layer(legacy);
+@import "./finance-topics.css" layer(legacy);
+@import "./todo/todo.css" layer(legacy);
+
+@custom-variant dark (&:where([data-dark="1"], [data-dark="1"] *));
+
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-ink: var(--brand-ink);
+}
+
+/* ---------- 1. Unified NexBot Bright-Blue Tokens (Light & Dark) ---------- */
+@layer components {
+  :root,
+  :is(.workspace-stage, .rk-workspace)[data-dark="0"] {
+    color-scheme: light;
+
+    /* Brand: NexBot Bright Blue (aligned with nexbot-mark.svg #5285FF -> #2859DC) */
+    --brand: #3569e8;
+    --brand-hover: #2656d1;
+    --brand-active: #1e47b5;
+    --brand-ink: #2352ca;
+    --brand-soft: rgba(53, 105, 232, 0.10);
+    --brand-ring: rgba(53, 105, 232, 0.42);
+    --identity-accent: var(--brand);
+    --accent-blue: var(--brand);
+
+    /* Surfaces & Cool Sapphire Atmosphere */
+    --stage: #dce6f5;
+    --atmosphere-base: #edf3fc;
+    --atmosphere-blue: #c8defc;
+    --atmosphere-blush: #e2e9fb;
+    --atmosphere-light: #ffffff;
+    --swirl: rgba(255, 255, 255, 0.72);
+
+    --background: #f7faff;
+    --card: #ffffff;
+    --card-foreground: #151e2e;
+    --popover: rgba(255, 255, 255, 0.96);
+    --popover-foreground: #151e2e;
+    --sidebar: rgba(255, 255, 255, 0.74);
+    --sidebar-foreground: #151e2e;
+    --sidebar-border: rgba(24, 52, 108, 0.08);
+    --sidebar-accent: rgba(53, 105, 232, 0.08);
+    --sidebar-accent-foreground: #151e2e;
+    --drawer-surface: #f4f8fe;
+
+    --glass: rgba(255, 255, 255, 0.72);
+    --glass-strong: rgba(255, 255, 255, 0.90);
+    --glass-edge: rgba(255, 255, 255, 0.88);
+    --surface-highlight: rgba(255, 255, 255, 0.92);
+
+    /* Ink & Controls */
+    --foreground: #151e2e;
+    --secondary: #edf2f9;
+    --secondary-foreground: #3b4a62;
+    --muted: #eef3f9;
+    --muted-foreground: #627189;
+    --accent: #e5eefb;
+    --accent-foreground: #151e2e;
+    --primary: var(--brand);
+    --primary-foreground: #ffffff;
+    --link: var(--brand-ink);
+    --ring: var(--brand);
+
+    /* Borders & Washes */
+    --border: rgba(24, 52, 108, 0.08);
+    --border-strong: rgba(24, 52, 108, 0.14);
+    --border-hover: rgba(24, 52, 108, 0.22);
+    --input: rgba(24, 52, 108, 0.15);
+    --hair: rgba(24, 52, 108, 0.07);
+    --wash: rgba(53, 86, 148, 0.065);
+    --switch-track: #cbd5e4;
+    --overlay: rgba(15, 23, 42, 0.36);
+
+    /* Semantic Status Colors */
+    --success: #16a34a;
+    --success-ink: #15803d;
+    --warning: #d97706;
+    --warning-ink: #b45309;
+    --destructive: #dc2626;
+    --destructive-foreground: #ffffff;
+    --status-working: var(--brand);
+
+    /* Unified User Message Bubble (NexBot Bright Blue) */
+    --me-a: #4b81f8;
+    --me-b: #2d60e5;
+    --chat-user: #e8f0fe;
+    --chat-user-foreground: #1a3266;
+
+    /* Refined Single-Layer Shadows */
+    --shadow-card: 0 1px 2px rgba(20, 42, 86, 0.04), 0 6px 20px rgba(20, 42, 86, 0.055);
+    --shadow-float: 0 12px 36px rgba(20, 42, 86, 0.12), 0 2px 6px rgba(20, 42, 86, 0.05);
+    --surface-shadow: 0 2px 10px rgba(20, 42, 86, 0.045);
+    --floating-shadow: 0 14px 36px rgba(20, 42, 86, 0.11), 0 2px 6px rgba(20, 42, 86, 0.05);
+    --scrollbar: rgba(100, 122, 158, 0.38);
+    --scrollbar-hover: rgba(82, 104, 142, 0.62);
+
+    /* Radius Scale */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 22px;
+  }
+
+  :root[data-dark="1"],
+  :is(.workspace-stage, .rk-workspace)[data-dark="1"] {
+    color-scheme: dark;
+
+    /* Brand: Luminous Cobalt Blue for Dark Surfaces */
+    --brand: #5586ff;
+    --brand-hover: #6c98ff;
+    --brand-active: #4173f2;
+    --brand-ink: #8fb6ff;
+    --brand-soft: rgba(85, 134, 255, 0.16);
+    --brand-ring: rgba(110, 156, 255, 0.50);
+    --identity-accent: var(--brand);
+    --accent-blue: var(--brand);
+
+    /* Surfaces & Deep Sapphire Atmosphere */
+    --stage: #060b14;
+    --atmosphere-base: #0b1220;
+    --atmosphere-blue: #162b4f;
+    --atmosphere-blush: #1a2442;
+    --atmosphere-light: #15233a;
+    --swirl: rgba(118, 168, 255, 0.07);
+
+    --background: #0f1726;
+    --card: #172234;
+    --card-foreground: #ebf1fa;
+    --popover: rgba(22, 33, 50, 0.96);
+    --popover-foreground: #ebf1fa;
+    --sidebar: rgba(17, 25, 39, 0.80);
+    --sidebar-foreground: #ebf1fa;
+    --sidebar-border: rgba(176, 206, 255, 0.09);
+    --sidebar-accent: rgba(85, 134, 255, 0.14);
+    --sidebar-accent-foreground: #ebf1fa;
+    --drawer-surface: #141f30;
+
+    --glass: rgba(17, 26, 40, 0.78);
+    --glass-strong: rgba(24, 36, 54, 0.92);
+    --glass-edge: rgba(176, 206, 255, 0.12);
+    --surface-highlight: rgba(186, 214, 255, 0.10);
+
+    /* Ink & Controls */
+    --foreground: #ebf1fa;
+    --secondary: #1e2c42;
+    --secondary-foreground: #c0cde0;
+    --muted: #1b283c;
+    --muted-foreground: #8a9bb5;
+    --accent: #243550;
+    --accent-foreground: #ebf1fa;
+    --primary: var(--brand);
+    --primary-foreground: #ffffff;
+    --link: var(--brand-ink);
+    --ring: var(--brand);
+
+    /* Borders & Washes */
+    --border: rgba(176, 206, 255, 0.10);
+    --border-strong: rgba(176, 206, 255, 0.16);
+    --border-hover: rgba(176, 206, 255, 0.26);
+    --input: rgba(176, 206, 255, 0.18);
+    --hair: rgba(176, 206, 255, 0.08);
+    --wash: rgba(148, 184, 240, 0.09);
+    --switch-track: #374863;
+    --overlay: rgba(2, 6, 16, 0.68);
+
+    /* Semantic Status Colors */
+    --success: #4ade80;
+    --success-ink: #86efac;
+    --warning: #fbbf24;
+    --warning-ink: #fcd34d;
+    --destructive: #f87171;
+    --destructive-foreground: #ffffff;
+    --status-working: #7ba4ff;
+
+    /* Unified User Message Bubble (Rich Saturated Cobalt) */
+    --me-a: #4678f2;
+    --me-b: #2b59d4;
+    --chat-user: #1e3357;
+    --chat-user-foreground: #ebf1fa;
+
+    /* Shadows */
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.30), 0 8px 24px rgba(0, 0, 0, 0.28);
+    --shadow-float: 0 16px 44px rgba(0, 0, 0, 0.48), 0 2px 6px rgba(0, 0, 0, 0.30);
+    --surface-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
+    --floating-shadow: 0 14px 36px rgba(0, 0, 0, 0.44), 0 2px 6px rgba(0, 0, 0, 0.24);
+    --scrollbar: rgba(130, 158, 200, 0.32);
+    --scrollbar-hover: rgba(154, 180, 218, 0.54);
+  }
+
+  /* ---------- 2. Base Typography & Controls ---------- */
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: var(--background);
+    color: var(--foreground);
+  }
+
+  .rk-workspace {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    color: var(--foreground);
+  }
+
+  .rk-workspace button:focus-visible,
+  .rk-workspace input:focus-visible,
+  .rk-workspace textarea:focus-visible,
+  .rk-workspace select:focus-visible,
+  .rk-workspace summary:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+
+  .rk-workspace .primary {
+    background: var(--brand);
+    color: #ffffff;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: 9px 16px;
+    font-size: 13px;
+    font-weight: 550;
+    box-shadow: 0 1px 2px rgba(30, 64, 175, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.20);
+  }
+  .rk-workspace .primary:hover:not(:disabled) {
+    background: var(--brand-hover);
+    opacity: 1;
+  }
+  .rk-workspace .primary:active:not(:disabled) {
+    background: var(--brand-active);
+  }
+
+  .rk-workspace .danger {
+    background: var(--destructive);
+    color: #ffffff;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: 9px 16px;
+    font-size: 13px;
+    font-weight: 550;
+  }
+
+  /* ---------- 3. Sidebar & Navigation Polish ---------- */
+  .rk-workspace .contact-sidebar {
+    background: var(--glass);
+    border-right: 1px solid var(--sidebar-border);
+  }
+
+  .rk-workspace .workspace-brand strong {
+    font-size: 15.5px;
+    font-weight: 680;
+    letter-spacing: -0.02em;
+  }
+
+  .rk-workspace .sidebar-search {
+    height: 36px;
+    border-radius: var(--radius-md);
+    background: var(--wash);
+    border: 1px solid transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .rk-workspace .sidebar-search:hover {
+    background: color-mix(in srgb, var(--wash) 130%, transparent);
+  }
+  .rk-workspace .sidebar-search:focus-within {
+    background: var(--card);
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-soft);
+  }
+  .rk-workspace .sidebar-search input {
+    font-size: 13px;
+  }
+
+  .rk-workspace .contact-list-label,
+  .rk-workspace .sidebar-section-title {
+    font-size: 12px;
+    font-weight: 550;
+    color: var(--muted-foreground);
+  }
+
+  .rk-workspace .contact-item {
+    border-radius: var(--radius-md);
+    padding: 9px 10px;
+    border: 1px solid transparent;
+    transition: background-color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+  }
+  .rk-workspace .contact-item:hover {
+    background: var(--wash);
+  }
+  .rk-workspace .contact-item.is-selected {
+    background: var(--card);
+    border-color: var(--border);
+    box-shadow: 0 2px 8px rgba(20, 42, 86, 0.06);
+  }
+  .rk-workspace[data-dark="1"] .contact-item.is-selected {
+    background: rgba(85, 134, 255, 0.14);
+    border-color: rgba(116, 160, 255, 0.24);
+    box-shadow: none;
+  }
+
+  .rk-workspace .contact-item.todo-entry.is-selected {
+    color: var(--brand-ink);
+  }
+  .rk-workspace .contact-item.todo-entry.is-selected svg {
+    color: var(--brand);
+  }
+
+  .rk-workspace .contact-item-heading strong {
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+  .rk-workspace .contact-item-heading time {
+    font-size: 11.5px;
+  }
+  .rk-workspace .contact-item-preview {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .rk-workspace .contact-item-preview .is-working {
+    color: var(--brand-ink);
+    font-weight: 500;
+  }
+
+  /* Unread badge in NexBot Bright Blue */
+  .rk-workspace .contact-unread {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    background: var(--brand);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .app.rk-workspace[data-left="closed"] .contact-item.is-selected::before {
+    background: var(--brand);
+  }
+  .app.rk-workspace[data-left="closed"] .contact-item[data-unread]::after {
+    background: var(--brand);
+  }
+
+  /* Account Footer & Avatar */
+  .rk-workspace .account-avatar {
+    background: linear-gradient(145deg, #5285ff 0%, #2859dc 100%);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(40, 89, 220, 0.25);
+  }
+  .rk-workspace .workspace-account-name strong {
+    font-size: 13px;
+    font-weight: 550;
+  }
+  .rk-workspace .account-menu {
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-float);
+  }
+  .rk-workspace .account-menu button.is-selected {
+    background: var(--brand-soft);
+    color: var(--brand-ink);
+    font-weight: 550;
+  }
+  .rk-workspace .account-menu button.is-selected svg {
+    color: var(--brand);
+  }
+
+  /* ---------- 4. Chat Header, Messages & Unified NexBot Blue Bubbles ---------- */
+  .rk-workspace .contact-heading.who {
+    background: var(--glass-strong);
+    border: 1px solid var(--border);
+    box-shadow: var(--surface-shadow);
+  }
+  .rk-workspace .contact-heading.who > span {
+    font-size: 12px;
+  }
+  .rk-workspace .contact-heading.who > span.active-phrase {
+    color: var(--brand-ink);
+  }
+
+  /* Override glass.css --me-a/--me-b so user bubbles are ALWAYS unified NexBot Bright Blue */
+  .app.rk-workspace,
+  .app.rk-workspace[data-dark="0"] {
+    --me-a: #4b81f8;
+    --me-b: #2d60e5;
+  }
+  .app.rk-workspace[data-dark="1"] {
+    --me-a: #4678f2;
+    --me-b: #2b59d4;
+  }
+
+  .rk-workspace .message .bubble {
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--card);
+    color: var(--card-foreground);
+    box-shadow: var(--shadow-card);
+    padding: 11px 16px;
+  }
+  .rk-workspace .message.assistant.group-end .bubble,
+  .rk-workspace .message.assistant.streaming .bubble,
+  .rk-workspace .message.assistant.processing-message .bubble {
+    border-bottom-left-radius: 6px;
+  }
+  .rk-workspace .message.user .bubble {
+    border: 0;
+    border-radius: 18px 18px 6px 18px;
+    color: #ffffff;
+    background: linear-gradient(155deg, var(--me-a) 0%, var(--me-b) 100%);
+    box-shadow: 0 5px 16px rgba(45, 96, 229, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+  .rk-workspace[data-dark="1"] .message.user .bubble {
+    box-shadow: 0 6px 20px rgba(20, 54, 148, 0.40), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  }
+
+  /* Document card & Tool pill aligned with NexBot Bright Blue */
+  .rk-workspace .doc {
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    box-shadow: var(--shadow-card);
+  }
+  .rk-workspace .doc-outline button {
+    font-size: 12px;
+    padding: 4px 11px;
+  }
+  .rk-workspace .doc-outline button:hover {
+    background: var(--brand-soft);
+    color: var(--brand-ink);
+  }
+  .rk-workspace .tool-chips > span {
+    color: var(--brand);
+  }
+  .rk-workspace .message-meta,
+  .rk-workspace .message-meta time,
+  .rk-workspace .day-divider {
+    font-size: 12px;
+  }
+  .rk-workspace .message-tools button {
+    font-size: 12px;
+  }
+
+  /* Restore & refine Markdown typography (counteracting Tailwind v4 Preflight resets) */
+  .rk-workspace .markdown {
+    line-height: 1.7;
+  }
+  .rk-workspace .markdown > :first-child {
+    margin-top: 0;
+  }
+  .rk-workspace .markdown > :last-child {
+    margin-bottom: 0;
+  }
+  .rk-workspace .markdown p {
+    margin: 0.45em 0;
+  }
+  .rk-workspace .markdown ul {
+    list-style-type: disc;
+    padding-left: 1.35em;
+    margin: 0.45em 0;
+  }
+  .rk-workspace .markdown ol {
+    list-style-type: decimal;
+    padding-left: 1.35em;
+    margin: 0.45em 0;
+  }
+  .rk-workspace .markdown ul ul {
+    list-style-type: circle;
+  }
+  .rk-workspace .markdown ul ul ul {
+    list-style-type: square;
+  }
+  .rk-workspace .markdown li {
+    margin: 0.22em 0;
+    line-height: 1.7;
+  }
+  .rk-workspace .markdown li::marker {
+    color: var(--muted-foreground);
+  }
+  .rk-workspace .markdown ul.contains-task-list {
+    list-style-type: none;
+    padding-left: 0;
+  }
+  .rk-workspace .markdown .task-list-item {
+    list-style-type: none;
+  }
+  .rk-workspace .markdown h1,
+  .rk-workspace .markdown h2,
+  .rk-workspace .markdown h3,
+  .rk-workspace .markdown h4 {
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    line-height: 1.4;
+    margin: 0.85em 0 0.35em;
+  }
+  .rk-workspace .markdown h1 { font-size: 1.22em; }
+  .rk-workspace .markdown h2 { font-size: 1.12em; }
+  .rk-workspace .markdown h3 { font-size: 1.02em; }
+  .rk-workspace .markdown :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.87em;
+    padding: 1px 6px;
+    border-radius: 6px;
+    background: var(--wash);
+    color: var(--foreground);
+  }
+  .rk-workspace .markdown pre {
+    margin: 0.65em 0;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: var(--secondary);
+    border: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .rk-workspace .markdown pre code {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .rk-workspace .markdown blockquote {
+    margin: 0.6em 0;
+    padding: 2px 0 2px 12px;
+    border-left: 3px solid var(--border-strong);
+    color: var(--secondary-foreground);
+  }
+  .rk-workspace .markdown hr {
+    margin: 0.85em 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+  }
+  .rk-workspace .markdown a:not(.file-chip) {
+    color: var(--link);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .rk-workspace .message.user .markdown :not(pre) > code {
+    background: rgba(255, 255, 255, 0.22);
+    color: #ffffff;
+  }
+  .rk-workspace .message.user .markdown li::marker {
+    color: rgba(255, 255, 255, 0.80);
+  }
+  .rk-workspace .message.user .markdown a:not(.file-chip) {
+    color: #ffffff;
+  }
+  .rk-workspace .message.user .markdown blockquote {
+    border-left-color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.90);
+  }
+
+  /* Avatar Status Badges Aligned with Semantic Tokens */
+  .rk-workspace .agent-glyph .companion-badge {
+    background: var(--success);
+  }
+  .rk-workspace .agent-glyph .state-approval {
+    background: var(--warning);
+  }
+  .rk-workspace .agent-glyph .state-failed {
+    background: var(--destructive);
+  }
+  .rk-workspace .agent-glyph .state-offline,
+  .rk-workspace .agent-glyph .state-paused {
+    background: var(--muted-foreground);
+  }
+
+  /* ---------- 5. Composer Capsule & Bright-Blue Send CTA ---------- */
+  .rk-workspace .composer.conversation-input {
+    background: var(--glass-strong);
+    border: 1px solid var(--border-strong);
+    border-radius: 24px;
+    box-shadow: 0 4px 20px rgba(20, 42, 86, 0.07), inset 0 1px 0 var(--surface-highlight);
+    transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  }
+  .rk-workspace .composer.conversation-input:focus-within {
+    border-color: var(--brand);
+    box-shadow: 0 6px 24px rgba(45, 96, 229, 0.13), 0 0 0 3px var(--brand-soft);
+  }
+
+  .rk-workspace .composer .send {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+    border-radius: 9999px;
+    background: var(--brand);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(45, 96, 229, 0.28);
+    transition: background-color 0.14s ease, transform 0.12s ease, box-shadow 0.14s ease;
+  }
+  .rk-workspace .composer .send:hover:not(:disabled) {
+    background: var(--brand-hover);
+    opacity: 1;
+    box-shadow: 0 4px 12px rgba(45, 96, 229, 0.35);
+  }
+  .rk-workspace .composer .send:active:not(:disabled) {
+    transform: scale(0.95);
+  }
+  .rk-workspace .composer .send:disabled {
+    background: var(--wash);
+    color: var(--muted-foreground);
+    box-shadow: none;
+    opacity: 0.72;
+  }
+  .rk-workspace .composer .send.stop {
+    background: var(--foreground);
+    color: var(--background);
+    box-shadow: none;
+  }
+
+  .rk-workspace .composer-add {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+    border-radius: 9999px;
+  }
+  .rk-workspace .composer-popover {
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-float);
+  }
+  .rk-workspace .composer-menu-heading {
+    font-size: 12px;
+  }
+
+  /* ---------- 6. Right Companion Inspector ---------- */
+  .rk-workspace .inspector.ds-drawer {
+    background: var(--glass);
+    border-left: 1px solid var(--sidebar-border);
+  }
+  .rk-workspace .hero-halo::before {
+    background: radial-gradient(circle, rgba(53, 105, 232, 0.20), transparent 68%);
+  }
+  .rk-workspace[data-dark="1"] .hero-halo::before {
+    background: radial-gradient(circle, rgba(85, 134, 255, 0.24), transparent 68%);
+  }
+  .rk-workspace .inspector-tabs {
+    border-radius: var(--radius-md);
+    padding: 3px;
+    background: var(--wash);
+  }
+  .rk-workspace .inspector-tabs button,
+  .rk-workspace .inspector-tabs button.selected {
+    border-radius: 9px;
+    font-size: 12.5px;
+  }
+  .rk-workspace .inspector-tabs button.selected {
+    background: var(--card);
+    color: var(--brand-ink);
+    font-weight: 600;
+    box-shadow: 0 1px 4px rgba(20, 42, 86, 0.08);
+  }
+  .rk-workspace .inspector-content h2,
+  .rk-workspace .ds-field-label {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .rk-workspace .ds-kv-row {
+    font-size: 12.5px;
+  }
+  .rk-workspace .ds-pill-btn {
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--secondary);
+    color: var(--foreground);
+  }
+  .rk-workspace .ds-pill-btn:hover {
+    background: var(--brand-soft);
+    color: var(--brand-ink);
+  }
+  .rk-workspace .ds-usage-grid {
+    border-radius: var(--radius-md);
+    padding: 12px 10px;
+    background: var(--secondary);
+  }
+  .rk-workspace .ds-usage-grid small {
+    font-size: 11.5px;
+  }
+  .rk-workspace .ds-usage-grid strong {
+    font-size: 14px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .rk-workspace .routine-list {
+    border-radius: var(--radius-lg);
+    background: transparent;
+    gap: 10px;
+  }
+  .rk-workspace .routine-row {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--surface-shadow);
+  }
+  .rk-workspace .routine-ended,
+  .rk-workspace .routine-next,
+  .rk-workspace .routine-row-actions button {
+    font-size: 12px;
+  }
+
+  /* Fix broken selector typo from legacy identity.css & align avatar picker accents */
+  .routine-detail .modal-heading h2 {
+    font-size: 20px;
+    letter-spacing: -0.02em;
+    line-height: 1.35;
+  }
+  .rk-workspace .graphic-avatar-option[aria-pressed="true"],
+  .rk-workspace .identity-shapes button[aria-pressed="true"],
+  .rk-workspace .identity-presets button[aria-pressed="true"] {
+    border-color: var(--brand);
+    background: var(--brand-soft);
+  }
+
+  /* ---------- 7. Settings, Model Providers, Connectors & Devices ---------- */
+  .rk-workspace[data-page="settings"] > main {
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+  }
+  .rk-workspace[data-page="settings"] .preferences-page {
+    padding: 28px clamp(24px, 4.5vw, 60px) 56px;
+  }
+  .rk-workspace .preferences-layout {
+    grid-template-columns: 188px minmax(0, 1fr);
+    gap: 40px;
+  }
+  .rk-workspace .preferences-nav button {
+    border-radius: var(--radius-md);
+    font-size: 13.5px;
+    font-weight: 500;
+    min-height: 40px;
+    padding: 9px 12px;
+  }
+  .rk-workspace .preferences-nav button[aria-current="page"] {
+    background: var(--brand-soft);
+    color: var(--brand-ink);
+    font-weight: 600;
+    box-shadow: none;
+  }
+  .rk-workspace .preferences-nav button[aria-current="page"] svg {
+    color: var(--brand);
+  }
+
+  .rk-workspace .preferences-panel-heading {
+    padding: 0 0 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .rk-workspace .preferences-panel-heading h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+  .rk-workspace .preferences-section {
+    padding: 22px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .rk-workspace .preferences-page .field input,
+  .rk-workspace .preferences-page .field select,
+  .rk-workspace .core-memory textarea {
+    border-color: var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--background);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .rk-workspace .preferences-page .field input:focus,
+  .rk-workspace .preferences-page .field select:focus,
+  .rk-workspace .core-memory textarea:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-soft);
+  }
+
+  /* Fix disabled cursor bug (settings.css had cursor: wait for all disabled buttons!) */
+  .rk-workspace .preferences-page button:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+  }
+  .rk-workspace .preferences-page fieldset:disabled {
+    cursor: progress;
+  }
+
+  .rk-workspace .preferences-page button.primary,
+  .rk-workspace .preferences-actions button.primary,
+  .rk-workspace .provider-model-editor-actions button.primary {
+    background: var(--brand);
+    border-color: transparent;
+    color: #ffffff;
+    border-radius: var(--radius-md);
+  }
+  .rk-workspace .preferences-page button.primary:hover:not(:disabled),
+  .rk-workspace .preferences-actions button.primary:hover:not(:disabled),
+  .rk-workspace .provider-model-editor-actions button.primary:hover:not(:disabled) {
+    background: var(--brand-hover);
+  }
+  .rk-workspace .preferences-page .ds-current-pill {
+    padding: 2px 8px;
+    border-radius: 9999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--brand-ink);
+    background: var(--brand-soft);
+  }
+
+  /* Unified NexBot Bright Blue Switches across Settings & Model Providers */
+  .rk-workspace .preferences-toggle input {
+    background: var(--switch-track);
+  }
+  .rk-workspace .preferences-toggle input:checked {
+    background: var(--brand);
+  }
+  .provider-switch span {
+    background: var(--switch-track);
+  }
+  .provider-switch input:checked + span {
+    background: var(--brand);
+  }
+
+  /* Fix ProviderSettings model list layout, field spacing & active/disabled contrast bug */
+  .provider-layout {
+    grid-template-columns: minmax(210px, 240px) minmax(0, 1fr);
+    border-color: var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--card);
+  }
+  @media (max-width: 760px) {
+    .provider-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+  .provider-list {
+    border-right-color: var(--border);
+    background: var(--background);
+  }
+  .provider-dot.on {
+    background: var(--success);
+  }
+  .rk-workspace .provider-form .field {
+    margin: 0 0 18px;
+  }
+  .rk-workspace .provider-form .field:last-of-type {
+    margin-bottom: 18px;
+  }
+  .rk-workspace .provider-form .preferences-actions {
+    margin-top: 20px;
+  }
+  .rk-workspace .provider-list button[aria-current="true"] {
+    background: var(--card);
+    border-color: var(--border-strong);
+    color: var(--brand-ink);
+    box-shadow: var(--surface-shadow);
+  }
+  .provider-list small,
+  .provider-tag.accent {
+    background: var(--brand-soft);
+    color: var(--brand-ink);
+    font-size: 11.5px;
+    font-weight: 550;
+  }
+  .provider-model-label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .provider-model-name {
+    color: var(--foreground);
+    font-size: 13.5px;
+    font-weight: 550;
+  }
+  .provider-model-rows > li.off .provider-model-name {
+    color: var(--muted-foreground);
+    font-weight: 450;
+  }
+  .provider-model-id {
+    font-size: 11.5px;
+  }
+  .provider-tag {
+    font-size: 11.5px;
+    border-color: var(--border-strong);
+  }
+
+  /* Unified Online Status Dot on Devices Page (Green, matching Sidebar Account Dot) */
+  .device-presence i[data-online="true"] {
+    background: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent);
+  }
+  .signed-in-device {
+    border-bottom-color: var(--border);
+  }
+
+  /* Model Menu Reasoning Slider — Harmonized NexBot Blue Gradient */
+  .model-menu {
+    border-color: var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-float);
+  }
+  .model-menu-check {
+    color: var(--brand);
+  }
+  .model-menu-effort input[type="range"]::-webkit-slider-runnable-track {
+    background: linear-gradient(90deg, #8fb4ff, var(--brand)) 0 0 / var(--fill, 0%) 100% no-repeat, var(--wash);
+  }
+  .model-menu-effort input[type="range"]::-moz-range-progress {
+    background: linear-gradient(90deg, #8fb4ff, var(--brand));
+  }
+  .model-menu-stops,
+  .model-menu-tag {
+    font-size: 11.5px;
+  }
+
+  /* ---------- 8. Todo Workspace Harmonization (NexBot Bright Blue, Zero Teal Clashes) ---------- */
+  .todo-app .todo-content {
+    background: var(--card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+  }
+  .todo-app .glow-button {
+    background: linear-gradient(155deg, #4b81f8 0%, #2d60e5 100%);
+    color: #ffffff;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: 9px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: 0 2px 10px rgba(45, 96, 229, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+  .todo-app .glow-button::before,
+  .todo-app .glow-button::after {
+    display: none;
+  }
+  .todo-app .glow-button:hover:not(:disabled) {
+    background: linear-gradient(155deg, #3e74f4 0%, #2453d1 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 5px 16px rgba(45, 96, 229, 0.30), 0 0 0 3px var(--brand-soft);
+  }
+  .todo-app .todo-detail-footer .glow-button {
+    border-radius: var(--radius-md);
+  }
+  .todo-app .todo-send {
+    background: var(--brand);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(45, 96, 229, 0.26);
+  }
+  .todo-app .todo-send:hover:not(:disabled) {
+    background: var(--brand-hover);
+  }
+  .todo-app .todo-secondary,
+  .todo-app .calendar-arrow,
+  .todo-app .calendar-today {
+    border-radius: var(--radius-md);
+    background: var(--card);
+    border: 1px solid var(--border-strong);
+    box-shadow: 0 1px 2px rgba(20, 42, 86, 0.04);
+  }
+  .todo-app .todo-secondary:hover,
+  .todo-app .calendar-arrow:hover,
+  .todo-app .calendar-today:hover {
+    background: var(--secondary);
+    transform: none;
+    box-shadow: none;
+  }
+  .todo-app .glass-switch {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--wash);
+    box-shadow: none;
+  }
+  .todo-app .glass-switch-indicator {
+    border-radius: 9px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 4px rgba(20, 42, 86, 0.08);
+  }
+  .todo-app .glass-switch button[aria-pressed="true"] {
+    color: var(--brand-ink);
+  }
+  .todo-app .glass-switch small {
+    font-size: 11.5px;
+  }
+
+  /* ---------- 9. Mobile Viewport Polish ---------- */
+  @media (max-width: 720px) {
+    .rk-workspace .transcript {
+      scrollbar-width: none;
+    }
+    .rk-workspace .transcript::-webkit-scrollbar {
+      display: none;
+    }
+    .rk-workspace[data-page="settings"] > main {
+      border-radius: 0;
+      border-width: 0;
+    }
+  }
+}

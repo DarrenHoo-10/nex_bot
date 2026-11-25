@@ -4,7 +4,6 @@ import type { CompanionState } from '../avatars/appearance';
 import sprites from '../avatars/character-sprites.json';
 import { castFraming } from '../avatars/cast-framing';
 import { SpriteTransition } from './SpriteTransition';
-import './q-avatar.css';
 
 const base = '/companions/cast/';
 const decoded = new Map<string,Promise<void>>();

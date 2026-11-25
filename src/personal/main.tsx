@@ -3,15 +3,7 @@ import { AgentDesktop } from "./AgentDesktop";
 import { LoginGate } from "./auth";
 import { api } from "./api";
 import { ErrorBoundary } from "./ErrorBoundary";
-import "./agent.css";
-import "./workspace.css";
-import "./message-media.css";
-import "./identity.css";
-import "./settings.css";
-import "./home.css";
-import "../../electron/client/style.css";
-import "./atmosphere.css";
-import "./glass.css";
+import "./theme.css";
 async function boot() {
  const token = new URLSearchParams(location.hash.slice(1)).get("token");
  if (token) { await api("session", { token }); history.replaceState(null, "", location.pathname); }

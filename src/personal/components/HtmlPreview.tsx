@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { HTML_PREVIEW_LIMIT, previewHeight } from '../../../shared/html-preview';
-import './html-preview.css';
 
 export function HtmlPreview({ source, pending, complete }: { source: string; pending: boolean; complete: boolean }) {
   const [run, setRun] = useState(0), [stopped, setStopped] = useState(false), [fullscreen, setFullscreen] = useState(false);

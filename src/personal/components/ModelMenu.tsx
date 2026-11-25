@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { listConnectionModels, modelName, reasoningLabels, resolveReasoning, type Connection, type ReasoningChoice } from "../api";
-import "./model-menu.css";
 
 /** What an assistant uses: a provider, a model there ("" = the provider's default model) and its reasoning effort. */
 export interface ModelChoice { connectionId: string; model: string; reasoning: ReasoningChoice | null }

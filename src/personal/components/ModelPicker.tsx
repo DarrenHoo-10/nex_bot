@@ -1,6 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, ChevronDown, Search, Square } from 'lucide-react';
-import './model-picker.css';
 
 type Catalog = { models: string[]; hasMore: boolean };
 export function ModelList({ models, value, selected, onSelect, onBulk, emptyLabel, allowCustom = false, autoFocus = false }: {

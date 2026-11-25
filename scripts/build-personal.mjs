@@ -1,6 +1,7 @@
 import { build } from "esbuild";
 import { build as viteBuild } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync, cpSync, realpathSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -35,7 +36,7 @@ if (shellOnly) { console.log("Desktop client runtime prepared"); process.exit(0)
 const serverOutput = path.join(output, "server");
 mkdirSync(path.join(serverOutput, "core"), { recursive: true });
 if (process.platform === "win32") await import("./build-personal-computer.mjs");
-await viteBuild({ configFile: false, root, plugins: [react()], build: { outDir: path.join(serverOutput, "ui"), emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
+await viteBuild({ configFile: false, root, plugins: [react(), tailwindcss()], build: { outDir: path.join(serverOutput, "ui"), emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
 copyFileSync(path.join(serverOutput, "ui", "personal.html"), path.join(serverOutput, "ui", "index.html"));
 writeFileSync(path.join(serverOutput, "ui", "html-preview.html"), htmlPreviewShell);
 // The Feishu SDK reads its own package.json relative to its CommonJS entry at load time.

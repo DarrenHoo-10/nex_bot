@@ -4,7 +4,6 @@ import { api, str, type ConnectorView, type State } from "./api";
 import { FeishuCard } from "./FeishuCard";
 import { GmailConnect } from "./GmailConnect";
 import gmailIcon from "./assets/gmail.png";
-import "./connectors.css";
 
 const gmailTools = [
   { name: "gmail.search", label: "搜索邮件", description: "按关键词、发件人和时间查找邮件。" },

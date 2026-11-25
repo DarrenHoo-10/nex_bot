@@ -1,6 +1,7 @@
 import { build } from "esbuild";
 import { build as viteBuild } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { createRequire } from "node:module";
 import { cpSync, mkdirSync, copyFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -31,7 +32,7 @@ copyFileSync(path.join(root, "LICENSE"), path.join(output, "LICENSE.txt"));
 copyFileSync(pdfRequire.resolve("@napi-rs/canvas/LICENSE"), path.join(output, "canvas-LICENSE.txt"));
 // A complete client uses the matching UI instead of waiting for a server rollout.
 const ui = path.join(root, "dist-personal/client-ui");
-await viteBuild({ configFile: false, root, plugins: [react()], build: { outDir: ui, emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
+await viteBuild({ configFile: false, root, plugins: [react(), tailwindcss()], build: { outDir: ui, emptyOutDir: true, rollupOptions: { input: path.join(root, "personal.html") } } });
 copyFileSync(path.join(ui, "personal.html"), path.join(ui, "index.html"));
 writeFileSync(path.join(ui, "html-preview.html"), htmlPreviewShell());
 console.log("Client executor and matching UI prepared:", output);

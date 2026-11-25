@@ -28,7 +28,7 @@ export function SettingsPage({ state, financeBotId, run, category, onCategory, r
     { id: "about", label: "关于", icon: Info },
   ];
   return <div className="preferences-page">
-    <div className="preferences-heading"><h1>设置</h1></div>
+    <h1 className="sr-only">设置</h1>
     <div className="preferences-layout">
       <nav className="preferences-nav" aria-label="设置分类">{categories.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={category === id ? "page" : undefined} aria-controls={`${sectionId}-${id}`} onClick={() => onCategory(id)}><Icon size={17}/><span>{label}</span></button>)}</nav>
       <div className="preferences-content">

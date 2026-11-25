@@ -5,10 +5,13 @@
  * the real height as `--nex-vh`; this rewrites the stylesheet to use it.
  */
 export function rewriteViewportUnits(css) {
-  return css.replace(/(\d*\.?\d+)(?:d|s|l)?vh\b/g, "calc(var(--nex-vh, 1vh) * $1)");
+  // Rewrite viewport height units only in declaration values (never inside escaped class selectors like `.max-h-\[90vh\]`).
+  return css.replace(/(:[^;{}]+?)([;{}])/g, (_match, value, end) =>
+    value.replace(/(?<![-\w\\])(\d*\.?\d+)(?:d|s|l)?vh\b/g, "calc(var(--nex-vh, 1vh) * $1)") + end,
+  );
 }
 
-/** Vite plugin: runs before Vite's own CSS handling so every imported stylesheet is covered. */
+/** Vite plugin: rewrites viewport height units in both source CSS and bundled Tailwind utilities. */
 export function androidViewportUnits() {
   return {
     name: "android-viewport-units",
@@ -17,6 +20,13 @@ export function androidViewportUnits() {
       if (!id.split("?")[0].endsWith(".css")) return null;
       const rewritten = rewriteViewportUnits(code);
       return rewritten === code ? null : { code: rewritten, map: null };
+    },
+    generateBundle(_options, bundle) {
+      for (const asset of Object.values(bundle)) {
+        if (asset.type === "asset" && asset.fileName.endsWith(".css") && typeof asset.source === "string") {
+          asset.source = rewriteViewportUnits(asset.source);
+        }
+      }
     },
   };
 }
