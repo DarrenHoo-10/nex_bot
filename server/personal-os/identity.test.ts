@@ -31,8 +31,8 @@ async function request(app: Awaited<ReturnType<typeof createPersonalApp>>, route
   return { status: response.status, body: result, cookie: cookie?.split(";", 1)[0], maxAge: Number(cookie?.match(/Max-Age=(\d+)/)?.[1]) };
 }
 async function bootstrap(app: Awaited<ReturnType<typeof createPersonalApp>>) { const result = await request(app, "session", { token: "synthetic-bootstrap" }); return { Cookie: result.cookie! }; }
-async function login(app: Awaited<ReturnType<typeof createPersonalApp>>, headers: Record<string, string> = {}, account = "owner@example.test", password = " synthetic password ") {
-  const start = await request(app, "auth/start", { account, name: "合成设备" }, headers);
+async function login(app: Awaited<ReturnType<typeof createPersonalApp>>, headers: Record<string, string> = {}, account = "owner@example.test", password = " synthetic password ", client?: { name?: string; clientInstanceId: string }) {
+  const start = await request(app, "auth/start", { account, name: "合成设备", ...client }, headers);
   if (start.status !== 200) return start;
   return request(app, "auth/respond", { ...start.body, password }, headers);
 }
@@ -80,6 +80,30 @@ describe("mandatory built-in account login", () => {
     const result = await login(app, {}, "other@example.test"); expect(result.status).toBe(403);
     expect(app.store.get("SELECT subject FROM external_identities")!.subject).toBe("synthetic-owner-uid");
     expect([...provider.sessions.values()].filter((s) => s.subject === "synthetic-other-uid" && s.active)).toHaveLength(0);
+  });
+  it("replaces the previous login for the same installation while preserving same-name and legacy logins", async () => {
+    const { app } = await fixture();
+    const legacy = await login(app, await bootstrap(app));
+    const client = { clientInstanceId: "a1234567-1234-4234-8234-123456789012" };
+    const first = await login(app, {}, undefined, undefined, client);
+    const other = await login(app, {}, undefined, undefined, { clientInstanceId: "b1234567-1234-4234-8234-123456789012" });
+    const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+    expect((await login(app, {}, undefined, "wrong", client)).status).toBe(401);
+    expect((await request(app, "auth/status", undefined, bearer(first.body.token))).body).toMatchObject({ authenticated: true });
+
+    const next = await login(app, {}, undefined, undefined, { ...client, name: "重命名设备" });
+    expect(next.status).toBe(200);
+    expect(next.body.sessionId).not.toBe(first.body.sessionId);
+    expect((await request(app, "state", undefined, bearer(first.body.token))).status).toBe(401);
+    expect((await request(app, "state", undefined, bearer(other.body.token))).status).toBe(200);
+
+    const result = await request(app, "clients", undefined, bearer(next.body.token));
+    expect(result.body).toMatchObject({ currentSessionId: next.body.sessionId });
+    const { sessions } = result.body as unknown as { sessions: Array<{ session_id: string; name: string }> };
+    expect(sessions.map((session) => session.session_id)).toEqual(expect.arrayContaining([legacy.body.sessionId, other.body.sessionId, next.body.sessionId]));
+    expect(sessions).toHaveLength(3);
+    expect(sessions).toContainEqual(expect.objectContaining({ session_id: next.body.sessionId, name: "重命名设备" }));
+    expect(sessions.every((session) => !("client_instance_hash" in session))).toBe(true);
   });
   it("consumes failed attempts and forbids challenge replay or forged binding without calling upstream", async () => {
     const { app, provider } = await fixture(), headers = await bootstrap(app);

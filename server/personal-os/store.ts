@@ -621,6 +621,12 @@ CREATE TABLE personal_connector_deliveries (
       this.db.exec(schema);
       this.insert("schema_migrations", { version: 58, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=59")) this.transaction(() => {
+      const schema = `ALTER TABLE client_sessions ADD COLUMN client_instance_hash TEXT;
+        CREATE INDEX client_sessions_instance ON client_sessions(client_instance_hash) WHERE client_instance_hash IS NOT NULL;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 59, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }

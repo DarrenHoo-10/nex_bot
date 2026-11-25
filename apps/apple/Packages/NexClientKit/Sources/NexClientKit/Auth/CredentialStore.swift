@@ -17,9 +17,14 @@ public struct StoredCredential: Codable, Sendable, Equatable {
 
 /// Storage for one login record (one profile).
 public protocol CredentialStore: Sendable {
+    func clientInstanceId() throws -> String?
     func load() throws -> StoredCredential?
     func save(_ credential: StoredCredential) throws
     func delete() throws
+}
+
+public extension CredentialStore {
+    func clientInstanceId() throws -> String? { nil }
 }
 
 public struct KeychainError: Error, LocalizedError, Sendable {
@@ -40,16 +45,35 @@ public struct KeychainCredentialStore: CredentialStore {
     }
 
     public func load() throws -> StoredCredential? {
+        guard let data = try loadData(query) else { return nil }
+        return try? JSONDecoder().decode(StoredCredential.self, from: data)
+    }
+
+    public func clientInstanceId() throws -> String? {
+        var instanceQuery = query
+        instanceQuery[kSecAttrService as String] = Self.service + ".installation"
+        if let data = try loadData(instanceQuery), let id = String(data: data, encoding: .utf8), UUID(uuidString: id) != nil {
+            return id
+        }
+        let id = UUID().uuidString
+        try saveData(Data(id.utf8), query: instanceQuery)
+        return id
+    }
+
+    private func loadData(_ query: [String: Any]) throws -> Data? {
         var q = query; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw KeychainError(status: status) }
-        return try? JSONDecoder().decode(StoredCredential.self, from: data)
+        return data
     }
 
     public func save(_ credential: StoredCredential) throws {
-        let data = try JSONEncoder().encode(credential)
+        try saveData(JSONEncoder().encode(credential), query: query)
+    }
+
+    private func saveData(_ data: Data, query: [String: Any]) throws {
         let update = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if update == errSecSuccess { return }
         guard update == errSecItemNotFound else { throw KeychainError(status: update) }

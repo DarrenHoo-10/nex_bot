@@ -128,7 +128,7 @@ struct TaskBody: Encodable { let taskId: String }
 struct ApprovalBody: Encodable { let id: String; let hash: String; let allow: Bool; let remember: Bool }
 struct RevokeApprovalRuleBody: Encodable { let id: String; let botId: String }
 struct SessionBody: Encodable { let token: String }
-struct StartBody: Encodable { let account: String; let name: String }
+struct StartBody: Encodable { let account: String; let name: String; let clientInstanceId: String? }
 struct RevokeBody: Encodable { let sessionId: String }
 struct RespondBody: Encodable {
     let transaction: LoginTransaction; let password: String

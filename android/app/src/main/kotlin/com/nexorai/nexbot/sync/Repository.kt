@@ -177,7 +177,7 @@ class Repository(
                 check(identity.loginRequired) { "这台 Core 没有启用账号登录" }
                 check(identity.initialized) { "后端尚未关联账号，请先在服务器运行 init" }
                 check("password" in identity.loginMethods) { "后端不支持密码登录" }
-                val transaction = core.startLogin(account.trim(), deviceName())
+                val transaction = core.startLogin(account.trim(), deviceName(), store.clientInstanceId())
                 val session = core.respondLogin(transaction, password)
                 check(session.coreId == identity.coreId) { "Core 身份在登录期间发生变化" }
                 core.useToken(session.token)

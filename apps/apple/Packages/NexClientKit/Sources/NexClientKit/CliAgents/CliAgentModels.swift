@@ -388,6 +388,7 @@ public struct CliSessionQueue: Decodable, Sendable {
     public let sessionKey: String
     public let entries: [CliQueuedEntry]
     public let paused: Bool
+    public let pauseReason: String?
 }
 
 // MARK: WebSocket messages

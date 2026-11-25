@@ -6,14 +6,15 @@ import { identityBase, IdentityError, NexUserProvider, NEX_USER_ORIGIN, type Ups
 /** Longest a Core login lives without a refresh; the upstream session can end it sooner. */
 export const SESSION_MAX_MS = 90 * 24 * 60 * 60_000;
 
-interface LoginSecret { account: string; name: string; nonce: string; version: number; purpose: "login" | "link"; operator?: string }
+interface LoginClient { name: string; instanceHash?: string }
+interface LoginSecret extends LoginClient { account: string; nonce: string; version: number; purpose: "login" | "link"; operator?: string }
 export class CoreIdentity {
   private readonly controller = new AbortController();
   private readonly checked = new Map<string, { version: number; wall: number; mono: number }>();
   private readonly checking = new Map<string, Promise<Row | undefined>>();
   onSessionLost?: (sessionId: string, temporary?: boolean) => void;
   /** Server-owned routing after successful upstream password/session verification. */
-  routeVerified?: (session: UpstreamSession, name: string) => Promise<ReturnType<CoreIdentity["acceptVerified"]>>;
+  routeVerified?: (session: UpstreamSession, client: LoginClient) => Promise<ReturnType<CoreIdentity["acceptVerified"]>>;
   /** Core-owned work whose authorization anchor is a live channel (e.g. a connected Feishu app), not a client session. */
   channelAuthorize?: (task: Row) => Promise<boolean> | boolean;
   private closed = false;
@@ -58,7 +59,9 @@ export class CoreIdentity {
     this.prune();
     if (Number(this.store.get("SELECT COUNT(*) n FROM login_transactions WHERE status='pending'")?.n) >= 1000) throw new IdentityError(429, "登录事务过多，请稍后重试");
     const transactionId = id(), secretRef = `identity-login:${transactionId}`, bindingToken = randomBytes(32).toString("base64url"), stepId = id(), nonce = randomBytes(32).toString("base64url"), expiresAt = now() + 5 * 60_000;
-    const secret: LoginSecret = { account: text(data.account, 254), name: text(data.name ?? "这台设备", 80), version: Number(config.version), nonce, purpose, ...(operator ? { operator: String(operator.id) } : {}) };
+    const instanceId = data.clientInstanceId;
+    const instanceHash = typeof instanceId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(instanceId) ? hash(instanceId.toLowerCase()) : undefined;
+    const secret: LoginSecret = { account: text(data.account, 254), name: text(data.name ?? "这台设备", 80), instanceHash, version: Number(config.version), nonce, purpose, ...(operator ? { operator: String(operator.id) } : {}) };
     this.store.transaction(() => {
       this.store.insert("secrets", { id: secretRef, ciphertext: this.store.encrypt(JSON.stringify(secret)) });
       this.store.insert("login_transactions", { id: transactionId, provider_id: "1", protocol: "native-v1", client_binding_hash: hash(bindingToken), nonce_hash: hash(nonce), status: "pending", secret_ref: secretRef, challenge_json: JSON.stringify({ type: "password", stepId }), created_at: now(), expires_at: expiresAt });
@@ -87,7 +90,7 @@ export class CoreIdentity {
     try {
       if (this.routeVerified && secret.purpose === "login") {
         if (this.closed || this.configuration()?.version !== secret.version || Number(transaction.expires_at) <= now()) throw new IdentityError(409, "登录事务已失效，请重新登录");
-        const login = await this.routeVerified(upstream, secret.name);
+        const login = await this.routeVerified(upstream, { name: secret.name, instanceHash: secret.instanceHash });
         this.store.run("UPDATE login_transactions SET status='consumed',consumed_at=? WHERE id=?", now(), transactionId);
         return login;
       }
@@ -95,17 +98,17 @@ export class CoreIdentity {
     } catch (error) { await provider.revoke(upstream).catch(() => {}); throw error; }
   }
   /** Internal provisioning only; caller must have verified NexUserProvider.login. Never an HTTP route. */
-  acceptVerified(upstream: UpstreamSession, name: string) {
+  acceptVerified(upstream: UpstreamSession, client: LoginClient) {
     const config = this.configuration()!;
     const operator = this.store.get("SELECT * FROM user_sessions WHERE id=?", this.store.session);
-    return this.issueVerified(upstream, { account: "", name, nonce: "", version: Number(config.version), purpose: this.connected() ? "login" : "link" }, operator);
+    return this.issueVerified(upstream, { ...client, account: "", nonce: "", version: Number(config.version), purpose: this.connected() ? "login" : "link" }, operator);
   }
   private issueVerified(upstream: UpstreamSession, secret: LoginSecret, operator?: Row, transactionId?: string, expiresAtLimit = Infinity) {
     const config = this.configuration()!;
     const sessionId = id();
     const token = randomBytes(32).toString("base64url"), expiresAt = Math.min(upstream.expiresAt, now() + SESSION_MAX_MS);
     const ref = `identity-session:${sessionId}`;
-    this.store.transaction(() => {
+    const replaced = this.store.transaction(() => {
       const current = this.configuration();
       if (this.closed || !current || current.version !== secret.version || expiresAtLimit <= now()) throw new IdentityError(409, "登录事务已失效，请重新登录");
       let externalId = current.external_identity_id;
@@ -121,14 +124,25 @@ export class CoreIdentity {
         if (!current.connected || !identity || identity.issuer !== config.base_url || identity.subject !== upstream.subject) throw new IdentityError(403, "此账号未获准访问这个 Core");
       }
       this.store.run("DELETE FROM client_sessions WHERE session_id IN (SELECT id FROM user_sessions WHERE revoked_at IS NOT NULL OR expires_at<=?)", now());
+      const previous = secret.instanceHash ? this.store.all(
+        "SELECT s.id,s.upstream_session_ref FROM client_sessions c JOIN user_sessions s ON s.id=c.session_id WHERE c.client_instance_hash=? AND s.workspace_id=? AND s.user_id=? AND s.external_identity_id=? AND s.protocol='native-v1' AND s.revoked_at IS NULL AND s.expires_at>?",
+        secret.instanceHash, this.store.workspace, this.store.owner, externalId!, now(),
+      ) : [];
+      for (const session of previous) {
+        this.store.run("UPDATE user_sessions SET revoked_at=?,version=version+1 WHERE id=?", now(), session.id);
+        this.queueRevocation(session, upstream.cookie);
+        this.store.audit("identity.logout", "session", String(session.id), { reason: "replaced" });
+      }
       this.store.insert("secrets", { id: ref, ciphertext: this.store.encrypt(JSON.stringify(upstream)) });
       this.store.insert("user_sessions", { id: sessionId!, workspace_id: this.store.workspace, user_id: this.store.owner, token_hash: hash(token), protocol: "native-v1", external_identity_id: externalId!, upstream_session_ref: ref, revocation_mode: "native_status", status_checked_at: now(), created_at: now(), expires_at: expiresAt });
-      this.store.insert("client_sessions", { session_id: sessionId!, name: secret.name, last_seen_at: now() });
+      this.store.insert("client_sessions", { session_id: sessionId!, name: secret.name, last_seen_at: now(), client_instance_hash: secret.instanceHash ?? null });
       this.store.run("UPDATE users SET display_name=?,version=version+1 WHERE id=?", upstream.displayName, this.store.owner);
       if (transactionId) this.store.run("UPDATE login_transactions SET status='consumed',consumed_at=? WHERE id=?", now(), transactionId);
       this.store.audit(secret.purpose === "link" ? "identity.link" : "identity.login", "session", sessionId!, { protocol: "native-v1", providerType: "nex-user" });
+      return previous;
     });
     this.checked.set(sessionId, { version: 1, wall: now(), mono: performance.now() });
+    for (const session of replaced) this.sessionLost(String(session.id));
     return { token, sessionId, expiresAt, coreId: this.clients.coreId(), protocol: "native-v1", version: 1 };
   }
   private async verify(session: Row, fresh = false): Promise<Row | undefined> {
@@ -159,7 +173,20 @@ export class CoreIdentity {
   }
   private revokeLocal(sessionId: string) {
     this.store.run("UPDATE user_sessions SET revoked_at=?,version=version+1 WHERE id=? AND revoked_at IS NULL", now(), sessionId);
+    this.sessionLost(sessionId);
+  }
+  private sessionLost(sessionId: string) {
     this.checked.delete(sessionId); this.onSessionLost?.(sessionId);
+  }
+  private queueRevocation(session: Row, keepCookie?: string) {
+    const encrypted = this.store.get("SELECT ciphertext FROM secrets WHERE id=?", session.upstream_session_ref);
+    if (!encrypted) return;
+    const upstream = JSON.parse(this.store.decrypt(String(encrypted.ciphertext))) as UpstreamSession;
+    if (upstream.cookie === keepCookie) {
+      this.store.run("DELETE FROM secrets WHERE id=?", session.upstream_session_ref);
+      return;
+    }
+    this.store.run("INSERT OR IGNORE INTO identity_revocations(session_id,secret_ref,next_attempt_at,expires_at) VALUES(?,?,?,?)", session.id, session.upstream_session_ref, now(), upstream.expiresAt);
   }
   async revoke(sessionId: string) {
     const session = this.store.get("SELECT s.* FROM user_sessions s JOIN client_sessions c ON c.session_id=s.id WHERE s.id=? AND s.workspace_id=? AND s.user_id=?", sessionId, this.store.workspace, this.store.owner);
@@ -167,8 +194,7 @@ export class CoreIdentity {
     this.revokeLocal(sessionId);
     this.store.audit("identity.logout", "session", sessionId, {});
     if (session.upstream_session_ref) {
-      const encrypted = this.store.get("SELECT ciphertext FROM secrets WHERE id=?", session.upstream_session_ref);
-      if (encrypted) this.store.run("INSERT OR IGNORE INTO identity_revocations(session_id,secret_ref,next_attempt_at,expires_at) VALUES(?,?,?,?)", sessionId, session.upstream_session_ref, now(), JSON.parse(this.store.decrypt(String(encrypted.ciphertext))).expiresAt);
+      this.queueRevocation(session);
       await this.retryRevocations();
     }
   }

@@ -31,7 +31,7 @@ export class ClientIdentity {
     });
     return { token, sessionId, expiresAt, coreId: this.coreId(), protocol: "local", version: 1 };
   }
-  list() { return this.store.all("SELECT c.*,s.created_at,s.expires_at,s.revoked_at FROM client_sessions c JOIN user_sessions s ON s.id=c.session_id WHERE s.revoked_at IS NULL AND s.expires_at>? ORDER BY s.created_at DESC", now()); }
+  list() { return this.store.all("SELECT c.session_id,c.name,c.last_seen_at,s.created_at,s.expires_at,s.revoked_at FROM client_sessions c JOIN user_sessions s ON s.id=c.session_id WHERE s.revoked_at IS NULL AND s.expires_at>? ORDER BY s.created_at DESC", now()); }
   revoke(sessionId: string) {
     if (!this.store.get("SELECT session_id FROM client_sessions WHERE session_id=?", sessionId)) throw new Error("客户端会话不存在");
     this.store.run("UPDATE user_sessions SET revoked_at=?,version=version+1 WHERE id=? AND revoked_at IS NULL", now(), sessionId);

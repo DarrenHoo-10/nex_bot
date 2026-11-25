@@ -60,7 +60,8 @@ public actor LoginService {
             let origin = try CoreOrigin(originText.isEmpty ? defaultOrigin.string : originText)
             let identity = try await discover(origin: origin)
             let http = client(origin)
-            let transaction: LoginTransaction = try await http.post("/api/auth/start", body: StartBody(account: account, name: name))
+            let clientInstanceId = try? store.clientInstanceId()
+            let transaction: LoginTransaction = try await http.post("/api/auth/start", body: StartBody(account: account, name: name, clientInstanceId: clientInstanceId))
             let granted: LoginSession = try await http.post("/api/auth/respond", body: RespondBody(transaction: transaction, password: password))
             try Task.checkCancellation()
             guard granted.coreId == identity.coreId else { throw CoreError.identityChanged("Core 身份在登录期间发生变化") }

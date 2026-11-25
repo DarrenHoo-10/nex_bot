@@ -65,9 +65,9 @@ class CoreClient(
 
     suspend fun identity(): IdentityInfo = get("/api/client/identity", IdentityInfo.serializer())
 
-    suspend fun startLogin(account: String, name: String): LoginTransaction = post(
+    suspend fun startLogin(account: String, name: String, clientInstanceId: String? = null): LoginTransaction = post(
         "/api/auth/start",
-        jsonBody("account" to account, "name" to name),
+        jsonBody("account" to account, "name" to name, "clientInstanceId" to clientInstanceId),
         LoginTransaction.serializer(),
         bearer = null,
     )
