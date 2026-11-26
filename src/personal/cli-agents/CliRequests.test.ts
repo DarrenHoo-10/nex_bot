@@ -348,23 +348,28 @@ describe("hand over to an assistant", () => {
     expect(container.querySelector("[role=dialog]")).toBeNull();
   });
 
-  it("copies a reply and branches from the reply whose icon was pressed", async () => {
+  it("copies and branches from the selected conclusion, with no actions on interim replies", async () => {
     fixture.fetchItems.mockResolvedValue({ more: false, items: [
-      { id: "a1", kind: "assistant", ts: 1, text: "Earlier reply" },
-      { id: "a2", kind: "assistant", ts: 2, text: "Later reply" },
+      { id: "u1", kind: "user", ts: 1, text: "First task" },
+      { id: "progress", kind: "assistant", ts: 2, text: "Working on the task" },
+      { id: "a1", kind: "assistant", ts: 3, text: "Earlier conclusion" },
+      { id: "u2", kind: "user", ts: 4, text: "Second task" },
+      { id: "a2", kind: "assistant", ts: 5, text: "Later conclusion" },
     ] });
     fixture.forkSession.mockResolvedValue({ botId: "bot1", conversationId: "conv9" });
     const onOpenTopic = vi.fn();
     const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
     try {
       await open(undefined, { bots, onOpenTopic });
-      const first = container.querySelector('[data-testid="cli-assistant"]')!;
+      const [interim, first, last] = container.querySelectorAll('[data-testid="cli-assistant"]');
+      expect(interim.querySelector('button[title="复制"], button[title="分支到新聊天"]')).toBeNull();
+      expect(last.querySelector('button[title="复制"]')).not.toBeNull();
       const copy = first.querySelector('button[title="复制"]');
       const branch = first.querySelector('button[title="分支到新聊天"]');
       expect(copy?.textContent).toBe("");
       expect(branch?.textContent).toBe("");
       await click(copy);
-      expect(write).toHaveBeenCalledWith("Earlier reply");
+      expect(write).toHaveBeenCalledWith("Earlier conclusion");
       await click(branch);
       const dialog = container.querySelector('[role="dialog"][aria-label="分支到新聊天"]')!;
       await submit(dialog);
