@@ -1,6 +1,42 @@
 import SwiftUI
 import NexClientKit
 
+/// Selects a draft only. Cancelling the picker or the containing create sheet writes nothing.
+struct NewAgentAvatarField: View {
+    @Binding var appearance: AgentAppearance?
+    @State private var choice = AgentAppearance.graphic("secretary-01")
+    @State private var picking = false
+
+    var body: some View {
+        Button {
+            choice = appearance ?? .graphic("secretary-01")
+            picking = true
+        } label: {
+            HStack {
+                if let appearance { AgentAvatar(appearance: appearance, size: 32) }
+                else { Image(systemName: "person.crop.circle").frame(width: 32, height: 32) }
+                Text("选择头像")
+            }
+        }
+        .sheet(isPresented: $picking) {
+            VStack(spacing: 14) {
+                ScrollView { RoleAvatarOptions(choice: $choice).padding(4) }
+                HStack {
+                    Button("取消") { picking = false }.keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("使用头像") { appearance = choice; picking = false }.keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding()
+            #if os(macOS)
+            .frame(width: 460, height: 480)
+            #else
+            .presentationDetents([.large])
+            #endif
+        }
+    }
+}
+
 /// One additive catalog on both Apple clients. Descriptions are for VoiceOver only.
 struct RoleAvatarOptions: View {
     @Binding var choice: AgentAppearance

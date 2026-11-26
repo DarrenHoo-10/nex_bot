@@ -143,6 +143,14 @@ extension CoreClient {
         _ = r
     }
 
+    /// The first message uses the same outbox request even if its HTTP acknowledgement was lost.
+    func cliSendFirst(key: CliSessionKey, text: String, launchID: String) async throws -> Bool {
+        guard text.utf8.count <= Self.cliMaxSendBytes else { throw CoreError(kind: .http, message: "内容太长", status: 400, code: "too_large") }
+        let body = CliSendBody(key: key, text: text, delivery: "send", clientMessageId: launchID, requestId: launchID)
+        let result: CliSendResult = try await post(Self.cliBase + "/send", body: body)
+        return result.status == nil || result.status == "sent" || result.status == "confirmed"
+    }
+
     /// Returns the delivery notice when Core cannot confirm immediate steering.
     public func cliSteer(key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
         let body = CliSendBody(key: key, text: text, delivery: "steer", clientMessageId: UUID().uuidString, requestId: UUID().uuidString, questionId: questionId, interruptWaiting: interruptWaiting ? true : nil)

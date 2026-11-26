@@ -280,7 +280,7 @@ public struct PreviewItem: RowBacked {
 // MARK: - Bodies
 
 struct IDVersion: Encodable { let id: String; let version: Int }
-struct BotCreateBody: Encodable { let name: String; let instructions: String? }
+struct BotCreateBody: Encodable { let name: String; let instructions: String?; let appearance: AppearanceChoice? }
 struct BotUpdateBody: Encodable { let id: String; let name: String; let instructions: String?; let version: Int; let expertise: [String]? }
 struct AppearanceBody: Encodable { let id: String; let appearance: AppearanceChoice; let version: Int }
 struct PolicyBody: Encodable { let id: String; let version: Int; let tools: [String] }
@@ -337,8 +337,8 @@ extension CoreClient {
 
     // Agents
     /// `POST /api/bots`. Returns the new bot id.
-    public func createBot(name: String, instructions: String? = nil) async throws -> String {
-        try await post("/api/bots", body: BotCreateBody(name: name, instructions: instructions), as: IDResult.self).id
+    public func createBot(name: String, instructions: String? = nil, appearance: AppearanceChoice? = nil) async throws -> String {
+        try await post("/api/bots", body: BotCreateBody(name: name, instructions: instructions, appearance: appearance), as: IDResult.self).id
     }
     /// `POST /api/bots/update`. `version` is `Bot.version`; `expertise` is only sent when non-nil.
     public func updateBot(id: String, name: String, instructions: String?, version: Int, expertise: [String]? = nil) async throws {

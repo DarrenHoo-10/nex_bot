@@ -51,6 +51,7 @@ import { AgyError, AgyRuntime } from "./agy.ts";
 import { agyConfigDir, supportsAgyAcp, type agyWriters } from "./agy-native.ts";
 import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { CodexDesktopQueue } from "./codex-desktop-queue.ts";
+import { codexEmptyComposer, codexReceipt } from "./codex-first-input.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
 import { harnessFor } from "./harness.ts";
 import { HookError, HookServer, TurnTracker, locateHookPlugin, platformPlugin } from "./hooks.ts";
@@ -94,7 +95,7 @@ export interface HcLike {
   /** presses keys (`enter`, `esc`, `1`...); answers approval dialogs read off the screen */
   keys?(terminal: string, keys: string[]): Promise<unknown>;
   /** `send` that fails with kind `hc_draft` instead of merging into a local draft */
-  sendGuarded(params: HcSendParams): Promise<HcSendResult>;
+  sendGuarded(params: HcSendParams, options?: { beforeSend?: () => Promise<void> }): Promise<HcSendResult>;
   interrupt(terminal: string, params?: { timeout?: number }): Promise<{ outcome: string }>;
   attach(params: HcAttachParams, options?: { autoAck?: boolean }): Promise<TermStream>;
   subscribe(params?: { labels?: Record<string, string> }): Promise<HcSnapshot>;
@@ -144,6 +145,9 @@ export interface CliAgentBridgeOptions {
   /** How long a new Codex terminal may wait for its session file. Default 10 minutes. */
   codexClaimMs?: number;
   prepareCodexThread?: typeof prepareCodexThread;
+  /** Maximum time to observe the resumed composer's first usable frame / a native receipt. */
+  codexInputReadyMs?: number;
+  codexReceiptMs?: number;
   codexHasNoDaemonFlag?: typeof codexHasNoDaemonFlag;
   codexDesktopQueue?: Pick<CodexDesktopQueue, "refresh" | "supports" | "send">;
   /** After continuing a Codex session without a lock file: how long an immediate exit counts as "open elsewhere". Default 5 s. */
@@ -189,6 +193,8 @@ interface TerminalInfo {
   nativeId: string | null;
   cwd: string;
   registeredAt: number;
+  /** Shared across list refreshes; a fresh bridge conservatively rechecks a labelled terminal. */
+  firstCodexInput?: { confirmed: boolean };
   /** herdr-core has listed it at least once, so a later absence means it ended */
   seen: boolean;
 }
@@ -210,6 +216,7 @@ interface Watch {
 }
 
 const HC_LABELS = { nexbot: "1" } as const;
+const FIRST_CODEX_INPUT = "nexbot.codex-first-input";
 /** herdr-core events after which the list of terminals may differ; status, title and size do not matter here */
 /** Engines whose CLI can start from another session's context (`claude --resume <id> --fork-session`, `codex fork <id>`). */
 const FORK_ENGINES: readonly CliEngine[] = ["claude", "codex"];
@@ -912,7 +919,9 @@ export class CliAgentBridge {
         const stored = this.store.terminal(terminal.address)?.nativeId;
         nativeId = known?.nativeId ?? (stored && stored !== PENDING_NATIVE_ID ? stored : null);
       }
-      const info: TerminalInfo = { address: terminal.address, engine, nativeId, cwd: terminal.cwd, registeredAt: known?.registeredAt ?? 0, seen: true };
+      const info: TerminalInfo = { address: terminal.address, engine, nativeId, cwd: terminal.cwd, registeredAt: known?.registeredAt ?? 0, seen: true,
+        ...(labels[FIRST_CODEX_INPUT] === "1" ? { firstCodexInput: known?.firstCodexInput ?? { confirmed: false } } : {}),
+      };
       this.terminals.set(terminal.address, info);
       if (!this.store.terminal(terminal.address)) {
         this.store.upsertTerminal({ address: terminal.address, engine, nativeId: nativeId ?? PENDING_NATIVE_ID, cwd: terminal.cwd });
@@ -1204,9 +1213,9 @@ export class CliAgentBridge {
       case "continue":
         return this.exclusive((args as CliOpArgs["continue"]).ref, () => this.opContinue(args as CliOpArgs["continue"], budget));
       case "send":
-        return this.exclusive((args as CliOpArgs["send"]).ref, () => this.opSend(args as CliOpArgs["send"]));
+        return this.exclusive((args as CliOpArgs["send"]).ref, () => this.opSend(args as CliOpArgs["send"], Date.now() + budget));
       case "steer":
-        return this.exclusive((args as CliOpArgs["steer"]).ref, () => this.opSteer(args as CliOpArgs["steer"]));
+        return this.exclusive((args as CliOpArgs["steer"]).ref, () => this.opSteer(args as CliOpArgs["steer"], Date.now() + budget));
       case "interrupt":
         return this.exclusive((args as CliOpArgs["interrupt"]).ref, () => this.opInterrupt(args as CliOpArgs["interrupt"]));
       case "open_local":
@@ -1351,7 +1360,9 @@ export class CliAgentBridge {
   }
 
   private register(terminal: HcTerminal, engine: CliEngine, nativeId: string | null, cwd: string): TerminalInfo {
-    const info: TerminalInfo = { address: terminal.address, engine, nativeId, cwd, registeredAt: Date.now(), seen: false };
+    const info: TerminalInfo = { address: terminal.address, engine, nativeId, cwd, registeredAt: Date.now(), seen: false,
+      ...(terminal.labels[FIRST_CODEX_INPUT] === "1" ? { firstCodexInput: { confirmed: false } } : {}),
+    };
     this.terminals.set(terminal.address, info);
     this.store.upsertTerminal({ address: terminal.address, engine, nativeId: nativeId ?? PENDING_NATIVE_ID, cwd });
     return info;
@@ -1453,6 +1464,7 @@ export class CliAgentBridge {
       },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
+    if (newCodex) plan.labels[FIRST_CODEX_INPUT] = "1";
     if (noDaemon) plan.argv.push("--no-daemon");
     if (codexHome) plan.env.CODEX_HOME = codexHome;
     // the fork reads the parent from the config home the parent lives in
@@ -1601,7 +1613,67 @@ export class CliAgentBridge {
     return { turn: 0, started: !sent.steered };
   }
 
-  private async opSend(args: CliOpArgs["send"]): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
+  /** A saved blank thread is discoverable well before its resumed TUI can consume a paste.
+   * Only the TUI submits the message. No probe keystrokes, daemon fallback or second Enter. */
+  private async firstCodexSend(args: CliOpArgs["send"], address: string, gate: { confirmed: boolean }, deadline: number): Promise<CliOpResult["send"]> {
+    const readyBy = Math.min(deadline - 350, Date.now() + (this.options.codexInputReadyMs ?? 30_000));
+    const confirmMs = this.options.codexReceiptMs ?? 4000;
+    const link = this.link_;
+    const notReady = () => new OpFailure("read_only", "消息未发送。请打开 Codex 终端，处理启动提示或草稿，看到空输入框后重试。");
+    let receipt: Awaited<ReturnType<typeof codexReceipt>> = null;
+    let attempted = false;
+    let expired = false;
+    const submit = async () => {
+      const hc = await this.requireHc();
+      const check = () => {
+        if (expired || Date.now() >= readyBy) throw notReady();
+        if (this.detached || this.link_ !== link || this.hc !== hc || this.terminals.get(address)?.firstCodexInput !== gate) throw new OpFailure("stopped");
+      };
+      return hc.sendGuarded({ terminal: address, text: args.text }, { beforeSend: async () => {
+        check();
+        let previous: string | null = null;
+        for (;;) {
+          check();
+          const [terminal, screen] = await Promise.all([hc.get(address), hc.read(address, { lines: 0 })]);
+          check();
+          if (terminal.state !== "live" || terminal.labels["nexbot.native"] !== parseCliRef(args.ref)?.nativeId) throw new OpFailure("stopped");
+          const frame = terminal.status === "blocked" || this.discovery.get(args.ref)?.state === "waiting" ? null : codexEmptyComposer(screen.text);
+          if (frame && frame === previous) break;
+          if (frame && !receipt) receipt = await codexReceipt(this.discovery.transcriptFor(args.ref));
+          previous = frame;
+          await sleep(Math.min(200, Math.max(1, readyBy - Date.now())));
+        }
+        // Recheck at the mutation boundary, even if a read / connection finished after the op expired.
+        check();
+        attempted = true;
+      } });
+    };
+    const sending = submit();
+    try {
+      // Also bound an unresponsive terminal.read or side connection. If no write began,
+      // prevent its pending callback from submitting after the failure reply.
+      const result = await withDeadline(sending, Math.max(1, Math.min(deadline - 150, readyBy + 6500) - Date.now()));
+      const delivery = await receiptForSend();
+      if (delivery === "confirmed") gate.confirmed = true;
+      return { turn: Number.isSafeInteger(result.turn) && result.turn >= 0 ? result.turn : 0, started: delivery === "confirmed", delivery };
+    } catch (error) {
+      if (error instanceof OpFailure) throw error;
+      if (!attempted) throw hcErrorCode(error) === "stopped" ? new OpFailure("stopped") : notReady();
+      // Once the RPC may have pasted, even a timeout that looks like a draft must not enter
+      // the workbench's automatic busy retry path.
+      throw new OpFailure("unknown", "无法确认 Codex 是否收到消息。请先检查终端和会话记录，不要重复发送。");
+    } finally {
+      expired = true;
+      // If the RPC timed out during preflight, allow outstanding read-only work to clean up.
+      void sending.catch(() => {}).finally(() => receipt?.close().catch(() => {}));
+    }
+
+    async function receiptForSend(): Promise<"confirmed" | "unconfirmed"> {
+      return receipt && await receipt.confirmed(args.text, Math.min(deadline - 150, Date.now() + confirmMs)).catch(() => false) ? "confirmed" : "unconfirmed";
+    }
+  }
+
+  private async opSend(args: CliOpArgs["send"], deadline: number): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     if (!this.addressFor(args.ref)) {
@@ -1613,6 +1685,8 @@ export class CliAgentBridge {
       if (row && (row.sendVia === "inbox" || row.sendVia === "daemon" || row.sendVia === "host")) return this.sendOutside(args, row);
     }
     const address = this.terminalOf(args.ref);
+    const gate = this.terminals.get(address)?.firstCodexInput;
+    if (gate && !gate.confirmed) return this.firstCodexSend(args, address, gate, deadline);
     const hc = await this.requireHc();
     try {
       const result = await hc.sendGuarded({ terminal: address, text: args.text });
@@ -1626,7 +1700,7 @@ export class CliAgentBridge {
 
   /** Guidance into a turn that is already running: typing into the live
    * terminal, a priority inbox message, a daemon steer, or the host channel for ZCode. */
-  private async opSteer(args: CliOpArgs["steer"]): Promise<CliOpResult["steer"]> {
+  private async opSteer(args: CliOpArgs["steer"], deadline: number): Promise<CliOpResult["steer"]> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     const row = this.discovery.get(args.ref);
@@ -1636,7 +1710,9 @@ export class CliAgentBridge {
     }
     // A shared Codex daemon can bind the input to one exact turn even if
     // discovery also knows the address of the CLI's terminal.
-    if (row?.engine === "codex" && this.codexDaemons.threads(row.configDir)?.has(row.nativeId)) {
+    const managedAddress = this.addressFor(args.ref);
+    const gate = managedAddress ? this.terminals.get(managedAddress)?.firstCodexInput : undefined;
+    if (row?.engine === "codex" && (!gate || gate.confirmed) && this.codexDaemons.threads(row.configDir)?.has(row.nativeId)) {
       return this.codexDaemons.steer(row.configDir, row.nativeId, args.text);
     }
     const route = this.discovery.routeFor(args.ref);
@@ -1653,8 +1729,8 @@ export class CliAgentBridge {
           if (!(error instanceof InboxError) || (error.code !== "not_in_terminal" && error.code !== "stopped")) throw error;
         }
       }
-      const result = await this.opSend(args);
-      return { accepted: true, started: result.started };
+      const result = await this.opSend(args, deadline);
+      return { accepted: true, started: result.started, ...(result.delivery ? { delivery: result.delivery } : {}) };
     }
     if (route?.via === "inbox" && row?.engine === "claude" && row.sendVia === "inbox") {
       if (row.state !== "running") throw new OpFailure("turn_changed");

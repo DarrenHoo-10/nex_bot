@@ -991,12 +991,16 @@ export class HerdrCore extends EventEmitter<HcEvents> {
    * send and leaves the draft untouched (docs/verification/agent-mode-draft-
    * 20261115.md). Fails with kind `hc_draft`. A genuinely slow core looks the
    * same, and a send that lands just as we give up is possible but harmless. */
-  async sendGuarded(params: HcSendParams, options: { giveUpMs?: number } = {}): Promise<HcSendResult> {
+  async sendGuarded(params: HcSendParams, options: { giveUpMs?: number; beforeSend?: () => Promise<void> } = {}): Promise<HcSendResult> {
     await this.ensureStarted();
     const giveUpMs = options.giveUpMs ?? DRAFT_GIVE_UP_MS;
     const side = new HerdrCore({ ...this.initial, reconnect: false });
     try {
-      return await side.send(params, { timeoutMs: giveUpMs });
+      await side.ensureStarted();
+      // Connect first. Once the screen/deadline check passes, write on this very
+      // connection, without an intervening reconnect or another readiness wait.
+      await options.beforeSend?.();
+      return await side.request<HcSendResult>("terminal.send", { ...params }, giveUpMs);
     } catch (error) {
       if (error instanceof HcError && error.kind === "hc_timeout") {
         throw new HcError("hc_draft", "the terminal has an unsent draft", "someone is typing in the terminal on this computer");

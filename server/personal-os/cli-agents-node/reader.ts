@@ -7,7 +7,7 @@ import { open, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { MAX_ITEMS_PER_MESSAGE, PAGE_SIZE, type CliEngine, type CliItem } from "../../../shared/cli-agents.ts";
 import { agyRecordItems } from "./agy-native.ts";
-import { claudeRecordToItems, codexRecordToItems, type ItemContext, type RowUpdate, type ToolItem } from "./items.ts";
+import { claudeRecordToItems, codexRecordToItems, COMPACT_TEXT, type ItemContext, type RowUpdate, type ToolItem } from "./items.ts";
 
 export interface ReaderPage {
   /** oldest first, newest last */
@@ -32,6 +32,8 @@ export interface TranscriptReaderOptions {
   /** index and tail read size, default 1 MiB */
   chunkBytes?: number;
 }
+
+type ReaderContext = ItemContext & { compact?: { ts: number; sources: Set<string> } };
 
 const DEFAULT_CHUNK = 1024 * 1024;
 const LOOKAHEAD_LINES = 200;
@@ -68,6 +70,7 @@ export class TranscriptReader {
   private partial: Buffer = Buffer.alloc(0);
   private ino = 0;
   private tools = new Map<string, ToolItem>();
+  private tailCompact?: ReaderContext["compact"];
   private ids = new Map<string, number>();
 
   private watcher: FSWatcher | null = null;
@@ -159,6 +162,7 @@ export class TranscriptReader {
     this.indexing = null;
     this.partial = Buffer.alloc(0);
     this.tools = new Map();
+    this.tailCompact = undefined;
     this.ids.clear();
     const generation = this.generation;
     let info;
@@ -217,10 +221,16 @@ export class TranscriptReader {
       try {
         handle = await open(this.file, "r");
         const buf = Buffer.alloc(this.chunk);
+        let carry: Buffer = Buffer.alloc(0);
         for (;;) {
           if (generation !== this.generation) return;
           const { bytesRead } = await handle.read(buf, 0, buf.length, this.scanPos);
           if (bytesRead === 0 || generation !== this.generation) break;
+          if (!this.started && this.engine === "codex" && !this.codexV2) {
+            const data = Buffer.concat([carry, buf.subarray(0, bytesRead)]);
+            this.codexV2 = data.includes(V2_MARK);
+            carry = Buffer.from(data.subarray(Math.max(0, data.length - V2_MARK.length + 1)));
+          }
           let from = 0;
           for (;;) {
             const nl = buf.indexOf(10, from);
@@ -279,7 +289,10 @@ export class TranscriptReader {
       const lines = await this.readLines(from, to);
       for (let i = 0; i < lines.length; i += 1) {
         const text = lines[i].text;
-        if (needles.some((needle) => text.includes(needle))) return from + i;
+        if (this.engine === "agy" || needles.some((needle) => text.includes(needle))) {
+          const mapped = this.mapLine(text, lines[i].offset, this.ctxFor(new Map(), false));
+          if (mapped?.items.some(item => item.id === id)) return from + i;
+        }
       }
       await yieldLoop();
     }
@@ -320,12 +333,12 @@ export class TranscriptReader {
     }
   }
 
-  private ctxFor(tools: Map<string, ToolItem>, share: boolean): ItemContext {
+  private ctxFor(tools: Map<string, ToolItem>, share: boolean): ReaderContext {
     return { segment: this.segment, offset: 0, codexV2: this.codexV2, tools, shareTools: share };
   }
 
   /** Maps lines in order. Items are returned with their line offsets. */
-  private mapLines(lines: { text: string; offset: number }[], ctx: ItemContext, onRow?: (u: RowUpdate) => void): { item: CliItem; offset: number }[] {
+  private mapLines(lines: { text: string; offset: number }[], ctx: ReaderContext, onRow?: (u: RowUpdate) => void): { item: CliItem; offset: number }[] {
     const out: { item: CliItem; offset: number }[] = [];
     for (const line of lines) {
       const mapped = this.mapLine(line.text, line.offset, ctx);
@@ -336,7 +349,7 @@ export class TranscriptReader {
     return out;
   }
 
-  private mapLine(text: string, offset: number, ctx: ItemContext) {
+  private mapLine(text: string, offset: number, ctx: ReaderContext) {
     const trimmed = text.endsWith("\r") ? text.slice(0, -1) : text;
     if (trimmed.trim() === "") return null;
     let record: unknown;
@@ -348,7 +361,22 @@ export class TranscriptReader {
     }
     ctx.offset = offset;
     if (this.engine === "agy") return { items: agyRecordItems(record, ctx.fallbackTs) };
-    return this.engine === "claude" ? claudeRecordToItems(record, ctx) : codexRecordToItems(record, ctx);
+    const mapped = this.engine === "claude" ? claudeRecordToItems(record, ctx) : codexRecordToItems(record, ctx);
+    if (!mapped.items.length) return mapped;
+    const notice = mapped.items[0];
+    const row = record as { type?: string; subtype?: string; isCompactSummary?: boolean; payload?: { type?: string } };
+    const source = row.isCompactSummary ? "summary" : row.subtype ?? row.payload?.type ?? row.type;
+    if (notice.kind !== "notice" || notice.text !== COMPACT_TEXT || !source || !["summary", "compact_boundary", "compacted", "context_compacted", "item_completed"].includes(source)) {
+      ctx.compact = undefined;
+      return mapped;
+    }
+    const last = ctx.compact;
+    if (last && !last.sources.has(source) && Math.abs(notice.ts - last.ts) <= 30_000) {
+      last.sources.add(source);
+      return { ...mapped, items: [] };
+    }
+    ctx.compact = { ts: notice.ts, sources: new Set([source]) };
+    return mapped;
   }
 
   private remember(id: string, offset: number): void {
@@ -375,6 +403,7 @@ export class TranscriptReader {
       const ctx = this.ctxFor(tools, true);
       const lines = await this.readLines(startLine, endLine);
       let found = this.mapLines(lines, ctx);
+      if (before === undefined && tools === this.tools) this.tailCompact = ctx.compact;
       if (before !== undefined) {
         // items of the cut line that come before `before`
         const cutIndex = found.findIndex((entry) => entry.item.id === before);
@@ -450,7 +479,10 @@ export class TranscriptReader {
           s = e + 1;
         }
         this.offset = base + complete.length;
-        const mapped = this.mapLines(lines, this.ctxFor(this.tools, false), this.opts.onRow);
+        const ctx = this.ctxFor(this.tools, false);
+        ctx.compact = this.tailCompact;
+        const mapped = this.mapLines(lines, ctx, this.opts.onRow);
+        this.tailCompact = ctx.compact;
         for (const entry of mapped) this.remember(entry.item.id, entry.offset);
         for (let i = 0; i < mapped.length; i += MAX_ITEMS_PER_MESSAGE) {
           this.opts.onItems?.(mapped.slice(i, i + MAX_ITEMS_PER_MESSAGE).map((entry) => entry.item));

@@ -8,6 +8,7 @@ import type { AttachmentObjects } from './attachment-objects.ts';
 import { connectorSchema } from "./connector-schema.ts";
 import { feishuSchema } from "./feishu/feishu-schema.ts";
 import { appearanceSchema } from "./appearance-schema.ts";
+import { parseAppearance } from "../../shared/personal-appearance.ts";
 import { continuitySchema } from "./continuity-schema.ts";
 import { episodeSchema } from "./episodes-schema.ts";
 import { trigramSchema, vectorSchema } from "./retrieval-schema.ts";
@@ -935,10 +936,12 @@ CREATE TABLE personal_connector_deliveries (
     const selection=this.resolveInputModel(String(task.bot_id),JSON.parse(String(saved.selection_json)));
     return {...this.modelConfig(String(task.bot_id),{connectionId:selection.connectionId,model:selection.model}),reasoning:selection.reasoning};
   }
-  createBot(name: string, instructions?: unknown) {
+  createBot(name: string, instructions?: unknown, initialAppearance?: unknown) {
     const botId = id();
+    const appearance = initialAppearance === undefined ? undefined : parseAppearance(initialAppearance);
     this.transaction(() => {
       this.insert("bots", { id: botId, ...this.scope(), name: text(name, 80), instructions: optionalText(instructions), model_connection_id: this.defaultConnection()?.id ?? null, status: "active", created_at: now() });
+      if (appearance) this.insert("bot_appearance", { bot_id: botId, appearance_json: JSON.stringify(appearance), version: 1 });
       this.insert("bot_policies", { bot_id: botId, ...this.scope(), policy_json: JSON.stringify({ tools: basicActions, inheritDefaults: true }), approval_mode: "allow_scoped" });
       this.run("INSERT INTO agent_inboxes(bot_id,workspace_id,owner_user_id) VALUES(?,?,?)", botId, this.workspace, this.owner);
       this.insert("memory_bank_bindings", { id: id(), ...this.scope(), scope: "bot", bot_id: botId, provider_bank_id: id(), state: "provisioning" });

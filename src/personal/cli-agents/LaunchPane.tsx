@@ -3,12 +3,15 @@
 import { ArrowLeft, ArrowUp, Plus, RotateCcw, X } from "lucide-react";
 import { ConversationActionButton } from "../components/ConversationActionButton";
 import { HarnessMark } from "./tokendance/HarnessMark";
-import { EchoMessage, WorkingRow } from "./TranscriptView";
+import { EchoMessage } from "./TranscriptView";
 import type { Launch } from "./use-launches";
+import { attachmentPreview } from "./composer-additions";
 import { AGENT_LABEL } from "./session-model";
 
 export function LaunchPane({ launch, onBack, onRetry, onDismiss }: { launch: Launch; onBack(): void; onRetry(): void; onDismiss(): void }) {
   const failed = launch.phase === "failed";
+  const preview = attachmentPreview(launch.message, launch.files ?? []);
+  const status = failed ? (launch.target ? "发送失败" : "未启动") : launch.phase === "starting" ? "正在启动" : launch.phase === "sending" ? "正在发送" : "等待会话同步";
   const heading = launch.message.split("\n")[0]?.trim() || "新会话";
   return (
     <section className="cli-pane" aria-label={heading} data-testid="cli-launch">
@@ -17,11 +20,11 @@ export function LaunchPane({ launch, onBack, onRetry, onDismiss }: { launch: Lau
         <div className="cli-pane-title">
           <strong title={heading}>{heading}</strong>
         </div>
-        <span className="cli-chip" data-tone={failed ? "stopped" : "running"}>{failed ? "未启动" : "运行中"}</span>
+        <span className="cli-chip" data-tone={failed ? "stopped" : "running"}>{status}</span>
       </header>
       <div className="cli-pane-body na-conversation-body">
         <div className="cli-transcript"><div className="cli-transcript-list">
-          {launch.message ? <EchoMessage text={launch.message}/> : null}
+          {preview ? <EchoMessage text={preview}/> : null}
           {failed ? <div className="cli-msg is-assistant na-launch-reply" data-testid="cli-launch-reply">
             <div className="na-byline"><HarnessMark agentId={launch.engine}/><b>{AGENT_LABEL[launch.engine]}</b></div>
             <div className="cli-notice na-launch-error" data-level="error" role="alert">
@@ -29,7 +32,7 @@ export function LaunchPane({ launch, onBack, onRetry, onDismiss }: { launch: Lau
               <ConversationActionButton onClick={onRetry}><RotateCcw size={13} aria-hidden="true"/>重试</ConversationActionButton>
               <ConversationActionButton tone="dark" onClick={onDismiss}><X size={13} aria-hidden="true"/>关闭</ConversationActionButton>
             </div>
-          </div> : <WorkingRow engine={launch.engine} label="执行中" byline/>}
+          </div> : null}
         </div></div>
       </div>
       {/* the message box of the session to come: usable once it is running */}

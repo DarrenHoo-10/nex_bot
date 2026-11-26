@@ -11,7 +11,7 @@ import { CLI_IMAGE_PREFIX, mapCliImageLinks } from "../../../shared/cli-images.t
 import { execCli } from "../../procs.ts";
 import { AgyAcp, AgyAcpError } from "./agy-acp.ts";
 import {
-  agyArray, agyJson, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
+  agyArray, agyJson, agyLastStep, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
   type AgyNativeSession, type AgyRecord, type AgyWriters,
 } from "./agy-native.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
@@ -69,6 +69,8 @@ interface Turn {
   error?: string;
   version: number;
   items: CliItem[];
+  afterStep?: number;
+  nativeUser?: string;
   calls: Map<string, Extract<CliItem, { kind: "tool" }>>;
   lastText?: Extract<CliItem, { kind: "assistant" | "thinking" }>;
 }
@@ -470,7 +472,9 @@ export class AgyRuntime {
     if (steer && session.active !== turn) throw new AgyError("turn_changed", "目标轮次已经结束");
     clearTimeout(session.idle);
     if (!turn) {
-      turn = { startedAt: Date.now(), waiting: 0, stopping: false, completed: false, version: 0, items: [], calls: new Map() };
+      const afterStep = await agyLastStep(this.options.dir, id);
+      if (session.active) throw new AgyError("busy", "当前轮次还在运行");
+      turn = { afterStep, startedAt: Date.now(), waiting: 0, stopping: false, completed: false, version: 0, items: [], calls: new Map() };
       session.active = turn;
       session.tails.push(turn);
       if (session.tails.length > MAX_RECENT_TURNS) session.tails.shift();
@@ -685,7 +689,7 @@ export class AgyRuntime {
     return `${file}:${info?.size ?? 0}:${info?.mtimeMs ?? 0}:${tail.map((turn) => `${turn.startedAt}:${turn.version}`).join(",")}`;
   }
 
-  async page(id: string, options: { before?: string } = {}, limit = 40): Promise<ReaderPage> {
+  async page(id: string, options: { before?: string; limit?: number } = {}, limit = options.limit ?? 40): Promise<ReaderPage> {
     const file = await agyTranscript(this.options.dir, id);
     const reader = file ? new TranscriptReader({ path: file, engine: "agy", watch: false }) : null;
     try {
@@ -695,14 +699,31 @@ export class AgyRuntime {
       const page = await reader?.page({ limit: HISTORY_LOOKBACK }) ?? { items: [], more: false };
       let items = page.items;
       const settled = new Set<Turn>();
+      let previousStep = -1;
       for (const turn of tails) {
         const sent = turn.items[0];
         if (!sent || sent.kind !== "user") continue;
-        const at = items.findIndex((item) => item.kind === "user" && item.text.trim() === sent.text.trim() && item.ts >= turn.startedAt);
+        if (previousStep >= 0) turn.afterStep = Math.max(turn.afterStep ?? -1, previousStep);
+        const at = items.findIndex(item => item.kind === "user" && /^agy:\d+$/.test(item.id) && (turn.nativeUser ? item.id === turn.nativeUser :
+          item.text.trim() === sent.text.trim() && (turn.afterStep === undefined ? item.ts >= turn.startedAt : Number(item.id.slice(4)) > turn.afterStep)));
+        let end = at + 1;
+        if (at >= 0) {
+          turn.nativeUser = items[at].id;
+          previousStep = Number(turn.nativeUser.slice(4));
+          const steers = turn.items.slice(1).filter(item => item.kind === "user");
+          let matched = 0;
+          for (; end < items.length; end++) {
+            const next = items[end];
+            if (next.kind !== "user") continue;
+            if (!/^agy:\d+$/.test(next.id) || steers[matched]?.text.trim() !== next.text.trim()) break;
+            previousStep = Number(next.id.slice(4));
+            matched++;
+          }
+        }
         const lastReply = turn.items.findLast((item) => item.kind === "assistant");
         const exported = at >= 0 && turn.completed && !turn.error && !turn.stopping &&
           (lastReply?.kind === "assistant"
-            ? items.slice(at + 1).some((item) => item.kind === "assistant" && item.text.trim() === lastReply.text.trim())
+            ? items.slice(at + 1, end).some((item) => item.kind === "assistant" && item.text.trim() === lastReply.text.trim())
             : turn.items.length === 1);
         if (exported) {
           settled.add(turn);
@@ -711,14 +732,21 @@ export class AgyRuntime {
         // Within the current turn the export can contain only part of the reply.
         // Replace that part as a unit until the completed native reply catches up.
         if (at >= 0) {
-          const upcoming = items.findIndex((item, index) => index > at && item.kind === "user" && item.ts > (turn.items.at(-1)?.ts ?? turn.startedAt) + 1000);
-          items = [...items.slice(0, at), ...turn.items, ...(upcoming >= 0 ? items.slice(upcoming) : [])];
+          items = [...items.slice(0, at), ...turn.items, ...items.slice(end)];
         } else items = [...items, ...turn.items];
       }
       if (session && settled.size) session.tails = session.tails.filter((turn) => !settled.has(turn));
       const at = options.before === undefined ? items.length : items.findIndex((item) => item.id === options.before);
       if (at < 0) return await reader?.page({ ...options, limit }) ?? { items: [], more: false };
-      return { items: items.slice(Math.max(0, at - limit), at), more: at > limit || page.more };
+      const slice = items.slice(Math.max(0, at - limit), at);
+      // HISTORY_LOOKBACK is just the window for reconciling live ACP items.
+      // At its edge continue before the first *native* id, even when a live
+      // turn replaced that id. Never return an empty page claiming more.
+      if (slice.length < limit && page.more && reader && page.items.length) {
+        const prefix = await reader.page({ before: page.items[0].id, limit: limit - slice.length });
+        return { items: [...prefix.items, ...slice], more: prefix.more };
+      }
+      return { items: slice, more: at > limit || page.more };
     } finally {
       reader?.close();
     }

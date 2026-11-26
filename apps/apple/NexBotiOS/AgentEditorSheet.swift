@@ -12,7 +12,7 @@ struct AgentEditorSheet: View {
     @State private var instructions = ""
     @State private var pending = false
     @State private var error: String?
-    @FocusState private var focus: Bool
+    @State private var appearance: AgentAppearance?
 
     private var title: String { botID == nil ? "添加 Agent" : "Agent 身份" }
     private var canSave: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !pending }
@@ -20,8 +20,9 @@ struct AgentEditorSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if botID == nil { Section { NewAgentAvatarField(appearance: $appearance) } }
                 Section {
-                    TextField("名字", text: $name).focused($focus).submitLabel(.next)
+                    TextField("名字", text: $name).submitLabel(.next)
                         .accessibilityLabel("名字")
                 } header: { Text("名字") }
                 Section {
@@ -45,7 +46,7 @@ struct AgentEditorSheet: View {
                 }
             }
             .onAppear {
-                if let botID, let bot = workspace.bot(botID) { name = bot.name; instructions = bot.instructions } else { focus = true }
+                if let botID, let bot = workspace.bot(botID) { name = bot.name; instructions = bot.instructions }
             }
             .debugCommand { command, arg in
                 if command == "agentname" { name = arg }
@@ -67,7 +68,7 @@ struct AgentEditorSheet: View {
                 try await workspace.updateIdentity(botID: botID, name: String(trimmed.prefix(80)), instructions: instructions)
                 dismiss()
             } else {
-                let id = try await workspace.createAgent(name: String(trimmed.prefix(80)), instructions: instructions)
+                let id = try await workspace.createAgent(name: String(trimmed.prefix(80)), instructions: instructions, appearance: appearance?.request)
                 dismiss()
                 onCreated(id)
             }

@@ -552,6 +552,20 @@ describe("session pane", () => {
     expect(container.querySelector("[data-testid=cli-working]")?.textContent).not.toContain("已送达");
   });
 
+  it("does not show an idle Codex as working until the pending input is recorded", async () => {
+    const row = session({ engine: "codex", state: "idle" });
+    fixture.sendMessage.mockResolvedValue({ status: "sent", delivery: "unconfirmed" });
+    await mount({ devices: [device()], sessions: [row] }, row.key);
+    const box = container.querySelector("textarea")!;
+    await typeText(box, "first");
+    await click(container.querySelector('button[type="submit"]'));
+    expect(text()).toContain("等待 Codex 确认收件");
+    expect(container.querySelector("[data-testid=cli-working]")).toBeNull();
+    await act(async () => socket.open());
+    await act(async () => socket.push({ type: "items", key: row.key, items: [{ id: "first-record", kind: "user", text: "first", ts: Date.now() }] }));
+    expect(text()).not.toContain("等待 Codex 确认收件");
+  });
+
   it("names the agent once per reply and shows its work as dots in the conversation", async () => {
     fixture.fetchItems.mockResolvedValue({ more: false, items: [
       { kind: "user", id: "u1", ts: 1, text: "第一问" },
@@ -792,7 +806,8 @@ describe("new session", () => {
     expect(fixture.startSession).toHaveBeenCalledWith("dev1", "claude", ALPHA, {});
     const pane = container.querySelector("[data-testid=cli-launch]")!;
     expect(pane.querySelector(".cli-bubble")?.textContent).toBe("修一下登录页");
-    expect(pane.querySelector("[data-testid=cli-working] .na-working-dots")).not.toBeNull();
+    expect(pane.textContent).toContain("正在启动");
+    expect(pane.querySelector("[data-testid=cli-working]")).toBeNull();
 
     await act(async () => { started({ key: "dev1:claude:new1" }); });
     await flush();

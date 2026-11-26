@@ -196,6 +196,9 @@ final class ActionsTests: XCTestCase {
         let (core, store) = await loaded { r in r.path == "/api/bots" ? .json(["id": "new1"]) : .json(["ok": true]) }
         let id = try await store.createAgent(name: "新", instructions: "说明")
         XCTAssertEqual(id, "new1"); XCTAssertEqual(core.recorded("/api/bots")[0].json["name"] as? String, "新"); XCTAssertEqual(core.recorded("/api/bots")[0].method, "POST")
+        XCTAssertNil(core.recorded("/api/bots")[0].json["appearance"])
+        try await store.createAgent(name: "头像", appearance: .q("white-dragon"))
+        XCTAssertEqual(core.recorded("/api/bots")[1].json["appearance"] as? [String: String], ["kind": "q", "id": "white-dragon"])
         try await store.updateIdentity(botID: "b1", name: "改名", instructions: "新说明")
         var j = core.recorded("/api/bots/update")[0].json
         XCTAssertEqual(j["id"] as? String, "b1"); XCTAssertEqual(j["version"] as? Int, 3); XCTAssertEqual(j["name"] as? String, "改名"); XCTAssertNil(j["expertise"])

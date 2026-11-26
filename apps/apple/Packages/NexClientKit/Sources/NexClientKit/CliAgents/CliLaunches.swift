@@ -107,12 +107,17 @@ public struct CliLaunch: Sendable, Hashable, Identifiable {
     public let createdAt: Int
     public var phase: CliLaunchPhase = .starting
     public var target: CliSessionKey?
+    var preparedMessage: String? = nil
     /// one id per launch, so a retried worktree start reuses the tree it built
     public let requestId: String
 }
 
 public enum CliLaunches {
     public static let keyPrefix = "launch-"
+
+    public static func messagePreview(_ text: String, images: [CliImageUpload]) -> String {
+        ([text.trimmingCharacters(in: .whitespacesAndNewlines)] + images.map { "图片：" + $0.name }).filter { !$0.isEmpty }.joined(separator: "\n")
+    }
     public static let efforts: [CliEngine: [String]] = [
         .claude: ["low", "medium", "high", "xhigh", "max"],
         .codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],

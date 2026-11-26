@@ -24,12 +24,14 @@ private enum AgentTab: Hashable { case terminal, chat }
 /// A message sent from this screen that the session's records do not hold yet: it shows at once, with the dots under it.
 struct AgentPendingSend: Identifiable, Equatable {
     let id = UUID()
-    let text: String
+    var text: String
+    var uploading = false
     /// the items the transcript held when it was sent
     let known: Set<String>
 
     /// Still waiting: no new user item with its text, and nothing of the agent after it.
     func waiting(in items: [CliItem]) -> Bool {
+        if uploading { return true }
         let plain = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return !items.contains { item in
             guard !known.contains(item.id) else { return false }
@@ -337,23 +339,29 @@ private struct AgentTranscript: View {
     /// messages sent from here that the records do not hold yet
     var pending: [AgentPendingSend] = []
     var branch: ((String) -> Void)?
+    @State private var lateReceipt: String?
 
     var body: some View {
         let t = model.transcript(key)
         let sent = pending.filter { $0.waiting(in: t.items) }
-        let working = self.working ?? (sent.isEmpty ? nil : "等待回复")
+        let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
+        let receipt = model.sessions.first { $0.key == key }
+        let codexPending = engine == .codex && receipt?.online == true && (receipt?.state == .idle || receipt?.state == .stopped) && (echo != nil || !sent.isEmpty)
+        let receiptID = codexPending ? (sent.last?.id.uuidString ?? key) : nil
+        let delivery = sent.contains(where: \.uploading) ? "正在上传附件" : codexPending ? (lateReceipt == receiptID ? "Codex 尚未确认收件，请查看终端" : "等待 Codex 确认收件") : nil
+        let working = delivery == nil ? (self.working ?? (sent.isEmpty && echo == nil ? nil : "等待回复")) : nil
         let blocks = CliTranscript.group(AgentGuide.timeline(t.items, guides))
         let completed = CliTranscript.completedReplies(t.items, active: active)
         // copy and branch: only on a finished reply's conclusion
         let conclusions = CliTranscript.replyTails(blocks).intersection(completed)
-        let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
         Group {
             if blocks.isEmpty && (echo != nil || !sent.isEmpty) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
                         ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
-                        AgentWorkingRow(engine: engine, label: working ?? "执行中", byline: true)
+                        if let delivery { Text(delivery).font(.caption).foregroundStyle(Theme.muted) }
+                        if let working { AgentWorkingRow(engine: engine, label: working, byline: true) }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 6)
                 }
@@ -391,6 +399,7 @@ private struct AgentTranscript: View {
                             }
                             if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
                             ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
+                            if let delivery { Text(delivery).font(.caption).foregroundStyle(Theme.muted) }
                             // the agent's name heads the dots only when nothing of this reply is shown yet
                             if let working { AgentWorkingRow(engine: engine, label: working, byline: echo != nil || !sent.isEmpty || { if case .user = blocks.last { return true } else { return false } }()) }
                             Color.clear.frame(height: 1).id("bottom")
@@ -404,6 +413,12 @@ private struct AgentTranscript: View {
                     .onChange(of: t.items.last?.text.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
+        }
+        .task(id: receiptID) {
+            lateReceipt = nil
+            guard let receiptID else { return }
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            lateReceipt = receiptID
         }
     }
 }
@@ -1094,7 +1109,7 @@ private struct AgentComposer: View {
                             }
                             Button("编辑") { editing = entry; editedText = entry.text }
                         } else {
-                            Text(["uncertain": "待确认", "claimed": "投递中", "failed": "发送失败"][entry.status] ?? "投递中")
+                            Text(session.engine == .codex && entry.status == "failed" && entry.errorCode == "read_only" ? "消息未发送，请检查 Codex 终端" : (["uncertain": "待确认", "claimed": "投递中", "failed": "发送失败"][entry.status] ?? "投递中"))
                         }
                     }
                 }
@@ -1217,7 +1232,10 @@ private struct AgentComposer: View {
         deliveryNotice = nil
         let text = draft
         let submittedImages = images
-        var entry: AgentPendingSend?
+        let queued = (session.state == .running || session.state == .waiting) && ((session.liveIn == .nexbot && session.terminal != nil) || (session.engine == .claude && session.sendVia == "inbox") || managedAcp)
+        let entry = AgentPendingSend(text: CliLaunches.messagePreview(text, images: submittedImages), uploading: !submittedImages.isEmpty, known: Set(model.transcript(session.key).items.map(\.id)))
+        pending.append(entry)
+        draft = ""; images = []
         sending = true; error = ""
         defer { sending = false }
         do {
@@ -1248,19 +1266,16 @@ private struct AgentComposer: View {
                 try await model.send(session.key, text: "/effort " + level)
                 AgentDrafts.appliedEfforts[session.key] = level
             }
-            let echo = AgentPendingSend(text: message, known: Set(model.transcript(session.key).items.map(\.id)))
-            let queued = (session.state == .running || session.state == .waiting) && ((session.liveIn == .nexbot && session.terminal != nil) || (session.engine == .claude && session.sendVia == "inbox") || managedAcp)
-            if !queued { pending.append(echo) }
-            entry = echo
-            if draft == text { draft = "" }
+            if let index = pending.firstIndex(where: { $0.id == entry.id }) {
+                pending[index].text = message
+                pending[index].uploading = false
+            }
             if queued { try await model.enqueue(session.key, text: message) }
             else { try await model.send(session.key, text: message) }
-            images.removeAll { submittedImages.contains($0) }
+            if queued { pending.removeAll { $0.id == entry.id } }
         } catch {
-            if let entry {
-                pending.removeAll { $0.id == entry.id }
-                if draft.isEmpty { draft = text }
-            }
+            pending.removeAll { $0.id == entry.id }
+            if draft.isEmpty && images.isEmpty { draft = text; images = submittedImages }
             self.error = CliErrorText.text(for: error, fallback: "没能发送")
         }
     }

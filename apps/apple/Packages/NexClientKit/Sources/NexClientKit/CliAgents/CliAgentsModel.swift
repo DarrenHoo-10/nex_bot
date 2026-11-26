@@ -311,7 +311,12 @@ public final class CliAgentsModel {
             guard openGeneration[key] == generation, subscribed[key] != nil else { return }
             var next = transcript(key)
             guard next.items.first?.id == first.id else { return }
-            next.items = CliTranscript.prepend(next.items, page.items)
+            let merged = CliTranscript.prepend(next.items, page.items)
+            if page.more && merged.count == next.items.count {
+                transcripts[key]?.olderError = "历史游标未前进，请重试"
+                return
+            }
+            next.items = merged
             next.more = page.more
             transcripts[key] = next
         } catch {
@@ -351,9 +356,18 @@ public final class CliAgentsModel {
 
     public func imageMessage(_ key: CliSessionKey, text: String, images: [CliImageUpload]) async throws -> String {
         guard images.count <= ChatAttachment.maxCount else { throw CoreError(kind: .http, message: "最多添加 5 张图片", status: 400) }
-        var lines = [text.trimmingCharacters(in: .whitespacesAndNewlines)]
-        for image in images { lines.append(try await clientProvider().cliUploadImage(key: key, image: image)) }
-        return lines.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let caption = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !images.isEmpty else { return caption }
+        let client = clientProvider()
+        let links = try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            for (index, image) in images.enumerated() {
+                group.addTask { (index, try await client.cliUploadImage(key: key, image: image)) }
+            }
+            var ordered = Array(repeating: "", count: images.count)
+            for try await (index, link) in group { ordered[index] = link }
+            return ordered
+        }
+        return ([caption] + links).filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
     public func downloadImage(_ path: String) async throws -> Data {
@@ -438,13 +452,18 @@ public final class CliAgentsModel {
             let text = request.message.trimmingCharacters(in: .whitespacesAndNewlines)
             if let target, !text.isEmpty || !request.images.isEmpty {
                 updateLaunch(id) { $0.phase = .sending }
-                echoes[target] = ([text] + request.images.map { "图片：" + $0.name }).filter { !$0.isEmpty }.joined(separator: "\n")
-                var outgoing: String?
+                echoes[target] = CliLaunches.messagePreview(text, images: request.images)
+                var outgoing = entry.preparedMessage
                 var tries = 0
                 while true {
                     do {
-                        if outgoing == nil { outgoing = try await imageMessage(target, text: text, images: request.images) }
-                        try await send(target, text: outgoing ?? text)
+                        if outgoing == nil {
+                            outgoing = try await imageMessage(target, text: text, images: request.images)
+                            updateLaunch(id) { $0.preparedMessage = outgoing }
+                        }
+                        echoes[target] = outgoing
+                        let sent = try await clientProvider().cliSendFirst(key: target, text: outgoing ?? text, launchID: id)
+                        if !sent { echoes[target] = nil }
                         break
                     } catch {
                         // the computer lists a just-started session once the CLI is up
@@ -655,8 +674,7 @@ public final class CliAgentsModel {
             let combined = snapshot.compactMap { changed[String($0.dropFirst(65))] ?? cached[$0] }
             guard combined.count == snapshot.count else { Task { await loadTranscript(key) }; return }
             var t = transcript(key)
-            let priorIds = Set(prior?.items.map(\.id) ?? [])
-            let next = CliTranscript.reset(t.items.filter { !priorIds.contains($0.id) }, combined)
+            let next = CliTranscript.reset(t.items, combined)
             t.items = next.items
             if !next.kept { t.more = more }
             t.loaded = true

@@ -156,7 +156,8 @@ export class FakeHc extends EventEmitter implements HcLike {
     return { turn: this.turn };
   }
 
-  async sendGuarded(params: HcSendParams): Promise<HcSendResult> {
+  async sendGuarded(params: HcSendParams, options?: { beforeSend?: () => Promise<void> }): Promise<HcSendResult> {
+    await options?.beforeSend?.();
     const terminal = this.live(params.terminal);
     if (this.drafts.has(terminal.address)) throw new HcError("hc_draft", "a person has an unsent draft", "ask them to send or clear it");
     terminal.sent.push(params);

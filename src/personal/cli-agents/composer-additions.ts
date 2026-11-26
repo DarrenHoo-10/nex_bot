@@ -8,6 +8,9 @@ export interface ComposerExtras {files:PickedFile[];goal:string|null}
 const extras=new Map<string,ComposerExtras>();
 const deliveredFiles=new WeakMap<File,{key:string;reference:string}>();
 export const isPickedImage = (file: File) => file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
+export function attachmentPreview(text: string, files: readonly File[]): string {
+  return [text.trim(), ...files.map(file => (isPickedImage(file) ? "图片：" : "附件：") + file.name)].filter(Boolean).join("\n");
+}
 const goalKey=(key:string)=>"nexagent.goal."+key;
 export function getExtras(key:string):ComposerExtras {
   const saved=extras.get(key);
@@ -92,6 +95,17 @@ export async function fileReference(entry:PickedFile,key:CliSessionKey,upload:bo
   if(!response.ok || typeof result.path!=="string")throw Error(result.error||"附件未能送达");
   const reference="附件："+file.name+"\n"+result.path;
   deliveredFiles.set(file,{key,reference});return reference;
+}
+
+export async function attachmentReferences(files: readonly PickedFile[], key: CliSessionKey, upload: Parameters<typeof fileReference>[2]): Promise<string[]> {
+  // The at-most-five Core images are independent. Device file operations still run in order.
+  if (files.length > 1 && files.length <= 5 && files.every(entry => isPickedImage(entry.file))) {
+    const results = await Promise.allSettled(files.map(entry => fileReference(entry, key, upload)));
+    return results.map(result => { if (result.status === "rejected") throw result.reason; return result.value; });
+  }
+  const references: string[] = [];
+  for (const file of files) references.push(await fileReference(file, key, upload));
+  return references;
 }
 
 /** Files of messages sent from this page, so edit-and-resend puts them back in the box. */

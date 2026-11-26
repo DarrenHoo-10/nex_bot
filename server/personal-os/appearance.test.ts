@@ -54,11 +54,18 @@ it("syncs appearance across sessions, rejects stale/invalid/foreign changes and 
     expect((await request("bots/appearance", secondSession, { ...update, version: 1, appearance: { kind: "portrait", id: "fox" } })).status).toBe(200);
     expect(JSON.parse((await request("state", owner.token)).body.bots[0].appearance_json!)).toEqual({ kind: "portrait", id: "fox" });
     const classic = (await request("state", owner.token)).body.bots.find((item) => item.id === bot)!;
-    const added = await request("bots", owner.token, { name: "Graphic appearance fixture", instructions: "Synthetic avatar check" });
+    const invalid = await request("bots", owner.token, { name: "Invalid creation fixture", appearance: { kind: "q", id: "missing" } });
+    expect(invalid.status).toBe(400);
+    expect((await request("state", secondSession)).body.bots.map((item) => item.id)).toEqual([bot]);
+    const initialLook: Appearance = { kind: "q", id: "white-dragon" };
+    const added = await request("bots", owner.token, { name: "Graphic appearance fixture", instructions: "Synthetic avatar check", appearance: initialLook });
     expect(added.status).toBe(200);
     const graphicBot = added.body.id;
-    let graphicVersion = 0;
-    expect((await request("bots/appearance", owner.token, { id: graphicBot, version: 0, appearance: { kind: "graphic", id: "https://foreign.example.test/avatar.svg" } })).status).toBe(400);
+    const created = (await request("state", secondSession)).body.bots.find((item) => item.id === graphicBot)!;
+    expect(JSON.parse(created.appearance_json!)).toEqual(initialLook);
+    expect(created.appearance_version).toBe(1);
+    let graphicVersion = created.appearance_version;
+    expect((await request("bots/appearance", owner.token, { id: graphicBot, version: graphicVersion, appearance: { kind: "graphic", id: "https://foreign.example.test/avatar.svg" } })).status).toBe(400);
     for (const id of graphicAvatarIds) {
       expect((await request("bots/appearance", owner.token, { id: graphicBot, version: graphicVersion, appearance: { kind: "graphic", id } })).status).toBe(200);
       graphicVersion++;

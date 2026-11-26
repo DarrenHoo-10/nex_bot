@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CliEngine, CliPermissionMode, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { CliApiError, cliErrorText, sendMessage, startSession, uploadAttachment } from "./api";
 import type { LaunchChoice } from "./CliModelMenu";
-import { fileReference, saveApplied, saveLaunch, type PickedFile } from "./composer-additions";
+import { attachmentPreview, attachmentReferences, saveApplied, saveLaunch, type PickedFile } from "./composer-additions";
 import { useReview } from "./WorkbenchReview";
 
 export interface LaunchRequest {
@@ -133,18 +133,19 @@ export function useLaunches(sessions: readonly CliSessionView[], onSettled?: () 
       const files = launch.files ?? [];
       if (launch.message.trim() || files.length) {
         patch(launch.id, { phase: "sending", error: undefined });
-        echoes.current.set(target, { text: [launch.message.trim(), ...files.map((file) => (file.type.startsWith("image/") ? "图片：" : "附件：") + file.name)].filter(Boolean).join("\n"), at: launch.createdAt });
+        echoes.current.set(target, { text: attachmentPreview(launch.message, files), at: launch.createdAt });
         const key = target;
         const upload = launch.attach ? (file: File) => uploadAttachment(key, file) : false;
         if (!attempt.files) attempt.files = files.map((file) => ({ id: crypto.randomUUID(), file }));
         for (let tries = 0; ; tries++) {
           try {
             // the session must be listed on the computer before files can go next to it
-            const references: string[] = [];
-            for (const entry of attempt.files) references.push(await fileReference(entry, key, upload));
+            const references = await attachmentReferences(attempt.files, key, upload);
             const text = [launch.message.trim(), ...references].filter(Boolean).join("\n\n");
             echoes.current.set(key, { text, at: launch.createdAt });
-            await sendMessage(key, text, { delivery: "send", clientMessageId: attempt.clientMessageId, requestId: attempt.sendRequestId });
+            const outcome = await sendMessage(key, text, { delivery: "send", clientMessageId: attempt.clientMessageId, requestId: attempt.sendRequestId });
+            // A held or failed entry already lives in the queue; show it there, not as an accepted first turn.
+            if (outcome.queued) echoes.current.delete(key);
             break;
           } catch (cause) {
             // the computer lists a just-started session once the CLI is up

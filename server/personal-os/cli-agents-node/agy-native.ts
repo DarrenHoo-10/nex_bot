@@ -1,6 +1,6 @@
 // The official CLI and its ACP server share the same on-device conversations.
 // Discover metadata here, and open transcript content only for a read/watch/search.
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -176,16 +176,53 @@ export async function agyWriters(platform: NodeJS.Platform, ownedPids: ReadonlyS
   return { sessions, unknown };
 }
 
-const AGY_REQUEST = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/;
-const AGY_ONLY_BLOCKS = /^\s*(?:<([A-Z][A-Z_]*)>[\s\S]*?<\/\1>\s*)+$/;
-
-/** AGY records what the user typed inside `<USER_REQUEST>`, followed by blocks it adds itself (`<ADDITIONAL_METADATA>`
- * with the local time, `<USER_SETTINGS_CHANGE>` after a model switch…). Only the request is the user's words, and input
- * made of nothing but such blocks has none. Text without them is returned as it is. */
+/** Only AGY's whole input envelope is special. Literal markup inside a normal message stays intact. */
 export function agyUserText(content: string): string {
-  const request = AGY_REQUEST.exec(content);
-  if (request) return request[1];
-  return AGY_ONLY_BLOCKS.test(content) ? "" : content;
+  const trimmed = content.trim();
+  const hasRequest = trimmed.startsWith("<USER_REQUEST>");
+  const close = hasRequest ? trimmed.lastIndexOf("</USER_REQUEST>") : -1;
+  if (hasRequest && close < 0) return content;
+  let rest = hasRequest ? trimmed.slice(close + "</USER_REQUEST>".length).trimStart() : trimmed;
+  while (rest) {
+    const tag = /^<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>/.exec(rest);
+    if (!tag) return content;
+    const endTag = `</${tag[1]}>`;
+    const end = rest.indexOf(endTag, tag[0].length);
+    if (end < 0) return content;
+    rest = rest.slice(end + endTag.length).trimStart();
+  }
+  // AGY can put the tags on their own lines. Do not strip indentation inside the prompt.
+  return hasRequest ? trimmed.slice("<USER_REQUEST>".length, close).replace(/^\r?\n|\r?\n$/g, "") : "";
+}
+
+/** Capture the export frontier BEFORE submitting to ACP. A timestamp is not
+ * an identity: native timestamps may be rounded, and two prompts can be equal.
+ * Read only the last physical line(s), not the whole conversation on each send. */
+export async function agyLastStep(dir: string, id: string): Promise<number | undefined> {
+  const file = await agyTranscript(dir, id);
+  if (!file) return -1;
+  const handle = await open(file, "r").catch(() => null);
+  if (!handle) return undefined;
+  try {
+    const { size } = await handle.stat();
+    if (!size) return -1;
+    let length = Math.min(8192, size);
+    for (;;) {
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, size - length);
+      const lines = buffer.toString("utf8", 0, bytesRead).trimEnd().split("\n");
+      if (length === size || lines.length > 1) {
+        const step = agyRecord(JSON.parse(lines.at(-1)!)).step_index;
+        return typeof step === "number" && Number.isSafeInteger(step) ? step : undefined;
+      }
+      if (length >= 1024 * 1024) return undefined;
+      length = Math.min(length * 2, size);
+    }
+  } catch {
+    return undefined; // concurrent export; use the send time as a conservative fallback
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Stable native step ids let pagination and external CLI changes use the same reader. */

@@ -226,6 +226,7 @@ it("runs AGY through ACP without herdr and continues the native conversation onc
   const history = await s.call(`cli-agents/items?key=${encodeURIComponent(key)}`);
   expect(history.data.items.filter((item: { kind: string }) => item.kind === "user").map((item: { text: string }) => item.text))
     .toEqual(["native context", "continue in NexAgent"]);
+  expect(history.data.items.filter((item: { kind: string }) => item.kind === "assistant")).toMatchObject([{ text: "context native context" }]);
 
   const created = await s.call("cli-agents/start", { deviceId: s.deviceId, engine: "agy", cwd: s.workDir, effort: "low", permissions: "edits" });
   expect(created).toMatchObject({ status: 200, data: { key: `${s.deviceId}:agy:c75d00aa-0000-4000-8000-000000000002` } });

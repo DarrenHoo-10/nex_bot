@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
 import { cliPermissionModes, cliQuestionToSteer, modelFailureReason, unwrapPastedContent, type CliItem, type CliAnswerDecision, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { privateCliImageLinks } from "../../../shared/cli-images";
 import { ModelFailureDialog } from "./ModelFailureDialog";
 import { CliApiError, continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
@@ -54,7 +55,7 @@ const NO_REQUESTS: readonly RequestRecord[] = [];
 /** A message sent from this page that the session's records do not hold yet. */
 export interface PendingSend { id: string; text: string; at: number; known: ReadonlySet<string>; queueId?: string }
 
-const plain = (text: string) => text.replace(/\s+/g, " ").trim();
+const plain = (text: string) => privateCliImageLinks(unwrapPastedContent(text)).replace(/\s+/g, " ").trim();
 const isNewAgentItem = (item: CliItem, known: ReadonlySet<string>) =>
   item.kind !== "user" && item.kind !== "turn" && (item.kind !== "notice" || !!item.text) && !known.has(item.id);
 
@@ -96,6 +97,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
   // Core keeps the notes; the isolated review fixture keeps them in the tab
   const {notes,update:updateNotes,error:noteError,dismissError:dismissNoteError}=useNotes(session.key,!review);
   const [items,setItems]=useState<CliItem[]>([]);
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   // handled cards show their outcome for a moment, then leave the space above the box
   const cards = shownCards(requests, now);
   const pendingRequests = requests.filter((record) => cardState(record, now) === "pending");
@@ -202,8 +204,18 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
     if (visibleEchoes.length < echoes.length) setEchoes((list) => list.filter((echo) => !echo.queueId || !queuedIds.has(echo.queueId)));
   }, [queuedIds, visibleEchoes.length, echoes.length]);
   const dropPending = (id: string) => setEchoes((list) => list.filter((entry) => entry.id !== id));
-  const progress = awaiting ? (awaiting.fresh ? "执行中" : awaiting.resuming ? "正在恢复会话" : "等待回复")
-    : session.online && session.state === "running" ? "执行中" : "";
+  const codexReceiptPending = session.engine === "codex" && session.online && session.state !== "running" && session.state !== "waiting" && !!awaiting &&
+    (awaiting.fresh ? !items.some(item => item.kind === "user") : visibleEchoes.length > 0);
+  const receiptId = codexReceiptPending ? visibleEchoes.at(-1)?.id ?? session.key : null;
+  const [lateReceipt, setLateReceipt] = useState<string | null>(null);
+  useEffect(() => {
+    setLateReceipt(null);
+    if (!receiptId) return;
+    const timer = setTimeout(() => setLateReceipt(receiptId), 15_000);
+    return () => clearTimeout(timer);
+  }, [receiptId]);
+  const deliveryLabel = uploadPreview ? "正在上传附件" : codexReceiptPending ? (lateReceipt === receiptId ? "Codex 尚未确认收件，请查看终端" : awaiting?.resuming ? "正在恢复会话" : "等待 Codex 确认收件") : "";
+  const progress = deliveryLabel ? "" : session.online && session.state === "running" ? "执行中" : awaiting ? (awaiting.resuming ? "正在恢复会话" : "等待回复") : "";
   const working = useMemo(() => progress && !compact ? { label: progress } : undefined, [progress, compact]);
 
   async function send(text:string, delivery?:"send"|"queue"|"steer") {
@@ -297,7 +309,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
       {noteError?<div role="alert" className="cli-banner">{noteError}<button type="button" className="text-button" onClick={dismissNoteError}>关闭</button></div>:null}
       {compact && details?.quote?<blockquote className="na-side-quote" aria-label="引用的原文">{details.quote}</blockquote>:null}
       <div className={"cli-pane-body"+(compact?"":" na-conversation-body")}>
-        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} guides={guides} queueEntries={queue?.entries} pending={visibleEchoes.filter(row => !guides.some(guide => guide.id === row.queueId))} working={working} onItems={setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
+        <TranscriptView key={session.key} active={session.state === "running" || session.state === "waiting"} echo={echo} guides={guides} queueEntries={queue?.entries} pending={[...visibleEchoes.filter(row => !guides.some(guide => guide.id === row.queueId)), ...(uploadPreview ? [{ id: "upload", text: uploadPreview }] : [])]} deliveryLabel={deliveryLabel} working={working} onItems={setItems} onSide={onSideOpen} onBranch={onBranchReply} onEdit={compact?undefined:edit} hidden={hidden} engine={session.engine} stream={stream} sessionKey={session.key} notes={notes} onNotes={updateNotes} />
         {!compact && <div ref={workspaceLayer} id={workspaceId} className="na-workspace-layer" data-open={workspaceOpen} inert={!workspaceOpen} aria-hidden={!workspaceOpen}
           onKeyDown={event=>{if(event.key==="Escape" && !(event.target as Element).closest("dialog")){setWorkspaceOpen(false);workspaceToggle.current?.focus()}}}>
           <SessionInfoCard session={session} items={items} open={workspaceOpen} onTerminalOpen={onTerminalOpen && (()=>{setWorkspaceOpen(false);onTerminalOpen()})}/>
@@ -312,7 +324,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
         session={shown} notes={notes} onNotes={updateNotes}
         features={features} launch={launch} onLaunch={chooseLaunch}
         permissions={permissionModes.length ? { modes: permissionModes, value: permission?.mode, pending: permission?.pending ? (takesNow ? "发送下一条消息时生效" : "会话下次启动时生效") : undefined, onChange: choosePermission } : undefined}
-        onSend={send}
+        onSend={send} onUploadPreview={setUploadPreview}
         onInterrupt={() => review ? interruptSession(session.key) : stop()}
         queue={queue}
         revision={revision}

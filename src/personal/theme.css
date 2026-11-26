@@ -1606,6 +1606,31 @@
     color: var(--foreground);
     box-shadow: var(--shadow-float);
   }
+  /* A single stable top-layer frame for the create form and its scrollable avatar catalog. */
+  .rk-workspace .create-bot-dialog {
+    width: min(460px, calc(100% - 32px));
+    max-height: calc(100dvh - 32px);
+  }
+  .create-bot-dialog :is(form:not([hidden]), .create-bot-picker) {
+    display: flex;
+    flex-direction: column;
+    height: min(340px, max(140px, calc(100dvh - 150px)));
+  }
+  .create-bot-dialog :is(.create-bot-fields, .identity-options) {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding: 3px;
+  }
+  .rk-workspace .create-bot-dialog .create-bot-avatar {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    min-height: 44px;
+    margin-bottom: 10px;
+  }
   .rk-workspace .modal .modal-heading {
     margin-bottom: 16px;
   }

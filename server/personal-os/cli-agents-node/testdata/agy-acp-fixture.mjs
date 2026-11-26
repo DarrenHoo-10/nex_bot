@@ -77,7 +77,8 @@ lines.on("line", (line) => {
       const sessionId = params.sessionId;
       const text = params.prompt[0].text;
       const previous = load(sessionId).find((step) => step.type === "USER_INPUT")?.content;
-      append(sessionId, { type: "USER_INPUT", content: text });
+      append(sessionId, { type: "USER_INPUT", created_at: new Date(Date.now() - 1000).toISOString(),
+        content: `<USER_REQUEST>${text}</USER_REQUEST>\n<ADDITIONAL_METADATA>fixture clock</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>fixture model</USER_SETTINGS_CHANGE>` });
       if (text === "request approval") {
         pending.set(++question, { id, sessionId });
         send({

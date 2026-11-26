@@ -103,7 +103,10 @@ final class CliLaunchModelTests: XCTestCase {
         XCTAssertEqual(body?["model"] as? String, "auto/claude-opus-5-5[1m]")
         XCTAssertEqual(body?["effort"] as? String, "high")
         XCTAssertNotNil(body?["requestId"] as? String)
-        XCTAssertEqual(stub.recorded("/api/cli-agents/send").last?.json["text"] as? String, "修一下登录页")
+        let sends = stub.recorded("/api/cli-agents/send")
+        XCTAssertEqual(sends.last?.json["text"] as? String, "修一下登录页")
+        XCTAssertEqual(Set(sends.compactMap { $0.json["requestId"] as? String }).count, 1)
+        XCTAssertEqual(Set(sends.compactMap { $0.json["clientMessageId"] as? String }).count, 1)
     }
 
     func testFailedStartStaysWithARetryOfTheSameRequest() async {

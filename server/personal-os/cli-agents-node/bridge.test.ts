@@ -8,6 +8,7 @@ import type { CliOp, CliOpArgs, DeviceCliMessage } from "../../../shared/cli-age
 import { TERM_INPUT, TERM_OUTPUT, decodeTermFrame, encodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { CliAgentBridge, type CliAgentBridgeOptions } from "./bridge.ts";
 import { FakeHc } from "./fake-hc.ts";
+import { codexReceipt } from "./codex-first-input.ts";
 import type { CommandRunner } from "./liveness.ts";
 import type { OpenLocalPlan } from "./open-local.ts";
 
@@ -423,7 +424,7 @@ describe("start", () => {
 
 describe("Codex session mapping", () => {
   it("returns the saved native ID for a new chat before it has a first message", async () => {
-    const t = setup();
+    const t = setup({ codexReceiptMs: 30 });
     await t.start();
     const reply = await t.call("start", { engine: "codex", cwd: workDir, model: "gpt-6.2", permissions: "ask" });
     expect(reply.ok).toBe(true);
@@ -434,7 +435,39 @@ describe("Codex session mapping", () => {
       labels: { "nexbot.native": XID(9) },
     });
     expect(t.sessions()).toContainEqual(expect.objectContaining({ nativeId: XID(9), terminal: result.terminal }));
-    expect(await t.call("send", { ref: `codex:${XID(9)}`, text: "the first message" })).toMatchObject({ ok: true });
+    const terminal = hc.terminals.get(result.terminal)!;
+    const pending = t.call("send", { ref: result.ref as `codex:${string}`, text: "the first message" });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(terminal.sent).toHaveLength(0);
+    terminal.screen = "› Explain this codebase\nGPT-6.2-Astra max fast · worktree\n⚠ 1 warning · f2 to view";
+    await until(() => terminal.sent.length === 1);
+    expect(terminal.pressed).toEqual([]);
+    expect(await pending).toMatchObject({ ok: true, result: { delivery: "unconfirmed", started: false } });
+  });
+
+  it("confirms only a new native user record matching this submission", async () => {
+    const file = codexRollout(XID(9), "same text", 0);
+    const receipt = await codexReceipt(file);
+    expect(receipt).not.toBeNull();
+    try {
+      expect(await receipt!.confirmed("same text", Date.now() + 20)).toBe(false);
+      appendFileSync(file, JSON.stringify({ type: "event_msg", payload: { type: "item_completed", item: { type: "UserMessage", content: [{ type: "text", text: "same text" }] } } }) + "\n");
+      expect(await receipt!.confirmed("same text", Date.now() + 1000)).toBe(true);
+    } finally { await receipt?.close(); }
+  });
+
+  it("does not type through a startup menu or submit a pre-existing draft", async () => {
+    const t = setup({ codexInputReadyMs: 300 });
+    await t.start();
+    const launch = await t.call("start", { engine: "codex", cwd: workDir });
+    const { ref, terminal: address } = launch.result as { ref: `codex:${string}`; terminal: string };
+    const terminal = hc.terminals.get(address)!;
+    for (const screen of ["› 1. Trust this folder\nPress Enter to continue", "› someone else's draft\nGPT-6.2-Astra · worktree"]) {
+      terminal.screen = screen;
+      expect(await t.call("send", { ref, text: "hello" })).toMatchObject({ ok: false });
+    }
+    expect(terminal.sent).toHaveLength(0);
+    expect(terminal.pressed).toEqual([]);
   });
 
   it("claims the new rollout in the same directory, not an older session or another directory", async () => {

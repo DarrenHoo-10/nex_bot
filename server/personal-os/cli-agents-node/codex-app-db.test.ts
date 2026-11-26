@@ -220,6 +220,13 @@ describe("CodexAppDb.page", () => {
     expect(older.more).toBe(false);
   });
 
+  it("pages past 300 turns without wrapping a missing cursor back to the newest page", async () => {
+    makeHistory(1, ID, Array.from({ length: 305 }, (_, n) => ({ id: `t${n}`, status: "completed", startedAt: NOW + n, completedAt: NOW + n })), []);
+    const db = new CodexAppDb(home, { exclude });
+    expect((await db.page(ID, { before: "t5:started", limit: 12 })).items[0]?.id).toBe("t0:started");
+    expect(await db.page(ID, { before: "missing" })).toEqual({ items: [], more: false });
+  });
+
   it("is empty for an unknown chat or a missing history database", async () => {
     const db = new CodexAppDb(home, { exclude });
     expect(await db.page(ID)).toEqual({ items: [], more: false });

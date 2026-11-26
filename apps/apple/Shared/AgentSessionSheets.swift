@@ -45,17 +45,24 @@ struct AgentLaunchDetail: View {
 
     var body: some View {
         let row = CliLaunches.row(launch)
+        let preview = CliLaunches.messagePreview(launch.request.message, images: launch.request.images)
+        let status: String = switch launch.phase {
+        case .starting: "正在启动"
+        case .sending: "正在发送"
+        case .sent: "等待会话同步"
+        case .failed: launch.target == nil ? "未启动" : "发送失败"
+        }
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text(row.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 4)
-                if case .failed = launch.phase { CliChip(text: "未启动", tone: .stopped) } else { CliChip(text: "运行中", tone: .running) }
+                if case .failed = launch.phase { CliChip(text: status, tone: .stopped) } else { CliChip(text: status, tone: .running) }
             }
             .padding(14)
             // laid out like any conversation: the message, then the agent's reply slot
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if !launch.request.message.isEmpty { AgentEchoBubble(text: launch.request.message, loadImage: model.downloadImage) }
+                    if !preview.isEmpty { AgentEchoBubble(text: preview, loadImage: model.downloadImage) }
                     if case .failed(let reason) = launch.phase {
                         VStack(alignment: .leading, spacing: 6) {
                             AgentByline(engine: launch.request.engine)
@@ -65,8 +72,6 @@ struct AgentLaunchDetail: View {
                                 Button("关闭") { model.dismissLaunch(launch.id) }.buttonStyle(ConversationActionButtonStyle(tone: .dark))
                             }
                         }
-                    } else {
-                        AgentWorkingRow(engine: launch.request.engine, label: "执行中", byline: true)
                     }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 6)

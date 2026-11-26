@@ -30,8 +30,8 @@ extension WorkspaceStore {
 
     /// Creates an agent and returns its id (select it with ``select(_:)``).
     @discardableResult
-    public func createAgent(name: String, instructions: String = "") async throws -> String {
-        try await act { try await client.createBot(name: name, instructions: instructions) }
+    public func createAgent(name: String, instructions: String = "", appearance: AppearanceChoice? = nil) async throws -> String {
+        try await act { try await client.createBot(name: name, instructions: instructions, appearance: appearance) }
     }
     /// Saves name and instructions; `expertise` is only sent when non-nil.
     public func updateIdentity(botID: String, name: String, instructions: String, expertise: [String]? = nil) async throws {

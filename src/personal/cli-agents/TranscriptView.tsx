@@ -330,7 +330,7 @@ export function EchoMessage({ text }: { text: string }) {
   );
 }
 
-export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,onBranch,echo,guides,queueEntries,pending=NO_PENDING,hidden=NO_HIDDEN,working,active = false }: { guides?:readonly GuideMessage[]; queueEntries?:readonly CliQueueEntry[]; active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; onBranch?(messageId: string): void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
+export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,engine,notes=[],onNotes,onSide,onItems,onEdit,onBranch,echo,guides,queueEntries,pending=NO_PENDING,hidden=NO_HIDDEN,working,deliveryLabel,active = false }: { deliveryLabel?:string; guides?:readonly GuideMessage[]; queueEntries?:readonly CliQueueEntry[]; active?:boolean; hidden?:ReadonlySet<string>; echo?:{text:string;at:number}; pending?:readonly {id:string;text:string}[]; working?:{label:string}; onItems?(items:CliItem[]):void; onSide?(quote:string,message:string):Promise<void>; onEdit?(messageId:string,text:string):void; onBranch?(messageId: string): void; engine?:CliEngine; stream: CliStream; sessionKey: CliSessionKey;notes?:Note[];onNotes?(notes:Note[]):void }) {
   const review=useReview(), details=review?.records[sessionKey];
   const [items, setItems] = useState<CliItem[]>([]);
   const [translationEnabled, setTranslationEnabled] = useState<boolean | null>();
@@ -350,12 +350,15 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   latestTranscript.current = { sessionKey, items, more, translationEnabled };
   const fetchedAt = useRef(0);
   const streamResets = useRef(0);
+  const refreshDeltas = useRef<CliItem[] | null>(null);
   const generation = useRef(0);
   const localTail = useRef<StoredTail | undefined>(undefined);
 
   const loadFirst = useCallback(async () => {
     const mine = ++generation.current;
     const resetAtStart = streamResets.current;
+    const pushed: CliItem[] = [];
+    refreshDeltas.current = pushed;
     const scope = localCacheScope();
     setLoading(true);
     setError("");
@@ -364,8 +367,11 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
       if (generation.current !== mine) return;
       // pushes that arrived while the page was loading stay
       if (streamResets.current === resetAtStart) {
-        setItems(current => mergeItems(page.items, current, false, true));
-        setMore(page.more);
+        setItems(current => {
+          const next = resetItems(current, page.items);
+          if (!next.kept) setMore(page.more);
+          return mergeItems(next.items, pushed, false, true);
+        });
       }
       setTranslationEnabled(page.translationEnabled ?? null);
       fetchedAt.current = Date.now();
@@ -376,7 +382,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     } catch (cause) {
       if (generation.current === mine) setError(cliErrorText(cause, "记录读取失败"));
     } finally {
-      if (generation.current === mine) setLoading(false);
+      if (generation.current === mine) { refreshDeltas.current = null; setLoading(false); }
     }
   }, [sessionKey]);
 
@@ -431,8 +437,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
         saveTail(scope, key, tail);
         setLoading(false);
         setItems(current => {
-          const previousTailIds = new Set(previous?.items.map(item => item.id));
-          const next = resetItems(current.filter(item => !previousTailIds.has(item.id)), rebuilt);
+          const next = resetItems(current, rebuilt);
           if (!next.kept) setMore(message.more === true);
           return next.items;
         });
@@ -440,7 +445,10 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
       }
       if (message.reset) clearTimeout(fallback);
       if (message.reset) batch = { items: [], more: message.more };
-      if (!batch) { setItems(current => mergeItems(current, message.items, false, true)); return; }
+      if (!batch) {
+        refreshDeltas.current?.push(...message.items);
+        setItems(current => mergeItems(current, message.items, false, true)); return;
+      }
       batch.items.push(...message.items);
       if (message.continues) return;
       const page = batch;
@@ -497,6 +505,11 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     try {
       const page = await fetchItems(sessionKey, before);
       if (generation.current !== mine || oldestId(itemsRef.current) !== before) return;
+      const shownIds = new Set(itemsRef.current.map(item => item.id));
+      if (page.more && page.items.every(item => shownIds.has(item.id))) {
+        setOlderError("历史游标未前进，请重试");
+        return;
+      }
       anchorRef.current = { height: scroller.scrollHeight, top: scroller.scrollTop };
       setItems((current) => prependItems(current, page.items));
       setMore(page.more);
@@ -567,9 +580,10 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
         })}
         {echoShown && echo ? <EchoMessage text={echo.text}/> : null}
         {pending.map((entry) => <EchoMessage key={entry.id} text={entry.text}/>)}
+        {deliveryLabel ? <small className="cli-notice" role="status">{deliveryLabel}</small> : null}
         {working ? <WorkingRow engine={engine} label={working.label} byline={echoShown || pending.length > 0 || !replying}/> : null}
         {loading && !items.length && !echo ? <div className="cli-empty" role="status">正在读取…</div> : null}
-        {!loading && !error && !items.length && !echo ? <div className="cli-empty">暂无记录</div> : null}
+        {!loading && !error && !items.length && !echo && !pending.length ? <div className="cli-empty">暂无记录</div> : null}
         {error ? <div className="cli-notice" data-level="error" role="alert">{error}<button type="button" className="text-button" onClick={() => void loadFirst()}>重试</button></div> : null}
       </div>
     </div>

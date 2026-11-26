@@ -10,6 +10,7 @@ struct AgentEditorSheet: View {
     @Environment(UIState.self) private var ui
     @State private var name = ""
     @State private var instructions = ""
+    @State private var appearance: AgentAppearance?
     @State private var error: String?
     @State private var busy = false
     @State private var loaded = false
@@ -20,6 +21,7 @@ struct AgentEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             DialogHeader(title: editing == nil ? "添加 Agent" : "Agent 身份") { dismiss() }
+            if editing == nil { NewAgentAvatarField(appearance: $appearance) }
             VStack(alignment: .leading, spacing: 6) {
                 FieldLabel(text: "名字")
                 DialogTextField(placeholder: "名字", text: $name).accessibilityLabel("名字")
@@ -54,7 +56,7 @@ struct AgentEditorSheet: View {
                 if let bot = editing {
                     try await workspace.updateIdentity(botID: bot.id, name: name.trimmingCharacters(in: .whitespacesAndNewlines), instructions: instructions)
                 } else {
-                    let id = try await workspace.createAgent(name: name.trimmingCharacters(in: .whitespacesAndNewlines), instructions: instructions)
+                    let id = try await workspace.createAgent(name: name.trimmingCharacters(in: .whitespacesAndNewlines), instructions: instructions, appearance: appearance?.request)
                     workspace.select(id)
                 }
                 dismiss()

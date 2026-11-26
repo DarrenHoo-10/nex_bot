@@ -826,7 +826,7 @@ export async function createPersonalApp(options: AppOptions) {
         json(response, 200, result); return;
       }
       if (url.pathname === "/api/config") { if (runtime.workers.size) throw new Error("请先等待模型请求结束再修改模型"); store.saveConfig(data); changed(); json(response, 200, { ok: true }); return; }
-      if (url.pathname === "/api/bots") { const botId = store.createBot(text(data.name, 80), data.instructions); agents.ensure(botId); changed(); json(response, 200, { id: botId }); return; }
+      if (url.pathname === "/api/bots") { const botId = store.createBot(text(data.name, 80), data.instructions, data.appearance); agents.ensure(botId); changed(); json(response, 200, { id: botId }); return; }
       if (url.pathname === "/api/bots/update") {
         agents.updateProfile(data); json(response, 200, { ok: true }); return;
       }

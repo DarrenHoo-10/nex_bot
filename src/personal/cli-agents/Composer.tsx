@@ -6,7 +6,7 @@ import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDa
 import { MAX_SEND_TEXT, cliPermissionLabel, utf8ByteLength, type CliContextUsage, type CliPermissionMode, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
-import {fileReference,getExtras,isPickedImage,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
+import {attachmentPreview,attachmentReferences,getExtras,isPickedImage,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
 import { composerMode } from "./session-model";
 import { CliModelMenu, type LaunchChoice } from "./CliModelMenu";
 import { useCompactComposer } from "../components/use-compact-composer";
@@ -63,6 +63,7 @@ export interface ComposerProps {
   onNotes?(notes:Note[]):void;
   session: CliSessionView;
   onSend(text: string, delivery?: "send"|"queue"|"steer"): Promise<unknown>;
+  onUploadPreview?(text: string | null): void;
   onInterrupt(): Promise<unknown>;
   /** the session's live outbox; queued entries show, edit, withdraw and steer here */
   queue?: CliQueue | null;
@@ -80,7 +81,7 @@ export interface ComposerProps {
   permissions?: { modes: readonly CliPermissionMode[]; value?: CliPermissionMode; pending?: string; onChange(mode: CliPermissionMode): void };
 }
 
-export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, starter, features, launch, onLaunch, queue=null, guided, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, steerQuestionId, interruptWaiting, onQueueSteer, permissions, onQueueResume }: ComposerProps) {
+export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=[], onNotes, draft, starter, features, launch, onLaunch, queue=null, guided, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, steerQuestionId, interruptWaiting, onQueueSteer, permissions, onQueueResume }: ComposerProps) {
   const mode = draft || starter ? {kind:"send",running:false,outside:false} as const : composerMode(session);
   const review=useReview(), details=draft?undefined:review?.records[session.key];
   const model=draft?.model || details?.model || review?.models[session.engine]?.[0] || session.model?.trim() || "";
@@ -131,6 +132,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const revisionId = revision?.messageId ?? null;
   const [text, setText] = useState(() => revision?.text ?? drafts.get(key) ?? "");
   const [sending,setSending]=useState(false);
+  const submitting = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
@@ -225,7 +227,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   // the paused note matters only while something waits in the queue
   const pausedNote = !review && queue?.paused && realQueue.length > 0;
   const submit = async () => {
-    if(!canSubmit || busy || draft?.busy || tooLarge)return;
+    if(!canSubmit || submitting.current || busy || draft?.busy || tooLarge)return;
     if(starter){
       starter.onStart(body, extra.files.map(entry=>entry.file));
       drafts.delete(key);saveExtras(key,{files:[],goal:null});
@@ -240,16 +242,18 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
     setError("");setNote("");
     // uploads take a while: the button shows it, typing stays open
     const uploads=kept.files.length>0;
-    if(uploads)setSending(true);
+    submitting.current = true;
+    setSending(true);
+    if (uploads) onUploadPreview?.(attachmentPreview(body, kept.files.map(entry => entry.file)));
     let result:unknown;
     try {
-      const references=[];
       // Images use Core storage even when the executor cannot upload device files.
       const upload=review?.fileUpload ? true : features?.includes("attach") ? (file:File)=>uploadAttachment(session.key,file) : false;
-      for(const entry of kept.files)references.push(await fileReference(entry,session.key,upload));
+      const references = uploads ? await attachmentReferences(kept.files, session.key, upload) : [];
       const value=[body,...references].filter(Boolean).join("\n\n");
       if(utf8ByteLength(value)>MAX_SEND_TEXT)throw Error("消息和附件内容超过可发送长度");
       rememberSent(session.key, body, kept.files);
+      if (uploads) onUploadPreview?.(null);
       // a resend replaces the message the agent is on: it goes now, never into the queue
       result = active&&review&&!revision ? await review.run("queue",session.key,{text:value})
         : queuesWhileBusy ? await onSend(value, "queue") : await onSend(value);
@@ -264,7 +268,11 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
       if (mounted.current) setError(cliErrorText(cause));
       return;
     } finally {
-      if (uploads && mounted.current) setSending(false);
+      submitting.current = false;
+      if (mounted.current) {
+        if (uploads) onUploadPreview?.(null);
+        setSending(false);
+      }
     }
     if (!mounted.current) return;
     if(!active)setSentAt(Date.now());
@@ -312,7 +320,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <span className="na-queued-label"><ListOrdered size={13}/>排队 {i+1}</span>
           <span className="na-queued-text" title={entry.text}>{entry.text}</span>
           {entry.status==="uncertain" ? <small className="na-queued-state" role="status">待确认</small> : null}
-          {entry.status==="failed" ? <small className="na-queued-state" data-tone="error" role="alert">发送失败</small> : null}
+          {entry.status==="failed" ? <small className="na-queued-state" data-tone="error" role="alert">{session.engine === "codex" && entry.errorCode === "read_only" ? "消息未发送，请检查 Codex 终端" : "发送失败"}</small> : null}
           {entry.status==="pending" || entry.status==="failed" ? <span className="na-queued-actions">
             {entry.status==="pending" && onQueueSteer && canSteer ? <button type="button" onClick={()=>{steered.current=entry.id;void run(()=>onQueueSteer(entry.id, entry.version)).then(done=>{if(done)steered.current=null})}}><CornerUpRight size={14} aria-hidden="true"/>{steerLabel}</button> : null}
             {onQueueEdit ? <button type="button" className="is-icon" aria-label={"编辑排队消息 "+(i+1)} data-tip="编辑" onClick={()=>setEditingQueue({id:entry.id,version:entry.version,text:entry.text})}><Pencil size={13}/></button> : null}
@@ -377,7 +385,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
         </>
         {/* one button: Stop while a turn runs and the box is empty, Send once there is something to send */}
         {stopOnly ? <button type="button" className="na-stop" aria-label={review?"中断":"停止"} title={review?"中断":"停止当前运行并暂停队列"} disabled={busy} onClick={() => void run(onInterrupt)}><Square size={12} fill="currentColor" strokeWidth={0}/></button> : null}
-        {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":queuesWhileBusy ? "排队发送" : "发送"} aria-label="发送" disabled={!!draft?.busy || busy || !canSubmit || tooLarge}>{sending || draft?.busy ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
+        {stopOnly ? null : <button type="submit" className="primary" aria-busy={sending || !!draft?.busy} title={sending?"正在处理…":queuesWhileBusy ? "排队发送" : "发送"} aria-label="发送" disabled={sending || !!draft?.busy || busy || !canSubmit || tooLarge}>{draft?.busy || (sending && !onUploadPreview) ? <LoaderCircle className="na-busy-icon" size={17}/> : <ArrowUp size={19}/>}</button>}
       </div>
       {tooLarge ? <small role="alert" className="cli-composer-error">内容太长</small> : error ? <small role="alert" className="cli-composer-error">{error}</small> : null}
       {mode.kind==="send" && mode.outside && note ? <small className="cli-composer-note" role="status" data-testid="cli-composer-note">{note}</small> : null}

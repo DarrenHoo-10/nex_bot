@@ -16,7 +16,6 @@ import { clipUnits, codexThreadItemToItems, type LocalSession } from "./items.ts
 const DAY_MS = 86_400_000;
 const TITLE_CHARS = 60;
 const THREAD_ROWS = 500;
-const TURN_ROWS = 300;
 const CACHE_MS = 30_000;
 
 type Row = Record<string, unknown>;
@@ -252,99 +251,67 @@ export class CodexAppDb {
 
   /** One page of the chat, newest last; `before` is an item id and the page ends right before it. */
   async page(threadId: string, options: { before?: string; limit?: number } = {}): Promise<{ items: CliItem[]; more: boolean }> {
-    const { items, older } = await this.load(threadId);
-    const limit = Math.max(1, options.limit ?? PAGE_SIZE);
-    let end = items.length;
-    if (options.before) {
-      const index = items.findIndex((item) => item.id === options.before);
-      if (index >= 0) end = index;
-    }
-    const start = Math.max(0, end - limit);
-    return { items: items.slice(start, end), more: start > 0 || (end === items.length && older) };
-  }
-
-  private async load(threadId: string): Promise<{ items: CliItem[]; older: boolean }> {
     const file = await latestDb(this.home, "thread_history");
-    if (!file) return { items: [], older: false };
+    if (!file) return { items: [], more: false };
+    const limit = Math.max(1, options.limit ?? PAGE_SIZE);
     try {
       const db = openReadOnly(file);
       try {
-        return mapHistory(db, threadId);
+        const items: CliItem[] = [];
+        let seeking = options.before;
+        for (const item of historyBackwards(db, threadId, seeking)) {
+          if (seeking !== undefined) {
+            if (item.id === seeking) seeking = undefined;
+          } else if (items.length === limit) return { items: items.reverse(), more: true };
+          else items.push(item);
+        }
+        return { items: items.reverse(), more: false };
       } finally {
         db.close();
       }
     } catch {
-      return { items: [], older: false };
+      return { items: [], more: false };
     }
   }
 }
 
-function mapHistory(db: DatabaseSync, threadId: string): { items: CliItem[]; older: boolean } {
-  const turnColumns = columnsOf(db, "thread_turns");
-  const itemColumns = columnsOf(db, "thread_items");
-  if (!itemColumns.has("item_json") || !itemColumns.has("item_id")) return { items: [], older: false };
-  const turnOrder = turnColumns.has("rollout_ordinal") ? "rollout_ordinal" : "rowid";
-  const turns = turnColumns.has("turn_id")
-    ? (db
-        .prepare(
-          `SELECT turn_id, ${turnColumns.has("status") ? "status" : "NULL AS status"}, ${turnColumns.has("started_at") ? "started_at" : "NULL AS started_at"}, ${turnColumns.has("completed_at") ? "completed_at" : "NULL AS completed_at"} FROM thread_turns WHERE thread_id = ? ORDER BY ${turnOrder} DESC LIMIT ${TURN_ROWS + 1}`,
-        )
-        .all(threadId) as Row[])
-    : [];
-  const older = turns.length > TURN_ROWS;
-  const kept = turns.slice(0, TURN_ROWS).reverse();
-  const itemOrder = itemColumns.has("rollout_ordinal") ? "rollout_ordinal" : "rowid";
-  const rows = db
-    .prepare(
-      `SELECT item_id, ${itemColumns.has("turn_id") ? "turn_id" : "NULL AS turn_id"}, ${itemColumns.has("rollout_ordinal") ? "rollout_ordinal" : "NULL AS rollout_ordinal"}, ${itemColumns.has("created_at_ms") ? "created_at_ms" : "NULL AS created_at_ms"}, item_json, ${itemColumns.has("item_type") ? "item_type" : "NULL AS item_type"} FROM thread_items WHERE thread_id = ? ORDER BY ${itemOrder} ASC`,
-    )
-    .all(threadId) as Row[];
-
-  const byTurn = new Map<string, Row[]>();
-  const loose: Row[] = [];
-  for (const row of rows) {
-    const turn = text(row.turn_id);
-    if (!turn) {
-      loose.push(row);
-      continue;
+/** Walk the same turn/record order as the App, stopping as soon as the caller
+ * has a page plus one item. A long thread isn't a reason to cut off history. */
+function* historyBackwards(db: DatabaseSync, threadId: string, before?: string): Generator<CliItem> {
+  const turnCols = columnsOf(db, "thread_turns"), itemCols = columnsOf(db, "thread_items");
+  if (!itemCols.has("item_json") || !itemCols.has("item_id")) return;
+  const optional = (cols: Set<string>, name: string) => cols.has(name) ? name : `NULL AS ${name}`;
+  const order = (cols: Set<string>, key: "turn_id" | "item_id") => cols.has("rollout_ordinal") ? `rollout_ordinal DESC, ${key} DESC` : "rowid DESC";
+  const itemQuery = `SELECT item_id, item_json, ${["item_type", "rollout_ordinal", "created_at_ms"].map(k => optional(itemCols, k)).join(", ")} FROM thread_items WHERE thread_id=?`;
+  function* mapped(rows: Iterable<Row>, fallbackTs: number) {
+    for (const row of rows) {
+      let item: Row;
+      try { item = JSON.parse(String(row.item_json)); } catch { continue; }
+      if (!item || typeof item !== "object") continue;
+      if (typeof item.type !== "string") item.type = text(row.item_type);
+      if (typeof item.id !== "string") item.id = String(row.item_id);
+      yield* codexThreadItemToItems(item, { segment: threadId, offset: num(row.rollout_ordinal) ?? 0 }, epochMs(row.created_at_ms) ?? fallbackTs).reverse();
     }
-    const list = byTurn.get(turn);
-    if (list) list.push(row);
-    else byTurn.set(turn, [row]);
   }
-
-  const out: CliItem[] = [];
-  const emit = (row: Row, fallbackTs: number): void => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(String(row.item_json));
-    } catch {
-      return;
+  if (turnCols.has("turn_id")) {
+    const perTurn = itemCols.has("turn_id") ? db.prepare(`${itemQuery} AND turn_id=? ORDER BY ${order(itemCols, "item_id")}`) : null;
+    // Jump to the anchor's turn when possible. Still match the emitted id
+    // below: markers are synthetic, and older schemas may supply an id in JSON.
+    const anchorTurn = before && (text(perTurn && db.prepare("SELECT turn_id FROM thread_items WHERE thread_id=? AND item_id=?").get(threadId, before)?.turn_id) ?? /^(.*):(?:started|ended|aborted)$/.exec(before)?.[1]);
+    const ordinal = turnCols.has("rollout_ordinal") ? "COALESCE(rollout_ordinal,-1)" : "rowid";
+    const boundary = anchorTurn && db.prepare(`SELECT ${ordinal} AS ord,turn_id FROM thread_turns WHERE thread_id=? AND turn_id=?`).get(threadId, anchorTurn);
+    const turns = db.prepare(`SELECT turn_id, ${["status", "started_at", "completed_at"].map(k => optional(turnCols, k)).join(", ")} FROM thread_turns WHERE thread_id=? ${boundary ? `AND (${ordinal},turn_id)<=(?,?)` : ""} ORDER BY ${order(turnCols, "turn_id")}`);
+    for (const turn of turns.iterate(threadId, ...(boundary ? [boundary.ord, boundary.turn_id] : []))) {
+      const turnId = text(turn.turn_id);
+      if (!turnId) continue;
+      const start = epochMs(turn.started_at) ?? 0;
+      const phase = turn.status === "interrupted" ? "aborted" : turn.status === "completed" || turn.status === "failed" ? "ended" : null;
+      if (phase) yield { kind: "turn", id: `${turnId}:${phase}`, ts: epochMs(turn.completed_at) ?? start, phase };
+      if (perTurn) yield* mapped(perTurn.iterate(threadId, turnId), start);
+      yield { kind: "turn", id: `${turnId}:started`, ts: start, phase: "started" };
     }
-    if (!parsed || typeof parsed !== "object") return;
-    const item = { ...(parsed as Row) };
-    if (typeof item.type !== "string") {
-      const kind = text(row.item_type);
-      if (kind) item.type = kind;
-    }
-    if (typeof item.id !== "string") item.id = String(row.item_id);
-    const ts = epochMs(row.created_at_ms) ?? fallbackTs;
-    const ordinal = num(row.rollout_ordinal) ?? 0;
-    out.push(...codexThreadItemToItems(item, { segment: threadId, offset: ordinal }, ts));
-  };
-
-  // items without a turn come first; items of turns older than the kept ones are left out
-  if (!older) for (const row of loose) emit(row, 0);
-  for (const turn of kept) {
-    const turnId = text(turn.turn_id);
-    if (!turnId) continue;
-    const startedAt = epochMs(turn.started_at) ?? 0;
-    const completedAt = epochMs(turn.completed_at) ?? startedAt;
-    out.push({ kind: "turn", id: `${turnId}:started`, ts: startedAt, phase: "started" });
-    for (const row of byTurn.get(turnId) ?? []) emit(row, startedAt);
-    const status = text(turn.status);
-    if (status === "completed" || status === "failed") out.push({ kind: "turn", id: `${turnId}:ended`, ts: completedAt, phase: "ended" });
-    else if (status === "interrupted") out.push({ kind: "turn", id: `${turnId}:aborted`, ts: completedAt, phase: "aborted" });
   }
-  return { items: out, older };
+  // Items without a turn precede all turns in the forward timeline.
+  const loose = db.prepare(`${itemQuery} ${itemCols.has("turn_id") ? "AND (turn_id IS NULL OR turn_id='')" : ""} ORDER BY ${order(itemCols, "item_id")}`);
+  yield* mapped(loose.iterate(threadId), 0);
 }

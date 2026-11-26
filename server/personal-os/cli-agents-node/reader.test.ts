@@ -27,7 +27,7 @@ function userLine(n: number, text = `message ${n}`): string {
   });
 }
 
-function make(file: string, engine: "claude" | "codex", extra: Partial<TranscriptReaderOptions> = {}) {
+function make(file: string, engine: "claude" | "codex" | "agy", extra: Partial<TranscriptReaderOptions> = {}) {
   const items: CliItem[][] = [];
   const resets: ReaderPage[] = [];
   const rows: RowUpdate[] = [];
@@ -46,6 +46,21 @@ function make(file: string, engine: "claude" | "codex", extra: Partial<Transcrip
 }
 
 describe("TranscriptReader initial page", () => {
+  it("resolves an AGY step cursor with a fresh reader and shows only the wrapped user request", async () => {
+    const file = path.join(dir, "steps.jsonl");
+    const content = "<USER_REQUEST>hi，测试一下新建会话</USER_REQUEST>\n<ADDITIONAL_METADATA>time</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>model</USER_SETTINGS_CHANGE>";
+    writeFileSync(file, [0, 1].map(step_index => JSON.stringify({ type: "USER_INPUT", step_index, content })).join("\n") + "\n");
+    const { reader } = make(file, "agy");
+    const older = await reader.page({ before: "agy:1" });
+    expect(older.items).toMatchObject([{ id: "agy:0", text: "hi，测试一下新建会话" }]);
+    expect(older.more).toBe(false);
+  });
+
+  it("can page a v2 Codex rollout without starting a live watcher first", async () => {
+    const { reader } = make(fixture("codex-rollout-v2.jsonl"), "codex");
+    expect((await reader.page({ before: "item-2" })).items.map(item => item.id)).toEqual(["turn-1:started", "item-1"]);
+  });
+
   it("reads a Claude fixture, completes the tool from its result and validates every item", async () => {
     const { reader } = make(fixture("claude-session.jsonl"), "claude");
     const page = await reader.start();
@@ -54,6 +69,18 @@ describe("TranscriptReader initial page", () => {
     expect(page.items.map((item) => item.kind)).toEqual(["user", "thinking", "assistant", "tool", "assistant"]);
     expect(page.items.find((item) => item.kind === "tool")).toMatchObject({ kind: "tool", name: "Bash", status: "error" });
     expect(page.items[0]).toMatchObject({ kind: "user", text: "Fix the failing test" });
+  });
+
+  it("folds a summary into the preceding compaction boundary across a live append, not into the next boundary", async () => {
+    const file = path.join(dir, "compact.jsonl");
+    const boundary = (uuid: string) => JSON.stringify({ type: "system", subtype: "compact_boundary", uuid, timestamp: "2026-11-26T01:00:00Z" });
+    writeFileSync(file, boundary("first") + "\n");
+    const { reader, items } = make(file, "claude");
+    expect((await reader.start()).items.map(item => item.id)).toEqual(["first"]);
+    appendFileSync(file, JSON.stringify({ type: "user", isCompactSummary: true, uuid: "summary", timestamp: "2026-11-26T01:00:01Z" }) + "\n" + boundary("second") + "\n");
+    await reader.poll();
+    expect(items.flat().map(item => item.id)).toEqual(["second"]);
+    expect((await reader.page()).items.map(item => item.id)).toEqual(["first", "second"]);
   });
 
   it("returns an empty page for a missing file and picks it up when it appears", async () => {

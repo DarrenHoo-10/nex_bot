@@ -157,6 +157,22 @@ describe("images", () => {
     expect(onSend.mock.calls[0][0]).toBe("看看这个报错\n\n![shot.png](/api/cli-agents/images/12345678-0000-4000-8000-000000000000)");
   });
 
+  it("echoes the caption and attachment before upload completes and sends only once", async () => {
+    let finish!: (value: { path: string }) => void;
+    uploadAttachment.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const preview = vi.fn(), onSend = vi.fn(async () => ({}));
+    await act(async () => { root.render(createElement(Composer, { session: session({ nativeId: "upload-delay" }), onSend, onUploadPreview: preview, onInterrupt: async () => ({}) })); });
+    await paste(png()); await type("查一下"); await submit();
+    expect(preview).toHaveBeenCalledWith("查一下\n图片：shot.png");
+    expect(onSend).not.toHaveBeenCalled();
+    await type("下一条");
+    expect(sendButton().disabled).toBe(true);
+    await act(async () => finish({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" }));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(area().value).toBe("下一条");
+    expect(preview).toHaveBeenLastCalledWith(null);
+  });
+
   it("sends an image even when the execution device cannot upload files", async () => {
     const onSend = vi.fn(async (_text: string) => ({ turn: 1 }));
     await act(async () => { root.render(createElement(Composer, { session: session({ nativeId: "s2" }), onSend, onInterrupt: async () => ({}), features: [] })); });

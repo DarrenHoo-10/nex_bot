@@ -393,6 +393,7 @@ public struct CliQueuedEntry: Decodable, Identifiable, Sendable {
     public let version: Int
     public let text: String
     public let status: String
+    public var errorCode: String? = nil
 }
 public struct CliSessionQueue: Decodable, Sendable {
     public let sessionKey: String
