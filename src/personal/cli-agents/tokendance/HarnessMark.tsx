@@ -1,5 +1,47 @@
-import type { ReactNode, SVGProps } from 'react';
+import { useId, type ReactNode, type SVGProps } from 'react';
 import { resolveHarnessBrand } from './harnessBrand';
+
+const ANTIGRAVITY_PATH =
+  'M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z';
+
+/** Official Google Antigravity four-color mark (clipPath + radial gradients, no blur filters). */
+function AntigravityGlyph() {
+  const id = useId().replace(/:/g, '');
+  const clip = `${id}-c`;
+  const red = `${id}-r`;
+  const yellow = `${id}-y`;
+  const green = `${id}-g`;
+  return (
+    <Icon viewBox="-0.5 0 25 24">
+      <defs>
+        <clipPath id={clip}>
+          <path d={ANTIGRAVITY_PATH} />
+        </clipPath>
+        <radialGradient id={red} cx="18.5" cy="5.5" r="11.5" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#FC413D" />
+          <stop offset="55%" stopColor="#FC413D" stopOpacity="0.88" />
+          <stop offset="100%" stopColor="#FC413D" stopOpacity="0" />
+        </radialGradient>
+        <radialGradient id={yellow} cx="7.5" cy="2" r="10.5" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#FBBC04" />
+          <stop offset="55%" stopColor="#FBBC04" stopOpacity="0.85" />
+          <stop offset="100%" stopColor="#FBBC04" stopOpacity="0" />
+        </radialGradient>
+        <radialGradient id={green} cx="3" cy="12" r="10.5" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#00B95C" />
+          <stop offset="55%" stopColor="#00B95C" stopOpacity="0.88" />
+          <stop offset="100%" stopColor="#00B95C" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <g clipPath={`url(#${clip})`}>
+        <rect x="-1" y="0" width="26" height="24" fill="#3186FF" />
+        <rect x="-1" y="0" width="26" height="24" fill={`url(#${red})`} />
+        <rect x="-1" y="0" width="26" height="24" fill={`url(#${yellow})`} />
+        <rect x="-1" y="0" width="26" height="24" fill={`url(#${green})`} />
+      </g>
+    </Icon>
+  );
+}
 
 function Icon({ children, ...props }: SVGProps<SVGSVGElement>) {
   return (
@@ -118,7 +160,7 @@ export function HarnessMark({
       }}
       aria-hidden="true"
     >
-      {glyphs[brand.id] ?? <b>{brand.letter}</b>}
+      {brand.id === 'agy' ? <AntigravityGlyph /> : (glyphs[brand.id] ?? <b>{brand.letter}</b>)}
     </span>
   );
 }

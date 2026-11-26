@@ -22,7 +22,8 @@
 .harness-mark[data-harness='grok-build'] svg,
 .harness-mark[data-harness='pi'] svg,
 .harness-mark[data-harness='claude-code'] svg,
-.harness-mark[data-harness='doubao-work'] svg { width: 15px; height: 15px; }
+.harness-mark[data-harness='doubao-work'] svg,
+.harness-mark[data-harness='agy'] svg { width: 15px; height: 15px; }
 .harness-mark[data-harness='workbuddy'] svg { width: 22px; height: 22px; }
 .harness-mark[data-size='sm'][data-harness='cursor'] svg,
 .harness-mark[data-size='sm'][data-harness='deepseek-harness'] svg,
@@ -30,5 +31,6 @@
 .harness-mark[data-size='sm'][data-harness='grok-build'] svg,
 .harness-mark[data-size='sm'][data-harness='pi'] svg,
 .harness-mark[data-size='sm'][data-harness='claude-code'] svg,
-.harness-mark[data-size='sm'][data-harness='doubao-work'] svg { width: 12px; height: 12px; }
+.harness-mark[data-size='sm'][data-harness='doubao-work'] svg,
+.harness-mark[data-size='sm'][data-harness='agy'] svg { width: 12px; height: 12px; }
 .harness-mark[data-size='sm'][data-harness='workbuddy'] svg { width: 14px; height: 14px; }

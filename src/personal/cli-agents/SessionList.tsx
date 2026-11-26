@@ -52,7 +52,7 @@ export interface SessionListProps {
 
 
 const HARNESS_SAMPLES = {
-  "claude-code":"Claude Code",codex:"Codex",cursor:"Cursor","grok-build":"Grok Build",
+  "claude-code":"Claude Code",codex:"Codex",agy:"Antigravity CLI",cursor:"Cursor","grok-build":"Grok Build",
   "deepseek-harness":"DeepSeek Harness",opencode:"OpenCode",pi:"Pi",workbuddy:"WorkBuddy",
   "doubao-work":"Doubao Work",droid:"Droid",qoder:"Qoder",zcode:"Zcode"
 };
