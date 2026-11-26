@@ -191,12 +191,12 @@ public enum CliBlock: Sendable, Hashable, Identifiable {
 
 public enum CliTranscriptRow: Identifiable {
     case block(CliBlock)
-    case progress(id: String, blocks: [CliBlock])
+    case progress(id: String, blocks: [CliBlock], durationMs: Int? = nil)
 
     public var id: String {
         switch self {
         case .block(let block): block.id
-        case .progress(let id, _): id
+        case .progress(let id, _, _): id
         }
     }
 }
@@ -258,13 +258,44 @@ public enum CliTranscript {
         return clean.count > 36 ? String(clean.prefix(35)) + "…" : clean
     }
 
+    public static func formatWorkDuration(_ durationMs: Int?) -> String? {
+        guard let durationMs, durationMs >= 1000 else { return nil }
+        let seconds = Int((Double(durationMs) / 1000.0).rounded())
+        if seconds < 60 { return "用时 \(seconds)秒" }
+        let minutes = Int((Double(seconds) / 60.0).rounded())
+        if minutes < 60 { return "用时 \(minutes)分钟" }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return rest > 0 ? "用时 \(hours)小时\(rest)分钟" : "用时 \(hours)小时"
+    }
+
+    private static func blockTsBounds(_ blocks: [CliBlock]) -> (first: Int, last: Int) {
+        var first = 0, last = 0
+        func record(_ ts: Int) {
+            guard ts > 0 else { return }
+            if first == 0 || ts < first { first = ts }
+            if ts > last { last = ts }
+        }
+        for block in blocks {
+            switch block {
+            case .user(let item), .assistant(let item): record(item.ts)
+            case .activity(_, let items): for item in items { record(item.ts) }
+            case .notice: break
+            }
+        }
+        return (first, last)
+    }
+
     public static func rows(_ items: [CliItem], active: Bool) -> [CliTranscriptRow] {
         var rows: [CliTranscriptRow] = []
         var pending: [CliItem] = []
         var marked = false
-        func flush(closed: Bool, aborted: Bool = false) {
+        var turnStart = 0
+        func flush(closed: Bool, aborted: Bool = false, turnEnd: Int = 0) {
             let blocks = group(pending)
+            let openedAt = turnStart
             pending.removeAll(keepingCapacity: true)
+            turnStart = 0
             guard closed else { rows.append(contentsOf: blocks.map(CliTranscriptRow.block)); return }
             let interrupted: Bool
             if case .notice(_, .error, _) = blocks.last { interrupted = true } else { interrupted = aborted }
@@ -280,8 +311,17 @@ public enum CliTranscript {
                 }
             }
             var progress: [CliBlock] = []
-            func emitProgress() {
-                if let last = progress.last { rows.append(.progress(id: "progress:" + last.id, blocks: progress)) }
+            var anchorTs = openedAt > 0 ? openedAt : 0
+            func emitProgress(next: CliBlock? = nil) {
+                guard let last = progress.last else { return }
+                let bounds = blockTsBounds(progress)
+                let endTs: Int
+                if case .assistant(let item) = next, item.ts > 0 { endTs = item.ts }
+                else if turnEnd > 0 { endTs = turnEnd }
+                else { endTs = bounds.last }
+                let startTs = anchorTs > 0 && anchorTs <= endTs ? anchorTs : bounds.first
+                let durationMs = startTs > 0 && endTs > startTs ? endTs - startTs : nil
+                rows.append(.progress(id: "progress:" + last.id, blocks: progress, durationMs: durationMs))
                 progress.removeAll(keepingCapacity: true)
             }
             for block in blocks {
@@ -290,15 +330,23 @@ public enum CliTranscript {
                 case .assistant(let item) where item.replyPhase != "artifact" && item.replyPhase != "final" &&
                     (interrupted || explicit || block.id != tail?.id || item.replyPhase == "commentary"):
                     progress.append(block)
-                default: emitProgress(); rows.append(.block(block))
+                default:
+                    emitProgress(next: block)
+                    rows.append(.block(block))
+                    switch block {
+                    case .user(let item), .assistant(let item):
+                        if item.ts > 0 { anchorTs = item.ts }
+                    default: break
+                    }
                 }
             }
             emitProgress()
         }
         for item in items {
             if item.kind == .turn {
-                flush(closed: true, aborted: item.phase == .aborted)
+                flush(closed: true, aborted: item.phase == .aborted, turnEnd: item.phase == .started ? 0 : item.ts)
                 marked = item.phase == .started
+                turnStart = item.phase == .started && item.ts > 0 ? item.ts : 0
                 if item.phase == .aborted { rows.append(.block(.notice(id: item.id, level: .info, text: "已中断"))) }
             } else {
                 if !marked && item.kind == .user && !item.queued && !item.id.hasPrefix("guide:") { flush(closed: true) }

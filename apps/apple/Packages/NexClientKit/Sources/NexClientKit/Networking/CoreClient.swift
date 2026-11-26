@@ -38,8 +38,8 @@ public struct CoreClient: Sendable {
         self.origin = origin; self.token = token; self.session = session
     }
 
-    public func get<T: Decodable & Sendable>(_ path: String, query: [(String, String)] = []) async throws -> T {
-        try await send(request(path, query: query, body: nil), as: T.self)
+    public func get<T: Decodable & Sendable>(_ path: String, query: [(String, String)] = [], timeout: TimeInterval = 15) async throws -> T {
+        try await send(request(path, query: query, body: nil, timeout: timeout), as: T.self)
     }
 
     /// The same client with another bearer token (after a session refresh). Origin and URLSession are kept.
@@ -58,13 +58,13 @@ public struct CoreClient: Sendable {
         return (data, headers)
     }
 
-    public func post<T: Decodable & Sendable, B: Encodable>(_ path: String, body: B, as: T.Type = T.self) async throws -> T {
-        try await send(request(path, query: [], body: JSONEncoder().encode(body)), as: T.self)
+    public func post<T: Decodable & Sendable, B: Encodable>(_ path: String, body: B, as: T.Type = T.self, timeout: TimeInterval = 15) async throws -> T {
+        try await send(request(path, query: [], body: JSONEncoder().encode(body), timeout: timeout), as: T.self)
     }
 
     /// POST whose response body is ignored.
-    public func post<B: Encodable>(_ path: String, body: B) async throws {
-        _ = try await post(path, body: body, as: Empty.self)
+    public func post<B: Encodable>(_ path: String, body: B, timeout: TimeInterval = 15) async throws {
+        _ = try await post(path, body: body, as: Empty.self, timeout: timeout)
     }
 
     func request(_ path: String, query: [(String, String)], body: Data?, timeout: TimeInterval = 15) throws -> URLRequest {

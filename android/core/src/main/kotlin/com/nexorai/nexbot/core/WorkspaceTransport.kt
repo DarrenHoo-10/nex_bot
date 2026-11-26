@@ -23,7 +23,7 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         assetToken = null
     }
 
-    private val imageHttp by lazy { http.newBuilder().callTimeout(120, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build() }
+    private val longHttp by lazy { http.newBuilder().callTimeout(120, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build() }
 
     fun request(path: String, method: String, body: String): Reply {
         validate(path, method)
@@ -53,7 +53,7 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
             }
             else -> builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
         }
-        (if (cliPreview || route == "/api/cli-agents/images") imageHttp else http).newCall(builder.build()).execute().use { response ->
+        (if (usesLongTimeout(route, query.ifEmpty { null }, method)) longHttp else http).newCall(builder.build()).execute().use { response ->
             if ((preview || avatar || cliPreview) && token() != bearer) throw IOException("登录已失效")
             if (preview && response.code == 304 && old != null) return old.reply
             val source = response.body?.source() ?: return Reply(response.code, ByteArray(0))
@@ -104,6 +104,20 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
     }
 
     companion object {
+        private val longCliRoutes = setOf(
+            "/api/cli-agents/start",
+            "/api/cli-agents/continue",
+            "/api/cli-agents/send",
+            "/api/cli-agents/steer-waiting",
+            "/api/cli-agents/queue/steer",
+            "/api/cli-agents/translate",
+            "/api/cli-agents/attach",
+            "/api/cli-agents/open-local",
+            "/api/cli-agents/git",
+            "/api/cli-agents/items",
+        )
+        fun usesLongTimeout(route: String, query: String?, method: String) =
+            (method == "GET" && isCliImagePreview(route, query)) || route == "/api/cli-agents/images" || route in longCliRoutes
         private val imageTypes = mapOf("image/png" to "png", "image/jpeg" to "jpg", "image/webp" to "webp")
         private val cliImagePath = Regex("^/api/cli-agents/images/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
         fun isCliImage(path: String) = cliImagePath.matches(path)

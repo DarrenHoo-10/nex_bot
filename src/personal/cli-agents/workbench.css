@@ -111,6 +111,9 @@
 .na-byline{display:flex;align-items:center;gap:7px;font-size:12px;line-height:20px;color:var(--na-ink);margin-bottom:8px}
 .na-byline b{font-weight:650}.na-byline time{color:var(--na-muted);font:11px/1.3 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
 .na-byline.is-user{justify-content:flex-end;color:var(--na-muted);margin-bottom:2px}
+.na-stage .cli-app .cli-msg.is-assistant .message-progress{margin:0 0 8px}
+.na-stage .cli-app .message-progress>.more-content-toggle{color:var(--na-muted);font-size:13.5px;font-weight:400;gap:6px;padding:1px 4px 1px 0}
+.na-stage .cli-app .message-progress>.more-content-toggle:hover{color:var(--na-ink)}
 .na-avatar{display:inline-grid;place-items:center;width:23px;height:23px;border-radius:7px;background:var(--na-inset);color:var(--na-ink)}
 .na-avatar.claude{color:#aa5a3d;background:#f7e9e1}
 .na-stage .cli-app .na-reply-actions{display:flex;align-items:center;gap:4px;margin-top:4px;color:var(--na-muted)}

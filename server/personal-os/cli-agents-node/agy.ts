@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import {
-  CLI_LIMITS, CLI_MODEL_LIMITS, CLI_EFFORTS, ITEM_TEXT_MAX, SUMMARY_MAX, TOOL_OUTPUT_MAX,
+  CLI_LIMITS, CLI_MODEL_LIMITS, CLI_EFFORTS, SUMMARY_MAX,
   cliRef, isCliEffort, parseDeviceCliMessage, truncateUtf8,
   type CliErrorCode, type CliItem, type CliLaunchOptions, type CliModelCatalog,
   type CliOpArgs, type CliRequestResolvedBy, type CliRequestWire, type CliTurnReason, type DeviceCliMessage,
@@ -14,7 +14,7 @@ import {
   agyArray, agyJson, agyLastStep, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
   type AgyNativeSession, type AgyRecord, type AgyWriters,
 } from "./agy-native.ts";
-import { clipUnits, type LocalSession } from "./items.ts";
+import { appendItemText, buildAssistantItem, buildNoticeItem, buildThinkingItem, buildToolItem, buildUserItem, clipUnits, updateToolItem, type LocalSession } from "./items.ts";
 import { TranscriptReader, type ReaderPage } from "./reader.ts";
 
 const IDLE_MS = 5 * 60_000;
@@ -455,7 +455,13 @@ export class AgyRuntime {
     clearTimeout(session.idle);
     if (!session.acp || this.disposed) return;
     session.idle = setTimeout(() => {
-      if (!session.active) void this.retire(session).catch(() => {});
+      if (session.active) return;
+      void this.retire(session).then(() => {
+        if (!session.active && !session.acp && session.count === 0 && !this.native.get(session.id)?.row.transcript) {
+          this.sessions.delete(session.id);
+          this.options.changed();
+        }
+      }).catch(() => {});
     }, IDLE_MS);
     session.idle.unref();
   }
@@ -486,7 +492,7 @@ export class AgyRuntime {
     session.title ||= clipUnits(content.text.trim().split("\n", 1)[0], CLI_LIMITS.title);
     session.at = ts;
     active.lastText = undefined;
-    active.items.push({ id: randomUUID(), ts, kind: "user", text: truncateUtf8(content.text, ITEM_TEXT_MAX) });
+    active.items.push(buildUserItem({ id: randomUUID(), ts, text: content.text }));
     active.version++;
     active.waiting++;
     const call = acp.prompt({ sessionId: id, prompt: content.prompt });
@@ -536,7 +542,7 @@ export class AgyRuntime {
     if (session.active !== turn) return;
     clearTimeout(turn.cancelTimer);
     for (const request of this.requests.values()) if (request.session === session) this.finishRequest(request, "gone");
-    if (turn.error) turn.items.push({ id: randomUUID(), ts: Date.now(), kind: "notice", level: "error", text: turn.error });
+    if (turn.error) turn.items.push(buildNoticeItem({ id: randomUUID(), ts: Date.now(), level: "error", text: turn.error }));
     for (const tool of turn.calls.values()) if (tool.status === "running") tool.status = turn.stopping || turn.error ? "error" : "ok";
     turn.version++;
     turn.completed = true;
@@ -577,9 +583,11 @@ export class AgyRuntime {
       const kind = update.sessionUpdate === "agent_message_chunk" ? "assistant" : "thinking";
       const previous = turn.lastText;
       if (previous?.kind === kind) {
-        previous.text = truncateUtf8(previous.text + text, ITEM_TEXT_MAX);
+        appendItemText(previous, text);
       } else {
-        const next: NonNullable<Turn["lastText"]> = { id: randomUUID(), ts: Date.now(), kind, text: truncateUtf8(text, ITEM_TEXT_MAX) };
+        const next: NonNullable<Turn["lastText"]> = kind === "thinking"
+          ? buildThinkingItem({ id: randomUUID(), ts: Date.now(), text })
+          : buildAssistantItem({ id: randomUUID(), ts: Date.now(), text });
         turn.lastText = next;
         turn.items.push(next);
       }
@@ -589,14 +597,16 @@ export class AgyRuntime {
       turn.lastText = undefined;
       let item = turn.calls.get(callId);
       if (!item) {
-        item = { id: randomUUID(), ts: Date.now(), kind: "tool", name: "Antigravity", input: "", status: "running" };
+        item = buildToolItem({ id: randomUUID(), ts: Date.now(), name: "Antigravity", status: "running" });
         turn.calls.set(callId, item);
         turn.items.push(item);
       }
-      item.name = clipUnits(agyString(update.title) || item.name, CLI_LIMITS.toolName);
-      item.status = update.status === "completed" ? "ok" : update.status === "failed" ? "error" : item.status;
-      if (update.rawInput !== undefined) item.input = truncateUtf8(JSON.stringify(update.rawInput), TOOL_OUTPUT_MAX);
-      if (update.rawOutput !== undefined) item.output = truncateUtf8(JSON.stringify(update.rawOutput), TOOL_OUTPUT_MAX);
+      updateToolItem(item, {
+        name: agyString(update.title) || undefined,
+        status: update.status === "completed" ? "ok" : update.status === "failed" ? "error" : undefined,
+        rawInput: update.rawInput,
+        rawOutput: update.rawOutput,
+      });
     } else return;
     if (turn.items.length > MAX_TAIL) {
       const removed = turn.items.splice(1, 1)[0];
@@ -724,7 +734,7 @@ export class AgyRuntime {
         const exported = at >= 0 && turn.completed && !turn.error && !turn.stopping &&
           (lastReply?.kind === "assistant"
             ? items.slice(at + 1, end).some((item) => item.kind === "assistant" && item.text.trim() === lastReply.text.trim())
-            : turn.items.length === 1);
+            : turn.items.length === 1 || items.slice(at + 1, end).some((item) => item.kind === "assistant"));
         if (exported) {
           settled.add(turn);
           continue;

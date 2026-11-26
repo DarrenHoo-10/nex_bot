@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CliItem } from "../../../shared/cli-agents";
+import { formatWorkDuration } from "../components/MoreContent";
 import { assistantItem, toolItem, userItem } from "./fixtures";
 import { guideTimeline, activityStats, groupItems, transcriptRows, replyTails, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
 
@@ -188,5 +189,22 @@ describe("replyTails", () => {
       assistantItem("a3", 6, "正在改"),
     ]);
     expect([...replyTails(blocks)]).toEqual(["a2", "a3"]);
+  });
+});
+
+describe("progress duration", () => {
+  it("records elapsed turn duration on folded progress rows and formats it cleanly", () => {
+    const start = 1_700_000_000_000;
+    const rows = transcriptRows([
+      userItem("u1", start, "帮我排查"),
+      toolItem("t1", start + 5_000, "ok"),
+      assistantItem("a1", start + 4 * 60_000, "已定位原因"),
+    ], false);
+    const progress = rows.find((row) => row.kind === "progress");
+    expect(progress).toMatchObject({ kind: "progress", durationMs: 4 * 60_000 });
+    expect(formatWorkDuration(progress?.kind === "progress" ? progress.durationMs : undefined)).toBe("用时 4分钟");
+    expect(formatWorkDuration(500)).toBeUndefined();
+    expect(formatWorkDuration(12_000)).toBe("用时 12秒");
+    expect(formatWorkDuration(90 * 60_000)).toBe("用时 1小时30分钟");
   });
 });

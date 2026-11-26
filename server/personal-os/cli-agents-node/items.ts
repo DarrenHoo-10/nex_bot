@@ -3,6 +3,7 @@
 // ignored, every text field is cut with truncateUtf8, and a tool result
 // completes the matching running tool item through ctx.tools.
 import {
+  CLI_LIMITS,
   ITEM_TEXT_MAX,
   SUMMARY_MAX,
   TOOL_OUTPUT_MAX,
@@ -13,7 +14,10 @@ import {
   truncateUtf8,
   unwrapPastedContent,
   type CliItem,
+  type CliNoticeLevel,
   type CliSessionWire,
+  type CliTaskEnd,
+  type CliToolStatus,
 } from "../../../shared/cli-agents.ts";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -194,8 +198,29 @@ function completeTool(ctx: ItemContext, callId: string | undefined, status: "ok"
   return ctx.shareTools ? tool : { ...tool };
 }
 
-/** One short line for a tool call's arguments, at most SUMMARY_MAX bytes. */
-export function summarizeInput(input: unknown): string {
+const SUMMARY_KEYS: readonly string[] = [
+  "command",
+  "commandline",
+  "cmd",
+  "file_path",
+  "filepath",
+  "targetfile",
+  "path",
+  "pattern",
+  "url",
+  "query",
+  "searchpath",
+  "directorypath",
+  "task_name",
+  "taskname",
+  "description",
+  "prompt",
+];
+
+/** One short line for a tool call's arguments, at most SUMMARY_MAX bytes.
+ * Matches canonical snake_case, camelCase and PascalCase keys across harnesses;
+ * future harnesses may pass extra priority keys without changing this helper. */
+export function summarizeInput(input: unknown, extraKeys?: readonly string[]): string {
   if (typeof input === "string") return summary(input);
   if (!isRec(input)) return input === undefined || input === null ? "" : summary(String(input));
   if (input.run_in_background === true) {
@@ -207,18 +232,122 @@ export function summarizeInput(input: unknown): string {
   if (typeof input.subject === "string" && typeof input.description === "string") {
     return summary(JSON.stringify({ subject: truncateUtf8(input.subject, 200), taskId: input.taskId, status: input.status }));
   }
+  const byLower = new Map<string, unknown>();
+  for (const [key, value] of Object.entries(input)) {
+    const normalized = key.toLowerCase();
+    if (!byLower.has(normalized)) byLower.set(normalized, value);
+  }
   // a sub-agent call names its task (Claude's Agent `description`, Codex's spawn_agent `task_name`);
   // `prompt` and `message` are the whole brief
-  for (const key of ["command", "file_path", "path", "pattern", "url", "query", "task_name", "description", "prompt"]) {
-    const value = input[key];
+  const keys = extraKeys?.length ? [...extraKeys.map((key) => key.toLowerCase()), ...SUMMARY_KEYS] : SUMMARY_KEYS;
+  for (const key of keys) {
+    const value = byLower.get(key);
     if (typeof value === "string" && value) return summary(value);
-    if (key === "command" && Array.isArray(value) && value.every((part) => typeof part === "string")) return summary(value.join(" "));
+    if ((key === "command" || key === "cmd") && Array.isArray(value) && value.every((part) => typeof part === "string")) {
+      return summary(value.join(" "));
+    }
   }
   try {
     return summary(JSON.stringify(input) ?? "");
   } catch {
     return "";
   }
+}
+
+/** Wire-safe CliItem builders shared by every harness adapter so limits and
+ * argument summarization stay identical across Claude, Codex, AGY, ZCode and
+ * future harnesses. */
+export function buildUserItem(input: {
+  id: string;
+  ts: number;
+  text: string;
+  images?: string[];
+  queued?: boolean;
+  queuedByUser?: boolean;
+}): Extract<CliItem, { kind: "user" }> {
+  const images = input.images?.filter(Boolean).slice(0, CLI_LIMITS.images).map((entry) => clipUnits(entry, CLI_LIMITS.imagePath));
+  return {
+    kind: "user",
+    id: clipId(input.id),
+    ts: input.ts,
+    text: itemText(input.text),
+    ...(images?.length ? { images } : {}),
+    ...(input.queued ? { queued: true } : {}),
+    ...(input.queuedByUser ? { queuedByUser: true } : {}),
+  };
+}
+
+export function buildAssistantItem(input: {
+  id: string;
+  ts: number;
+  text: string;
+  replyPhase?: "commentary" | "final" | "artifact";
+}): Extract<CliItem, { kind: "assistant" }> {
+  return {
+    kind: "assistant",
+    id: clipId(input.id),
+    ts: input.ts,
+    text: itemText(input.text),
+    ...(input.replyPhase ? { replyPhase: input.replyPhase } : {}),
+  };
+}
+
+export function buildThinkingItem(input: { id: string; ts: number; text: string }): Extract<CliItem, { kind: "thinking" }> {
+  return { kind: "thinking", id: clipId(input.id), ts: input.ts, text: summary(input.text) };
+}
+
+export function buildToolItem(input: {
+  id: string;
+  ts: number;
+  name: string;
+  input?: unknown;
+  status: CliToolStatus;
+  output?: unknown;
+  inputKeys?: readonly string[];
+}): ToolItem {
+  const renderedOutput = input.output === undefined ? "" : output(jsonText(input.output));
+  return {
+    kind: "tool",
+    id: clipId(input.id),
+    ts: input.ts,
+    name: clipUnits(input.name, CLI_LIMITS.toolName),
+    input: input.input === undefined ? "" : summarizeInput(input.input, input.inputKeys),
+    status: input.status,
+    ...(renderedOutput ? { output: renderedOutput } : {}),
+  };
+}
+
+export function buildNoticeItem(input: {
+  id: string;
+  ts: number;
+  level: CliNoticeLevel;
+  text: string;
+  taskEnd?: CliTaskEnd;
+}): Extract<CliItem, { kind: "notice" }> {
+  return {
+    kind: "notice",
+    id: clipId(input.id),
+    ts: input.ts,
+    level: input.level,
+    text: truncateUtf8(input.text, CLI_LIMITS.noticeText),
+    ...(input.taskEnd ? { taskEnd: input.taskEnd } : {}),
+  };
+}
+
+/** Appends a streaming chunk to an assistant or thinking item under the wire cap. */
+export function appendItemText(item: Extract<CliItem, { kind: "assistant" | "thinking" }>, delta: string): void {
+  item.text = item.kind === "thinking" ? summary(item.text + delta) : itemText(item.text + delta);
+}
+
+/** Applies a streaming tool update under the same caps as transcript readers. */
+export function updateToolItem(
+  item: ToolItem,
+  patch: { name?: string; status?: CliToolStatus; rawInput?: unknown; rawOutput?: unknown; inputKeys?: readonly string[] },
+): void {
+  if (patch.name) item.name = clipUnits(patch.name, CLI_LIMITS.toolName);
+  if (patch.status) item.status = patch.status;
+  if (patch.rawInput !== undefined) item.input = summarizeInput(patch.rawInput, patch.inputKeys);
+  if (patch.rawOutput !== undefined) item.output = output(jsonText(patch.rawOutput));
 }
 
 function jsonText(value: unknown): string {

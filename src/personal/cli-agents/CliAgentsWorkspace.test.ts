@@ -580,6 +580,9 @@ describe("session pane", () => {
     expect(replies.map((reply) => !!reply.querySelector(".na-byline"))).toEqual([true, true]);
     expect(replies[0].textContent).toContain("看完了");
     expect(text()).not.toContain("先看看");
+    const byline = replies[0].querySelector(".na-byline")!;
+    const progressBefore = replies[0].querySelector(".message-progress")!;
+    expect(byline.compareDocumentPosition(progressBefore) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await click(container.querySelector(".message-progress > button"));
     const progress = container.querySelector(".message-progress")!;
     expect(progress.textContent).toContain("先看看");

@@ -1288,4 +1288,24 @@ describe("search, launch options and attachments", () => {
     expect((await upload(keyOf(device, "a"), "a.png", bytes, { "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
     expect(device.ops("attach")).toHaveLength(1);
   });
+
+  it("deduplicates worktree start retries by requestId instead of launching a second session", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "wt-dedup", { cap: FULL });
+    let starts = 0;
+    device.onOp = (message) => {
+      if (message.op !== "start") return defaultOp(message);
+      starts += 1;
+      return { ok: true, result: { ref: `agy:sess-${starts}`, cwd: "C:/wt/nexagent-abc" } };
+    };
+    const body = { deviceId: device.id, engine: "agy", cwd: "C:/proj", worktreeBranch: "nexagent/abc", requestId: "req-same-1" };
+    const [first, second] = await Promise.all([f.call("cli-agents/start", body), f.call("cli-agents/start", body)]);
+    expect(first).toMatchObject({ status: 200, data: { key: keyOf(device, "sess-1", "agy"), cwd: "C:/wt/nexagent-abc" } });
+    expect(second).toEqual(first);
+    const third = await f.call("cli-agents/start", body);
+    expect(third).toEqual(first);
+    expect(device.ops("start")).toHaveLength(1);
+    const conflict = await f.call("cli-agents/start", { ...body, worktreeBranch: "nexagent/other" });
+    expect(conflict.status).toBe(409);
+  });
 });

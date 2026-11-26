@@ -870,6 +870,52 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
 }
 .text-button:hover { background: transparent; text-decoration: underline; }
 .text-button.danger-link { color: #dc2626; }
+.message-progress {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+.message-progress-body {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+.message-progress > .more-content-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  min-height: 0;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground, var(--bt-fg-4, #8e8e93));
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.14s ease;
+}
+.message-progress > .more-content-toggle:hover {
+  background: transparent;
+  color: var(--foreground, var(--bt-fg));
+  text-decoration: none;
+}
+.more-content-chevron {
+  flex: none;
+  opacity: 0.78;
+  transition: transform 0.16s ease, opacity 0.14s ease;
+}
+.more-content-toggle[aria-expanded="true"] .more-content-chevron {
+  transform: rotate(90deg);
+}
 
 /* 3D Mascot Look Picker */
 .ds-look-picker {

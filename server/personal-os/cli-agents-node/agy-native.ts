@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { CLI_LIMITS, ITEM_TEXT_MAX, TOOL_OUTPUT_MAX, isCliModel, truncateUtf8, type CliItem } from "../../../shared/cli-agents.ts";
-import { clipUnits, type LocalSession } from "./items.ts";
+import { CLI_LIMITS, isCliModel, type CliItem } from "../../../shared/cli-agents.ts";
+import { buildAssistantItem, buildNoticeItem, buildThinkingItem, buildToolItem, buildUserItem, clipUnits, type LocalSession } from "./items.ts";
 import { defaultRunner, type CommandRunner } from "./liveness.ts";
 
 const RECENT = 120;
@@ -126,7 +126,8 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Pr
   const timestamp = (id: string) => {
     const summary = summaries.get(id);
     const cachedSummary = agyRecord(agyRecord(metadata[id]).summary);
-    return Date.parse(agyString(summary?.last_modified_time ?? cachedSummary.UpdatedAt)) || 0;
+    const parsed = Date.parse(agyString(summary?.last_modified_time ?? cachedSummary.UpdatedAt));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
   };
   const ids = [...new Set([...summaries.keys(), ...Object.keys(metadata).filter(isAgyId)])].sort((a, b) => timestamp(b) - timestamp(a)).slice(0, RECENT);
   const rows = await Promise.all(ids.map(async (id): Promise<AgyNativeSession | null> => {
@@ -139,12 +140,15 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Pr
     if (!cwd) return null;
     const transcript = await agyTranscript(dir, id);
     if (!transcript && !summary) return null;
+    const lastActivityAt = timestamp(id) || (transcript ? Math.trunc((await lstat(transcript).catch(() => null))?.mtimeMs ?? 0) : 0);
+    const working = !summary?.killed && (summary?.status === "CASCADE_RUN_STATUS_RUNNING" || Boolean(summary?.not_fully_idle));
+    if (!transcript && !working && !lastActivityAt) return null;
     return {
-      working: !summary?.killed && (summary?.status === "CASCADE_RUN_STATUS_RUNNING" || Boolean(summary?.not_fully_idle)),
+      working,
       row: {
         engine: "agy", nativeId: id, cwd, configDir: dir, transcript, state: "stopped",
         title: clipUnits(agyString(summary?.title ?? fallback.Title) || path.basename(cwd), CLI_LIMITS.title),
-        lastActivityAt: timestamp(id) || (transcript ? Math.trunc((await lstat(transcript).catch(() => null))?.mtimeMs ?? 0) : 0),
+        lastActivityAt,
       },
     };
   }));
@@ -232,27 +236,26 @@ export function agyRecordItems(value: unknown, fallbackTs = 0): CliItem[] {
   const id = `agy:${row.step_index}`;
   const ts = Date.parse(agyString(row.created_at)) || fallbackTs;
   const content = row.type === "USER_INPUT" ? agyUserText(agyString(row.content)) : agyString(row.content);
-  const text = truncateUtf8(content, ITEM_TEXT_MAX);
-  if (row.type === "USER_INPUT") return text ? [{ id, ts, kind: "user", text }] : [];
+  if (row.type === "USER_INPUT") return content ? [buildUserItem({ id, ts, text: content })] : [];
   if (row.type === "ERROR_MESSAGE") {
-    const error = truncateUtf8(agyString(row.error) || content, 4096);
-    return error ? [{ id, ts, kind: "notice", level: "error", text: error }] : [];
+    const error = agyString(row.error) || content;
+    return error ? [buildNoticeItem({ id, ts, level: "error", text: error })] : [];
   }
   const items: CliItem[] = [];
   if (row.type === "PLANNER_RESPONSE") {
-    const thinking = truncateUtf8(agyString(row.thinking), ITEM_TEXT_MAX);
-    if (thinking) items.push({ id: `${id}:thought`, ts, kind: "thinking", text: thinking });
-    if (text) items.push({ id, ts, kind: "assistant", text });
+    const thinking = agyString(row.thinking);
+    if (thinking) items.push(buildThinkingItem({ id: `${id}:thought`, ts, text: thinking }));
+    if (content) items.push(buildAssistantItem({ id, ts, text: content }));
   }
   for (const [index, raw] of agyArray(row.tool_calls).slice(0, 32).entries()) {
     const call = agyRecord(raw);
     const name = clipUnits(agyString(call.name), TOOL_NAME_LIMIT);
     if (!name) continue;
-    items.push({
-      id: `${id}:tool:${index}`, ts, kind: "tool", name,
-      input: truncateUtf8(JSON.stringify(call.args ?? {}), TOOL_OUTPUT_MAX),
+    items.push(buildToolItem({
+      id: `${id}:tool:${index}`, ts, name,
+      input: call.args ?? {},
       status: row.status === "ERROR" ? "error" : row.status === "RUNNING" ? "running" : "ok",
-    });
+    }));
   }
   return items;
 }

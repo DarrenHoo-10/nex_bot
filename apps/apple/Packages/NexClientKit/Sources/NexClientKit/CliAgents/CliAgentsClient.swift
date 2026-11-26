@@ -73,7 +73,7 @@ extension CoreClient {
     public func cliItems(key: CliSessionKey, before: String? = nil) async throws -> CliItemsPage {
         var query = [("key", key)]
         if let before { query.append(("before", before)) }
-        return try await get(Self.cliBase + "/items", query: query)
+        return try await get(Self.cliBase + "/items", query: query, timeout: 30)
     }
 
     public func cliTranslateReply(key: CliSessionKey, itemId: String, source: String) async throws -> String? {
@@ -99,7 +99,7 @@ extension CoreClient {
         let body = CliStartBody(deviceId: deviceId, engine: engine.rawValue, cwd: cwd, worktreeBranch: worktreeBranch, requestId: worktreeBranch == nil ? nil : requestId,
                                 model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil, createDir: createDir && worktreeBranch == nil ? true : nil,
                                 permissions: permissions?.rawValue)
-        let r: CliKeyResult = try await send(request(Self.cliBase + "/start", query: [], body: JSONEncoder().encode(body), timeout: 45), as: CliKeyResult.self)
+        let r: CliKeyResult = try await send(request(Self.cliBase + "/start", query: [], body: JSONEncoder().encode(body), timeout: 60), as: CliKeyResult.self)
         return r.key
     }
 
@@ -115,13 +115,13 @@ extension CoreClient {
 
     /// Resumes a stopped session in a nex_bot terminal. The resumed session may have a new key.
     public func cliContinue(key: CliSessionKey, effort: String? = nil, model: String? = nil, permissions: CliPermissionMode? = nil) async throws -> CliSessionKey {
-        let r: CliKeyResult = try await post(Self.cliBase + "/continue", body: CliContinueBody(key: key, effort: effort, model: model, permissions: permissions?.rawValue))
+        let r: CliKeyResult = try await post(Self.cliBase + "/continue", body: CliContinueBody(key: key, effort: effort, model: model, permissions: permissions?.rawValue), timeout: 45)
         return r.key
     }
 
     public func cliEnqueue(key: CliSessionKey, text: String) async throws {
         struct Body: Encodable { let key: String; let text: String; let delivery = "queue"; let requestId = UUID(); let clientMessageId = UUID() }
-        try await post(Self.cliBase + "/send", body: Body(key: key, text: text))
+        try await post(Self.cliBase + "/send", body: Body(key: key, text: text), timeout: 90)
     }
 
     public func cliEditQueued(_ entry: CliQueuedEntry, text: String) async throws {
@@ -132,7 +132,7 @@ extension CoreClient {
     public func cliSteerQueued(_ entry: CliQueuedEntry, questionId: String?, interruptWaiting: Bool) async throws -> CliQueuedEntry {
         struct Body: Encodable { let entryId: String; let expectedVersion: Int; let questionId: String?; let interruptWaiting: Bool? }
         struct Response: Decodable, Sendable { let entry: CliQueuedEntry }
-        let result: Response = try await post(Self.cliBase + (questionId != nil || interruptWaiting ? "/steer-waiting" : "/queue/steer"), body: Body(entryId: entry.id, expectedVersion: entry.version, questionId: questionId, interruptWaiting: interruptWaiting ? true : nil))
+        let result: Response = try await post(Self.cliBase + (questionId != nil || interruptWaiting ? "/steer-waiting" : "/queue/steer"), body: Body(entryId: entry.id, expectedVersion: entry.version, questionId: questionId, interruptWaiting: interruptWaiting ? true : nil), timeout: 90)
         return result.entry
     }
 
@@ -141,7 +141,7 @@ extension CoreClient {
     }
 
     public func cliSend(key: CliSessionKey, text: String) async throws {
-        let r: CliSendResult = try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text))
+        let r: CliSendResult = try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text), timeout: 90)
         _ = r
     }
 
@@ -149,7 +149,7 @@ extension CoreClient {
     func cliSendFirst(key: CliSessionKey, text: String, launchID: String) async throws -> Bool {
         guard text.utf8.count <= Self.cliMaxSendBytes else { throw CoreError(kind: .http, message: "内容太长", status: 400, code: "too_large") }
         let body = CliSendBody(key: key, text: text, delivery: "send", clientMessageId: launchID, requestId: launchID)
-        let result: CliSendResult = try await post(Self.cliBase + "/send", body: body)
+        let result: CliSendResult = try await post(Self.cliBase + "/send", body: body, timeout: 90)
         return result.status == nil || result.status == "sent" || result.status == "confirmed"
     }
 
@@ -157,7 +157,7 @@ extension CoreClient {
     public func cliSteer(key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
         let body = CliSendBody(key: key, text: text, delivery: "steer", clientMessageId: UUID().uuidString, requestId: UUID().uuidString, questionId: questionId, interruptWaiting: interruptWaiting ? true : nil)
         let route = questionId != nil || interruptWaiting ? "/steer-waiting" : "/send"
-        let result: CliSendResult = try await post(Self.cliBase + route, body: body)
+        let result: CliSendResult = try await post(Self.cliBase + route, body: body, timeout: 90)
         switch result.status {
         case "failed": return "引导失败，消息已保留"
         case "uncertain": return "引导结果待确认"
@@ -214,7 +214,7 @@ extension CoreClient {
         _ = r
     }
 
-    public func cliOpenLocal(key: CliSessionKey) async throws { try await post(Self.cliBase + "/open-local", body: CliKeyBody(key: key)) }
+    public func cliOpenLocal(key: CliSessionKey) async throws { try await post(Self.cliBase + "/open-local", body: CliKeyBody(key: key), timeout: 30) }
 
     public func cliHide(key: CliSessionKey, hidden: Bool) async throws { try await post(Self.cliBase + "/hide", body: CliHideBody(key: key, hidden: hidden)) }
 

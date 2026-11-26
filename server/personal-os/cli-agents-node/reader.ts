@@ -6,8 +6,8 @@ import { watch, type FSWatcher } from "node:fs";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { MAX_ITEMS_PER_MESSAGE, PAGE_SIZE, type CliEngine, type CliItem } from "../../../shared/cli-agents.ts";
-import { agyRecordItems } from "./agy-native.ts";
-import { claudeRecordToItems, codexRecordToItems, COMPACT_TEXT, imageLocator, itemHasImage, localImageLinks, type TranscriptImage, type ItemContext, type RowUpdate, type ToolItem } from "./items.ts";
+import { harnessFor, type HarnessTranscriptStrategy } from "./harness.ts";
+import { COMPACT_TEXT, imageLocator, itemHasImage, localImageLinks, type TranscriptImage, type ItemContext, type RowUpdate, type ToolItem } from "./items.ts";
 
 export interface ReaderPage {
   /** oldest first, newest last */
@@ -19,6 +19,8 @@ export interface ReaderPage {
 export interface TranscriptReaderOptions {
   path: string;
   engine: CliEngine;
+  /** Optional override for custom/plugin harnesses; defaults to harnessFor(engine)?.transcript. */
+  transcript?: HarnessTranscriptStrategy;
   /** id prefix for records without a native id; defaults to the file name */
   segment?: string;
   onItems?: (items: CliItem[]) => void;
@@ -38,7 +40,6 @@ type ReaderContext = ItemContext & { compact?: { ts: number; sources: Set<string
 const DEFAULT_CHUNK = 1024 * 1024;
 const LOOKAHEAD_LINES = 200;
 const ID_CACHE_MAX = 20_000;
-const V2_MARK = Buffer.from('"item_completed"');
 
 function yieldLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -49,7 +50,7 @@ export class TranscriptReader {
   parseErrors = 0;
 
   private readonly file: string;
-  private readonly engine: CliEngine;
+  private readonly transcript: HarnessTranscriptStrategy | undefined;
   private readonly segment: string;
   private readonly chunk: number;
   private readonly opts: TranscriptReaderOptions;
@@ -57,7 +58,7 @@ export class TranscriptReader {
   private closed = false;
   private started = false;
   private generation = 0;
-  private codexV2 = false;
+  private alternateFormat = false;
 
   // line-start index over complete lines
   private starts: number[] = [];
@@ -81,7 +82,7 @@ export class TranscriptReader {
   constructor(options: TranscriptReaderOptions) {
     this.opts = options;
     this.file = options.path;
-    this.engine = options.engine;
+    this.transcript = options.transcript ?? harnessFor(options.engine)?.transcript;
     this.segment = options.segment ?? path.basename(options.path).replace(/\.jsonl$/i, "");
     this.chunk = Math.max(64, options.chunkBytes ?? DEFAULT_CHUNK);
   }
@@ -148,7 +149,8 @@ export class TranscriptReader {
     const limit = Math.min(MAX_ITEMS_PER_MESSAGE, Math.max(1, Math.trunc(options.limit ?? PAGE_SIZE)));
     const generation = this.generation;
     await this.ensureIndex();
-    if (!this.started && this.engine === "codex") this.codexV2 = await this.detectV2(0, this.scanPos);
+    const mark = this.transcript?.alternateFormatMark;
+    if (!this.started && mark) this.alternateFormat = await this.detectMarker(mark, 0, this.scanPos);
     if (generation !== this.generation) return { items: [], more: false };
     return this.buildPage(options.before, limit, new Map());
   }
@@ -162,8 +164,8 @@ export class TranscriptReader {
     const [entry] = await this.readLines(line, line + 1);
     if (!entry) return;
     const ctx = this.ctxFor(new Map(), false);
-    // Cold page reads and live watches may have used different Codex record formats.
-    ctx.codexV2 = true;
+    // Cold page reads and live watches may have used different record formats.
+    if (this.transcript?.alternateFormatMark) ctx.codexV2 = true;
     let source: TranscriptImage | undefined;
     ctx.imageRef = (at, candidate) => {
       const ref = imageLocator(at, candidate);
@@ -171,7 +173,7 @@ export class TranscriptReader {
       return ref;
     };
     let mapped = this.mapLine(entry.text, offset, ctx);
-    if (!mapped?.items.length && this.engine === "codex") {
+    if (!mapped?.items.length && this.transcript?.retryImageWithoutAlternateFormat) {
       ctx.codexV2 = false;
       mapped = this.mapLine(entry.text, offset, ctx);
     }
@@ -199,14 +201,15 @@ export class TranscriptReader {
       return { items: [], more: false };
     }
     this.ino = info.ino;
-    if (this.engine === "codex") this.codexV2 = await this.detectV2(0, info.size);
+    const mark = this.transcript?.alternateFormatMark;
+    if (mark) this.alternateFormat = await this.detectMarker(mark, 0, info.size);
     await this.ensureIndex();
     if (generation !== this.generation) return { items: [], more: false };
     this.offset = this.lineStart;
     return this.buildPage(undefined, PAGE_SIZE, this.tools);
   }
 
-  private async detectV2(from: number, to: number): Promise<boolean> {
+  private async detectMarker(mark: Buffer, from: number, to: number): Promise<boolean> {
     let handle: FileHandle | null = null;
     try {
       handle = await open(this.file, "r");
@@ -217,8 +220,8 @@ export class TranscriptReader {
         const { bytesRead } = await handle.read(buf, 0, Math.min(this.chunk, to - pos), pos);
         if (bytesRead === 0) break;
         const data = Buffer.concat([carry, buf.subarray(0, bytesRead)]);
-        if (data.includes(V2_MARK)) return true;
-        carry = Buffer.from(data.subarray(Math.max(0, data.length - (V2_MARK.length - 1))));
+        if (data.includes(mark)) return true;
+        carry = Buffer.from(data.subarray(Math.max(0, data.length - (mark.length - 1))));
         pos += bytesRead;
         await yieldLoop();
       }
@@ -242,6 +245,7 @@ export class TranscriptReader {
   private ensureIndex(): Promise<void> {
     if (this.indexing) return this.indexing;
     const generation = this.generation;
+    const mark = this.transcript?.alternateFormatMark;
     const run = (async () => {
       let handle: FileHandle | null = null;
       try {
@@ -252,10 +256,10 @@ export class TranscriptReader {
           if (generation !== this.generation) return;
           const { bytesRead } = await handle.read(buf, 0, buf.length, this.scanPos);
           if (bytesRead === 0 || generation !== this.generation) break;
-          if (!this.started && this.engine === "codex" && !this.codexV2) {
+          if (!this.started && mark && !this.alternateFormat) {
             const data = Buffer.concat([carry, buf.subarray(0, bytesRead)]);
-            this.codexV2 = data.includes(V2_MARK);
-            carry = Buffer.from(data.subarray(Math.max(0, data.length - V2_MARK.length + 1)));
+            this.alternateFormat = data.includes(mark);
+            carry = Buffer.from(data.subarray(Math.max(0, data.length - mark.length + 1)));
           }
           let from = 0;
           for (;;) {
@@ -315,7 +319,7 @@ export class TranscriptReader {
       const lines = await this.readLines(from, to);
       for (let i = 0; i < lines.length; i += 1) {
         const text = lines[i].text;
-        if (this.engine === "agy" || needles.some((needle) => text.includes(needle))) {
+        if (this.transcript?.idPrefilter === false || needles.some((needle) => text.includes(needle))) {
           const mapped = this.mapLine(text, lines[i].offset, this.ctxFor(new Map(), false));
           if (mapped?.items.some(item => item.id === id)) return from + i;
         }
@@ -360,7 +364,7 @@ export class TranscriptReader {
   }
 
   private ctxFor(tools: Map<string, ToolItem>, share: boolean): ReaderContext {
-    return { imageRef: imageLocator, segment: this.segment, offset: 0, codexV2: this.codexV2, tools, shareTools: share };
+    return { imageRef: imageLocator, segment: this.segment, offset: 0, codexV2: this.alternateFormat, tools, shareTools: share };
   }
 
   /** Maps lines in order. Items are returned with their line offsets. */
@@ -378,6 +382,7 @@ export class TranscriptReader {
   private mapLine(text: string, offset: number, ctx: ReaderContext) {
     const trimmed = text.endsWith("\r") ? text.slice(0, -1) : text;
     if (trimmed.trim() === "") return null;
+    if (!this.transcript) return null;
     let record: unknown;
     try {
       record = JSON.parse(trimmed);
@@ -386,10 +391,9 @@ export class TranscriptReader {
       return null;
     }
     ctx.offset = offset;
-    if (this.engine === "agy") return { items: agyRecordItems(record, ctx.fallbackTs) };
-    const mapped = this.engine === "claude" ? claudeRecordToItems(record, ctx) : codexRecordToItems(record, ctx);
-    mapped.items = mapped.items.map(item => localImageLinks(item, ctx));
-    if (!mapped.items.length) return mapped;
+    const mapped = this.transcript.mapRecord(record, ctx);
+    if (this.transcript.rewriteLocalImages) mapped.items = mapped.items.map(item => localImageLinks(item, ctx));
+    if (!mapped.items.length || !this.transcript.dedupeCompactionNotices) return mapped;
     const notice = mapped.items[0];
     const row = record as { type?: string; subtype?: string; isCompactSummary?: boolean; payload?: { type?: string } };
     const source = row.isCompactSummary ? "summary" : row.subtype ?? row.payload?.type ?? row.type;
@@ -482,10 +486,11 @@ export class TranscriptReader {
         const buf = Buffer.alloc(this.chunk);
         const { bytesRead } = await handle.read(buf, 0, buf.length, from);
         if (bytesRead === 0 || generation !== this.generation) break;
-        if (this.engine === "codex" && !this.codexV2 && buf.subarray(0, bytesRead).includes(V2_MARK)) {
+        const mark = this.transcript?.alternateFormatMark;
+        if (mark && !this.alternateFormat && buf.subarray(0, bytesRead).includes(mark)) {
           await handle.close();
           handle = null;
-          this.codexV2 = true;
+          this.alternateFormat = true;
           await this.reset();
           return;
         }

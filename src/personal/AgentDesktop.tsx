@@ -1123,6 +1123,9 @@ function AgentMessage({ message: m, hasJobReply, bot, bots, jobs, jobActions, bu
   if (direction === "replied" && m.role === "assistant") return <article className="message assistant a2a-reply"><Avatar bot={bot} allBots={bots} size={26}/><div className="message-body"><div className="message-author"><strong>{bot?.name ?? "Agent"}</strong></div><FoldedReply content={str(m.content)} recipient={peer?.name ? str(peer.name) : "Agent"}/><time>{formatTime(m.created_at)}</time></div></article>;
   const canAct = m.role === "user" || m.role === "assistant" || m.role === "peer";
   const steps = Array.isArray(m.tool_steps) ? m.tool_steps : [];
+  const earliestStep = steps.reduce((min, step) => step.created_at > 0 && (min === 0 || step.created_at < min) ? step.created_at : min, 0);
+  const messageAt = Number(m.created_at) || 0;
+  const progressDurationMs = earliestStep > 0 && messageAt > earliestStep ? messageAt - earliestStep : undefined;
   const { text, images } = parseMessageMedia(str(m.content));
   const assistant = m.role === "assistant", document = assistant && !!text && replyLayout(text).document;
   return <article className={`message ${m.role} ${m.kind} ${joined ? "joined" : ""} ${groupEnd ? "group-end" : ""} ${document ? "has-doc" : ""}`} data-message-id={str(m.id)}>
@@ -1130,7 +1133,7 @@ function AgentMessage({ message: m, hasJobReply, bot, bots, jobs, jobActions, bu
     <div className="message-body">
       {m.role === "user" && jobId ? <div className="job-reply-label">回复后台任务：{job?.title ?? str(m.job_title)}</div> : null}
       {m.role === "peer" ? <div className="message-author"><Avatar bot={peer} allBots={bots} size={22}/>{peer?.name ?? "Agent"} · {m.kind === "request" ? "发来任务" : "返回结果"}</div> : null}
-      {m.stream_progress || steps.length > 0 ? <MoreContent>{() => <>
+      {m.stream_progress || steps.length > 0 ? <MoreContent durationMs={progressDurationMs}>{() => <>
         {m.stream_progress ? <RichText value={str(m.stream_progress)} onPreviewFile={onPreviewFile}/> : null}
         {steps.length > 0 ? <div className="step-list">{steps.map((step) => <div className="step-item" key={step.id}><button type="button" className="step-row" aria-expanded={stepDetail?.id === step.id ? "true" : undefined} onClick={() => toggleStep(step)} title={stepDetail?.id === step.id ? "点击收起" : "点击展开详情"}><span className={`step-dot ${step.status}`}/><strong>{toolLabels[step.tool_name] ?? step.tool_name}</strong>{step.summary ? <code>{step.summary}</code> : null}<small>{statuses[step.status] ?? step.status}</small></button>{stepDetail?.id === step.id ? <div className="step-detail"><ToolStepDetail tool={step.tool_name} item={stepDetail.item} loading={stepDetail.loading}/></div> : null}</div>)}</div> : null}
       </>}</MoreContent> : null}

@@ -170,7 +170,21 @@ export function groupItems(items: readonly CliItem[]): Block[] {
   return blocks;
 }
 
-export type TranscriptRow = Block | { kind: "progress"; id: string; blocks: Block[] };
+export type TranscriptRow = Block | { kind: "progress"; id: string; blocks: Block[]; durationMs?: number };
+
+function blockTsBounds(blocks: readonly Block[]): { first: number; last: number } {
+  let first = 0, last = 0;
+  const record = (ts: number) => {
+    if (ts <= 0) return;
+    if (first === 0 || ts < first) first = ts;
+    if (ts > last) last = ts;
+  };
+  for (const block of blocks) {
+    if (block.kind === "user" || block.kind === "assistant") record(block.item.ts);
+    else if (block.kind === "activity") for (const item of block.items) record(item.ts);
+  }
+  return { first, last };
+}
 
 /** A recorded turn can contain steering messages. For older logs without turn
  * markers, the next user prompt or the session becoming idle closes the turn. */
@@ -178,31 +192,45 @@ export function transcriptRows(items: readonly CliItem[], active: boolean): Tran
   const rows: TranscriptRow[] = [];
   let pending: CliItem[] = [];
   let marked = false;
-  function flush(closed: boolean, aborted = false) {
+  let turnStart = 0;
+  function flush(closed: boolean, aborted = false, turnEnd = 0) {
     const blocks = groupItems(pending);
+    const openedAt = turnStart;
     pending = [];
+    turnStart = 0;
     if (!closed) { rows.push(...blocks); return; }
     const last = blocks.at(-1);
     const interrupted = aborted || (last?.kind === "notice" && last.level === "error");
     const explicit = blocks.some(block => block.kind === "assistant" && block.item.replyPhase === "final");
     const tail = [...blocks].reverse().find(block => block.kind === "activity" || (block.kind === "assistant" && block.item.replyPhase !== "artifact"));
     let progress: Block[] = [];
-    function emitProgress() {
-      if (progress.length) rows.push({ kind: "progress", id: "progress:" + progress[progress.length - 1].id, blocks: progress });
+    let anchorTs = openedAt > 0 ? openedAt : 0;
+    function emitProgress(next?: Block) {
+      if (!progress.length) return;
+      const bounds = blockTsBounds(progress);
+      const endTs = next?.kind === "assistant" && next.item.ts > 0 ? next.item.ts : (turnEnd > 0 ? turnEnd : bounds.last);
+      const startTs = anchorTs > 0 && anchorTs <= endTs ? anchorTs : bounds.first;
+      const durationMs = startTs > 0 && endTs > startTs ? endTs - startTs : undefined;
+      rows.push({ kind: "progress", id: "progress:" + progress[progress.length - 1].id, blocks: progress, ...(durationMs ? { durationMs } : {}) });
       progress = [];
     }
     for (const block of blocks) {
       if (block.kind === "activity" || (block.kind === "assistant" && block.item.replyPhase !== "artifact" &&
           block.item.replyPhase !== "final" && (interrupted || explicit || block !== tail || block.item.replyPhase === "commentary"))) {
         progress.push(block);
-      } else { emitProgress(); rows.push(block); }
+      } else {
+        emitProgress(block);
+        rows.push(block);
+        if ((block.kind === "user" || block.kind === "assistant") && block.item.ts > 0) anchorTs = block.item.ts;
+      }
     }
     emitProgress();
   }
   for (const item of items) {
     if (item.kind === "turn") {
-      flush(true, item.phase === "aborted");
+      flush(true, item.phase === "aborted", item.phase === "started" ? 0 : item.ts);
       marked = item.phase === "started";
+      turnStart = item.phase === "started" && item.ts > 0 ? item.ts : 0;
       if (item.phase === "aborted") rows.push({ kind: "notice", id: item.id, level: "info", text: "已中断" });
     } else {
       if (!marked && item.kind === "user" && !item.queued && !item.id.startsWith("guide:")) flush(true);

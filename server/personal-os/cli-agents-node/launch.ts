@@ -129,16 +129,20 @@ export async function resolveCli(engine: CliEngine, options: PlatformOptions & {
   if (platform === "darwin") {
     for (const directory of macFallbackDirectories(home)) if (!directories.includes(directory)) directories.push(directory);
   }
-  if (engine === "agy" && isWindows(platform)) {
-    const local = envValue(env, "LOCALAPPDATA", platform);
-    if (local && path.isAbsolute(local)) directories.push(path.join(local, "Microsoft", "WinGet", "Links"), path.join(local, "agy", "bin"));
-    // The official Windows installer can also put a .cmd in ~/.local/bin.
-    // Prefer the real CLI so the long-running ACP process needs no shell.
-    for (const directory of directories) {
-      const executable = path.join(directory, "agy.exe");
-      if (await isExecutable(executable, platform)) {
-        if (useCache) resolveCache.set(key, executable);
-        return executable;
+  const strategy = launchStrategyFor(engine);
+  if (isWindows(platform) && strategy) {
+    for (const extra of strategy.windowsExtraDirs?.(env) ?? []) {
+      if (extra && !directories.includes(extra)) directories.push(extra);
+    }
+    if (strategy.preferWindowsExe) {
+      // The official Windows installer can also put a .cmd in ~/.local/bin.
+      // Prefer the real CLI so long-running processes need no shell.
+      for (const directory of directories) {
+        const executable = path.join(directory, `${engine}.exe`);
+        if (await isExecutable(executable, platform)) {
+          if (useCache) resolveCache.set(key, executable);
+          return executable;
+        }
       }
     }
   }
@@ -230,44 +234,15 @@ export type LaunchArgs = Partial<LaunchIds> & CliLaunchOptions;
  * `fork <id>`, whose subcommands take the same options). A model name may carry
  * `[` `]` (`opus[1m]`): it is checked against CLI_MODEL_RE instead of SAFE_ARG;
  * neither bracket means anything to cmd.exe, and it can never start with `-`. */
-function launchFlags(engine: CliEngine, options: CliLaunchOptions): string[] {
-  const { model, effort } = options;
-  const access = permissionFlags(engine, options.permissions);
-  if (model === undefined && effort === undefined) return access;
-  if (engine === "zcode") throw new LaunchError("invalid_argument", "ZCode cannot choose a model or effort");
-  if (model !== undefined && !isCliModel(model)) throw new LaunchError("invalid_argument", "the model name is not allowed");
-  if (effort !== undefined && !isCliEffort(engine, effort)) throw new LaunchError("invalid_argument", `${engine} has no effort ${JSON.stringify(effort)}`);
-  const flags: string[] = [];
-  if (engine === "claude") {
-    if (model !== undefined) flags.push("--model", model);
-    if (effort !== undefined) flags.push("--effort", effort);
-  } else {
-    if (model !== undefined) flags.push("-m", model);
-    if (effort !== undefined) flags.push("-c", `model_reasoning_effort=${effort}`);
-  }
-  for (const flag of flags) {
-    if (flag !== model && !SAFE_ARG.test(flag)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(flag)} is not allowed`);
-  }
-  return [...flags, ...access];
-}
-
-/** Each CLI's own permission mode. Full access: Claude Code skips every permission prompt, Codex runs
- * without approvals or sandbox. Claude's other modes are `--permission-mode` (`default` asks, `acceptEdits`,
- * `plan`, `auto`); Codex's are its sandbox and approval policy (`read-only`, or its default `workspace-write`,
- * both asking on request, as `-c` overrides). Nothing chosen adds no flag, so the CLI keeps the user's own settings; a mode the
- * CLI does not have (Codex `edits`) is refused. ZCode has none, and Antigravity takes its mode over ACP (agy.ts).
- * All are accepted by `claude --resume`/`--fork-session` and by `codex resume`/`codex fork` (Claude Code
- * 2.1.331, Codex 0.163). */
-export function permissionFlags(engine: CliEngine, mode: CliLaunchOptions["permissions"]): string[] {
-  if (mode === undefined || (engine !== "claude" && engine !== "codex")) return [];
-  if (!cliPermissionModes(engine).includes(mode)) throw new LaunchError("invalid_argument", `${engine} has no permission mode ${JSON.stringify(mode)}`);
-  if (engine === "claude") {
-    if (mode === "full") return ["--dangerously-skip-permissions"];
-    return ["--permission-mode", mode === "ask" ? "default" : mode === "edits" ? "acceptEdits" : mode];
-  }
-  if (mode === "full") return ["--dangerously-bypass-approvals-and-sandbox"];
-  // `-c` overrides, like the effort: `codex resume`/`codex fork` take them as the TUI does
-  return ["-c", `sandbox_mode=${mode === "readonly" ? "read-only" : "workspace-write"}`, "-c", "approval_policy=on-request"];
+/** Extensible per-harness CLI argument & permission strategy. */
+export interface HarnessLaunchStrategy {
+  readonly acceptsPluginDir?: boolean;
+  readonly startupFlags?: readonly string[];
+  readonly preferWindowsExe?: boolean;
+  windowsExtraDirs?(env: NodeJS.ProcessEnv): string[];
+  modeArgs(mode: LaunchMode, ids: LaunchArgs): string[];
+  optionFlags?(options: CliLaunchOptions): string[];
+  permissionFlags?(mode: NonNullable<CliLaunchOptions["permissions"]>): string[];
 }
 
 /** Codex's TUI checks for a newer release on startup and, when it finds one, opens an
@@ -277,60 +252,148 @@ export function permissionFlags(engine: CliEngine, mode: CliLaunchOptions["permi
  * the check; the user's own `codex` keeps their config (checked on Codex 0.172). */
 export const CODEX_STARTUP_FLAGS: readonly string[] = ["-c", "check_for_update_on_startup=false"];
 
-/** The CLI arguments (without the executable). New Claude sessions get an id we
- * choose so the transcript can be found at once; Codex assigns its own. */
+const LAUNCH_STRATEGIES = new Map<string, HarnessLaunchStrategy>([
+  [
+    "claude",
+    {
+      acceptsPluginDir: true,
+      modeArgs(mode, ids) {
+        if (!ids.nativeId) throw new LaunchError("invalid_argument", "a Claude session needs a session id");
+        assertSafeId(ids.nativeId, "the Claude session");
+        // a real context fork: the CLI copies the parent's history into the new id we choose
+        return mode === "new"
+          ? ["--session-id", ids.nativeId]
+          : mode === "fork"
+            ? ["--resume", ids.forkFrom as string, "--fork-session", "--session-id", ids.nativeId]
+            : ["--resume", ids.nativeId];
+      },
+      optionFlags({ model, effort }) {
+        const flags: string[] = [];
+        if (model !== undefined) flags.push("--model", model);
+        if (effort !== undefined) flags.push("--effort", effort);
+        return flags;
+      },
+      permissionFlags(mode) {
+        if (mode === "full") return ["--dangerously-skip-permissions"];
+        return ["--permission-mode", mode === "ask" ? "default" : mode === "edits" ? "acceptEdits" : mode];
+      },
+    },
+  ],
+  [
+    "codex",
+    {
+      startupFlags: CODEX_STARTUP_FLAGS,
+      modeArgs(mode, ids) {
+        if (mode === "new") return [];
+        if (mode === "fork") return ["fork", ids.forkFrom as string];
+        if (!ids.nativeId) throw new LaunchError("invalid_argument", "resuming Codex needs a session id");
+        assertSafeId(ids.nativeId, "the Codex session");
+        return ["resume", ids.nativeId];
+      },
+      optionFlags({ model, effort }) {
+        const flags: string[] = [];
+        if (model !== undefined) flags.push("-m", model);
+        if (effort !== undefined) flags.push("-c", `model_reasoning_effort=${effort}`);
+        return flags;
+      },
+      permissionFlags(mode) {
+        if (mode === "full") return ["--dangerously-bypass-approvals-and-sandbox"];
+        return ["-c", `sandbox_mode=${mode === "readonly" ? "read-only" : "workspace-write"}`, "-c", "approval_policy=on-request"];
+      },
+    },
+  ],
+  [
+    "agy",
+    {
+      preferWindowsExe: true,
+      windowsExtraDirs(env) {
+        const local = envValue(env, "LOCALAPPDATA", "win32");
+        return local && path.isAbsolute(local) ? [path.join(local, "Microsoft", "WinGet", "Links"), path.join(local, "agy", "bin")] : [];
+      },
+      modeArgs(mode, ids) {
+        if (mode !== "resume" || !ids.nativeId) throw new LaunchError("invalid_argument", "Antigravity terminal requires an existing session");
+        assertSafeId(ids.nativeId, "the Antigravity session");
+        return ["--conversation", ids.nativeId];
+      },
+      optionFlags({ model, effort }) {
+        const flags: string[] = [];
+        if (model !== undefined) flags.push("-m", model);
+        if (effort !== undefined) flags.push("-c", `model_reasoning_effort=${effort}`);
+        return flags;
+      },
+    },
+  ],
+  [
+    "zcode",
+    {
+      modeArgs(mode, ids) {
+        if (mode === "fork") throw new LaunchError("invalid_argument", "ZCode cannot fork a session");
+        if (mode === "new") return [];
+        if (!ids.nativeId) throw new LaunchError("invalid_argument", "resuming ZCode needs a session id");
+        assertSafeId(ids.nativeId, "the ZCode session");
+        return ["--resume", ids.nativeId];
+      },
+      optionFlags() {
+        throw new LaunchError("invalid_argument", "ZCode cannot choose a model or effort");
+      },
+    },
+  ],
+]);
+
+export function launchStrategyFor(engine: CliEngine | string): HarnessLaunchStrategy | null {
+  return LAUNCH_STRATEGIES.get(engine) ?? null;
+}
+
+/** Registers a launch strategy for a harness; returns a disposer. */
+export function registerLaunchStrategy(engine: CliEngine | string, strategy: HarnessLaunchStrategy): () => void {
+  const previous = LAUNCH_STRATEGIES.get(engine);
+  LAUNCH_STRATEGIES.set(engine, strategy);
+  return () => {
+    if (LAUNCH_STRATEGIES.get(engine) !== strategy) return;
+    if (previous) LAUNCH_STRATEGIES.set(engine, previous);
+    else LAUNCH_STRATEGIES.delete(engine);
+  };
+}
+
+function launchFlags(engine: CliEngine, options: CliLaunchOptions): string[] {
+  const strategy = launchStrategyFor(engine);
+  const { model, effort } = options;
+  const access = permissionFlags(engine, options.permissions);
+  if (model === undefined && effort === undefined) return access;
+  if (!strategy?.optionFlags) throw new LaunchError("invalid_argument", `${engine} cannot choose a model or effort`);
+  if (model !== undefined && !isCliModel(model)) throw new LaunchError("invalid_argument", "the model name is not allowed");
+  if (effort !== undefined && !isCliEffort(engine, effort)) throw new LaunchError("invalid_argument", `${engine} has no effort ${JSON.stringify(effort)}`);
+  const flags = strategy.optionFlags(options);
+  for (const flag of flags) {
+    if (flag !== model && !SAFE_ARG.test(flag)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(flag)} is not allowed`);
+  }
+  return [...flags, ...access];
+}
+
+/** Each CLI's own permission mode, dispatched through its launch strategy. */
+export function permissionFlags(engine: CliEngine, mode: CliLaunchOptions["permissions"]): string[] {
+  const strategy = launchStrategyFor(engine);
+  if (mode === undefined || !strategy?.permissionFlags) return [];
+  if (!cliPermissionModes(engine).includes(mode)) throw new LaunchError("invalid_argument", `${engine} has no permission mode ${JSON.stringify(mode)}`);
+  return strategy.permissionFlags(mode);
+}
+
+/** The CLI arguments (without the executable). Dispatched through the harness launch strategy. */
 export function cliArgs(engine: CliEngine, mode: LaunchMode, ids: LaunchArgs = {}, options: PlatformOptions = {}): string[] {
-  let args: string[];
+  const strategy = launchStrategyFor(engine);
+  if (!strategy) throw new LaunchError("invalid_argument", `unknown engine ${String(engine)}`);
   if (mode === "fork") {
     if (!ids.forkFrom) throw new LaunchError("invalid_argument", "a fork needs the session to fork");
     assertSafeId(ids.forkFrom, "the session to fork");
   }
-  if (engine === "claude") {
-    if (!ids.nativeId) throw new LaunchError("invalid_argument", "a Claude session needs a session id");
-    assertSafeId(ids.nativeId, "the Claude session");
-    // a real context fork: the CLI copies the parent's history into the new id we choose
-    args =
-      mode === "new"
-        ? ["--session-id", ids.nativeId]
-        : mode === "fork"
-          ? ["--resume", ids.forkFrom as string, "--fork-session", "--session-id", ids.nativeId]
-          : ["--resume", ids.nativeId];
-  } else if (engine === "codex") {
-    if (mode === "new") {
-      args = [];
-    } else if (mode === "fork") {
-      // `codex fork <id>` opens the interactive CLI on a new thread that starts from the parent's; Codex assigns the id
-      args = ["fork", ids.forkFrom as string];
-    } else {
-      if (!ids.nativeId) throw new LaunchError("invalid_argument", "resuming Codex needs a session id");
-      assertSafeId(ids.nativeId, "the Codex session");
-      args = ["resume", ids.nativeId];
-    }
-  } else if (engine === "agy") {
-    if (mode !== "resume" || !ids.nativeId) throw new LaunchError("invalid_argument", "Antigravity terminal requires an existing session");
-    assertSafeId(ids.nativeId, "the Antigravity session");
-    args = ["--conversation", ids.nativeId];
-  } else if (engine === "zcode") {
-    if (mode === "fork") throw new LaunchError("invalid_argument", "ZCode cannot fork a session");
-    // the installed ZCode CLI's resume flag still needs the live check P0 asks
-    // for; the shape mirrors the other CLIs until then
-    if (mode === "new") {
-      args = [];
-    } else {
-      if (!ids.nativeId) throw new LaunchError("invalid_argument", "resuming ZCode needs a session id");
-      assertSafeId(ids.nativeId, "the ZCode session");
-      args = ["--resume", ids.nativeId];
-    }
-  } else {
-    throw new LaunchError("invalid_argument", `unknown engine ${String(engine)}`);
-  }
+  const args = [...strategy.modeArgs(mode, ids)];
   for (const arg of args) {
     if (!SAFE_ARG.test(arg)) throw new LaunchError("invalid_argument", `argument ${JSON.stringify(arg)} is not allowed`);
   }
   args.push(...launchFlags(engine, ids));
-  if (engine === "codex") args.push(...CODEX_STARTUP_FLAGS);
+  if (strategy.startupFlags?.length) args.push(...strategy.startupFlags);
   if (ids.pluginDir !== undefined) {
-    if (engine !== "claude") throw new LaunchError("invalid_argument", "only Claude takes a plugin directory");
+    if (!strategy.acceptsPluginDir) throw new LaunchError("invalid_argument", "only Claude takes a plugin directory");
     args.push("--plugin-dir", validatePluginDir(ids.pluginDir, options.platform ?? process.platform));
   }
   return args;
@@ -450,7 +513,7 @@ export async function planLaunch(
   const executable = input.executable ?? (await resolveCli(input.engine, options));
   if (!executable) throw new LaunchError("cli_not_found", `${input.engine} was not found on PATH`);
   // Hooks are an extra: a plugin directory that is missing or incomplete just means no cards.
-  const hooks = input.engine === "claude" && input.hooks && (await pluginComplete(input.hooks.pluginDir)) ? input.hooks : undefined;
+  const hooks = launchStrategyFor(input.engine)?.acceptsPluginDir && input.hooks && (await pluginComplete(input.hooks.pluginDir)) ? input.hooks : undefined;
   if (hooks) {
     for (const [name, value] of Object.entries({ node: hooks.node, pipe: hooks.pipe, token: hooks.token })) {
       // eslint-disable-next-line no-control-regex

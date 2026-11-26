@@ -392,11 +392,21 @@ private struct AgentTranscript: View {
                                         .frame(maxWidth: .infinity)
                                 }
                             }
-                            ForEach(rows) { row in
-                                switch row {
-                                case .block(let block): rendered(block, conclusions: conclusions, completed: completed, translate: t.translationEnabled)
-                                case .progress(_, let parts):
-                                    MoreContent { ForEach(parts) { block in rendered(block, conclusions: [], completed: [], translate: false) } }
+                            ForEach(displayRows(from: rows)) { entry in
+                                if entry.byline || entry.progress != nil {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        if entry.byline { AgentByline(engine: engine) }
+                                        if let progress = entry.progress {
+                                            MoreContent(durationMs: progress.durationMs) {
+                                                ForEach(progress.blocks) { block in rendered(block, conclusions: [], completed: [], translate: false) }
+                                            }
+                                        }
+                                        if let block = entry.block {
+                                            rendered(block, conclusions: conclusions, completed: completed, translate: t.translationEnabled)
+                                        }
+                                    }
+                                } else if let block = entry.block {
+                                    rendered(block, conclusions: conclusions, completed: completed, translate: t.translationEnabled)
                                 }
                             }
                             if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
@@ -423,6 +433,57 @@ private struct AgentTranscript: View {
             lateReceipt = receiptID
         }
     }
+    private struct DisplayRow: Identifiable {
+        let id: String
+        let byline: Bool
+        let progress: (id: String, blocks: [CliBlock], durationMs: Int?)?
+        let block: CliBlock?
+    }
+
+    private func displayRows(from rows: [CliTranscriptRow]) -> [DisplayRow] {
+        var heads: Set<String> = []
+        var replying = false
+        for row in rows {
+            guard case .block(let block) = row else { continue }
+            switch block {
+            case .user: replying = false
+            case .assistant where !replying:
+                heads.insert(block.id)
+                replying = true
+            default: break
+            }
+        }
+        var out: [DisplayRow] = []
+        var seenAssistant = false
+        for (index, row) in rows.enumerated() {
+            switch row {
+            case .progress(let id, let parts, let durationMs):
+                guard !parts.isEmpty else { continue }
+                if index + 1 < rows.count, case .block(let next) = rows[index + 1], case .assistant = next, heads.contains(next.id) {
+                    continue
+                }
+                let showByline = !seenAssistant
+                seenAssistant = true
+                out.append(DisplayRow(id: id, byline: showByline, progress: (id, parts, durationMs), block: nil))
+            case .block(let block):
+                if case .user = block { seenAssistant = false }
+                var attached: (id: String, blocks: [CliBlock], durationMs: Int?)?
+                let showByline: Bool
+                if case .assistant = block, heads.contains(block.id) {
+                    showByline = true
+                    if index > 0, case .progress(let pid, let parts, let durationMs) = rows[index - 1], !parts.isEmpty {
+                        attached = (pid, parts, durationMs)
+                    }
+                    seenAssistant = true
+                } else {
+                    showByline = false
+                }
+                out.append(DisplayRow(id: block.id, byline: showByline, progress: attached, block: block))
+            }
+        }
+        return out
+    }
+
     private func rendered(_ block: CliBlock, conclusions: Set<String>, completed: Set<String>, translate: Bool) -> some View {
         let guide = guides.first { "guide:" + $0.id == block.id }
         let state = guide.flatMap { guide in model.queues[key]?.entries.first { $0.id == guide.id }?.status }

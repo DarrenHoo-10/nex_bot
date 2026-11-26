@@ -48,15 +48,16 @@ import {
 } from "../../../shared/cli-agents.ts";
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { AgyError, AgyRuntime } from "./agy.ts";
-import { agyConfigDir, supportsAgyAcp, type agyWriters } from "./agy-native.ts";
-import { CodexDaemons, DaemonError, codexSkills, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
+import { agyConfigDir, type agyWriters } from "./agy-native.ts";
+import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { CodexDesktopQueue } from "./codex-desktop-queue.ts";
 import { codexEmptyComposer, codexReceipt } from "./codex-first-input.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
-import { harnessFor } from "./harness.ts";
+import { allHarnesses, harnessConfigEnv, harnessFor, type HarnessDriver, type HarnessWatchSource } from "./harness.ts";
+import { createDefaultHarnessDrivers } from "./harness-drivers.ts";
 import { HookError, HookServer, TurnTracker, locateHookPlugin, platformPlugin } from "./hooks.ts";
 import { ScreenPromptError, ScreenPrompts, type ScreenTerminal } from "./screen-prompts.ts";
-import { InboxError, sendToInbox } from "./inbox.ts";
+import { InboxError } from "./inbox.ts";
 import { clipUnits } from "./items.ts";
 import { SessionDiscovery, type SessionDiscoveryOptions, type SessionsDiff } from "./discovery.ts";
 import {
@@ -79,11 +80,10 @@ import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
 import { compressImagePreview, maxImageSourceBytes } from "../image-preview.ts";
 import { TranscriptReader } from "./reader.ts";
 import { searchSessions, type SearchSource } from "./search.ts";
-import { claudeSkills } from "./skills.ts";
 import { cliModels } from "./models.ts";
 import { ensureDir, listDirs } from "./dirs.ts";
 import { TermStreams, hcErrorCode, type TermStream } from "./streams.ts";
-import { zcodeHomeExists, zcodeHomes, type ZcodeHostChannel } from "./zcode.ts";
+import type { ZcodeHostChannel } from "./zcode.ts";
 
 /** What the bridge needs from herdr-core. `HerdrCore` is one; tests pass a fake. */
 export interface HcLike {
@@ -178,6 +178,8 @@ export interface CliAgentBridgeOptions {
   screenPromptMs?: number;
   /** How long such a dialog must stay before it becomes a card (tests pass 0). */
   screenPromptGraceMs?: number;
+  /** Optional extra or override harness runtime drivers (for extensions or tests). */
+  drivers?: readonly HarnessDriver[];
   /** Wall-clock budget of one `search`. Default 8 s (the op itself has 10). */
   searchBudgetMs?: number;
 }
@@ -220,9 +222,6 @@ interface Watch {
 const HC_LABELS = { nexbot: "1" } as const;
 const FIRST_CODEX_INPUT = "nexbot.codex-first-input";
 /** herdr-core events after which the list of terminals may differ; status, title and size do not matter here */
-/** Engines whose CLI can start from another session's context (`claude --resume <id> --fork-session`, `codex fork <id>`). */
-const FORK_ENGINES: readonly CliEngine[] = ["claude", "codex"];
-
 const TERMINAL_CHANGES = new Set(["created", "lost", "restarted", "finished", "removed"]);
 const REGISTER_GRACE_MS = 5000;
 const REPLY_RESULT_LIMIT = 900_000;
@@ -243,6 +242,7 @@ export class CliAgentBridge {
   private readonly terminals = new Map<string, TerminalInfo>();
   private readonly pending: PendingClaim[] = [];
   private readonly inflight = new Map<string, Promise<StoredReply>>();
+  private readonly activeStarts = new Map<string, Promise<CliOpResult["start"]>>();
   private readonly busyRefs = new Set<string>();
   private readonly tasks = new Set<Promise<unknown>>();
   private engines: Array<{ engine: CliEngine; version: string | null }> = [];
@@ -276,6 +276,7 @@ export class CliAgentBridge {
   private readonly screens: ScreenPrompts;
   private screenTimer: NodeJS.Timeout | null = null;
   private readonly git: DeviceGit;
+  private readonly drivers: Map<CliEngine, HarnessDriver>;
 
   constructor(private readonly options: CliAgentBridgeOptions) {
     this.platform = options.platform ?? process.platform;
@@ -348,42 +349,81 @@ export class CliAgentBridge {
       log: (message) => this.log("debug", message),
       ...(options.coalesceMs === undefined ? {} : { coalesceMs: options.coalesceMs }),
     });
+    this.drivers = createDefaultHarnessDrivers({
+      platform: this.platform,
+      env: this.options.env,
+      homedir: this.options.homedir,
+      discovery: this.discovery,
+      agy: this.agy,
+      codexDaemons: this.codexDaemons,
+      codexDesktopQueue: this.codexDesktopQueue,
+      zcodeHomes: this.options.zcodeHomes,
+      zcodeHost: this.options.zcodeHost,
+      inboxConfirmMs: this.options.inboxConfirmMs,
+      shouldProbeAgy: !this.options.claudeDirs || !!this.options.agyDir,
+      fail: (code, message) => new OpFailure(code, message),
+      probeCli: (engine) => this.probeCli(engine),
+      findCli: (engine) => this.findCli(engine),
+      addressFor: (ref) => this.addressFor(ref),
+      firstCodexGate: (address) => this.terminals.get(address)?.firstCodexInput,
+      awaitRow: (ref, ms) => this.awaitRow(ref, ms),
+      scheduleRefresh: () => this.scheduleRefresh(),
+      setAgyNeedsUpdate: (value) => { this.agyNeedsUpdate = value; },
+      openAgyLocalTerminal: (row) => this.openAgyLocalTerminal(row),
+    });
+    for (const driver of options.drivers ?? []) this.drivers.set(driver.id, driver);
+  }
+
+  private driver(engine: CliEngine): HarnessDriver | undefined {
+    return this.drivers.get(engine);
+  }
+
+  private async probeCli(engine: CliEngine): Promise<{ available: boolean; version: string | null }> {
+    const find = this.options.resolveCli ?? ((name: CliEngine) => resolveCli(name, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}) }));
+    const version = this.options.cliVersion ?? ((file: string) => cliVersion(file, { platform: this.platform, timeoutMs: 3000, ...(this.options.env ? { env: this.options.env } : {}) }));
+    const file = await find(engine);
+    if (!file) return { available: false, version: null };
+    return { available: true, version: await version(file).catch(() => null) };
+  }
+
+  private async openAgyLocalTerminal(row: CliSessionWire): Promise<string> {
+    const hc = await this.requireHc();
+    await this.refreshTerminals();
+    const existing = this.addressFor(cliRef("agy", row.nativeId));
+    if (existing) return existing;
+    const plan = await planLaunch({
+      engine: "agy", mode: "resume", nativeId: row.nativeId, key: row.nativeId,
+      cwd: row.cwd, executable: await this.cliPath("agy"),
+    }, { platform: this.platform, env: this.options.env, homedir: this.options.homedir });
+    plan.env = { ...plan.env, ...this.launchEnvironment("agy", row.configDir), ...(await this.driver("agy")?.extraEnv?.()) };
+    await this.agy.handoff(row.nativeId);
+    const terminal = await this.runTerminal(hc, "agy", plan, clampTermSize(undefined, undefined));
+    this.register(terminal, "agy", row.nativeId, plan.cwd);
+    this.discovery.reapply({ flush: true });
+    return terminal.address;
   }
 
   // -- what the device tells Core about itself ---------------------------------
 
-  /** Finds the installed CLIs. Call before the hello so `capability()` is accurate; it never throws.
-   * ZCode needs no CLI on PATH: its sessions live in the local database, so its presence in
-   * the list only means the data directory exists. */
+  /** Finds the installed CLIs via registered harness adapters and drivers. Never throws. */
   prepare(): Promise<void> {
     this.prepared ??= (async () => {
-      const find = this.options.resolveCli ?? ((engine: CliEngine) => resolveCli(engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}) }));
-      const version = this.options.cliVersion ?? ((file: string) => cliVersion(file, { platform: this.platform, timeoutMs: 3000, ...(this.options.env ? { env: this.options.env } : {}) }));
       const found: Array<{ engine: CliEngine; version: string | null }> = [];
       await Promise.all(
-        (["claude", "codex", ...(!this.options.claudeDirs || this.options.agyDir ? ["agy" as const] : [])] as const).map(async (engine) => {
+        allHarnesses().map(async (adapter) => {
           try {
-            const file = await find(engine);
-            if (!file) return;
-            const installed = await version(file).catch(() => null);
-            if (engine === "agy") {
-              this.agyNeedsUpdate = !supportsAgyAcp(installed);
-              if (this.agyNeedsUpdate) return;
-              this.agy.enable();
-            }
-            found.push({ engine, version: installed });
+            const custom = this.driver(adapter.id)?.probe;
+            const probed = custom
+              ? await custom()
+              : adapter.features.probe === "cli"
+                ? await this.probeCli(adapter.id)
+                : { available: false, version: null };
+            if (probed.available) found.push({ engine: adapter.id, version: probed.version });
           } catch (error) {
-            this.log("warn", `looking for ${engine} failed: ${String(error)}`);
+            this.log("warn", `looking for ${adapter.id} failed: ${String(error)}`);
           }
         }),
       );
-      const homes = this.options.zcodeHomes ?? zcodeHomes();
-      for (const home of homes) {
-        if (await zcodeHomeExists(home)) {
-          found.push({ engine: "zcode", version: null });
-          break;
-        }
-      }
       this.engines = found.sort((a, b) => a.engine.localeCompare(b.engine));
     })();
     return this.prepared;
@@ -394,7 +434,7 @@ export class CliAgentBridge {
     return {
       version: 1,
       engines: this.engines.map((entry) => entry.engine),
-      forkEngines: this.engines.map((entry) => entry.engine).filter((engine) => FORK_ENGINES.includes(engine)),
+      forkEngines: this.engines.map((entry) => entry.engine).filter((engine) => harnessFor(engine)?.features.fork === true),
       features: [...CLI_FEATURES],
       ...(this.agyNeedsUpdate ? { agyNeedsUpdate: true } : {}),
       terminal: {
@@ -432,8 +472,7 @@ export class CliAgentBridge {
     this.resync();
     void this.warm();
     // Core dropped its copies of open approvals with the old link
-    this.codexDaemons.relink();
-    this.agy.relink();
+    for (const driver of this.drivers.values()) driver.relink?.();
     // The hook listener comes up with the link, so terminals that survived a client restart keep forwarding;
     // prompts that came while the link was down are announced now.
     void this.ensureHooks().then((hooks) => hooks?.relink());
@@ -483,8 +522,10 @@ export class CliAgentBridge {
     this.hooks = null;
     if (hooks) this.track(hooks.close());
     for (const claim of this.pending.splice(0)) claim.waiter?.(null);
-    this.codexDaemons.close();
-    this.track(this.agy.close());
+    for (const driver of this.drivers.values()) {
+      const closing = driver.close?.();
+      if (closing) this.track(closing);
+    }
     this.discovery.closeZcode();
     this.dropHc();
     await Promise.race([Promise.allSettled(this.tasks), new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
@@ -597,7 +638,7 @@ export class CliAgentBridge {
     for (const ref of diff.removes) this.dropObserved(ref);
     const mine = this.nexbotTerminals();
     for (const row of diff.upserts) {
-      if (row.engine !== "claude" && row.engine !== "agy") continue;
+      if (!harnessFor(row.engine)?.features.statusTurnFallback) continue;
       const ref = cliRef(row.engine, row.nativeId);
       const before = this.states.get(ref);
       this.states.set(ref, row.state);
@@ -640,12 +681,13 @@ export class CliAgentBridge {
       this.codexTails.delete(ref);
     }
     for (const ref of mine.keys()) {
-      if (!ref.startsWith("codex:") || this.codexTails.has(ref)) continue;
+      const parsed = parseCliRef(ref);
+      if (!parsed || !harnessFor(parsed.engine)?.features.transcriptTurnTails || this.codexTails.has(ref)) continue;
       const file = this.discovery.transcriptFor(ref);
       if (!file) continue;
       const reader = new TranscriptReader({
         path: file,
-        engine: "codex",
+        engine: parsed.engine,
         onItems: (items) => {
           for (const item of items) {
             if (item.kind !== "turn" || item.phase === "started") continue;
@@ -685,7 +727,7 @@ export class CliAgentBridge {
   private screenTerminals(): ScreenTerminal[] {
     const out: ScreenTerminal[] = [];
     for (const info of this.terminals.values()) {
-      if (!info.nativeId || (info.engine !== "claude" && info.engine !== "codex")) continue;
+      if (!info.nativeId || !harnessFor(info.engine)?.features.screenPrompts) continue;
       try {
         out.push({ ref: cliRef(info.engine, info.nativeId), engine: info.engine, address: info.address });
       } catch {
@@ -1107,21 +1149,25 @@ export class CliAgentBridge {
     state.timer.unref?.();
   }
 
+  private watchSourceFor(ref: CliSessionRef, row: CliSessionWire): HarnessWatchSource | null {
+    return this.driver(row.engine)?.watchSource?.(ref, row) ?? null;
+  }
+
   private async startWatch(watch: Watch): Promise<void> {
     if (watch.reader || watch.app) return;
-    if (watch.engine === "agy") {
-      await this.startAppWatch(watch, { chat: { threadId: watch.ref.slice(4) }, db: this.agy });
-      return;
+    const row = this.discovery.get(watch.ref);
+    const driver = this.driver(watch.engine);
+    if (row && driver?.read && driver.watchSource) {
+      const source = driver.watchSource(watch.ref, row);
+      if (source) {
+        await this.startAppWatch(watch, source);
+        return;
+      }
     }
     const file = this.discovery.transcriptFor(watch.ref);
     if (!file) {
-      const app = this.discovery.appChatFor(watch.ref);
-      if (app) {
-        await this.startAppWatch(watch, app);
-        return;
-      }
-      const zcode = this.discovery.zcodeChatFor(watch.ref);
-      if (zcode) await this.startAppWatch(watch, zcode);
+      const source = row ? this.watchSourceFor(watch.ref, row) : null;
+      if (source) await this.startAppWatch(watch, source);
       return;
     }
     const reader = new TranscriptReader({
@@ -1235,16 +1281,17 @@ export class CliAgentBridge {
       case "skills": {
         const query = args as CliOpArgs["skills"];
         const session = query.ref ? this.session(query.ref) : undefined;
-        const home = this.options.homedir ?? os.homedir(), env = this.options.env ?? process.env;
-        const cwd = session?.cwd || query.cwd || home;
-        if (query.engine === "claude") return claudeSkills(session?.configDir || env.CLAUDE_CONFIG_DIR || path.join(home, ".claude"), cwd);
-        if (query.engine === "codex") return codexSkills({ codexPath: () => this.findCli("codex"), env, platform: this.platform },
-          session?.configDir || env.CODEX_HOME || path.join(home, ".codex"), cwd);
-        throw new OpFailure("invalid", "此工具不支持选择技能");
+        const cwd = session?.cwd || query.cwd || this.options.homedir || os.homedir();
+        const skills = await this.driver(query.engine)?.skills?.(session, cwd);
+        if (!skills) throw new OpFailure("invalid", "此工具不支持选择技能");
+        return skills;
       }
-      case "models":
-        if ((args as CliOpArgs["models"]).engine === "agy") return this.agy.models();
-        return cliModels((args as CliOpArgs["models"]).engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
+      case "models": {
+        const engine = (args as CliOpArgs["models"]).engine;
+        const custom = this.driver(engine)?.models;
+        if (custom) return custom();
+        return cliModels(engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
+      }
       case "dirs":
         return listDirs((args as CliOpArgs["dirs"]).path, { platform: this.platform, ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
       default:
@@ -1273,12 +1320,10 @@ export class CliAgentBridge {
     const file = this.discovery.transcriptFor(ref);
     const live = this.watches.get(ref)?.reader;
     const reader = file ? live ?? new TranscriptReader({ path: file, engine: row.engine, watch: false }) : undefined;
-    const app = !reader && this.discovery.appChatFor(ref);
-    const zcode = !reader && !app && this.discovery.zcodeChatFor(ref);
+    const chat = !reader ? this.watchSourceFor(ref, row) : null;
     try {
       const source = reader ? await reader.imageSource(itemId, locator)
-        : app ? await app.db.imageSource(app.chat.threadId, itemId, locator)
-        : zcode ? zcode.db.imageSource(zcode.chat.threadId, itemId, locator) : undefined;
+        : await chat?.db.imageSource?.(chat.chat.threadId, itemId, locator);
       if (!source) throw new OpFailure("not_found");
       let bytes: Buffer;
       if (source.kind === "inline") {
@@ -1324,14 +1369,13 @@ export class CliAgentBridge {
 
   private async opRead(args: CliOpArgs["read"]): Promise<{ items: CliItem[]; more: boolean }> {
     const row = this.session(args.ref);
-    const file = this.discovery.transcriptFor(args.ref);
     const limit = args.limit ?? PAGE_SIZE;
-    if (row.engine === "agy") return this.agy.page(row.nativeId, args.before ? { before: args.before } : {}, limit);
+    const custom = await this.driver(row.engine)?.read?.(args.ref, row, args.before, limit);
+    if (custom) return custom;
+    const file = this.discovery.transcriptFor(args.ref);
     if (!file) {
-      const app = this.discovery.appChatFor(args.ref);
-      if (app) return app.db.page(app.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
-      const zcode = this.discovery.zcodeChatFor(args.ref);
-      if (zcode) return zcode.db.page(zcode.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
+      const source = this.watchSourceFor(args.ref, row);
+      if (source) return source.db.page(source.chat.threadId, { ...(args.before ? { before: args.before } : {}), limit });
       return { items: [], more: false };
     }
     const live = this.watches.get(args.ref)?.reader;
@@ -1391,18 +1435,12 @@ export class CliAgentBridge {
   private launchEnvironment(engine: CliEngine, configDir: string | undefined): Record<string, string> {
     const homedir = this.options.homedir ?? os.homedir();
     const env = launchEnv(engine, { platform: this.platform, homedir, ...(this.options.env ? { env: this.options.env } : {}) });
-    if (engine === "agy") return configDir ? { ...env, ANTIGRAVITY_CLI_CONFIG_DIR: configDir } : env;
-    if (configDir) {
-      const variable = engine === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
-      const fallback = path.join(homedir, engine === "claude" ? ".claude" : ".codex");
-      if (normalizeDir(configDir, this.platform) !== normalizeDir(fallback, this.platform)) env[variable] = configDir;
-    }
-    return env;
+    return { ...env, ...harnessConfigEnv(engine, configDir, homedir, this.platform) };
   }
 
   private async launchOptions(engine: CliEngine, args: CliLaunchOptions, configDir?: string, sessionModel?: string, fallback?: CliPermissionMode) {
     let effort = args.effort;
-    if (engine !== "zcode") {
+    if (harnessFor(engine)?.features.modelPicker) {
       const env = { ...(this.options.env ?? process.env), ...this.launchEnvironment(engine, configDir) };
       const catalog = await cliModels(engine, { platform: this.platform, env, homedir: this.options.homedir });
       const model = args.model ?? sessionModel ?? catalog.current ?? "";
@@ -1454,8 +1492,8 @@ export class CliAgentBridge {
     if (!args.forkFrom) return null;
     const parent = parseCliRef(args.forkFrom);
     if (!parent || parent.engine !== args.engine) throw new OpFailure("invalid");
-    // ZCode has no fork flag; a blank session in its place would look like a fork that lost its context
-    if (!FORK_ENGINES.includes(args.engine)) throw new OpFailure("invalid", "此入口不支持分叉");
+    // ZCode and non-forking harnesses have no fork flag; a blank session in its place would look like a fork that lost its context
+    if (!harnessFor(args.engine)?.features.fork) throw new OpFailure("invalid", "此入口不支持分叉");
     if (args.worktree) throw new OpFailure("invalid", "分叉不能同时新建工作树");
     const row = this.session(args.forkFrom);
     if (!this.discovery.transcriptFor(args.forkFrom)) throw new OpFailure("invalid", "此会话没有本地记录，无法分叉");
@@ -1463,14 +1501,39 @@ export class CliAgentBridge {
   }
 
   private async opStart(args: CliOpArgs["start"], budget: number): Promise<CliOpResult["start"]> {
-    refuseZcodeOptions(args.engine, args);
+    const requestId = args.worktree?.requestId;
+    if (!requestId) return this.runStart(args, budget);
+    const inflight = this.activeStarts.get(requestId);
+    if (inflight) return inflight;
+    const storedKey = `start-req:${requestId}`;
+    const cached = this.store.opEntry(storedKey);
+    if (cached?.state === "done" && cached.reply.ok && cached.reply.result) {
+      const parsed = parseCliOpResult("start", cached.reply.result);
+      if (parsed && (!parsed.ref.startsWith("agy:") || this.agy.rows().some((row) => cliRef("agy", row.nativeId) === parsed.ref))) {
+        return parsed;
+      }
+    }
+    const task = this.runStart(args, budget).then((result) => {
+      this.store.beginOp(storedKey, "start");
+      this.store.finishOp(storedKey, { ok: true, result: result as Record<string, unknown> });
+      return result;
+    }).finally(() => {
+      if (this.activeStarts.get(requestId) === task) this.activeStarts.delete(requestId);
+    });
+    this.activeStarts.set(requestId, task);
+    return task;
+  }
+
+  private async runStart(args: CliOpArgs["start"], budget: number): Promise<CliOpResult["start"]> {
+    refuseUnsupportedLaunchOptions(args.engine, args);
     const fork = this.forkSource(args);
     if (args.createDir) {
       // a folder typed in the picker that did not exist yet; a worktree needs an existing repository
       if (fork || args.worktree) throw new OpFailure("invalid", "新建目录不能同时分叉或新建工作树");
       try { await ensureDir(args.cwd); } catch (error) { throw new OpFailure("invalid", "无法创建目录：" + String((error as NodeJS.ErrnoException).code ?? "error")); }
     }
-    if (args.engine === "agy") {
+    const customStart = this.driver(args.engine)?.start;
+    if (customStart) {
       let cwd = args.cwd;
       if (args.worktree) {
         const built = await this.git.worktree(cwd, args.worktree.branch, args.worktree.requestId, { platform: this.platform });
@@ -1478,14 +1541,12 @@ export class CliAgentBridge {
         cwd = built.worktree;
       }
       cwd = await validateCwd(cwd, { platform: this.platform, env: this.options.env });
-      const id = await this.agy.start(cwd, launchOptionsOf(args, "ask"));
-      const ref = cliRef("agy", id);
-      await this.awaitRow(ref, budget - 1000);
-      return { ref, cwd };
+      return customStart(args, cwd, budget);
     }
     const size = clampTermSize(args.cols, args.rows);
-    const claude = args.engine === "claude";
-    let nativeId: string | undefined = claude ? randomUUID() : undefined;
+    const features = harnessFor(args.engine)?.features;
+    const preassigned = features?.hooks === true;
+    let nativeId: string | undefined = preassigned ? randomUUID() : undefined;
     const newCodex = args.engine === "codex" && !fork;
     const known = new Set<string>();
     // A worktree start builds the tree here first; the requestId dedups so a
@@ -1497,8 +1558,8 @@ export class CliAgentBridge {
       this.cliPath(args.engine),
       nativeId ? this.hookLaunch(nativeId) : Promise.resolve(undefined),
       this.launchOptions(args.engine, args, fork?.row.configDir, fork?.row.model, "full"),
-      claude || newCodex ? Promise.resolve() : this.discovery.refresh().then(() => {
-        for (const row of this.discovery.snapshot()) if (row.engine === "codex") known.add(cliRef("codex", row.nativeId));
+      preassigned || newCodex ? Promise.resolve() : this.discovery.refresh().then(() => {
+        for (const row of this.discovery.snapshot()) if (row.engine === args.engine) known.add(cliRef(args.engine, row.nativeId));
       }),
     ]);
     let cwd = fork ? fork.row.cwd : args.cwd;
@@ -1568,15 +1629,10 @@ export class CliAgentBridge {
   private async opContinue(args: CliOpArgs["continue"], budget: number): Promise<CliOpResult["continue"]> {
     const parsed = parseCliRef(args.ref);
     if (!parsed) throw new OpFailure("invalid");
-    refuseZcodeOptions(parsed.engine, args);
+    refuseUnsupportedLaunchOptions(parsed.engine, args);
     const existing = this.session(args.ref);
-    if (parsed.engine === "agy") {
-      const terminal = this.addressFor(args.ref);
-      if (terminal) return { ref: args.ref, terminal };
-      await validateCwd(existing.cwd, { platform: this.platform, env: this.options.env });
-      await this.agy.resume(existing, launchOptionsOf(args));
-      return { ref: args.ref };
-    }
+    const customContinue = await this.driver(parsed.engine)?.continueSession?.(args, existing, budget);
+    if (customContinue) return customContinue;
     const hc = await this.requireHc();
     await this.refreshTerminals();
     const mapped = this.addressFor(args.ref);
@@ -1589,31 +1645,32 @@ export class CliAgentBridge {
     const writer = this.otherWriter(row);
     if (writer === "yes") throw new OpFailure("open_elsewhere");
 
+    const features = harnessFor(parsed.engine)?.features;
     const size = clampTermSize(undefined, undefined);
-    const [executable, hooks, launchOptions] = await Promise.all([
+    const [executable, hooks, launchOptions, extraEnv] = await Promise.all([
       this.cliPath(parsed.engine),
-      parsed.engine === "claude" ? this.hookLaunch(parsed.nativeId) : Promise.resolve(undefined),
+      features?.hooks ? this.hookLaunch(parsed.nativeId) : Promise.resolve(undefined),
       this.launchOptions(parsed.engine, args, row.configDir, row.model),
+      this.driver(parsed.engine)?.extraEnv?.() ?? Promise.resolve({}),
     ]);
     const plan = await planLaunch(
       { engine: parsed.engine, mode: "resume", nativeId: parsed.nativeId, key: parsed.nativeId, cwd: row.cwd, executable, ...(hooks ? { hooks } : {}), ...launchOptions },
       { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) },
     );
-    plan.env = { ...plan.env, ...this.launchEnvironment(parsed.engine, row.configDir) };
+    plan.env = { ...plan.env, ...this.launchEnvironment(parsed.engine, row.configDir), ...extraEnv };
     const terminal = await this.runTerminal(hc, parsed.engine, plan, clampTermSize(args.cols ?? size.cols, args.rows ?? size.rows));
     this.register(terminal, parsed.engine, parsed.nativeId, plan.cwd);
-    if (parsed.engine === "codex" && writer === "unknown") await this.checkEarlyExit(hc, terminal.address);
+    if (features?.unknownWriterCheck && writer === "unknown") await this.checkEarlyExit(hc, terminal.address);
     await this.awaitRow(args.ref, budget - 1000);
     this.discovery.reapply({ flush: true });
     return { ref: args.ref, terminal: terminal.address };
   }
 
   /** Whether another process writes this session. The scan just ran: a running or idle row has a live
-   * process (Claude) or a writer lock or fresh write (Codex); a stopped Codex row may still be written when the
-   * CLI keeps no lock files, which only the early-exit check can tell. */
+   * process or writer lock; a stopped row whose harness lacks locks may still have another writer. */
   private otherWriter(row: CliSessionWire): "yes" | "no" | "unknown" {
     if (row.state !== "stopped") return "yes";
-    return row.engine === "codex" && row.writerUnknown === true ? "unknown" : "no";
+    return harnessFor(row.engine)?.features.unknownWriterCheck && row.writerUnknown === true ? "unknown" : "no";
   }
 
   /** Codex gives no lock file to check: a terminal that dies at once with a "writer" complaint means someone else has the session. */
@@ -1651,34 +1708,11 @@ export class CliAgentBridge {
     throw new OpFailure(row.state === "stopped" ? "stopped" : "not_in_terminal");
   }
 
-  /** A session outside nex_bot's terminals that this device can still write to: a Claude inbox, a shared
-   * Codex daemon, or a ZCode session the host channel has attached. */
-  private async sendOutside(args: CliOpArgs["send"], row: CliSessionWire, steer = false): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
-    const route = this.discovery.routeFor(args.ref);
-    if (route?.via === "codexQueue" && row.sendVia === "inbox" && this.codexDesktopQueue) {
-      await this.codexDesktopQueue.send({ home: route.home, threadId: route.threadId, version: route.version, text: args.text });
-      return { turn: 0, started: false, delivery: "unconfirmed" };
-    }
-    if (!route || route.via !== row.sendVia) throw new OpFailure("not_in_terminal");
-    if (route.via === "inbox") {
-      if (row.state === "stopped") throw new OpFailure("stopped");
-      const result = await sendToInbox({ configDir: route.configDir, pid: route.pid, socketPath: route.socketPath, sessionId: route.sessionId }, args.text, {
-        platform: this.platform,
-        transcript: this.discovery.transcriptFor(args.ref),
-        state: row.state,
-        steer,
-        ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }),
-      });
-      return { turn: 0, started: false, delivery: result.delivery, ...(result.waiting ? { waiting: true } : {}) };
-    }
-    if (route.via === "host") {
-      if (!this.options.zcodeHost) throw new OpFailure("read_only");
-      const result = await this.options.zcodeHost.submit(route.sessionId, args.text);
-      return { turn: 0, started: result.accepted === true };
-    }
-    if (route.via !== "daemon") throw new OpFailure("not_in_terminal");
-    const sent = await this.codexDaemons.send(route.home, route.threadId, args.text);
-    return { turn: 0, started: !sent.steered };
+  /** A session outside nex_bot's terminals that its harness driver can still write to. */
+  private async sendOutside(args: CliOpArgs["send"], row: CliSessionWire, steer = false): Promise<CliOpResult["send"]> {
+    const sent = await this.driver(row.engine)?.sendOutside?.(args, row, steer);
+    if (sent) return sent;
+    throw new OpFailure("not_in_terminal");
   }
 
   /** A saved blank thread is discoverable well before its resumed TUI can consume a paste.
@@ -1741,16 +1775,16 @@ export class CliAgentBridge {
     }
   }
 
-  private async opSend(args: CliOpArgs["send"], deadline: number): Promise<{ turn: number; started: boolean; delivery?: "confirmed" | "unconfirmed"; waiting?: boolean }> {
+  private async opSend(args: CliOpArgs["send"], deadline: number): Promise<CliOpResult["send"]> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     if (!this.addressFor(args.ref)) {
       const row = this.discovery.get(args.ref);
-      if (row?.engine === "agy") {
-        if (row.sendVia !== "acp") throw new OpFailure(row.writerUnknown || row.liveIn ? "open_elsewhere" : "stopped");
-        return this.agy.send(row.nativeId, args.text);
+      if (row) {
+        const sent = await this.driver(row.engine)?.sendOutside?.(args, row);
+        if (sent) return sent;
+        if (row.sendVia === "inbox" || row.sendVia === "daemon" || row.sendVia === "host") return this.sendOutside(args, row);
       }
-      if (row && (row.sendVia === "inbox" || row.sendVia === "daemon" || row.sendVia === "host")) return this.sendOutside(args, row);
     }
     const address = this.terminalOf(args.ref);
     const gate = this.terminals.get(address)?.firstCodexInput;
@@ -1766,52 +1800,21 @@ export class CliAgentBridge {
     }
   }
 
-  /** Guidance into a turn that is already running: typing into the live
-   * terminal, a priority inbox message, a daemon steer, or the host channel for ZCode. */
+  /** Guidance into a turn that is already running: delegates engine-specific
+   * channels (ACP, daemon, inbox, host) to the harness driver, else types into
+   * the live managed terminal. */
   private async opSteer(args: CliOpArgs["steer"], deadline: number): Promise<CliOpResult["steer"]> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     const row = this.discovery.get(args.ref);
-    if (row?.engine === "agy" && row.sendVia === "acp" && !this.addressFor(args.ref)) {
-      const result = await this.agy.send(row.nativeId, args.text, true);
-      return { accepted: true, started: result.started };
-    }
-    // A shared Codex daemon can bind the input to one exact turn even if
-    // discovery also knows the address of the CLI's terminal.
     const managedAddress = this.addressFor(args.ref);
-    const gate = managedAddress ? this.terminals.get(managedAddress)?.firstCodexInput : undefined;
-    if (row?.engine === "codex" && (!gate || gate.confirmed) && this.codexDaemons.threads(row.configDir)?.has(row.nativeId)) {
-      return this.codexDaemons.steer(row.configDir, row.nativeId, args.text);
+    if (row) {
+      const steered = await this.driver(row.engine)?.steer?.(args, row, managedAddress, deadline);
+      if (steered) return steered;
     }
-    const route = this.discovery.routeFor(args.ref);
-    if (this.addressFor(args.ref)) {
-      if (row?.engine === "claude" && route?.via === "inbox" && !args.text.trimStart().startsWith("/")) {
-        try {
-          const receipt = await sendToInbox(route, args.text, { steer: true, platform: this.platform,
-            state: row.state, transcript: this.discovery.transcriptFor(args.ref),
-            ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }) });
-          return { accepted: true, delivery: receipt.delivery };
-        } catch (error) {
-          // No authenticated connection was established. A partial write or a
-          // missing receipt must never cause a second submission.
-          if (!(error instanceof InboxError) || (error.code !== "not_in_terminal" && error.code !== "stopped")) throw error;
-        }
-      }
+    if (managedAddress) {
       const result = await this.opSend(args, deadline);
       return { accepted: true, started: result.started, ...(result.delivery ? { delivery: result.delivery } : {}) };
-    }
-    if (route?.via === "inbox" && row?.engine === "claude" && row.sendVia === "inbox") {
-      if (row.state !== "running") throw new OpFailure("turn_changed");
-      const { delivery } = await this.sendOutside(args, row, true);
-      return { accepted: true, ...(delivery ? { delivery } : {}) };
-    }
-    if (route?.via === "daemon" && row?.sendVia === "daemon") {
-      return this.codexDaemons.steer(route.home, route.threadId, args.text);
-    }
-    if (route?.via === "host" && row?.sendVia === "host") {
-      if (!this.options.zcodeHost) throw new OpFailure("read_only");
-      const result = await this.options.zcodeHost.submit(route.sessionId, args.text, { steer: true });
-      return { accepted: result.accepted === true };
     }
     throw new OpFailure(row?.state === "running" || row?.state === "waiting" ? "invalid" : "turn_changed");
   }
@@ -1819,32 +1822,12 @@ export class CliAgentBridge {
   private async opInterrupt(args: CliOpArgs["interrupt"]): Promise<{ outcome: string }> {
     const address = this.addressFor(args.ref);
     if (!address) {
-      // a session outside our terminals can only be stopped through its own
-      // channel; the harness registry says which ones have one
       const row = this.discovery.get(args.ref);
-      if (row?.engine === "agy" && row.sendVia === "acp") return this.agy.interrupt(row.nativeId);
-      const route = this.discovery.routeFor(args.ref);
-      if (row && route?.via === "host" && row.sendVia === "host") {
-        if (!this.options.zcodeHost) throw new OpFailure("read_only");
-        if (!harnessFor(row.engine)?.caps(row).interrupt) throw new OpFailure("invalid", "此入口不支持停止");
-        const result = await this.options.zcodeHost.interrupt(route.sessionId);
-        return { outcome: String(result.outcome ?? "unknown").slice(0, 100) };
+      if (row) {
+        const outcome = await this.driver(row.engine)?.interruptOutside?.(args, row);
+        if (outcome) return outcome;
+        throw new OpFailure(row.state === "stopped" ? "stopped" : "not_in_terminal");
       }
-      // a Claude in the desktop app or the user's own terminal: Stop goes through its
-      // inbox at priority now, which aborts the running turn (as Claude Code's "send now")
-      if (row && route?.via === "inbox" && row.sendVia === "inbox") {
-        if (row.state !== "running" && row.state !== "waiting") throw new OpFailure("turn_changed");
-        const result = await sendToInbox({ configDir: route.configDir, pid: route.pid, socketPath: route.socketPath, sessionId: route.sessionId }, "", {
-          stop: true,
-          transcript: this.discovery.transcriptFor(args.ref),
-          state: row.state,
-          platform: this.platform,
-          ...(this.options.inboxConfirmMs === undefined ? {} : { confirmMs: this.options.inboxConfirmMs }),
-        });
-        this.scheduleRefresh();
-        return { outcome: result.delivery === "confirmed" ? "stopped" : "unconfirmed" };
-      }
-      if (row) throw new OpFailure(row.state === "stopped" ? "stopped" : "not_in_terminal");
       throw new OpFailure("not_found");
     }
     const hc = await this.requireHc();
@@ -1875,7 +1858,7 @@ export class CliAgentBridge {
         sources.push({ ref, engine: row.engine, file });
         continue;
       }
-      const chat = this.discovery.appChatFor(ref) ?? this.discovery.zcodeChatFor(ref);
+      const chat = this.watchSourceFor(ref, row);
       if (chat) sources.push({ ref, engine: row.engine, items: () => allItems(chat.db, chat.chat.threadId) });
     }
     const hits = await searchSessions(sources, args.query, {
@@ -1904,23 +1887,7 @@ export class CliAgentBridge {
   private async opOpenLocal(args: CliOpArgs["open_local"]): Promise<Record<string, never>> {
     const row = this.session(args.ref);
     let address = this.addressFor(args.ref);
-    if (!address && row.engine === "agy") {
-      const hc = await this.requireHc();
-      await this.refreshTerminals();
-      address = this.addressFor(args.ref);
-      if (!address) {
-        const plan = await planLaunch({
-          engine: "agy", mode: "resume", nativeId: row.nativeId, key: row.nativeId,
-          cwd: row.cwd, executable: await this.cliPath("agy"),
-        }, { platform: this.platform, env: this.options.env, homedir: this.options.homedir });
-        plan.env = { ...plan.env, ...this.launchEnvironment("agy", row.configDir), ...await this.agy.proxyEnvironment() };
-        await this.agy.handoff(row.nativeId);
-        const terminal = await this.runTerminal(hc, "agy", plan, clampTermSize(undefined, undefined));
-        this.register(terminal, "agy", row.nativeId, plan.cwd);
-        this.discovery.reapply({ flush: true });
-        address = terminal.address;
-      }
-    }
+    if (!address) address = (await this.driver(row.engine)?.prepareOpenLocal?.(args.ref, row)) ?? null;
     address ??= this.terminalOf(args.ref);
     const scope = this.hcScope ?? this.scopeFor();
     if (!scope.binary) throw new OpFailure("hc_unavailable");
@@ -1939,22 +1906,16 @@ export class CliAgentBridge {
     return {};
   }
 
-  /** Core relays the answer to a pending request; it goes to the hook that waits for it. */
+  /** Core relays the answer to a pending request; delegates to the owning harness driver, screen prompt, or hook server. */
   private async opAnswer(args: CliOpArgs["answer"]): Promise<{ outcome: string }> {
-    if (this.agy.hasRequest(args.id)) return this.agy.answer(args);
+    for (const driver of this.drivers.values()) {
+      if (driver.hasRequest?.(args.id) && driver.answerRequest) return driver.answerRequest(args);
+    }
     if (this.screens.owns(args.id)) {
       try {
         return { outcome: await this.screens.answer(args) };
       } catch (error) {
         if (error instanceof ScreenPromptError) throw new OpFailure(error.code, error.code === "not_found" ? "request is closed" : undefined);
-        throw error;
-      }
-    }
-    if (this.codexDaemons.owns(args.id)) {
-      try {
-        return { outcome: this.codexDaemons.answer(args) };
-      } catch (error) {
-        if (error instanceof DaemonError) throw new OpFailure(error.code, error.code === "not_found" ? "request is closed" : undefined);
         throw error;
       }
     }
@@ -1980,9 +1941,12 @@ export class CliAgentBridge {
   }
 }
 
-/** The CLIs have no model or effort switch for ZCode; a launch that asks for one is refused, not silently plain. */
-function refuseZcodeOptions(engine: CliEngine, args: { model?: string; effort?: string }): void {
-  if (engine === "zcode" && (args.model !== undefined || args.effort !== undefined)) throw new OpFailure("invalid", "ZCode 不支持选择模型和推理强度");
+/** Harnesses without modelPicker refuse model or effort flags instead of silently dropping them. */
+function refuseUnsupportedLaunchOptions(engine: CliEngine, args: { model?: string; effort?: string }): void {
+  const adapter = harnessFor(engine);
+  if (adapter && !adapter.features.modelPicker && (args.model !== undefined || args.effort !== undefined)) {
+    throw new OpFailure("invalid", `${adapter.label} 不支持选择模型和推理强度`);
+  }
 }
 
 /** The launch options of an op. A new session (`start`) runs with full access unless the user chose

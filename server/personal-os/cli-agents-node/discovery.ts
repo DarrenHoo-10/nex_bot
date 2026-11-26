@@ -24,6 +24,7 @@ import { ClaudeDesktopSessions, claudeDesktopRoots, desktopAlwaysListed, EMPTY_D
 import { CodexScanner, codexHomes, type CodexScannerOptions } from "./codex.ts";
 import type { CodexAppDb } from "./codex-app-db.ts";
 import type { RepoRootLookup } from "./device-git.ts";
+import type { HarnessSessionSource } from "./harness.ts";
 import type { AppChat, LocalSession, SendRoute } from "./items.ts";
 import { ZcodeScanner, type ZcodeScannerOptions } from "./zcode.ts";
 
@@ -43,6 +44,8 @@ export interface SessionDiscoveryOptions {
   zcodeHomes?: string[];
   zcode?: ZcodeScannerOptions;
   agy?: { scan(): Promise<void>; rows(): LocalSession[] };
+  /** Additional pluggable harness session sources (future harnesses or tests). */
+  extraSources?: readonly HarnessSessionSource[];
   /** Claude desktop app data folders (the sessions' archive and fork state). Defaults to the
    * platform's own folders when `claudeDirs` is not overridden, and to none otherwise. */
   claudeDesktopRoots?: string[];
@@ -178,9 +181,15 @@ export class SessionDiscovery {
     return scanner ? { chat: { threadId: row.nativeId }, db: scanner.db } : null;
   }
 
-  /** Stops the ZCode database handles. */
+  /** Pluggable sources (AGY + any extra registered harness sources). */
+  private pluggableSources(): Array<{ scan(): Promise<void>; rows(): LocalSession[]; close?(): void }> {
+    return [...(this.options.agy ? [this.options.agy] : []), ...(this.options.extraSources ?? [])];
+  }
+
+  /** Stops the ZCode database handles and any pluggable sources that need cleanup. */
   closeZcode(): void {
     for (const scanner of this.zcodes) scanner.close();
+    for (const source of this.options.extraSources ?? []) source.close?.();
   }
 
   /** The next report is a full one (after the link to Core was re-established). */
@@ -220,7 +229,7 @@ export class SessionDiscovery {
     const run = (async () => {
       await Promise.all([
         this.options.codexDesktopQueue?.refresh(),
-        this.options.agy?.scan().catch((error) => this.fail(error)),
+        ...this.pluggableSources().map((source) => source.scan().catch((error) => this.fail(error))),
         ...this.claudeDirs.map(async (dir) => {
           try {
             this.live.set(dir, await scanLive(dir, this.options.claudeLive));
@@ -321,7 +330,7 @@ export class SessionDiscovery {
     for (const entries of this.history.values()) for (const e of entries) if (e.cwd) cwds.add(e.cwd);
     for (const rows of this.codex.values()) for (const r of rows) cwds.add(r.cwd);
     for (const rows of this.zcodeRows.values()) for (const r of rows) cwds.add(r.cwd);
-    for (const row of this.options.agy?.rows() ?? []) cwds.add(row.cwd);
+    for (const source of this.pluggableSources()) for (const row of source.rows()) cwds.add(row.cwd);
     try {
       await roots.warm(cwds);
     } catch (error) {
@@ -346,7 +355,7 @@ export class SessionDiscovery {
     }
     for (const rows of this.codex.values()) for (const row of rows) add(row);
     for (const rows of this.zcodeRows.values()) for (const row of rows) add(row);
-    for (const row of this.options.agy?.rows() ?? []) add(row);
+    for (const source of this.pluggableSources()) for (const row of source.rows()) add(row);
 
     // the project each session belongs to (rows are copied: the scanners keep the originals in their caches)
     const roots = this.options.repoRoots;

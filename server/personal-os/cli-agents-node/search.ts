@@ -8,7 +8,8 @@
 // whole search stops at `limit` hits or when its time budget runs out.
 import { open, type FileHandle } from "node:fs/promises";
 import { CLI_SEARCH, type CliEngine, type CliItem, type CliSearchHit, type CliSessionRef } from "../../../shared/cli-agents.ts";
-import { claudeRecordToItems, clipUnits, codexRecordToItems } from "./items.ts";
+import { harnessFor } from "./harness.ts";
+import { clipUnits } from "./items.ts";
 
 /** One session to search: a transcript file, or a reader of its items (the
  * Codex App database and ZCode, which have no file). */
@@ -170,13 +171,9 @@ function line(bytes: Buffer, engine: CliEngine, match: Match, prefilter: string[
   } catch {
     return;
   }
+  const strategy = harnessFor(engine)?.transcript;
+  if (!strategy) return;
   const ctx = { segment: "search", offset };
-  let items: CliItem[];
-  if (engine === "claude") items = claudeRecordToItems(record, ctx).items;
-  else if (engine === "codex") {
-    // v1 files carry the text in response_item records, v2 files in event_msg item_completed
-    const v2 = typeof record === "object" && record !== null && (record as { type?: unknown }).type === "event_msg";
-    items = codexRecordToItems(record, { ...ctx, codexV2: v2 }).items;
-  } else return;
+  const items = strategy.searchRecord ? strategy.searchRecord(record, ctx) : strategy.mapRecord(record, ctx).items;
   for (const item of items) match.take(item);
 }

@@ -161,6 +161,7 @@ interface StreamEntry {
 
 export const MAX_STREAMS_PER_SINK = 8;
 const OPS_RETENTION_MS = 7 * 86_400_000;
+const START_DEDUP_MS = 10 * 60_000;
 /** A request never stays pending longer than this, whatever the device claims. */
 const MAX_REQUEST_MS = 2 * 3_600_000;
 const SESSION_COLUMNS = [
@@ -209,6 +210,12 @@ export class CliAgentHub {
   private readonly contexts = new Map<string, CliContextUsage>();
   private readonly pending = new Map<string, Pending>();
   private readonly busyKeys = new Set<string>();
+  private readonly startRequests = new Map<string, {
+    fingerprint: string;
+    promise?: Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }>;
+    result?: { key: CliSessionKey; terminal?: string; cwd?: string };
+    expiresAt: number;
+  }>();
   private readonly watchers = new Map<string, Set<(message: ServerMessage) => void>>();
   private readonly listListeners = new Set<(delta: ListDelta) => void>();
   private readonly summaryListeners = new Set<(summary: { waiting: number; running: number }) => void>();
@@ -269,6 +276,7 @@ export class CliAgentHub {
     this.summaryListeners.clear();
     this.requestListeners.clear();
     this.turnListeners.clear();
+    this.startRequests.clear();
     this.coreAnswer = null;
   }
 
@@ -924,12 +932,35 @@ export class CliAgentHub {
     return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
   }
 
-  /** Starts a session inside a fresh worktree of the repository at `cwd`; the
-   * device dedups by requestId, so a retry reuses the tree it built. */
+  /** Starts a session inside a fresh worktree of the repository at `cwd`; Core
+   * and the device both dedup by requestId, so a retry after a slow checkout or
+   * lost HTTP response returns the same session instead of launching a second one. */
   async startWorktree(actor: string, deviceId: string, engine: CliEngine, cwd: string, branch: string, requestId: string, launch: CliLaunchOptions = {}): Promise<{ key: CliSessionKey; terminal?: string; cwd?: string }> {
     const options = this.launchOptions(deviceId, launch);
-    const result = await this.op(actor, deviceId, null, "start", { engine, cwd, worktree: { branch, requestId }, ...options });
-    return { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
+    const dedupKey = `${deviceId}\0${requestId}`;
+    const fingerprint = JSON.stringify({ engine, cwd, branch, options });
+    const ts = now();
+    for (const [key, entry] of this.startRequests) {
+      if (!entry.promise && entry.expiresAt <= ts) this.startRequests.delete(key);
+    }
+    const existing = this.startRequests.get(dedupKey);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw new CliOpError("conflict");
+      if (existing.promise) return existing.promise;
+      if (existing.result && existing.expiresAt > ts) return existing.result;
+    }
+    const promise = this.op(actor, deviceId, null, "start", { engine, cwd, worktree: { branch, requestId }, ...options })
+      .then((result) => {
+        const started = { key: cliKey(deviceId, result.ref), terminal: result.terminal, ...(result.cwd ? { cwd: result.cwd } : {}) };
+        this.startRequests.set(dedupKey, { fingerprint, result: started, expiresAt: now() + START_DEDUP_MS });
+        return started;
+      })
+      .catch((error) => {
+        if (this.startRequests.get(dedupKey)?.promise === promise) this.startRequests.delete(dedupKey);
+        throw error;
+      });
+    this.startRequests.set(dedupKey, { fingerprint, promise, expiresAt: ts + START_DEDUP_MS });
+    return promise;
   }
 
   /** Model and effort only go to an executor that lists `launchOptions`: an older

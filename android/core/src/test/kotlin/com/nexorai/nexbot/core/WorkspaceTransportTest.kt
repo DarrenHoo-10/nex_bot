@@ -76,6 +76,12 @@ class WorkspaceTransportTest {
             assertEquals(2, server.requestCount)
         }
     }
+    @Test fun `long-running cli-agents endpoints use the extended timeout`() {
+        for (route in listOf("/api/cli-agents/start", "/api/cli-agents/continue", "/api/cli-agents/send", "/api/cli-agents/steer-waiting", "/api/cli-agents/translate", "/api/cli-agents/git", "/api/cli-agents/items", "/api/cli-agents/images")) {
+            assertTrue(WorkspaceTransport.usesLongTimeout(route, null, "POST"), route)
+        }
+        assertFalse(WorkspaceTransport.usesLongTimeout("/api/state", null, "GET"))
+    }
     @Test fun `redirect never forwards bearer to another origin`() {
         MockWebServer().use { server ->
             MockWebServer().use { destination ->

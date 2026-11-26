@@ -2,7 +2,7 @@ import { MoreContent } from "../components/MoreContent";
 import { transcriptRows } from "./transcript";
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { completedCliReplies, isInterruptRecord, unwrapPastedContent, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
 import { MessageImages } from "../components/MessageImages";
 import { parseMessageMedia } from "../message-media";
@@ -242,7 +242,28 @@ export function ReplyText({ source, supplied, local = true, core, actions, onBra
   </>;
 }
 
-function BlockView({ block, engine, translations, onEdit, guideStatus, byline = true, actions = true, local, core, onBranch }: { block: Block; guideStatus?:string; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; actions?: boolean; local: boolean; core?: CoreReply; onBranch?(): void }) {
+function Byline({ engine, ts }: { engine?: CliEngine; ts?: number }) {
+  return (
+    <div className="na-byline">
+      <HarnessMark agentId={engine ?? "claude"} />
+      <b>{engine ? AGENT_LABEL[engine] : "助手"}</b>
+      {ts && ts > 0 ? <time>{new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time> : null}
+    </div>
+  );
+}
+
+function progressTimestamp(blocks: readonly Block[]): number | undefined {
+  let latest = 0;
+  for (const block of blocks) {
+    if (block.kind === "assistant" && block.item.ts > latest) latest = block.item.ts;
+    else if (block.kind === "activity") {
+      for (const item of block.items) if (item.ts > latest) latest = item.ts;
+    }
+  }
+  return latest > 0 ? latest : undefined;
+}
+
+function BlockView({ block, engine, translations, onEdit, guideStatus, byline = true, actions = true, local, core, onBranch, progress, annotate }: { block: Block; guideStatus?:string; engine?: CliEngine; translations?:Record<string,string>; onEdit?:(messageId:string,text:string)=>void; byline?: boolean; actions?: boolean; local: boolean; core?: CoreReply; onBranch?(): void; progress?: ReactNode; annotate?: (node: ReactNode) => ReactNode }) {
   // onEdit is passed only for a message that may still be revised
   switch (block.kind) {
     case "user":
@@ -255,13 +276,16 @@ function BlockView({ block, engine, translations, onEdit, guideStatus, byline = 
           {block.item.queued ? <small>排队中</small> : null}
         </div>
       );
-    case "assistant":
+    case "assistant": {
+      const reply = <ReplyText key={block.item.text} actions={actions} onBranch={onBranch} source={block.item.text} local={local} core={core} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>;
       return (
         <div className="cli-msg is-assistant markdown" data-testid="cli-assistant">
-          {byline ? <div className="na-byline"><HarnessMark agentId={engine??"claude"}/><b>{engine?AGENT_LABEL[engine]:"助手"}</b><time>{new Date(block.item.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})}</time></div> : null}
-          <ReplyText key={block.item.text} actions={actions} onBranch={onBranch} source={block.item.text} local={local} core={core} supplied={translations && Object.hasOwn(translations, block.item.text) ? translations[block.item.text] : undefined}/>
+          {byline ? <Byline engine={engine} ts={block.item.ts}/> : null}
+          {progress}
+          {annotate ? annotate(reply) : reply}
         </div>
       );
+    }
     case "activity":
       return <div className="cli-msg is-activity"><Activity items={block.items} /></div>;
     case "notice":
@@ -560,7 +584,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     return () => clearTimeout(timer);
   }, [editable.next]);
   useEffect(() => { setNow(Date.now()); }, [items]);
-  function renderBlock(block: Block, folded: boolean) {
+  function renderBlock(block: Block, folded: boolean, progress?: ReactNode) {
           const localOnly = block.id.startsWith("guide:") || block.id.startsWith("after-guide:");
           const complete = block.kind === "assistant" && completed.has(block.id) &&
             (!guides?.length || items.some(item => item.kind === "assistant" && item.id === block.id && item.text === block.item.text));
@@ -571,9 +595,39 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
           const guideStatus = status === "failed" ? "发送失败" : status === "uncertain" || guide?.uncertain ? "待确认" : undefined;
           // copy and branch: only on a finished reply's conclusion, not on what the agent wrote while working
           const conclusion = !folded && complete && tails.has(block.id);
-          const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} actions={conclusion} onBranch={conclusion && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
+          const annotate = onNotes && !localOnly
+            ? (node: ReactNode) => <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{node}</AnnotatedMessage>
+            : undefined;
+          const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} actions={conclusion} onBranch={conclusion && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)} progress={progress} annotate={block.kind === "assistant" ? annotate : undefined}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
-          return onNotes && !localOnly ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
+          return annotate && block.kind !== "assistant" ? annotate(message) : message;
+  }
+  const visibleRows = rows.filter(row => row.kind !== "progress" || row.blocks.length > 0);
+  const renderedRows: ReactNode[] = [];
+  let seenAssistant = false;
+  for (let i = 0; i < visibleRows.length; i++) {
+    const row = visibleRows[i]!;
+    if (row.kind === "progress") {
+      const next = visibleRows[i + 1];
+      if (next && next.kind === "assistant" && heads.has(next.id)) continue;
+      const showByline = !seenAssistant;
+      seenAssistant = true;
+      const disclosure = <MoreContent key={row.id} durationMs={row.durationMs}>{() => row.blocks.map(block => renderBlock(block, true))}</MoreContent>;
+      renderedRows.push(showByline
+        ? <div key={row.id} className="cli-msg is-assistant"><Byline engine={engine} ts={progressTimestamp(row.blocks)}/>{disclosure}</div>
+        : disclosure);
+      continue;
+    }
+    if (row.kind === "user") seenAssistant = false;
+    let attachedProgress: ReactNode;
+    if (row.kind === "assistant" && heads.has(row.id)) {
+      const previous = visibleRows[i - 1];
+      if (previous?.kind === "progress") {
+        attachedProgress = <MoreContent key={previous.id} durationMs={previous.durationMs}>{() => previous.blocks.map(block => renderBlock(block, true))}</MoreContent>;
+      }
+      seenAssistant = true;
+    }
+    renderedRows.push(renderBlock(row, false, attachedProgress));
   }
   return (
     <div className="cli-transcript" ref={scrollRef} onScroll={onScroll} data-testid="cli-transcript">
@@ -582,9 +636,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
           {loadingOlder ? "正在读取…" : olderError ? "重试加载更早的记录" : "加载更早的记录"}
         </button> : null}
         {more && olderError ? <div className="cli-notice" data-level="error" role="alert">{olderError}</div> : null}
-        {rows.map(row => row.kind === "progress"
-          ? row.blocks.length > 0 && <MoreContent key={row.id}>{() => row.blocks.map(block => renderBlock(block, true))}</MoreContent>
-          : renderBlock(row, false))}
+        {renderedRows}
         {echoShown && echo ? <EchoMessage text={echo.text}/> : null}
         {pending.map((entry) => <EchoMessage key={entry.id} text={entry.text}/>)}
         {deliveryLabel ? <small className="cli-notice" role="status">{deliveryLabel}</small> : null}

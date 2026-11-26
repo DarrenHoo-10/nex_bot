@@ -21,14 +21,14 @@ import { DatabaseSync } from "node:sqlite";
 import {
   CLI_LIMITS,
   HISTORY_DAYS,
+  ITEM_TEXT_MAX,
   MAX_SESSIONS,
   PAGE_SIZE,
-  truncateUtf8,
   type CliEngine,
   type CliItem,
   type CliSessionState,
 } from "../../../shared/cli-agents.ts";
-import { clipUnits, imageLocator, itemHasImage, localImageLinks, type ItemContext, type TranscriptImage, type LocalSession } from "./items.ts";
+import { buildAssistantItem, buildUserItem, clipUnits, imageLocator, itemHasImage, localImageLinks, type ItemContext, type TranscriptImage, type LocalSession } from "./items.ts";
 
 const DAY_MS = 86_400_000;
 const POLL_MS = 30_000;
@@ -300,7 +300,7 @@ function safeJson(value: unknown): Rec | null {
 /** The text of one message: its text parts in order, skipping synthetic ones.
  * Tool parts and separators are not chat text. */
 function zcodeItem(role: "user" | "assistant", id: string, ts: number, parts: Rec[], imageRef: NonNullable<ItemContext["imageRef"]>): CliItem | undefined {
-  const text = truncateUtf8(messageText(parts), 256 * 1024);
+  const text = messageText(parts);
   const images: string[] = [];
   for (const part of parts) {
     if (part.type !== "file" || part.synthetic === true || typeof part.url !== "string" || images.length >= 20) continue;
@@ -315,9 +315,9 @@ function zcodeItem(role: "user" | "assistant", id: string, ts: number, parts: Re
   const ctx = { segment: id, offset: 0, imageRef };
   if (role === "assistant") {
     const caption = [text, ...images.map(ref => `![图片](${ref})`)].filter(Boolean).join("\n\n");
-    return localImageLinks({ kind: role, id, ts, text: caption }, ctx);
+    return localImageLinks(buildAssistantItem({ id, ts, text: caption }), ctx);
   }
-  return localImageLinks({ kind: role, id, ts, text, ...(images.length ? { images } : {}) }, ctx);
+  return localImageLinks(buildUserItem({ id, ts, text, ...(images.length ? { images } : {}) }), ctx);
 }
 
 function messageText(parts: Rec[]): string {
@@ -325,7 +325,7 @@ function messageText(parts: Rec[]): string {
   for (const part of parts) {
     if (part.type !== "text") continue;
     if (part.synthetic === true) continue;
-    const text = str(part.text, 256 * 1024);
+    const text = str(part.text, ITEM_TEXT_MAX);
     if (text) chunks.push(text);
   }
   return chunks.join("\n\n");

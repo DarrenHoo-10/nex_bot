@@ -223,7 +223,7 @@ struct MessageRow: View {
         VStack(alignment: .leading, spacing: 4) {
             if message.role == "peer" && message.a2aDirection == nil { peerAuthor }
             if !message.streamProgress.isEmpty || !message.toolSteps.isEmpty {
-                MoreContent {
+                MoreContent(durationMs: workDurationMs(steps: message.toolSteps, endedAt: message.createdAt)) {
                     if !message.streamProgress.isEmpty { ChatMarkdown(source: message.streamProgress) }
                     if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps, onOpen: onOpenStep) }
                 }

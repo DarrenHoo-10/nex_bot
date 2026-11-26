@@ -582,7 +582,7 @@ private struct MessageRow: View {
                 .padding(.leading, 4)
             }
             if !message.streamProgress.isEmpty || !message.toolSteps.isEmpty {
-                MoreContent {
+                MoreContent(durationMs: workDurationMs(steps: message.toolSteps, endedAt: message.createdAt)) {
                     if !message.streamProgress.isEmpty { MarkdownText(source: message.streamProgress) }
                     if !message.toolSteps.isEmpty {
                         ToolSteps(steps: message.toolSteps) { step in

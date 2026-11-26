@@ -168,9 +168,26 @@ export async function codexModels(options: ModelSourceOptions = {}): Promise<Cli
   };
 }
 
-/** The picker rows of `engine` on this computer; ZCode has none. */
+export type ModelProvider = (options?: ModelSourceOptions) => Promise<CliModelCatalog>;
+
+const MODEL_PROVIDERS = new Map<string, ModelProvider>([
+  ["claude", claudeModels],
+  ["codex", codexModels],
+]);
+
+/** Registers a model catalog provider for a harness; returns a disposer. */
+export function registerModelProvider(engine: CliEngine | string, provider: ModelProvider): () => void {
+  const previous = MODEL_PROVIDERS.get(engine);
+  MODEL_PROVIDERS.set(engine, provider);
+  return () => {
+    if (MODEL_PROVIDERS.get(engine) !== provider) return;
+    if (previous) MODEL_PROVIDERS.set(engine, previous);
+    else MODEL_PROVIDERS.delete(engine);
+  };
+}
+
+/** The picker rows of `engine` on this computer; harnesses without a file-based catalog return none. */
 export function cliModels(engine: CliEngine, options: ModelSourceOptions = {}): Promise<CliModelCatalog> {
-  if (engine === "claude") return claudeModels(options);
-  if (engine === "codex") return codexModels(options);
-  return Promise.resolve({ models: [] });
+  const provider = MODEL_PROVIDERS.get(engine);
+  return provider ? provider(options) : Promise.resolve({ models: [] });
 }

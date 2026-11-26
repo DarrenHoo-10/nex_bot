@@ -249,15 +249,34 @@ struct RoutineOccurrenceDetailView: View {
     }
 }
 
+func workDurationMs(steps: [ToolStep], endedAt: Date?) -> Int? {
+    guard let end = endedAt, let start = steps.compactMap(\.createdAt).min() else { return nil }
+    let ms = Int((end.timeIntervalSince(start) * 1000).rounded())
+    return ms >= 1000 ? ms : nil
+}
+
 struct MoreContent<Content: View>: View {
+    var durationMs: Int? = nil
     @State private var expanded = false
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button(expanded ? "收起" : "更多内容") { expanded.toggle() }
-                .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent)
-                .accessibilityValue(expanded ? "已展开" : "已收起")
+            Button { withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() } } label: {
+                HStack(spacing: 5) {
+                    Text(CliTranscript.formatWorkDuration(durationMs) ?? "更多内容")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.muted)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.muted.opacity(0.75))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(expanded ? "已展开" : "已收起")
             if expanded { content() }
         }
     }

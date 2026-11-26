@@ -363,12 +363,12 @@ describe("hand over to an assistant", () => {
       await open(undefined, { bots, onOpenTopic });
       expect(container.textContent).not.toContain("Working on the task");
       await click(container.querySelector(".message-progress > button"));
-      const [interim, first, last] = container.querySelectorAll('[data-testid="cli-assistant"]');
+      const [first, interim, last] = container.querySelectorAll('[data-testid="cli-assistant"]');
       expect(interim.textContent).toContain("Working on the task");
       expect(interim.querySelector('button[title="复制"], button[title="分支到新聊天"]')).toBeNull();
       expect(last.querySelector('button[title="复制"]')).not.toBeNull();
-      const copy = first.querySelector('button[title="复制"]');
-      const branch = first.querySelector('button[title="分支到新聊天"]');
+      const copy = first.querySelector(':scope > .na-reply-actions button[title="复制"], button[title="复制"]');
+      const branch = first.querySelector(':scope > .na-reply-actions button[title="分支到新聊天"], button[title="分支到新聊天"]');
       expect(copy?.textContent).toBe("");
       expect(branch?.textContent).toBe("");
       await click(copy);
