@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 新建会话三标签、按 CLI 的权限模式与返回手势 · 0.9.56 四端发布（2026-11-26）](nexagent-permission-modes-0956-20261126.md)
+
 - [NexAgent 完整设备列表推送 · Core 部署（2026-11-26）](nexagent-device-snapshot-20261126.md)
 
 - [NexAgent 设备离线误报 · 0.9.55 四端发布（2026-11-26）](nexagent-device-online-0955-20261126.md)
