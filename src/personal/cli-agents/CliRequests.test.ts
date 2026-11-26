@@ -361,7 +361,10 @@ describe("hand over to an assistant", () => {
     const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
     try {
       await open(undefined, { bots, onOpenTopic });
+      expect(container.textContent).not.toContain("Working on the task");
+      await click(container.querySelector(".message-progress > button"));
       const [interim, first, last] = container.querySelectorAll('[data-testid="cli-assistant"]');
+      expect(interim.textContent).toContain("Working on the task");
       expect(interim.querySelector('button[title="复制"], button[title="分支到新聊天"]')).toBeNull();
       expect(last.querySelector('button[title="复制"]')).not.toBeNull();
       const copy = first.querySelector('button[title="复制"]');
