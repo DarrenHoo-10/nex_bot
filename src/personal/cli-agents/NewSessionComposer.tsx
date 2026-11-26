@@ -28,14 +28,21 @@ export interface NewSessionComposerProps {
 }
 
 export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recents, source, onLaunch, onShowDirectory }: NewSessionComposerProps) {
-  const firstReady = devices.find((device) => !deviceBlocker(device));
-  const [deviceId, setDeviceId] = useState(() => (initialDeviceId && devices.some((device) => device.id === initialDeviceId) ? initialDeviceId : firstReady?.id ?? devices[0]?.id ?? ""));
+  const defaultDevice = devices.find((entry) => entry.id === initialDeviceId)
+    ?? devices.find((entry) => !deviceBlocker(entry))
+    ?? devices.find((entry) => entry.online)
+    ?? devices[0];
+  const [selectedDeviceId, setDeviceId] = useState(() => defaultDevice?.id ?? "");
+  const deviceId = selectedDeviceId || defaultDevice?.id || "";
   const device = devices.find((entry) => entry.id === deviceId);
   const engines = useMemo(() => STARTABLE.filter((engine) => device?.cliAgents?.engines.includes(engine) && !deviceBlocker(device, engine)), [device]);
   const [engine, setEngine] = useState<CliEngine>(engines[0] ?? "claude");
+  // The draft belongs to this form while the device list and tool capabilities load.
+  const [draftKey] = useState(() => `${deviceId || "none"}:${engine}:new-session` as CliSessionKey);
   const blocker = deviceBlocker(device, engine);
   const recent = useMemo(() => recents(deviceId), [recents, deviceId]);
-  const [dir, setDir] = useState<DirectoryChoice | null>(() => (initialCwd ? { path: initialCwd, create: false } : recent[0] ? { path: recent[0], create: false } : null));
+  const defaultPath = (initialDeviceId && initialDeviceId !== deviceId ? undefined : initialCwd) ?? recent[0];
+  const [dir, setDir] = useState<DirectoryChoice | null>(() => deviceId && defaultPath ? { path: defaultPath, create: false } : null);
   const [git, setGit] = useState(false);
   const [branch, setBranch] = useState<string | null>(null);
   const [choice, setChoice] = useState<LaunchChoice>({ model: "", effort: "" });
@@ -43,6 +50,11 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   const [agyPermissions, setAgyPermissions] = useState<CliPermissionMode>("ask");
   const selectedPermissions = engine === "agy" ? agyPermissions : permissions;
 
+  useEffect(() => {
+    if (selectedDeviceId || !deviceId) return;
+    setDeviceId(deviceId);
+    if (defaultPath) setDir((picked) => picked ?? { path: defaultPath, create: false });
+  }, [selectedDeviceId, deviceId, defaultPath]);
   useEffect(() => { if (engines.length && !engines.includes(engine)) setEngine(engines[0]); }, [engines, engine]);
   useEffect(() => { setChoice({ model: "", effort: "" }); }, [engine, deviceId]);
   // a worktree needs a Git folder that exists
@@ -59,9 +71,9 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   const ready = !blocker && !!device && engines.includes(engine) && !!dir && !branchError;
   // the box below is the session's own message box: it only needs the computer, CLI and folder
   const draft: CliSessionView = useMemo(() => ({
-    key: `${deviceId || "none"}:${engine}:new-session` as CliSessionKey, deviceId, engine, nativeId: "new-session", configDir: "", cwd: dir?.path ?? "",
+    key: draftKey, deviceId, engine, nativeId: "new-session", configDir: "", cwd: dir?.path ?? "",
     title: "", state: "idle", lastActivityAt: 0, hidden: false, online: !!device?.online,
-  }), [deviceId, engine, dir?.path, device?.online]);
+  }), [draftKey, deviceId, engine, dir?.path, device?.online]);
 
   const start = (message: string, files: File[]) => {
     if (!dir || !ready) return;
@@ -73,7 +85,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
     });
   };
 
-  const status = blocker ?? branchError ?? (dir ? null : "先选择工作目录");
+  const status = deviceId ? blocker ?? branchError ?? (dir ? null : "先选择工作目录") : "等待电脑连接";
   // A phone's keyboard shrinks the page while the box is in use: the box stays in view at the bottom, and the
   // brand and chips go up with it under the header
   const body = useRef<HTMLDivElement>(null);
@@ -97,7 +109,7 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
             <h2>NexAgent</h2>
           </div>
           <div className="na-new-options" role="group" aria-label="会话设置">
-            <DirectoryPicker devices={devices.map((entry) => ({ id: entry.id, name: entry.name, online: entry.online && !deviceBlocker(entry) }))}
+            <DirectoryPicker devices={devices} disabled={!deviceId}
               deviceId={deviceId} onDevice={(id) => { setDeviceId(id); setDir(null); }} value={dir} onChange={setDir}
               source={source} recents={recent}/>
             <HarnessPicker engines={engines} value={engine} onChange={setEngine} disabled={!device?.online || !device.cliAgents} agyNeedsUpdate={device?.cliAgents?.agyNeedsUpdate}/>

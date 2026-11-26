@@ -82,7 +82,10 @@ struct AgentNewSessionPage: View {
     private var selectedEffort: String { CliLaunches.reasoningChoice(effort.isEmpty && engine == .agy ? catalog.currentEffort : effort) }
     private var resolvedEffort: String? { CliLaunches.resolveEffort(engine: engine, offered: offered, preferred: selectedEffort) }
     private var ready: Bool { blocker == nil && device != nil && engines.contains(engine) && dir != nil && branchError == nil && !tooLong }
-    private var status: String? { blocker ?? branchError ?? (tooLong ? "内容太长" : nil) ?? (dir == nil ? "先选择工作目录" : nil) }
+    private var status: String? {
+        if deviceId.isEmpty { return "等待电脑连接" }
+        return blocker ?? branchError ?? (tooLong ? "内容太长" : nil) ?? (dir == nil ? "先选择工作目录" : nil)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -111,10 +114,15 @@ struct AgentNewSessionPage: View {
             }
         }
         #endif
-        .onAppear(perform: setUp)
-        .onChange(of: deviceId) { _, _ in if !engines.contains(engine), let first = engines.first { engine = first } }
+        .onAppear { setUp(); focused = true }
+        .onChange(of: model.devices.map(\.id)) { _, _ in setUp() }
+        .onChange(of: deviceId) { previous, _ in if !previous.isEmpty { dir = nil } }
+        .onChange(of: engines) { _, available in
+            if !available.contains(engine), let first = available.first { engine = first }
+        }
         .task(id: "\(deviceId)\n\(engine.rawValue)") {
             chosenModel = ""; effort = ""
+            guard !deviceId.isEmpty else { return }
             catalog = await model.models(deviceId: deviceId, engine: engine)
         }
         .task(id: dir) { await checkGit() }
@@ -122,12 +130,16 @@ struct AgentNewSessionPage: View {
 
     private func setUp() {
         guard deviceId.isEmpty else { return }
-        deviceId = target.deviceId.flatMap { model.device($0) }?.id
-            ?? model.devices.first { CliSessions.deviceBlocker($0) == nil }?.id ?? model.devices.first?.id ?? ""
+        let preferred = target.deviceId.flatMap { model.device($0) }
+            ?? model.devices.first { CliSessions.deviceBlocker($0) == nil }
+            ?? model.devices.first { $0.online }
+            ?? model.devices.first
+        guard let preferred else { return }
+        deviceId = preferred.id
         if let first = engines.first, !engines.contains(engine) { engine = first }
-        let start = target.cwd ?? CliSessions.recentCwds(model.sessions, deviceId: deviceId).first
+        let matchingCwd = target.deviceId == nil || target.deviceId == deviceId ? target.cwd : nil
+        let start = matchingCwd ?? CliSessions.recentCwds(model.sessions, deviceId: deviceId).first
         dir = start.map { AgentDirChoice(path: $0, create: false) }
-        focused = true
     }
 
     /// A worktree needs a Git folder that exists.
@@ -149,6 +161,7 @@ struct AgentNewSessionPage: View {
                 }
             }
             .buttonStyle(.plain)
+            .disabled(deviceId.isEmpty)
             .help(dir.map { ($0.create ? "将新建 " : "") + $0.path } ?? "选择工作目录")
             .accessibilityLabel("工作目录")
             .popover(isPresented: presenting(.directory), arrowEdge: .bottom) {
@@ -436,14 +449,13 @@ struct AgentDirectoryBrowser: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(model.devices) { d in
-                        let usable = CliSessions.deviceBlocker(d) == nil
                         Button { deviceId = d.id; go("") } label: {
                             Label(d.name + (d.online ? "" : "（离线）"), systemImage: "desktopcomputer").font(.caption)
                                 .padding(.horizontal, 9).padding(.vertical, 4)
                                 .background(d.id == deviceId ? Theme.successSoft : .clear, in: Capsule())
                                 .overlay(Capsule().strokeBorder(d.id == deviceId ? Theme.success : Theme.border))
                         }
-                        .buttonStyle(.plain).disabled(!usable)
+                        .buttonStyle(.plain).disabled(!d.online)
                     }
                 }
             }

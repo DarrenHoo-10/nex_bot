@@ -708,6 +708,45 @@ describe("new session", () => {
   };
   beforeEach(() => { fixture.listDirs.mockReset(); fixture.listDirs.mockImplementation(async (_device: string, path: string) => listing(path)); });
 
+  it("selects the computer when the first device list arrives and keeps the new-session draft", async () => {
+    await mount({ devices: [], sessions: [] });
+    const page = await openNew();
+    expect(page.querySelector(".na-new-path")?.textContent).toBe("等待电脑连接");
+    await typeInto(page.querySelector("textarea")!, "启动后继续");
+
+    await act(async () => {
+      socket.open();
+      socket.push({ type: "list", devices: [capable()], sessions: [session({ cwd: ALPHA })] });
+    });
+    await flush();
+
+    expect(page.querySelector(".na-new-path")).toBeNull();
+    expect(page.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("启动后继续");
+    expect(page.querySelector('button[aria-label="工作目录"]')?.textContent).toContain("alpha");
+    expect(fixture.listDirs).toHaveBeenCalledWith("dev1", ALPHA);
+  });
+
+  it("shows runtime readiness separately from the online state in the computer picker", async () => {
+    const base = capable();
+    const notReady = device({
+      id: "boot", name: "终端未就绪的电脑",
+      cliAgents: { ...base.cliAgents!, terminal: { ...base.cliAgents!.terminal, ready: false } },
+    });
+    const offline = device({ id: "off", online: false, name: "已断开的电脑" });
+    await mount({ devices: [base, notReady, offline], sessions: [session({ cwd: ALPHA })] });
+    const page = await openNew();
+    await click(page.querySelector('button[aria-label="工作目录"]'));
+    const choices = [...page.querySelectorAll<HTMLButtonElement>('.na-dir-devices button[role="radio"]')];
+    const online = choices.find((choice) => choice.textContent?.includes(notReady.name))!;
+    const disconnected = choices.find((choice) => choice.textContent?.includes(offline.name))!;
+    expect(online.disabled).toBe(false);
+    expect(online.textContent).toBe(notReady.name);
+    expect(disconnected.disabled).toBe(true);
+    expect(disconnected.textContent).toContain("离线");
+    await click(online);
+    expect(page.querySelector(".na-new-path")?.textContent).toBe("终端组件不可用");
+  });
+
   it("replaces an open picker when another trigger is activated and dismisses on an outside tap", async () => {
     await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
     const page = await openNew();
