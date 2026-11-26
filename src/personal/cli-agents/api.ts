@@ -10,6 +10,7 @@ import {
   isCliErrorCode,
   parseCliKey,
   parseCliModelCatalog,
+  parseSkillCatalog,
   parseCliDirListing,
   parseCliDeviceView,
   parseCliItems,
@@ -28,6 +29,7 @@ import {
   type CliSessionKey,
   type CliSessionView,
 } from "../../../shared/cli-agents";
+import { compressPickedImage } from "./image-preview";
 import { cliImageId } from "../../../shared/cli-images";
 
 import { httpErrorText, isTechnicalMessage, readJson, userErrorText } from "../../lib/http-errors";
@@ -138,6 +140,14 @@ export async function listDirs(deviceId: string, path: string): Promise<CliDirLi
   return listing;
 }
 
+export async function fetchSkills(deviceId: string, engine: CliEngine, cwd: string, key: string | undefined, signal: AbortSignal) {
+  const query = new URLSearchParams({ deviceId, engine, cwd });
+  if (key) query.set("key", key);
+  const catalog = parseSkillCatalog(await call<unknown>(`/skills?${query}`, undefined, "GET", signal));
+  if (!catalog) throw new CliApiError("技能列表格式不对");
+  return catalog.skills;
+}
+
 /** A computer's model lists, read again after this long (the CLI's settings may change). */
 const MODELS_TTL_MS = 60_000;
 const modelLists = new Map<string, { at: number; value: Promise<CliModelCatalog> }>();
@@ -176,10 +186,10 @@ export async function searchSessions(query: string, signal?: AbortSignal): Promi
 /** Images are stored in Core. Other files use the existing device attachment route. */
 export async function uploadAttachment(key: CliSessionKey, file: File): Promise<{ path: string }> {
   const image = file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
-  if (file.size > (image ? 5 * 1024 * 1024 : CLI_ATTACH_MAX_BYTES)) throw new CliApiError(image ? "图片不能超过 5 MB" : "附件不能超过 8 MB", "too_large", 413);
+  if (!image && file.size > CLI_ATTACH_MAX_BYTES) throw new CliApiError(image ? "图片不能超过 5 MB" : "附件不能超过 8 MB", "too_large", 413);
   // Core takes a name of up to 200 units; the end keeps the extension
   const name = (file.name || "file").slice(-CLI_ATTACH_NAME_MAX);
-  const data = await call<{ path?: unknown }>(`/${image ? "images" : "attach"}?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, file);
+  const data = await call<{ path?: unknown }>(`/${image ? "images" : "attach"}?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, image ? await compressPickedImage(file) : file);
   if (typeof data.path !== "string" || !data.path) throw new CliApiError("附件上传结果格式不对");
   if (image && !cliImageId(data.path)) throw new CliApiError("Core 版本过旧，升级后可发送图片");
   return { path: data.path };

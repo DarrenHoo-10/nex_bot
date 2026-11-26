@@ -20,6 +20,7 @@ struct Composer: View {
     let onOpenImage: (ChatImagePreview) -> Void
     @Environment(UIState.self) private var ui
     @FocusState private var focused: Bool
+    @State private var showSkills = false
     @State private var menuError: String?
     @State private var revokingRule = false
     @State private var mentionIndex = 0
@@ -86,6 +87,9 @@ struct Composer: View {
         }
         .padding(.leading, 8).padding(.trailing, 6).padding(.vertical, 6)
         .glass(RoundedRectangle(cornerRadius: 26, style: .continuous), strong: true)
+        .sheet(isPresented: $showSkills) {
+            ChatSkillPicker(load: { try await workspace.skills() }) { conversation.draft = $0.adding(to: conversation.draft); focused = true }
+        }
         .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(Theme.identityAccent.opacity(focused ? 0.5 : 0), lineWidth: 1.5))
     }
 
@@ -185,6 +189,7 @@ struct Composer: View {
         ComposerMenu(label: "添加与指令", entries: [
             .heading("添加"),
             .row(.init(id: "file", icon: "paperclip", title: "文件", key: "file", enabled: !conversation.isUploadingAttachments, action: { close(); chooseFiles() })),
+            .row(.init(id: "skills", icon: "book", title: "技能", key: "skill", action: { close(); showSkills = true })),
             .heading("指令"),
             .row(.init(id: "permission", icon: full ? "exclamationmark.shield" : "checkmark.shield", title: "权限", key: "permission", value: mode.title,
                        action: { ui.composerMenu = .permissions })),

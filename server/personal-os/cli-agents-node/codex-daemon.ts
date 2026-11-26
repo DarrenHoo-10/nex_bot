@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { CLI_LIMITS, cliRef, isCliNativeId, type CliErrorCode, type CliOpArgs, type DeviceCliMessage } from "../../../shared/cli-agents.ts";
+import { CLI_LIMITS, SKILL_LIMIT, skillCommandName, type SkillOption, cliRef, isCliNativeId, type CliErrorCode, type CliOpArgs, type DeviceCliMessage } from "../../../shared/cli-agents.ts";
 import { clipUnits } from "./items.ts";
 
 const CONTROL_DIR = "app-server-control";
@@ -284,6 +284,27 @@ export async function prepareCodexThread(
     rpc.close();
     await closed;
   }
+}
+
+/** Ask the installed CLI for its enabled project, user and plugin skills without starting a turn. */
+export async function codexSkills(options: ProxyConnectorOptions, home: string, cwd: string) {
+  const peer = await connectCodexProcess(options, home, "stdio", cwd);
+  const rpc = new Rpc(peer, { notification() {}, request() {}, closed() {} });
+  try {
+    await rpc.request("initialize", { clientInfo: { name: "nexbot", version: "1" }, capabilities: null }, 4000);
+    rpc.notify("initialized");
+    const result = await rpc.request("skills/list", { cwds: [cwd] }, 8000);
+    const group = Array.isArray(result.data) ? rec(result.data[0]) : null;
+    if (!Array.isArray(group?.skills)) throw new DaemonError("invalid", "Codex 未返回技能列表");
+    const unique = new Map<string, SkillOption>();
+    for (const entry of group.skills) {
+      const row = rec(entry);
+      if (!row || row.enabled === false || typeof row.name !== "string" || !skillCommandName.test(row.name) || unique.has(row.name)) continue;
+      unique.set(row.name, { name: row.name, description: clipUnits(str(row.shortDescription) ?? str(row.description) ?? "", 300) });
+      if (unique.size === SKILL_LIMIT) break;
+    }
+    return { skills: [...unique.values()] };
+  } finally { rpc.close(); }
 }
 
 export const CODEX_NEW_THREAD_NAME = "NexAgent 新会话";

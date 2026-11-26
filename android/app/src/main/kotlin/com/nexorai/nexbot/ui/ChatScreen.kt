@@ -659,11 +659,15 @@ private fun MessageBlock(
                     }
                 }
             } else {
-                MarkdownText(message.content, onAttachment = onAttachment)
-                if (message.toolSteps.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    ToolSteps(message.toolSteps)
+                if (!message.streamProgress.isNullOrBlank() || message.toolSteps.isNotEmpty()) {
+                    var expanded by rememberSaveable(message.id) { mutableStateOf(false) }
+                    TextAction(if (expanded) "收起" else "更多内容") { expanded = !expanded }
+                    if (expanded) {
+                        message.streamProgress?.takeIf { it.isNotBlank() }?.let { MarkdownText(it, onAttachment = onAttachment) }
+                        if (message.toolSteps.isNotEmpty()) ToolSteps(message.toolSteps)
+                    }
                 }
+                MarkdownText(message.content, onAttachment = onAttachment)
             }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),

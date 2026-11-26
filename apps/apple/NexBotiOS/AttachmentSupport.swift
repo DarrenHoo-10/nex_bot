@@ -161,7 +161,7 @@ struct ImageThumbnail: View {
         .contextMenu { Button { onSave() } label: { Label("存储图片", systemImage: "square.and.arrow.down") } }
         .accessibilityLabel("图片 \(link.name)")
         .task(id: link.id) {
-            do { image = UIImage(data: try await workspace.downloadAttachment(id: link.id).data); failed = image == nil }
+            do { image = UIImage(data: try await workspace.attachmentImage(id: link.id)); failed = image == nil }
             catch { failed = true }
         }
     }

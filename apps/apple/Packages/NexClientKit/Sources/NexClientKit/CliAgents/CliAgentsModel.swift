@@ -371,7 +371,7 @@ public final class CliAgentsModel {
     }
 
     public func downloadImage(_ path: String) async throws -> Data {
-        try await clientProvider().cliDownloadImage(path)
+        try await clientProvider().cliDownloadImage(path, workspaceID: cacheScope())
     }
 
     public func translateReply(_ key: CliSessionKey, item: CliItem) async throws -> String? {
@@ -503,6 +503,16 @@ public final class CliAgentsModel {
 
     /// Running or waiting sessions on every computer, pinned above the projects.
     public var activeSessions: [CliSession] { CliSessions.active(displaySessions) }
+
+    public func skills(deviceId: String, engine: CliEngine, cwd: String, key: CliSessionKey? = nil) async throws -> [ChatSkill] {
+        guard device(deviceId)?.cliAgents?.features.contains("skills") == true else {
+            throw CoreError(kind: .unsupported, message: "请更新会话所在电脑的客户端后使用技能")
+        }
+        var query = [("deviceId", deviceId), ("engine", engine.rawValue), ("cwd", cwd)]
+        if let key { query.append(("key", key)) }
+        let catalog: ChatSkillCatalog = try await clientProvider().get("/api/cli-agents/skills", query: query)
+        return catalog.skills
+    }
 
     /// The rows of the CLI's own `/model` picker on a computer: read from it when its executor can list them (once a minute),
     /// else the built-in suggestions.

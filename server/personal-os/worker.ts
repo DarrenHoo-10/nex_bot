@@ -411,19 +411,22 @@ async function main(value: WorkerConfig) {
       ...(extendedBudget && { thinkingBudgets: { ...options?.thinkingBudgets, high: extendedBudget } }),
     });
   }
-  let hasStreamedText = false;
+  let streamedLength = 0;
+  let finalStart = 0;
   let startsParagraph = false;
   session.subscribe((event) => {
+    if (event.type === "message_start" && event.message.role === "assistant") finalStart = streamedLength;
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       const delta = event.assistantMessageEvent.delta;
       if (delta) {
-        send({ type: "delta", text: startsParagraph ? "\n\n" + delta : delta });
-        hasStreamedText = true;
+        const text = startsParagraph ? "\n\n" + delta : delta;
+        send({ type: "delta", text });
+        streamedLength += text.length;
         startsParagraph = false;
       }
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
-      startsParagraph = hasStreamedText;
+      startsParagraph = streamedLength > 0;
       send({ type: "snapshot", invokeId: activeInvoke, inputTokens: event.message.usage.input + event.message.usage.cacheRead + event.message.usage.cacheWrite, estimatedTokens: requestEstimate, cacheRead:event.message.usage.cacheRead,cacheWrite:event.message.usage.cacheWrite,outputTokens: event.message.usage.output, modelStatus: event.message.stopReason === "error" ? "failed" : event.message.stopReason === "aborted" ? "cancelled" : "succeeded" });
     }
   });
@@ -487,7 +490,7 @@ async function main(value: WorkerConfig) {
     manager.appendCustomEntry("nex.settled", { inputs, text: result });
     // Wait for Core's durable acknowledgement before closing IPC. A large
     // snapshot can otherwise still be buffered when the process disconnects.
-    await rpc({ type: "done", entries: snapshot(), inputs, text: result });
+    await rpc({ type: "done", entries: snapshot(), inputs, text: result, progressLength: finalStart });
   } catch (error) { throw requestFailure ?? error; }
   finally { globalThis.fetch = originalFetch; session.dispose(); }
 }

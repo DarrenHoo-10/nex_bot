@@ -7,7 +7,7 @@ import { open, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { MAX_ITEMS_PER_MESSAGE, PAGE_SIZE, type CliEngine, type CliItem } from "../../../shared/cli-agents.ts";
 import { agyRecordItems } from "./agy-native.ts";
-import { claudeRecordToItems, codexRecordToItems, COMPACT_TEXT, type ItemContext, type RowUpdate, type ToolItem } from "./items.ts";
+import { claudeRecordToItems, codexRecordToItems, COMPACT_TEXT, imageLocator, itemHasImage, localImageLinks, type TranscriptImage, type ItemContext, type RowUpdate, type ToolItem } from "./items.ts";
 
 export interface ReaderPage {
   /** oldest first, newest last */
@@ -148,8 +148,34 @@ export class TranscriptReader {
     const limit = Math.min(MAX_ITEMS_PER_MESSAGE, Math.max(1, Math.trunc(options.limit ?? PAGE_SIZE)));
     const generation = this.generation;
     await this.ensureIndex();
+    if (!this.started && this.engine === "codex") this.codexV2 = await this.detectV2(0, this.scanPos);
     if (generation !== this.generation) return { items: [], more: false };
     return this.buildPage(options.before, limit, new Map());
+  }
+
+  /** Re-open exactly the native record that advertised this image, including after a restart. */
+  async imageSource(itemId: string, locator: string): Promise<TranscriptImage | undefined> {
+    await this.ensureIndex();
+    const offset = Number(locator.split(":")[1]);
+    const line = this.lineAtOffset(offset);
+    if (line < 0) return;
+    const [entry] = await this.readLines(line, line + 1);
+    if (!entry) return;
+    const ctx = this.ctxFor(new Map(), false);
+    // Cold page reads and live watches may have used different Codex record formats.
+    ctx.codexV2 = true;
+    let source: TranscriptImage | undefined;
+    ctx.imageRef = (at, candidate) => {
+      const ref = imageLocator(at, candidate);
+      if (ref === locator) source = candidate;
+      return ref;
+    };
+    let mapped = this.mapLine(entry.text, offset, ctx);
+    if (!mapped?.items.length && this.engine === "codex") {
+      ctx.codexV2 = false;
+      mapped = this.mapLine(entry.text, offset, ctx);
+    }
+    if (mapped?.items.some(item => itemHasImage(item, itemId, locator))) return source;
   }
 
   // -------------------------------------------------------------------------
@@ -334,7 +360,7 @@ export class TranscriptReader {
   }
 
   private ctxFor(tools: Map<string, ToolItem>, share: boolean): ReaderContext {
-    return { segment: this.segment, offset: 0, codexV2: this.codexV2, tools, shareTools: share };
+    return { imageRef: imageLocator, segment: this.segment, offset: 0, codexV2: this.codexV2, tools, shareTools: share };
   }
 
   /** Maps lines in order. Items are returned with their line offsets. */
@@ -362,6 +388,7 @@ export class TranscriptReader {
     ctx.offset = offset;
     if (this.engine === "agy") return { items: agyRecordItems(record, ctx.fallbackTs) };
     const mapped = this.engine === "claude" ? claudeRecordToItems(record, ctx) : codexRecordToItems(record, ctx);
+    mapped.items = mapped.items.map(item => localImageLinks(item, ctx));
     if (!mapped.items.length) return mapped;
     const notice = mapped.items[0];
     const row = record as { type?: string; subtype?: string; isCompactSummary?: boolean; payload?: { type?: string } };

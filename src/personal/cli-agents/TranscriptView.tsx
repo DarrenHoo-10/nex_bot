@@ -1,3 +1,5 @@
+import { MoreContent } from "../components/MoreContent";
+import { transcriptRows } from "./transcript";
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -247,7 +249,7 @@ function BlockView({ block, engine, translations, onEdit, guideStatus, byline = 
       if(isInterruptRecord(block.item.text))return <div className="cli-notice">你已中断本次请求</div>;
       return (
         <div className="cli-msg is-user" data-testid="cli-user">
-          <UserMessageContent text={block.item.text}/>
+          <UserMessageContent text={[block.item.text, ...(block.item.images ?? []).filter(path => path.startsWith("/api/cli-agents/images/") && !block.item.text.includes(path))].join("\n")}/>
           {onEdit ? <div className="na-user-actions"><button type="button" className="text-button na-edit-resend" aria-label="编辑并重发这条消息" title="编辑并重发" onClick={()=>onEdit(block.item.id, block.item.text)}>编辑并重发</button></div> : null}
           {guideStatus && <small>{guideStatus}</small>}
           {block.item.queued ? <small>排队中</small> : null}
@@ -542,7 +544,9 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   }, [items, more, loading, loadingOlder, error, olderError, loadOlder]);
 
   const translations = useMemo(() => ({ ...review?.translations, ...details?.translations }), [review?.translations, details?.translations]);
-  const blocks = useMemo(() => withoutHidden(groupItems(guideTimeline(details?.history?.length?mergeItems(details.history,items):items, guides ?? [])), hidden), [items,details?.history,hidden,guides]);
+  const timeline = useMemo(() => guideTimeline(details?.history?.length ? mergeItems(details.history, items) : items, guides ?? []), [items, details?.history, guides]);
+  const blocks = useMemo(() => withoutHidden(groupItems(timeline), hidden), [timeline, hidden]);
+  const rows = useMemo(() => transcriptRows(timeline, active).flatMap(row => row.kind === "progress" ? [{ ...row, blocks: withoutHidden(row.blocks, hidden) }] : withoutHidden([row], hidden) as import("./transcript").TranscriptRow[]), [timeline, active, hidden]);
   const { heads, replying } = useMemo(() => replyHeads(blocks), [blocks]);
   const tails = useMemo(() => replyTails(blocks), [blocks]);
   const completed = useMemo(() => completedCliReplies(items, active), [items, active]);
@@ -556,14 +560,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
     return () => clearTimeout(timer);
   }, [editable.next]);
   useEffect(() => { setNow(Date.now()); }, [items]);
-  return (
-    <div className="cli-transcript" ref={scrollRef} onScroll={onScroll} data-testid="cli-transcript">
-      <div className="cli-transcript-list" ref={listRef}>
-        {more ? <button type="button" className="cli-older" disabled={loading || loadingOlder} onClick={() => void loadOlder()}>
-          {loadingOlder ? "正在读取…" : olderError ? "重试加载更早的记录" : "加载更早的记录"}
-        </button> : null}
-        {more && olderError ? <div className="cli-notice" data-level="error" role="alert">{olderError}</div> : null}
-        {blocks.map(block => {
+  function renderBlock(block: Block, folded: boolean) {
           const localOnly = block.id.startsWith("guide:") || block.id.startsWith("after-guide:");
           const complete = block.kind === "assistant" && completed.has(block.id) &&
             (!guides?.length || items.some(item => item.kind === "assistant" && item.id === block.id && item.text === block.item.text));
@@ -573,11 +570,21 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
           const status = guide && queueEntries?.find(entry => entry.id === guide.id)?.status;
           const guideStatus = status === "failed" ? "发送失败" : status === "uncertain" || guide?.uncertain ? "待确认" : undefined;
           // copy and branch: only on a finished reply's conclusion, not on what the agent wrote while working
-          const conclusion = complete && tails.has(block.id);
+          const conclusion = !folded && complete && tails.has(block.id);
           const message = <BlockView guideStatus={guideStatus} key={block.id} core={core} local={translationEnabled === null && complete} engine={engine} block={block} translations={translations} onEdit={!localOnly && editable.ids.has(block.id) ? onEdit : undefined} actions={conclusion} onBranch={conclusion && onBranch ? () => onBranch(block.id) : undefined} byline={block.kind !== "assistant" || heads.has(block.id)}/>;
           // notes persist in Core in production and in sessionStorage in the review fixture: both annotate
           return onNotes && !localOnly ? <AnnotatedMessage onSide={onSide} key={block.id} id={block.id} notes={notes} onNotes={onNotes}>{message}</AnnotatedMessage> : message;
-        })}
+  }
+  return (
+    <div className="cli-transcript" ref={scrollRef} onScroll={onScroll} data-testid="cli-transcript">
+      <div className="cli-transcript-list" ref={listRef}>
+        {more ? <button type="button" className="cli-older" disabled={loading || loadingOlder} onClick={() => void loadOlder()}>
+          {loadingOlder ? "正在读取…" : olderError ? "重试加载更早的记录" : "加载更早的记录"}
+        </button> : null}
+        {more && olderError ? <div className="cli-notice" data-level="error" role="alert">{olderError}</div> : null}
+        {rows.map(row => row.kind === "progress"
+          ? row.blocks.length > 0 && <MoreContent key={row.id}>{() => row.blocks.map(block => renderBlock(block, true))}</MoreContent>
+          : renderBlock(row, false))}
         {echoShown && echo ? <EchoMessage text={echo.text}/> : null}
         {pending.map((entry) => <EchoMessage key={entry.id} text={entry.text}/>)}
         {deliveryLabel ? <small className="cli-notice" role="status">{deliveryLabel}</small> : null}

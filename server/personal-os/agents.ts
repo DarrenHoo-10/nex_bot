@@ -588,6 +588,25 @@ export class AgentModule {
           }
         }
       }
+      if (message.role !== "user" && /^(answer|error|cancel|legacy):/.test(String(message.source_key)) && message.task_id && message.content !== "[已遗忘]") {
+        const legacy = String(message.source_key).startsWith("legacy:");
+        const column = legacy ? "id" : "source_key";
+        const key = legacy ? String(message.source_key).slice(7) : message.source_key;
+        const record = this.store.get(`SELECT source_key,stream_progress FROM transcript WHERE ${column}=? AND task_id=?`, key, message.task_id);
+        let progress = record?.stream_progress;
+        // Older rows only retained the assistant's intermediate tool-call messages in Pi's projection.
+        if (record && progress == null && /^(answer|error):/.test(String(record.source_key)) &&
+            !this.store.get("SELECT task_id FROM memory_forgotten_tasks WHERE task_id=?", message.task_id)) {
+          const runId = String(record.source_key).split(":")[1];
+          const entries = this.store.all("SELECT runtime_session_id,assistant_entry_id FROM tool_calls WHERE task_id=? AND run_id=? GROUP BY runtime_session_id,assistant_entry_id ORDER BY min(rowid)", message.task_id, runId);
+          progress = entries.flatMap(row => {
+            const entry = this.runtime.projection.entry(String(row.runtime_session_id), String(row.assistant_entry_id));
+            return entry?.type === "message" && entry.message.role === "assistant"
+              ? entry.message.content.filter(part => part.type === "text").map(part => part.text).join("") : [];
+          }).filter(Boolean).join("\n\n");
+        }
+        if (progress) projected = { ...projected, stream_progress: progress };
+      }
       const job = /^job-(start|report|input):(.+)$/.exec(String(message.source_key));
       if (job) {
         const report = job[1] === "report" ? this.store.get("SELECT job_id,state FROM agent_job_reports WHERE id=?", job[2]) : undefined;

@@ -34,7 +34,7 @@ function decodedBase64Bytes(value: string): number {
   return Math.floor(value.length * 3 / 4) - padding;
 }
 
-function imageDimensions(bytes: Uint8Array, mime: string): { width: number; height: number } | null {
+export function imageDimensions(bytes: Uint8Array, mime: string): { width: number; height: number } | null {
   const u16be = (offset: number) => bytes[offset] * 256 + bytes[offset + 1];
   const u16le = (offset: number) => bytes[offset] + bytes[offset + 1] * 256;
   const u24le = (offset: number) => bytes[offset] + bytes[offset + 1] * 256 + bytes[offset + 2] * 65536;

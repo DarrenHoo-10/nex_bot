@@ -227,6 +227,7 @@ public struct AgentMessage: RowBacked {
     public var kind: String { row.string("kind") ?? "" }
     public var content: String { row.string("content") ?? "" }
     public var taskID: String? { row.string("task_id") }
+    public var streamProgress: String { row.string("stream_progress") ?? "" }
     public var senderBotID: String? { row.string("sender_bot_id") }
     public var createdAt: Date? { dateFromMilliseconds(row.double("created_at")) }
     public var a2aDirection: String? { row.string("a2a_direction") }

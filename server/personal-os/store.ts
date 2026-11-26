@@ -628,6 +628,23 @@ CREATE TABLE personal_connector_deliveries (
       this.db.exec(schema);
       this.insert("schema_migrations", { version: 59, checksum: hash(schema), applied_at: now() });
     });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=60")) this.transaction(() => {
+      const schema = `CREATE TABLE cli_history_images (
+        id TEXT PRIMARY KEY, session_key TEXT NOT NULL REFERENCES cli_agent_sessions(key) ON DELETE CASCADE,
+        item_id TEXT NOT NULL, locator TEXT NOT NULL, file_id TEXT REFERENCES cli_agent_images(id),
+        UNIQUE(session_key,item_id,locator)
+      ) STRICT;
+      CREATE TRIGGER cli_history_image_removed AFTER DELETE ON cli_history_images WHEN OLD.file_id IS NOT NULL BEGIN
+        UPDATE cli_agent_images SET published=0 WHERE id=OLD.file_id;
+      END;`;
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 60, checksum: hash(schema), applied_at: now() });
+    });
+    if (!this.get("SELECT version FROM schema_migrations WHERE version=61")) this.transaction(() => {
+      const schema = "ALTER TABLE transcript ADD COLUMN stream_progress TEXT";
+      this.db.exec(schema);
+      this.insert("schema_migrations", { version: 61, checksum: hash(schema), applied_at: now() });
+    });
     this.db.exec("PRAGMA secure_delete=ON;");
   }
   scope() { return { workspace_id: this.workspace, owner_user_id: this.owner }; }
@@ -993,8 +1010,8 @@ CREATE TABLE personal_connector_deliveries (
       return String(task.id);
     });
   }
-  message(conv: string, task: string | null, role: string, content: string, source: string) {
-    this.run("INSERT OR IGNORE INTO transcript(id,conversation_id,task_id,role,content,source_key,created_at) VALUES(?,?,?,?,?,?,?)", id(), conv, task, role, content, source, now());
+  message(conv: string, task: string | null, role: string, content: string, source: string, progress: string | null = null) {
+    this.run("INSERT OR IGNORE INTO transcript(id,conversation_id,task_id,role,content,source_key,created_at,stream_progress) VALUES(?,?,?,?,?,?,?,?)", id(), conv, task, role, content, source, now(), progress);
   }
   pending(taskId: string) {
     return this.all("SELECT i.*,d.runtime_entry_id FROM conversation_inputs i JOIN runtime_input_deliveries d ON d.input_id=i.id WHERE i.task_id=? AND d.status IN ('pending','applied') ORDER BY input_seq", taskId);

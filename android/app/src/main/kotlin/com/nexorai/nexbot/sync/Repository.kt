@@ -256,6 +256,8 @@ class Repository(
             current.connection.account == saved.account) client?.token else null
     }
 
+    val imagePrivacyEpoch get() = loadedSync?.privacyEpoch
+
     fun workspaceTransport(): com.nexorai.nexbot.core.WorkspaceTransport {
         val saved = requireNotNull(_state.value.connection)
         return com.nexorai.nexbot.core.WorkspaceTransport(saved.origin, { workspaceToken(saved) })

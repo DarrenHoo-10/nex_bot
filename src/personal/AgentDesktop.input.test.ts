@@ -676,6 +676,12 @@ describe("Tool steps in the chat (Web, Electron and Android WebView)", () => {
       return base(route, ...rest);
     });
     await act(async () => { sources[0].emit("change", { ...sync, reset: true }); await new Promise(resolve => setTimeout(resolve, 200)); });
+    const more = container.querySelector<HTMLButtonElement>(".message-progress > button")!;
+    expect(more.textContent).toBe("更多内容");
+    expect(container.textContent).not.toContain("正在记录偏好");
+    await act(async () => { more.click(); });
+    expect(more.parentElement?.textContent).toContain("正在记录偏好");
+    expect(more.parentElement?.querySelector('[title="复制内容"]')).toBeNull();
     const row = container.querySelector<HTMLButtonElement>(".step-row");
     expect(row?.textContent).toContain("写入长期记忆");
     expect(container.querySelector('[data-right="closed"]')).not.toBeNull();

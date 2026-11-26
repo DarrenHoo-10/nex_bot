@@ -13,6 +13,17 @@ extension WorkspaceStore {
         if doRefresh { await refresh() }
         return value
     }
+    public func skills() async throws -> [ChatSkill] {
+        let catalog: ChatSkillCatalog = try await act(refresh: false) { try await client.get("/api/agents/skills") }
+        return catalog.skills
+    }
+
+    public func attachmentImage(id: String) async throws -> Data {
+        guard id.wholeMatch(of: /[a-zA-Z0-9_-]+/) != nil else { throw CoreError(kind: .http, message: "图片不存在", status: 404) }
+        let scope = sync.map { "\($0.coreId)/\($0.privacyEpoch)" }
+        return try await act(refresh: false) { try await client.cachedImagePreview("/api/attachments/\(id)?preview=1&compact=1", workspaceID: scope) }
+    }
+
     private func currentBot(_ id: String) throws -> Bot {
         guard let b = bot(id) else { throw missing("Agent 不存在") }
         return b

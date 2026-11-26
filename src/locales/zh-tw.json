@@ -577,6 +577,7 @@
   "chat.viewPayload": "檢視事件酬載",
   "chat.sentMidTurn": "於回合中送出",
   "chat.sentMidTurnHint": "在機器人工作期間送出 — 它在同一回合中、進行下一步之前就看到了這則訊息。",
+  "chat.moreContent": "更多內容",
   "chat.showFull": "顯示完整訊息",
   "chat.showLess": "收合",
   "chat.generatedImage": "產生的圖片",

@@ -21,6 +21,7 @@ struct AgentPermissionChoice {
 struct AgentComposerAdd: View {
     @Binding var images: [CliImageUpload]
     @Binding var error: String
+    var openSkills: (() -> Void)?
     var openModels: (() -> Void)?
     var permissions: AgentPermissionChoice?
     @State private var picking = false
@@ -29,6 +30,7 @@ struct AgentComposerAdd: View {
         Menu {
             Button("选择图片", systemImage: "photo.on.rectangle") { picking = true }
             Button("粘贴图片", systemImage: "clipboard", action: paste)
+            if let openSkills { Button("技能", systemImage: "book", action: openSkills) }
             if let openModels { Button("模型", systemImage: "cpu", action: openModels) }
             if let permissions, !permissions.modes.isEmpty {
                 SwiftUI.Picker(selection: Binding(get: { permissions.value }, set: { if let mode = $0 { permissions.choose(mode) } })) {
@@ -53,8 +55,8 @@ struct AgentComposerAdd: View {
                 for url in urls {
                     let permitted = url.startAccessingSecurityScopedResource()
                     defer { if permitted { url.stopAccessingSecurityScopedResource() } }
-                    if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > ChatAttachment.maxBytes {
-                        error = "图片不能超过 5 MB"
+                    if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 32 * 1024 * 1024 {
+                        error = "图片不能超过 32 MB"
                         continue
                     }
                     guard let bytes = try? Data(contentsOf: url, options: .mappedIfSafe) else { error = "无法读取所选图片"; continue }
@@ -77,24 +79,24 @@ struct AgentComposerAdd: View {
 
     private func add(_ name: String, bytes: Data) {
         guard images.count < ChatAttachment.maxCount else { error = "最多添加 5 张图片"; return }
-        guard !bytes.isEmpty, bytes.count <= ChatAttachment.maxBytes else { error = "图片不能超过 5 MB"; return }
+        guard !bytes.isEmpty, bytes.count <= 32 * 1024 * 1024 else { error = "图片不能超过 32 MB"; return }
         guard let source = CGImageSourceCreateWithData(bytes as CFData, nil) else { error = "无法读取所选图片"; return }
-        let type = CGImageSourceGetType(source).map { $0 as String }
-        if [UTType.png.identifier, UTType.jpeg.identifier, UTType.webP.identifier].contains(type ?? "") {
-            images.append(.init(name: name, data: bytes))
-        } else {
+        for edge in [1920, 1440, 1024, 640] {
             let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
-                           kCGImageSourceThumbnailMaxPixelSize: 3072] as CFDictionary
+                           kCGImageSourceThumbnailMaxPixelSize: edge] as CFDictionary
             let buffer = NSMutableData()
             guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options),
                   let output = CGImageDestinationCreateWithData(buffer, UTType.jpeg.identifier as CFString, 1, nil) else {
                 error = "无法读取所选图片"; return
             }
-            CGImageDestinationAddImage(output, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
-            guard CGImageDestinationFinalize(output), buffer.length <= ChatAttachment.maxBytes else { error = "图片不能超过 5 MB"; return }
+            CGImageDestinationAddImage(output, image, [kCGImageDestinationLossyCompressionQuality: 0.8,
+                                                 kCGImageDestinationBackgroundColor: CGColor(gray: 1, alpha: 1)] as CFDictionary)
+            guard CGImageDestinationFinalize(output), buffer.length > 0, buffer.length <= 512 * 1024 else { continue }
             images.append(.init(name: (name as NSString).deletingPathExtension + ".jpg", data: buffer as Data))
+            error = ""
+            return
         }
-        error = ""
+        error = "图片压缩失败"
     }
 }
 
@@ -165,6 +167,7 @@ private struct AgentImageDraft: View {
 
 struct AgentImageMessage: View {
     let text: String
+    var markdown = false
     let load: (String) async throws -> Data
     private static let pattern = /!\[([^\]\n]*)\]\((?:https?:\/\/[^\/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?ticket=[^)\s]+)?\)/
     private static let standalone = /(?m)^[ \t]*(?:https?:\/\/[^\/\s()]+)?(\/api\/cli-agents\/images\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?ticket=[^\s)]+)?[ \t]*$/
@@ -180,7 +183,12 @@ struct AgentImageMessage: View {
         let images = matches.sorted { $0.start < $1.start }.filter { seen.insert($0.path).inserted }
         let caption = withoutMarkdown.replacing(Self.standalone, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         // with words, the pictures sit in the bubble's top-left corner above them; without, they stand on their own
-        if caption.isEmpty {
+        if markdown {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(images, id: \.path) { image in AgentImagePreview(name: image.name, path: image.path, load: load) }
+                if !caption.isEmpty { MarkdownText(source: caption, fontSize: 14) }
+            }
+        } else if caption.isEmpty {
             OutlineFlow(spacing: 6, trailing: true) {
                 ForEach(images, id: \.path) { image in
                     AgentImagePreview(name: image.name, path: image.path, load: load)

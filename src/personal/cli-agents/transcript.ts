@@ -153,6 +153,9 @@ export function groupItems(items: readonly CliItem[]): Block[] {
       }
       case "notice": {
         if (!item.text) break;
+        const previous = blocks.at(-1);
+        if (item.level === "info" && item.text === "上下文已压缩" && previous?.kind === "notice" &&
+            previous.level === item.level && previous.text === item.text) break;
         const reason = item.level === "error" ? modelFailureReason(item.text) : null;
         blocks.push(reason
           ? { kind: "notice", id: item.id, level: "error", text: "模型调用失败：" + reason, failure: true }
@@ -165,6 +168,53 @@ export function groupItems(items: readonly CliItem[]): Block[] {
     }
   }
   return blocks;
+}
+
+export type TranscriptRow = Block | { kind: "progress"; id: string; blocks: Block[] };
+
+/** A recorded turn can contain steering messages. For older logs without turn
+ * markers, the next user prompt or the session becoming idle closes the turn. */
+export function transcriptRows(items: readonly CliItem[], active: boolean): TranscriptRow[] {
+  const rows: TranscriptRow[] = [];
+  let pending: CliItem[] = [];
+  let marked = false;
+  function flush(closed: boolean, aborted = false) {
+    const blocks = groupItems(pending);
+    pending = [];
+    if (!closed) { rows.push(...blocks); return; }
+    const last = blocks.at(-1);
+    const interrupted = aborted || (last?.kind === "notice" && last.level === "error");
+    const explicit = blocks.some(block => block.kind === "assistant" && block.item.replyPhase === "final");
+    const tail = [...blocks].reverse().find(block => block.kind === "activity" || (block.kind === "assistant" && block.item.replyPhase !== "artifact"));
+    let progress: Block[] = [];
+    function emitProgress() {
+      if (progress.length) rows.push({ kind: "progress", id: "progress:" + progress[progress.length - 1].id, blocks: progress });
+      progress = [];
+    }
+    for (const block of blocks) {
+      if (block.kind === "activity" || (block.kind === "assistant" && block.item.replyPhase !== "artifact" &&
+          block.item.replyPhase !== "final" && (interrupted || explicit || block !== tail || block.item.replyPhase === "commentary"))) {
+        progress.push(block);
+      } else { emitProgress(); rows.push(block); }
+    }
+    emitProgress();
+  }
+  for (const item of items) {
+    if (item.kind === "turn") {
+      flush(true, item.phase === "aborted");
+      marked = item.phase === "started";
+      if (item.phase === "aborted") rows.push({ kind: "notice", id: item.id, level: "info", text: "已中断" });
+    } else {
+      if (!marked && item.kind === "user" && !item.queued && !item.id.startsWith("guide:")) flush(true);
+      pending.push(item);
+    }
+  }
+  flush(!active);
+  return rows.filter((row, index) => {
+    const previous = rows[index - 1];
+    return !(row.kind === "notice" && row.level === "info" && row.text === "上下文已压缩" &&
+      previous?.kind === "notice" && previous.level === row.level && previous.text === row.text);
+  });
 }
 
 /** First line of a tool's input, cut for a one-line summary. */

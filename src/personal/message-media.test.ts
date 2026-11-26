@@ -41,7 +41,7 @@ describe("parseMessageMedia", () => {
     expect(parsed.images).toEqual([{
       id: "image-1",
       url: "/api/attachments/image-1",
-      previewUrl: "/api/attachments/image-1?preview=1",
+      previewUrl: "/api/attachments/image-1?preview=1&compact=1",
       name: "生成图片.png",
       alt: "生成图片",
     }]);
@@ -53,7 +53,7 @@ describe("parseMessageMedia", () => {
     expect(parsed.images).toEqual([{
       id: "screenshot-1",
       url: "/api/attachments/screenshot-1",
-      previewUrl: "/api/attachments/screenshot-1?preview=1",
+      previewUrl: "/api/attachments/screenshot-1?preview=1&compact=1",
       name: "截图.png",
       alt: "截图.png",
     }]);

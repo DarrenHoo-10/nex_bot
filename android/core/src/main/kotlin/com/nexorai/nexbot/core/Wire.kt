@@ -255,6 +255,7 @@ data class MessageRow(
     @SerialName("a2a_direction") val a2aDirection: String? = null,
     @SerialName("a2a_peer_id") val a2aPeerId: String? = null,
     @SerialName("tool_steps") val toolSteps: List<ToolStep> = emptyList(),
+    @SerialName("stream_progress") val streamProgress: String? = null,
 )
 
 @Serializable

@@ -584,6 +584,7 @@
   "chat.viewPayload": "查看事件负载",
   "chat.sentMidTurn": "在轮次中途发送",
   "chat.sentMidTurnHint": "在机器人工作时发送——它在同一轮次里、下一步之前看到了这条消息。",
+  "chat.moreContent": "更多内容",
   "chat.showFull": "显示完整消息",
   "chat.showLess": "收起",
   "chat.generatedImage": "生成的图片",

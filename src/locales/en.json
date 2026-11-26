@@ -1047,6 +1047,7 @@
   "chat.sentMidTurn": "sent mid-turn",
   "chat.sentMidTurnHint": "Sent while the bot was working — it saw this before its next step, inside the same turn.",
   "chat.viaCall": "via call",
+  "chat.moreContent": "More content",
   "chat.showFull": "Show full message",
   "chat.showLess": "Show less",
   "chat.generatedImage": "Generated image",

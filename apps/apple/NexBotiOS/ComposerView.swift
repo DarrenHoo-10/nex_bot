@@ -33,6 +33,7 @@ struct ComposerView: View {
     @State private var exportFile: SharedFile?
     @State private var exporting = false
     @State private var actionError: String?
+    @State private var showSkills = false
     @State private var showModels = false
     @State private var showPolicy = false
     @State private var draftImage: ImagePreview?
@@ -128,6 +129,9 @@ struct ComposerView: View {
             guard !items.isEmpty else { return }
             photoItems = []
             Task { await addPhotos(items) }
+        }
+        .sheet(isPresented: $showSkills) {
+            ChatSkillPicker(load: { try await workspace.skills() }) { conversation.draft = $0.adding(to: conversation.draft) }
         }
         .sheet(isPresented: $showModels) {
             ChatModelSheet(workspace: workspace, botID: botID, onError: { actionError = $0 }, composer: true)
@@ -239,6 +243,7 @@ struct ComposerView: View {
             menuRow("photo", "照片", "photo", disabled: conversation.isUploadingAttachments) { menu = nil; showPhotos = true }
             pasteRow
             heading("指令")
+            menuRow("book", "技能", disabled: bot == nil) { menu = nil; showSkills = true }
             menuRow("cpu", "模型", "model", disabled: bot == nil || conversation.isSending) { menu = nil; showModels = true }
             menuRow(mode == .full ? "exclamationmark.shield" : "checkmark.shield", "权限", "permission", value: mode.title, disabled: bot == nil) { menu = .permissions }
             menuRow("plus.bubble", "新话题", "topic", disabled: conversation.messages.isEmpty || bot == nil) { menu = nil; Task { await startNewTopic() } }

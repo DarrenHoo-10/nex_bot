@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, PAGE_SIZE, isCliNativeId, type CliItem } from "../../../shared/cli-agents.ts";
-import { clipUnits, codexThreadItemToItems, type LocalSession } from "./items.ts";
+import { clipUnits, codexThreadItemToItems, imageLocator, itemHasImage, type TranscriptImage, type LocalSession } from "./items.ts";
 
 const DAY_MS = 86_400_000;
 const TITLE_CHARS = 60;
@@ -231,6 +231,27 @@ export class CodexAppDb {
     return active;
   }
 
+  async imageSource(threadId: string, itemId: string, locator: string): Promise<TranscriptImage | undefined> {
+    const file = await latestDb(this.home, "thread_history");
+    if (!file) return;
+    const db = openReadOnly(file);
+    try {
+      const row = db.prepare("SELECT * FROM thread_items WHERE thread_id=? AND item_id=?").get(threadId, itemId) as Row | undefined;
+      if (!row) return;
+      const item = JSON.parse(String(row.item_json));
+      let source: TranscriptImage | undefined;
+      const items = codexThreadItemToItems({ ...item, type: item.type ?? row.item_type, id: item.id ?? itemId }, {
+        segment: threadId, offset: num(row.rollout_ordinal) ?? 0,
+        imageRef: (offset, candidate) => {
+          const ref = imageLocator(offset, candidate);
+          if (ref === locator) source = candidate;
+          return ref;
+        },
+      }, 0);
+      if (items.some(it => itemHasImage(it, itemId, locator))) return source;
+    } finally { db.close(); }
+  }
+
   /** A cheap value that changes when the chat gets new turns or items. */
   async marker(threadId: string): Promise<string> {
     const file = await latestDb(this.home, "thread_history");
@@ -290,7 +311,7 @@ function* historyBackwards(db: DatabaseSync, threadId: string, before?: string):
       if (!item || typeof item !== "object") continue;
       if (typeof item.type !== "string") item.type = text(row.item_type);
       if (typeof item.id !== "string") item.id = String(row.item_id);
-      yield* codexThreadItemToItems(item, { segment: threadId, offset: num(row.rollout_ordinal) ?? 0 }, epochMs(row.created_at_ms) ?? fallbackTs).reverse();
+      yield* codexThreadItemToItems(item, { imageRef: imageLocator, segment: threadId, offset: num(row.rollout_ordinal) ?? 0 }, epochMs(row.created_at_ms) ?? fallbackTs).reverse();
     }
   }
   if (turnCols.has("turn_id")) {

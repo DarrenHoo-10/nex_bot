@@ -239,7 +239,7 @@ export interface CliTaskEnd { id: string; state: "completed" | "failed" | "cance
 
 export type CliItem =
   | { kind: "user"; id: string; ts: number; text: string; images?: string[]; queued?: boolean; queuedByUser?: boolean }
-  | { kind: "assistant"; id: string; ts: number; text: string }
+  | { kind: "assistant"; id: string; ts: number; text: string; replyPhase?: "commentary" | "final" | "artifact" }
   | { kind: "thinking"; id: string; ts: number; text: string }
   | {
       kind: "tool";
@@ -455,10 +455,10 @@ export interface CliError {
  * attachments written to the computer (`attach`) and the models its CLIs offer
  * (`models`). Older executors send none. */
 /** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first. */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes";
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes" | "skills";
 /** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask".
  * `permissionModes`: it also takes each CLI's other permission modes (cliPermissionModes); without it only "full" and "ask". */
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes"];
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills"];
 
 /** What the page shows when the computer's executor lacks a feature. */
 export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
@@ -604,6 +604,8 @@ export const CLI_SEARCH = { queryMax: 200, defaultLimit: 50, maxLimit: 100, snip
 /** Decoded bytes of one attachment. Base64 makes it ~11.2 MB on the device link,
  * whose frames the executor accepts up to CLI_LINK_FRAME_MAX. */
 export const CLI_ATTACH_MAX_BYTES = 8 * 1024 * 1024;
+export const CLI_HISTORY_IMAGE_MAX = 512 * 1024;
+export const HISTORY_IMAGE_LOCATOR = /^history:(\d{1,16}):[0-9a-f]{64}$/;
 export const CLI_ATTACH_NAME_MAX = 200;
 const ATTACH_BASE64_MAX = Math.ceil(CLI_ATTACH_MAX_BYTES / 3) * 4;
 /** The largest message the executor takes from Core: one attachment plus its envelope. */
@@ -642,7 +644,9 @@ export const CLI_OPS = [
   "git",
   "search",
   "attach",
+  "history_image",
   "models",
+  "skills",
   "dirs",
 ] as const;
 export type CliOp = (typeof CLI_OPS)[number];
@@ -692,9 +696,11 @@ export interface CliOpArgs {
   /** every listed session's user and assistant text, newest sessions first */
   search: { query: string; limit?: number };
   /** writes a file next to the session's other attachments; `data` is base64 */
+  history_image: { ref: CliSessionRef; itemId: string; locator: string };
   attach: { ref: CliSessionRef; name: string; data: string };
   /** the model picker rows of one CLI on the computer */
   models: { engine: CliEngine };
+  skills: { engine: CliEngine; cwd: string; ref?: CliSessionRef };
   /** the sub-folders of an absolute folder; "" lists the roots (drives and the home folder) */
   dirs: { path: string };
 }
@@ -735,8 +741,10 @@ export interface CliOpResult {
   answer: { outcome: string };
   git: CliGitInfo;
   search: { hits: CliSearchHit[] };
+  history_image: { data: string };
   attach: { path: string };
   models: CliModelCatalog;
+  skills: SkillCatalog;
   dirs: CliDirListing;
 }
 
@@ -754,8 +762,10 @@ export const CLI_OP_TIMEOUT_MS: Record<CliOp, number> = {
   git: 20_000,
   // the device stops scanning well before this (its own budget is ~8 s)
   search: 10_000,
+  history_image: 30_000,
   attach: 20_000,
   models: 8000,
+  skills: 15_000,
   dirs: 8000,
 };
 
@@ -1125,7 +1135,8 @@ function item(value: unknown): CliItem {
       }));
     }
     case "assistant":
-      return { kind: "assistant", id, ts, text: str(o.text, ITEM_TEXT_MAX) };
+      return pick({ kind: "assistant" as const, id, ts, text: str(o.text, ITEM_TEXT_MAX),
+        replyPhase: o.replyPhase == null ? undefined : oneOf(o.replyPhase, ["commentary", "final", "artifact"] as const) });
     case "thinking":
       return { kind: "thinking", id, ts, text: str(o.text, SUMMARY_MAX) };
     case "tool":
@@ -1438,10 +1449,22 @@ const ARGS_PARSERS: { [K in CliOp]: (o: Rec) => CliOpArgs[K] } = {
     return pick({ query, limit: optInt(o, "limit", 1, CLI_SEARCH.maxLimit) });
   },
   models: (o) => ({ engine: oneOf(o.engine, CLI_ENGINES) }),
+  skills: (o) => {
+    const engine = oneOf(o.engine, CLI_ENGINES);
+    const cwd = str(o.cwd, CLI_LIMITS.cwd);
+    const target = present(o, "ref") ? ref(o.ref) : undefined;
+    if ((cwd && !isAbsoluteCwd(cwd)) || (target && !target.startsWith(engine + ":"))) fail();
+    return pick({ engine, cwd, ref: target });
+  },
   dirs: (o) => {
     const path = str(o.path, CLI_LIMITS.cwd);
     if (path && !isAbsoluteCwd(path)) fail();
     return { path };
+  },
+  history_image: (o) => {
+    const locator = str(o.locator, 90);
+    if (!HISTORY_IMAGE_LOCATOR.test(locator)) fail();
+    return { ref: ref(o.ref), itemId: str(o.itemId, CLI_LIMITS.itemId, 1), locator };
   },
   attach: (o) => {
     const name = str(o.name, CLI_ATTACH_NAME_MAX, 1);
@@ -1530,14 +1553,37 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
       return { ref: ref(hit.ref), snippet: str(hit.snippet, CLI_SEARCH.snippetMax * 2) };
     }),
   }),
+  history_image: (o) => {
+    const data = str(o.data, Math.ceil(CLI_HISTORY_IMAGE_MAX / 3) * 4, 1);
+    const size = base64DecodedLength(data);
+    if (size < 1 || size > CLI_HISTORY_IMAGE_MAX) fail();
+    return { data };
+  },
   attach: (o) => {
     const path = str(o.path, CLI_LIMITS.imagePath, 1);
     if (!isAbsoluteCwd(path)) fail();
     return { path };
   },
   models: (o) => modelCatalog(o),
+  skills: (o) => skillCatalog(o),
   dirs: (o) => dirListing(o),
 };
+
+export interface SkillOption { name: string; description: string }
+export interface SkillCatalog { skills: SkillOption[] }
+export const SKILL_LIMIT = 512;
+export const skillCommandName = /^[\p{L}\p{N}_][\p{L}\p{N}_.:-]{0,127}$/u;
+
+function skillCatalog(o: Rec): SkillCatalog {
+  return { skills: arr(o.skills, SKILL_LIMIT).map(item => {
+    const row = rec(item), name = str(row.name, 128, 1);
+    if (!skillCommandName.test(name)) fail();
+    return { name, description: str(row.description, 300) };
+  }) };
+}
+export function parseSkillCatalog(value: unknown): SkillCatalog | null {
+  return guard(() => skillCatalog(rec(value)));
+}
 
 /** One folder's sub-folders on a computer. */
 export interface CliDirListing {

@@ -5,7 +5,7 @@ import { localCacheScope, queueLocalCache, readLocalCache } from "./local-conten
 export function usePersistentPreview(url: string, target: RefObject<HTMLElement | null>) {
   const [preview, setPreview] = useState<{ url: string; source: string; scope: string | undefined }>();
   const scope = localCacheScope();
-  const eligible = !!scope && (!!cliImageId(url) || /^\/api\/attachments\/[a-zA-Z0-9_-]+\?preview=1$/.test(url));
+  const eligible = !!scope && (!!cliImageId(url) || /^\/api\/attachments\/[a-zA-Z0-9_-]+\?preview=1(?:&compact=1)?$/.test(url));
   useEffect(() => {
     if (!eligible) return;
     const abort = new AbortController();

@@ -58,7 +58,7 @@ struct AgentNewSessionPage: View {
     @Environment(\.dismiss) private var dismiss
     #endif
     @State private var catalog = CliModelCatalog()
-    private enum Picker { case directory, options, model }
+    private enum Picker { case directory, options, model, skills }
     @State private var picker: Picker?
     @FocusState private var focused: Bool
 
@@ -123,6 +123,11 @@ struct AgentNewSessionPage: View {
             }
         }
         #endif
+        .sheet(isPresented: presenting(.skills)) {
+            ChatSkillPicker(load: { try await model.skills(deviceId: deviceId, engine: engine, cwd: dir?.path ?? "") }) {
+                message = $0.adding(to: message, engine: engine); focused = true
+            }
+        }
         .onAppear { setUp(); focused = true }
         .onChange(of: model.devices.map(\.id)) { _, _ in setUp() }
         .onChange(of: deviceId) { previous, _ in if !previous.isEmpty { dir = nil } }
@@ -281,14 +286,14 @@ struct AgentNewSessionPage: View {
             #endif
             HStack(spacing: 8) {
                 #if os(iOS)
-                AgentComposerAdd(images: $images, error: $imageError, openModels: canChoose ? { picker = .model } : nil)
+                AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex ? { picker = .skills } : nil, openModels: canChoose ? { picker = .model } : nil)
                     .popover(isPresented: presenting(.model), arrowEdge: .bottom) {
                         AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort) { effort = $0 }
                             .frame(width: 310, height: 360)
                             .presentationCompactAdaptation(.popover)
                     }
                 #else
-                AgentComposerAdd(images: $images, error: $imageError)
+                AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex ? { picker = .skills } : nil)
                 #endif
                 Spacer(minLength: 0)
                 #if os(macOS)

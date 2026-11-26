@@ -189,6 +189,18 @@ public enum CliBlock: Sendable, Hashable, Identifiable {
     }
 }
 
+public enum CliTranscriptRow: Identifiable {
+    case block(CliBlock)
+    case progress(id: String, blocks: [CliBlock])
+
+    public var id: String {
+        switch self {
+        case .block(let block): block.id
+        case .progress(let id, _): id
+        }
+    }
+}
+
 public enum CliTranscript {
     public static func backgroundTaskTitle(_ item: CliItem) -> String? {
         let name = item.name.lowercased().split(separator: ".").last.map(String.init) ?? ""
@@ -244,6 +256,61 @@ public enum CliTranscript {
     private static func shortTaskTitle(_ title: String) -> String {
         let clean = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return clean.count > 36 ? String(clean.prefix(35)) + "…" : clean
+    }
+
+    public static func rows(_ items: [CliItem], active: Bool) -> [CliTranscriptRow] {
+        var rows: [CliTranscriptRow] = []
+        var pending: [CliItem] = []
+        var marked = false
+        func flush(closed: Bool, aborted: Bool = false) {
+            let blocks = group(pending)
+            pending.removeAll(keepingCapacity: true)
+            guard closed else { rows.append(contentsOf: blocks.map(CliTranscriptRow.block)); return }
+            let interrupted: Bool
+            if case .notice(_, .error, _) = blocks.last { interrupted = true } else { interrupted = aborted }
+            let explicit = blocks.contains { block in
+                if case .assistant(let item) = block { return item.replyPhase == "final" }
+                return false
+            }
+            let tail = blocks.last { block in
+                switch block {
+                case .assistant(let item): item.replyPhase != "artifact"
+                case .activity: true
+                default: false
+                }
+            }
+            var progress: [CliBlock] = []
+            func emitProgress() {
+                if let last = progress.last { rows.append(.progress(id: "progress:" + last.id, blocks: progress)) }
+                progress.removeAll(keepingCapacity: true)
+            }
+            for block in blocks {
+                switch block {
+                case .activity: progress.append(block)
+                case .assistant(let item) where item.replyPhase != "artifact" && item.replyPhase != "final" &&
+                    (interrupted || explicit || block.id != tail?.id || item.replyPhase == "commentary"):
+                    progress.append(block)
+                default: emitProgress(); rows.append(.block(block))
+                }
+            }
+            emitProgress()
+        }
+        for item in items {
+            if item.kind == .turn {
+                flush(closed: true, aborted: item.phase == .aborted)
+                marked = item.phase == .started
+                if item.phase == .aborted { rows.append(.block(.notice(id: item.id, level: .info, text: "已中断"))) }
+            } else {
+                if !marked && item.kind == .user && !item.queued && !item.id.hasPrefix("guide:") { flush(closed: true) }
+                pending.append(item)
+            }
+        }
+        flush(closed: !active)
+        return rows.enumerated().compactMap { index, row in
+            if index > 0, case .block(.notice(_, .info, "上下文已压缩")) = row,
+               case .block(.notice(_, .info, "上下文已压缩")) = rows[index - 1] { return nil }
+            return row
+        }
     }
 
     public static func completedReplies(_ items: [CliItem], active: Bool) -> Set<String> {
@@ -320,6 +387,8 @@ public enum CliTranscript {
                 else { blocks.append(.activity(id: item.id, items: [item])) }
             case .notice:
                 guard !item.text.isEmpty else { continue }
+                if item.level == .info, item.text == "上下文已压缩",
+                   case .notice(_, .info, let lastText)? = blocks.last, lastText == item.text { continue }
                 if item.level == .error, let reason = modelFailureReason(item.text) { blocks.append(.notice(id: item.id, level: .error, text: "模型调用失败：" + reason)) }
                 else { blocks.append(.notice(id: item.id, level: item.level, text: item.text)) }
             case .turn: if item.phase == .aborted { blocks.append(.notice(id: item.id, level: .info, text: "已中断")) }

@@ -678,8 +678,10 @@ describe("parseCoreCliMessage", () => {
       answer: { id: "req-1", decision: "allow", answers: { "Which one?": "A" }, message: "ok" },
       git: { ref, action: "info" },
       search: { query: "部署 main", limit: 20 },
+      history_image: { ref, itemId: "message", locator: `history:0:${"a".repeat(64)}` },
       attach: { ref, name: "截图.png", data: "aGk=" },
       models: { engine: "codex" },
+      skills: { engine: "codex", cwd: "", ref },
       dirs: { path: "D:\\work" },
     };
     expect(Object.keys(ops).sort()).toEqual([...CLI_OPS].sort());

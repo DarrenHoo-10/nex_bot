@@ -1,9 +1,10 @@
 import { userErrorText } from "../../lib/http-errors";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowUp, ChevronLeft } from "lucide-react";
+import { MoreContent } from "./MoreContent";
 import { api, busyJob, jobStageLabels, str, type JobDetail, type RecordRow } from "../api";
 
-type Entry = { key: string; at: number; role: "user" | "assistant" | "steps"; content: string; question?: string; count?: number; pending?: boolean };
+type Entry = { key: string; at: number; role: "user" | "assistant" | "steps"; content: string; progress?: string; question?: string; count?: number; pending?: boolean };
 const clock = (value: unknown) => value ? new Date(Number(value)).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "";
 
 /** The conversation with one background job's sub-agent, in place of the main chat. Messages go to the job as input. */
@@ -38,10 +39,11 @@ export function JobChat({ id, botName, avatar, back, renderContent }: { id: stri
   const job = detail?.job;
   const messages = detail?.messages ?? [];
   const brief = messages.find((message) => message.role === "user");
-  const replies = new Set(messages.filter((message) => message.role === "assistant").map((message) => str(message.content).trim()));
+  const timeline = messages.filter(message => message !== brief && (message.content || message.stream_progress) &&
+    (message.role === "user" || message.role === "assistant" || (message.role === "system" && !!message.stream_progress)));
+  const replies = new Set(timeline.filter(message => message.role !== "user").map(message => str(message.content).trim()));
   const entries: Entry[] = [
-    ...messages.filter((message) => message !== brief && (message.role === "user" || message.role === "assistant") && str(message.content))
-      .map((message: RecordRow) => ({ key: `m:${str(message.id)}`, at: Number(message.created_at), role: message.role as "user" | "assistant", content: str(message.content) })),
+    ...timeline.map((message: RecordRow) => ({ key: `m:${str(message.id)}`, at: Number(message.created_at), role: message.role === "user" ? "user" as const : "assistant" as const, content: str(message.content), progress: str(message.stream_progress) })),
     // A report repeating the sub-agent's own reply (Core files the final answer as one) is shown once.
     ...(detail?.reports ?? []).filter((report) => str(report.question) || (str(report.summary) && !replies.has(str(report.summary).trim())))
       .map((report) => ({ key: `r:${str(report.id)}`, at: Number(report.created_at), role: "assistant" as const, content: str(report.summary), question: str(report.question) || undefined })),
@@ -87,6 +89,7 @@ export function JobChat({ id, botName, avatar, back, renderContent }: { id: stri
           : <article className={`message ${entry.role} group-end`} key={entry.key}>
               {entry.role === "assistant" ? avatar : null}
               <div className="message-body">
+                {entry.progress && <MoreContent>{renderContent(entry.progress)}</MoreContent>}
                 <div className="bubble">{renderContent(entry.content)}{entry.question ? <p className="job-question">{entry.question}</p> : null}</div>
                 {entry.pending || entry.role !== "user" ? <div className="message-meta">{entry.pending ? "发送中…" : <time>{clock(entry.at)}</time>}</div> : null}
               </div>

@@ -350,7 +350,9 @@ private struct AgentTranscript: View {
         let receiptID = codexPending ? (sent.last?.id.uuidString ?? key) : nil
         let delivery = sent.contains(where: \.uploading) ? "正在上传附件" : codexPending ? (lateReceipt == receiptID ? "Codex 尚未确认收件，请查看终端" : "等待 Codex 确认收件") : nil
         let working = delivery == nil ? (self.working ?? (sent.isEmpty && echo == nil ? nil : "等待回复")) : nil
-        let blocks = CliTranscript.group(AgentGuide.timeline(t.items, guides))
+        let timeline = AgentGuide.timeline(t.items, guides)
+        let blocks = CliTranscript.group(timeline)
+        let rows = CliTranscript.rows(timeline, active: active)
         let completed = CliTranscript.completedReplies(t.items, active: active)
         // copy and branch: only on a finished reply's conclusion
         let conclusions = CliTranscript.replyTails(blocks).intersection(completed)
@@ -390,12 +392,12 @@ private struct AgentTranscript: View {
                                         .frame(maxWidth: .infinity)
                                 }
                             }
-                            ForEach(blocks) { block in
-                                let guide = guides.first { "guide:" + $0.id == block.id }
-                                let state = guide.flatMap { guide in model.queues[key]?.entries.first { $0.id == guide.id }?.status }
-                                AgentBlockView(block: block, guideStatus: state == "failed" ? "发送失败" : (state == "uncertain" || guide?.uncertain == true ? "待确认" : nil), expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: t.translationEnabled && completed.contains(block.id) && !guides.contains(where: { $0.tail?.id == block.id }) ? { item in
-                                    try await model.translateReply(key, item: item)
-                                } : nil, actions: conclusions.contains(block.id), branch: conclusions.contains(block.id) ? branch : nil)
+                            ForEach(rows) { row in
+                                switch row {
+                                case .block(let block): rendered(block, conclusions: conclusions, completed: completed, translate: t.translationEnabled)
+                                case .progress(_, let parts):
+                                    MoreContent { ForEach(parts) { block in rendered(block, conclusions: [], completed: [], translate: false) } }
+                                }
                             }
                             if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
                             ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
@@ -421,6 +423,14 @@ private struct AgentTranscript: View {
             lateReceipt = receiptID
         }
     }
+    private func rendered(_ block: CliBlock, conclusions: Set<String>, completed: Set<String>, translate: Bool) -> some View {
+        let guide = guides.first { "guide:" + $0.id == block.id }
+        let state = guide.flatMap { guide in model.queues[key]?.entries.first { $0.id == guide.id }?.status }
+        return AgentBlockView(block: block, guideStatus: state == "failed" ? "发送失败" : (state == "uncertain" || guide?.uncertain == true ? "待确认" : nil), expandedActivities: $expandedActivities, loadImage: model.downloadImage, translate: translate && completed.contains(block.id) && !guides.contains(where: { $0.tail?.id == block.id }) ? { item in
+        try await model.translateReply(key, item: item)
+        } : nil, actions: conclusions.contains(block.id), branch: conclusions.contains(block.id) ? branch : nil)
+    }
+
 }
 
 private struct AgentBlockView: View {
@@ -438,13 +448,13 @@ private struct AgentBlockView: View {
             HStack {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 2) {
-                    AgentImageMessage(text: item.text, load: loadImage)
+                    AgentImageMessage(text: ([item.text] + item.images.filter { $0.hasPrefix("/api/cli-agents/images/") && !item.text.contains($0) }).joined(separator: "\n"), load: loadImage)
                     if let guideStatus { Text(guideStatus).font(.caption2).foregroundStyle(Theme.muted) }
                     if item.queued { Text("排队中").font(.caption2).foregroundStyle(Theme.muted) }
                 }
             }
         case .assistant(let item):
-            AgentReplyText(item: item, translate: translate, actions: actions, branch: branch)
+            AgentReplyText(item: item, load: loadImage, translate: translate, actions: actions, branch: branch)
         case .activity(let id, let items):
             AgentActivity(items: items, open: Binding(get: { expandedActivities.contains(id) }, set: { open in
                 if open { expandedActivities.insert(id) }
@@ -458,6 +468,7 @@ private struct AgentBlockView: View {
 
 private struct AgentReplyText: View {
     let item: CliItem
+    let load: (String) async throws -> Data
     var translate: ((CliItem) async throws -> String?)?
     var actions = true
     var branch: ((String) -> Void)?
@@ -474,7 +485,7 @@ private struct AgentReplyText: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            MarkdownText(source: displayedText, fontSize: 14)
+            AgentImageMessage(text: displayedText, markdown: true, load: load)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if translated != nil {
                 Button(original ? "查看中文" : "查看原文") { original.toggle() }
@@ -955,6 +966,7 @@ private struct AgentComposer: View {
     @State private var showingEffort = false
     @State private var effort: String?
     @State private var chosenModel = ""
+    @State private var showingSkills = false
     @State private var showingModels = false
     @State private var catalog = CliModelCatalog(models: [])
 
@@ -1029,7 +1041,7 @@ private struct AgentComposer: View {
             case .stopped(let hint):
                 HStack {
                     #if os(iOS)
-                    if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error, permissions: permissionChoice) }
+                    if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex ? { showingSkills = true } : nil, permissions: permissionChoice) }
                     #endif
                     Text(hint ?? "会话已停止").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
@@ -1051,6 +1063,11 @@ private struct AgentComposer: View {
             chosenModel = AgentDrafts.models[session.key] ?? ""
             images = AgentDrafts.images[session.key] ?? []
             permission = AgentDrafts.permissions[session.key]
+        }
+        .sheet(isPresented: $showingSkills) {
+            ChatSkillPicker(load: { try await model.skills(deviceId: session.deviceId, engine: session.engine, cwd: session.cwd, key: session.key) }) { skill in
+                draft = session.engine == .claude && session.sendVia == "inbox" ? "请调用 Skill 工具使用「\(skill.name)」技能。\n" + draft : skill.adding(to: draft, engine: session.engine)
+            }
         }
         .onChange(of: draft) { _, text in AgentDrafts.texts[session.key] = text }
         .onChange(of: images) { _, value in AgentDrafts.images[session.key] = value.isEmpty ? nil : value }
@@ -1130,7 +1147,7 @@ private struct AgentComposer: View {
 
     private func sendRow(running: Bool) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            AgentComposerAdd(images: $images, error: $error, permissions: permissionChoice)
+            AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex ? { showingSkills = true } : nil, permissions: permissionChoice)
             TextField("发消息", text: $draft, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain)
                 .padding(.horizontal, 12).padding(.vertical, 8)
@@ -1297,6 +1314,7 @@ private struct AgentComposer: View {
             AgentDrafts.appliedEfforts[next] = level
             AgentDrafts.models[next] = requestedModel
             AgentDrafts.appliedModels[next] = requestedModel
+            if !draft.isEmpty { AgentDrafts.texts[next] = draft }
             AgentDrafts.images[next] = images.isEmpty ? nil : images
             onKeyChange(next)
         }

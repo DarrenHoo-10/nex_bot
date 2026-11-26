@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import ImageIO
 
 // HTTP side of Agent mode, on the existing CoreClient transport (Bearer auth, no redirects). Failures are `CoreError`s whose
 // `code` is Core's machine-readable code; `CliErrorText.text(for:)` turns one into the line to show.
@@ -177,9 +179,28 @@ extension CoreClient {
         return "![\(name)](\(result.path))"
     }
 
-    public func cliDownloadImage(_ path: String) async throws -> Data {
+    public func cliDownloadImage(_ path: String, workspaceID: String? = nil) async throws -> Data {
         guard Self.cliImageID(path) != nil else { throw CoreError(kind: .http, message: "图片不存在", status: 404) }
-        return try await getData(path).0
+        return try await cachedImagePreview(path + "?preview=1", workspaceID: workspaceID)
+    }
+
+    func cachedImagePreview(_ path: String, workspaceID: String?) async throws -> Data {
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        let file = workspaceID.flatMap { scope -> URL? in
+            guard !scope.isEmpty, token != nil else { return nil }
+            let key = SHA256.hash(data: Data("\(origin.string)\n\(scope)\n\(path)".utf8)).map { String(format: "%02x", $0) }.joined()
+            return directory?.appendingPathComponent("message-images", isDirectory: true).appendingPathComponent(key)
+        }
+        if let file, let bytes = try? Data(contentsOf: file), CGImageSourceCreateWithData(bytes as CFData, nil) != nil { return bytes }
+        let (bytes, headers) = try await getData(path, timeout: 120)
+        guard headers["content-type"]?.hasPrefix("image/") == true, CGImageSourceCreateWithData(bytes as CFData, nil) != nil else {
+            throw CoreError(kind: .http, message: "图片加载失败")
+        }
+        if let file {
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? bytes.write(to: file, options: .atomic)
+        }
+        return bytes
     }
 
     private static func cliImageID(_ path: String) -> UUID? {

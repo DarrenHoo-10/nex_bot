@@ -2,7 +2,8 @@
 // narrate before tools; the messages stay available without looking like six
 // separate final answers after the turn is done.
 import { useEffect, useState } from "react";
-import { Check, ChevronRight } from "lucide-react";
+import { t } from "@/lib/i18n";
+import { ChevronRight } from "lucide-react";
 
 export function TurnNarrationRun({
   label,
@@ -25,11 +26,10 @@ export function TurnNarrationRun({
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          title={open ? "Hide progress messages" : "Show progress messages"}
-          className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-control"
+          title={label}
+          className="flex items-center gap-1 py-1 text-[13px] text-ink-secondary hover:text-ink"
         >
-          <Check size={13} className="text-success" />
-          <span>{label}</span>
+          <span>{t(open ? "chat.showLess" : "chat.moreContent")}</span>
           <ChevronRight size={13} className={open ? "rotate-90" : undefined} />
         </button>
       </div>

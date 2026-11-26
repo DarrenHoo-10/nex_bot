@@ -1,14 +1,17 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { parseCliKey } from "../../../shared/cli-agents.ts";
 import { CLI_IMAGE_PREFIX, mapCliImageLinks } from "../../../shared/cli-images.ts";
+import { compressImagePreview } from "../image-preview.ts";
 import { ChatFiles, attachmentLimit, attachmentMime } from "../chat-files.ts";
 import { id, now, type CoreStore } from "../store.ts";
-import { CliOpError } from "./hub.ts";
+import { CliOpError, type CliAgentHub } from "./hub.ts";
 
 const TICKET_TTL = 60 * 60 * 1000;
 const UNPUBLISHED_TTL = 24 * 60 * 60 * 1000;
 
 export class CliImages {
   private readonly files: ChatFiles;
+  private readonly syncing = new Map<string, Promise<{ mime: string; bytes: Buffer }>>();
 
   constructor(private readonly store: CoreStore, private readonly key: Buffer) {
     this.files = new ChatFiles(store);
@@ -75,6 +78,40 @@ export class CliImages {
     if (!match) return false;
     const expires = Number(match[1]);
     return expires > now() && timingSafeEqual(Buffer.from(match[2], "hex"), Buffer.from(this.signature(fileId, expires), "hex"));
+  }
+
+  async readForOwner(imageId: string, hub: CliAgentHub, actor: string, origin: string, preview: boolean) {
+    const source = this.store.get("SELECT session_key,item_id,locator,file_id FROM cli_history_images WHERE id=?", imageId);
+    if (!source) {
+      const image = await this.read(imageId);
+      if (!image || !preview) return image;
+      return { mime: "image/webp", bytes: await compressImagePreview(image.bytes) };
+    }
+    if (source.file_id) return this.read(String(source.file_id));
+    const pending = this.syncing.get(imageId);
+    if (pending) return pending;
+
+    const key = String(source.session_key);
+    const session = parseCliKey(key);
+    if (!session) throw new CliOpError("not_found");
+    const sync = async () => {
+      const result = await hub.op(actor, session.deviceId, key, "history_image", {
+        ref: session.ref, itemId: String(source.item_id), locator: String(source.locator),
+      });
+      const bytes = Buffer.from(result.data, "base64");
+      const uploaded = await this.upload(session.deviceId, origin, bytes);
+      const fileId = uploaded.path.slice(CLI_IMAGE_PREFIX.length);
+      this.store.transaction(() => {
+        if (!this.store.run("UPDATE cli_history_images SET file_id=? WHERE id=?", fileId, imageId).changes) {
+          throw new CliOpError("not_found");
+        }
+        this.store.run("UPDATE cli_agent_images SET published=1 WHERE id=?", fileId);
+      });
+      return { mime: attachmentMime(bytes), bytes };
+    };
+    const job = sync().finally(() => this.syncing.delete(imageId));
+    this.syncing.set(imageId, job);
+    return job;
   }
 
   async read(fileId: string) {

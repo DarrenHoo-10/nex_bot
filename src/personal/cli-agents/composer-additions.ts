@@ -4,7 +4,7 @@ import {uploadAttachment} from "./api";
 import {localCacheScope, queueLocalCache} from "../local-content-cache";
 
 export interface PickedFile {id:string; file:File}
-export interface ComposerExtras {files:PickedFile[];goal:string|null}
+export interface ComposerExtras {files:PickedFile[];goal:string|null;skill?:string}
 const extras=new Map<string,ComposerExtras>();
 const deliveredFiles=new WeakMap<File,{key:string;reference:string}>();
 export const isPickedImage = (file: File) => file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
@@ -20,7 +20,7 @@ export function getExtras(key:string):ComposerExtras {
   return {files:[],goal};
 }
 export function saveExtras(key:string,value:ComposerExtras){
-  if(!value.files.length && value.goal===null)extras.delete(key);else extras.set(key,value);
+  if(!value.files.length && !value.skill && value.goal===null)extras.delete(key);else extras.set(key,value);
   try{if(value.goal===null)sessionStorage.removeItem(goalKey(key));else sessionStorage.setItem(goalKey(key),value.goal)}catch{/* memory still works */}
 }
 /** The model and effort chosen for a session, kept in this browser. */

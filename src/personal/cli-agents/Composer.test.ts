@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliApiError } from "./api";
 
 const uploadAttachment = vi.hoisted(() => vi.fn(async () => ({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" })));
-vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), uploadAttachment }));
+const fetchSkills = vi.hoisted(() => vi.fn(async () => [
+  { name: "agent-reach", description: "全网调研" },
+  { name: "archive", description: "整理归档" },
+]));
+vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), uploadAttachment, fetchSkills }));
 const layout = vi.hoisted(() => ({ compact: false }));
 vi.mock("../components/use-compact-composer", () => ({ useCompactComposer: () => layout.compact }));
 import { Composer, deliveryNote, UNCONFIRMED_NOTE, WAITING_NOTE } from "./Composer";
@@ -50,6 +54,28 @@ async function type(value: string) {
 }
 
 const submit = async () => { await act(async () => { sendButton().click(); }); await flush(); };
+
+it.each(["codex", "claude"] as const)("finds a %s skill by partial name and description and keeps the pending draft", async engine => {
+  const row = session({ nativeId: "pick-skill", engine, liveIn: "terminal", terminal: undefined, sendVia: engine === "claude" ? "inbox" : "daemon" });
+  const onSend = vi.fn(async () => ({}));
+  await act(async () => root.render(createElement(Composer, { session: row, features: ["skills"], onSend, onInterrupt: async () => ({}) })));
+  await type("分析这个项目");
+  await act(async () => container.querySelector<HTMLButtonElement>("[aria-label=添加]")!.click());
+  await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "技能")!.click());
+  const search = container.querySelector<HTMLInputElement>("[aria-label=搜索技能]")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "agrc 调研");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const rows = container.querySelectorAll<HTMLButtonElement>("[data-skill-result]");
+  expect(rows).toHaveLength(1);
+  await act(async () => rows[0]!.click());
+  expect(area().value).toBe("分析这个项目");
+  expect(onSend).not.toHaveBeenCalled();
+  await submit();
+  const invocation = engine === "codex" ? "$agent-reach" : "请调用 Skill 工具使用「agent-reach」技能。";
+  expect(onSend).toHaveBeenCalledWith(invocation + "\n\n分析这个项目");
+});
 
 describe("what a send says about a session on the computer", () => {
   it("builds the line from the result", () => {

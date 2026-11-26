@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CliItem } from "../../../shared/cli-agents";
 import { assistantItem, toolItem, userItem } from "./fixtures";
-import { guideTimeline, activityStats, groupItems, replyTails, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
+import { guideTimeline, activityStats, groupItems, transcriptRows, replyTails, mergeItems, oldestId, prependItems, resetItems, toolSummary, userTurns, type ActivityItem } from "./transcript";
 
 const ids = (items: readonly CliItem[]) => items.map((item) => item.id);
 const thinking = (id: string, ts: number): CliItem => ({ kind: "thinking", id, ts, text: "想一想" });
@@ -95,6 +95,11 @@ describe("prependItems", () => {
 });
 
 describe("groupItems", () => {
+  it("shows one compaction notice across adjacent source records and preserves later compactions", () => {
+    const compact = (id: string) => ({ kind: "notice" as const, id, ts: 1, level: "info" as const, text: "上下文已压缩" });
+    const rows = transcriptRows([compact("boundary"), { kind: "turn", id: "marker", ts: 1, phase: "started" }, compact("summary"), userItem("next", 2), compact("later")], false);
+    expect(rows.map(row => row.id)).toEqual(["boundary", "next", "later"]);
+  });
   it("leaves out command bookkeeping and words a model failure plainly", () => {
     const blocks = groupItems([
       userItem("c1", 1, "<command-name>/model</command-name>\n<command-args>sonnet</command-args>"),

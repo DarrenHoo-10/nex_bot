@@ -6,6 +6,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.Base64
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.TimeUnit
 
 /** The bundled workspace can call only the signed-in Core's API, never a supplied host. */
 class WorkspaceTransport(private val origin: String, private val token: () -> String?, private val http: OkHttpClient = CoreClient.defaultHttp()) {
@@ -18,6 +22,8 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         assets.clear()
         assetToken = null
     }
+
+    private val imageHttp by lazy { http.newBuilder().callTimeout(120, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build() }
 
     fun request(path: String, method: String, body: String): Reply {
         validate(path, method)
@@ -47,7 +53,7 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
             }
             else -> builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
         }
-        http.newCall(builder.build()).execute().use { response ->
+        (if (cliPreview || route == "/api/cli-agents/images") imageHttp else http).newCall(builder.build()).execute().use { response ->
             if ((preview || avatar || cliPreview) && token() != bearer) throw IOException("登录已失效")
             if (preview && response.code == 304 && old != null) return old.reply
             val source = response.body?.source() ?: return Reply(response.code, ByteArray(0))
@@ -66,11 +72,47 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
         }
     }
 
+    /** The WebView's synthetic origin already isolates this directory by account and server. */
+    fun imagePreview(path: String, directory: File): Reply {
+        val cli = isCliImage(path)
+        require(cli || attachmentPreview.matches(path))
+        fun checkSession() { if (token().isNullOrBlank()) throw IOException("登录已失效") }
+        checkSession()
+        val id = (if (cli) "cli-" else "chat-") + path.substringAfterLast('/')
+        for ((mime, ext) in imageTypes) {
+            val cached = File(directory, "$id.$ext")
+            if (cached.isFile) {
+                val bytes = cached.readBytes()
+                checkSession()
+                return Reply(200, bytes, mime)
+            }
+        }
+        val query = if (cli) "preview=1" else "preview=1&compact=1"
+        val reply = request("$path?$query", "GET", "")
+        checkSession()
+        val ext = imageTypes[reply.contentType.substringBefore(';')]
+        if (reply.status != 200 || ext == null || reply.body.isEmpty()) throw IOException("图片加载失败")
+        runCatching {
+            directory.mkdirs()
+            val tmp = File.createTempFile("image-", ".tmp", directory)
+            try {
+                tmp.writeBytes(reply.body)
+                Files.move(tmp.toPath(), File(directory, "$id.$ext").toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } finally { tmp.delete() }
+        }
+        return reply
+    }
+
     companion object {
+        private const val previewLimit = 512 * 1024
+        private val imageTypes = mapOf("image/png" to "png", "image/jpeg" to "jpg", "image/webp" to "webp")
+        private val cliImagePath = Regex("^/api/cli-agents/images/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
+        fun isCliImage(path: String) = cliImagePath.matches(path)
         private val attachmentPreview = Regex("^/api/attachments/[a-zA-Z0-9-]+$")
         private val cliImagePreview = Regex("^/api/cli-agents/images/[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
         fun isCliImagePreview(path: String, query: String?) = query.isNullOrEmpty() && cliImagePreview.matches(path)
         /** Core-served image previews, fetched with the native token for <img> tags. */
+        fun isCompactAttachment(path: String, query: String?) = attachmentPreview.matches(path) && query == "preview=1&compact=1"
         fun isAttachmentPreview(path: String, query: String?) = attachmentPreview.matches(path) && query == "preview=1"
         private val groupAvatarQuery = Regex("^id=[a-zA-Z0-9-]+&chat=[a-zA-Z0-9_-]+&v=[a-f0-9]{16}$")
         fun isGroupAvatar(path: String, query: String?) = path == "/api/feishu/group-avatar" && query != null && groupAvatarQuery.matches(query)

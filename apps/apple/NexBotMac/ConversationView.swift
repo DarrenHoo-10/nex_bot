@@ -513,8 +513,11 @@ private struct MessageRow: View {
         } else if message.a2aDirection == "replied", message.role == "assistant" {
             repliedCard
         } else if message.role == "system" {
-            Text(message.content).font(.system(size: 12)).foregroundStyle(Theme.muted)
-                .frame(maxWidth: .infinity).textSelection(.enabled)
+            VStack(alignment: .leading) {
+                if !message.streamProgress.isEmpty { MoreContent { MarkdownText(source: message.streamProgress) } }
+                Text(message.content).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity).textSelection(.enabled)
+            }
         } else if message.isFromUser {
             userRow
         } else if message.role == "assistant" {
@@ -578,9 +581,14 @@ private struct MessageRow: View {
                 }
                 .padding(.leading, 4)
             }
-            if !message.toolSteps.isEmpty {
-                ToolSteps(steps: message.toolSteps) { step in
-                    AgentUI.shared.previewStep(step, botID: botID, workspace: workspace, ui: ui)
+            if !message.streamProgress.isEmpty || !message.toolSteps.isEmpty {
+                MoreContent {
+                    if !message.streamProgress.isEmpty { MarkdownText(source: message.streamProgress) }
+                    if !message.toolSteps.isEmpty {
+                        ToolSteps(steps: message.toolSteps) { step in
+                            AgentUI.shared.previewStep(step, botID: botID, workspace: workspace, ui: ui)
+                        }
+                    }
                 }
             }
             if !message.content.isEmpty {

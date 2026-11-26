@@ -1,9 +1,10 @@
+import { cliImageMime } from "../../shared/cli-images.ts";
 import { hash, id, now, text, type CoreStore } from "./store.ts";
 
 export const attachmentLimit = 5 * 1024 * 1024;
 export const attachmentQuota = 200 * 1024 * 1024;
 export function attachmentMime(bytes: Buffer): string {
-  return bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? "image/png" : bytes[0] === 255 && bytes[1] === 216 ? "image/jpeg" : bytes.subarray(0, 4).toString() === "%PDF" ? "application/pdf" : bytes.subarray(0,4).toString() === "RIFF" && bytes.subarray(8,12).toString() === "WEBP" ? "image/webp" : "application/octet-stream";
+  return cliImageMime(bytes) ?? (bytes.subarray(0, 4).toString() === "%PDF" ? "application/pdf" : "application/octet-stream");
 }
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled", "rejected"]);
 

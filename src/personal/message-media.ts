@@ -63,7 +63,7 @@ function makeImage(id: string, label: string, cli: boolean): MessageImage {
   const alt = label.trim() || "图片";
   const url = `/api/attachments/${id}`;
   if (cli) return { id: CLI_IMAGE_PREFIX + id, url: "", previewUrl: CLI_IMAGE_PREFIX + id, name: imageDownloadName(alt), alt };
-  return { id, url, previewUrl: `${url}?preview=1`, name: imageDownloadName(alt), alt };
+  return { id, url, previewUrl: `${url}?preview=1&compact=1`, name: imageDownloadName(alt), alt };
 }
 
 /** Markdown may put inline code beside attachment prose; never turn an example

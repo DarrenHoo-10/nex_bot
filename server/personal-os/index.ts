@@ -10,9 +10,11 @@ import { CoreStore, text, optionalText, id } from "./store.ts";
 import { catalogSettings, fetchModelCatalog } from "../../shared/model-catalog.mjs";
 import { TaskRuntime } from "./runtime.ts";
 import { DeviceGateway } from "./devices.ts";
-import { CliAgentHub, type CliHubTuning } from "./cli-agents/hub.ts";
+import { CliAgentHub, CliOpError, type CliHubTuning } from "./cli-agents/hub.ts";
 import { CliAgentWorkbench } from "./cli-agents/workbench.ts";
-import { CliAgentRoutes, readCliAttachment } from "./cli-agents/routes.ts";
+import { cliErrorResult, CliAgentRoutes, readCliAttachment } from "./cli-agents/routes.ts";
+import { compressImagePreview } from "./image-preview.ts";
+import { skillList } from "./skills.ts";
 import { CliImages } from "./cli-agents/images.ts";
 import { cliImageId } from "../../shared/cli-images.ts";
 import { CliAgentSupervisor } from "./cli-agents/supervisor.ts";
@@ -347,12 +349,23 @@ export async function createPersonalApp(options: AppOptions) {
     const token = request.headers.authorization?.replace(/^Bearer /, "") ?? cookieValue("nex");
     const imageId = request.method === "GET" ? cliImageId(url.pathname) : undefined;
     const imageTicket = url.searchParams.get("ticket");
-    async function serveCliImage(fileId: string, authorized: () => Promise<boolean>) {
+    async function serveCliImage(fileId: string, authorized: () => Promise<boolean>, ownerSession?: string) {
       response.setHeader("Cache-Control", "private, no-store");
       if (!await authorized()) { json(response, 401, { error: "Unauthorized" }); return; }
-      const image = await cliImages.read(fileId);
+      let image;
+      try {
+        image = ownerSession ? await cliImages.readForOwner(fileId, cliHub, ownerSession, options.publicOrigin ?? requestOrigin, true) : await cliImages.read(fileId);
+      } catch (error) {
+        if (!(error instanceof CliOpError)) throw error;
+        const result = cliErrorResult(error.code, error.message);
+        json(response, result.status, result.body); return;
+      }
       if (!await authorized()) { json(response, 401, { error: "Unauthorized" }); return; }
       if (!image) { json(response, 404, { error: "图片不存在" }); return; }
+      if (ownerSession && url.searchParams.get("preview") === "1") {
+        response.setHeader("Vary", "Cookie, Authorization");
+        response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+      }
       response.writeHead(200, { "Content-Type": image.mime, "Content-Length": image.bytes.length });
       response.end(image.bytes);
     }
@@ -464,7 +477,7 @@ export async function createPersonalApp(options: AppOptions) {
         const route = request.method + " " + url.pathname;
         const get = ["GET /api/agents/topics", "GET /api/agents/messages", "GET /api/agents/tasks", "GET /api/agents/context"];
         const post = ["POST /api/agents/input", "POST /api/agents/read", "POST /api/agents/cancel", "POST /api/agents/retry", "POST /api/agents/edit", "POST /api/agents/delete-topic"];
-        const scopedFinance = ["GET /api/agents/finance", "GET /api/finance/models", "GET /api/finance/alias",
+        const scopedFinance = ["GET /api/agents/finance", "GET /api/agents/skills", "GET /api/finance/models", "GET /api/finance/alias",
           "GET /api/finance/aliases", "GET /api/finance/alias/context", "POST /api/finance/alias",
           "POST /api/finance/alias/compact", "POST /api/finance/alias/delete"];
         const allowed = get.includes(route) ? url.searchParams.get("bot") === botId : post.includes(route) ? (await body(request)).botId === botId :
@@ -472,7 +485,7 @@ export async function createPersonalApp(options: AppOptions) {
         if (!allowed) throw new IdentityError(403, "此委托只可访问本人的金融助手");
       }
       if (imageId) {
-        await serveCliImage(imageId, async () => (await authenticate(token))?.user_id === store.owner);
+        await serveCliImage(imageId, async () => (await authenticate(token))?.user_id === store.owner, String(session.id));
         return;
       }
       const targetBot = url.searchParams.get("botId") ?? url.searchParams.get("bot");
@@ -517,14 +530,16 @@ export async function createPersonalApp(options: AppOptions) {
         const attachment = files.authorize(attachmentId);
         const isImage = url.searchParams.get("preview") === "1" && ["image/png", "image/jpeg", "image/webp"].includes(String(attachment.mime));
         // Revalidate against workspace and message authorization before reusing browser-stored bytes.
-        const etag = `"${attachment.id}"`;
+        const compact = isImage && url.searchParams.get("compact") === "1";
+        const etag = compact ? `"compact-v1-${attachment.id}"` : `"${attachment.id}"`;
         const cache = { "Cache-Control": "private, no-cache", "ETag": etag, "Vary": "Cookie, Authorization" };
         if (isImage && request.headers["if-none-match"] === etag) { response.writeHead(304, cache); response.end(); return; }
         const { row, bytes } = await files.file(attachmentId);
+        const payload = compact ? await compressImagePreview(bytes) : bytes;
         if (!await authenticate(token)) { json(response, 401, { error: 'Unauthorized' }); return; }
         files.authorize(String(row.id));
         const preview = url.searchParams.get('preview') === '1' && ['image/png', 'image/jpeg', 'image/webp'].includes(String(row.mime));
-        response.writeHead(200, { "Content-Type": preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", ...(preview ? cache : { "Cache-Control": "no-store" }), "Content-Length": bytes.length }); response.end(bytes); return;
+        response.writeHead(200, { "Content-Type": compact ? "image/webp" : preview ? String(row.mime) : "application/octet-stream", "Content-Disposition": `${preview ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(String(row.name))}`, "X-Content-Type-Options": "nosniff", ...(preview ? cache : { "Cache-Control": "no-store" }), "Content-Length": payload.length }); response.end(payload); return;
       }
       if (url.pathname === "/api/events") {
         const scope = url.searchParams.get("incremental") === "1" ? {
@@ -597,6 +612,9 @@ export async function createPersonalApp(options: AppOptions) {
         const botId = text(url.searchParams.get('bot'), 100);
         if (finance.hasBinding() && agents.finance().botId === botId) stockHistory.schedule(String(session.id));
         json(response, 200, {topics: agents.topics(botId, url.searchParams.get("view") === "compact", optionalText(url.searchParams.get("conversationId"), 100) || undefined)}); return;
+      }
+      if (url.pathname === "/api/agents/skills" && request.method === "GET") {
+        json(response, 200, { skills: skillList().map(skill => ({ name: skill.id, description: skill.title })) }); return;
       }
       if (url.pathname === "/api/agents/context" && request.method === "GET") {
         const botId = text(url.searchParams.get("bot"), 100);

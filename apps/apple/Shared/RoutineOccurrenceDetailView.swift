@@ -249,29 +249,46 @@ struct RoutineOccurrenceDetailView: View {
     }
 }
 
-/// The collapsed execution record of a background run (a routine occurrence or a job): its messages, live text and tool steps.
+struct MoreContent<Content: View>: View {
+    @State private var expanded = false
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(expanded ? "收起" : "更多内容") { expanded.toggle() }
+                .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.identityAccent)
+                .accessibilityValue(expanded ? "已展开" : "已收起")
+            if expanded { content() }
+        }
+    }
+}
+
+/// The execution record of a routine occurrence or background job.
 struct RunTranscriptView: View {
     let workspace: WorkspaceStore
     let messages: [AgentMessage]
     let streaming: String
     let steps: [ToolStep]
+    var shownResult = ""
 
     var body: some View {
-        DisclosureGroup("查看过程") {
-            VStack(alignment: .leading, spacing: 18) {
-                ForEach(messages) { message in
-                    VStack(alignment: .leading, spacing: 6) {
-                        if let date = message.createdAt { Text(TimeFormat.formatClock(date)).font(.caption).foregroundStyle(Theme.muted) }
-                        MarkdownText(source: message.content)
+        let finalID = messages.last(where: { $0.role == "assistant" })?.id
+        let visible = messages.filter { $0.id != finalID || $0.content != shownResult || !$0.streamProgress.isEmpty }
+        if !visible.isEmpty || !streaming.isEmpty || !steps.isEmpty {
+            MoreContent {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(visible) { message in
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let date = message.createdAt { Text(TimeFormat.formatClock(date)).font(.caption).foregroundStyle(Theme.muted) }
+                            if !message.streamProgress.isEmpty { MarkdownText(source: message.streamProgress) }
+                            if message.id != finalID || message.content != shownResult { MarkdownText(source: message.content) }
+                        }
                     }
-                }
-                if !streaming.isEmpty { MarkdownText(source: streaming) }
-                ForEach(steps) { step in RoutineStepDetail(workspace: workspace, step: step) }
-                if messages.isEmpty && streaming.isEmpty && steps.isEmpty {
-                    Text("暂无记录").foregroundStyle(Theme.muted)
-                }
-            }.padding(.top, 12)
-        }.font(.subheadline).tint(Theme.muted)
+                    if !streaming.isEmpty { MarkdownText(source: streaming) }
+                    ForEach(steps) { step in RoutineStepDetail(workspace: workspace, step: step) }
+                }.padding(.top, 12)
+            }.font(.subheadline).tint(Theme.muted)
+        }
     }
 }
 

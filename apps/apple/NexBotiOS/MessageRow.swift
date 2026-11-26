@@ -160,7 +160,10 @@ struct MessageRow: View {
             } else if isMarker {
                 marker.frame(maxWidth: .infinity)
             } else if message.role == "system" {
-                Text(message.content).font(.caption).foregroundStyle(Theme.muted).multilineTextAlignment(.center).frame(maxWidth: .infinity)
+                VStack(alignment: .leading) {
+                    if !message.streamProgress.isEmpty { MoreContent { ChatMarkdown(source: message.streamProgress) } }
+                    Text(message.content).font(.caption).foregroundStyle(Theme.muted).multilineTextAlignment(.center).frame(maxWidth: .infinity)
+                }
             } else if message.isFromUser {
                 userColumn.padding(.leading, 56).frame(maxWidth: .infinity, alignment: .trailing)
             } else if message.role == "assistant" {
@@ -179,10 +182,14 @@ struct MessageRow: View {
         }
         .contentShape(Rectangle())
         .contextMenu {
-            if quotable {
-                Button { onQuote(author, parsed.body) } label: { Label("引用", systemImage: "arrow.turn.up.left") }
-                Button { UIPasteboard.general.string = parsed.body } label: { Label("复制", systemImage: "doc.on.doc") }
-            }
+            if message.streamProgress.isEmpty { messageActions }
+        }
+    }
+
+    @ViewBuilder private var messageActions: some View {
+        if quotable {
+            Button { onQuote(author, parsed.body) } label: { Label("引用", systemImage: "arrow.turn.up.left") }
+            Button { UIPasteboard.general.string = parsed.body } label: { Label("复制", systemImage: "doc.on.doc") }
         }
     }
 
@@ -215,14 +222,22 @@ struct MessageRow: View {
     private var assistantColumn: some View {
         VStack(alignment: .leading, spacing: 4) {
             if message.role == "peer" && message.a2aDirection == nil { peerAuthor }
-            if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps, onOpen: onOpenStep) }
+            if !message.streamProgress.isEmpty || !message.toolSteps.isEmpty {
+                MoreContent {
+                    if !message.streamProgress.isEmpty { ChatMarkdown(source: message.streamProgress) }
+                    if !message.toolSteps.isEmpty { ToolStepsRow(steps: message.toolSteps, onOpen: onOpenStep) }
+                }
+            }
             let conversation = workspace.conversation(for: message.botID)
             let pictures = AttachmentLink.embeddedImages(message.content)
             let body = AttachmentLink.stripped(message.content)
             if !pictures.isEmpty {
                 AttachmentCards(links: pictures, workspace: workspace, conversation: conversation, messageID: message.id)
             }
-            if !body.isEmpty { reply(body) }
+            if !body.isEmpty {
+                if message.streamProgress.isEmpty { reply(body) }
+                else { reply(body).contextMenu { messageActions } }
+            }
             if groupEnd || message.role != "assistant" { time.padding(.horizontal, 4) }
         }
     }

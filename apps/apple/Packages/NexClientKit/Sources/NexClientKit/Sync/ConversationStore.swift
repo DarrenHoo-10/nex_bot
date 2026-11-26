@@ -230,7 +230,7 @@ public final class ConversationStore {
 
     /// Image bytes of a sent or generated picture, served by Core (clients never receive storage URLs).
     public func image(_ link: AttachmentLink) async throws -> Data {
-        try await workspace.downloadAttachment(id: link.id).data
+        try await workspace.attachmentImage(id: link.id)
     }
 
     /// Cancels the bot's unfinished main-chat task. Background jobs keep running; stop them from their card or the profile.

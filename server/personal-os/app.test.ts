@@ -210,13 +210,19 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   }, 60_000);
   it("reads generic bundled skills without agents by profession and keeps edited restrictions during migration", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
+    // This assistant predates universal skills and has no device or skill grants.
+    f.app.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: [] }), botId);
+    const response = await fetch(f.app.origin + "/api/agents/skills", { headers: { Authorization: "Bearer " + f.token } });
+    expect(response.status).toBe(200);
+    const picker = await response.json() as { skills: { name: string }[] };
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "skills", name: "broker", args: JSON.stringify({ action: "skill.list" }) }] }, { kind: "openai-tool", calls: [{ id: "read-skill", name: "broker", args: JSON.stringify({ action: "skill.read", skillId: "devices" }) }] }, { kind: "openai-text", text: "设备技能已读" });
     const taskId = f.app.agents.send(botId, "了解内置技能", "skills-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     const skills = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE task_id=? AND tool_name='skill.list'", taskId)?.result_json));
     expect(skills.skills.map((skill: { id: string }) => skill.id)).toEqual(["devices", "computer", "memory", "collaboration", "routines", "agent-reach"]);
-    // Agent Reach runs its commands on a device, so it is offered with the terminal capability.
-    const reach = skillRead(f.app.store, botId, "agent-reach").content;
+    expect(picker.skills.map(skill => skill.name)).toEqual(skills.skills.map((skill: { id: string }) => skill.id));
+    expect(() => skillRead("../unknown")).toThrow("技能不存在");
+    const reach = skillRead("agent-reach").content;
     expect(reach).toContain("broker(action=device.exec");
     expect(reach).toContain("## 参考：social");
     expect(reach).not.toMatch(/Administrator|127\.0\.0\.1:12001/);
@@ -225,7 +231,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.app.store.run("DELETE FROM schema_migrations WHERE version=7");
     await f.app.close(); f.owned.apps.splice(0, 1);
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
-    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory", "image.models", "image.generate", "html.render", "tool.search"]);
+    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory", "image.models", "image.generate", "html.render", "tool.search", "skill.list", "skill.read"]);
   }, 60_000);
   it("runs ordinary computer input automatically and approves dangerous effects only in the executing Agent, returning screenshot images to the vision model", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
@@ -332,9 +338,11 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   it("creates a generic chat routine with a Core-relative deadline and survives a lost acknowledgement without duplicating it", async () => {
     const f = await fixture(), botId = String(f.bots[1].id), start = Date.now();
     const args = { action: "routine.save", name: "合成两分钟提醒", prompt: "发送合成你好", scheduleKind: "once", delaySeconds: 120 };
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "fixture-schedule", name: "broker", args: JSON.stringify(args) }] }, { kind: "openai-text", text: "已安排两分钟后的提醒" });
+    f.fake.scripts.push({ kind: "openai-tool", text: "正在设置提醒。", calls: [{ id: "fixture-schedule", name: "broker", args: JSON.stringify(args) }] }, { kind: "openai-text", text: "已安排两分钟后的提醒" });
     const taskId = f.app.agents.send(botId, "两分钟后向我问好", "fixture-schedule-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    expect(f.app.agents.messages(botId).find(message => message.role === "assistant" && message.task_id === taskId))
+      .toMatchObject({ content: "已安排两分钟后的提醒", stream_progress: "正在设置提醒。" });
     const row = f.app.store.get("SELECT * FROM agent_routines WHERE bot_id=?", botId)!;
     expect(Number(row.next_due_at)).toBeGreaterThanOrEqual(start + 120_000);
     expect(Number(row.next_due_at)).toBeLessThan(Date.now() + 120_100);

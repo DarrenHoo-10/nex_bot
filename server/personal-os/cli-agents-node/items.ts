@@ -15,6 +15,8 @@ import {
   type CliItem,
   type CliSessionWire,
 } from "../../../shared/cli-agents.ts";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { inboxWords } from "./inbox.ts";
 import { ASK_USER_QUESTION_TOOL, parseAskQuestions } from "../../../shared/ask-question.ts";
 
@@ -63,7 +65,13 @@ export interface MappedRecord {
   row?: RowUpdate;
 }
 
+export interface TranscriptImage { kind: "file" | "inline" | "marker" | "markdown"; value: string }
+export function imageLocator(offset: number, source: TranscriptImage): string {
+  return `history:${offset}:${createHash("sha256").update(source.kind).update("\0").update(source.value).digest("hex")}`;
+}
+
 export interface ItemContext {
+  imageRef?: (offset: number, source: TranscriptImage) => string;
   /** file segment name, the stable prefix of ids without a native id */
   segment: string;
   /** byte offset of the line in its file */
@@ -78,6 +86,33 @@ export interface ItemContext {
   /** emit the registered tool object itself instead of a copy (paging: later
    * results complete items that are already in the page) */
   shareTools?: boolean;
+}
+
+/** Rewrite local Markdown image destinations only. Keep literal examples inside code intact. */
+export function localImageLinks(item: CliItem, ctx: ItemContext): CliItem {
+  const imageRef = ctx.imageRef;
+  if (!imageRef || (item.kind !== "assistant" && item.kind !== "user") || !item.text.includes("![")) return item;
+  let count = 0;
+  const text = item.text.replace(/`{3}[\s\S]*?`{3}|`[^`\n]*`|(!\[[^\]\n]*\]\()\s*(?:<([^<>\n]+)>|([^\]\n]*?\.(?:png|jpe?g|webp)))\s*\)/gi,
+    (match, before?: string, quoted?: string, bare?: string) => {
+      if (!before || count >= 20) return match;
+      let value = (quoted ?? bare ?? "").trim();
+      if (/^file:\/\//i.test(value)) {
+        try { value = fileURLToPath(value); } catch { return match; }
+      } else {
+        if (/^(?:[a-z][a-z+.-]{1,}:|[\\/]{2}|\/api\/)/i.test(value)) return match;
+        try { value = decodeURIComponent(value).replace(/^\/([a-z]:[\\/])/i, "$1"); } catch { /* a literal percent in a filename */ }
+      }
+      if (!/\.(?:png|jpe?g|webp)$/i.test(value)) return match;
+      count++;
+      return before + imageRef(ctx.offset, { kind: "markdown", value }) + ")";
+    });
+  return text === item.text ? item : { ...item, text };
+}
+
+export function itemHasImage(item: CliItem, itemId: string, locator: string): boolean {
+  return item.id === itemId && (item.kind === "user" || item.kind === "assistant") &&
+    ((item.kind === "user" && !!item.images?.includes(locator)) || item.text.includes("(" + locator + ")"));
 }
 
 export const COMPACT_TEXT = "上下文已压缩";
@@ -357,7 +392,10 @@ function claudeUser(record: Rec, message: Rec | undefined, ctx: ItemContext, bas
           sawImage = true;
           const source = isRec(block.source) ? block.source : undefined;
           const path = nonEmpty(source?.path) ?? nonEmpty(block.path) ?? (source?.type === "file" ? nonEmpty(source.file_path) : undefined);
-          if (path) images.push(path);
+          if (path) images.push(ctx.imageRef?.(ctx.offset, { kind: "file", value: path }) ?? path);
+          else if (source?.type === "base64" && typeof source.data === "string" && source.data && ctx.imageRef) {
+            images.push(ctx.imageRef(ctx.offset, { kind: "inline", value: source.data }));
+          }
           break;
         }
         case "tool_result": {
@@ -378,7 +416,10 @@ function claudeUser(record: Rec, message: Rec | undefined, ctx: ItemContext, bas
   let text = unwrapPastedContent(texts.join("\n\n"));
   const extracted = extractImagePaths(text);
   text = extracted.text;
-  images.push(...extracted.images);
+  // Claude may include both the pasted bytes and a textual source marker for the same image.
+  if (!ctx.imageRef || !images.length) {
+    images.push(...extracted.images.map(value => ctx.imageRef?.(ctx.offset, { kind: "marker", value }) ?? value));
+  }
   if (text.trim() === "" && images.length === 0 && sawImage) text = "[image]";
   if (text.trim() !== "" || images.length > 0) {
     const user: CliItem = { kind: "user", id: baseId, ts, text: itemText(text) };
@@ -408,7 +449,11 @@ function claudeAssistant(record: Rec, message: Rec | undefined, ctx: ItemContext
     switch (block.type) {
       case "text": {
         const text = asStr(block.text);
-        if (text && text.trim()) items.push({ kind: "assistant", id: idFor(index), ts, text: itemText(text) });
+        if (text && text.trim()) {
+          const reason = message?.stop_reason;
+          const phase = reason === "tool_use" ? "commentary" : reason === "end_turn" || reason === "stop_sequence" ? "final" : undefined;
+          items.push({ kind: "assistant", id: idFor(index), ts, text: itemText(text), ...(phase && { replyPhase: phase }) });
+        }
         break;
       }
       case "thinking": {
@@ -502,7 +547,21 @@ function codexToolStatus(item: Rec): "running" | "ok" | "error" {
   return "ok";
 }
 
-function codexUserText(item: Rec): { text: string; images: string[] } {
+function codexImage(part: Rec, ctx: ItemContext): string | undefined {
+  const kind = norm(part.type);
+  if (kind === "localimage" && nonEmpty(part.path)) {
+    const value = String(part.path);
+    return ctx.imageRef?.(ctx.offset, { kind: "file", value }) ?? value;
+  }
+  const url = part.image_url ?? part.imageUrl ?? part.url;
+  if ((kind === "inputimage" || kind === "image") && typeof url === "string" && ctx.imageRef) {
+    const prefix = /^data:image\/[\w.+-]+;base64,/i.exec(url);
+    if (prefix) return ctx.imageRef(ctx.offset, { kind: "inline", value: url.slice(prefix[0].length) });
+  }
+  return undefined;
+}
+
+function codexUserText(item: Rec, ctx: ItemContext): { text: string; images: string[] } {
   const images: string[] = [];
   const texts: string[] = [];
   const content = item.content;
@@ -513,9 +572,9 @@ function codexUserText(item: Rec): { text: string; images: string[] } {
       if (t === "text" || t === "inputtext") {
         const text = asStr(part.text);
         if (text) texts.push(text);
-      } else if (t === "localimage") {
-        const path = nonEmpty(part.path);
-        if (path) images.push(path);
+      } else {
+        const image = codexImage(part, ctx);
+        if (image) images.push(image);
       }
     }
   } else if (typeof item.message === "string") {
@@ -543,22 +602,39 @@ function stringList(value: unknown): string[] {
   return out;
 }
 
+function codexReply(item: Rec, id: string, ts: number, text: string): MappedRecord {
+  const phase = norm(item.phase);
+  const replyPhase = phase === "commentary" ? "commentary" : phase === "finalanswer" ? "final" : undefined;
+  return { items: text.trim() ? [{ kind: "assistant", id, ts, text: itemText(text), ...(replyPhase && { replyPhase }) }] : [] };
+}
+
+function generatedImage(item: Rec, ctx: ItemContext, id: string, ts: number): MappedRecord {
+  if (!ctx.imageRef) return { items: [] };
+  const result = nonEmpty(item.result);
+  const file = nonEmpty(item.saved_path) ?? nonEmpty(item.savedPath);
+  const source: TranscriptImage | undefined = result ? { kind: "inline", value: result.replace(/^data:image\/[\w.+-]+;base64,/i, "") }
+    : file ? { kind: "markdown", value: file } : undefined;
+  return { items: source ? [{ kind: "assistant", id, ts, replyPhase: "artifact", text: `![生成图片](${ctx.imageRef(ctx.offset, source)})` }] : [] };
+}
+
 function codexThreadItem(item: Rec, ctx: ItemContext, ts: number): MappedRecord {
   const none: MappedRecord = { items: [] };
   const kind = norm(item.type);
   const nativeId = nonEmpty(item.id);
   const id = clipId(nativeId ?? fallbackId(ctx));
   switch (kind) {
+    case "imagegeneration":
+    case "imagegenerationcall":
+      return generatedImage(item, ctx, id, ts);
     case "usermessage": {
-      const { text, images } = codexUserText(item);
+      const { text, images } = codexUserText(item, ctx);
       if (text.trim() === "" && images.length === 0) return none;
       const user: CliItem = { kind: "user", id, ts, text: itemText(text) };
       if (images.length > 0) user.images = images.slice(0, 20);
       return { items: [user] };
     }
     case "agentmessage": {
-      const text = codexAgentText(item);
-      return text.trim() ? { items: [{ kind: "assistant", id, ts, text: itemText(text) }] } : none;
+      return codexReply(item, id, ts, codexAgentText(item));
     }
     case "reasoning": {
       const parts = [...stringList(item.summary_text), ...stringList(item.summary)];
@@ -605,7 +681,7 @@ function codexThreadItem(item: Rec, ctx: ItemContext, ts: number): MappedRecord 
 
 /** One Codex v2 thread item (the App's database rows and the shared daemon's notifications) as items. */
 export function codexThreadItemToItems(item: unknown, ctx: ItemContext, ts: number): CliItem[] {
-  return isRec(item) ? codexThreadItem(item, { ...ctx, codexV2: true }, ts).items : [];
+  return isRec(item) ? codexThreadItem(item, { ...ctx, codexV2: true }, ts).items.map(entry => localImageLinks(entry, ctx)) : [];
 }
 
 function codexTool(id: string, ts: number, name: string, input: string, status: "running" | "ok" | "error", text: string | undefined): ToolItem {
@@ -620,6 +696,8 @@ function codexResponseItem(payload: Rec, ctx: ItemContext, ts: number): MappedRe
   const nativeId = nonEmpty(payload.id);
   const id = clipId(nativeId ?? fallbackId(ctx));
   switch (kind) {
+    case "image_generation_call":
+      return generatedImage(payload, ctx, id, ts);
     case "message": {
       const role = payload.role;
       if (role !== "user" && role !== "assistant") return none;
@@ -630,7 +708,10 @@ function codexResponseItem(payload: Rec, ctx: ItemContext, ts: number): MappedRe
         if (!isRec(part)) continue;
         const t = norm(part.type);
         if ((t === "inputtext" || t === "outputtext" || t === "text") && typeof part.text === "string") texts.push(part.text);
-        else if (t === "localimage" && nonEmpty(part.path)) images.push(String(part.path));
+        else if (role === "user") {
+          const image = codexImage(part, ctx);
+          if (image) images.push(image);
+        }
       }
       const text = texts.join("\n\n");
       if (role === "user") {
@@ -640,7 +721,7 @@ function codexResponseItem(payload: Rec, ctx: ItemContext, ts: number): MappedRe
         if (images.length > 0) user.images = images.slice(0, 20);
         return { items: [user] };
       }
-      return text.trim() ? { items: [{ kind: "assistant", id, ts, text: itemText(text) }] } : none;
+      return codexReply(payload, id, ts, text);
     }
     case "reasoning": {
       const text = stringList(payload.summary).join("\n").trim();

@@ -179,6 +179,7 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
     public var status: CliToolStatus
     public var output: String?
     public var level: CliNoticeLevel
+    public var replyPhase: String?
     public var phase: CliTurnPhase
 
     public init(id: String, ts: Int, kind: CliItemKind, text: String = "", images: [String] = [], queued: Bool = false, name: String = "",
@@ -188,7 +189,7 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
         self.input = input; self.status = status; self.output = output; self.level = level; self.phase = phase
     }
 
-    enum CodingKeys: String, CodingKey { case id, ts, kind, text, images, queued, queuedByUser, name, input, status, output, level, phase }
+    enum CodingKeys: String, CodingKey { case id, ts, kind, text, images, queued, queuedByUser, name, input, status, output, level, phase, replyPhase }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -207,6 +208,7 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
             }
         case .assistant, .thinking:
             text = try c.decode(String.self, forKey: .text)
+            replyPhase = try c.decodeIfPresent(String.self, forKey: .replyPhase)
         case .tool:
             name = try c.decode(String.self, forKey: .name)
             input = try c.decode(String.self, forKey: .input)

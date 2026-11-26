@@ -293,7 +293,7 @@ export class JobModule {
     const tasks = this.store.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at FROM tasks t WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) ORDER BY created_at,rowid", job.conversation_id)
       .map((task) => task.status === "failed" && typeof task.result_summary === "string" ? { ...task, result_summary: publicModelFailure(task.result_summary) } : task);
     const ids = tasks.map((task) => String(task.id)), marks = ids.map(() => "?").join(",");
-    const messages = ids.length ? this.store.all(`SELECT id,task_id,role,content,created_at FROM transcript WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)
+    const messages = ids.length ? this.store.all(`SELECT id,task_id,role,content,created_at,stream_progress FROM transcript WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)
       .map((message) => message.role === "system" ? { ...message, content: publicModelFailure(String(message.content)) } : message) : [];
     const steps = ids.length ? this.store.all(`SELECT id,task_id,tool_name,status,created_at FROM tool_calls WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids).map((call) => ({ ...call, summary: String(call.tool_name), preview: "" })) : [];
     const reports = ids.length ? this.store.all(`SELECT id,task_id,state,summary,question,automatic,message_id,created_at FROM agent_job_reports WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)

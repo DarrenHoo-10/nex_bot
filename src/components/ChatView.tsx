@@ -471,6 +471,7 @@ const Bubble = memo(function Bubble({
   // start_thread) is that bot speaking, not the person: it takes the
   // bot side of the chat under the peer's name, with the model-facing
   // provenance note stripped from what the reader sees.
+  const progress = message.role === "bot" && !!message.turnId && !message.turnTerminal;
   const peer = peerLine(message);
   const user = message.role === "user" && !peer;
   const [expanded, setExpanded] = useState(false);
@@ -653,7 +654,9 @@ const Bubble = memo(function Bubble({
                 </div>
               )}
               <AttachmentGallery images={generatedPaths} files={linkedFiles} message={{ threadId, messageId: message.id }} className={text ? undefined : "mb-0"} eager={eagerAttachments} />
-              {viewRaw && text ? (
+              {progress && text ? (
+                <div className="whitespace-pre-wrap break-words" data-citation-source={message.id} data-citation-owner-type="bot" data-citation-owner={botId} data-citation-thread={threadId}>{text}</div>
+              ) : viewRaw && text ? (
                 <div data-citation-source={message.id} data-citation-owner-type="bot" data-citation-owner={botId} data-citation-thread={threadId}><RawMarkdownView text={text} /></div>
               ) : text ? (
                 <div data-citation-source={message.id} data-citation-owner-type="bot" data-citation-owner={botId} data-citation-thread={threadId}><ChatMarkdown text={text} mentionPeers={mentionPeers} message={{ threadId, messageId: message.id }} /></div>
@@ -663,8 +666,8 @@ const Bubble = memo(function Bubble({
         </div>
         {!user && (
           <MessageActions side="bot" forceOpen={viewRaw || speaking}>
-            {text && <CopyButton text={text} className="opacity-100" />}
-            {text && <RawToggleAction active={viewRaw} onToggle={() => setViewRaw((r) => !r)} className="opacity-100" />}
+            {!progress && text && <CopyButton text={text} className="opacity-100" />}
+            {!progress && text && <RawToggleAction active={viewRaw} onToggle={() => setViewRaw((r) => !r)} className="opacity-100" />}
             {message.kind === "text" && text && !peer && (
               <SpeakButton text={text} botId={botId} messageId={message.id} voiceId={voiceId} tts={tts} localVoice={localVoice} className="opacity-100" />
             )}

@@ -120,6 +120,7 @@ export class CliAgentRoutes {
           case "/api/cli-agents/sessions/git": return await this.gitInfo(request);
           case "/api/cli-agents/notes": return this.notes(request);
           case "/api/cli-agents/search": return await this.search(request);
+          case "/api/cli-agents/skills": return await this.skills(request);
           case "/api/cli-agents/models": return await this.models(request);
           case "/api/cli-agents/dirs": return await this.dirs(request);
           default: return {
@@ -450,6 +451,15 @@ export class CliAgentRoutes {
     return { status: 200, body: { hits } };
   }
 
+  private async skills(request: CliRouteRequest): Promise<CliRouteResult> {
+    const deviceId = request.search.get("deviceId"), engine = request.search.get("engine");
+    const cwd = request.search.get("cwd") ?? "", key = request.search.get("key");
+    const session = key ? parseCliKey(key) : null;
+    if (!isCliDeviceId(deviceId) || !isCliEngine(engine) || cwd.length > CLI_LIMITS.cwd || (cwd && !isAbsoluteCwd(cwd)) ||
+        (key && (!session || session.deviceId !== deviceId || session.engine !== engine))) return cliErrorResult("invalid");
+    return { status: 200, body: await this.hub.skills(request.sessionId, deviceId, { engine, cwd, ...(session && { ref: session.ref }) }) };
+  }
+
   /** `GET /models?deviceId=&engine=`: the rows of that CLI's own model picker on the computer. */
   private async models(request: CliRouteRequest): Promise<CliRouteResult> {
     const deviceId = request.search.get("deviceId");
@@ -684,6 +694,7 @@ const GET_ROUTES = new Set([
   "/api/cli-agents/notes",
   "/api/cli-agents/search",
   "/api/cli-agents/models",
+  "/api/cli-agents/skills",
   "/api/cli-agents/dirs",
 ]);
 

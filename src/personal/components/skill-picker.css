@@ -1,0 +1,8 @@
+.skill-picker { display: grid; gap: 6px; min-width: 0; color: inherit; }
+.skill-picker input { box-sizing: border-box; width: 100%; padding: 8px 10px; color: inherit; background: transparent; border: 1px solid var(--na-line, var(--border)); border-radius: 8px; font: inherit; }
+.skill-results { max-height: min(38dvh, 280px); overflow-y: auto; overscroll-behavior: contain; }
+.skill-picker .skill-results button { display: grid; gap: 2px; width: 100%; padding: 7px 9px; text-align: left; }
+.skill-picker small { color: var(--muted-foreground, #647287); font-size: 12px; line-height: 1.4; }
+.skill-picker .skill-results small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.na-message-box .na-compose-pop[data-panel="skill"] { width: min(360px, calc(100% - 16px)); }
+.na-message-box .na-compose-pop[data-panel="skill"] .skill-results button { display: grid; }

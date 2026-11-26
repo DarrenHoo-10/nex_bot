@@ -1,12 +1,13 @@
 // The one line the page shows for a failed call: Core's wording when it sent
 // some (a device's own refusal), else the standard text for the code.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as previewEncoder from "./image-preview";
 import { CLI_ERROR_TEXT } from "../../../shared/cli-agents";
 import { CliApiError, cliErrorText, continueSession, fetchSupervision, saveSupervision, searchSessions, sendMessage, startSession, uploadAttachment } from "./api";
 
 const reply = (status: number, body: unknown) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status })));
 
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("send result", () => {
   const key = "dev:claude:abc";
@@ -124,11 +125,14 @@ describe("search, launch options and attachments", () => {
   it("uploads images to the Core media endpoint and receives a private path", async () => {
     const fetchMock = capture({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" });
     const file = new File([new Uint8Array([1, 2, 3])], "截图 1.png", { type: "image/png" });
+    const preview = new Blob(["preview"], { type: "image/webp" });
+    const encode = vi.spyOn(previewEncoder, "compressPickedImage").mockResolvedValue(preview);
     expect(await uploadAttachment(key, file)).toEqual({ path: "/api/cli-agents/images/12345678-0000-4000-8000-000000000000" });
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`/api/cli-agents/images?key=${encodeURIComponent(key)}&name=${encodeURIComponent("截图 1.png")}`);
-    expect(init).toMatchObject({ method: "POST", headers: { "Content-Type": "image/png" } });
-    expect(init?.body).toBe(file);
+    expect(encode).toHaveBeenCalledWith(file);
+    expect(init).toMatchObject({ method: "POST", headers: { "Content-Type": "image/webp" } });
+    expect(init?.body).toBe(preview);
   });
 
   it("refuses a file over 8 MB before uploading, and a reply without a path", async () => {

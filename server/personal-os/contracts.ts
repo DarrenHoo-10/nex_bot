@@ -35,6 +35,8 @@ export interface WorkerEvent {
   requestId?: string; entries?: FileEntry[]; inputs?: string[];
   providerId?: string; entryId?: string; args?: Record<string, unknown>;
   text?: string; error?: string; inputTokens?: number; outputTokens?: number; invokeId?: string;
+  /** Number of streamed UTF-16 units preceding the final assistant message. */
+  progressLength?: number;
   purpose?: "answer" | "compact";
   modelStatus?: "succeeded" | "failed" | "cancelled";
   firstEntry?: string; lastEntry?: string; contextTokens?: number;

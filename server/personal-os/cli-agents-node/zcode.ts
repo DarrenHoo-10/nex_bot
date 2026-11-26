@@ -13,6 +13,7 @@
 // injectable: without one the sessions report read-only, with one they report
 // `sendVia: "host"` and send, steer and interrupt route through it. No part
 // of this file starts a process.
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
@@ -27,7 +28,7 @@ import {
   type CliItem,
   type CliSessionState,
 } from "../../../shared/cli-agents.ts";
-import { clipUnits, type LocalSession } from "./items.ts";
+import { clipUnits, imageLocator, itemHasImage, localImageLinks, type ItemContext, type TranscriptImage, type LocalSession } from "./items.ts";
 
 const DAY_MS = 86_400_000;
 const POLL_MS = 30_000;
@@ -211,11 +212,11 @@ export class ZcodeDb {
           if (!role) continue;
           if (isRec(data.metadata) && isRec(data.metadata.runtimeMessage)) continue;
           if (data.visibility === "model-only") continue;
-          const text = messageText(parts.get(String(row.id)) ?? []);
-          if (!text) continue;
+          const messageParts = parts.get(String(row.id)) ?? [];
           const ts = Number((isRec(data.time) ? data.time : {}).created) || Number(row.time_created) || 0;
           // the message id doubles as the page boundary, so it stays whole
-          collected.push({ kind: role, id: String(row.id), ts, text: truncateUtf8(text, 256 * 1024) });
+          const item = zcodeItem(role, String(row.id), ts, messageParts, imageLocator);
+          if (item) collected.push(item);
         }
         if (collected.length > limit) break;
       }
@@ -226,6 +227,20 @@ export class ZcodeDb {
     } catch {
       return { items: [], more: false };
     }
+  }
+
+  imageSource(sessionId: string, itemId: string, locator: string): TranscriptImage | undefined {
+    const row = this.open()?.prepare("SELECT data FROM message WHERE id=? AND session_id=?").get(itemId, sessionId);
+    const data = safeJson(row?.data);
+    if (!data || data.visibility === "model-only" || (isRec(data.metadata) && isRec(data.metadata.runtimeMessage))) return;
+    if (data.role !== "user" && data.role !== "assistant") return;
+    let source: TranscriptImage | undefined;
+    const item = zcodeItem(data.role, itemId, 0, this.partsOf([itemId]).get(itemId) ?? [], (offset, candidate) => {
+      const ref = imageLocator(offset, candidate);
+      if (ref === locator) source = candidate;
+      return ref;
+    });
+    if (item && itemHasImage(item, itemId, locator)) return source;
   }
 
   /** The text parts of a batch of messages, in sequence order. */
@@ -284,6 +299,27 @@ function safeJson(value: unknown): Rec | null {
 
 /** The text of one message: its text parts in order, skipping synthetic ones.
  * Tool parts and separators are not chat text. */
+function zcodeItem(role: "user" | "assistant", id: string, ts: number, parts: Rec[], imageRef: NonNullable<ItemContext["imageRef"]>): CliItem | undefined {
+  const text = truncateUtf8(messageText(parts), 256 * 1024);
+  const images: string[] = [];
+  for (const part of parts) {
+    if (part.type !== "file" || part.synthetic === true || typeof part.url !== "string" || images.length >= 20) continue;
+    if (typeof part.mime !== "string" || !part.mime.startsWith("image/")) continue;
+    const prefix = /^data:image\/[\w.+-]+;base64,/i.exec(part.url);
+    if (prefix) images.push(imageRef(0, { kind: "inline", value: part.url.slice(prefix[0].length) }));
+    else if (part.url.startsWith("file://")) {
+      try { images.push(imageRef(0, { kind: "file", value: fileURLToPath(part.url) })); } catch { /* invalid file URL */ }
+    }
+  }
+  if (!text && !images.length) return;
+  const ctx = { segment: id, offset: 0, imageRef };
+  if (role === "assistant") {
+    const caption = [text, ...images.map(ref => `![图片](${ref})`)].filter(Boolean).join("\n\n");
+    return localImageLinks({ kind: role, id, ts, text: caption }, ctx);
+  }
+  return localImageLinks({ kind: role, id, ts, text, ...(images.length ? { images } : {}) }, ctx);
+}
+
 function messageText(parts: Rec[]): string {
   const chunks: string[] = [];
   for (const part of parts) {

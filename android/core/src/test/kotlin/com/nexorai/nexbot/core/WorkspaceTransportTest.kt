@@ -39,6 +39,23 @@ class WorkspaceTransportTest {
             assertEquals("89504e47", request.body.readByteString().hex())
         }
     }
+    @Test fun `a second viewer uses the private disk copy and logout blocks cache access`() {
+        val directory = java.nio.file.Files.createTempDirectory("cli-history").toFile()
+        try {
+            MockWebServer().use { server ->
+                var token: String? = "fixture"
+                val origin = server.url("/").toString()
+                val path = "/api/cli-agents/images/12345678-0000-4000-8000-000000000000"
+                server.enqueue(MockResponse().setHeader("Content-Type", "image/webp").setBody("preview"))
+                assertEquals("preview", WorkspaceTransport(origin, { token }).imagePreview(path, directory).body.decodeToString())
+                val reopened = WorkspaceTransport(origin, { token })
+                assertEquals("preview", reopened.imagePreview(path, directory).body.decodeToString())
+                token = null
+                assertFailsWith<IOException> { reopened.imagePreview(path, directory) }
+                assertEquals(1, server.requestCount)
+            }
+        } finally { directory.deleteRecursively() }
+    }
     @Test fun `requests use current native token and preserve server error statuses`() {
         MockWebServer().use { server ->
             var token: String? = "fixture-one"

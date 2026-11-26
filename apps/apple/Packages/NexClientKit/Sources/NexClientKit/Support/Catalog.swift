@@ -84,8 +84,6 @@ public enum PolicyCatalog {
         .init(id: "image.models", label: "查看生图模型"),
         .init(id: "image.generate", label: "按需生成图片"),
         .init(id: "html.render", label: "展示交互内容"),
-        .init(id: "skill.list", label: "查看通用技能目录"),
-        .init(id: "skill.read", label: "阅读通用技能说明"),
     ]
     public static func label(for action: String) -> String { uiOrder.first { $0.id == action }?.label ?? action }
     /// Footer note of the editor.

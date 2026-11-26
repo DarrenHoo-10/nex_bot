@@ -1,13 +1,14 @@
 // Message box under a session. What it offers follows composerMode(): send
 // (and interrupt while running), continue a stopped session, or a plain hint
 // when the session cannot be driven from here.
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2, Shield, ChevronRight } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowUp, BookOpen, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2, Shield, ChevronRight } from "lucide-react";
 import { MAX_SEND_TEXT, cliPermissionLabel, utf8ByteLength, type CliContextUsage, type CliPermissionMode, type CliSessionView } from "../../../shared/cli-agents";
-import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
+import { cliErrorText, fetchSkills, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
 import {attachmentPreview,attachmentReferences,getExtras,isPickedImage,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
 import { composerMode } from "./session-model";
+import { SkillPicker } from "../components/SkillPicker";
 import { CliModelMenu, type LaunchChoice } from "./CliModelMenu";
 import { useCompactComposer } from "../components/use-compact-composer";
 import { formatCompactTokens } from "../../lib/token-count";
@@ -89,6 +90,15 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
   const [panel,setPanel]=useState<"add"|"skill"|"model"|"notes"|"context"|"permissions"|null>(null);
   const compact = useCompactComposer();
   const modelTrigger = compact ? "na-model-button na-model-chip" : "na-model-button";
+  const [slashSearch, setSlashSearch] = useState(false);
+  const skillKey = starter ? undefined : session.key;
+  const previewSkills = review?.skills;
+  const canListSkills = !!previewSkills || features?.includes("skills");
+  const loadSkills = useCallback(async (signal: AbortSignal) => {
+    if (previewSkills) return previewSkills.map(name => ({ name: name.replace(/^[/\u0024]/, ""), description: "" }));
+    if (!canListSkills) throw new Error("请更新会话所在电脑的客户端后使用技能");
+    return fetchSkills(session.deviceId, session.engine, session.cwd, skillKey, signal);
+  }, [previewSkills, canListSkills, session.deviceId, session.engine, session.cwd, skillKey]);
   const [skill,setSkill]=useState("");
   const [editingQueue,setEditingQueue]=useState<{id:string;version:number;text:string}|null>(null);
   const running=session.state==="running"&&!draft;
@@ -211,7 +221,8 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
   };
 
   const goal=extra.goal?.trim();
-  const body=[goal?"当前目标："+goal:"",skill,text.trim(),...notes.map(n=>"引用「"+n.quote+"」\n注释："+n.body)].filter(Boolean).join("\n\n");
+  const invocation = skill && mode.kind === "send" && mode.outside && session.sendVia === "inbox" ? `请调用 Skill 工具使用「${skill.slice(1)}」技能。` : skill;
+  const body=[invocation,goal?"当前目标："+goal:"",text.trim(),...notes.map(n=>"引用「"+n.quote+"」\n注释："+n.body)].filter(Boolean).join("\n\n");
   const tooLarge=utf8ByteLength(body)>MAX_SEND_TEXT;
   // a new session may start without a message: it only opens the CLI in that folder
   const canSubmit=(starter ? starter.ready : !!(body || extra.files.length)) && (extra.goal===null || !!goal);
@@ -335,7 +346,7 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
         placeholder={starter?"要做什么？":review?"发消息，或输入 / 选择技能":draft?"发消息":"发消息，或输入 / 使用技能"}
         rows={Math.min(5, Math.max(1, text.split("\n").length))}
         value={text}
-        onChange={(event) => {change(event.target.value);if(review)setPanel(/^\/\S*$/.test(event.target.value)?"skill":null)}}
+        onChange={(event) => {change(event.target.value);const slash = !!canListSkills && /^\/\S*$/.test(event.target.value); setSlashSearch(slash); setPanel(slash ? "skill" : null)}}
         onCompositionEnd={() => { imeEndedAt.current = Date.now(); }}
         onPaste={(event) => {
           // a pasted screenshot becomes an attachment, as in the assistant's composer
@@ -348,7 +359,7 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
           if (event.nativeEvent.isComposing || Date.now() - imeEndedAt.current < 150) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            if(panel==="skill"&&review){const next=review.skills.find(s=>s.startsWith(text));if(next){setSkill(next);change("");setPanel(null)}return} void submit();
+            void submit();
           }
         }}
       />
@@ -359,6 +370,7 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
         }} aria-label="添加到消息">
           <button type="button" onClick={()=>{setPanel(null);imagePicker.current?.click()}}><ImagePlus size={16}/><span>图片</span></button>
           <button type="button" onClick={()=>{setPanel(null);picker.current?.click()}}><Paperclip size={16}/><span>文件</span></button>
+          {(session.engine === "codex" || session.engine === "claude") && <button type="button" onClick={() => { setSlashSearch(false); setPanel("skill"); }}><BookOpen size={16}/><span>技能</span></button>}
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
           {permissions?.modes.length ? <button type="button" aria-haspopup="true" onClick={()=>setPanel("permissions")}><Shield size={16}/><span>权限模式</span>{permissions.value ? <small>{cliPermissionLabel(session.engine, permissions.value)}</small> : null}<ChevronRight size={14}/></button> : null}
         </div>}
@@ -367,7 +379,11 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
           {permissions.pending ? <small className="na-permission-note">{permissions.pending}</small> : null}
         </div> : null}
         {panel==="context"?<ContextDetail usage={context}/>:null}
-        {panel==="skill"&&review?review.skills.filter(s=>!text.startsWith("/")||s.startsWith(text)).map(s=><button type="button" key={s} onClick={()=>{setSkill(s);if(text.startsWith("/"))change("");setPanel(null);draftRef.current?.focus()}}>{s}</button>):null}
+        {panel === "skill" && <SkillPicker load={loadSkills} externalQuery={slashSearch ? text : undefined} select={row => {
+          setSkill((session.engine === "codex" ? "$" : "/") + row.name);
+          if (slashSearch) change("");
+          setPanel(null); draftRef.current?.focus();
+        }}/>}
         {panel==="model"&&review?<><label>模型<select aria-label="模型" value={model} onChange={e=>configure(e.target.value,effort)}>{(review.models[session.engine]??[]).map(m=><option key={m}>{m}</option>)}</select></label><label>推理强度<select aria-label="推理强度" value={effort} onChange={e=>configure(model!,e.target.value)}><option>标准</option><option>高</option></select></label></>:null}
         {panel==="notes"?notes.map(n=><div key={n.id}><b>{n.num}. {n.quote}</b><p>{n.body}</p><button type="button" onClick={()=>onNotes?.(notes.filter(v=>v.id!==n.id))}>移除</button></div>):null}
       </div>:null}

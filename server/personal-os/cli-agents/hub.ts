@@ -1,5 +1,5 @@
 /* oxlint-disable unicorn/no-useless-spread -- the copies are deliberate: listeners and entries remove themselves while a loop runs over the collection */
-import { privateCliImageLinks } from "../../../shared/cli-images.ts";
+import { CLI_IMAGE_PREFIX, privateCliImageLinks } from "../../../shared/cli-images.ts";
 // Agent mode hub: what Core knows about terminal coding-agent sessions on the
 // user's devices. Devices push session rows and transcript items over the DCP
 // link (`cli.*`); browsers read them through the stream (stream.ts) and the
@@ -13,6 +13,7 @@ import {
   CLI_ERROR_CODES,
   CLI_ERROR_TEXT,
   CLI_LIMITS,
+  HISTORY_IMAGE_LOCATOR,
   CLI_OUTDATED_TEXT,
   CLI_OP_MUTATING,
   CLI_OP_TIMEOUT_MS,
@@ -486,9 +487,25 @@ export class CliAgentHub {
   private onItems(deviceId: string, message: Extract<DeviceCliMessage, { type: "cli.items" }>) {
     const key = cliKey(deviceId, message.ref);
     if (!this.sessionRow(key)) return;
-    const items = message.items.map(privateImageItem);
+    const items = message.items.map(item => this.transcriptItem(key, item));
     this.cacheItems(key, items, message.reset === true);
-    this.notify(key, { type: "items", key: asKey(key), items, ...(message.reset ? { reset: true } : {}), ...(message.more ? { more: true } : {}), ...(message.continues ? { continues: true } : {}) });
+    this.notify(key, { type: "items", key: asKey(key), items, ...(message.reset ? { reset: true } : {}), ...(message.continues ? { continues: true } : {}), ...(message.more ? { more: true } : {}) });
+  }
+
+  private transcriptItem(key: string, raw: CliItem): CliItem {
+    const item = privateImageItem(raw);
+    if (item.kind !== "user" && item.kind !== "assistant") return item;
+    const resolve = (locator: string) => {
+      if (!HISTORY_IMAGE_LOCATOR.test(locator)) return locator;
+      const row = this.store.get("SELECT id FROM cli_history_images WHERE session_key=? AND item_id=? AND locator=?", key, item.id, locator);
+      if (row) return CLI_IMAGE_PREFIX + row.id;
+      const imageId = id();
+      this.store.insert("cli_history_images", { id: imageId, session_key: key, item_id: item.id, locator });
+      return CLI_IMAGE_PREFIX + imageId;
+    };
+    const text = item.text.replace(/(!\[[^\]\n]*\]\()\b(history:\d{1,16}:[a-f0-9]{64})\)/g, (_, prefix: string, locator: string) => prefix + resolve(locator) + ")");
+    if (item.kind === "user" && item.images?.length) return { ...item, text, images: item.images.map(resolve) };
+    return text === item.text ? item : { ...item, text };
   }
 
   /** Items are encrypted at rest; the cache keeps the newest CORE_ITEM_CACHE per session. */
@@ -968,6 +985,11 @@ export class CliAgentHub {
     if (caps && !hasCliFeature(caps, feature)) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
   }
 
+  async skills(actor: string, deviceId: string, args: CliOpArgs["skills"]) {
+    this.requireFeature(deviceId, "skills");
+    return this.op(actor, deviceId, args.ref ? cliKey(deviceId, args.ref) : null, "skills", args);
+  }
+
   /** The model picker rows of one CLI on a computer; an executor without `models` is refused (the page keeps its own list). */
   async models(actor: string, deviceId: string, engine: CliEngine): Promise<CliModelCatalog> {
     const caps = this.caps.get(deviceId);
@@ -1038,7 +1060,8 @@ export class CliAgentHub {
     for (let limit = PAGE_SIZE; ; limit = Math.floor(limit / 2)) {
       try {
         const result = await this.op(actor, parsed.deviceId, key, "read", { ref: parsed.ref, ...(before ? { before } : {}), limit });
-        const items = result.items.map(privateImageItem);
+        if (!this.sessionRow(key)) return { ...result, items: result.items.map(privateImageItem) };
+        const items = result.items.map(item => this.transcriptItem(key, item));
         if (this.sessionRow(key)) this.cacheItems(key, items, false);
         return { ...result, items };
       } catch (error) {

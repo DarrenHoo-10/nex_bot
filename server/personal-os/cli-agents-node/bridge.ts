@@ -8,7 +8,7 @@
 // `detach()` on close. herdr-core and its terminals are never stopped here; a
 // closed or paused device just stops watching them.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, open, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -49,7 +49,7 @@ import {
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { AgyError, AgyRuntime } from "./agy.ts";
 import { agyConfigDir, supportsAgyAcp, type agyWriters } from "./agy-native.ts";
-import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
+import { CodexDaemons, DaemonError, codexSkills, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { CodexDesktopQueue } from "./codex-desktop-queue.ts";
 import { codexEmptyComposer, codexReceipt } from "./codex-first-input.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
@@ -76,8 +76,10 @@ import {
 import { LaunchError, PENDING_NATIVE_ID, clearCliCache, cliVersion, codexHasNoDaemonFlag, launchEnv, planLaunch, resolveCli, terminalName, validateCwd } from "./launch.ts";
 import { CliLocalStore, type StoredReply } from "./local-store.ts";
 import { OpenLocalError, openLocal, type OpenLocalPlan } from "./open-local.ts";
+import { compressImagePreview, maxImageSourceBytes } from "../image-preview.ts";
 import { TranscriptReader } from "./reader.ts";
 import { searchSessions, type SearchSource } from "./search.ts";
+import { claudeSkills } from "./skills.ts";
 import { cliModels } from "./models.ts";
 import { ensureDir, listDirs } from "./dirs.ts";
 import { TermStreams, hcErrorCode, type TermStream } from "./streams.ts";
@@ -1204,6 +1206,8 @@ export class CliAgentBridge {
     switch (message.op) {
       case "read":
         return this.opRead(args as CliOpArgs["read"]);
+      case "history_image":
+        return this.opHistoryImage(args as CliOpArgs["history_image"]);
       case "watch":
         return this.opWatch(args as CliOpArgs["watch"]);
       case "unwatch":
@@ -1228,6 +1232,16 @@ export class CliAgentBridge {
         return this.opSearch(args as CliOpArgs["search"], budget);
       case "attach":
         return this.opAttach(args as CliOpArgs["attach"]);
+      case "skills": {
+        const query = args as CliOpArgs["skills"];
+        const session = query.ref ? this.session(query.ref) : undefined;
+        const home = this.options.homedir ?? os.homedir(), env = this.options.env ?? process.env;
+        const cwd = session?.cwd || query.cwd || home;
+        if (query.engine === "claude") return claudeSkills(session?.configDir || env.CLAUDE_CONFIG_DIR || path.join(home, ".claude"), cwd);
+        if (query.engine === "codex") return codexSkills({ codexPath: () => this.findCli("codex"), env, platform: this.platform },
+          session?.configDir || env.CODEX_HOME || path.join(home, ".codex"), cwd);
+        throw new OpFailure("invalid", "此工具不支持选择技能");
+      }
       case "models":
         if ((args as CliOpArgs["models"]).engine === "agy") return this.agy.models();
         return cliModels((args as CliOpArgs["models"]).engine, { platform: this.platform, ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.homedir ? { homedir: this.options.homedir } : {}) });
@@ -1252,6 +1266,60 @@ export class CliAgentBridge {
     const row = this.discovery.get(ref);
     if (!row) throw new OpFailure("not_found");
     return row;
+  }
+
+  private async opHistoryImage({ ref, itemId, locator }: CliOpArgs["history_image"]) {
+    const row = this.session(ref);
+    const file = this.discovery.transcriptFor(ref);
+    const live = this.watches.get(ref)?.reader;
+    const reader = file ? live ?? new TranscriptReader({ path: file, engine: row.engine, watch: false }) : undefined;
+    const app = !reader && this.discovery.appChatFor(ref);
+    const zcode = !reader && !app && this.discovery.zcodeChatFor(ref);
+    try {
+      const source = reader ? await reader.imageSource(itemId, locator)
+        : app ? await app.db.imageSource(app.chat.threadId, itemId, locator)
+        : zcode ? zcode.db.imageSource(zcode.chat.threadId, itemId, locator) : undefined;
+      if (!source) throw new OpFailure("not_found");
+      let bytes: Buffer;
+      if (source.kind === "inline") {
+        if (source.value.length > Math.ceil(maxImageSourceBytes / 3) * 4) throw new OpFailure("too_large");
+        bytes = Buffer.from(source.value, "base64");
+      } else {
+        // Reject UNC/device names before any OS call (including Windows network authentication).
+        const name = source.value;
+        if (/^[\\/]{2}/.test(name) || Array.from(name).some(char => char.charCodeAt(0) < 32) || !/\.(?:png|jpe?g|webp)$/i.test(name) || /^[a-z]+:(?![\\/])/i.test(name)) throw new OpFailure("invalid");
+        const target = path.resolve(row.cwd, name);
+        if (/^[\\/]{2}/.test(target)) throw new OpFailure("invalid");
+        if (source.kind === "marker" || source.kind === "markdown") {
+          // Text links may resolve only within this workspace or this session's image directory.
+          const roots = source.kind === "marker" ? [path.resolve(row.configDir, "image-cache", row.nativeId)]
+            : [row.cwd, path.resolve(row.configDir, "generated_images", row.nativeId)].filter(Boolean);
+          const inside = (candidate: string) => roots.some(root => {
+            const rel = path.relative(root, candidate);
+            return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+          });
+          if (!inside(target) || !inside(await realpath(target))) throw new OpFailure("invalid");
+        }
+        const handle = await open(target, "r");
+        try {
+          const info = await handle.stat();
+          if (!info.isFile() || !info.size) throw new OpFailure("not_found");
+          if (info.size > maxImageSourceBytes) throw new OpFailure("too_large");
+          bytes = Buffer.alloc(info.size);
+          let pos = 0;
+          while (pos < bytes.length) {
+            const { bytesRead } = await handle.read(bytes, pos, bytes.length - pos, pos);
+            if (!bytesRead) throw new OpFailure("not_found");
+            pos += bytesRead;
+          }
+        } finally { await handle.close(); }
+      }
+      const preview = await compressImagePreview(bytes).catch(() => { throw new OpFailure("invalid", "图片压缩失败"); });
+      return { data: preview.toString("base64") };
+    } catch (error) {
+      if (error instanceof OpFailure) throw error;
+      throw new OpFailure("not_found");
+    } finally { if (reader && reader !== live) reader.close(); }
   }
 
   private async opRead(args: CliOpArgs["read"]): Promise<{ items: CliItem[]; more: boolean }> {

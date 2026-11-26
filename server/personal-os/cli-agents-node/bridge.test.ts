@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { imageDimensions } from "../../../shared/provider-icon.ts";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CliOp, CliOpArgs, DeviceCliMessage } from "../../../shared/cli-agents.ts";
@@ -142,6 +143,30 @@ function claudeWritesTranscript(): void {
     if (terminal.argv.includes("--session-id")) claudeTranscript(id, "new session", 0, terminal.cwd);
   };
 }
+
+describe("history image transfer", () => {
+  it("keeps embedded pixels off the transcript and only serves a compressed preview for its own message", async () => {
+    const ref = `claude:${CID(1)}` as const;
+    const file = claudeTranscript(CID(1), "history");
+    // A synthetic 3072 × 64 RGB screenshot.
+    const pixels = "iVBORw0KGgoAAAANSUhEUgAADAAAAABACAIAAACxq3PuAAACw0lEQVR42u3aQQ0AAAgDsUlAEtKQjo4lTarg3pfZAwAAAAAAAAAASkUCAAAAAAAAAAAwAAEAAAAAAAAAAAYgAAAAAAAAAADAAAQAAAAAAAAAAAYgAAAAAAAAAADAAAQAAAAAAAAAABiAAAAAAAAAAAAAAxAAAAAAAAAAABiAAAAAAAAAAAAAAxAAAAAAAAAAAGAAAgAAAAAAAAAAAxAAAAAAAAAAAGAAAgAAAAAAAAAADEAAAAAAAAAAAIABCAAAAAAAAAAADEAAAAAAAAAAAIABCAAAAAAAAAAAMAABAAAAAAAAAAAGIAAAAAAAAAAAMAABAAAAAAAAAAAGIAAAAAAAAAAAwAAEAAAAAAAAAAAGIAAAAAAAAAAAwAAEAAAAAAAAAAAYgAAAAAAAAAAAAAMQAAAAAAAAAAAYgAAAAAAAAAAAAAMQAAAAAAAAAABgAAIAAAAAAAAAAAxAAAAAAAAAAABgAAIAAAAAAAAAAAxAAAAAAAAAAACAAQgAAAAAAAAAAAxAAAAAAAAAAACAAQgAAAAAAAAAADAAAQAAAAAAAAAABiAAAAAAAAAAADAAAQAAAAAAAAAABiAAAAAAAAAAAMAABAAAAAAAAAAABiAVAAAAAAAAAADAAAQAAAAAAAAAABiAAAAAAAAAAAAAAxAAAAAAAAAAABiAAAAAAAAAAAAAAxAAAAAAAAAAAGAAAgAAAAAAAAAADEAAAAAAAAAAAGAAAgAAAAAAAAAADEAAAAAAAAAAAIABCAAAAAAAAAAADEAAAAAAAAAAAIABCAAAAAAAAAAAMAABAAAAAAAAAAAGIAAAAAAAAAAAMAABAAAAAAAAAAAGIAAAAAAAAAAAwAAEAAAAAAAAAAAYgAAAAAAAAAAAwAAEAAAAAAAAAAAYgAAAAAAAAAAAAAMQAAAAAAAAAAAYgAAAAAAAAAAAgB4PI+EkkRp/AUsAAAAASUVORK5CYII=";
+    appendFileSync(file, JSON.stringify({ type: "user", uuid: "with-image", message: { content: [
+      { type: "image", source: { type: "base64", media_type: "image/png", data: pixels } },
+    ] } }) + "\n");
+    const t = setup();
+    await t.start();
+    const page = await t.call("read", { ref });
+    expect(JSON.stringify(page)).not.toContain(pixels);
+    const items = (page.result?.items ?? []) as Array<{ id: string; images: string[] }>;
+    const [locator] = items.find(item => item.id === "with-image")!.images;
+    expect(await t.call("history_image", { ref, locator, itemId: "other" })).toMatchObject({ ok: false });
+    const reply = await t.call("history_image", { ref, locator, itemId: "with-image" });
+    expect(reply.ok).toBe(true);
+    const bytes = Buffer.from(String(reply.result?.data), "base64");
+    expect(imageDimensions(bytes, "image/webp")).toEqual({ width: 1920, height: 40 });
+    expect(bytes.length).toBeLessThan(Buffer.from(pixels, "base64").length);
+  });
+});
 
 describe("capability and first report", () => {
   it("reports the engines found and sends every session once linked", async () => {
@@ -1078,7 +1103,7 @@ describe("launch options, search and attachments", () => {
   it("lists the features this executor has", async () => {
     const t = setup();
     await t.bridge.prepare();
-    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes"]);
+    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes", "skills"]);
   });
 
   it("starts and continues with the model and effort the user picked", async () => {

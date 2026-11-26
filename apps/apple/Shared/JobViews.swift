@@ -174,7 +174,8 @@ struct JobDetailView: View {
                                 }.padding(.top, 12)
                             }.font(.subheadline).tint(Theme.muted)
                         }
-                        RunTranscriptView(workspace: workspace, messages: detail.messages.filter { !$0.isFromUser }, streaming: detail.streaming, steps: detail.steps)
+                        RunTranscriptView(workspace: workspace, messages: detail.messages.filter { !$0.isFromUser }, streaming: detail.streaming, steps: detail.steps, shownResult: job?.latestReport?.summary ?? "")
+                            .id(job?.isBusy)
                         if let brief = detail.messages.first(where: \.isFromUser) {
                             DisclosureGroup("任务书") { Text(brief.content).textSelection(.enabled).padding(.top, 12).frame(maxWidth: .infinity, alignment: .leading) }
                                 .font(.subheadline).tint(Theme.muted)

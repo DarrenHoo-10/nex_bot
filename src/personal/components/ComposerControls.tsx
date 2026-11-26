@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useId, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from "react";
-import { Check, Cpu, Download, MessageSquarePlus, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
+import { BookOpen, Check, Cpu, Download, MessageSquarePlus, Paperclip, Plus, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
 
+import { SkillPicker } from "./SkillPicker";
+import type { SkillOption } from "../../../shared/cli-agents";
 import type { Connection } from "../api";
 import { ModelMenu, type ModelChoice } from "./ModelMenu";
 import { ComposerContext } from "./ComposerContext";
@@ -11,34 +13,37 @@ type Props = {
   onMode: (mode: string) => void; onFile: () => void; onModel: (choice: ModelChoice) => void;
   connections: Connection[]; choice: ModelChoice; modelLabel: string;
   onExport: () => void; onNewTopic?: () => void; children: ReactNode;
+  loadSkills: (signal: AbortSignal) => Promise<SkillOption[]>; onSkill: (skill: SkillOption) => void;
   approvalRules?: Array<{ id: string; label: string; active?: boolean }>; onRevokeRule?: (id: string) => void;
   context: Omit<ComponentProps<typeof ComposerContext>, "open" | "onOpenChange">; onToolPolicy?: () => void;
 };
 
-export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, onNewTopic, children, connections, choice, modelLabel, approvalRules = [], onRevokeRule, context, onToolPolicy }: Props) {
+export function ComposerControls({ mode, disabled, uploading, canExport, onMode, onFile, onModel, onExport, onNewTopic, children, connections, choice, modelLabel, loadSkills, onSkill, approvalRules = [], onRevokeRule, context, onToolPolicy }: Props) {
   const compact = useCompactComposer();
-  const [menu, setMenu] = useState<"add" | "permissions" | "models" | "context" | null>(null);
+  const [menu, setMenu] = useState<"add" | "permissions" | "models" | "context" | "skills" | null>(null);
   const root = useRef<HTMLDivElement>(null), add = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null), id = useId();
   const full = mode === "full", ModeIcon = full ? ShieldAlert : ShieldCheck;
   const close = () => { add.current?.focus(); setMenu(null); };
   useLayoutEffect(() => {
     const panel = menuRef.current;
-    if ((menu !== "add" && menu !== "permissions") || !panel) return;
+    if ((menu !== "add" && menu !== "skills" && menu !== "permissions") || !panel) return;
     panel.showPopover();
     const position = () => {
       const anchor = (menu === "permissions" ? add.current : root.current?.closest("form"))?.getBoundingClientRect();
       if (!anchor) return;
-      panel.style.width = `${Math.min(menu === "add" ? anchor.width : 216, window.innerWidth - 24)}px`;
+      panel.style.width = `${Math.min(menu === "add" ? anchor.width : menu === "skills" ? Math.min(380, anchor.width) : 216, window.innerWidth - 24)}px`;
       panel.style.maxHeight = `${Math.max(80, Math.min(360, anchor.top - 20))}px`;
       panel.style.left = `${Math.max(12, Math.min(anchor.left, window.innerWidth - panel.offsetWidth - 12))}px`;
       panel.style.top = `${Math.max(10, anchor.top - panel.offsetHeight - 10)}px`;
     };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(position);
+    observer?.observe(panel);
     position(); window.addEventListener("resize", position); window.addEventListener("scroll", position, true);
-    return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); if (panel.isConnected) panel.hidePopover(); };
+    return () => { observer?.disconnect(); window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); if (panel.isConnected) panel.hidePopover(); };
   }, [menu]);
   useEffect(() => {
-    if (menu !== "add" && menu !== "permissions") return;
+    if (menu !== "add" && menu !== "skills" && menu !== "permissions") return;
     const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setMenu(null); };
     document.addEventListener("pointerdown", outside);
     const frame = requestAnimationFrame(() => (menuRef.current?.querySelector<HTMLInputElement>("input") ?? menuRef.current?.querySelector<HTMLButtonElement>("[aria-checked=true]") ?? menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus());
@@ -64,9 +69,13 @@ export function ComposerControls({ mode, disabled, uploading, canExport, onMode,
           {approvalRules.map((rule) => <button type="button" role="menuitem" key={rule.id} disabled={disabled} aria-label={`撤销授权：${rule.label}`} onClick={() => { close(); onRevokeRule?.(rule.id); }}><span className="approval-rule-label">{rule.label}{rule.active === false && <small> · 已失效</small>}</span><small className="menu-value">撤销</small></button>)}
         </div>}
     </div>
+    {menu === "skills" && <div ref={menuRef} className="composer-popover" popover="manual" role="dialog" aria-label="技能" onKeyDown={event => { if (event.key === "Escape") close(); }}>
+      <SkillPicker load={loadSkills} select={row => { close(); onSkill(row); }}/>
+    </div>}
     {menu === "add" && <div ref={menuRef} id={`${id}-add`} className="composer-popover composer-command-menu" popover="manual" role="menu" aria-label="添加与指令" onKeyDown={navigate}>
       <div className="composer-menu-heading" role="presentation">添加</div>
       <button type="button" role="menuitem" disabled={disabled || uploading} onClick={() => { close(); onFile(); }}><Paperclip size={18}/><span>文件</span><small>file</small></button>
+      <button type="button" role="menuitem" onClick={() => setMenu("skills")}><BookOpen size={18}/><span>技能</span></button>
       <div className="composer-menu-heading" role="presentation">指令</div>
       {compact && <button type="button" role="menuitem" disabled={disabled} onClick={() => { add.current?.focus(); setMenu("models"); }}><Cpu size={18}/><span>模型</span></button>}
       <button type="button" role="menuitem" disabled={disabled} onClick={() => setMenu("permissions")}><ModeIcon size={18}/><span>权限</span><small>permission</small><span className="menu-value">{full ? "完全权限" : "标准权限"}</span></button>

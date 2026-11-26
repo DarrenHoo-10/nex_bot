@@ -49,6 +49,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.File
 import java.io.ByteArrayInputStream
 import java.security.MessageDigest
 
@@ -94,6 +95,7 @@ fun WorkspaceScreen(state: Repository.UiState, repository: Repository) {
 internal class AndroidWorkspace(private val context: Context, private val repository: Repository, private val origin: String, coreOrigin: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val transport = repository.workspaceTransport()
+    private val imageDir = File(context.cacheDir, "cli-images/${Uri.parse(origin).host}")
     private val subscriptions = mutableMapOf<String, String>()
     private val streams = mutableMapOf<String, Job>()
     // Agent mode socket. The page owns reconnecting (see CliStreamRelay); this only
@@ -151,6 +153,15 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                 if (uri.scheme == "data") return null
                 val path = uri.path.orEmpty()
                 // Image previews come from Core with the native token; storage URLs never reach the page.
+                if (request.method == "GET" && uri.scheme == "https" && "https://${uri.encodedAuthority}" == origin &&
+                    (((uri.query == null || uri.query == "preview=1") && WorkspaceTransport.isCliImage(path)) ||
+                        WorkspaceTransport.isCompactAttachment(path, uri.query))) {
+                    return try {
+                        val dir = if (WorkspaceTransport.isCliImage(path)) imageDir else File(imageDir, "chat-${repository.imagePrivacyEpoch}")
+                        val reply = transport.imagePreview(path, dir)
+                        response(reply.status, reply.contentType, ByteArrayInputStream(reply.body))
+                    } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
+                }
                 if (request.method == "GET" && uri.scheme == "https" && "https://${uri.host}" == origin &&
                     (WorkspaceTransport.isAttachmentPreview(path, uri.query) || WorkspaceTransport.isGroupAvatar(path, uri.query) ||
                      WorkspaceTransport.isCliImagePreview(path, uri.query))) {
