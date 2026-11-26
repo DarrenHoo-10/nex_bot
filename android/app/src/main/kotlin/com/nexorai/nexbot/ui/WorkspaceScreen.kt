@@ -154,17 +154,15 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
                 val path = uri.path.orEmpty()
                 // Image previews come from Core with the native token; storage URLs never reach the page.
                 if (request.method == "GET" && uri.scheme == "https" && "https://${uri.encodedAuthority}" == origin &&
-                    (((uri.query == null || uri.query == "preview=1") && WorkspaceTransport.isCliImage(path)) ||
+                    (WorkspaceTransport.isCliImagePreview(path, uri.query) ||
                         WorkspaceTransport.isCompactAttachment(path, uri.query))) {
                     return try {
-                        val dir = if (WorkspaceTransport.isCliImage(path)) imageDir else File(imageDir, "chat-${repository.imagePrivacyEpoch}")
-                        val reply = transport.imagePreview(path, dir)
+                        val reply = cachedImage(path)
                         response(reply.status, reply.contentType, ByteArrayInputStream(reply.body))
                     } catch (_: Exception) { response(404, "text/plain", ByteArrayInputStream(ByteArray(0))) }
                 }
                 if (request.method == "GET" && uri.scheme == "https" && "https://${uri.host}" == origin &&
-                    (WorkspaceTransport.isAttachmentPreview(path, uri.query) || WorkspaceTransport.isGroupAvatar(path, uri.query) ||
-                     WorkspaceTransport.isCliImagePreview(path, uri.query))) {
+                    (WorkspaceTransport.isAttachmentPreview(path, uri.query) || WorkspaceTransport.isGroupAvatar(path, uri.query))) {
                     return try {
                         val reply = transport.request(path + uri.encodedQuery?.let { "?$it" }.orEmpty(), "GET", "")
                         val mime = reply.contentType.substringBefore(';').trim()
@@ -233,12 +231,20 @@ internal class AndroidWorkspace(private val context: Context, private val reposi
             if (!closed) web.evaluateJavascript("window.__nexStream?.(${JSONObject.quote(id)},${JSONObject.quote(type)},${JSONObject.quote(data)})", null)
         }
     }
+    private fun cachedImage(path: String): WorkspaceTransport.Reply {
+        val directory = if (WorkspaceTransport.isCliImage(path)) imageDir else File(imageDir, "chat-${repository.imagePrivacyEpoch}")
+        return transport.imagePreview(path, directory)
+    }
+
     private fun request(id: String, path: String, method: String, body: String) {
         scope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
-                    val response = transport.request(path, method, body)
-                    val preview = method == "GET" && WorkspaceTransport.isAttachmentPreview(path.substringBefore('?'), path.substringAfter('?', ""))
+                    val route = path.substringBefore('?')
+                    val query = path.substringAfter('?', "")
+                    val compact = method == "GET" && (WorkspaceTransport.isCliImagePreview(route, query) || WorkspaceTransport.isCompactAttachment(route, query))
+                    val response = if (compact) cachedImage(route) else transport.request(path, method, body)
+                    val preview = compact || (method == "GET" && WorkspaceTransport.isAttachmentPreview(route, query))
                     val mime = response.contentType.substringBefore(';').trim()
                     if (preview && response.status == 200 && mime in setOf("image/png", "image/jpeg", "image/webp")) {
                         if (response.body.size <= 2 * 1024 * 1024) JSONObject().put("status", 200).put("mime", mime)

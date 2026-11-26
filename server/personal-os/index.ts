@@ -354,7 +354,7 @@ export async function createPersonalApp(options: AppOptions) {
       if (!await authorized()) { json(response, 401, { error: "Unauthorized" }); return; }
       let image;
       try {
-        image = ownerSession ? await cliImages.readForOwner(fileId, cliHub, ownerSession, options.publicOrigin ?? requestOrigin, true) : await cliImages.read(fileId);
+        image = ownerSession ? await cliImages.readForOwner(fileId, cliHub, ownerSession, options.publicOrigin ?? requestOrigin, url.searchParams.get("preview") === "1") : await cliImages.read(fileId);
       } catch (error) {
         if (!(error instanceof CliOpError)) throw error;
         const result = cliErrorResult(error.code, error.message);

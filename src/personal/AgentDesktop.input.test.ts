@@ -667,7 +667,7 @@ it("opens an inline finance topic in the shared chat and replies to its original
 
 describe("Tool steps in the chat (Web, Electron and Android WebView)", () => {
   it("expands a memory-write step in place instead of opening the side panel", async () => {
-    const history = [{ id: "m1", role: "assistant", kind: "message", content: "已写入长期记忆。", created_at: 1, seq: 1, tool_steps: [{ id: "call1", tool_name: "memory.write", status: "succeeded", summary: "写作偏好", preview: "", created_at: 1 }] }];
+    const history = [{ id: "m1", role: "assistant", kind: "message", content: "已写入长期记忆。", stream_progress: "正在记录偏好", created_at: 1, seq: 1, tool_steps: [{ id: "call1", tool_name: "memory.write", status: "succeeded", summary: "写作偏好", preview: "", created_at: 1 }] }];
     const base = fixture.api.getMockImplementation()!;
     fixture.api.mockImplementation(async (route: string, ...rest: unknown[]) => {
       if (route.startsWith("state?view=workspace")) return { ...state };

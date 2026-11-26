@@ -2,10 +2,12 @@ import { useEffect, useState, type RefObject } from "react";
 import { cliImageId } from "../../shared/cli-images";
 import { localCacheScope, queueLocalCache, readLocalCache } from "./local-content-cache";
 
-export function usePersistentPreview(url: string, target: RefObject<HTMLElement | null>) {
+export function usePersistentPreview(path: string, target: RefObject<HTMLElement | null>) {
+  const cli = !!cliImageId(path);
+  const url = cli ? path + "?preview=1" : path;
   const [preview, setPreview] = useState<{ url: string; source: string; scope: string | undefined }>();
   const scope = localCacheScope();
-  const eligible = !!scope && (!!cliImageId(url) || /^\/api\/attachments\/[a-zA-Z0-9_-]+\?preview=1(?:&compact=1)?$/.test(url));
+  const eligible = !!scope && (cli || /^\/api\/attachments\/[a-zA-Z0-9_-]+\?preview=1(?:&compact=1)?$/.test(url));
   useEffect(() => {
     if (!eligible) return;
     const abort = new AbortController();
@@ -17,8 +19,9 @@ export function usePersistentPreview(url: string, target: RefObject<HTMLElement 
         const response = await fetch(url, { signal: abort.signal, credentials: "same-origin", redirect: "error" });
         if (!response.ok) throw new Error(String(response.status));
         bytes = await response.blob();
+        if (!/^image\/(?:png|jpeg|webp)$/.test(bytes.type)) throw new Error("图片加载失败");
         if (abort.signal.aborted || scope !== localCacheScope()) return;
-        if (/^image\/(?:png|jpeg|webp)$/.test(bytes.type) && bytes.size <= 2 * 1024 * 1024) queueLocalCache(scope, "image:" + url, bytes);
+        if (bytes.size <= 2 * 1024 * 1024) queueLocalCache(scope, "image:" + url, bytes);
       }
       objectUrl = URL.createObjectURL(bytes);
       setPreview({ url, scope, source: objectUrl });

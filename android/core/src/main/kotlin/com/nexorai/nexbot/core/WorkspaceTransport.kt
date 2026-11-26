@@ -76,8 +76,8 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
     fun imagePreview(path: String, directory: File): Reply {
         val cli = isCliImage(path)
         require(cli || attachmentPreview.matches(path))
-        fun checkSession() { if (token().isNullOrBlank()) throw IOException("登录已失效") }
-        checkSession()
+        val bearer = token()?.takeIf { it.isNotBlank() } ?: throw IOException("登录已失效")
+        fun checkSession() { if (token() != bearer) throw IOException("登录已失效") }
         val id = (if (cli) "cli-" else "chat-") + path.substringAfterLast('/')
         for ((mime, ext) in imageTypes) {
             val cached = File(directory, "$id.$ext")
@@ -104,13 +104,11 @@ class WorkspaceTransport(private val origin: String, private val token: () -> St
     }
 
     companion object {
-        private const val previewLimit = 512 * 1024
         private val imageTypes = mapOf("image/png" to "png", "image/jpeg" to "jpg", "image/webp" to "webp")
         private val cliImagePath = Regex("^/api/cli-agents/images/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
         fun isCliImage(path: String) = cliImagePath.matches(path)
         private val attachmentPreview = Regex("^/api/attachments/[a-zA-Z0-9-]+$")
-        private val cliImagePreview = Regex("^/api/cli-agents/images/[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
-        fun isCliImagePreview(path: String, query: String?) = query.isNullOrEmpty() && cliImagePreview.matches(path)
+        fun isCliImagePreview(path: String, query: String?) = (query.isNullOrEmpty() || query == "preview=1") && isCliImage(path)
         /** Core-served image previews, fetched with the native token for <img> tags. */
         fun isCompactAttachment(path: String, query: String?) = attachmentPreview.matches(path) && query == "preview=1&compact=1"
         fun isAttachmentPreview(path: String, query: String?) = attachmentPreview.matches(path) && query == "preview=1"

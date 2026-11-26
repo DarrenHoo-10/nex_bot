@@ -547,7 +547,7 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
   const timeline = useMemo(() => guideTimeline(details?.history?.length ? mergeItems(details.history, items) : items, guides ?? []), [items, details?.history, guides]);
   const blocks = useMemo(() => withoutHidden(groupItems(timeline), hidden), [timeline, hidden]);
   const rows = useMemo(() => transcriptRows(timeline, active).flatMap(row => row.kind === "progress" ? [{ ...row, blocks: withoutHidden(row.blocks, hidden) }] : withoutHidden([row], hidden) as import("./transcript").TranscriptRow[]), [timeline, active, hidden]);
-  const { heads, replying } = useMemo(() => replyHeads(blocks), [blocks]);
+  const { heads, replying } = useMemo(() => replyHeads(rows.filter(row => row.kind !== "progress")), [rows]);
   const tails = useMemo(() => replyTails(blocks), [blocks]);
   const completed = useMemo(() => completedCliReplies(items, active), [items, active]);
   const echoShown = !!echo && !items.some((item) => item.kind === "user");

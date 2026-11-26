@@ -1050,6 +1050,9 @@ describe("search, launch options and attachments", () => {
     expect((await fetch(link.replace(/.$/, link.endsWith("0") ? "1" : "0"))).status).toBe(401);
     expect(Buffer.from(await (await fetch(link)).arrayBuffer())).toEqual(bytes);
     expect(Buffer.from(await (await fetch(preview, { headers: auth })).arrayBuffer())).toEqual(bytes);
+    const compact = await fetch(preview + "?preview=1", { headers: auth });
+    expect(compact.headers.get("Content-Type")).toBe("image/webp");
+    expect(Buffer.from(await compact.arrayBuffer()).toString("ascii", 8, 12)).toBe("WEBP");
     device.onOp = (op) => op.op === "read" ? {
       ok: true, result: { items: [{ kind: "user", id: "image-message", ts: 123, text: outgoing }], more: false },
     } : defaultOp(op);
@@ -1087,45 +1090,6 @@ describe("search, launch options and attachments", () => {
     device.kill();
     await device.closed;
     expect(await get()).toEqual(bytes);
-  });
-
-  it("stores chat images privately in OSS, sends only a limited link, and keeps that link out of the transcript", async () => {
-    const f = await fixture(), objects = new Map<string, string>();
-    f.app.store.attachmentObjects = {
-      async put(key, value) { objects.set(key, value); },
-      async get(key) { return objects.get(key)!; },
-    };
-    const device = await connectDevice(f, "image fixture");
-    device.sessions([wire("image-session")], { full: true });
-    await until(() => f.app.cliHub.session(keyOf(device, "image-session")));
-    const key = keyOf(device, "image-session");
-    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aEtcAAAAASUVORK5CYII=", "base64");
-    const uploaded = await fetch(f.app.origin + "/api/cli-agents/images?key=" + encodeURIComponent(key), {
-      method: "POST", headers: { Authorization: "Bearer " + OWNER, "Content-Type": "image/png" }, body: new Uint8Array(bytes),
-    });
-    expect(uploaded.status).toBe(200);
-    const { path: imagePath } = await uploaded.json() as { path: string };
-    expect(imagePath).toMatch(/^\/api\/cli-agents\/images\/[0-9a-f-]+$/);
-    expect(device.ops("attach")).toHaveLength(0);
-    expect([...objects.keys()]).toEqual([expect.stringContaining("nexbot/attachments/v1/")]);
-    expect([...objects.values()][0]).not.toContain(bytes.toString("base64"));
-    expect(f.app.store.get("SELECT ciphertext,published FROM cli_agent_images")).toEqual({ ciphertext: "", published: 0 });
-    const preview = f.app.origin + imagePath, auth = { Authorization: "Bearer " + OWNER };
-    expect((await fetch(preview)).status).toBe(401);
-    expect((await fetch(preview, { headers: auth })).status).toBe(404);
-    const text = `看看图片\n\n![fixture.png](${imagePath})`;
-    expect((await f.call("cli-agents/send", { key, text, delivery: "send", clientMessageId: "image-message", requestId: "image-send" })).status).toBe(200);
-    const outgoing: string = device.ops("send").at(-1)?.args.text;
-    const link = /\]\((https?:\/\/[^)]+)\)/.exec(outgoing)?.[1] ?? "";
-    expect(link).toContain(preview + "?ticket=");
-    expect((await fetch(link.replace(/.$/, link.endsWith("0") ? "1" : "0"))).status).toBe(401);
-    expect(Buffer.from(await (await fetch(link)).arrayBuffer())).toEqual(bytes);
-    expect(Buffer.from(await (await fetch(preview, { headers: auth })).arrayBuffer())).toEqual(bytes);
-    device.onOp = (op) => op.op === "read" ? {
-      ok: true, result: { items: [{ kind: "user", id: "image-message", ts: 123, text: outgoing }], more: false },
-    } : defaultOp(op);
-    const transcript = await f.call("cli-agents/items?key=" + encodeURIComponent(key));
-    expect(transcript.data.items[0].text).toBe(text);
   });
 
   it("searches the online computers that can, keys the hits, drops unknown sessions and survives a failing computer", async () => {

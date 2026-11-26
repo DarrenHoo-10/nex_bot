@@ -577,7 +577,13 @@ describe("session pane", () => {
     ] });
     await mount({ devices: [device()], sessions: [session({ state: "running" })] }, "dev1:claude:s1");
     const replies = [...container.querySelectorAll("[data-testid=cli-assistant]")];
-    expect(replies.map((reply) => !!reply.querySelector(".na-byline"))).toEqual([true, false, true]);
+    expect(replies.map((reply) => !!reply.querySelector(".na-byline"))).toEqual([true, true]);
+    expect(replies[0].textContent).toContain("看完了");
+    expect(text()).not.toContain("先看看");
+    await click(container.querySelector(".message-progress > button"));
+    const progress = container.querySelector(".message-progress")!;
+    expect(progress.textContent).toContain("先看看");
+    expect(progress.querySelector(".na-byline, [aria-label='复制']")).toBeNull();
     // the running turn already has a reply: the dots follow it without another name, inside the transcript
     const working = container.querySelector("[data-testid=cli-transcript] [data-testid=cli-working]")!;
     expect(working.querySelector(".na-byline")).toBeNull();

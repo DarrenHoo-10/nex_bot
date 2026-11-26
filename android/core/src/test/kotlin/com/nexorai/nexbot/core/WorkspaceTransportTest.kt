@@ -25,6 +25,7 @@ class WorkspaceTransportTest {
     @Test fun `NexAgent images upload raw bytes and use a private preview route`() {
         val image = "/api/cli-agents/images/12345678-0000-4000-8000-000000000000"
         assertTrue(WorkspaceTransport.isCliImagePreview(image, null))
+        assertTrue(WorkspaceTransport.isCliImagePreview(image, "preview=1"))
         assertFalse(WorkspaceTransport.isCliImagePreview(image, "ticket=temporary"))
         assertFalse(WorkspaceTransport.isCliImagePreview("$image/other", null))
         MockWebServer().use { server ->
