@@ -254,6 +254,32 @@ describe("liveness", () => {
 });
 
 describe("list and transcript", () => {
+  it("keeps the selected computer in device snapshots when another computer disconnects or is revoked", async () => {
+    const f = await fixture();
+    const selected = await connectDevice(f.origin, f.call, undefined, "selected computer");
+    const other = await connectDevice(f.origin, f.call, undefined, "other computer");
+    selected.sessions([wire("selected")], { full: true });
+    other.sessions([wire("other")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.length === 2, "both devices have a session");
+
+    const phone = await f.login("Android fixture");
+    const browser = await connectBrowser(f.origin, { bearer: phone.token });
+    browser.send({ type: "sub.list" });
+    const initial = await browser.find("list");
+    expect(initial.devices).toHaveLength(2);
+
+    other.kill();
+    const disconnected = await browser.find("list.delta", (message) =>
+      message.devices?.some((device: { id: string; online: boolean }) => device.id === other.id && !device.online));
+    expect(disconnected.devices).toEqual(f.app.cliHub.list().devices);
+    expect(disconnected.devices).toContainEqual(expect.objectContaining({ id: selected.id, online: true }));
+    expect(disconnected.upserts.map((session: { deviceId: string }) => session.deviceId)).toEqual([other.id]);
+
+    expect((await f.call("devices/revoke", { id: other.id })).status).toBe(200);
+    const revoked = await browser.find("list.delta", (message) => message.removes.includes(`${other.id}:claude:other`));
+    expect(revoked.devices).toEqual([expect.objectContaining({ id: selected.id, online: true })]);
+  });
+
   it("pushes list deltas and summary changes, and stops after the socket closes", async () => {
     const f = await fixture();
     const device = await connectDevice(f.origin, f.call, undefined, "mac");

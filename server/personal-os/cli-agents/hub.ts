@@ -116,6 +116,7 @@ export class TrackedOpError extends Error {
   }
 }
 
+/** A session delta can include a replacement for the entire device list. */
 export type ListDelta = { upserts: CliSessionView[]; removes: CliSessionKey[]; devices?: CliDeviceView[] };
 
 /** One browser socket as the hub sees it. `data` gets a complete binary frame
@@ -329,7 +330,7 @@ export class CliAgentHub {
       this.store.run("DELETE FROM cli_agent_ops WHERE device_id=?", deviceId);
       this.store.run("DELETE FROM cli_agent_requests WHERE substr(session_key,1,?)=?", deviceId.length + 1, deviceId + ":");
     });
-    if (removes.length) this.emitList({ upserts: [], removes });
+    if (removes.length) this.emitList({ upserts: [], removes, devices: this.listDevices() });
     this.refreshSummary();
   }
 
@@ -1149,24 +1150,21 @@ export class CliAgentHub {
     return view;
   }
 
-  private deviceView(deviceId: string): CliDeviceView | null {
-    const row = this.store.get("SELECT id,name FROM devices WHERE id=? AND status!='revoked'", deviceId);
-    if (!row) return null;
-    const online = this.caps.has(deviceId);
-    return { id: deviceId, name: String(row.name), online, cliAgents: this.caps.get(deviceId) ?? this.lastCaps.get(deviceId) ?? null };
+  private listDevices(sessionRows = this.store.all(
+    "SELECT device_id FROM cli_agent_sessions ORDER BY last_activity_at DESC,key LIMIT ?", CLI_LIMITS.listSessions,
+  )): CliDeviceView[] {
+    const ids = new Set([...this.caps.keys(), ...sessionRows.map((row) => String(row.device_id))]);
+    return this.store.all("SELECT id,name FROM devices WHERE status!='revoked' ORDER BY created_at,id")
+      .filter((row) => ids.has(String(row.id)))
+      .map((row) => {
+        const id = String(row.id), live = this.caps.get(id);
+        return { id, name: String(row.name), online: !!live, cliAgents: live ?? this.lastCaps.get(id) ?? null };
+      });
   }
 
   list(): { devices: CliDeviceView[]; sessions: CliSessionView[] } {
-    const rows = this.store.all("SELECT * FROM cli_agent_sessions ORDER BY last_activity_at DESC,key LIMIT 5000");
-    const sessions = rows.map((row) => this.view(row));
-    const ids = new Set<string>([...this.caps.keys(), ...sessions.map((session) => session.deviceId)]);
-    const devices: CliDeviceView[] = [];
-    for (const row of this.store.all("SELECT id FROM devices WHERE status!='revoked' ORDER BY created_at,id")) {
-      if (!ids.has(String(row.id))) continue;
-      const view = this.deviceView(String(row.id));
-      if (view) devices.push(view);
-    }
-    return { devices, sessions };
+    const rows = this.store.all("SELECT * FROM cli_agent_sessions ORDER BY last_activity_at DESC,key LIMIT ?", CLI_LIMITS.listSessions);
+    return { devices: this.listDevices(rows), sessions: rows.map((row) => this.view(row)) };
   }
 
   session(key: string): CliSessionView | null {
@@ -1227,8 +1225,7 @@ export class CliAgentHub {
   /** A device went online or offline: its sessions flip `online` and its row in the device list changes. */
   private emitDeviceDelta(deviceId: string) {
     const upserts = this.store.all("SELECT * FROM cli_agent_sessions WHERE device_id=?", deviceId).map((row) => this.view(row));
-    const device = this.deviceView(deviceId);
-    this.emitList({ upserts, removes: [], ...(device ? { devices: [device] } : {}) });
+    this.emitList({ upserts, removes: [], devices: this.listDevices() });
   }
 
   // -------------------------------------------------------------------------

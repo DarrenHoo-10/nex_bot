@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [NexAgent 完整设备列表推送 · Core 部署（2026-11-26）](nexagent-device-snapshot-20261126.md)
+
 - [NexAgent 设备离线误报 · 0.9.55 四端发布（2026-11-26）](nexagent-device-online-0955-20261126.md)
 
 - [NexAgent 接入 Antigravity CLI · 0.9.54 四端发布（2026-11-26）](nexagent-agy-0954-20261126.md)
