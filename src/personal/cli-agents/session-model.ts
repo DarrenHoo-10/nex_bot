@@ -86,37 +86,70 @@ export function projectOf(session: CliSessionView, root?: string): ProjectRef {
   return { key: normalizePath(path), root: path, label: folderLabel(path), scratch: false };
 }
 
-export interface ProjectGroup<T = CliSessionView> extends ProjectRef { rows: T[]; latest: number }
+export interface ProjectGroup<T = CliSessionView> extends ProjectRef {
+  rows: T[];
+  latest: number;
+  /** the folders the project joins, each by its own key, and their paths (empty for the scratch group) */
+  members: string[];
+  roots: string[];
+}
 
-/** Rows grouped by project: real projects by latest activity, the scratch group last. */
+const NAME_KEY = "\u0000name:";
+
+/** Rows grouped by project: real projects by latest activity, the scratch group last. Folders that show the same name
+ * are one project, wherever they are (two `workspace` folders list once); it starts new sessions in the folder used
+ * last. A project of one folder keeps that folder's key, so its saved place and fold state stay as they were. */
 export function projectGroups(rows: readonly CliSessionView[], rootOf?: (row: CliSessionView) => string | undefined): ProjectGroup[] {
   const groups = new Map<string, ProjectGroup>();
   for (const row of rows) {
     const ref = projectOf(row, rootOf?.(row));
-    let group = groups.get(ref.key);
-    if (!group) groups.set(ref.key, (group = { ...ref, rows: [], latest: 0 }));
+    const name = ref.scratch ? ref.key : NAME_KEY + ref.label.toLocaleLowerCase();
+    let group = groups.get(name);
+    if (!group) groups.set(name, (group = { ...ref, rows: [], latest: 0, members: [], roots: [] }));
+    if (!group.members.includes(ref.key)) {
+      group.members.push(ref.key);
+      if (ref.root) group.roots.push(ref.root);
+    }
     // label and path casing follow the newest session
-    if (row.lastActivityAt >= group.latest && group.rows.length) Object.assign(group, ref);
+    if (row.lastActivityAt >= group.latest && group.rows.length) Object.assign(group, { root: ref.root, label: ref.label });
     group.rows.push(row);
     group.latest = Math.max(group.latest, row.lastActivityAt);
   }
+  for (const [name, group] of groups) if (group.members.length > 1) group.key = name;
   return [...groups.values()].sort((a, b) => Number(a.scratch) - Number(b.scratch) || b.latest - a.latest || a.label.localeCompare(b.label));
+}
+
+type Orderable = ProjectRef & { latest: number; members?: readonly string[] };
+
+/** A project's place in the saved order: its own key's, or for a project that joined folders saved apart, the earliest of theirs. */
+function savedAt(group: Orderable, at: ReadonlyMap<string, number>): number | undefined {
+  const own = at.get(group.key);
+  if (own !== undefined) return own;
+  const places = (group.members ?? []).map((key) => at.get(key)).filter((index): index is number => index !== undefined);
+  return places.length ? Math.min(...places) : undefined;
 }
 
 /** Projects in the user's order: projects not in `saved` yet are new and go first (newest activity
  * first), the rest keep their saved order, and the scratch group stays last. */
-export function orderProjects<T extends ProjectRef & { latest: number }>(groups: readonly T[], saved: readonly string[]): T[] {
+export function orderProjects<T extends Orderable>(groups: readonly T[], saved: readonly string[]): T[] {
   const at = new Map(saved.map((key, index) => [key, index]));
-  const fresh = groups.filter((group) => !group.scratch && !at.has(group.key)).sort((a, b) => b.latest - a.latest);
-  const known = groups.filter((group) => !group.scratch && at.has(group.key)).sort((a, b) => at.get(a.key)! - at.get(b.key)!);
+  const fresh = groups.filter((group) => !group.scratch && savedAt(group, at) === undefined).sort((a, b) => b.latest - a.latest);
+  const known = groups.filter((group) => !group.scratch && savedAt(group, at) !== undefined).sort((a, b) => savedAt(a, at)! - savedAt(b, at)!);
   return [...fresh, ...known, ...groups.filter((group) => group.scratch)];
 }
 
-/** The saved order after `groups` were shown: new projects go in front, nothing known moves. */
-export function rememberProjects(groups: readonly (ProjectRef & { latest: number })[], saved: readonly string[], max = 300): string[] {
-  const known = new Set(saved);
-  const fresh = orderProjects(groups, saved).filter((group) => !group.scratch && !known.has(group.key)).map((group) => group.key);
-  return fresh.length ? [...fresh, ...saved].slice(0, max) : [...saved];
+/** The saved order after `groups` were shown: new projects go in front, nothing known moves. A project that joined
+ * folders saved apart is saved under its own key in the earliest of their places. */
+export function rememberProjects(groups: readonly Orderable[], saved: readonly string[], max = 300): string[] {
+  const order = [...saved];
+  for (const group of groups) {
+    if (group.scratch || order.includes(group.key)) continue;
+    const place = savedAt(group, new Map(order.map((key, index) => [key, index])));
+    if (place !== undefined) order.splice(place, 0, group.key);
+  }
+  const known = new Set(order);
+  const fresh = orderProjects(groups, order).filter((group) => !group.scratch && !known.has(group.key)).map((group) => group.key);
+  return [...fresh, ...order].slice(0, max);
 }
 
 /** The saved order with `key` dropped before or after `target`. */

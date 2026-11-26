@@ -36,6 +36,7 @@ import { DocumentCard } from "./components/DocumentCard";
 import { replyLayout } from "./long-reply";
 import { MessageImages } from "./components/MessageImages";
 import { ImageLightbox } from "./components/ImageLightbox";
+import { closeTopLayer } from "./android-back";
 import { isImageFileName, parseMessageMedia, type MessageImage } from "./message-media";
 import { useModelChoice } from "./components/use-model-choice";
 import { BotIdentity } from "./components/BotIdentity";
@@ -283,21 +284,12 @@ export function AgentDesktop() {
   const previousScrollTop = useRef(0), touchY = useRef(0), feedRetry = useRef(false), loadedBot = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (desktop?.platform !== "android") return;
+    // NexAgent goes up its own levels, layers on top included (CliAgentsWorkspace). Both listen on `window` itself,
+    // where listeners run in the order they were added whatever their phase, so this one stands aside there.
     const back = () => {
-      const preview = document.querySelector<HTMLButtonElement>('.html-preview-dialog [aria-label="关闭全屏预览"]');
-      if (preview) { preview.click(); return; }
-      const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
-      if (modal) { modal.dispatchEvent(new Event("cancel", { cancelable: true })); return; }
-      const popover = document.querySelector<HTMLElement>(":popover-open");
-      if (popover) { popover.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return; }
-      const closeModal = document.querySelector<HTMLButtonElement>('.modal-backdrop button[aria-label^="关闭"]:not(:disabled)');
-      if (closeModal) { closeModal.click(); return; }
+      if (page === "cli" && agentSection) return;
+      if (closeTopLayer()) return;
       if (dialog) { setDialog(null); return; }
-      // Agent mode: the supervision popover, then the open session back to the list
-      const supervision = document.querySelector(".cli-supervision-panel");
-      if (supervision) { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return; }
-      const sessionBack = document.querySelector<HTMLButtonElement>('.cli-app[data-mobile="pane"] .cli-back');
-      if (sessionBack && sessionBack.offsetParent !== null) { sessionBack.click(); return; }
       if (detail) { setDetail(false); return; }
       if (page !== "agent") { setPage("agent"); return; }
       if (!sidebarOpen) { setSidebarOpen(true); return; }

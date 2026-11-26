@@ -112,6 +112,8 @@ public final class CliAgentsModel {
     public func device(_ id: String) -> CliDevice? { devices.first { $0.id == id } }
     /// The cards of a session: open ones and the ones closed lately, oldest first.
     public func cards(_ key: CliSessionKey) -> [CliRequestRecord] { requests.records[key] ?? [] }
+    /// What sits above the box: open cards, and handled ones for a moment.
+    public func shownCards(_ key: CliSessionKey) -> [CliRequestRecord] { requests.shown(key, now: now) }
     public func cardState(_ record: CliRequestRecord) -> CliCardState { CliRequestStore.state(of: record, now: now) }
     public func transcript(_ key: CliSessionKey) -> Transcript { transcripts[key] ?? Transcript() }
     public var connected: Bool { link == .open }
@@ -376,8 +378,8 @@ public final class CliAgentsModel {
 
     /// Resumes a stopped session. The new key is selected.
     @discardableResult
-    public func continueSession(_ key: CliSessionKey, effort: String? = nil, model: String? = nil) async throws -> CliSessionKey {
-        let next = try await clientProvider().cliContinue(key: key, effort: effort, model: model)
+    public func continueSession(_ key: CliSessionKey, effort: String? = nil, model: String? = nil, permissions: CliPermissionMode? = nil) async throws -> CliSessionKey {
+        let next = try await clientProvider().cliContinue(key: key, effort: effort, model: model, permissions: permissions)
         await refresh()
         if selectedKey == key { select(next) }
         return next

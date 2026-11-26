@@ -1,4 +1,4 @@
-import {MAX_SEND_TEXT, type CliSessionKey} from "../../../shared/cli-agents";
+import {CLI_PERMISSION_MODES, MAX_SEND_TEXT, type CliPermissionMode, type CliSessionKey} from "../../../shared/cli-agents";
 import {cliImageId, cliImageReference} from "../../../shared/cli-images";
 import {uploadAttachment} from "./api";
 import {localCacheScope, queueLocalCache} from "../local-content-cache";
@@ -42,10 +42,25 @@ export function getApplied(key:string):{model:string;effort:string}|null{
 export function saveApplied(key:string,value:{model:string;effort:string}){
   try{localStorage.setItem(appliedKey(key),JSON.stringify({model:value.model,effort:value.effort}))}catch{/* lasts for the page */}
 }
+/** The permission mode chosen for a session in this browser, and whether its CLI still has to take it: a CLI running in
+ * a terminal takes it the next time it starts, an idle Antigravity session at the next message. */
+export interface PermissionChoice {mode:CliPermissionMode;pending:boolean}
+const permissionKey=(key:string)=>"nexagent.permission."+key;
+export function getPermission(key:string):PermissionChoice|null{
+  try{const value=JSON.parse(localStorage.getItem(permissionKey(key))||"null") as {mode?:unknown;pending?:unknown}|null;
+    const mode=CLI_PERMISSION_MODES.find(entry=>entry===value?.mode);
+    return mode?{mode,pending:value?.pending===true}:null;
+  }catch{return null}
+}
+export function savePermission(key:string,value:PermissionChoice|null){
+  try{if(value)localStorage.setItem(permissionKey(key),JSON.stringify(value));else localStorage.removeItem(permissionKey(key))}catch{/* lasts for the page */}
+}
 export function transferGoal(from:string,to:string){
   const goal=getExtras(from).goal;
   if(goal!==null && from!==to)saveExtras(to,{...getExtras(to),goal});
   if(from!==to && !getLaunch(to).model && !getLaunch(to).effort)saveLaunch(to,getLaunch(from));
+  const permission=getPermission(from);
+  if(from!==to && permission && !getPermission(to))savePermission(to,permission);
 }
 /** What a message says about an attached file. `upload` is true for the review fixture's endpoint, a
  * function that puts the file on the session's computer, or false where only small text files go inline. */

@@ -868,12 +868,17 @@ describe("new session", () => {
     await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
     const page = await openNew();
     await flush();
+    // the third tab opens the session options: the worktree switch, then the branch it starts on
+    const tabs = [...page.querySelectorAll<HTMLButtonElement>(".na-new-options > .model-menu-root > button")].map((tab) => tab.getAttribute("aria-label"));
+    expect(tabs).toEqual(["工作目录", "运行工具", "会话选项"]);
+    const options = page.querySelector<HTMLButtonElement>("button[aria-label=会话选项]")!;
+    expect(options.textContent).toBe("");
+    await click(options);
     const worktree = [...page.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input")!;
     expect(worktree.checked).toBe(false);
     await click(worktree);
     expect(worktree.checked).toBe(true);
-    expect(page.querySelector("button[aria-label=分支名称]")?.textContent).toMatch(/^nexagent\/[a-z0-9]{6}$/);
-    await click(page.querySelector("button[aria-label=分支名称]"));
+    expect(options.textContent).toBe("Worktree");
     const branch = document.querySelector<HTMLInputElement>("input[aria-label=新分支名称]")!;
     expect(branch.value).toMatch(/^nexagent\/[a-z0-9]{6}$/);
     await typeInto(branch, "nexagent/login fix");
@@ -890,6 +895,7 @@ describe("new session", () => {
     await mount({ devices: [capable()], sessions: [session({ cwd: ALPHA })] });
     const page = await openNew();
     await flush();
+    await click(page.querySelector("button[aria-label=会话选项]"));
     await click([...page.querySelectorAll("label")].find((label) => label.textContent === "Worktree")!.querySelector("input"));
     await act(async () => { page.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await flush();

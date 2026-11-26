@@ -6,6 +6,8 @@
 // rewritten by proxies in front of it and lose the code.
 import {
   CLI_ATTACH_MAX_BYTES,
+  CLI_PERMISSION_MODES,
+  cliPermissionModes,
   CLI_ATTACH_NAME_MAX,
   CLI_ERROR_TEXT,
   CLI_LIMITS,
@@ -489,11 +491,12 @@ export class CliAgentRoutes {
     const { model, effort, permissions } = data;
     if (model !== undefined && model !== null && model !== "" && !isCliModel(model)) return null;
     if (effort !== undefined && effort !== null && effort !== "" && !isCliEffort(engine, effort)) return null;
-    if (permissions !== undefined && permissions !== null && permissions !== "full" && permissions !== "ask") return null;
+    const mode = CLI_PERMISSION_MODES.find((entry) => entry === permissions);
+    if (permissions !== undefined && permissions !== null && (!mode || !cliPermissionModes(engine).includes(mode))) return null;
     return {
       ...(typeof model === "string" && model ? { model } : {}),
       ...(typeof effort === "string" && effort ? { effort } : {}),
-      ...(permissions === "full" || permissions === "ask" ? { permissions } : {}),
+      ...(mode ? { permissions: mode } : {}),
     };
   }
 

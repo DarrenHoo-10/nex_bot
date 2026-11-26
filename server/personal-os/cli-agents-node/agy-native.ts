@@ -176,13 +176,25 @@ export async function agyWriters(platform: NodeJS.Platform, ownedPids: ReadonlyS
   return { sessions, unknown };
 }
 
+const AGY_REQUEST = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/;
+const AGY_ONLY_BLOCKS = /^\s*(?:<([A-Z][A-Z_]*)>[\s\S]*?<\/\1>\s*)+$/;
+
+/** AGY records what the user typed inside `<USER_REQUEST>`, followed by blocks it adds itself (`<ADDITIONAL_METADATA>`
+ * with the local time, `<USER_SETTINGS_CHANGE>` after a model switch…). Only the request is the user's words, and input
+ * made of nothing but such blocks has none. Text without them is returned as it is. */
+export function agyUserText(content: string): string {
+  const request = AGY_REQUEST.exec(content);
+  if (request) return request[1];
+  return AGY_ONLY_BLOCKS.test(content) ? "" : content;
+}
+
 /** Stable native step ids let pagination and external CLI changes use the same reader. */
 export function agyRecordItems(value: unknown, fallbackTs = 0): CliItem[] {
   const row = agyRecord(value);
   if (typeof row.step_index !== "number" || !Number.isSafeInteger(row.step_index) || row.step_index < 0) return [];
   const id = `agy:${row.step_index}`;
   const ts = Date.parse(agyString(row.created_at)) || fallbackTs;
-  const content = agyString(row.content);
+  const content = row.type === "USER_INPUT" ? agyUserText(agyString(row.content)) : agyString(row.content);
   const text = truncateUtf8(content, ITEM_TEXT_MAX);
   if (row.type === "USER_INPUT") return text ? [{ id, ts, kind: "user", text }] : [];
   if (row.type === "ERROR_MESSAGE") {

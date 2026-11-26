@@ -8,6 +8,7 @@ import { searchSessions } from "./api";
 import { copyText } from "../../lib/copy-text";
 import {HarnessMark} from "./tokendance/HarnessMark";
 import { useReview } from "./WorkbenchReview";
+import type { BackStep } from "../android-back";
 
 /** One logical-session row as the list sees it, from the review fixture or from Core. */
 export interface WorkbenchMeta {
@@ -45,6 +46,8 @@ export interface SessionListProps {
   /** the list's own 新建会话 button: a new session on the computer and folder in view */
   onCreate?(): void;
   reloadSessions(): Promise<void>;
+  /** Android's back gesture: the open search closes first, then the archive returns to the list */
+  back?: BackStep;
 }
 
 
@@ -71,7 +74,7 @@ function readOrder():ProjectOrder{
 function writeOrder(order:ProjectOrder){try{localStorage.setItem(ORDER_KEY,JSON.stringify(order))}catch{/* the order lasts for the page */}}
 function readTimeSort(){try{return localStorage.getItem(TIME_KEY)==="1"}catch{return false}}
 const sameList=(a:readonly string[],b:readonly string[])=>a.length===b.length&&a.every((entry,i)=>entry===b[i]);
-export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAction,onSelect,onNew,onCreate,reloadSessions}:SessionListProps) {
+export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAction,onSelect,onNew,onCreate,reloadSessions,back}:SessionListProps) {
   const review=useReview();
   const wbActions = review ? undefined : onWorkbenchAction;
   const [closed,setClosed]=useState<Set<string>>(()=>new Set());
@@ -144,6 +147,11 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
   },[query,review]);
   function toggleTime(){const next=!byTime;setByTime(next);try{localStorage.setItem(TIME_KEY,next?"1":"0")}catch{/* lasts for the page */}}
   function closeSearch(){setSearchOpen(false);setFilter("")}
+  useEffect(()=>{
+    if(!back)return;
+    back.current=()=>{if(searchOpen){closeSearch();return true}if(archived){setArchived(false);return true}return false};
+    return ()=>{back.current=null};
+  });
   function saveOrder(device:string,next:string[]){setOrder(current=>{const all={...current,[device]:next};writeOrder(all);return all})}
   function twist(id:string,name:string){const open=!!filter||!closed.has(id);return <button className="na-twist" disabled={!!filter} title={filter?"搜索时自动展开":undefined} aria-expanded={open} aria-label={(open?"收起":"展开")+name} onClick={()=>toggle(id)}>{open?<ChevronDown size={13}/>:<ChevronRight size={13}/>}</button>}
   const forkKey=forking?.key;
@@ -347,7 +355,7 @@ export function SessionList({groups,selectedKey,pending,workbench,onWorkbenchAct
           <div className="na-folder" draggable={movable} data-dragging={drag?.key===project.key&&drag.device===device.id?"1":undefined}
             onDragStart={movable?e=>{e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",project.label);setDrag({device:device.id,key:project.key})}:undefined}
             onDragEnd={()=>{setDrag(null);setDrop(null)}}>
-            {twist(id,project.label)}<strong title={project.root||project.label}>{project.label}</strong>
+            {twist(id,project.label)}<strong title={project.roots.length>1?project.roots.join("\n"):project.root||project.label}>{project.label}</strong>
             {!project.scratch&&project.root?<button type="button" className="icon-button na-folder-new" aria-label={"在 "+project.label+" 中新建会话"} title="新建会话" onClick={()=>onNew(device.id,project.root)}><Plus size={14}/></button>:null}
             <small>{visible.length}</small></div>{filter||!closed.has(id)?<div className="na-branch">{sessions(shown,parents,null,0,new Set())}
           {olderCount>0?<button type="button" className="na-older" aria-expanded={open} onClick={()=>toggleEarlier(id)}>{open?<ChevronDown size={13}/>:<ChevronRight size={13}/>}<span>更早 {olderCount}</span></button>:null}

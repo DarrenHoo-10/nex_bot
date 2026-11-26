@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { permissionRequest, questionRequest } from "./fixtures";
 import { newRequests, requestBody } from "./notifications";
 import {
-  answersComplete, answersFor, cardState, CLOSED_KEEP, dropOpen, EMPTY_STORE, EXPIRY_GRACE_MS, markAnswered, mergePending,
-  nextExpiry, OTHER_CHOICE, pendingCounts, pendingViews, resolveRequest, setPending, toggleChoice,
+  answersComplete, answersFor, cardState, CLOSED_KEEP, CLOSED_SHOW_MS, dropOpen, EMPTY_STORE, EXPIRY_GRACE_MS, markAnswered, mergePending,
+  nextExpiry, OTHER_CHOICE, pendingCounts, pendingViews, resolveRequest, setPending, shownCards, toggleChoice,
 } from "./requests";
 import { askedSession, waitingCount } from "./session-model";
 import { session } from "./fixtures";
@@ -99,6 +99,17 @@ describe("how a card reads", () => {
     expect(nextExpiry(store, NOW)).toBe(NOW + 2_000 + EXPIRY_GRACE_MS + 1);
     expect(nextExpiry(store, NOW + 20_000)).toBeNull();
     expect(nextExpiry(resolveRequest(store, KEY, "b", "terminal"), NOW)).toBe(NOW + 9_000 + EXPIRY_GRACE_MS + 1);
+  });
+
+  it("shows a handled card for a moment above the box, then lets it go", () => {
+    let store = setPending(EMPTY_STORE, KEY, [req("a"), req("b")]);
+    store = markAnswered(store, KEY, "a", "allow");
+    const records = store.get(KEY)!;
+    const closedAt = records.find((record) => record.view.id === "a")!.closedAt!;
+    expect(shownCards(records, closedAt).map((record) => record.view.id)).toEqual(["b", "a"]);
+    expect(shownCards(records, closedAt + CLOSED_SHOW_MS).map((record) => record.view.id)).toEqual(["b"]);
+    // the clock wakes up when it leaves
+    expect(nextExpiry(setPending(store, KEY, []), closedAt)).toBe(closedAt + CLOSED_SHOW_MS + 1);
   });
 });
 

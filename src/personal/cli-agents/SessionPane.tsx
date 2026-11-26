@@ -4,14 +4,14 @@
 // records the revised message.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowLeft, List, MessageSquare, Share2 } from "lucide-react";
-import { cliQuestionToSteer, modelFailureReason, unwrapPastedContent, type CliItem, type CliAnswerDecision, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
+import { cliPermissionModes, cliQuestionToSteer, modelFailureReason, unwrapPastedContent, type CliItem, type CliAnswerDecision, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { ModelFailureDialog } from "./ModelFailureDialog";
 import { CliApiError, continueSession, editQueued, interruptSession, resumeQueue, sendMessage, steerQueued, stopSession, withdrawQueued } from "./api";
 import { useReview } from "./WorkbenchReview";
 import { useNotes } from "./use-notes";
-import {getApplied,getLaunch,saveApplied,saveLaunch,transferGoal} from "./composer-additions";
+import {getApplied,getLaunch,getPermission,saveApplied,saveLaunch,savePermission,transferGoal,type PermissionChoice} from "./composer-additions";
 import { Composer, type LaunchChoice } from "./Composer";
-import { cardState, type RequestRecord } from "./requests";
+import { cardState, shownCards, type RequestRecord } from "./requests";
 import { RequestCard } from "./RequestCard";
 import { askedSession, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
 import type { CliStream } from "./stream";
@@ -19,6 +19,7 @@ import { SessionInfoCard } from "./SessionInfoCard";
 import type { GuideMessage } from "./transcript";
 import { TranscriptView } from "./TranscriptView";
 import { isVisibleQueueEntry, useCliQueue } from "./use-queue";
+import type { BackStep } from "../android-back";
 
 export interface SessionPaneProps {
   session: CliSessionView;
@@ -26,6 +27,8 @@ export interface SessionPaneProps {
   /** a continued session gets a new key */
   onKeyChange(key: CliSessionKey): void;
   onBack(): void;
+  /** Android's back gesture: the workspace panel closes first, then a message being edited */
+  back?: BackStep;
   /** this session's request cards */
   requests?: readonly RequestRecord[];
   now?: number;
@@ -73,7 +76,7 @@ export function settlePending(list: readonly PendingSend[], items: readonly CliI
   return next.length === list.length ? list as PendingSend[] : next;
 }
 
-export function SessionPane({ session, stream, onKeyChange, onBack, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onBranchReply, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features, echo }: SessionPaneProps) {
+export function SessionPane({ session, stream, onKeyChange, onBack, back, requests = NO_REQUESTS, now = Date.now(), onAnswer, onFork, onBranchReply, onSideOpen, onTerminalOpen, sideCount = 0, compact, title, features, echo }: SessionPaneProps) {
   const review=useReview();
   const details=review?.records[session.key];
   const heading=unwrapPastedContent(details?.title||title?.trim()||"")||sessionTitle(session);
@@ -93,7 +96,8 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   // Core keeps the notes; the isolated review fixture keeps them in the tab
   const {notes,update:updateNotes,error:noteError,dismissError:dismissNoteError}=useNotes(session.key,!review);
   const [items,setItems]=useState<CliItem[]>([]);
-  const cards = [...requests].sort((a, b) => Number(a.closed) - Number(b.closed));
+  // handled cards show their outcome for a moment, then leave the space above the box
+  const cards = shownCards(requests, now);
   const pendingRequests = requests.filter((record) => cardState(record, now) === "pending");
   const shown = askedSession(session, pendingRequests.length);
   const managedClaude = session.engine === "claude" && session.liveIn === "nexbot" && !!session.terminal;
@@ -113,7 +117,9 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
     setGuides(previous => [...previous.filter(row => row.id !== id), guide]);
     try {
       const result = await steerQueued(id, entry.version, waitingSteer);
-      if (result.entry.status === "pending" && (waitingSteer.questionId || waitingSteer.interruptWaiting)) throw new Error("引导未送达，消息仍在队列中");
+      // not taken into the turn (the session was waiting on the user): it stays the next message in the queue, which
+      // sends it as soon as the session takes input, so this is no error
+      if (result.entry.status === "pending" && (waitingSteer.questionId || waitingSteer.interruptWaiting)) { setGuides(list => list.filter(row => row.id !== id)); return; }
       if (result.entry.status === "uncertain") setGuides(list => list.map(row => row.id === id ? { ...row, uncertain: true } : row));
     } catch (error) {
       const uncertain = error instanceof CliApiError && (!error.status || error.code === "unknown" || error.status >= 500);
@@ -132,6 +138,15 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
   }), [session.key]);
   const edit = useCallback((messageId: string, text: string) => { if (revision && revision.messageId !== messageId) hide(revision.messageId, false); hide(messageId, true); setRevision({ messageId, text }); }, [hide, revision]);
   const cancelEdit = () => { if (revision) hide(revision.messageId, false); setRevision(null); };
+  useEffect(() => {
+    if (!back) return;
+    back.current = () => {
+      if (workspaceOpen) { setWorkspaceOpen(false); return true; }
+      if (revision) { cancelEdit(); return true; }
+      return false;
+    };
+    return () => { back.current = null; };
+  });
   // A model call that failed for good, as it arrives: a dialog, and the turn stays where it stopped.
   const [failure, setFailure] = useState<string | null>(null);
   const failuresSeen = useRef<Set<string> | null>(null);
@@ -157,6 +172,13 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
    * Unknown (a session from before this was kept): the saved choice, which it was started with. */
   const applied = useRef<string>(JSON.stringify(getApplied(session.key) ?? launch));
   const markApplied = (key: string, value: LaunchChoice) => { applied.current = JSON.stringify(value); saveApplied(key, value); };
+  // The permission mode picked in the + menu. A stopped session and an idle Antigravity session take it with the next
+  // message; a CLI running in a terminal has no way in, so it takes it the next time it starts.
+  const [permission, setPermission] = useState<PermissionChoice | null>(() => getPermission(session.key));
+  const permissionModes = review || compact ? [] : cliPermissionModes(session.engine, features ?? []);
+  const takesNow = session.state === "stopped" || session.sendVia === "acp";
+  const choosePermission = (mode: CliPermissionMode) => { const next = { mode, pending: true }; setPermission(next); savePermission(session.key, next); };
+  const tookPermission = (key: CliSessionKey, mode: CliPermissionMode) => { const next = { mode, pending: false }; setPermission(next); savePermission(key, next); };
   const chooseLaunch = (next: LaunchChoice) => {
     // a change not sent yet stays a change after the page reopens
     if (!getApplied(session.key)) saveApplied(session.key, JSON.parse(applied.current) as LaunchChoice);
@@ -196,16 +218,20 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
 
   async function deliver(text:string, known:ReadonlySet<string>, delivery:"send"|"queue"|"steer"|undefined, echoId:string) {
     const options = { ...(launch.model ? { model: launch.model } : {}), ...(launch.effort ? { effort: launch.effort } : {}) };
+    const pendingMode = !review && permission?.pending ? permission.mode : undefined;
     if(session.state==="stopped" && !resumedKey.current){
-      // the chosen model and effort start the CLI (an older executor only takes a plain continue)
-      const launchOptions = !review && features?.includes("launchOptions") && Object.keys(options).length ? options : undefined;
-      resumedKey.current=(await continueSession(session.key, launchOptions)).key;
+      // the chosen model, effort and permission mode start the CLI (an older executor only takes a plain continue)
+      const launchOptions = { ...(!review && features?.includes("launchOptions") ? options : {}), ...(pendingMode ? { permissions: pendingMode } : {}) };
+      resumedKey.current=(await continueSession(session.key, Object.keys(launchOptions).length ? launchOptions : undefined)).key;
       markApplied(resumedKey.current, launch);
+      if (pendingMode) tookPermission(resumedKey.current, pendingMode);
     }
     const key=resumedKey.current??session.key;
-    if (!review && session.sendVia === "acp" && session.state === "idle" && delivery !== "steer" && delivery !== "queue" && applied.current !== JSON.stringify(launch)) {
-      if (Object.keys(options).length) await continueSession(key, options);
+    if (!review && session.sendVia === "acp" && session.state === "idle" && delivery !== "steer" && delivery !== "queue" && (applied.current !== JSON.stringify(launch) || (pendingMode && key === session.key))) {
+      const next = { ...options, ...(pendingMode ? { permissions: pendingMode } : {}) };
+      if (Object.keys(next).length) await continueSession(key, next);
       applied.current = JSON.stringify(launch);
+      if (pendingMode) tookPermission(key, pendingMode);
     }
     // a Claude in a NexBot terminal takes the change at once, typed as its own commands
     if(delivery!=="steer" && !review && session.engine==="claude" && session.liveIn==="nexbot" && !!session.terminal && session.state!=="stopped" && applied.current!==JSON.stringify(launch)){
@@ -285,6 +311,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, requests = N
       <Composer
         session={shown} notes={notes} onNotes={updateNotes}
         features={features} launch={launch} onLaunch={chooseLaunch}
+        permissions={permissionModes.length ? { modes: permissionModes, value: permission?.mode, pending: permission?.pending ? (takesNow ? "发送下一条消息时生效" : "会话下次启动时生效") : undefined, onChange: choosePermission } : undefined}
         onSend={send}
         onInterrupt={() => review ? interruptSession(session.key) : stop()}
         queue={queue}

@@ -32,8 +32,38 @@ public struct CliModelCatalog: Sendable, Hashable, Decodable {
     }
 }
 
-/// How a launched CLI asks before it acts: "full" skips every prompt, "ask" keeps the CLI's own prompts (they arrive as cards).
-public enum CliPermissionMode: String, Sendable, Hashable, CaseIterable { case full, ask }
+/// How a launched CLI asks before it acts: each CLI's own permission modes, passed through (same as the web client).
+/// "full" skips every prompt; "ask" keeps the CLI's prompts (they arrive as cards); "edits" lets file edits through
+/// (Claude `acceptEdits`, Antigravity `auto_edit`); "plan" is Claude's plan mode; "auto" Claude's own reviewer;
+/// "readonly" Codex's read-only sandbox.
+public enum CliPermissionMode: String, Sendable, Hashable, CaseIterable { case full, ask, edits, plan, auto, readonly }
+
+public enum CliPermissions {
+    /// A CLI's permission modes in the order a menu shows them, the most cautious first. An executor without
+    /// `permissionModes` takes only full access and asking.
+    public static func modes(engine: CliEngine, features: [String]) -> [CliPermissionMode] {
+        guard features.contains("permissions") else { return [] }
+        let all: [CliPermissionMode] = switch engine {
+        case .claude: [.plan, .ask, .edits, .auto, .full]
+        case .codex: [.readonly, .ask, .full]
+        case .agy: [.ask, .edits, .full]
+        }
+        return features.contains("permissionModes") ? all : all.filter { $0 == .full || $0 == .ask }
+    }
+
+    /// What a mode is called for a CLI (Codex's default writes in its workspace without asking).
+    public static func label(engine: CliEngine, mode: CliPermissionMode) -> String {
+        if engine == .codex && mode == .ask { return "默认" }
+        switch mode {
+        case .full: return "完全访问"
+        case .ask: return "每次询问"
+        case .edits: return "自动接受编辑"
+        case .plan: return "计划模式"
+        case .auto: return "自动审批"
+        case .readonly: return "只读"
+        }
+    }
+}
 
 /// What a new session is started with; empty model and effort leave the CLI's own defaults.
 public struct CliImageUpload: Sendable, Hashable, Identifiable {

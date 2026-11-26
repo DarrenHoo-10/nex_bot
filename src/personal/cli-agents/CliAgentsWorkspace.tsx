@@ -6,6 +6,7 @@ import { PanelLeftOpen, MessageSquare, SquareTerminal, Plus, X } from "lucide-re
 import { WorkbenchProvider, useReview } from "./WorkbenchReview";
 import type { CliAnswerDecision, CliDeviceView, CliRequestView, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
 import { desktop } from "../api";
+import { closeTopLayer, type BackStep } from "../android-back";
 import { BrandMark } from "../components/BrandMark";
 import { answerRequest, cliErrorText, fetchSnapshot, hideSession } from "./api";
 import { ForkDialog, type CliBotChoice } from "./ForkDialog";
@@ -294,11 +295,32 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
     }
   };
 
+  // Android's back gesture goes up one level inside NexAgent and never switches to NexBot: what sits on top closes
+  // first (the app-wide handler does that), then the side panel, the page's own panel, the open page back to the
+  // list, the list's search or archive, and last the app goes to the background.
+  const listBack = useRef<(() => boolean) | null>(null) as BackStep, paneBack = useRef<(() => boolean) | null>(null) as BackStep;
+  useEffect(() => {
+    if (desktop?.platform !== "android") return;
+    // the app-wide handler stands aside while NexAgent is shown, so this one alone answers the gesture
+    const back = () => {
+      if (closeTopLayer()) return;
+      if (forking) { setForking(null); return; }
+      if (sideChats.selected) { sideChats.select(null); return; }
+      if (paneBack.current?.()) return;
+      if (!sidebarList && mobileView === "pane") { setMobileView("list"); return; }
+      if (listBack.current?.()) return;
+      void desktop?.minimize?.();
+    };
+    window.addEventListener("nex-android-back", back);
+    return () => window.removeEventListener("nex-android-back", back);
+  }, [forking, sideChats, sidebarList, mobileView]);
+
   const list = (
     <>
       {!loaded ? <div className="cli-empty" role="status">正在读取…</div> : null}
       {loaded && !groups.length ? <div className="cli-empty">还没有电脑接入</div> : null}
       <SessionList
+        back={listBack}
         groups={groups}
         selectedKey={selectedKey}
         pending={pending}
@@ -370,6 +392,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
                   stream={stream}
                   onKeyChange={(next) => replaceSelection(selected.key, next)}
                   onBack={() => setMobileView("list")}
+                  back={paneBack}
                   requests={requests.store.get(selected.key)}
                   now={requests.now}
                   onAnswer={(id, decision, answers, always) => answer(selected.key, id, decision, answers, always)}

@@ -221,6 +221,20 @@ describe("projects", () => {
     ]);
     expect(groups[2].scratch).toBe(true);
   });
+
+  it("lists folders that show the same name as one project, opening new sessions in the one used last", () => {
+    const older = String.raw`C:\Temp\nex-agy-native-check-z1FQ0M\workspace`, newer = String.raw`C:\Temp\nex-agy-roundtrip-e223BM\Workspace`;
+    const groups = projectGroups([
+      session({ nativeId: "1", engine: "agy", cwd: older, lastActivityAt: 10 }),
+      session({ nativeId: "2", engine: "agy", cwd: newer, lastActivityAt: 30 }),
+      session({ nativeId: "3", cwd: String.raw`D:\ProgrammingProjects\nex_bot`, lastActivityAt: 20 }),
+    ]);
+    expect(groups.map((group) => [group.label, group.rows.map((row) => row.nativeId)])).toEqual([["Workspace", ["1", "2"]], ["nex_bot", ["3"]]]);
+    expect(groups[0]).toMatchObject({ root: newer, roots: [older, newer], members: [normalizePath(older), normalizePath(newer)] });
+    expect(groups[0].key).not.toBe(normalizePath(newer));
+    // a project of one folder keeps that folder's key, so its saved place and fold state stay
+    expect(groups[1].key).toBe(normalizePath(String.raw`D:\ProgrammingProjects\nex_bot`));
+  });
 });
 
 describe("fork nesting", () => {
@@ -271,6 +285,16 @@ describe("project order", () => {
   it("remembers new projects in front without moving known ones", () => {
     expect(rememberProjects([group("a", 1), group("n", 2), group("s", 3, true)], ["x", "a"])).toEqual(["n", "x", "a"]);
     expect(rememberProjects([group("a", 1)], ["x", "a"])).toEqual(["x", "a"]);
+  });
+
+  it("keeps a project that joined folders saved apart in the earliest of their places", () => {
+    const merged = { ...group("w", 9), members: ["w1", "w2"] };
+    const groups = [group("a", 5), merged, group("b", 7)];
+    expect(orderProjects(groups, ["a", "w2", "b", "w1"]).map((g) => g.key)).toEqual(["a", "w", "b"]);
+    const remembered = rememberProjects(groups, ["a", "w2", "b", "w1"]);
+    expect(remembered).toEqual(["a", "w", "w2", "b", "w1"]);
+    // once saved under its own key, it drags like any project
+    expect(orderProjects(groups, moveProject(remembered, "w", "b", true)).map((g) => g.key)).toEqual(["a", "b", "w"]);
   });
 
   it("moves a dragged project before or after the one it was dropped on", () => {

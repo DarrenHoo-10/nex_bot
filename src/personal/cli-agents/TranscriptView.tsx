@@ -1,7 +1,7 @@
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { completedCliReplies, unwrapPastedContent, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
+import { completedCliReplies, isInterruptRecord, unwrapPastedContent, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
 import { MessageImages } from "../components/MessageImages";
 import { parseMessageMedia } from "../message-media";
 import { AGENT_LABEL } from "./session-model";
@@ -48,7 +48,7 @@ export function withoutHidden(blocks: readonly Block[], hidden: ReadonlySet<stri
   let afterHidden = false;
   for (const block of blocks) {
     if (hidden.has(block.id)) { afterHidden = true; continue; }
-    const interrupted = (block.kind === "user" && block.item.text.trim() === "[Request interrupted by user]") || (block.kind === "notice" && block.text === "已中断");
+    const interrupted = (block.kind === "user" && isInterruptRecord(block.item.text)) || (block.kind === "notice" && block.text === "已中断");
     if (afterHidden && interrupted) continue;
     afterHidden = false;
     out.push(block);
@@ -244,7 +244,7 @@ function BlockView({ block, engine, translations, onEdit, guideStatus, byline = 
   // onEdit is passed only for a message that may still be revised
   switch (block.kind) {
     case "user":
-      if(block.item.text.trim()==="[Request interrupted by user]")return <div className="cli-notice">你已中断本次请求</div>;
+      if(isInterruptRecord(block.item.text))return <div className="cli-notice">你已中断本次请求</div>;
       return (
         <div className="cli-msg is-user" data-testid="cli-user">
           <UserMessageContent text={block.item.text}/>
@@ -300,7 +300,7 @@ export function editableMessages(blocks: readonly Block[], now: number): { ids: 
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
     if (block.kind === "assistant" || block.kind === "activity") break;
-    if (block.kind !== "user") continue;
+    if (block.kind !== "user" || isInterruptRecord(block.item.text)) continue;
     const until = block.item.ts + EDIT_WINDOW_MS;
     if (until <= now) break;
     ids.add(block.id);

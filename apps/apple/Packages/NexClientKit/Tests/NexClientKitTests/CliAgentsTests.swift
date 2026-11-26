@@ -224,6 +224,18 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliSessions.hiddenCount(sessions), 1)
     }
 
+    func testSameNamedFoldersAreOneProject() {
+        let sessions = [
+            cliSession("d1:claude:a", cwd: "/tmp/check/workspace", at: 10), cliSession("d1:claude:b", cwd: "/tmp/roundtrip/Workspace", at: 30),
+            cliSession("d1:claude:c", cwd: "/work/nex_bot", at: 20),
+        ]
+        let office = CliSessions.group(devices: [CliDevice(id: "d1", name: "Office", online: true)], sessions: sessions)[0]
+        XCTAssertEqual(office.folders.map(\.label), ["Workspace", "nex_bot"])
+        XCTAssertEqual(office.folders[0].sessions.map(\.key), ["d1:claude:b", "d1:claude:a"])
+        XCTAssertEqual(office.folders[0].cwd, "/tmp/roundtrip/Workspace", "new sessions start in the folder used last")
+        XCTAssertEqual(office.folders[0].roots, ["/tmp/roundtrip/Workspace", "/tmp/check/workspace"])
+    }
+
     func testWaitingAndAsked() {
         let a = cliSession("a", state: .running), b = cliSession("b", state: .waiting), c = cliSession("c", state: .waiting, online: false), d = cliSession("d", state: .waiting, hidden: true)
         XCTAssertEqual(CliSessions.waitingCount([a, b, c, d]), 1)
@@ -368,6 +380,27 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliCardState.terminal.text, "已在终端处理")
         XCTAssertEqual(CliCardState.expired.text, "已过期")
         XCTAssertEqual(CliCardState.gone.text, "会话已结束")
+    }
+
+    func testEachCliOffersItsOwnPermissionModes() {
+        let all = ["permissions", "permissionModes"]
+        XCTAssertEqual(CliPermissions.modes(engine: .claude, features: all), [.plan, .ask, .edits, .auto, .full])
+        XCTAssertEqual(CliPermissions.modes(engine: .codex, features: all), [.readonly, .ask, .full])
+        XCTAssertEqual(CliPermissions.modes(engine: .agy, features: all), [.ask, .edits, .full])
+        XCTAssertEqual(CliPermissions.modes(engine: .claude, features: ["permissions"]), [.ask, .full], "an older executor takes only these")
+        XCTAssertTrue(CliPermissions.modes(engine: .claude, features: []).isEmpty)
+        XCTAssertEqual(CliPermissions.label(engine: .codex, mode: .ask), "默认")
+        XCTAssertEqual(CliPermissions.label(engine: .claude, mode: .edits), "自动接受编辑")
+    }
+
+    func testHandledCardLeavesAfterAMoment() throws {
+        var store = CliRequestStore()
+        store.setPending("k", [cliRequest("a", key: "k", expires: .max / 2), cliRequest("b", key: "k", expires: .max / 2)])
+        store.markAnswered("k", "a", .allow)
+        let closedAt = try XCTUnwrap(store.records["k"]?.first { $0.id == "a" }?.closedAt)
+        XCTAssertEqual(store.shown("k", now: closedAt).map(\.id), ["b", "a"], "open cards first, the answer still in view")
+        XCTAssertEqual(store.shown("k", now: closedAt + CliRequestStore.closedShowMs).map(\.id), ["b"])
+        XCTAssertEqual(store.nextExpiry(now: closedAt), closedAt + CliRequestStore.closedShowMs + 1, "the clock wakes up when it leaves")
     }
 
     func testSessionWideAllow() throws {

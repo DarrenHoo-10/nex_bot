@@ -8,10 +8,21 @@ import UIKit
 import AppKit
 #endif
 
+/// An open session's permission modes in the + menu (its CLI's own), and when a choice takes effect.
+struct AgentPermissionChoice {
+    let engine: CliEngine
+    let modes: [CliPermissionMode]
+    let value: CliPermissionMode?
+    /// set while the CLI has not taken the choice yet
+    let pending: String?
+    let choose: (CliPermissionMode) -> Void
+}
+
 struct AgentComposerAdd: View {
     @Binding var images: [CliImageUpload]
     @Binding var error: String
     var openModels: (() -> Void)?
+    var permissions: AgentPermissionChoice?
     @State private var picking = false
 
     var body: some View {
@@ -19,6 +30,17 @@ struct AgentComposerAdd: View {
             Button("选择图片", systemImage: "photo.on.rectangle") { picking = true }
             Button("粘贴图片", systemImage: "clipboard", action: paste)
             if let openModels { Button("模型", systemImage: "cpu", action: openModels) }
+            if let permissions, !permissions.modes.isEmpty {
+                SwiftUI.Picker(selection: Binding(get: { permissions.value }, set: { if let mode = $0 { permissions.choose(mode) } })) {
+                    ForEach(permissions.modes, id: \.self) { mode in
+                        Text(CliPermissions.label(engine: permissions.engine, mode: mode)).tag(Optional(mode))
+                    }
+                } label: {
+                    Label("权限模式", systemImage: "shield")
+                    if let pending = permissions.pending { Text(pending) }
+                }
+                .pickerStyle(.menu)
+            }
         } label: {
             Image(systemName: "plus").font(.system(size: 17, weight: .medium))
                 .foregroundStyle(Theme.muted).frame(width: 36, height: 36)

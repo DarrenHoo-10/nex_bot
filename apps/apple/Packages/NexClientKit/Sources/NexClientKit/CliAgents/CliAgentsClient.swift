@@ -4,7 +4,7 @@ import Foundation
 // `code` is Core's machine-readable code; `CliErrorText.text(for:)` turns one into the line to show.
 
 private struct CliKeyBody: Encodable { let key: String }
-private struct CliContinueBody: Encodable { let key: String; let effort: String?; let model: String? }
+private struct CliContinueBody: Encodable { let key: String; let effort: String?; let model: String?; var permissions: String? = nil }
 private struct CliStartBody: Encodable {
     let deviceId: String; let engine: String; let cwd: String
     var worktreeBranch: String? = nil; var requestId: String? = nil; var model: String? = nil; var effort: String? = nil; var createDir: Bool? = nil
@@ -112,8 +112,8 @@ extension CoreClient {
     }
 
     /// Resumes a stopped session in a nex_bot terminal. The resumed session may have a new key.
-    public func cliContinue(key: CliSessionKey, effort: String? = nil, model: String? = nil) async throws -> CliSessionKey {
-        let r: CliKeyResult = try await post(Self.cliBase + "/continue", body: CliContinueBody(key: key, effort: effort, model: model))
+    public func cliContinue(key: CliSessionKey, effort: String? = nil, model: String? = nil, permissions: CliPermissionMode? = nil) async throws -> CliSessionKey {
+        let r: CliKeyResult = try await post(Self.cliBase + "/continue", body: CliContinueBody(key: key, effort: effort, model: model, permissions: permissions?.rawValue))
         return r.key
     }
 

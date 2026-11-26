@@ -394,11 +394,16 @@ export class AgyRuntime {
 
   private async configure(session: Session, acp: AgyAcp, settings: CliLaunchOptions, initial?: AgyRecord, newSession = false): Promise<void> {
     let response = initial ?? {};
-    if (newSession || settings.permissions === "ask") {
+    // Antigravity's own modes: `auto_edit` lets file edits through; asking and full access both run `default`, and
+    // full access is answered by this executor (see `answer`). `auto_edit` goes in as the assistants' driver sets it.
+    const wanted = settings.permissions === "edits" ? "auto_edit" : "default";
+    if (newSession || settings.permissions === "ask" || settings.permissions === "edits") {
       const mode = chosenConfig(response, "mode", "mode");
       const current = agyString(mode.currentValue ?? agyRecord(response.modes).currentModeId);
-      if ((!initial || current) && current !== "default") {
-        const configured = await acp.request("session/set_mode", { sessionId: session.id, modeId: "default" });
+      if ((!initial || current) && current !== wanted) {
+        const configured = wanted === "default"
+          ? await acp.request("session/set_mode", { sessionId: session.id, modeId: "default" })
+          : await acp.request("session/set_config_option", { sessionId: session.id, configId: agyString(mode.id) || "mode", value: wanted });
         response = { ...response, ...configured };
       }
     }

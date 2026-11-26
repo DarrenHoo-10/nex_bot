@@ -1126,6 +1126,24 @@ describe("search, launch options and attachments", () => {
     expect((await f.call("cli-agents/start", { deviceId: device.id, engine: "claude", cwd: "C:/proj", permissions: "root" })).status).toBe(400);
   });
 
+  it("passes a CLI's other permission modes only to an executor that takes them, and refuses a mode the CLI lacks", async () => {
+    const f = await fixture();
+    const modes = await connectDevice(f, "perm-modes", { cap: { ...FULL, features: [...FULL.features, "permissions", "permissionModes"] } });
+    const basic = await connectDevice(f, "perm-basic", { cap: { ...FULL, features: [...FULL.features, "permissions"] } });
+    modes.sessions([wire("m1")], { full: true });
+    await until(() => f.app.cliHub.list().sessions.some((s) => s.nativeId === "m1"), "listed");
+    for (const target of [modes, basic]) target.onOp = (message) => message.op === "start" || message.op === "continue" ? { ok: true, result: { ref: "claude:m1", terminal: "t" } } : defaultOp(message);
+    expect((await f.call("cli-agents/start", { deviceId: modes.id, engine: "claude", cwd: "C:/proj", permissions: "plan" })).status).toBe(200);
+    expect(modes.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj", permissions: "plan" });
+    expect((await f.call("cli-agents/continue", { key: keyOf(modes, "m1"), permissions: "edits" })).status).toBe(200);
+    expect(modes.ops("continue").at(-1)!.args).toEqual({ ref: "claude:m1", permissions: "edits" });
+    // an executor with only full and ask keeps the CLI's own settings rather than a mode it cannot apply
+    expect((await f.call("cli-agents/start", { deviceId: basic.id, engine: "claude", cwd: "C:/proj", permissions: "plan" })).status).toBe(200);
+    expect(basic.ops("start").at(-1)!.args).toEqual({ engine: "claude", cwd: "C:/proj" });
+    expect((await f.call("cli-agents/start", { deviceId: modes.id, engine: "codex", cwd: "C:/proj", permissions: "edits" })).status).toBe(400);
+    expect((await f.call("cli-agents/start", { deviceId: modes.id, engine: "codex", cwd: "C:/proj", permissions: "readonly" })).status).toBe(200);
+  });
+
   it("passes each session's context usage to the page, and a change of usage alone", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "context", { cap: FULL });

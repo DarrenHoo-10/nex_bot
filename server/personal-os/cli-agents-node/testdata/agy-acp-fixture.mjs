@@ -68,6 +68,8 @@ lines.on("line", (line) => {
     case "session/set_config_option": {
       const option = configOptions.find((item) => item.id === params.configId);
       if (option) option.currentValue = params.value;
+      // the modes a test asked for, in the isolated profile
+      if (params.configId === "mode") appendFileSync(path.join(dir, "modes.log"), params.value + "\n");
       reply(id, { configOptions });
       break;
     }

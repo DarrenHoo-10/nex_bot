@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  cliPermissionLabel,
+  cliPermissionModes,
+  isInterruptRecord,
   CLI_ATTACH_MAX_BYTES,
   CLI_EFFORTS,
   CLI_ENGINES,
@@ -1059,5 +1062,25 @@ describe("search and attach ops", () => {
     expect(parseCliOpResult("attach", { path: "/tmp/nexbot-attachments/x/a.png" })).toEqual({ path: "/tmp/nexbot-attachments/x/a.png" });
     expect(parseCliOpResult("attach", { path: "C:\\Temp\\a.png" })).toEqual({ path: "C:\\Temp\\a.png" });
     expect(parseCliOpResult("attach", { path: "relative.png" })).toBeNull();
+  });
+});
+
+describe("records and permission modes", () => {
+  it("knows both lines Claude Code records for a stopped turn, and nothing the user wrote", () => {
+    expect(isInterruptRecord("[Request interrupted by user]")).toBe(true);
+    expect(isInterruptRecord(" [Request interrupted by user for tool use]\n")).toBe(true);
+    expect(isInterruptRecord("[Request interrupted by user] then this")).toBe(false);
+    expect(isInterruptRecord("workpace")).toBe(false);
+  });
+
+  it("offers each CLI its own permission modes, and an older executor only full access and asking", () => {
+    expect(cliPermissionModes("claude")).toEqual(["plan", "ask", "edits", "auto", "full"]);
+    expect(cliPermissionModes("codex")).toEqual(["readonly", "ask", "full"]);
+    expect(cliPermissionModes("agy")).toEqual(["ask", "edits", "full"]);
+    expect(cliPermissionModes("zcode")).toEqual([]);
+    expect(cliPermissionModes("claude", ["permissions"])).toEqual(["ask", "full"]);
+    expect(cliPermissionModes("claude", [])).toEqual([]);
+    expect(cliPermissionLabel("codex", "ask")).toBe("默认");
+    expect(cliPermissionLabel("claude", "plan")).toBe("计划模式");
   });
 });

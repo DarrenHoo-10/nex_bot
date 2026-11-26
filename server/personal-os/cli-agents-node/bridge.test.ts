@@ -430,7 +430,7 @@ describe("Codex session mapping", () => {
     const result = reply.result as { ref: string; terminal: string };
     expect(result.ref).toBe(`codex:${XID(9)}`);
     expect(hc.terminals.get(result.terminal)).toMatchObject({
-      argv: ["/fake/bin/codex", "resume", XID(9), "-m", "gpt-6.2", "-c", "model_reasoning_effort=high", "-c", "check_for_update_on_startup=false", "--no-daemon"],
+      argv: ["/fake/bin/codex", "resume", XID(9), "-m", "gpt-6.2", "-c", "model_reasoning_effort=high", "-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request", "-c", "check_for_update_on_startup=false", "--no-daemon"],
       labels: { "nexbot.native": XID(9) },
     });
     expect(t.sessions()).toContainEqual(expect.objectContaining({ nativeId: XID(9), terminal: result.terminal }));
@@ -1045,7 +1045,7 @@ describe("launch options, search and attachments", () => {
   it("lists the features this executor has", async () => {
     const t = setup();
     await t.bridge.prepare();
-    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer"]);
+    expect(t.bridge.capability().features).toEqual(["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes"]);
   });
 
   it("starts and continues with the model and effort the user picked", async () => {
@@ -1061,7 +1061,7 @@ describe("launch options, search and attachments", () => {
     expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=ultra", "-c", "check_for_update_on_startup=false"]);
   });
 
-  it("starts with the CLI's own permission prompts when the user chose ask, and continues with full access when asked", async () => {
+  it("starts asking when the user chose ask, and continues with full access when asked", async () => {
     claudeWritesTranscript();
     claudeTranscript(CID(1), "resume me");
     codexRollout(XID(1), "resume codex");
@@ -1069,7 +1069,7 @@ describe("launch options, search and attachments", () => {
     await t.start();
     const asked = await t.call("start", { engine: "claude", cwd: workDir, permissions: "ask" });
     expect(asked.ok).toBe(true);
-    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", (asked.result as { ref: string }).ref.slice("claude:".length), "--effort", "high"]);
+    expect(hc.last().argv).toEqual(["/fake/bin/claude", "--session-id", (asked.result as { ref: string }).ref.slice("claude:".length), "--effort", "high", "--permission-mode", "default"]);
     expect((await t.call("continue", { ref: `claude:${CID(1)}`, permissions: "full" })).ok).toBe(true);
     expect(hc.last().argv).toEqual(["/fake/bin/claude", "--resume", CID(1), "--effort", "high", "--dangerously-skip-permissions"]);
     expect((await t.call("continue", { ref: `codex:${XID(1)}`, permissions: "full" })).ok).toBe(true);

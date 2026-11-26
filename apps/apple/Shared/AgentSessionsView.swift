@@ -288,7 +288,7 @@ struct AgentSessionList: View {
                     Text("\(folder.sessions.count)").font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }
                 .padding(.horizontal, 6).padding(.top, 8).padding(.bottom, 2)
-                .help(folder.cwd)
+                .help(folder.roots.count > 1 ? folder.roots.joined(separator: "\n") : folder.cwd)
                 ForEach(folder.sessions) { session in row(session, asked: pending[session.key] ?? 0, context: nil) }
             }
             if group.count == 0 { Text("暂无会话").font(.caption).foregroundStyle(Theme.muted) }

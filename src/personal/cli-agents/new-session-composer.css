@@ -1,4 +1,4 @@
-/* The new-session page: the message box in the middle of the pane, with the folder, CLI and model at its edge. */
+/* The new-session page: the message box in the middle of the pane, with the project, CLI and session-option tabs above it. */
 .na-new { --nn-ink: var(--na-ink, #20362b); --nn-muted: var(--na-muted, #52685a); --nn-line: var(--na-line, #d2e1d6); --nn-paper: var(--na-paper, #fff); --nn-hover: var(--na-inset, #eff6ef); --nn-soft: var(--na-soft, #cde8d8); --nn-accent: var(--na-accent, #176643); }
 /* too little room (a phone's keyboard is up): the page scrolls under its header, nothing is drawn over it */
 .na-new .na-new-body { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: safe center; gap: 10px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px clamp(16px, 5vw, 64px) 14vh; }
@@ -9,42 +9,21 @@
 .na-new .na-new-path { min-width: 0; padding: 0 8px; overflow: hidden; color: #b4232a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 /* phones: the box sits at the bottom, in reach of the thumb and right above the keyboard; the brand fills the space
-   above it, and the chips stay in one row that scrolls sideways instead of wrapping. When the keyboard leaves too
-   little room, brand, chips and box keep their size and go up together: the body scrolls, the box stays in view */
+   above it, and the three tabs stay in one row. When the keyboard leaves too
+   little room, brand, tabs and box keep their size and go up together: the body scrolls, the box stays in view */
 @media (max-width: 720px) {
   .na-new .na-new-body { align-items: stretch; justify-content: safe flex-end; padding: 0 0 max(10px, env(safe-area-inset-bottom)); }
   .na-new .na-new-stack { display: flex; flex: 1 0 auto; flex-direction: column; gap: 10px; width: 100%; }
   .na-new .na-new-stack > * { flex: none; }
   .na-stage .cli-app .na-new .na-new-hero { flex: 1 0 auto; min-height: 56px; margin: 0; }
-  .na-stage .cli-app .na-new .na-new-options { flex-wrap: nowrap; overflow-x: auto; margin: 0; padding: 2px 10px; scroll-padding-inline: 10px; scrollbar-width: none; }
-  .na-new .na-new-options::-webkit-scrollbar { display: none; }
-  .na-new .na-new-options > * { flex: none; }
+  .na-stage .cli-app .na-new .na-new-options { margin: 0 10px; }
   .na-new .na-new-path { padding: 0 14px; }
   .na-stage .cli-app .na-new .na-new-stack .cli-composer { width: auto; margin: 0 10px; }
 }
 
-/* chips: folder, CLI, worktree */
-.na-stage .cli-app .na-new .na-new-options button.na-pick-chip,
-.na-stage .cli-app .na-new .na-new-options .na-pick-chip.na-branch-chip {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; min-height: 30px; max-width: 240px; padding: 0 10px; border: 1px solid var(--nn-line); border-radius: 999px;
-  background: var(--nn-paper); color: var(--nn-ink); font-size: 12.5px; font-weight: 500; transform: none;
-}
-.na-stage .cli-app .na-new .na-new-options button.na-pick-chip:hover:enabled { background: var(--nn-hover); }
-.na-stage .cli-app .na-new .na-new-options button.na-pick-chip[aria-expanded="true"] { border-color: var(--nn-accent); background: color-mix(in srgb, var(--nn-soft) 45%, var(--nn-paper)); color: var(--nn-ink); }
-.na-stage .cli-app .na-new .na-new-options button.na-pick-chip[data-empty] { border-style: dashed; color: var(--nn-muted); }
-.na-stage .cli-app .na-new .na-new-options button.na-pick-chip:disabled { opacity: 1; cursor: default; }
 .na-new .na-pick-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .na-new .na-pick-chip > svg { flex: none; color: var(--nn-muted); }
 .na-new .na-pick-chip em { flex: none; padding: 0 6px; border-radius: 6px; background: var(--nn-soft); color: var(--nn-accent); font-size: 10.5px; font-style: normal; line-height: 17px; }
-.na-stage .cli-app .na-new .na-new-options .na-pick-chip.na-branch-chip { gap: 0; padding: 0 4px 0 0; }
-.na-stage .cli-app .na-new .na-new-options .na-branch-chip button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 28px; height: 28px; padding: 0 8px 0 6px; border: 0; border-radius: 999px; background: transparent; color: var(--nn-ink); font-size: 12.5px; }
-.na-stage .cli-app .na-new .na-new-options .na-branch-chip[data-invalid] { border-color: #d65a5a; }
-.na-stage .cli-app .na-new .na-new-options .na-branch-chip:not([data-on]) { border-style: dashed; color: var(--nn-muted); }
-.na-stage .cli-app .na-new .na-new-options .na-branch-chip:not([data-on]):hover { background: var(--nn-hover); }
-.na-new .na-worktree-check { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px 0 10px; font-size: 12.5px; cursor: pointer; user-select: none; }
-.na-new .na-worktree-check input { flex: none; width: 14px; height: 14px; margin: 0; padding: 0; accent-color: var(--nn-accent); cursor: pointer; }
-.na-stage .cli-app .na-new .na-new-options .na-branch-chip[data-on] .na-worktree-check { padding-right: 2px; color: var(--nn-ink); }
-.na-new .na-branch-chip button > span { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
 /* the folder menu */
 .model-menu.na-model-menu.na-dir-menu { padding: 6px 6px 0; }
@@ -87,5 +66,3 @@
 .model-menu.na-model-menu.na-dir-menu .na-dir-current { flex: 1; min-width: 0; overflow: hidden; color: var(--mm-muted); font: 11.5px/1.4 ui-monospace, Consolas, "Microsoft YaHei", monospace; text-overflow: ellipsis; white-space: nowrap; }
 .model-menu.na-model-menu.na-dir-menu button.na-dir-confirm { flex: none; height: 30px; min-height: 30px; padding: 0 14px; border: 0; border-radius: 8px; background: var(--mm-accent); color: #fff; font-size: 12.5px; font-weight: 600; transform: none; }
 .model-menu.na-model-menu.na-dir-menu button.na-dir-confirm:disabled { opacity: .45; }
-.model-menu.na-model-menu.na-branch-menu { padding-bottom: 8px; }
-.model-menu.na-model-menu.na-branch-menu .model-menu-search input { font-family: ui-monospace, Consolas, monospace; }

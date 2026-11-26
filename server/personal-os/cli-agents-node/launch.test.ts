@@ -48,18 +48,28 @@ describe("cliArgs", () => {
     expect(cliArgs("codex", "resume", { nativeId: UUID })).toEqual(["resume", UUID, "-c", "check_for_update_on_startup=false"]);
   });
 
-  it("adds each CLI's full-access flag only for permissions full, after the model flags", () => {
+  it("passes each CLI's own permission mode, after the model flags", () => {
     expect(permissionFlags("claude", "full")).toEqual(["--dangerously-skip-permissions"]);
     expect(permissionFlags("codex", "full")).toEqual(["--dangerously-bypass-approvals-and-sandbox"]);
     expect(permissionFlags("zcode", "full")).toEqual([]);
-    expect(permissionFlags("claude", "ask")).toEqual([]);
+    expect(permissionFlags("claude", "ask")).toEqual(["--permission-mode", "default"]);
+    expect(permissionFlags("claude", "edits")).toEqual(["--permission-mode", "acceptEdits"]);
+    expect(permissionFlags("claude", "plan")).toEqual(["--permission-mode", "plan"]);
+    expect(permissionFlags("claude", "auto")).toEqual(["--permission-mode", "auto"]);
+    expect(permissionFlags("codex", "readonly")).toEqual(["-c", "sandbox_mode=read-only", "-c", "approval_policy=on-request"]);
+    expect(permissionFlags("codex", "ask")).toEqual(["-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request"]);
+    // nothing chosen keeps the CLI's own settings; a mode the CLI does not have is refused
     expect(permissionFlags("codex", undefined)).toEqual([]);
+    expect(permissionFlags("agy", "edits")).toEqual([]);
+    expect(() => permissionFlags("codex", "edits")).toThrow(/no permission mode/);
+    expect(() => permissionFlags("claude", "readonly")).toThrow(/no permission mode/);
     expect(cliArgs("claude", "new", { nativeId: UUID, permissions: "full" })).toEqual(["--session-id", UUID, "--dangerously-skip-permissions"]);
     expect(cliArgs("claude", "new", { nativeId: UUID, model: "opus", permissions: "full" })).toEqual(["--session-id", UUID, "--model", "opus", "--dangerously-skip-permissions"]);
     expect(cliArgs("codex", "new", { permissions: "full" })).toEqual(["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
     expect(cliArgs("codex", "resume", { nativeId: UUID, permissions: "full" })).toEqual(["resume", UUID, "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
     expect(cliArgs("codex", "fork", { forkFrom: UUID, permissions: "full" })).toEqual(["fork", UUID, "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]);
-    expect(cliArgs("codex", "new", { permissions: "ask" })).toEqual(["-c", "check_for_update_on_startup=false"]);
+    expect(cliArgs("codex", "new", { permissions: "ask" })).toEqual(["-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request", "-c", "check_for_update_on_startup=false"]);
+    expect(cliArgs("claude", "resume", { nativeId: UUID, permissions: "plan" })).toEqual(["--resume", UUID, "--permission-mode", "plan"]);
     // ZCode has no such flag and takes the mode without complaint
     expect(cliArgs("zcode", "new", { permissions: "full" })).toEqual([]);
   });

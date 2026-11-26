@@ -1,8 +1,9 @@
 // A new session, started from the same message box every session has (attachments, goal mode, skills, model):
-// the folder, CLI and worktree sit in a row above it, and sending starts the session with that message.
+// three tabs sit in a row above it (the project, the CLI, and the session's options: worktree, branch and
+// permissions), and sending starts the session with that message.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, PanelLeftOpen, ShieldAlert, ShieldCheck } from "lucide-react";
-import type { CliDeviceView, CliEngine, CliPermissionMode, CliSessionKey, CliSessionView } from "../../../shared/cli-agents";
+import { Check, ChevronDown, GitBranch, PanelLeftOpen, ShieldAlert, ShieldCheck } from "lucide-react";
+import { cliPermissionLabel, cliPermissionModes, type CliDeviceView, type CliEngine, type CliPermissionMode, type CliSessionKey, type CliSessionView } from "../../../shared/cli-agents";
 import { useAnchoredPopover } from "../components/anchored-popover";
 import type { LaunchChoice } from "./CliModelMenu";
 import { Composer } from "./Composer";
@@ -46,9 +47,8 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   const [git, setGit] = useState(false);
   const [branch, setBranch] = useState<string | null>(null);
   const [choice, setChoice] = useState<LaunchChoice>({ model: "", effort: "" });
-  const [permissions, setPermissions] = useState<CliPermissionMode>("full");
-  const [agyPermissions, setAgyPermissions] = useState<CliPermissionMode>("ask");
-  const selectedPermissions = engine === "agy" ? agyPermissions : permissions;
+  // each CLI keeps its own choice: full access by default, Antigravity asking (its full access is answered by the executor)
+  const [modeOf, setModeOf] = useState<Partial<Record<CliEngine, CliPermissionMode>>>({});
 
   useEffect(() => {
     if (selectedDeviceId || !deviceId) return;
@@ -66,7 +66,10 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   }, [dir, deviceId, source]);
 
   const features = device?.cliAgents?.features ?? [];
-  const canChoosePermissions = features.includes("permissions") && engine !== "zcode";
+  const permissionModes = cliPermissionModes(engine, features);
+  const preferred = modeOf[engine] ?? (engine === "agy" ? "ask" : "full");
+  const selectedPermissions = permissionModes.includes(preferred) ? preferred : permissionModes.includes("full") ? "full" : permissionModes[0];
+  const canChoosePermissions = permissionModes.length > 0;
   const branchError = branch !== null ? branchProblem(branch) : null;
   const ready = !blocker && !!device && engines.includes(engine) && !!dir && !branchError;
   // the box below is the session's own message box: it only needs the computer, CLI and folder
@@ -113,8 +116,9 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
               deviceId={deviceId} onDevice={(id) => { setDeviceId(id); setDir(null); }} value={dir} onChange={setDir}
               source={source} recents={recent}/>
             <HarnessPicker engines={engines} value={engine} onChange={setEngine} disabled={!device?.online || !device.cliAgents} agyNeedsUpdate={device?.cliAgents?.agyNeedsUpdate}/>
-            {git ? <BranchChip branch={branch} onChange={setBranch} problem={branchError}/> : null}
-            {canChoosePermissions ? <PermissionChip value={selectedPermissions} onChange={engine === "agy" ? setAgyPermissions : setPermissions}/> : null}
+            <SessionOptions git={git} branch={branch} onBranch={setBranch} problem={branchError}
+              engine={engine} modes={permissionModes} permissions={canChoosePermissions ? selectedPermissions : undefined}
+              onPermissions={(mode) => setModeOf((current) => ({ ...current, [engine]: mode }))}/>
           </div>
           {/* only what needs attention; the folder's full path is on its chip */}
           {status ? <span className="na-new-path" role="alert">{status}</span> : null}
@@ -126,38 +130,43 @@ export function NewSessionComposer({ devices, initialDeviceId, initialCwd, recen
   );
 }
 
-/** How the session asks before it acts: full access (the default; nothing is asked) or the CLI's own prompts,
- * which then arrive as cards. One tap switches. */
-function PermissionChip({ value, onChange }: { value: CliPermissionMode; onChange(next: CliPermissionMode): void }) {
-  const full = value === "full";
-  return (
-    <button type="button" className="na-pick-chip na-permission-chip" aria-pressed={full} data-mode={value}
-      title={full ? "完全访问：不再逐项确认" : "每次询问：需要你确认"} onClick={() => onChange(full ? "ask" : "full")}>
-      {full ? <ShieldCheck size={14}/> : <ShieldAlert size={14}/>}<span>{full ? "完全访问" : "每次询问"}</span>
-    </button>
-  );
-}
-
-/** A new worktree for the session: a "Worktree" checkbox, off by default. Checked, the session starts in a new
- * worktree on `nexagent/<random>`; the branch shows beside it and opens to be renamed. */
-function BranchChip({ branch, onChange, problem }: { branch: string | null; onChange(next: string | null): void; problem: string | null }) {
+/** The third tab: how the session runs. It opens a panel with the worktree switch (a Git folder only; on, the
+ * session starts in a new worktree on `nexagent/<random>`, renamable below it) and, where the CLI supports it,
+ * permissions: the CLI's own modes, full access by default; any other mode asks for some actions, as request cards. */
+function SessionOptions({ git, branch, onBranch, problem, engine, modes, permissions, onPermissions }: {
+  git: boolean; branch: string | null; onBranch(next: string | null): void; problem: string | null;
+  engine: CliEngine; modes: readonly CliPermissionMode[]; permissions?: CliPermissionMode; onPermissions(next: CliPermissionMode): void;
+}) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
-  useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false), 300);
+  useAnchoredPopover(open, panel, () => trigger.current, () => [root.current], () => setOpen(false), 280);
   const on = branch !== null;
+  const close = () => { setOpen(false); trigger.current?.focus(); };
   return <div className="model-menu-root" ref={root}>
-    <span className="na-pick-chip na-branch-chip" data-on={on || undefined} data-invalid={problem ? true : undefined}>
-      <label className="na-worktree-check" title="在新的工作树里运行">
-        <input type="checkbox" checked={on} onChange={(event) => { if (event.target.checked) onChange(randomBranch()); else { onChange(null); setOpen(false); } }}/>
-        <span>Worktree</span>
+    <button ref={trigger} type="button" className="na-pick-chip na-options-chip" data-on={on || undefined} data-invalid={problem ? true : undefined}
+      aria-label="会话选项" aria-haspopup="dialog" aria-expanded={open} title={on ? branch || "Worktree" : "Worktree 与权限"} onClick={() => setOpen(!open)}>
+      {/* a branch icon while the session runs in the folder itself; "Worktree" once it gets its own */}
+      <GitBranch size={15}/>{on ? <span>Worktree</span> : null}
+      {permissions && permissions !== "full" ? <ShieldAlert size={13} className="na-options-ask" aria-label={cliPermissionLabel(engine, permissions)}/> : null}<ChevronDown size={13}/>
+    </button>
+    {open && <div ref={panel} popover="manual" className="model-menu na-model-menu na-options-menu" role="dialog" aria-label="会话选项"
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } }}>
+      <label className="na-option-row" data-disabled={!git || undefined}>
+        <span className="na-option-text"><b>Worktree</b>{git ? null : <small>不是 Git 仓库</small>}</span>
+        <input type="checkbox" role="switch" className="na-switch" checked={on} disabled={!git} onChange={(event) => onBranch(event.target.checked ? randomBranch() : null)}/>
       </label>
-      {on ? <button ref={trigger} type="button" aria-label="分支名称" aria-expanded={open} onClick={() => setOpen(!open)}><GitBranch size={13}/><span>{branch || "分支"}</span></button> : null}
-    </span>
-    {open && on && <div ref={panel} popover="manual" className="model-menu na-model-menu na-branch-menu" role="dialog" aria-label="新工作树"
-      onKeyDown={(event) => { if (event.key === "Escape" || event.key === "Enter") { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); } }}>
-      <div className="na-model-head"><span>新工作树的分支</span></div>
-      <label className="model-menu-search"><GitBranch size={14}/><input autoFocus aria-label="新分支名称" value={branch} spellCheck={false} autoComplete="off" onChange={(event) => onChange(event.target.value)}/></label>
+      {on ? <label className="na-option-field"><span>分支</span>
+        <span className="model-menu-search"><GitBranch size={14}/><input aria-label="新分支名称" value={branch} spellCheck={false} autoComplete="off"
+          onChange={(event) => onBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); close(); } }}/></span>
+      </label> : null}
       {problem ? <div className="model-menu-status" role="alert">{problem}</div> : null}
+      {permissions ? <div className="na-option-field"><span>权限</span>
+        <div className="na-option-modes" role="radiogroup" aria-label="权限">
+          {modes.map((mode) => <button key={mode} type="button" role="radio" aria-checked={permissions === mode} onClick={() => onPermissions(mode)}>
+            {mode === "full" ? <ShieldCheck size={14}/> : <ShieldAlert size={14}/>}<span>{cliPermissionLabel(engine, mode)}</span>{permissions === mode ? <Check size={14}/> : null}
+          </button>)}
+        </div>
+      </div> : null}
     </div>}
   </div>;
 }

@@ -7,6 +7,8 @@ import type { CliRequestQuestion, CliRequestResolvedBy, CliRequestView, CliSessi
 export const EXPIRY_GRACE_MS = 5000;
 /** Closed cards kept per session, newest last. */
 export const CLOSED_KEEP = 10;
+/** How long a card stays above the box after it closed, so the answer is seen; then it leaves. */
+export const CLOSED_SHOW_MS = 4000;
 
 export interface RequestRecord {
   view: CliRequestView;
@@ -16,6 +18,8 @@ export interface RequestRecord {
   /** allowed for the rest of the session */
   always?: boolean;
   by?: CliRequestResolvedBy;
+  /** when this page saw it close */
+  closedAt?: number;
 }
 
 export type RequestStore = ReadonlyMap<CliSessionKey, readonly RequestRecord[]>;
@@ -75,7 +79,7 @@ function close(store: RequestStore, key: CliSessionKey, id: string, patch: Pick<
   const record = current?.find((entry) => entry.view.id === id && !entry.closed);
   if (!current || !record) return store;
   const rest = current.filter((entry) => entry !== record);
-  return put(store, key, [...rest, { ...record, closed: true, ...patch }]);
+  return put(store, key, [...rest, { ...record, closed: true, closedAt: Date.now(), ...patch }]);
 }
 
 export function resolveRequest(store: RequestStore, key: CliSessionKey, id: string, by: CliRequestResolvedBy): RequestStore {
@@ -115,6 +119,12 @@ export const CARD_STATE_TEXT: Record<CardState, string> = {
   expired: "已过期",
 };
 
+/** The cards shown above the box: open ones, and closed ones for CLOSED_SHOW_MS after they closed. Open cards first. */
+export function shownCards(records: readonly RequestRecord[], now: number): RequestRecord[] {
+  return records.filter((record) => !record.closed || now < (record.closedAt ?? 0) + CLOSED_SHOW_MS)
+    .sort((a, b) => Number(a.closed) - Number(b.closed));
+}
+
 export function pendingOf(store: RequestStore, key: CliSessionKey, now: number): RequestRecord[] {
   return (store.get(key) ?? []).filter((record) => cardState(record, now) === "pending");
 }
@@ -135,13 +145,12 @@ export function pendingViews(store: RequestStore, now: number): CliRequestView[]
   return views;
 }
 
-/** The next time an open card flips to expired after `now`, or null when there is none. */
+/** The next time a card changes after `now` (an open card flips to expired, a closed one leaves), or null when none will. */
 export function nextExpiry(store: RequestStore, now: number): number | null {
   let next: number | null = null;
   for (const records of store.values()) {
     for (const record of records) {
-      if (record.closed) continue;
-      const at = record.view.expiresAt + EXPIRY_GRACE_MS + 1;
+      const at = record.closed ? (record.closedAt ?? 0) + CLOSED_SHOW_MS + 1 : record.view.expiresAt + EXPIRY_GRACE_MS + 1;
       if (at <= now) continue;
       if (next === null || at < next) next = at;
     }

@@ -15,6 +15,8 @@ enum AgentDrafts {
     static var appliedModels: [CliSessionKey: String] = [:]
     static var efforts: [CliSessionKey: String] = [:]
     static var appliedEfforts: [CliSessionKey: String] = [:]
+    /// The permission mode picked in the + menu, and whether the CLI still has to take it.
+    static var permissions: [CliSessionKey: (mode: CliPermissionMode, pending: Bool)] = [:]
 }
 
 private enum AgentTab: Hashable { case terminal, chat }
@@ -111,7 +113,8 @@ struct AgentSessionDetail: View {
     private func content(_ session: CliSession) -> some View {
         let attach = CliSessions.canAttach(session)
         let shown = attach ? tab : .chat
-        let cards = model.cards(key)
+        // handled cards show their outcome for a moment, then leave the space above the box
+        let cards = model.shownCards(key)
         return VStack(spacing: 0) {
             header(session, attach: attach, shown: shown)
             if !actionError.isEmpty {
@@ -133,7 +136,7 @@ struct AgentSessionDetail: View {
             if !cards.isEmpty {
                 ScrollView {
                     VStack(spacing: 8) {
-                        ForEach(cards.sorted { !$0.closed && $1.closed }) { record in
+                        ForEach(cards) { record in
                             AgentRequestCard(model: model, record: record)
                         }
                     }
@@ -980,6 +983,24 @@ private struct AgentComposer: View {
     private var resolvedEffort: String? {
         CliLaunches.resolveEffort(engine: session.engine, offered: offered, preferred: selectedEffort)
     }
+    @State private var permission: (mode: CliPermissionMode, pending: Bool)?
+    /// A stopped session and an idle Antigravity session take a new permission mode with the next message; a CLI
+    /// running in a terminal has no way in, so it takes it the next time it starts (same as the web client).
+    private var permissionChoice: AgentPermissionChoice? {
+        let modes = CliPermissions.modes(engine: session.engine, features: model.device(session.deviceId)?.cliAgents?.features ?? [])
+        guard !modes.isEmpty else { return nil }
+        let takesNow = session.state == .stopped || managedAcp
+        return AgentPermissionChoice(engine: session.engine, modes: modes, value: permission?.mode,
+                                     pending: permission?.pending == true ? (takesNow ? "发送下一条消息时生效" : "会话下次启动时生效") : nil) { mode in
+            permission = (mode, true)
+            AgentDrafts.permissions[session.key] = (mode, true)
+        }
+    }
+    private var pendingPermission: CliPermissionMode? { permission?.pending == true ? permission?.mode : nil }
+    private func tookPermission(_ key: CliSessionKey, _ mode: CliPermissionMode) {
+        permission = (mode, false)
+        AgentDrafts.permissions[key] = (mode, false)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -993,7 +1014,7 @@ private struct AgentComposer: View {
             case .stopped(let hint):
                 HStack {
                     #if os(iOS)
-                    if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error) }
+                    if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error, permissions: permissionChoice) }
                     #endif
                     Text(hint ?? "会话已停止").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
@@ -1014,6 +1035,7 @@ private struct AgentComposer: View {
             effort = AgentDrafts.efforts[session.key]
             chosenModel = AgentDrafts.models[session.key] ?? ""
             images = AgentDrafts.images[session.key] ?? []
+            permission = AgentDrafts.permissions[session.key]
         }
         .onChange(of: draft) { _, text in AgentDrafts.texts[session.key] = text }
         .onChange(of: images) { _, value in AgentDrafts.images[session.key] = value.isEmpty ? nil : value }
@@ -1093,7 +1115,7 @@ private struct AgentComposer: View {
 
     private func sendRow(running: Bool) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            AgentComposerAdd(images: $images, error: $error)
+            AgentComposerAdd(images: $images, error: $error, permissions: permissionChoice)
             TextField("发消息", text: $draft, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain)
                 .padding(.horizontal, 12).padding(.vertical, 8)
@@ -1204,10 +1226,12 @@ private struct AgentComposer: View {
                 let previousModel = AgentDrafts.appliedModels[session.key]
                 let requestedModel = chosenModel.isEmpty ? (previousModel == nil ? nil : catalog.current) : chosenModel
                 let level = effort == nil ? nil : resolvedEffort
-                if (requestedModel != nil && requestedModel != previousModel) || (level != nil && level != AgentDrafts.appliedEfforts[session.key]) {
-                    _ = try await model.continueSession(session.key, effort: level, model: requestedModel)
+                let mode = pendingPermission
+                if (requestedModel != nil && requestedModel != previousModel) || (level != nil && level != AgentDrafts.appliedEfforts[session.key]) || mode != nil {
+                    _ = try await model.continueSession(session.key, effort: level, model: requestedModel, permissions: mode)
                     AgentDrafts.appliedModels[session.key] = requestedModel
                     AgentDrafts.appliedEfforts[session.key] = level
+                    if let mode { tookPermission(session.key, mode) }
                 }
             }
             if canSetOnSend {
@@ -1251,7 +1275,9 @@ private struct AgentComposer: View {
         do {
             let level = canSetOnResume ? resolvedEffort : nil
             let requestedModel = canSetOnResume && !chosenModel.isEmpty ? chosenModel : nil
-            let next = try await model.continueSession(session.key, effort: level, model: requestedModel)
+            let mode = pendingPermission
+            let next = try await model.continueSession(session.key, effort: level, model: requestedModel, permissions: mode)
+            if let mode { tookPermission(next, mode) }
             AgentDrafts.efforts[next] = effort
             AgentDrafts.appliedEfforts[next] = level
             AgentDrafts.models[next] = requestedModel

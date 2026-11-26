@@ -9,7 +9,7 @@ import { access, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { CLI_ENGINES, isCliEffort, isCliModel, type CliEngine, type CliLaunchOptions } from "../../../shared/cli-agents.ts";
+import { CLI_ENGINES, cliPermissionModes, isCliEffort, isCliModel, type CliEngine, type CliLaunchOptions } from "../../../shared/cli-agents.ts";
 
 export { CLI_ENGINES, type CliEngine };
 /** `fork`: a new session that starts from the context of another one (`forkFrom`). */
@@ -251,15 +251,23 @@ function launchFlags(engine: CliEngine, options: CliLaunchOptions): string[] {
   return [...flags, ...access];
 }
 
-/** Full access: Claude Code skips every permission prompt, Codex runs without approvals or
- * sandbox. "ask" (or nothing) adds no flag, so the CLI keeps the user's own settings. ZCode
- * has no such flag. Both flags are accepted by `claude --resume`/`--fork-session` and by
- * `codex resume`/`codex fork` (Claude Code 2.1.331, Codex 0.163). */
+/** Each CLI's own permission mode. Full access: Claude Code skips every permission prompt, Codex runs
+ * without approvals or sandbox. Claude's other modes are `--permission-mode` (`default` asks, `acceptEdits`,
+ * `plan`, `auto`); Codex's are its sandbox and approval policy (`read-only`, or its default `workspace-write`,
+ * both asking on request, as `-c` overrides). Nothing chosen adds no flag, so the CLI keeps the user's own settings; a mode the
+ * CLI does not have (Codex `edits`) is refused. ZCode has none, and Antigravity takes its mode over ACP (agy.ts).
+ * All are accepted by `claude --resume`/`--fork-session` and by `codex resume`/`codex fork` (Claude Code
+ * 2.1.331, Codex 0.163). */
 export function permissionFlags(engine: CliEngine, mode: CliLaunchOptions["permissions"]): string[] {
-  if (mode !== "full") return [];
-  if (engine === "claude") return ["--dangerously-skip-permissions"];
-  if (engine === "codex") return ["--dangerously-bypass-approvals-and-sandbox"];
-  return [];
+  if (mode === undefined || (engine !== "claude" && engine !== "codex")) return [];
+  if (!cliPermissionModes(engine).includes(mode)) throw new LaunchError("invalid_argument", `${engine} has no permission mode ${JSON.stringify(mode)}`);
+  if (engine === "claude") {
+    if (mode === "full") return ["--dangerously-skip-permissions"];
+    return ["--permission-mode", mode === "ask" ? "default" : mode === "edits" ? "acceptEdits" : mode];
+  }
+  if (mode === "full") return ["--dangerously-bypass-approvals-and-sandbox"];
+  // `-c` overrides, like the effort: `codex resume`/`codex fork` take them as the TUI does
+  return ["-c", `sandbox_mode=${mode === "readonly" ? "read-only" : "workspace-write"}`, "-c", "approval_policy=on-request"];
 }
 
 /** Codex's TUI checks for a newer release on startup and, when it finds one, opens an

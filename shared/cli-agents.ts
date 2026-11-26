@@ -455,9 +455,10 @@ export interface CliError {
  * attachments written to the computer (`attach`) and the models its CLIs offer
  * (`models`). Older executors send none. */
 /** `dirs`: list a computer's folders, and `createDir` on `start` makes a missing folder first. */
-export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer";
-/** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask". */
-export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer"];
+export type CliFeature = "search" | "launchOptions" | "attach" | "models" | "dirs" | "permissions" | "inboxSteer" | "permissionModes";
+/** `permissions`: the executor takes CliLaunchOptions.permissions and starts new sessions with full access unless told "ask".
+ * `permissionModes`: it also takes each CLI's other permission modes (cliPermissionModes); without it only "full" and "ask". */
+export const CLI_FEATURES: readonly CliFeature[] = ["search", "launchOptions", "attach", "models", "dirs", "permissions", "inboxSteer", "permissionModes"];
 
 /** What the page shows when the computer's executor lacks a feature. */
 export const CLI_OUTDATED_TEXT = "电脑端版本过旧，升级后可用";
@@ -558,11 +559,35 @@ export function isCliEffort(engine: CliEngine, value: unknown): value is string 
   return typeof value === "string" && (CLI_EFFORTS[engine] ?? []).includes(value);
 }
 
-/** How a launched CLI asks before it acts. "full": Claude `--dangerously-skip-permissions`, Codex
- * `--dangerously-bypass-approvals-and-sandbox` (nothing is asked). "ask": the CLI's own settings, so
- * prompts reach the request cards. A new session (start) defaults to "full", a continued one to "ask". */
-export type CliPermissionMode = "full" | "ask";
-export const CLI_PERMISSION_MODES: readonly CliPermissionMode[] = ["full", "ask"];
+/** How a launched CLI asks before it acts: each CLI's own permission modes, passed through.
+ * - "full": nothing is asked (Claude `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`,
+ *   Antigravity's requests answered by the executor).
+ * - "ask": the CLI asks, and its prompts reach the request cards (Claude `default`, Codex workspace-write on request,
+ *   Antigravity `default`).
+ * - "edits": file edits go ahead, other actions ask (Claude `acceptEdits`, Antigravity `auto_edit`).
+ * - "plan": Claude plans without changing anything (`plan`).
+ * - "auto": Claude's own reviewer approves routine actions (`auto`).
+ * - "readonly": Codex reads but does not write (`read-only` sandbox).
+ * A new session (start) defaults to "full", a continued one keeps the CLI's own settings. */
+export type CliPermissionMode = "full" | "ask" | "edits" | "plan" | "auto" | "readonly";
+export const CLI_PERMISSION_MODES: readonly CliPermissionMode[] = ["full", "ask", "edits", "plan", "auto", "readonly"];
+/** The two every executor with `permissions` takes; the rest need `permissionModes`. */
+export const CLI_BASIC_PERMISSION_MODES: readonly CliPermissionMode[] = ["full", "ask"];
+
+/** A CLI's permission modes in the order a menu shows them, the most cautious first. */
+export function cliPermissionModes(engine: CliEngine, features: readonly string[] = ["permissions", "permissionModes"]): CliPermissionMode[] {
+  if (!features.includes("permissions") || engine === "zcode") return [];
+  const all: CliPermissionMode[] = engine === "claude" ? ["plan", "ask", "edits", "auto", "full"]
+    : engine === "codex" ? ["readonly", "ask", "full"]
+      : engine === "agy" ? ["ask", "edits", "full"] : ["ask", "full"];
+  return features.includes("permissionModes") ? all : all.filter((mode) => CLI_BASIC_PERMISSION_MODES.includes(mode));
+}
+
+/** What a permission mode is called for a CLI (Codex's default writes in its workspace without asking). */
+export function cliPermissionLabel(engine: CliEngine, mode: CliPermissionMode): string {
+  if (engine === "codex" && mode === "ask") return "默认";
+  return { full: "完全访问", ask: "每次询问", edits: "自动接受编辑", plan: "计划模式", auto: "自动审批", readonly: "只读" }[mode];
+}
 
 export interface CliLaunchOptions {
   model?: string;
@@ -1846,6 +1871,13 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
 const CLI_COMMAND_RECORD = /^\s*(?:<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat)>[\s\S]*?<\/\1>\s*)+$/;
 export function isCliCommandRecord(text: string): boolean {
   return CLI_COMMAND_RECORD.test(text);
+}
+
+/** The line Claude Code records when the user stops a turn ("[Request interrupted by user]", or "… for tool use"
+ * when it was stopped at a tool). It is not the user's words. */
+const INTERRUPT_RECORD = /^\[Request interrupted by user(?: for tool use)?\]$/;
+export function isInterruptRecord(text: string): boolean {
+  return INTERRUPT_RECORD.test(text.trim());
 }
 
 /** Claude Code records text that reached it as a paste inside `<pasted_content id="…">` tags

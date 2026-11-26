@@ -343,6 +343,25 @@ describe("queue delivery", () => {
     expect(device.ops("send").map((op) => op.args.text)).toEqual(["New direction"]);
   });
 
+  it("keeps a guide that could not follow the interrupt as the next message, without an error, and sends it once the session is idle", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "wait-steer-retry");
+    const key = await sessionOn(f, device, "w2", "waiting");
+    let sends = 0;
+    device.onOp = (message) => {
+      if (message.op === "interrupt") return { ok: true, result: { outcome: "interrupted" } };
+      if (message.op === "send") return ++sends === 1 ? { ok: false, error: { code: "busy" } } : { ok: true, result: { turn: 3, started: true } };
+      return { ok: true, result: {} };
+    };
+    const queued = (await f.call("cli-agents/send", { key, text: "New direction", delivery: "queue", clientMessageId: ids.client(), requestId: ids.request() })).data;
+    const held = await f.call("cli-agents/steer-waiting", { entryId: queued.messageId, expectedVersion: queued.version, interruptWaiting: true });
+    expect(held.status).toBe(200);
+    expect(held.data.entry.status).toBe("pending");
+    device.sessions([runningWire("w2", { state: "idle" })]);
+    await until(() => device.ops("send").length === 2, "sent from the queue once the session is idle");
+    expect(device.ops("send").map((op) => op.args.text)).toEqual(["New direction", "New direction"]);
+  });
+
   it("steers the edited queue entry only at its current version", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "queue-steer");

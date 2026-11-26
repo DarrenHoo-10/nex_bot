@@ -677,8 +677,12 @@ export class CliAgentWorkbench {
       this.store.run("UPDATE cli_agent_outbox SET status='pending',version=version+1,updated_at=? WHERE id=?", now(), input.entryId);
     }
     this.pushQueue(workbenchId);
-    if (failure.code === "turn_changed" && !waitingSteer.questionId && !waitingSteer.interruptWaiting) this.pump(workbenchId);
-    else if (!waitingSteer.questionId && !waitingSteer.interruptWaiting && failure.code !== "unknown") throw new CliOpError(failure.code, "引导未送达，消息仍在队列中");
+    if (failure.code !== "unknown") {
+      // A waiting session was stopped for this message, or the turn already ended: it is the next message either way,
+      // and the queue sends it as soon as the session takes input.
+      if (waitingSteer.interruptWaiting || (failure.code === "turn_changed" && !waitingSteer.questionId)) this.pump(workbenchId);
+      else if (!waitingSteer.questionId) throw new CliOpError(failure.code, "没能插入这一轮，会在这一轮结束后发送");
+    }
     return this.entryView(this.entryRow(input.entryId));
   }
 

@@ -2914,19 +2914,229 @@
     letter-spacing: -0.03em;
     color: var(--na-ink);
   }
+  /* three tabs in one row above the box: project, CLI, session options. The CLI's name gives up width first,
+     then the project's; the options tab keeps its size. The box below is as wide as the row. */
   .na-stage .cli-app .na-new .na-new-options {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
     gap: 8px;
+    padding: 0;
+    overflow: visible;
   }
-  .na-stage .cli-app .na-new .na-new-options button.na-pick-chip,
-  .na-stage .cli-app .na-new .na-new-options .na-pick-chip.na-branch-chip {
-    height: 32px;
-    min-height: 32px;
-    padding: 0 11px;
-    border-color: var(--na-line-strong);
+  .na-stage .cli-app .na-new .na-new-options > .model-menu-root {
+    display: flex;
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+  .na-stage .cli-app .na-new .na-new-options > .model-menu-root:nth-child(2) {
+    flex-shrink: 3;
+  }
+  .na-stage .cli-app .na-new .na-new-options > .model-menu-root:last-child {
+    flex: none;
+  }
+  .na-stage .cli-app .na-new .na-new-options button.na-pick-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    height: 34px;
+    min-height: 34px;
+    padding: 0 10px 0 11px;
+    border: 1px solid var(--na-line-strong);
+    border-radius: 11px;
+    background: var(--na-paper);
+    color: var(--na-ink);
+    font-size: 13px;
+    font-weight: 500;
     box-shadow: 0 1px 2px rgba(10, 32, 24, 0.04);
+    transform: none;
   }
-  .na-stage .cli-app .na-new .na-new-options .na-pick-chip.na-branch-chip {
-    padding: 0 4px 0 0;
+  .na-stage .cli-app .na-new .na-new-stack form.na-message-box {
+    width: 100%;
+    margin: 0;
+  }
+  @media (max-width: 720px) {
+    .na-stage .cli-app .na-new .na-new-stack form.na-message-box {
+      width: auto;
+      margin: 0 10px;
+    }
+    .na-stage .cli-app .na-new .na-new-options {
+      gap: 6px;
+    }
+    .na-stage .cli-app .na-new .na-new-options button.na-pick-chip {
+      gap: 5px;
+      padding: 0 8px 0 9px;
+    }
+  }
+  .na-stage .cli-app .na-new .na-new-options button.na-pick-chip > svg:last-child {
+    margin-left: -1px;
+    color: var(--na-muted);
+  }
+  .na-stage .cli-app .na-new .na-new-options button.na-pick-chip:hover:enabled {
+    background: var(--na-hover);
+  }
+  .na-stage .cli-app .na-new .na-new-options button.na-pick-chip[aria-expanded="true"] {
+    border-color: var(--na-accent);
+    background: color-mix(in srgb, var(--na-soft) 45%, var(--na-paper));
+  }
+  .na-stage .cli-app .na-new .na-new-options button.na-options-chip[data-on] > svg:first-child {
+    color: var(--na-accent);
+  }
+  .na-stage .cli-app .na-new .na-new-options button.na-options-chip[data-invalid] {
+    border-color: #d65a5a;
+  }
+  .na-stage .cli-app .na-new .na-new-options .na-options-ask {
+    color: #b7791f;
+  }
+
+  /* the session options panel: worktree switch, branch, permissions */
+  .model-menu.na-model-menu.na-options-menu {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+  }
+  .na-options-menu .na-option-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 34px;
+    padding: 2px 4px;
+    cursor: pointer;
+  }
+  .na-options-menu .na-option-row[data-disabled] {
+    cursor: default;
+  }
+  .na-options-menu .na-option-text {
+    display: grid;
+    gap: 1px;
+  }
+  .na-options-menu .na-option-text b {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--mm-ink);
+  }
+  .na-options-menu .na-option-row[data-disabled] b {
+    color: var(--mm-muted);
+  }
+  .na-options-menu .na-option-text small {
+    font-size: 11.5px;
+    color: var(--mm-muted);
+  }
+  .na-options-menu .na-switch {
+    appearance: none;
+    position: relative;
+    flex: none;
+    width: 36px;
+    height: 21px;
+    margin: 0;
+    border-radius: 999px;
+    background: var(--mm-line);
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+  .na-options-menu .na-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(10, 32, 24, 0.25);
+    transition: transform 0.15s ease;
+  }
+  .na-options-menu .na-switch:checked {
+    background: var(--mm-accent);
+  }
+  .na-options-menu .na-switch:checked::after {
+    transform: translateX(15px);
+  }
+  .na-options-menu .na-switch:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .na-options-menu .na-option-field {
+    display: grid;
+    gap: 6px;
+  }
+  .na-options-menu .na-option-field > span:first-child {
+    padding: 0 4px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--mm-muted);
+  }
+  .model-menu.na-model-menu.na-options-menu .model-menu-search {
+    margin: 0;
+  }
+  .na-options-menu .model-menu-search input {
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .na-options-menu .model-menu-status {
+    margin: -4px 4px 0;
+  }
+  /* a CLI's permission modes: one row each, the chosen one checked (new-session options, the + menu) */
+  .na-options-menu .na-option-modes,
+  .na-stage .cli-app .na-permission-menu {
+    display: grid;
+    gap: 2px;
+  }
+  .na-options-menu .na-option-modes button,
+  .na-stage .cli-app .na-permission-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--na-ink);
+    font-size: 13px;
+    font-weight: 500;
+    text-align: left;
+    transform: none;
+  }
+  .na-options-menu .na-option-modes button > svg:first-child {
+    flex: none;
+    color: var(--na-muted);
+  }
+  .na-options-menu .na-option-modes button:hover,
+  .na-stage .cli-app .na-permission-menu button:hover {
+    background: var(--na-hover);
+  }
+  .na-options-menu .na-option-modes button[aria-checked="true"],
+  .na-stage .cli-app .na-permission-menu button[aria-checked="true"] {
+    background: color-mix(in srgb, var(--na-soft) 45%, var(--na-paper));
+    font-weight: 600;
+  }
+  .na-options-menu .na-option-modes button > span,
+  .na-stage .cli-app .na-permission-menu button > span {
+    flex: 1;
+    min-width: 0;
+  }
+  .na-options-menu .na-option-modes button > svg:last-child:not(:first-child),
+  .na-stage .cli-app .na-permission-menu button > svg {
+    flex: none;
+    color: var(--na-accent);
+  }
+  .na-stage .cli-app .na-permission-menu .na-permission-note {
+    padding: 4px 10px 2px;
+    color: var(--na-muted);
+    font-size: 12px;
+  }
+  .na-stage .cli-app .na-add-menu button small {
+    margin-left: auto;
+    color: var(--na-muted);
+    font-size: 12px;
+  }
+  .na-stage .cli-app .na-add-menu button small + svg {
+    flex: none;
+    color: var(--na-muted);
   }
 
   /* NexAgent Git Workspace Drawer */

@@ -27,6 +27,7 @@ import {
   normalizeCliTaskItem,
   parseCliKey,
   parseCliOpArgs,
+  CLI_BASIC_PERMISSION_MODES,
   parseCliOpResult,
   parseDeviceCliMessage,
   type CliAgentsCapability,
@@ -915,8 +916,8 @@ export class CliAgentHub {
 
   /** Model and effort only go to an executor that lists `launchOptions`: an older
    * one would drop them from the args and start with its defaults unasked. The
-   * permission mode only goes to one that lists `permissions`; an older one keeps
-   * asking as it always did, so the choice is dropped rather than refused. */
+   * permission mode only goes to one that lists `permissions` (and, beyond "full" and "ask", `permissionModes`);
+   * an older one keeps the CLI's own settings, so the choice is dropped rather than refused. */
   private launchOptions(deviceId: string, launch: CliLaunchOptions): CliLaunchOptions {
     const caps = this.caps.get(deviceId);
     const options: CliLaunchOptions = {
@@ -924,7 +925,10 @@ export class CliAgentHub {
       ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
     };
     if (Object.keys(options).length && caps && !hasCliFeature(caps, "launchOptions")) throw new CliOpError("invalid", CLI_OUTDATED_TEXT);
-    if (launch.permissions !== undefined && (!caps || hasCliFeature(caps, "permissions"))) options.permissions = launch.permissions;
+    const basic = launch.permissions !== undefined && CLI_BASIC_PERMISSION_MODES.includes(launch.permissions);
+    if (launch.permissions !== undefined && (!caps || (hasCliFeature(caps, "permissions") && (basic || hasCliFeature(caps, "permissionModes"))))) {
+      options.permissions = launch.permissions;
+    }
     return options;
   }
 

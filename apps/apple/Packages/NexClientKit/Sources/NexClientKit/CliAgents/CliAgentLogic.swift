@@ -6,10 +6,13 @@ import Foundation
 // MARK: Sessions
 
 public struct CliFolderGroup: Sendable, Hashable, Identifiable {
+    /// where new sessions start: the folder used last
     public var cwd: String
     public var label: String
     public var sessions: [CliSession]
-    public var id: String { cwd }
+    /// every folder the project joins, first used last
+    public var roots: [String] = []
+    public var id: String { label.lowercased() }
 }
 
 public struct CliDeviceGroup: Sendable, Hashable, Identifiable {
@@ -77,11 +80,15 @@ public enum CliSessions {
             let mine = visible.filter { $0.deviceId == id }.sorted(by: recent)
             var folders: [String: CliFolderGroup] = [:]
             var folderOrder: [String] = []
-            // a worktree sits under the repository it was made from
+            // a worktree sits under the repository it was made from; folders that show the same name are one project,
+            // wherever they are (two `workspace` folders list once), and it starts new sessions in the one used last
             for s in mine {
                 let root = s.repoRoot?.isEmpty == false ? s.repoRoot! : s.cwd
-                if folders[root] == nil { folders[root] = CliFolderGroup(cwd: root, label: folderLabel(root), sessions: []); folderOrder.append(root) }
-                folders[root]?.sessions.append(s)
+                let label = folderLabel(root)
+                let name = label.lowercased()
+                if folders[name] == nil { folders[name] = CliFolderGroup(cwd: root, label: label, sessions: []); folderOrder.append(name) }
+                if folders[name]?.roots.contains(root) == false { folders[name]?.roots.append(root) }
+                folders[name]?.sessions.append(s)
             }
             let sortedFolders = folderOrder.compactMap { folders[$0] }.sorted { ($0.sessions.first?.lastActivityAt ?? 0) > ($1.sessions.first?.lastActivityAt ?? 0) }
             groups.append(CliDeviceGroup(device: device, folders: sortedFolders, count: mine.count))
@@ -302,6 +309,8 @@ public enum CliTranscript {
             // a `/model` switch and other commands leave bookkeeping records, not the user's words
             case .user:
                 guard !isCommandRecord(item.text) else { continue }
+                // the line Claude Code records when the user stops a turn is not the user's words
+                if isInterruptRecord(item.text) { blocks.append(.notice(id: item.id, level: .info, text: "你已中断本次请求")); continue }
                 var shown = item
                 shown.text = unwrapPastedContent(item.text)
                 blocks.append(.user(shown))
@@ -344,6 +353,11 @@ public enum CliTranscript {
     }
 
     /// A user record that is only a CLI command's bookkeeping (same rule as the web client).
+    /// "[Request interrupted by user]", or "… for tool use" when the turn was stopped at a tool (same rule as the web client).
+    public static func isInterruptRecord(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).range(of: #"^\[Request interrupted by user(?: for tool use)?\]$"#, options: .regularExpression) != nil
+    }
+
     public static func isCommandRecord(_ text: String) -> Bool {
         text.range(of: #"^\s*(?:<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat)>[\s\S]*?</\1>\s*)+$"#, options: .regularExpression) != nil
     }
@@ -387,9 +401,11 @@ public struct CliRequestRecord: Sendable, Hashable, Identifiable {
     /// Allowed for the rest of the session.
     public var always: Bool
     public var by: CliResolvedBy?
+    /// When this app saw it close (epoch ms).
+    public var closedAt: Int?
     public var id: String { view.id }
-    public init(view: CliRequest, closed: Bool = false, decision: CliDecision? = nil, always: Bool = false, by: CliResolvedBy? = nil) {
-        self.view = view; self.closed = closed; self.decision = decision; self.always = always; self.by = by
+    public init(view: CliRequest, closed: Bool = false, decision: CliDecision? = nil, always: Bool = false, by: CliResolvedBy? = nil, closedAt: Int? = nil) {
+        self.view = view; self.closed = closed; self.decision = decision; self.always = always; self.by = by; self.closedAt = closedAt
     }
 }
 
@@ -412,6 +428,8 @@ public enum CliCardState: String, Sendable { case pending, allowed, always, deni
 public struct CliRequestStore: Sendable, Equatable {
     public static let expiryGraceMs = 5000
     public static let closedKeep = 10
+    /// How long a card stays above the box after it closed, so the answer is seen; then it leaves (same as the web client).
+    public static let closedShowMs = 4000
     public private(set) var records: [CliSessionKey: [CliRequestRecord]] = [:]
     public init() {}
 
@@ -451,6 +469,7 @@ public struct CliRequestStore: Sendable, Equatable {
         guard let list = records[key], let at = list.firstIndex(where: { $0.id == id && !$0.closed }) else { return }
         var record = list[at]
         record.closed = true; record.by = by; record.decision = decision; record.always = always && decision == .allow
+        record.closedAt = Int(Date().timeIntervalSince1970 * 1000)
         var rest = list; rest.remove(at: at)
         put(key, rest + [record])
     }
@@ -477,6 +496,12 @@ public struct CliRequestStore: Sendable, Equatable {
         }
     }
 
+    /// The cards shown above the box: open ones, and closed ones for `closedShowMs` after they closed. Open cards first.
+    public func shown(_ key: CliSessionKey, now: Int) -> [CliRequestRecord] {
+        let list = (records[key] ?? []).filter { !$0.closed || now < ($0.closedAt ?? 0) + Self.closedShowMs }
+        return list.filter { !$0.closed } + list.filter(\.closed)
+    }
+
     public func pending(_ key: CliSessionKey, now: Int) -> [CliRequestRecord] {
         (records[key] ?? []).filter { Self.state(of: $0, now: now) == .pending }
     }
@@ -492,12 +517,12 @@ public struct CliRequestStore: Sendable, Equatable {
         records.values.flatMap { $0 }.filter { Self.state(of: $0, now: now) == .pending }.map(\.view)
     }
 
-    /// The next moment (epoch ms) an open card flips to expired after `now`, or nil.
+    /// The next moment (epoch ms) a card changes after `now` (an open card flips to expired, a closed one leaves), or nil.
     public func nextExpiry(now: Int) -> Int? {
         var next: Int?
         for list in records.values {
-            for r in list where !r.closed {
-                let at = r.view.expiresAt + Self.expiryGraceMs + 1
+            for r in list {
+                let at = r.closed ? (r.closedAt ?? 0) + Self.closedShowMs + 1 : r.view.expiresAt + Self.expiryGraceMs + 1
                 if at <= now { continue }
                 if next == nil || at < next! { next = at }
             }

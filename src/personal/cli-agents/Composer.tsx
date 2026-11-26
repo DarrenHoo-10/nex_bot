@@ -2,8 +2,8 @@
 // (and interrupt while running), continue a stopped session, or a plain hint
 // when the session cannot be driven from here.
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2 } from "lucide-react";
-import { MAX_SEND_TEXT, utf8ByteLength, type CliContextUsage, type CliSessionView } from "../../../shared/cli-agents";
+import { ArrowUp, Square, Plus, LoaderCircle, ListOrdered, ChevronDown, CircleDashed, MessageSquareText, Paperclip, Target, X, Check, CornerUpRight, Pencil, ImagePlus, Undo2, Shield, ChevronRight } from "lucide-react";
+import { MAX_SEND_TEXT, cliPermissionLabel, utf8ByteLength, type CliContextUsage, type CliPermissionMode, type CliSessionView } from "../../../shared/cli-agents";
 import { cliErrorText, uploadAttachment, type CliQueueEntry, type SendResult } from "./api";
 import { imageFilesFromClipboard } from "../transcript-session";
 import {fileReference,getExtras,isPickedImage,recallSent,rememberSent,saveExtras,type ComposerExtras} from "./composer-additions";
@@ -76,14 +76,16 @@ export interface ComposerProps {
   interruptWaiting?: boolean;
   onQueueSteer?(entryId: string, version: number): Promise<void>;
   onQueueResume?(): Promise<void>;
+  /** an open session's permission modes (its CLI's own), chosen from the + menu; `pending` until the CLI took the choice */
+  permissions?: { modes: readonly CliPermissionMode[]; value?: CliPermissionMode; pending?: string; onChange(mode: CliPermissionMode): void };
 }
 
-export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, starter, features, launch, onLaunch, queue=null, guided, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, steerQuestionId, interruptWaiting, onQueueSteer, onQueueResume }: ComposerProps) {
+export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draft, starter, features, launch, onLaunch, queue=null, guided, revision=null, onCancelRevision, onQueueWithdraw, onQueueEdit, steerQuestionId, interruptWaiting, onQueueSteer, permissions, onQueueResume }: ComposerProps) {
   const mode = draft || starter ? {kind:"send",running:false,outside:false} as const : composerMode(session);
   const review=useReview(), details=draft?undefined:review?.records[session.key];
   const model=draft?.model || details?.model || review?.models[session.engine]?.[0] || session.model?.trim() || "";
   const effort=draft?.effort || details?.effort || "标准";
-  const [panel,setPanel]=useState<"add"|"skill"|"model"|"notes"|"context"|null>(null);
+  const [panel,setPanel]=useState<"add"|"skill"|"model"|"notes"|"context"|"permissions"|null>(null);
   const compact = useCompactComposer();
   const modelTrigger = compact ? "na-model-button na-model-chip" : "na-model-button";
   const [skill,setSkill]=useState("");
@@ -134,6 +136,14 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
   const [note, setNote] = useState("");
   const imeEndedAt = useRef(0);
   const mounted = useRef(true);
+  // a steer that could not join the turn leaves its note until the message has gone out from the queue
+  const steered = useRef<string | null>(null);
+  useEffect(() => {
+    const id = steered.current;
+    if (!id || queue?.entries.some((entry) => entry.id === id && entry.status === "pending")) return;
+    steered.current = null;
+    setError("");
+  }, [queue]);
   // outside the review fixture: the CLI's own models and effort levels
   const choice:LaunchChoice=draft?{model:draft.model,effort:draft.effort}:launch??{model:"",effort:""};
   const launchOptions=!!features?.includes("launchOptions");
@@ -304,7 +314,7 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           {entry.status==="uncertain" ? <small className="na-queued-state" role="status">待确认</small> : null}
           {entry.status==="failed" ? <small className="na-queued-state" data-tone="error" role="alert">发送失败</small> : null}
           {entry.status==="pending" || entry.status==="failed" ? <span className="na-queued-actions">
-            {entry.status==="pending" && onQueueSteer && canSteer ? <button type="button" onClick={()=>void run(()=>onQueueSteer(entry.id, entry.version))}><CornerUpRight size={14} aria-hidden="true"/>{steerLabel}</button> : null}
+            {entry.status==="pending" && onQueueSteer && canSteer ? <button type="button" onClick={()=>{steered.current=entry.id;void run(()=>onQueueSteer(entry.id, entry.version)).then(done=>{if(done)steered.current=null})}}><CornerUpRight size={14} aria-hidden="true"/>{steerLabel}</button> : null}
             {onQueueEdit ? <button type="button" className="is-icon" aria-label={"编辑排队消息 "+(i+1)} data-tip="编辑" onClick={()=>setEditingQueue({id:entry.id,version:entry.version,text:entry.text})}><Pencil size={13}/></button> : null}
             {onQueueWithdraw ? <button type="button" className="is-icon" aria-label="撤销" data-tip="撤销" onClick={()=>void run(()=>onQueueWithdraw(entry.id, entry.version))}><Undo2 size={14}/></button> : null}
           </span> : null}
@@ -342,7 +352,12 @@ export function Composer({ session, onSend, onInterrupt, notes=[], onNotes, draf
           <button type="button" onClick={()=>{setPanel(null);imagePicker.current?.click()}}><ImagePlus size={16}/><span>图片</span></button>
           <button type="button" onClick={()=>{setPanel(null);picker.current?.click()}}><Paperclip size={16}/><span>文件</span></button>
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
+          {permissions?.modes.length ? <button type="button" aria-haspopup="true" onClick={()=>setPanel("permissions")}><Shield size={16}/><span>权限模式</span>{permissions.value ? <small>{cliPermissionLabel(session.engine, permissions.value)}</small> : null}<ChevronRight size={14}/></button> : null}
         </div>}
+        {panel==="permissions" && permissions ? <div className="na-permission-menu" role="radiogroup" aria-label="权限模式">
+          {permissions.modes.map(mode=><button key={mode} type="button" role="radio" aria-checked={permissions.value===mode} onClick={()=>{permissions.onChange(mode);setPanel(null)}}><span>{cliPermissionLabel(session.engine, mode)}</span>{permissions.value===mode ? <Check size={14}/> : null}</button>)}
+          {permissions.pending ? <small className="na-permission-note">{permissions.pending}</small> : null}
+        </div> : null}
         {panel==="context"?<ContextDetail usage={context}/>:null}
         {panel==="skill"&&review?review.skills.filter(s=>!text.startsWith("/")||s.startsWith(text)).map(s=><button type="button" key={s} onClick={()=>{setSkill(s);if(text.startsWith("/"))change("");setPanel(null);draftRef.current?.focus()}}>{s}</button>):null}
         {panel==="model"&&review?<><label>模型<select aria-label="模型" value={model} onChange={e=>configure(e.target.value,effort)}>{(review.models[session.engine]??[]).map(m=><option key={m}>{m}</option>)}</select></label><label>推理强度<select aria-label="推理强度" value={effort} onChange={e=>configure(model!,e.target.value)}><option>标准</option><option>高</option></select></label></>:null}

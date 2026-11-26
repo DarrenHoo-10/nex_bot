@@ -227,8 +227,10 @@ it("runs AGY through ACP without herdr and continues the native conversation onc
   expect(history.data.items.filter((item: { kind: string }) => item.kind === "user").map((item: { text: string }) => item.text))
     .toEqual(["native context", "continue in NexAgent"]);
 
-  const created = await s.call("cli-agents/start", { deviceId: s.deviceId, engine: "agy", cwd: s.workDir, effort: "low" });
+  const created = await s.call("cli-agents/start", { deviceId: s.deviceId, engine: "agy", cwd: s.workDir, effort: "low", permissions: "edits" });
   expect(created).toMatchObject({ status: 200, data: { key: `${s.deviceId}:agy:c75d00aa-0000-4000-8000-000000000002` } });
+  // "auto-accept edits" is Antigravity's own `auto_edit` mode
+  expect(readFileSync(path.join(agyDir, "modes.log"), "utf8").trim().split(/\r?\n/)).toEqual(["auto_edit"]);
   const freshKey = created.data.key as string;
   const sent = await s.call("cli-agents/send", { key: freshKey, text: "request approval" });
   expect(sent.status).toBe(200);

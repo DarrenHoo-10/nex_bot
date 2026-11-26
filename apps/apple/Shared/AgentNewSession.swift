@@ -1,7 +1,8 @@
 import SwiftUI
 import NexClientKit
 
-// 新建会话 as a page, not a sheet: the message box with the folder, the CLI and a worktree in a row above it. A folder that
+// 新建会话 as a page, not a sheet: the message box with three tabs in a row above it (the folder, the CLI, and the
+// session options: worktree, branch, permissions). A folder that
 // does not exist yet is created by the computer when the session starts. Mirrors `NewSessionComposer.tsx`.
 
 /// Where a new session runs; `create` asks the computer to make the folder first.
@@ -20,19 +21,20 @@ struct AgentNewTarget: Hashable, Identifiable {
 private let startable: [CliEngine] = [.claude, .codex, .agy]
 func agentName(_ engine: CliEngine) -> String { engine == .claude ? "Claude Code" : engine.label }
 
-/// A rounded chip in the row above the box.
+/// One of the three tabs in the row above the box: project, CLI, session options.
 private struct AgentPickChip<Label: View>: View {
     var active = false
     var dashed = false
     @ViewBuilder let label: () -> Label
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         HStack(spacing: 5) { label() }
-            .font(.system(size: 12.5, weight: .medium))
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(dashed ? Theme.muted : Theme.foreground)
             .lineLimit(1)
-            .padding(.horizontal, 10).frame(height: 28)
-            .background(active ? Theme.nexAgentSoft : Theme.card, in: Capsule())
-            .overlay(Capsule().strokeBorder(active ? Theme.nexAgentAccent : Theme.border, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2] : [])))
+            .padding(.horizontal, 10).frame(height: 32)
+            .background(active ? Theme.nexAgentSoft : Theme.card, in: shape)
+            .overlay(shape.strokeBorder(active ? Theme.nexAgentAccent : Theme.border, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2] : [])))
     }
 }
 
@@ -48,15 +50,15 @@ struct AgentNewSessionPage: View {
     @State private var message = ""
     @State private var chosenModel = ""
     @State private var effort = ""
-    @State private var permissions: CliPermissionMode = .full
-    @State private var agyPermissions: CliPermissionMode = .ask
+    /// each CLI keeps its own choice: full access by default, Antigravity asking (its full access is answered by the executor)
+    @State private var modeOf: [CliEngine: CliPermissionMode] = [:]
     @State private var images: [CliImageUpload] = []
     @State private var imageError = ""
     #if os(iOS)
     @Environment(\.dismiss) private var dismiss
     #endif
     @State private var catalog = CliModelCatalog()
-    private enum Picker { case directory, branch, model }
+    private enum Picker { case directory, options, model }
     @State private var picker: Picker?
     @FocusState private var focused: Bool
 
@@ -70,12 +72,17 @@ struct AgentNewSessionPage: View {
     private var device: CliDevice? { model.device(deviceId) }
     private var engines: [CliEngine] { startable.filter { device?.cliAgents?.engines.contains($0) == true && CliSessions.deviceBlocker(device, engine: $0) == nil } }
     private var blocker: String? { CliSessions.deviceBlocker(device, engine: engine) }
-    private var selectedPermissions: CliPermissionMode { engine == .agy ? agyPermissions : permissions }
+    private var permissionModes: [CliPermissionMode] { CliPermissions.modes(engine: engine, features: device?.cliAgents?.features ?? []) }
+    private var selectedPermissions: CliPermissionMode {
+        let preferred = modeOf[engine] ?? (engine == .agy ? .ask : .full)
+        if permissionModes.contains(preferred) { return preferred }
+        return permissionModes.contains(.full) ? .full : permissionModes.first ?? .full
+    }
     private var branchError: String? { branch.flatMap { CliLaunches.branchProblem($0) } }
     private var text: String { message.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var tooLong: Bool { text.utf8.count > CoreClient.cliMaxSendBytes }
     private var canChoose: Bool { device?.cliAgents?.features.contains("launchOptions") == true }
-    private var canChoosePermissions: Bool { device?.cliAgents?.features.contains("permissions") == true }
+    private var canChoosePermissions: Bool { !permissionModes.isEmpty }
     private var fallbackModel: String { catalog.current ?? "" }
     private var offered: [String] { CliLaunches.efforts(engine: engine, models: catalog.models, model: chosenModel.isEmpty ? fallbackModel : chosenModel) }
     private var effortLevels: [String] { engine == .agy ? offered : CliLaunches.reasoningLevels }
@@ -96,6 +103,8 @@ struct AgentNewSessionPage: View {
             Spacer(minLength: 20)
             VStack(alignment: .leading, spacing: 8) {
                 options
+                // only what needs attention; the folder's full path is on its tab
+                if let status { Text(status).font(.caption).foregroundStyle(Theme.danger).lineLimit(1).padding(.horizontal, 4) }
                 box
             }
             .frame(maxWidth: 780)
@@ -151,7 +160,7 @@ struct AgentNewSessionPage: View {
     }
 
     private var options: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             Button { picker = picker == .directory ? nil : .directory } label: {
                 AgentPickChip(active: picker == .directory, dashed: dir == nil) {
                     Image(systemName: "folder").foregroundStyle(Theme.muted)
@@ -193,66 +202,66 @@ struct AgentNewSessionPage: View {
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .accessibilityLabel("运行工具")
 
-            if canChoosePermissions {
-                // full access (the default) or the CLI's own prompts, which then arrive as cards
-                Button {
-                    let next: CliPermissionMode = selectedPermissions == .full ? .ask : .full
-                    if engine == .agy { agyPermissions = next } else { permissions = next }
-                } label: {
-                    AgentPickChip {
-                        Image(systemName: selectedPermissions == .full ? "checkmark.shield" : "exclamationmark.shield").foregroundStyle(Theme.muted)
-                        Text(selectedPermissions == .full ? "完全访问" : "每次询问")
+            // the third tab: worktree, its branch and permissions, in one panel
+            Button { picker = picker == .options ? nil : .options } label: {
+                AgentPickChip(active: picker == .options) {
+                    // a branch icon while the session runs in the folder itself; "Worktree" once it gets its own
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(branch == nil ? Theme.muted : Theme.nexAgentAccent)
+                    if branch != nil { Text("Worktree") }
+                    if canChoosePermissions && selectedPermissions != .full {
+                        Image(systemName: "exclamationmark.shield").foregroundStyle(Theme.approval)
                     }
-                }
-                .buttonStyle(.plain).help(selectedPermissions == .full ? "完全访问：不再逐项确认" : "每次询问：需要你确认")
-                .accessibilityLabel("权限").accessibilityValue(selectedPermissions == .full ? "完全访问" : "每次询问")
-            }
-
-            if git {
-                // the "Worktree" checkbox: checked, the session starts in a new worktree on nexagent/<random>
-                Button {
-                    branch = branch == nil ? CliLaunches.randomBranch() : nil
-                    picker = nil
-                } label: {
-                    AgentPickChip(dashed: branch == nil) {
-                        Image(systemName: branch == nil ? "square" : "checkmark.square.fill")
-                            .foregroundStyle(branch == nil ? Theme.muted : Theme.nexAgentAccent)
-                        Text("Worktree")
-                    }
-                }
-                .buttonStyle(.plain).help("在新的工作树里运行")
-                .accessibilityLabel("Worktree").accessibilityValue(branch == nil ? "未选中" : "已选中")
-                if let current = branch {
-                    Button { picker = picker == .branch ? nil : .branch } label: {
-                        AgentPickChip(active: true) {
-                            Image(systemName: "arrow.triangle.branch").foregroundStyle(Theme.muted)
-                            Text(current.isEmpty ? "分支" : current).font(.system(size: 12, design: .monospaced))
-                        }
-                    }
-                    .buttonStyle(.plain).accessibilityLabel("分支名称")
-                    .popover(isPresented: presenting(.branch), arrowEdge: .bottom) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("新工作树的分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
-                            TextField("分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
-                                .textFieldStyle(.roundedBorder).font(.system(size: 13, design: .monospaced)).autocorrectionDisabled()
-                                #if os(iOS)
-                                .textInputAutocapitalization(.never)
-                                #endif
-                                .onSubmit { picker = nil }
-                            if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
-                        }
-                        .padding(14).frame(width: 280)
-                        #if os(iOS)
-                        .presentationCompactAdaptation(.popover)
-                        #endif
-                    }
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
                 }
             }
-            Spacer(minLength: 6)
-            // only what needs attention; the folder's full path is on its chip
-            if let status { Text(status).font(.caption).foregroundStyle(Theme.danger).lineLimit(1) }
+            .buttonStyle(.plain).fixedSize()
+            .help("Worktree 与权限")
+            .accessibilityLabel("会话选项")
+            .popover(isPresented: presenting(.options), arrowEdge: .bottom) {
+                sessionOptions
+                    .padding(14).frame(width: 290)
+                    #if os(iOS)
+                    .presentationCompactAdaptation(.popover)
+                    #endif
+            }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 4)
+    }
+
+    /// Worktree (a Git folder only; on, the session starts in a new worktree on nexagent/<random>, renamable here) and,
+    /// where the CLI supports it, permissions: full access (the default) or the CLI's own prompts, which arrive as cards.
+    private var sessionOptions: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle(isOn: Binding(get: { branch != nil }, set: { branch = $0 ? CliLaunches.randomBranch() : nil })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Worktree").font(.system(size: 13, weight: .semibold))
+                    if !git { Text("不是 Git 仓库").font(.caption).foregroundStyle(Theme.muted) }
+                }
+            }
+            .toggleStyle(.switch).tint(Theme.nexAgentAccent).disabled(!git)
+            if branch != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("分支").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                    TextField("分支名称", text: Binding(get: { branch ?? "" }, set: { branch = $0 }))
+                        .textFieldStyle(.roundedBorder).font(.system(size: 13, design: .monospaced)).autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .onSubmit { picker = nil }
+                    if let branchError { Text(branchError).font(.caption).foregroundStyle(Theme.danger) }
+                }
+            }
+            if canChoosePermissions {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("权限").font(.caption.weight(.semibold)).foregroundStyle(Theme.muted)
+                    SwiftUI.Picker("权限", selection: Binding(get: { selectedPermissions }, set: { modeOf[engine] = $0 })) {
+                        ForEach(permissionModes, id: \.self) { mode in Text(CliPermissions.label(engine: engine, mode: mode)).tag(mode) }
+                    }
+                    .pickerStyle(.inline).labelsHidden()
+                }
+            }
+        }
     }
 
     private var box: some View {
