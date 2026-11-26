@@ -211,6 +211,7 @@ public struct ToolStep: RowBacked {
     public var status: String { row.string("status") ?? "" }
     public var summary: String { row.string("summary") ?? "" }
     public var preview: String { row.string("preview") ?? "" }
+    public var createdAt: Date? { dateFromMilliseconds(row.double("created_at")) }
     /// Collapsed row label, e.g. 检索记忆.
     public var label: String { ToolLabels.label(for: toolName) }
 }
