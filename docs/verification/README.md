@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [AGY 回复渲染修复、可扩展 Harness 重构与过程耗时展示 · 0.9.58 四端预览版（2026-11-27）](nexagent-agy-harness-0958-20261127.md)
+
 - [历史图片跨端同步、过程折叠与技能搜索 · 0.9.57 四端预览版（2026-11-26）](chat-images-skills-0957-20261126.md)
 
 - [NexAgent 新建会话三标签、按 CLI 的权限模式与返回手势 · 0.9.56 四端发布（2026-11-26）](nexagent-permission-modes-0956-20261126.md)
