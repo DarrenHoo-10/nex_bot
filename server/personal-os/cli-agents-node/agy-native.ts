@@ -115,6 +115,14 @@ export interface AgyNativeSession {
   working: boolean;
 }
 
+function parseAgyTimestamp(value: unknown): number {
+  const raw = agyString(value).trim();
+  if (!raw || /^0001-01-01(?:$|[\sT])/.test(raw)) return 0;
+  // Go SQLite rows format timestamps with a space instead of ISO "T", which V8 misparses for low years.
+  const parsed = Date.parse(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+/, "$1T"));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Promise<AgyNativeSession[]> {
   const [cached, last] = await Promise.all([
     agyJson(path.join(dir, "cache", "conversation_metadata.json")),
@@ -126,8 +134,7 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Pr
   const timestamp = (id: string) => {
     const summary = summaries.get(id);
     const cachedSummary = agyRecord(agyRecord(metadata[id]).summary);
-    const parsed = Date.parse(agyString(summary?.last_modified_time ?? cachedSummary.UpdatedAt));
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    return parseAgyTimestamp(summary?.last_modified_time ?? cachedSummary.UpdatedAt);
   };
   const ids = [...new Set([...summaries.keys(), ...Object.keys(metadata).filter(isAgyId)])].sort((a, b) => timestamp(b) - timestamp(a)).slice(0, RECENT);
   const rows = await Promise.all(ids.map(async (id): Promise<AgyNativeSession | null> => {
@@ -234,7 +241,7 @@ export function agyRecordItems(value: unknown, fallbackTs = 0): CliItem[] {
   const row = agyRecord(value);
   if (typeof row.step_index !== "number" || !Number.isSafeInteger(row.step_index) || row.step_index < 0) return [];
   const id = `agy:${row.step_index}`;
-  const ts = Date.parse(agyString(row.created_at)) || fallbackTs;
+  const ts = parseAgyTimestamp(row.created_at) || fallbackTs;
   const content = row.type === "USER_INPUT" ? agyUserText(agyString(row.content)) : agyString(row.content);
   if (row.type === "USER_INPUT") return content ? [buildUserItem({ id, ts, text: content })] : [];
   if (row.type === "ERROR_MESSAGE") {
