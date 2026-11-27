@@ -250,7 +250,7 @@ function Workspace({ sidebar, sidebarList = true, overlay, dark, collapsed, onSw
   const sideChats=useSideChats(selectedKey,sessions,sideHost);
   /** Side chats start a new session on the session's computer, so it must run there (the preview fixture only has Claude). */
   const canSide = (entry: CliSessionView) => review ? entry.engine==="claude"
-    : (entry.engine==="claude" || entry.engine==="codex" || entry.engine==="agy") && entry.online && !!devices.find(d => d.id===entry.deviceId)?.cliAgents?.engines.includes(entry.engine);
+    : (entry.engine==="claude" || entry.engine==="codex" || entry.engine==="zcode" || entry.engine==="agy") && entry.online && !!devices.find(d => d.id===entry.deviceId)?.cliAgents?.engines.includes(entry.engine);
   const {draft:sideDraft,session:side}=sideChats;
   const terminalActive=sideChats.selected?.id===sideChats.terminalId;
   useEffect(()=>{

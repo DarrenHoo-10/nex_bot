@@ -163,10 +163,11 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
   const launchOptions=!!features?.includes("launchOptions");
   /** a Claude in a NexBot terminal switches at once (/model, /effort); anything else on its next start */
   const switchesNow=!draft && !starter && mode.kind==="send" && !mode.outside && session.engine==="claude";
-  const agyModelBlocked = !starter && !draft && session.engine === "agy" && session.state !== "stopped" && (session.sendVia !== "acp" || session.state !== "idle");
-  const pickerOff=(!launchOptions && !switchesNow) || agyModelBlocked;
-  const pickerNote=agyModelBlocked ? (session.sendVia === "acp" ? "会话空闲时可更改模型" : "可在终端里更改模型") : pickerOff ? "电脑端版本过旧，升级后可用" : "";
-  const canOpenModelMenu = !!review || session.engine !== "zcode";
+  const managedProtocol = !draft && (session.sendVia === "acp" || (session.sendVia === "host" && session.liveIn === "background"));
+  const protocolModelBlocked = !starter && !draft && (session.engine === "agy" || session.engine === "zcode") && session.state !== "stopped" && (!managedProtocol || session.state !== "idle");
+  const pickerOff=(!launchOptions && !switchesNow) || protocolModelBlocked;
+  const pickerNote=protocolModelBlocked ? (managedProtocol ? "会话空闲时可更改模型" : session.engine === "agy" ? "可在终端里更改模型" : "当前无法更改模型") : pickerOff ? "电脑端版本过旧，升级后可用" : "";
+  const canOpenModelMenu = true;
   function choose(next:LaunchChoice){if(draft)draft.configure(next.model,next.effort);else onLaunch?.(next)}
   function configure(nextModel:string,nextEffort:string) {
     if(draft)draft.configure(nextModel,nextEffort);
@@ -230,11 +231,10 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
   const canSubmit=(starter ? starter.ready : !!(body || extra.files.length)) && (extra.goal===null || !!goal);
   const stopOnly = mode.kind==="send" && mode.running && !sending && !(body || extra.files.length);
   const managedTerminal = !draft && session.liveIn === "nexbot" && !!session.terminal;
-  const managedAcp = !draft && session.sendVia === "acp";
   const claudeInbox = !draft && session.engine === "claude" && session.sendVia === "inbox";
-  const queuesWhileBusy = !revision && (managedTerminal || managedAcp || claudeInbox) && (running || session.state === "waiting");
+  const queuesWhileBusy = !revision && (managedTerminal || managedProtocol || claudeInbox) && (running || session.state === "waiting");
   const canSteer = session.online && queue?.pauseReason !== "stopped" && (
-    (managedTerminal && (steerQuestionId || interruptWaiting)) || (running && (managedTerminal || (managedAcp && session.state === "running") || (claudeInbox && features?.includes("inboxSteer"))))
+    (managedTerminal && (steerQuestionId || interruptWaiting)) || (running && (managedTerminal || (managedProtocol && session.state === "running") || (claudeInbox && features?.includes("inboxSteer"))))
   );
   const steerLabel = steerQuestionId ? "取消提问并引导" : interruptWaiting ? "中断并引导" : "引导";
   // the paused note matters only while something waits in the queue
@@ -372,7 +372,7 @@ export function Composer({ session, onSend, onUploadPreview, onInterrupt, notes=
         }} aria-label="添加到消息">
           <button type="button" onClick={()=>{setPanel(null);imagePicker.current?.click()}}><ImagePlus size={16}/><span>图片</span></button>
           <button type="button" onClick={()=>{setPanel(null);picker.current?.click()}}><Paperclip size={16}/><span>文件</span></button>
-          {(session.engine === "codex" || session.engine === "claude") && <button type="button" onClick={() => { setSlashSearch(false); setPanel("skill"); }}><BookOpen size={16}/><span>技能</span></button>}
+          {(session.engine === "codex" || session.engine === "claude" || session.engine === "zcode") && <button type="button" onClick={() => { setSlashSearch(false); setPanel("skill"); }}><BookOpen size={16}/><span>技能</span></button>}
           <button type="button" aria-pressed={extra.goal!==null} onClick={()=>{setPanel(null);changeExtra({...extra,goal:extra.goal===null?"":null})}}><Target size={16}/><span>目标模式</span>{extra.goal!==null && <Check size={14}/>}</button>
           {permissions?.modes.length ? <button type="button" aria-haspopup="true" onClick={()=>setPanel("permissions")}><Shield size={16}/><span>权限模式</span>{permissions.value ? <small>{cliPermissionLabel(session.engine, permissions.value)}</small> : null}<ChevronRight size={14}/></button> : null}
         </div>}

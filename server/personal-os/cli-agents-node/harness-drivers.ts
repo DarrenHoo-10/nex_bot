@@ -27,7 +27,8 @@ import { harnessFor, type HarnessDriver, type HarnessWatchSource } from "./harne
 import { InboxError, sendToInbox } from "./inbox.ts";
 import { validateCwd } from "./launch.ts";
 import { claudeSkills } from "./skills.ts";
-import { zcodeHomeExists, zcodeHomes, type ZcodeHostChannel } from "./zcode.ts";
+import type { ZcodeHostChannel } from "./zcode.ts";
+import type { ZcodeRuntime } from "./zcode-runtime.ts";
 
 export interface HarnessDriverErrorFactory {
   (code: CliErrorCode, message?: string): Error;
@@ -39,12 +40,14 @@ export interface HarnessDriverHost {
   readonly homedir: string | undefined;
   readonly discovery: SessionDiscovery;
   readonly agy: AgyRuntime;
+  readonly zcode: ZcodeRuntime;
   readonly codexDaemons: CodexDaemons;
   readonly codexDesktopQueue: Pick<CodexDesktopQueue, "refresh" | "supports" | "send"> | undefined;
   readonly zcodeHomes: string[] | undefined;
   readonly zcodeHost: ZcodeHostChannel | null | undefined;
   readonly inboxConfirmMs: number | undefined;
   readonly shouldProbeAgy: boolean;
+  readonly shouldProbeZcode: boolean;
   fail: HarnessDriverErrorFactory;
   probeCli(engine: CliEngine): Promise<{ available: boolean; version: string | null }>;
   findCli(engine: CliEngine): Promise<string | null>;
@@ -198,38 +201,82 @@ export function createDefaultHarnessDrivers(host: HarnessDriverHost): Map<CliEng
   const zcodeDriver: HarnessDriver = {
     id: "zcode",
     async probe() {
-      const homes = host.zcodeHomes ?? zcodeHomes();
-      for (const dir of homes) {
-        if (await zcodeHomeExists(dir)) return { available: true, version: null };
-      }
-      return { available: false, version: null };
+      if (!host.shouldProbeZcode) return { available: false, version: null };
+      return host.zcode.probe();
     },
-    watchSource(ref): HarnessWatchSource | null {
-      const zcode = host.discovery.zcodeChatFor(ref);
-      return zcode ? { chat: zcode.chat, db: zcode.db } : null;
+    watchSource(_ref, row): HarnessWatchSource {
+      return { chat: { threadId: row.nativeId }, db: host.zcode };
+    },
+    read(_ref, row, before, limit) {
+      return host.zcode.page(row.nativeId, before ? { before } : {}, limit);
+    },
+    async start(args, cwd, budget) {
+      const id = await host.zcode.start(cwd, launchOptionsOf(args, "full"));
+      const ref = cliRef("zcode", id);
+      await host.awaitRow(ref, budget - 1000);
+      return { ref, cwd };
+    },
+    async continueSession(args, row) {
+      const terminal = host.addressFor(args.ref);
+      if (terminal) return { ref: args.ref, terminal };
+      await validateCwd(row.cwd, { platform: host.platform, env: host.env });
+      await host.zcode.resume(row, launchOptionsOf(args));
+      return { ref: args.ref };
     },
     async sendOutside(args, row) {
+      if (host.zcode.hasManagedSession(row.nativeId)) {
+        return host.zcode.send(row.nativeId, args.text);
+      }
       const route = host.discovery.routeFor(args.ref);
-      if (!route || route.via !== "host" || row.sendVia !== "host") return null;
-      if (!host.zcodeHost) throw host.fail("read_only");
-      const result = await host.zcodeHost.submit(route.sessionId, args.text);
-      return { turn: 0, started: result.accepted === true };
+      if (route?.via === "host" && row.sendVia === "host") {
+        if (!host.zcodeHost) throw host.fail("read_only");
+        const result = await host.zcodeHost.submit(route.sessionId, args.text);
+        return { turn: 0, started: result.accepted === true };
+      }
+      throw host.fail(row.liveIn ? "open_elsewhere" : "stopped");
     },
     async steer(args, row, managedAddress) {
       if (managedAddress) return null;
+      if (host.zcode.hasManagedSession(row.nativeId)) {
+        const result = await host.zcode.send(row.nativeId, args.text, true);
+        return { accepted: result.accepted === true, started: result.started };
+      }
       const route = host.discovery.routeFor(args.ref);
-      if (route?.via !== "host" || row.sendVia !== "host") return null;
-      if (!host.zcodeHost) throw host.fail("read_only");
-      const result = await host.zcodeHost.submit(route.sessionId, args.text, { steer: true });
-      return { accepted: result.accepted === true };
+      if (route?.via === "host" && row.sendVia === "host") {
+        if (!host.zcodeHost) throw host.fail("read_only");
+        const result = await host.zcodeHost.submit(route.sessionId, args.text, { steer: true });
+        return { accepted: result.accepted === true };
+      }
+      return null;
     },
     async interruptOutside(args, row) {
+      if (host.zcode.hasManagedSession(row.nativeId)) {
+        return host.zcode.interrupt(row.nativeId);
+      }
       const route = host.discovery.routeFor(args.ref);
       if (!route || route.via !== "host" || row.sendVia !== "host") return null;
       if (!host.zcodeHost) throw host.fail("read_only");
       if (!harnessFor(row.engine)?.caps(row).interrupt) throw host.fail("invalid", "此入口不支持停止");
       const result = await host.zcodeHost.interrupt(route.sessionId);
       return { outcome: String(result.outcome ?? "unknown").slice(0, 100) };
+    },
+    models() {
+      return host.zcode.models();
+    },
+    skills(_session, cwd) {
+      return host.zcode.skills(cwd);
+    },
+    hasRequest(id) {
+      return host.zcode.hasRequest(id);
+    },
+    answerRequest(args) {
+      return host.zcode.answer(args);
+    },
+    relink() {
+      host.zcode.relink();
+    },
+    close() {
+      return host.zcode.close();
     },
   };
 

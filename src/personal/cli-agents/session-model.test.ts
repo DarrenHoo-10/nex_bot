@@ -117,6 +117,13 @@ describe("new session blockers", () => {
     expect(deviceBlocker(agy, "agy")).toBeNull();
     expect(deviceBlocker(agy, "codex")).toBe("终端组件不可用");
     expect(composerMode(session({ engine: "agy", liveIn: "background", terminal: undefined, sendVia: "acp", state: "waiting" }))).toEqual({ kind: "send", running: true });
+    const zcode = device({ cliAgents: { version: 1, engines: ["zcode"], terminal: { name: "herdr-core", version: "0.1.21", ready: false } } });
+    expect(deviceBlocker(zcode)).toBeNull();
+    expect(deviceBlocker(zcode, "zcode")).toBeNull();
+    expect(deviceBlocker(agy, "zcode")).toBe("找不到 ZCode");
+    expect(sendsOutside(session({ engine: "zcode", sendVia: "host" }))).toBe(true);
+    expect(composerMode(session({ engine: "zcode", liveIn: "background", terminal: undefined, sendVia: "host", state: "running" }))).toEqual({ kind: "send", running: true });
+    expect(composerMode(session({ engine: "zcode", liveIn: "desktop", terminal: undefined, state: "running" }))).toEqual({ kind: "blocked", hint: "在 ZCode 桌面应用中打开" });
     expect(deviceBlocker(device({ cliAgents: { version: 1, engines: ["claude"], terminal: { name: "herdr-core", version: "0.1.21", ready: false } } }))).toBe("终端组件不可用");
   });
 });

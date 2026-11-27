@@ -484,11 +484,11 @@ export function hasCliFeature(capability: CliAgentsCapability | null | undefined
 // Launch options: model and reasoning effort (Claude Code 2.1 `--model` /
 // `--effort`, Codex 0.163 `-m` / `-c model_reasoning_effort=`)
 
-/** Effort levels each CLI accepts; ZCode has no such switch. */
+/** Effort levels each CLI accepts. */
 export const CLI_EFFORTS: Record<CliEngine, readonly string[]> = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-  zcode: [],
+  zcode: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   agy: ["low", "medium", "high", "xhigh", "max"],
 };
 
@@ -576,10 +576,11 @@ export const CLI_BASIC_PERMISSION_MODES: readonly CliPermissionMode[] = ["full",
 
 /** A CLI's permission modes in the order a menu shows them, the most cautious first. */
 export function cliPermissionModes(engine: CliEngine, features: readonly string[] = ["permissions", "permissionModes"]): CliPermissionMode[] {
-  if (!features.includes("permissions") || engine === "zcode") return [];
+  if (!features.includes("permissions")) return [];
   const all: CliPermissionMode[] = engine === "claude" ? ["plan", "ask", "edits", "auto", "full"]
     : engine === "codex" ? ["readonly", "ask", "full"]
-      : engine === "agy" ? ["ask", "edits", "full"] : ["ask", "full"];
+      : engine === "zcode" ? ["plan", "ask", "edits", "full"]
+        : engine === "agy" ? ["ask", "edits", "full"] : ["ask", "full"];
   return features.includes("permissionModes") ? all : all.filter((mode) => CLI_BASIC_PERMISSION_MODES.includes(mode));
 }
 

@@ -122,7 +122,8 @@ public enum CliSessions {
         guard let device, device.online else { return "电脑离线" }
         guard let agents = device.cliAgents else { return "未开启 Agent 会话" }
         if engine == .agy { return agents.engines.contains(.agy) ? nil : (agents.agyNeedsUpdate ? "请更新 Antigravity CLI" : "找不到 Antigravity CLI") }
-        if engine == nil && agents.engines.contains(.agy) { return nil }
+        if engine == .zcode { return agents.engines.contains(.zcode) ? nil : "找不到 ZCode" }
+        if engine == nil && (agents.engines.contains(.agy) || agents.engines.contains(.zcode)) { return nil }
         if !agents.terminal.ready { return (agents.terminal.error?.isEmpty == false ? agents.terminal.error : nil) ?? "终端组件不可用" }
         if agents.engines.isEmpty { return agents.agyNeedsUpdate ? "请更新 Antigravity CLI" : "找不到可用的运行工具" }
         return nil
@@ -148,9 +149,10 @@ public enum CliSessions {
         if !s.online { return .blocked(hint: "电脑离线") }
         if s.state == .stopped { return .stopped(hint: s.writerUnknown ? "可能在电脑上打开" : nil) }
         if s.liveIn == .nexbot && s.terminal != nil { return .send(running: s.state == .running) }
-        if s.sendVia == "acp" { return .send(running: s.state == .running || s.state == .waiting) }
+        if s.sendVia == "acp" || s.sendVia == "host" { return .send(running: s.state == .running || s.state == .waiting) }
         if s.engine == .codex && (s.sendVia == "inbox" || s.sendVia == "daemon") { return .send(running: false) }
         if s.liveIn == .desktop && s.engine == .claude { return .blocked(hint: "在 Claude 桌面应用中打开") }
+        if s.liveIn == .desktop && s.engine == .zcode { return .blocked(hint: "在 ZCode 桌面应用中打开") }
         return .blocked(hint: s.writerUnknown ? "可能在电脑上打开" : "在电脑上运行")
     }
 

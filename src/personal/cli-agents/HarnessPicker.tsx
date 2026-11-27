@@ -7,7 +7,7 @@ import { HarnessMark } from "./tokendance/HarnessMark";
 import { AGENT_LABEL } from "./session-model";
 
 /** The CLIs a new session can start in. */
-export const STARTABLE: readonly CliEngine[] = ["claude", "codex", "agy"];
+export const STARTABLE: readonly CliEngine[] = ["claude", "codex", "zcode", "agy"];
 
 export function HarnessPicker({ engines, value, onChange, disabled, agyNeedsUpdate }: { engines: readonly CliEngine[]; value: CliEngine; onChange(next: CliEngine): void; disabled?: boolean; agyNeedsUpdate?: boolean }) {
   const [open, setOpen] = useState(false);

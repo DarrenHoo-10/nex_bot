@@ -179,7 +179,8 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
   // message; a CLI running in a terminal has no way in, so it takes it the next time it starts.
   const [permission, setPermission] = useState<PermissionChoice | null>(() => getPermission(session.key));
   const permissionModes = review || compact ? [] : cliPermissionModes(session.engine, features ?? []);
-  const takesNow = session.state === "stopped" || session.sendVia === "acp";
+  const managedProtocol = session.sendVia === "acp" || (session.sendVia === "host" && session.liveIn === "background");
+  const takesNow = session.state === "stopped" || managedProtocol;
   const choosePermission = (mode: CliPermissionMode) => { const next = { mode, pending: true }; setPermission(next); savePermission(session.key, next); };
   const tookPermission = (key: CliSessionKey, mode: CliPermissionMode) => { const next = { mode, pending: false }; setPermission(next); savePermission(key, next); };
   const chooseLaunch = (next: LaunchChoice) => {
@@ -241,7 +242,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
       if (pendingMode) tookPermission(resumedKey.current, pendingMode);
     }
     const key=resumedKey.current??session.key;
-    if (!review && session.sendVia === "acp" && session.state === "idle" && delivery !== "steer" && delivery !== "queue" && (applied.current !== JSON.stringify(launch) || (pendingMode && key === session.key))) {
+    if (!review && managedProtocol && session.state === "idle" && delivery !== "steer" && delivery !== "queue" && (applied.current !== JSON.stringify(launch) || (pendingMode && key === session.key))) {
       const next = { ...options, ...(pendingMode ? { permissions: pendingMode } : {}) };
       if (Object.keys(next).length) await continueSession(key, next);
       applied.current = JSON.stringify(launch);

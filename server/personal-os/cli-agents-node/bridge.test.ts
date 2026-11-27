@@ -1237,13 +1237,14 @@ describe("launch options, search and attachments", () => {
     expect(hc.last().argv).toEqual(["/fake/bin/codex", "resume", XID(1), "-c", "model_reasoning_effort=medium", "-c", "check_for_update_on_startup=false"]);
   });
 
-  it("refuses an effort the engine lacks, and any option for ZCode", async () => {
+  it("refuses an effort the engine lacks, and fails cleanly when ZCode is unavailable", async () => {
     const t = setup();
     await t.start();
     // the device parses the op itself: a bad effort never reaches cliArgs
     expect(await t.call("start", { engine: "claude", cwd: workDir, effort: "ultra" })).toMatchObject({ ok: false, error: { code: "invalid" } });
-    const zcode = await t.call("start", { engine: "zcode", cwd: workDir, model: "glm-5" });
-    expect(zcode).toMatchObject({ ok: false, error: { code: "invalid", message: "ZCode 不支持选择模型和推理强度" } });
+    expect(await t.call("start", { engine: "zcode", cwd: workDir, effort: "turbo" as never })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    const zcode = await t.call("start", { engine: "zcode", cwd: workDir, model: "magpie/zcode/GLM-5.3-Flash" });
+    expect(zcode).toMatchObject({ ok: false, error: { code: "cli_missing" } });
     expect(hc.runs).toHaveLength(0);
   });
 

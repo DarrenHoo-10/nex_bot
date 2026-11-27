@@ -109,10 +109,15 @@ interface DispatchOutcome { started?: boolean; turn?: number; delivery?: CliDeli
 /** Outbox statuses a browser is shown, oldest queue position first. */
 const LIVE_STATUSES: readonly CliQueueStatus[] = ["pending", "claimed", "sent", "uncertain", "failed"];
 
-/** Harnesses whose sessions take a new message while a turn runs (their inbox
- * accepts it); their send results report started=false, so the queue advances
- * right after the dispatch instead of waiting for a turn end nobody reports. */
-const OUTSIDE_VIA = new Set(["inbox", "daemon", "host"]);
+/** Harnesses whose sessions take a new message while a turn runs (their inbox,
+ * daemon, or an external desktop ZCode host accepts it); their send results
+ * report started=false, so the queue advances right after the dispatch instead
+ * of waiting for a turn end nobody reports. */
+const OUTSIDE_VIA = new Set(["inbox", "daemon"]);
+const isManagedProtocol = (session: CliSessionView): boolean =>
+  session.sendVia === "acp" || (session.sendVia === "host" && session.liveIn === "background");
+const isOutsideChannel = (session: CliSessionView): boolean =>
+  OUTSIDE_VIA.has(session.sendVia ?? "") || (session.sendVia === "host" && session.liveIn !== "background");
 
 const fingerprintOf = (input: Pick<WorkbenchSubmitInput, "text" | "revisesMessageId" | "questionId" | "interruptWaiting"> & { key: string; delivery: string }): string =>
   JSON.stringify({ key: input.key, delivery: input.delivery, text: input.text, ...(input.revisesMessageId ? { revises: input.revisesMessageId } : {}), ...(input.questionId ? { questionId: input.questionId } : {}), ...(input.interruptWaiting ? { interruptWaiting: true } : {}) });
@@ -428,7 +433,7 @@ export class CliAgentWorkbench {
     const session = this.hub.session(key);
     if (!session) throw new CliOpError("not_found");
     const queueState = this.queueState(workbenchId);
-    const outside = OUTSIDE_VIA.has(session.sendVia ?? "");
+    const outside = isOutsideChannel(session);
     const endedGuide = input.delivery === "steer" && session.state === "idle" && !input.questionId && !input.interruptWaiting && !this.pendingRequests(key).length;
     if (input.delivery === "steer") {
       if (queueState.paused && queueState.pauseReason === "stopped") throw new CliOpError("busy", "停止受理中，引导已拒绝");
@@ -499,7 +504,7 @@ export class CliAgentWorkbench {
       if (managed && session.engine === "claude" && session.state === "waiting") return;
       throw new CliOpError("turn_changed");
     }
-    if ((managed || session.sendVia === "acp") && session.state === "running") return;
+    if ((managed || session.sendVia === "acp" || session.sendVia === "host") && session.state === "running") return;
     if (session.engine === "claude" && session.sendVia === "inbox" && session.state === "running") {
       this.hub.requireFeature(session.deviceId, "inboxSteer");
       return;
@@ -864,9 +869,9 @@ export class CliAgentWorkbench {
     const failure = await this.dispatch("workbench", key, session.deviceId, "send", String(head.id), outcome);
     if (!failure) {
       this.pushQueue(workbenchId);
-      // An ACP response can finish before its send receipt. Only an event
-      // for the turn this dispatch started can release the next message.
-      const turn = session.sendVia === "acp" ? outcome.turn ?? null : null;
+      // A managed protocol response (ACP or background ZCode app-server) can finish before its send receipt.
+      // Only an event for the turn this dispatch started can release the next message.
+      const turn = isManagedProtocol(session) ? outcome.turn ?? null : null;
       const ended = this.hub.lastTurn(key);
       const alreadyEnded = turn !== null && ended !== before && ended?.turn === turn;
       if (outcome.started && !alreadyEnded) this.awaitingTurnEnd.set(workbenchId, turn);
@@ -894,7 +899,8 @@ export class CliAgentWorkbench {
     const expected = this.awaitingTurnEnd.get(id);
     if (typeof expected === "number" && expected !== event.turn) return;
     this.awaitingTurnEnd.delete(id);
-    if (event.reason === "error" && this.hub.session(event.key)?.engine === "agy" && this.headEntry(id)) {
+    const engine = this.hub.session(event.key)?.engine;
+    if (event.reason === "error" && (engine === "agy" || engine === "zcode") && this.headEntry(id)) {
       this.pause(id, "failed");
       this.pushQueue(id);
       return;

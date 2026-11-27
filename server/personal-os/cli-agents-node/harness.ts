@@ -240,7 +240,7 @@ const zcode: HarnessAdapter = {
   features: {
     probe: "directory",
     fork: false,
-    modelPicker: false,
+    modelPicker: true,
     screenPrompts: false,
     statusTurnFallback: false,
     transcriptTurnTails: false,

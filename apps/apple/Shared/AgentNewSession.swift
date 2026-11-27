@@ -18,7 +18,7 @@ struct AgentNewTarget: Hashable, Identifiable {
     let id = UUID()
 }
 
-private let startable: [CliEngine] = [.claude, .codex, .agy]
+private let startable: [CliEngine] = [.claude, .codex, .zcode, .agy]
 func agentName(_ engine: CliEngine) -> String { engine == .claude ? "Claude Code" : engine.label }
 
 /// One of the three tabs in the row above the box: project, CLI, session options.
@@ -85,8 +85,8 @@ struct AgentNewSessionPage: View {
     private var canChoosePermissions: Bool { !permissionModes.isEmpty }
     private var fallbackModel: String { catalog.current ?? "" }
     private var offered: [String] { CliLaunches.efforts(engine: engine, models: catalog.models, model: chosenModel.isEmpty ? fallbackModel : chosenModel) }
-    private var effortLevels: [String] { engine == .agy ? offered : CliLaunches.reasoningLevels }
-    private var selectedEffort: String { CliLaunches.reasoningChoice(effort.isEmpty && engine == .agy ? catalog.currentEffort : effort) }
+    private var effortLevels: [String] { engine == .agy || engine == .zcode ? offered : CliLaunches.reasoningLevels }
+    private var selectedEffort: String { CliLaunches.reasoningChoice(effort.isEmpty && (engine == .agy || engine == .zcode) ? catalog.currentEffort : effort) }
     private var resolvedEffort: String? { CliLaunches.resolveEffort(engine: engine, offered: offered, preferred: selectedEffort) }
     private var ready: Bool { blocker == nil && device != nil && engines.contains(engine) && dir != nil && branchError == nil && !tooLong }
     private var status: String? {
@@ -293,14 +293,14 @@ struct AgentNewSessionPage: View {
             #endif
             HStack(spacing: 8) {
                 #if os(iOS)
-                AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex ? { picker = .skills } : nil, openModels: canChoose ? { picker = .model } : nil)
+                AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex || engine == .zcode ? { picker = .skills } : nil, openModels: canChoose ? { picker = .model } : nil)
                     .popover(isPresented: presenting(.model), arrowEdge: .bottom) {
                         AgentComposerModelOptions(catalog: catalog, model: $chosenModel, levels: effortLevels, selection: selectedEffort) { effort = $0 }
                             .frame(width: 310, height: 360)
                             .presentationCompactAdaptation(.popover)
                     }
                 #else
-                AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex ? { picker = .skills } : nil)
+                AgentComposerAdd(images: $images, error: $imageError, openSkills: engine == .claude || engine == .codex || engine == .zcode ? { picker = .skills } : nil)
                 #endif
                 Spacer(minLength: 0)
                 #if os(macOS)

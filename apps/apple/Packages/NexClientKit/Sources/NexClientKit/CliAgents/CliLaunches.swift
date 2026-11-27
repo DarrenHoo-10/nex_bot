@@ -46,6 +46,7 @@ public enum CliPermissions {
         let all: [CliPermissionMode] = switch engine {
         case .claude: [.plan, .ask, .edits, .auto, .full]
         case .codex: [.readonly, .ask, .full]
+        case .zcode: [.plan, .ask, .edits, .full]
         case .agy: [.ask, .edits, .full]
         }
         return features.contains("permissionModes") ? all : all.filter { $0 == .full || $0 == .ask }
@@ -121,6 +122,7 @@ public enum CliLaunches {
     public static let efforts: [CliEngine: [String]] = [
         .claude: ["low", "medium", "high", "xhigh", "max"],
         .codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+        .zcode: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
         .agy: ["low", "medium", "high", "xhigh", "max"],
     ]
     /// Suggestions for a computer that cannot list its CLI's models.
@@ -141,7 +143,7 @@ public enum CliLaunches {
 
     /// Effort levels `model` takes: what the CLI says for it, else every level of the engine.
     public static func efforts(engine: CliEngine, models: [CliModelOption], model: String) -> [String] {
-        models.first { $0.id == model }?.efforts ?? (engine == .agy ? [] : efforts[engine] ?? [])
+        models.first { $0.id == model }?.efforts ?? (engine == .agy || engine == .zcode ? [] : efforts[engine] ?? [])
     }
 
     public static func resolveEffort(engine: CliEngine, offered: [String], preferred: String = "high") -> String? {

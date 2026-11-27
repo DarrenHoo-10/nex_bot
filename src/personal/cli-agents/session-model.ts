@@ -257,7 +257,8 @@ export function deviceBlocker(device: CliDeviceView | undefined, engine?: CliEng
   if (!device.cliAgents) return "未开启 Agent 会话";
   const { agyNeedsUpdate, engines, terminal } = device.cliAgents;
   if (engine === "agy") return engines.includes("agy") ? null : agyNeedsUpdate ? "请更新 Antigravity CLI" : "找不到 Antigravity CLI";
-  if (!engine && engines.includes("agy")) return null;
+  if (engine === "zcode") return engines.includes("zcode") ? null : "找不到 ZCode";
+  if (!engine && (engines.includes("agy") || engines.includes("zcode"))) return null;
   if (!terminal.ready) return terminal.error || "终端组件不可用";
   if (!engines.length) return agyNeedsUpdate ? "请更新 Antigravity CLI" : "找不到可用的运行工具";
   return null;
@@ -278,9 +279,9 @@ export function canAttach(session: CliSessionView): boolean {
   return session.online && session.state !== "stopped" && session.liveIn === "nexbot" && !!session.terminal;
 }
 
-/** The session runs on the computer outside nex_bot's terminals and takes messages through its own inbox or daemon. */
+/** The session runs on the computer outside nex_bot's terminals and takes messages through its own inbox, daemon, ACP or host channel. */
 export function sendsOutside(session: Pick<CliSessionView, "sendVia">): boolean {
-  return session.sendVia === "inbox" || session.sendVia === "daemon" || session.sendVia === "acp";
+  return session.sendVia === "inbox" || session.sendVia === "daemon" || session.sendVia === "acp" || session.sendVia === "host";
 }
 
 export type ComposerMode =
@@ -293,9 +294,10 @@ export function composerMode(session: CliSessionView): ComposerMode {
   if (!session.online) return { kind: "blocked", hint: "电脑离线" };
   if (session.state === "stopped") return { kind: "stopped", hint: session.writerUnknown ? "可能在电脑上打开" : undefined };
   if (session.liveIn === "nexbot" && session.terminal) return { kind: "send", running: session.state === "running" };
-  if (session.sendVia === "acp") return { kind: "send", running: session.state === "running" || session.state === "waiting" };
-  // A Claude's inbox takes Stop (a message at priority now); the Codex daemon has no stop path.
-  if (sendsOutside(session)) return { kind: "send", running: session.engine === "claude" && session.sendVia === "inbox" && (session.state === "running" || session.state === "waiting"), outside: true };
+  if (session.sendVia === "acp" || (session.sendVia === "host" && session.liveIn === "background")) return { kind: "send", running: session.state === "running" || session.state === "waiting" };
+  // A Claude's inbox or external ZCode desktop host takes Stop; the Codex daemon has no stop path.
+  if (sendsOutside(session)) return { kind: "send", running: ((session.engine === "claude" && session.sendVia === "inbox") || session.sendVia === "host") && (session.state === "running" || session.state === "waiting"), outside: true };
   if (session.liveIn === "desktop" && session.engine === "claude") return { kind: "blocked", hint: "在 Claude 桌面应用中打开" };
+  if (session.liveIn === "desktop" && session.engine === "zcode") return { kind: "blocked", hint: "在 ZCode 桌面应用中打开" };
   return { kind: "blocked", hint: session.writerUnknown ? "可能在电脑上打开" : "在电脑上运行" };
 }

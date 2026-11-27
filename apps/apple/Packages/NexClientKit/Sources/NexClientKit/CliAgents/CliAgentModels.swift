@@ -7,11 +7,12 @@ import Foundation
 public typealias CliSessionKey = String
 
 public enum CliEngine: String, Codable, Sendable, Hashable, CaseIterable {
-    case claude, codex, agy
+    case claude, codex, zcode, agy
     public var label: String {
         switch self {
         case .claude: "Claude"
         case .codex: "Codex"
+        case .zcode: "ZCode"
         case .agy: "Antigravity CLI"
         }
     }
@@ -293,7 +294,7 @@ public struct CliRequest: Sendable, Hashable, Identifiable, Decodable {
 public enum CliErrorText {
     public static let byCode: [String: String] = [
         "disabled": "Agent 会话已关闭", "paused": "本机控制已暂停", "hc_unavailable": "终端组件不可用", "hc_version": "终端组件版本不符",
-        "cli_missing": "找不到 Claude 或 Codex", "cwd_missing": "工作目录不存在", "not_found": "会话不存在", "not_in_terminal": "会话不在 nex_bot 终端里",
+        "cli_missing": "找不到所选运行工具", "cwd_missing": "工作目录不存在", "not_found": "会话不存在", "not_in_terminal": "会话不在 nex_bot 终端里",
         "stopped": "会话已停止", "open_elsewhere": "这个会话正在电脑上运行", "read_only": "只看，不能输入", "too_large": "内容太长",
         "invalid": "参数不合法", "busy": "上一个操作还没完成", "device_offline": "电脑离线", "unknown": "结果未知",
     ]

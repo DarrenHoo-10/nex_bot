@@ -177,7 +177,7 @@ struct AgentSessionDetail: View {
     @ViewBuilder
     private func actions(_ session: CliSession) -> some View {
         let canFork = !workspace.bots.isEmpty
-        let canOpenLocal = session.online && (session.engine != .agy || CliSessions.canAttach(session) ||
+        let canOpenLocal = session.online && session.engine != .zcode && (session.engine != .agy || CliSessions.canAttach(session) ||
             (!session.writerUnknown && (session.state == .stopped || (session.state == .idle && session.sendVia == "acp"))))
         #if os(macOS)
         if canFork { Button("交给助手") { forking = true }.buttonStyle(.bordered) }
@@ -1037,8 +1037,8 @@ private struct AgentComposer: View {
     private var claudeInbox: Bool {
         session.engine == .claude && session.sendVia == "inbox" && model.device(session.deviceId)?.cliAgents?.features.contains("inboxSteer") == true
     }
-    private var managedAcp: Bool { session.engine == .agy && session.sendVia == "acp" }
-    private var canConfigureAgy: Bool { managedAcp && session.state == .idle && canSetOnResume }
+    private var managedProtocol: Bool { (session.engine == .agy && session.sendVia == "acp") || (session.engine == .zcode && session.sendVia == "host" && session.liveIn == .background) }
+    private var canConfigureProtocol: Bool { managedProtocol && session.state == .idle && canSetOnResume }
     private var pendingRequests: [CliRequestRecord] { model.cards(session.key).filter { model.cardState($0) == .pending } }
     private var steerQuestionId: String? {
         guard canSetOnSend, session.state == .running || session.state == .waiting else { return nil }
@@ -1051,7 +1051,7 @@ private struct AgentComposer: View {
     private var canSteer: Bool {
         guard session.online else { return false }
         if steerQuestionId != nil || interruptWaiting { return true }
-        return pendingRequests.isEmpty && session.state == .running && ((session.liveIn == .nexbot && session.terminal != nil) || claudeInbox || managedAcp)
+        return pendingRequests.isEmpty && session.state == .running && ((session.liveIn == .nexbot && session.terminal != nil) || claudeInbox || managedProtocol)
     }
     private var steerLabel: String {
         if steerQuestionId != nil { return "取消提问并引导" }
@@ -1064,7 +1064,7 @@ private struct AgentComposer: View {
         return CliSessions.composerMode(session)
     }
     private var canSetOnSend: Bool { session.engine == .claude && session.liveIn == .nexbot && session.terminal != nil }
-    private var effortLevels: [String] { session.engine == .agy ? offered : CliLaunches.reasoningLevels }
+    private var effortLevels: [String] { session.engine == .agy || session.engine == .zcode ? offered : CliLaunches.reasoningLevels }
     private var selectedEffort: String { CliLaunches.reasoningChoice(effort) }
     private var offered: [String] {
         let effectiveModel = chosenModel.isEmpty ? session.model ?? catalog.current ?? "" : chosenModel
@@ -1074,12 +1074,12 @@ private struct AgentComposer: View {
         CliLaunches.resolveEffort(engine: session.engine, offered: offered, preferred: selectedEffort)
     }
     @State private var permission: (mode: CliPermissionMode, pending: Bool)?
-    /// A stopped session and an idle Antigravity session take a new permission mode with the next message; a CLI
+    /// A stopped session and an idle Antigravity / ZCode session take a new permission mode with the next message; a CLI
     /// running in a terminal has no way in, so it takes it the next time it starts (same as the web client).
     private var permissionChoice: AgentPermissionChoice? {
         let modes = CliPermissions.modes(engine: session.engine, features: model.device(session.deviceId)?.cliAgents?.features ?? [])
         guard !modes.isEmpty else { return nil }
-        let takesNow = session.state == .stopped || managedAcp
+        let takesNow = session.state == .stopped || managedProtocol
         return AgentPermissionChoice(engine: session.engine, modes: modes, value: permission?.mode,
                                      pending: permission?.pending == true ? (takesNow ? "发送下一条消息时生效" : "会话下次启动时生效") : nil) { mode in
             permission = (mode, true)
@@ -1104,7 +1104,7 @@ private struct AgentComposer: View {
             case .stopped(let hint):
                 HStack {
                     #if os(iOS)
-                    if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex ? { showingSkills = true } : nil, permissions: permissionChoice) }
+                    if hint == nil && canSetOnResume { AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex || session.engine == .zcode ? { showingSkills = true } : nil, permissions: permissionChoice) }
                     #endif
                     Text(hint ?? "会话已停止").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
@@ -1210,7 +1210,7 @@ private struct AgentComposer: View {
 
     private func sendRow(running: Bool) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex ? { showingSkills = true } : nil, permissions: permissionChoice)
+            AgentComposerAdd(images: $images, error: $error, openSkills: session.engine == .claude || session.engine == .codex || session.engine == .zcode ? { showingSkills = true } : nil, permissions: permissionChoice)
             TextField("发消息", text: $draft, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain)
                 .padding(.horizontal, 12).padding(.vertical, 8)
@@ -1220,7 +1220,7 @@ private struct AgentComposer: View {
             modelChip
             AgentContextRing(usage: session.context)
             #if os(macOS)
-            if (canSetOnSend || canConfigureAgy) && !effortLevels.isEmpty { effortButton }
+            if (canSetOnSend || canConfigureProtocol) && !effortLevels.isEmpty { effortButton }
             #endif
             // one button: Stop while a turn runs and the box is empty, Send once there is something to send
             if running && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty {
@@ -1243,7 +1243,7 @@ private struct AgentComposer: View {
 
     /// The model on one line left of the context ring, cut at its width; it opens the model choices.
     @ViewBuilder private var modelChip: some View {
-        if session.engine == .agy && session.state != .stopped && !canConfigureAgy {
+        if (session.engine == .agy || session.engine == .zcode) && session.state != .stopped && !canConfigureProtocol {
             modelChipLabel
         } else if canSetOnResume || canSetOnSend {
             #if os(iOS)
@@ -1312,7 +1312,7 @@ private struct AgentComposer: View {
         deliveryNotice = nil
         let text = draft
         let submittedImages = images
-        let queued = (session.state == .running || session.state == .waiting) && ((session.liveIn == .nexbot && session.terminal != nil) || (session.engine == .claude && session.sendVia == "inbox") || managedAcp)
+        let queued = (session.state == .running || session.state == .waiting) && ((session.liveIn == .nexbot && session.terminal != nil) || (session.engine == .claude && session.sendVia == "inbox") || managedProtocol)
         let entry = AgentPendingSend(text: CliLaunches.messagePreview(text, images: submittedImages), uploading: !submittedImages.isEmpty, known: Set(model.transcript(session.key).items.map(\.id)))
         pending.append(entry)
         draft = ""; images = []
@@ -1320,7 +1320,7 @@ private struct AgentComposer: View {
         defer { sending = false }
         do {
             let message = try await model.imageMessage(session.key, text: text, images: submittedImages)
-            if canConfigureAgy {
+            if canConfigureProtocol {
                 let previousModel = AgentDrafts.appliedModels[session.key]
                 let requestedModel = chosenModel.isEmpty ? (previousModel == nil ? nil : catalog.current) : chosenModel
                 let level = effort == nil ? nil : resolvedEffort

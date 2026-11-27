@@ -84,7 +84,8 @@ import { searchSessions, type SearchSource } from "./search.ts";
 import { cliModels } from "./models.ts";
 import { ensureDir, listDirs } from "./dirs.ts";
 import { TermStreams, hcErrorCode, type TermStream } from "./streams.ts";
-import type { ZcodeHostChannel } from "./zcode.ts";
+import type { ZcodeHostChannel, ZcodeLaunchSpec } from "./zcode.ts";
+import { ZcodeError, ZcodeRuntime } from "./zcode-runtime.ts";
 
 /** What the bridge needs from herdr-core. `HerdrCore` is one; tests pass a fake. */
 export interface HcLike {
@@ -134,9 +135,10 @@ export interface CliAgentBridgeOptions {
   agyDir?: string;
   agyDesktopDir?: string;
   agyWriters?: typeof agyWriters;
-  /** The ZCode host channel this device has, if any; without one the ZCode
-   * sessions stay read-only until the P0 verification provides it. */
+  /** The ZCode host channel this device has, if any. */
   zcodeHost?: ZcodeHostChannel | null;
+  /** Override ZCode app-server launch resolution (for tests and isolated fixtures). */
+  zcodeLaunch?: () => Promise<ZcodeLaunchSpec | null>;
   discovery?: Partial<SessionDiscoveryOptions>;
   resolveCli?: (engine: CliEngine) => Promise<string | null>;
   cliVersion?: (file: string) => Promise<string | null>;
@@ -239,6 +241,7 @@ export class CliAgentBridge {
   private readonly platform: NodeJS.Platform;
   private readonly store: CliLocalStore;
   private readonly agy: AgyRuntime;
+  private readonly zcode: ZcodeRuntime;
   private readonly discovery: SessionDiscovery;
   private readonly streams: TermStreams;
   private readonly watches = new Map<string, Watch>();
@@ -305,6 +308,24 @@ export class CliAgentBridge {
         });
       },
     });
+    this.zcode = new ZcodeRuntime({
+      homes: options.zcodeHomes,
+      platform: this.platform,
+      env: options.env ?? process.env,
+      homedir: options.homedir,
+      host: options.zcodeHost,
+      resolveCli: (engine) => this.findCli(engine),
+      resolveLaunch: options.zcodeLaunch,
+      origin: () => this.scope.origin,
+      changed: () => this.discovery.reapply({ flush: true }),
+      emit: (message) => { this.sendJson(message); },
+      ended: (id, turn, reason, error) => {
+        this.sendJson({
+          type: "cli.turn", ref: cliRef("zcode", id), turn, reason, endedAt: Date.now(),
+          ...(error ? { error: clipUnits(error, CLI_LIMITS.turnError) } : {}),
+        });
+      },
+    });
     this.codexDaemons = new CodexDaemons({
       connect: proxyConnector({ codexPath: () => this.findCli("codex"), ...(options.env ? { env: options.env } : {}), platform: this.platform }),
       emit: (message) => this.sendJson(message),
@@ -335,14 +356,13 @@ export class CliAgentBridge {
         { codexPath: () => this.findCli("codex"), platform: this.platform, env: this.options.env },
         home, names, () => this.link_ !== null && !this.detached,
       ) },
-      ...(options.zcodeHomes ? { zcodeHomes: options.zcodeHomes } : {}),
-      ...(options.zcodeHost ? { zcode: { host: options.zcodeHost } } : {}),
       agy: this.agy,
       // the real machine only when the Claude directories are the default ones: tests that name their own stay hermetic
       ...(options.claudeDirs ? {} : { repoRoots: new RepoRoots({ platform: this.platform, ...(options.homedir ? { home: options.homedir } : {}) }) }),
       codexDaemon: { threads: (home) => this.codexDaemons.threads(home), refresh: (home) => this.codexDaemons.refresh(home) },
       ...(this.codexDesktopQueue ? { codexDesktopQueue: this.codexDesktopQueue } : {}),
       ...options.discovery,
+      extraSources: [this.zcode, ...(options.discovery?.extraSources ?? [])],
       nexbotTerminals: () => this.nexbotTerminals(),
       onChange: (diff) => this.onDiscovery(diff),
       onError: (error) => this.log("warn", `scan failed: ${String(error)}`),
@@ -365,12 +385,14 @@ export class CliAgentBridge {
       homedir: this.options.homedir,
       discovery: this.discovery,
       agy: this.agy,
+      zcode: this.zcode,
       codexDaemons: this.codexDaemons,
       codexDesktopQueue: this.codexDesktopQueue,
       zcodeHomes: this.options.zcodeHomes,
       zcodeHost: this.options.zcodeHost,
       inboxConfirmMs: this.options.inboxConfirmMs,
       shouldProbeAgy: !this.options.claudeDirs || !!this.options.agyDir,
+      shouldProbeZcode: !this.options.claudeDirs || !!this.options.zcodeHomes || !!this.options.zcodeLaunch,
       fail: (code, message) => new OpFailure(code, message),
       probeCli: (engine) => this.probeCli(engine),
       findCli: (engine) => this.findCli(engine),
@@ -1246,7 +1268,7 @@ export class CliAgentBridge {
   }
 
   private failure(error: unknown): { code: CliErrorCode; message: string } {
-    if (error instanceof OpFailure || error instanceof AgyError) return { code: error.code, message: clipUnits(error.message, CLI_LIMITS.message) };
+    if (error instanceof OpFailure || error instanceof AgyError || error instanceof ZcodeError) return { code: error.code, message: clipUnits(error.message, CLI_LIMITS.message) };
     if (error instanceof DeadlineError) return { code: "unknown", message: CLI_ERROR_TEXT.unknown };
     if (error instanceof LaunchError) {
       const code: CliErrorCode = error.kind === "invalid_cwd" ? "cwd_missing" : error.kind === "cli_not_found" ? "cli_missing" : "invalid";
@@ -1526,7 +1548,11 @@ export class CliAgentBridge {
     const cached = this.store.opEntry(storedKey);
     if (cached?.state === "done" && cached.reply.ok && cached.reply.result) {
       const parsed = parseCliOpResult("start", cached.reply.result);
-      if (parsed && (!parsed.ref.startsWith("agy:") || this.agy.rows().some((row) => cliRef("agy", row.nativeId) === parsed.ref))) {
+      if (
+        parsed &&
+        (!parsed.ref.startsWith("agy:") || this.agy.rows().some((row) => cliRef("agy", row.nativeId) === parsed.ref)) &&
+        (!parsed.ref.startsWith("zcode:") || this.zcode.rows().some((row) => cliRef("zcode", row.nativeId) === parsed.ref))
+      ) {
         return parsed;
       }
     }

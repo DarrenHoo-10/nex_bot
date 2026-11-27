@@ -56,7 +56,7 @@ describe("extensible harness registry and strategies", () => {
     expect(allHarnesses().map((h) => h.id)).toEqual(["claude", "codex", "zcode", "agy"]);
     expect(harnessFor("claude")?.features).toMatchObject({ fork: true, hooks: true, modelPicker: true, screenPrompts: true });
     expect(harnessFor("codex")?.features).toMatchObject({ fork: true, transcriptTurnTails: true, unknownWriterCheck: true });
-    expect(harnessFor("zcode")?.features).toMatchObject({ probe: "directory", fork: false, modelPicker: false });
+    expect(harnessFor("zcode")?.features).toMatchObject({ probe: "directory", fork: false, modelPicker: true });
     expect(harnessFor("agy")?.features).toMatchObject({ probe: "cli", fork: false, modelPicker: true, statusTurnFallback: true });
     expect(harnessConfigEnv("claude", "/home/u/.claude", "/home/u", "linux")).toEqual({});
     expect(harnessConfigEnv("claude", "/custom/claude", "/home/u", "linux")).toEqual({ CLAUDE_CONFIG_DIR: "/custom/claude" });

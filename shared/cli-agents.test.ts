@@ -999,7 +999,7 @@ describe("launch options", () => {
   it("lists the efforts and suggested models of each engine", () => {
     expect(CLI_EFFORTS.claude).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(CLI_EFFORTS.codex).toEqual(expect.arrayContaining(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]));
-    expect(CLI_EFFORTS.zcode).toEqual([]);
+    expect(CLI_EFFORTS.zcode).toEqual(expect.arrayContaining(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]));
     expect(CLI_MODELS.claude.map((m) => m.id)).toEqual(["fable", "opus", "sonnet", "haiku"]);
     expect(CLI_MODELS.codex[0]).toEqual({ id: "gpt-6.2-sol", label: "gpt-6.2-sol" });
     expect(CLI_MODELS.zcode).toEqual([]);
@@ -1011,14 +1011,16 @@ describe("launch options", () => {
     expect(isCliEffort("claude", "max")).toBe(true);
     expect(isCliEffort("claude", "ultra")).toBe(false);
     expect(isCliEffort("codex", "ultra")).toBe(true);
-    expect(isCliEffort("zcode", "low")).toBe(false);
+    expect(isCliEffort("zcode", "low")).toBe(true);
+    expect(isCliEffort("zcode", "turbo")).toBe(false);
   });
   it("carries model and effort on start and continue, and rejects what the engine lacks", () => {
     expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", model: "opus", effort: "xhigh" })).toEqual({ engine: "claude", cwd: "/x", model: "opus", effort: "xhigh" });
     expect(parseCliOpArgs("continue", { ref, model: "gpt-6.2-sol", effort: "minimal" })).toEqual({ ref, model: "gpt-6.2-sol", effort: "minimal" });
     expect(parseCliOpArgs("continue", { ref })).toEqual({ ref });
     expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", effort: "ultra" })).toBeNull();
-    expect(parseCliOpArgs("start", { engine: "zcode", cwd: "/x", effort: "low" })).toBeNull();
+    expect(parseCliOpArgs("start", { engine: "zcode", cwd: "/x", model: "magpie/zcode/GLM-5.3-Flash", effort: "low" })).toEqual({ engine: "zcode", cwd: "/x", model: "magpie/zcode/GLM-5.3-Flash", effort: "low" });
+    expect(parseCliOpArgs("start", { engine: "zcode", cwd: "/x", effort: "turbo" })).toBeNull();
     expect(parseCliOpArgs("start", { engine: "claude", cwd: "/x", model: "--dangerously" })).toBeNull();
     expect(parseCliOpArgs("continue", { ref: `claude:${UUID}`, effort: "ultra" })).toBeNull();
   });
@@ -1082,7 +1084,8 @@ describe("records and permission modes", () => {
     expect(cliPermissionModes("claude")).toEqual(["plan", "ask", "edits", "auto", "full"]);
     expect(cliPermissionModes("codex")).toEqual(["readonly", "ask", "full"]);
     expect(cliPermissionModes("agy")).toEqual(["ask", "edits", "full"]);
-    expect(cliPermissionModes("zcode")).toEqual([]);
+    expect(cliPermissionModes("zcode")).toEqual(["plan", "ask", "edits", "full"]);
+    expect(cliPermissionModes("zcode", ["permissions"])).toEqual(["ask", "full"]);
     expect(cliPermissionModes("claude", ["permissions"])).toEqual(["ask", "full"]);
     expect(cliPermissionModes("claude", [])).toEqual([]);
     expect(cliPermissionLabel("codex", "ask")).toBe("默认");

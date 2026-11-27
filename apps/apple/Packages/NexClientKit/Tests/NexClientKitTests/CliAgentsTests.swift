@@ -278,6 +278,14 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(CliSessions.deviceBlocker(CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [], terminal: CliTerminalCapability(ready: true)))), "找不到可用的运行工具")
         let agy = CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [.agy], terminal: CliTerminalCapability(ready: false)))
         XCTAssertNil(CliSessions.deviceBlocker(agy, engine: .agy))
+        let zcode = CliDevice(id: "d", name: "n", online: true, cliAgents: CliCapability(engines: [.zcode], terminal: CliTerminalCapability(ready: false)))
+        XCTAssertNil(CliSessions.deviceBlocker(zcode))
+        XCTAssertNil(CliSessions.deviceBlocker(zcode, engine: .zcode))
+        XCTAssertEqual(CliSessions.deviceBlocker(agy, engine: .zcode), "找不到 ZCode")
+        var zcodeManaged = cliSession(state: .running, liveIn: .background, terminal: nil, engine: .zcode)
+        zcodeManaged.sendVia = "host"
+        XCTAssertEqual(CliSessions.composerMode(zcodeManaged), .send(running: true))
+        XCTAssertEqual(CliSessions.composerMode(cliSession(state: .running, liveIn: .desktop, terminal: nil, engine: .zcode)), .blocked(hint: "在 ZCode 桌面应用中打开"))
         let sessions = [cliSession("a", cwd: "/x", at: 1), cliSession("b", cwd: "/y", at: 9), cliSession("c", cwd: "/x", at: 5), cliSession("e", device: "other", cwd: "/z", at: 99)]
         XCTAssertEqual(CliSessions.recentCwds(sessions, deviceId: "d1"), ["/y", "/x"])
         XCTAssertEqual(CliSessions.recentCwds(sessions, deviceId: "d1", limit: 1), ["/y"])
@@ -386,6 +394,7 @@ final class CliAgentsTests: XCTestCase {
         let all = ["permissions", "permissionModes"]
         XCTAssertEqual(CliPermissions.modes(engine: .claude, features: all), [.plan, .ask, .edits, .auto, .full])
         XCTAssertEqual(CliPermissions.modes(engine: .codex, features: all), [.readonly, .ask, .full])
+        XCTAssertEqual(CliPermissions.modes(engine: .zcode, features: all), [.plan, .ask, .edits, .full])
         XCTAssertEqual(CliPermissions.modes(engine: .agy, features: all), [.ask, .edits, .full])
         XCTAssertEqual(CliPermissions.modes(engine: .claude, features: ["permissions"]), [.ask, .full], "an older executor takes only these")
         XCTAssertTrue(CliPermissions.modes(engine: .claude, features: []).isEmpty)
