@@ -11,7 +11,7 @@ import { CLI_IMAGE_PREFIX, mapCliImageLinks } from "../../../shared/cli-images.t
 import { execCli } from "../../procs.ts";
 import { AgyAcp, AgyAcpError } from "./agy-acp.ts";
 import {
-  agyArray, agyJson, agyLastStep, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
+  agyArray, agyDesktopWriters, agyJson, agyLastStep, agyModelId, agyProxyEnvironment, agyRecord, agyString, agyTranscript, agyWriters, isAgyId, scanAgyHistory,
   type AgyNativeSession, type AgyRecord, type AgyWriters,
 } from "./agy-native.ts";
 import { appendItemText, buildAssistantItem, buildNoticeItem, buildThinkingItem, buildToolItem, buildUserItem, clipUnits, updateToolItem, type LocalSession } from "./items.ts";
@@ -33,6 +33,7 @@ export class AgyError extends Error {
 
 interface AgyOptions {
   dir: string;
+  desktopDir?: string;
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
   writers?: typeof agyWriters;
@@ -45,6 +46,7 @@ interface AgyOptions {
 
 interface Session {
   id: string;
+  dir: string;
   cwd: string;
   at: number;
   settings: CliLaunchOptions;
@@ -200,6 +202,7 @@ export class AgyRuntime {
   private readonly processes = new Set<AgyAcp>();
   private readonly requests = new Map<string, Request>();
   private writers: AgyWriters = { sessions: new Set(), unknown: true };
+  private desktopWriters: AgyWriters = { sessions: new Set(), unknown: true };
   private writersAt = 0;
   private catalog?: { until: number; result: Promise<CliModelCatalog> };
   private scans?: Promise<void>;
@@ -213,10 +216,21 @@ export class AgyRuntime {
   }
 
   async scan(): Promise<void> {
-    if (!this.enabled || this.disposed) return;
+    if (this.disposed || (!this.enabled && !this.options.desktopDir)) return;
     this.scans ??= (async () => {
-      const rows = await scanAgyHistory(this.options.dir, this.options.platform);
-      this.native = new Map(rows.map((entry) => [entry.row.nativeId, entry]));
+      const { dir, desktopDir, platform } = this.options;
+      const [cli, desktop] = await Promise.all([
+        this.enabled ? scanAgyHistory(dir, platform) : [],
+        desktopDir ? scanAgyHistory(desktopDir, platform, true) : [],
+      ]);
+      // The CLI also indexes desktop-only IDs. Prefer the App's actual history
+      // over a CLI summary with no local transcript.
+      this.native = new Map(cli.map(entry => [entry.row.nativeId, entry]));
+      for (const entry of desktop) {
+        const id = entry.row.nativeId;
+        const owner = this.sessions.get(id);
+        if (owner ? owner.dir === desktopDir : !this.native.get(id)?.row.transcript) this.native.set(id, entry);
+      }
       if (Date.now() - this.writersAt > 5000) await this.refreshWriters();
     })().finally(() => { this.scans = undefined; });
     await this.scans;
@@ -225,6 +239,16 @@ export class AgyRuntime {
   rows(): LocalSession[] {
     const rows = new Map<string, LocalSession>();
     for (const [id, { row, working }] of this.native) {
+      if (row.configDir === this.options.desktopDir) {
+        const held = this.desktopWriters.sessions.has(id.toLowerCase());
+        rows.set(id, {
+          ...row,
+          state: working ? "running" : held ? "idle" : "stopped",
+          ...(working || held ? { liveIn: "desktop" } : {}),
+          ...(this.desktopWriters.unknown ? { writerUnknown: true } : {}),
+        });
+        continue;
+      }
       const explicit = this.writers.sessions.has(id.toLowerCase());
       rows.set(id, {
         ...row,
@@ -237,7 +261,7 @@ export class AgyRuntime {
       const row = rows.get(id);
       const waiting = [...this.requests.values()].some((request) => request.session === session);
       rows.set(id, {
-        engine: "agy", nativeId: id, cwd: session.cwd, configDir: this.options.dir,
+        engine: "agy", nativeId: id, cwd: session.cwd, configDir: session.dir,
         title: row?.title || session.title || path.basename(session.cwd),
         state: waiting ? "waiting" : session.active ? "running" : "idle",
         sendVia: "acp", liveIn: "background", transcript: row?.transcript ?? "",
@@ -297,7 +321,7 @@ export class AgyRuntime {
     return session.id;
   }
 
-  async resume(row: LocalSession | Pick<LocalSession, "nativeId" | "cwd">, settings: CliLaunchOptions): Promise<void> {
+  async resume(row: Pick<LocalSession, "nativeId" | "cwd" | "configDir">, settings: CliLaunchOptions): Promise<void> {
     if (!isAgyId(row.nativeId)) throw new AgyError("not_found", "找不到 Antigravity CLI 会话");
     const known = this.sessions.get(row.nativeId);
     if (known) {
@@ -315,8 +339,8 @@ export class AgyRuntime {
       }
       return;
     }
-    await this.requireAvailableWriter(row.nativeId);
-    const session = this.session(row.nativeId, row.cwd, settings);
+    await this.requireAvailableWriter(row.nativeId, row.configDir);
+    const session = this.session(row.nativeId, row.cwd, settings, row.configDir);
     await this.connect(session, true);
     this.sessions.set(session.id, session);
     this.armIdle(session);
@@ -324,12 +348,12 @@ export class AgyRuntime {
   }
 
   /** Hand off an idle ACP conversation before opening it in a local terminal. */
-  async handoff(id: string): Promise<void> {
+  async handoff(id: string, dir: string): Promise<void> {
     const session = this.sessions.get(id);
     if (session?.active) throw new AgyError("busy", "等当前轮结束后再在本机打开");
-    await this.requireAvailableWriter(id);
+    await this.requireAvailableWriter(id, dir);
     if (!session) return;
-    if (!(await agyTranscript(this.options.dir, id))) throw new AgyError("busy", "等 Antigravity CLI 保存会话后再打开");
+    if (!(await agyTranscript(session.dir, id))) throw new AgyError("busy", "等 Antigravity CLI 保存会话后再打开");
     await this.scan();
     clearTimeout(session.idle);
     await this.retire(session);
@@ -337,8 +361,16 @@ export class AgyRuntime {
     this.options.changed();
   }
 
-  private async requireAvailableWriter(id: string): Promise<void> {
+  private async requireAvailableWriter(id: string, dir = this.sessionDir(id)): Promise<void> {
     await this.refreshWriters();
+    if (dir === this.options.desktopDir) {
+      // An open ACP client holds its own native presence lock during handoff.
+      const locked = this.desktopWriters.unknown || this.desktopWriters.sessions.has(id.toLowerCase()) || this.native.get(id)?.working;
+      if (this.writers.sessions.has(id.toLowerCase()) || (!this.sessions.get(id)?.acp && locked)) {
+        throw new AgyError("open_elsewhere", "请先在 Antigravity 桌面端结束并关闭此会话");
+      }
+      return;
+    }
     if (this.writers.unknown || this.writers.sessions.has(id.toLowerCase())) {
       throw new AgyError("open_elsewhere", "请先退出电脑上打开此会话的 Antigravity CLI");
     }
@@ -347,12 +379,24 @@ export class AgyRuntime {
   private async refreshWriters(): Promise<void> {
     const pids = new Set<number>();
     for (const process of this.processes) if (process.pid) pids.add(process.pid);
-    this.writers = await (this.options.writers ?? agyWriters)(this.options.platform, pids);
+    [this.writers, this.desktopWriters] = await Promise.all([
+      (this.options.writers ?? agyWriters)(this.options.platform, pids),
+      this.options.desktopDir && [...this.native.values()].some(entry => entry.row.configDir === this.options.desktopDir)
+        ? agyDesktopWriters(this.options.desktopDir, this.options.platform) : { sessions: new Set<string>(), unknown: true },
+    ]);
     this.writersAt = Date.now();
   }
 
-  private session(id: string, cwd: string, settings: CliLaunchOptions): Session {
-    return { id, cwd, settings, at: Date.now(), title: "", tails: [], allowed: new Set(), version: 0, count: 0 };
+  private sessionDir(id: string): string {
+    return this.sessions.get(id)?.dir ?? this.native.get(id)?.row.configDir ?? this.options.dir;
+  }
+
+  profileArgs(dir: string): string[] {
+    return dir === this.options.desktopDir ? ["--app-data-dir=antigravity"] : [];
+  }
+
+  private session(id: string, cwd: string, settings: CliLaunchOptions, dir = this.options.dir): Session {
+    return { id, dir, cwd, settings, at: Date.now(), title: "", tails: [], allowed: new Set(), version: 0, count: 0 };
   }
 
   private async connect(session: Session, resume: boolean): Promise<AgyAcp> {
@@ -365,7 +409,7 @@ export class AgyRuntime {
     try {
       acp = new AgyAcp(executable, session.cwd, { ...this.options.env, ...proxy },
         (method, params, request) => this.onRpc(session, acp, method, params, request),
-        () => this.disconnected(session, acp));
+        () => this.disconnected(session, acp), this.profileArgs(session.dir));
     } catch (error) {
       throw operationError(error);
     }
@@ -478,7 +522,7 @@ export class AgyRuntime {
     if (steer && session.active !== turn) throw new AgyError("turn_changed", "目标轮次已经结束");
     clearTimeout(session.idle);
     if (!turn) {
-      const afterStep = await agyLastStep(this.options.dir, id);
+      const afterStep = await agyLastStep(session.dir, id);
       if (session.active) throw new AgyError("busy", "当前轮次还在运行");
       turn = { afterStep, startedAt: Date.now(), waiting: 0, stopping: false, completed: false, version: 0, items: [], calls: new Map() };
       session.active = turn;
@@ -693,14 +737,14 @@ export class AgyRuntime {
 
   /** A watch polls only the open session. ACP items cover the gap before AGY exports native steps. */
   async marker(id: string): Promise<string> {
-    const file = await agyTranscript(this.options.dir, id);
+    const file = await agyTranscript(this.sessionDir(id), id);
     const info = file ? await stat(file).catch(() => null) : null;
     const tail = this.sessions.get(id)?.tails ?? [];
     return `${file}:${info?.size ?? 0}:${info?.mtimeMs ?? 0}:${tail.map((turn) => `${turn.startedAt}:${turn.version}`).join(",")}`;
   }
 
   async page(id: string, options: { before?: string; limit?: number } = {}, limit = options.limit ?? 40): Promise<ReaderPage> {
-    const file = await agyTranscript(this.options.dir, id);
+    const file = await agyTranscript(this.sessionDir(id), id);
     const reader = file ? new TranscriptReader({ path: file, engine: "agy", watch: false }) : null;
     try {
       const session = this.sessions.get(id);

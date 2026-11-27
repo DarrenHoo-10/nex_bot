@@ -1,6 +1,7 @@
 // The official CLI and its ACP server share the same on-device conversations.
 // Discover metadata here, and open transcript content only for a read/watch/search.
-import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -123,7 +124,7 @@ function parseAgyTimestamp(value: unknown): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Promise<AgyNativeSession[]> {
+export async function scanAgyHistory(dir: string, platform: NodeJS.Platform, desktop = false): Promise<AgyNativeSession[]> {
   const [cached, last] = await Promise.all([
     agyJson(path.join(dir, "cache", "conversation_metadata.json")),
     agyJson(path.join(dir, "cache", "last_conversations.json")),
@@ -144,7 +145,9 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Pr
     const fallback = agyRecord(cachedRow.summary);
     const cwd = [...workspaces(summary?.workspace_uris), ...agyArray(fallback.WorkspaceURIs), cwdById.get(id)]
       .map((value) => workspacePath(value, platform)).find(Boolean);
-    if (!cwd) return null;
+    // The App also has conversations without a local workspace. Keep their history
+    // browsable without assigning a made-up project or launch directory.
+    if (!cwd && !desktop) return null;
     const transcript = await agyTranscript(dir, id);
     if (!transcript && !summary) return null;
     const lastActivityAt = timestamp(id) || (transcript ? Math.trunc((await lstat(transcript).catch(() => null))?.mtimeMs ?? 0) : 0);
@@ -153,8 +156,8 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Pr
     return {
       working,
       row: {
-        engine: "agy", nativeId: id, cwd, configDir: dir, transcript, state: "stopped",
-        title: clipUnits(agyString(summary?.title ?? fallback.Title) || path.basename(cwd), CLI_LIMITS.title),
+        engine: "agy", nativeId: id, cwd: cwd ?? "", configDir: dir, transcript, state: "stopped",
+        title: clipUnits(agyString(summary?.title ?? fallback.Title) || path.basename(cwd ?? "") || "Antigravity", CLI_LIMITS.title),
         lastActivityAt,
       },
     };
@@ -163,6 +166,41 @@ export async function scanAgyHistory(dir: string, platform: NodeJS.Platform): Pr
 }
 
 export interface AgyWriters { sessions: Set<string>; unknown: boolean }
+
+/** Presence files can outlive their owner. Windows denies a read while the App
+ * holds the lock. On macOS lsof lists open handles in the presence directory. */
+export async function agyDesktopWriters(dir: string, platform: NodeJS.Platform): Promise<AgyWriters> {
+  const presence = path.join(dir, "presence");
+  const sessions = new Set<string>();
+  try {
+    const names = (await readdir(presence)).filter(name => name.endsWith(".lock") && isAgyId(name.slice(0, -5)));
+    if (!names.length) return { sessions, unknown: false };
+    if (platform === "win32") {
+      await Promise.all(names.map(async name => {
+        try {
+          const file = await open(path.join(presence, name), "r");
+          try { await file.read(Buffer.alloc(1), 0, 1, 0); } finally { await file.close(); }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") sessions.add(name.slice(0, -5).toLowerCase());
+        }
+      }));
+      return { sessions, unknown: false };
+    }
+    return await new Promise<AgyWriters>(resolve => {
+      execFile(platform === "darwin" ? "/usr/sbin/lsof" : "lsof", ["-nP", "-Fn", "+d", presence], { timeout: 3000 }, (error, stdout, stderr) => {
+        for (const line of stdout.split("\n")) {
+          if (!line.startsWith("n")) continue;
+          const file = path.basename(line.slice(1));
+          if (file.endsWith(".lock") && isAgyId(file.slice(0, -5))) sessions.add(file.slice(0, -5).toLowerCase());
+        }
+        // lsof exits 1 with no diagnostics when none of the files are open.
+        resolve({ sessions, unknown: !!error && (error.code !== 1 || !!stderr.trim()) });
+      });
+    });
+  } catch {
+    return { sessions, unknown: true };
+  }
+}
 
 /** A CLI without an explicit conversation flag may have opened any session via /resume. */
 export async function agyWriters(platform: NodeJS.Platform, ownedPids: ReadonlySet<number>, run: CommandRunner = defaultRunner): Promise<AgyWriters> {

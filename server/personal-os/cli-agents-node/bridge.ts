@@ -132,6 +132,7 @@ export interface CliAgentBridgeOptions {
   zcodeHomes?: string[];
   /** Isolated Antigravity CLI profile, used by the release fixture. */
   agyDir?: string;
+  agyDesktopDir?: string;
   agyWriters?: typeof agyWriters;
   /** The ZCode host channel this device has, if any; without one the ZCode
    * sessions stay read-only until the P0 verification provides it. */
@@ -286,8 +287,11 @@ export class CliAgentBridge {
     this.turns = new TurnTracker((message) => this.sendJson(message));
     this.git = new DeviceGit({ platform: this.platform, ...(options.env ? { env: options.env } : {}) });
     const agyDir = options.agyDir ?? agyConfigDir(options.env, options.homedir);
+    const defaultGeminiDir = path.join(options.homedir ?? os.homedir(), ".gemini");
+    const desktopDir = options.agyDesktopDir ?? (!options.claudeDirs && !options.agyDir && agyDir === path.join(defaultGeminiDir, "antigravity-cli")
+      ? path.join(defaultGeminiDir, "antigravity") : undefined);
     this.agy = new AgyRuntime({
-      dir: agyDir, platform: this.platform,
+      dir: agyDir, desktopDir, platform: this.platform,
       writers: options.agyWriters,
       env: options.agyDir ? { ...(options.env ?? process.env), ANTIGRAVITY_CLI_CONFIG_DIR: agyDir } : options.env ?? process.env,
       executable: () => this.cliPath("agy"),
@@ -398,7 +402,8 @@ export class CliAgentBridge {
       cwd: row.cwd, executable: await this.cliPath("agy"),
     }, { platform: this.platform, env: this.options.env, homedir: this.options.homedir });
     plan.env = { ...plan.env, ...this.launchEnvironment("agy", row.configDir), ...(await this.driver("agy")?.extraEnv?.()) };
-    await this.agy.handoff(row.nativeId);
+    plan.argv.push(...this.agy.profileArgs(row.configDir));
+    await this.agy.handoff(row.nativeId, row.configDir);
     const terminal = await this.runTerminal(hc, "agy", plan, clampTermSize(undefined, undefined));
     this.register(terminal, "agy", row.nativeId, plan.cwd);
     this.discovery.reapply({ flush: true });

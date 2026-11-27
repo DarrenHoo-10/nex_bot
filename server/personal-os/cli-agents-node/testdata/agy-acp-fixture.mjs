@@ -3,8 +3,9 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
-const dir = process.env.ANTIGRAVITY_CLI_CONFIG_DIR;
-if (!dir) throw new Error("The fixture requires an isolated AGY profile");
+const cliDir = process.env.ANTIGRAVITY_CLI_CONFIG_DIR;
+if (!cliDir) throw new Error("The fixture requires an isolated AGY profile");
+const dir = process.argv.includes("--app-data-dir=antigravity") ? path.join(path.dirname(cliDir), "antigravity") : cliDir;
 if (process.argv[2] === "models") {
   console.log("gemini-fixture-low\tGemini Fixture (Low)\ngemini-fixture-high\tGemini Fixture (High)");
   process.exit(0);

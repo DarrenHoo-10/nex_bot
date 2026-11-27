@@ -8,6 +8,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
@@ -183,16 +184,19 @@ it("lets Windows AGY use a local system proxy while preserving an explicit proxy
 it("runs AGY through ACP without herdr and continues the native conversation once", async () => {
   const root = tempDir("nex-agy-int-");
   const agyDir = path.join(root, "agy-home");
+  const desktopDir = path.join(root, "antigravity");
   const fixture = path.join(root, "fake-agy.mjs");
   copyFileSync(fileURLToPath(new URL("./testdata/agy-acp-fixture.mjs", import.meta.url)), fixture);
   chmodSync(fixture, 0o755);
   const executable = process.platform === "win32" ? path.join(root, "agy.cmd") : fixture;
   if (process.platform === "win32") writeFileSync(executable, '@node "%~dp0fake-agy.mjs" %*\r\n');
   const nativeId = "c75d00aa-0000-4000-8000-000000000001";
+  const desktopId = "c75d00aa-0000-4000-8000-000000000003";
+  const desktopLog = path.join(desktopDir, "brain", desktopId, ".system_generated", "logs", "transcript_full.jsonl");
   const transcript = path.join(agyDir, "brain", nativeId, ".system_generated", "logs", "transcript_full.jsonl");
   let writerOpen = true;
   const s = await stack({
-    agyDir, binary: null,
+    agyDir, agyDesktopDir: desktopDir, binary: null,
     resolveCli: async (engine: string) => engine === "agy" ? executable : null,
     agyWriters: async () => ({ sessions: new Set(writerOpen ? [nativeId] : []), unknown: false }),
   }, ({ workDir }) => {
@@ -200,11 +204,31 @@ it("runs AGY through ACP without herdr and continues the native conversation onc
     const at = new Date(Date.now() - 60_000).toISOString();
     writeFileSync(transcript, JSON.stringify({ type: "USER_INPUT", step_index: 0, created_at: at, content: "native context" }) + "\n");
     mkdirSync(path.join(agyDir, "cache"), { recursive: true });
+    mkdirSync(path.join(desktopDir, "presence"), { recursive: true });
+    mkdirSync(path.dirname(desktopLog), { recursive: true });
+    writeFileSync(desktopLog, JSON.stringify({ type: "USER_INPUT", step_index: 0, created_at: at, content: "desktop context" }) + "\n");
+    // The CLI summary index can refer to a conversation whose transcript and
+    // writable history exist only in the App profile.
+    for (const dir of [desktopDir, agyDir]) {
+      const db = new DatabaseSync(path.join(dir, "conversation_summaries.db"));
+      try {
+        db.exec("CREATE TABLE conversation_summaries(conversation_id, status, not_fully_idle, killed, title, workspace_uris, last_modified_time)");
+        db.prepare("INSERT INTO conversation_summaries VALUES (?, 'CASCADE_RUN_STATUS_IDLE', 0, 0, ?, ?, ?)").run(
+          desktopId, dir === desktopDir ? "Desktop thread" : "Cached entry", JSON.stringify([pathToFileURL(workDir).href]), at,
+        );
+      } finally { db.close(); }
+    }
     writeFileSync(path.join(agyDir, "cache", "conversation_metadata.json"), JSON.stringify({
       conversations: { [nativeId]: { summary: { Title: "Original AGY", UpdatedAt: at, WorkspaceURIs: [pathToFileURL(workDir).href] } } },
     }));
   }, root);
-  await s.listed(1);
+  await s.listed(2);
+  const desktopKey = `${s.deviceId}:agy:${desktopId}`;
+  expect(s.hub.list().sessions.filter(row => row.key === desktopKey)).toMatchObject([{ title: "Desktop thread" }]);
+  expect((await s.call(`cli-agents/items?key=${encodeURIComponent(desktopKey)}`)).data.items).toMatchObject([{ text: "desktop context" }]);
+  expect((await s.call("cli-agents/continue", { key: desktopKey })).data.key).toBe(desktopKey);
+  expect((await s.call("cli-agents/send", { key: desktopKey, text: "continue desktop" })).status).toBe(200);
+  await until(() => readFileSync(desktopLog, "utf8").includes("context desktop context"), "desktop reply in original profile");
   const key = `${s.deviceId}:agy:${nativeId}`;
   expect(s.hub.list().sessions).toContainEqual(expect.objectContaining({ key, state: "idle", liveIn: "terminal" }));
   const refused = await s.call("cli-agents/continue", { key });

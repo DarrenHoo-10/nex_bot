@@ -39,8 +39,9 @@ export class AgyAcp {
     env: NodeJS.ProcessEnv,
     private readonly inbound: Inbound,
     private readonly disconnected: () => void,
+    profileArgs: string[] = [],
   ) {
-    this.child = spawnCli(executable, ["acp"], {
+    this.child = spawnCli(executable, ["acp", ...profileArgs], {
       cwd, env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" }, stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stderr.resume();
