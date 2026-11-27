@@ -620,6 +620,7 @@ export class CliAgentRoutes {
         started: result.started,
         ...(result.delivery ? { delivery: result.delivery } : {}),
         ...(result.waiting ? { waiting: true } : {}),
+        ...(result.nativeQueued ? { nativeQueued: true } : {}),
       },
     };
   }

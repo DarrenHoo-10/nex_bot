@@ -19,6 +19,12 @@ describe("send result", () => {
     expect(await sendMessage(key, "hi")).toEqual({ turn: 0, started: false, delivery: "confirmed" });
   });
 
+  it("distinguishes a native queue receipt from a started turn", async () => {
+    const acknowledgment = { turn: 0, started: false, delivery: "unconfirmed", nativeQueued: true };
+    reply(200, acknowledgment);
+    expect(await sendMessage("dev:codex:abc", "hi")).toEqual(acknowledgment);
+  });
+
   it("stays as it was for a terminal send, and ignores values it does not know", async () => {
     reply(200, { turn: 3, started: true });
     expect(await sendMessage(key, "hi")).toEqual({ turn: 3, started: true });

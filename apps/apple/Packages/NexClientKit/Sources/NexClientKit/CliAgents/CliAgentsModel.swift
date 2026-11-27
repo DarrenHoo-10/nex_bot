@@ -35,7 +35,7 @@ public final class CliAgentsModel {
     /// New sessions being started, newest first.
     public private(set) var launches: [CliLaunch] = []
     /// The first message of a session started here, until its transcript holds it.
-    public private(set) var echoes: [CliSessionKey: String] = [:]
+    public private(set) var echoes: [CliSessionKey: CliLaunchEcho] = [:]
     public private(set) var link: CliAgentStream.Status = .idle
     /// A first list has arrived.
     public private(set) var loaded = false
@@ -327,11 +327,11 @@ public final class CliAgentsModel {
 
     // MARK: Actions (each throws a CoreError; `CliErrorText.text(for:)` is the line to show)
 
-    public func send(_ key: CliSessionKey, text: String) async throws {
+    @discardableResult public func send(_ key: CliSessionKey, text: String) async throws -> CliSendResult? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         guard trimmed.utf8.count <= CoreClient.cliMaxSendBytes else { throw CoreError(kind: .http, message: CliErrorText.byCode["too_large"] ?? "内容太长", status: 400, code: "too_large") }
-        try await clientProvider().cliSend(key: key, text: trimmed)
+        return try await clientProvider().cliSend(key: key, text: trimmed)
     }
 
     public func steer(_ key: CliSessionKey, text: String, questionId: String? = nil, interruptWaiting: Bool = false) async throws -> String? {
@@ -452,7 +452,7 @@ public final class CliAgentsModel {
             let text = request.message.trimmingCharacters(in: .whitespacesAndNewlines)
             if let target, !text.isEmpty || !request.images.isEmpty {
                 updateLaunch(id) { $0.phase = .sending }
-                echoes[target] = CliLaunches.messagePreview(text, images: request.images)
+                echoes[target] = CliLaunchEcho(text: CliLaunches.messagePreview(text, images: request.images))
                 var outgoing = entry.preparedMessage
                 var tries = 0
                 while true {
@@ -461,9 +461,10 @@ public final class CliAgentsModel {
                             outgoing = try await imageMessage(target, text: text, images: request.images)
                             updateLaunch(id) { $0.preparedMessage = outgoing }
                         }
-                        echoes[target] = outgoing
-                        let sent = try await clientProvider().cliSendFirst(key: target, text: outgoing ?? text, launchID: id)
-                        if !sent { echoes[target] = nil }
+                        echoes[target] = CliLaunchEcho(text: outgoing ?? text)
+                        let receipt = try await clientProvider().cliSendFirst(key: target, text: outgoing ?? text, launchID: id)
+                        if receipt.dispatched { echoes[target]?.nativeQueued = receipt.nativeQueued == true }
+                        else { echoes[target] = nil }
                         break
                     } catch {
                         // the computer lists a just-started session once the CLI is up

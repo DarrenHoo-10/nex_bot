@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [Codex 手机发送：原生队列的发布验收门槛（待验证）](codex-native-phone-queue.md)
+
 - [Codex 输入框识别与发送保护 · Windows 0.9.59 / Mac 0.2.51（2026-11-27）](codex-composer-footer-0959-20261127.md)
 
 - [AGY 回复渲染修复、可扩展 Harness 重构与过程耗时展示 · 0.9.58 四端预览版（2026-11-27）](nexagent-agy-harness-0958-20261127.md)

@@ -58,7 +58,7 @@ function claudeLive(pid: number, id: string, status: string): void {
   writeFileSync(path.join(claudeDir, "sessions", `${pid}.json`), JSON.stringify({ pid, sessionId: id, cwd: workDir, entrypoint: "cli", status, procStart: LSTART, updatedAt: Date.now() }));
 }
 
-function codexRollout(id: string, text: string, ageMs = 3_600_000, cwd = workDir): string {
+function codexRollout(id: string, text: string, ageMs = 3_600_000, cwd = workDir, version = "0.99.0"): string {
   const day = new Date(Date.now() - ageMs);
   const folder = path.join(codexHome, "sessions", String(day.getUTCFullYear()), String(day.getUTCMonth() + 1).padStart(2, "0"), String(day.getUTCDate()).padStart(2, "0"));
   mkdirSync(folder, { recursive: true });
@@ -67,7 +67,7 @@ function codexRollout(id: string, text: string, ageMs = 3_600_000, cwd = workDir
   writeFileSync(
     file,
     [
-      JSON.stringify({ timestamp: at, type: "session_meta", payload: { id, cwd, originator: "codex_cli_rs", source: "cli", cli_version: "0.99.0" } }),
+      JSON.stringify({ timestamp: at, type: "session_meta", payload: { id, cwd, originator: "codex_cli_rs", source: "cli", cli_version: version } }),
       JSON.stringify({ timestamp: at, type: "event_msg", payload: { type: "user_message", message: text } }),
     ].join("\n") + "\n",
   );
@@ -469,6 +469,58 @@ describe("Codex session mapping", () => {
     await until(() => terminal.sent.length === 1);
     expect(terminal.pressed).toEqual([]);
     expect(await pending).toMatchObject({ ok: true, result: { delivery: "unconfirmed", started: false } });
+  });
+
+  it.each(["› existing local draft", "› phone message", "Warnings · 1 of 2 · Startup\nesc dismiss & close"])("delivers a phone message to a restored Codex terminal without altering its screen: %s", async (screen) => {
+    const id = XID(1), ref = `codex:${id}` as const;
+    codexRollout(id, "an earlier turn", 0, workDir, "0.172.0");
+    const { address } = await hc.run({ argv: ["/fake/bin/codex", "resume", id, "--no-daemon"], cwd: workDir, labels: { nexbot: "1", "nexbot.engine": "codex", "nexbot.native": id, "nexbot.codex-first-input": "1" } });
+    const terminal = hc.terminals.get(address)!;
+    terminal.screen = screen;
+    hc.drafts.add(address);
+    let submits = 0;
+    const t = setup({ managedCodexQueue: async (target, check) => {
+      expect(target).toMatchObject({ home: codexHome, threadId: id, text: "phone message", version: "0.172.0" });
+      await check();
+      submits++;
+      return true;
+    } });
+    await t.start();
+    await until(() => t.sessions().some(row => row.terminal === address));
+    const args = { ref, text: "phone message" };
+    const reply = await t.call("send", args, "same-phone-operation");
+    expect(reply).toMatchObject({ ok: true, result: { started: false, delivery: "unconfirmed", nativeQueued: true } });
+    expect(await t.call("send", args, "same-phone-operation")).toEqual(reply);
+    expect(submits).toBe(1);
+    expect(terminal.screen).toBe(screen);
+    expect(terminal.sent).toEqual([]);
+    expect(terminal.pressed).toEqual([]);
+  });
+
+  it("refuses a terminal rebound to a different thread before the queue write", async () => {
+    let writes = 0;
+    const t = setup({ env: { CODEX_HOME: codexHome }, cliVersion: async () => "codex-cli 0.172.0", managedCodexQueue: async (_input, check) => {
+      [...hc.terminals.values()][0].labels["nexbot.native"] = XID(2);
+      await check(); writes++; return true;
+    } });
+    await t.start();
+    const result = await t.call("start", { engine: "codex", cwd: workDir });
+    const { ref } = result.result as { ref: `codex:${string}` };
+    expect(await t.call("send", { ref, text: "only to the original" })).toMatchObject({ ok: false, error: { code: "stopped" } });
+    expect(writes).toBe(0);
+  });
+
+  it("does not type or retry an ambiguous Codex native enqueue", async () => {
+    let count = 0;
+    const t = setup({ env: { CODEX_HOME: codexHome }, cliVersion: async () => "codex-cli 0.172.0", managedCodexQueue: async (_input, check) => { await check(); count++; throw new Error("queue receipt lost"); } });
+    await t.start();
+    const result = await t.call("start", { engine: "codex", cwd: workDir });
+    const { ref, terminal: address } = result.result as { ref: `codex:${string}`; terminal: string };
+    const reply = await t.call("send", { ref, text: "once" }, "lost-ack");
+    expect(reply).toMatchObject({ ok: false, error: { code: "unknown" } });
+    expect(await t.call("send", { ref, text: "once" }, "lost-ack")).toEqual(reply);
+    expect(count).toBe(1);
+    expect(hc.terminals.get(address)?.sent).toEqual([]);
   });
 
   it("confirms only a new native user record matching this submission", async () => {

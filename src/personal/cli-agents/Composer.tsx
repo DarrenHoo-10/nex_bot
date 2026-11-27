@@ -23,11 +23,13 @@ export function discardComposerDraft(id:string){ drafts.delete(id);saveExtras(id
 
 export const OUTSIDE_NOTE = "发送到电脑上的会话";
 export const UNCONFIRMED_NOTE = "已发送，未确认";
+export const NATIVE_QUEUED_NOTE = "Codex 已接收，等待开始";
 export const WAITING_NOTE = "将在电脑上回答问题后读取";
 
 /** What a send to a session outside nex_bot's terminals adds to the status line; a confirmed one says nothing more. */
 export function deliveryNote(result: unknown): string {
   const sent = (result && typeof result === "object" ? result : {}) as Partial<SendResult>;
+  if (sent.nativeQueued) return NATIVE_QUEUED_NOTE;
   return [sent.delivery === "unconfirmed" ? UNCONFIRMED_NOTE : "", sent.waiting ? WAITING_NOTE : ""].filter(Boolean).join("，");
 }
 

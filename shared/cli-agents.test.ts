@@ -543,6 +543,9 @@ describe("parseCliOpResult", () => {
     expect(parseCliOpResult("start", { ref, terminal: "t-1" })).toEqual({ ref, terminal: "t-1" });
     expect(parseCliOpResult("continue", { ref, terminal: "t-1" })).toEqual({ ref, terminal: "t-1" });
     expect(parseCliOpResult("send", { turn: 3, started: false })).toEqual({ turn: 3, started: false });
+    const queued = { turn: 0, started: false, delivery: "unconfirmed", nativeQueued: true };
+    expect(parseCliOpResult("send", queued)).toEqual(queued);
+    expect(parseCliOpResult("send", { ...queued, nativeQueued: "yes" })).toBeNull();
     expect(parseCliOpResult("send", { turn: 0, started: false, delivery: "unconfirmed", waiting: true, extra: 1 })).toEqual({ turn: 0, started: false, delivery: "unconfirmed", waiting: true });
     expect(parseCliOpResult("interrupt", { outcome: "interrupted" })).toEqual({ outcome: "interrupted" });
     expect(parseCliOpResult("open_local", {})).toEqual({});

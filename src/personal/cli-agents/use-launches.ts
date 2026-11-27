@@ -42,7 +42,7 @@ export interface Launch extends LaunchRequest {
 }
 
 /** A first message the real session's pane shows until its transcript has it. */
-export interface LaunchEcho { text: string; at: number }
+export interface LaunchEcho { text: string; at: number; nativeQueued?: boolean }
 
 /** Ids that make a retry the same request: the device reuses the worktree, Core the message. */
 interface Attempt { requestId: string; clientMessageId: string; sendRequestId: string; files?: PickedFile[] }
@@ -146,6 +146,7 @@ export function useLaunches(sessions: readonly CliSessionView[], onSettled?: () 
             const outcome = await sendMessage(key, text, { delivery: "send", clientMessageId: attempt.clientMessageId, requestId: attempt.sendRequestId });
             // A held or failed entry already lives in the queue; show it there, not as an accepted first turn.
             if (outcome.queued) echoes.current.delete(key);
+            else if (outcome.nativeQueued) echoes.current.set(key, { text, at: launch.createdAt, nativeQueued: true });
             break;
           } catch (cause) {
             // the computer lists a just-started session once the CLI is up

@@ -140,17 +140,15 @@ extension CoreClient {
         try await post(Self.cliBase + "/queue/resume", body: CliKeyBody(key: key))
     }
 
-    public func cliSend(key: CliSessionKey, text: String) async throws {
-        let r: CliSendResult = try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text), timeout: 90)
-        _ = r
+    @discardableResult public func cliSend(key: CliSessionKey, text: String) async throws -> CliSendResult {
+        try await post(Self.cliBase + "/send", body: CliSendBody(key: key, text: text), timeout: 90)
     }
 
     /// The first message uses the same outbox request even if its HTTP acknowledgement was lost.
-    func cliSendFirst(key: CliSessionKey, text: String, launchID: String) async throws -> Bool {
+    func cliSendFirst(key: CliSessionKey, text: String, launchID: String) async throws -> CliSendResult {
         guard text.utf8.count <= Self.cliMaxSendBytes else { throw CoreError(kind: .http, message: "内容太长", status: 400, code: "too_large") }
         let body = CliSendBody(key: key, text: text, delivery: "send", clientMessageId: launchID, requestId: launchID)
-        let result: CliSendResult = try await post(Self.cliBase + "/send", body: body, timeout: 90)
-        return result.status == nil || result.status == "sent" || result.status == "confirmed"
+        return try await post(Self.cliBase + "/send", body: body, timeout: 90)
     }
 
     /// Returns the delivery notice when Core cannot confirm immediate steering.

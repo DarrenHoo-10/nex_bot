@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { DaemonError } from "./codex-daemon.ts";
 import { cliVersion } from "./launch.ts";
+import { enqueueCodexText } from "./codex-native-queue.ts";
 
 const exec = promisify(execFile);
 const REFRESH_MS = 60_000;
@@ -75,23 +76,6 @@ export class CodexDesktopQueue {
   async send(input: { home: string; threadId: string; version: string; text: string }): Promise<void> {
     const file = this.paths.get(input.version);
     if (!file) throw new DaemonError("read_only", "此 Codex App 会话没有匹配的本地版本");
-    // CreateProcess limits the quoted command line to 32767 UTF-16 units.
-    // libuv can double embedded quotes and runs of backslashes while quoting.
-    if (this.options.platform === "win32" && input.text.length * 2 + file.length * 2 + 256 >= 32767) {
-      throw new DaemonError("too_large", "消息超出 Codex App 当前发送长度");
-    }
-    const env = { ...(this.options.env ?? process.env) };
-    for (const key of Object.keys(env)) if (key.toUpperCase() === "CODEX_HOME") delete env[key];
-    env.CODEX_HOME = input.home;
-    try {
-      // No shell and no --resume: only the original App writer may pick up the message.
-      await exec(file, ["queue", "--thread", input.threadId, "--message=" + input.text], {
-        env, timeout: 8_000, windowsHide: true, maxBuffer: 64 * 1024,
-      });
-    } catch {
-      // The CLI may have persisted the message before failing or timing out.
-      // Core treats this as uncertain and never repeats it automatically.
-      throw new DaemonError("unknown", "Codex App 未确认接收消息");
-    }
+    await enqueueCodexText({ ...input, file, platform: this.options.platform, env: this.options.env });
   }
 }

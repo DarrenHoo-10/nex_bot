@@ -566,6 +566,21 @@ describe("session pane", () => {
     expect(text()).not.toContain("等待 Codex 确认收件");
   });
 
+  it("keeps a native Codex queue acknowledgment until the user record appears", async () => {
+    const row = session({ engine: "codex", state: "idle" });
+    fixture.sendMessage.mockResolvedValue({ turn: 0, started: false, status: "sent", delivery: "unconfirmed", nativeQueued: true });
+    await mount({ devices: [device()], sessions: [row] }, row.key);
+    await typeText(container.querySelector("textarea")!, "hello");
+    await click(container.querySelector('button[type="submit"]'));
+    expect(text()).toContain("Codex 已接收，等待开始");
+    expect(text()).not.toContain("等待 Codex 确认收件");
+    expect(container.querySelector("[data-testid=cli-working]")).toBeNull();
+    await act(async () => socket.open());
+    await act(async () => socket.push({ type: "items", key: row.key, items: [{ id: "receipt", kind: "user", text: "hello", ts: Date.now() }] }));
+    expect(text()).not.toContain("Codex 已接收，等待开始");
+    expect(fixture.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("names the agent once per reply and shows its work as dots in the conversation", async () => {
     fixture.fetchItems.mockResolvedValue({ more: false, items: [
       { kind: "user", id: "u1", ts: 1, text: "第一问" },

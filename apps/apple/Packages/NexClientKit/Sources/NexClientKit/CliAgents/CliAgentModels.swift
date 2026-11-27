@@ -386,8 +386,20 @@ public struct CliForkResult: Sendable, Hashable, Decodable {
     public var conversationId: String
 }
 
+public struct CliLaunchEcho: Sendable {
+    public let text: String
+    public var nativeQueued = false
+}
+
 struct CliKeyResult: Decodable, Sendable { let key: String }
-struct CliSendResult: Decodable, Sendable { let turn: Int?; let started: Bool?; let status: String?; let delivery: String? }
+public struct CliSendResult: Decodable, Sendable {
+    let turn: Int?
+    let started: Bool?
+    let status: String?
+    let delivery: String?
+    public let nativeQueued: Bool?
+    var dispatched: Bool { status == nil || status == "sent" || status == "confirmed" }
+}
 struct CliOutcomeResult: Decodable, Sendable { let outcome: String? }
 
 public struct CliQueuedEntry: Decodable, Identifiable, Sendable {

@@ -51,6 +51,7 @@ import { AgyError, AgyRuntime } from "./agy.ts";
 import { agyConfigDir, type agyWriters } from "./agy-native.ts";
 import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { CodexDesktopQueue } from "./codex-desktop-queue.ts";
+import { canConsumeCodexQueue, tryManagedCodexQueue } from "./codex-native-queue.ts";
 import { codexEmptyComposer, codexReceipt } from "./codex-first-input.ts";
 import { DeviceGit, RepoRoots } from "./device-git.ts";
 import { allHarnesses, harnessConfigEnv, harnessFor, type HarnessDriver, type HarnessWatchSource } from "./harness.ts";
@@ -151,6 +152,7 @@ export interface CliAgentBridgeOptions {
   codexInputReadyMs?: number;
   codexReceiptMs?: number;
   codexHasNoDaemonFlag?: typeof codexHasNoDaemonFlag;
+  managedCodexQueue?: typeof tryManagedCodexQueue;
   codexDesktopQueue?: Pick<CodexDesktopQueue, "refresh" | "supports" | "send">;
   /** After continuing a Codex session without a lock file: how long an immediate exit counts as "open elsewhere". Default 5 s. */
   settleMs?: number;
@@ -1456,7 +1458,13 @@ export class CliAgentBridge {
     plan: { argv: string[]; cwd: string; env: Record<string, string>; name: string; labels: Record<string, string> },
     size: { cols: number; rows: number },
   ): Promise<HcTerminal> {
-    const params: HcRunParams = { argv: plan.argv, cwd: plan.cwd, env: plan.env, name: plan.name, labels: plan.labels, size, keep: false };
+    // Resumed threads can have an older CLI version in their rollout than the terminal that now owns them.
+    const version = engine === "codex" ? /^codex-cli (\d+\.\d+\.\d+)$/.exec(this.engines.find((e) => e.engine === engine)?.version ?? "")?.[1] : undefined;
+    const labels = engine === "codex" ? { ...plan.labels,
+      ...(version ? { "nexbot.codex-version": version } : {}),
+      ...(plan.env.CODEX_HOME ? { "nexbot.codex-home": plan.env.CODEX_HOME } : {}),
+    } : plan.labels;
+    const params: HcRunParams = { argv: plan.argv, cwd: plan.cwd, env: plan.env, name: plan.name, labels, size, keep: false };
     try {
       return await hc.run(params);
     } catch (error) {
@@ -1778,7 +1786,40 @@ export class CliAgentBridge {
     }
   }
 
-  private async opSend(args: CliOpArgs["send"], deadline: number): Promise<CliOpResult["send"]> {
+  private async enqueueManagedCodex(args: CliOpArgs["send"], address: string, deadline: number): Promise<boolean> {
+    const link = this.link_;
+    const row = this.discovery.get(args.ref);
+    if (!row || row.engine !== "codex") return false;
+    const hc = await this.requireHc();
+    const terminal = await hc.get(address);
+    const version = terminal.labels["nexbot.codex-version"] ?? row.cliVersion;
+    if (!version || !canConsumeCodexQueue(version)) return false;
+    // PATH can point to a different installation after the desktop app restarts.
+    const file = terminal.argv[0];
+    const paths = this.platform === "win32" ? path.win32 : path.posix;
+    if (!file || !paths.isAbsolute(file) || !/^codex(?:\.exe)?$/i.test(paths.basename(file))) return false;
+    const boundHome = terminal.labels["nexbot.codex-home"];
+    if (boundHome && normalizeDir(boundHome, this.platform) !== normalizeDir(row.configDir, this.platform)) throw new OpFailure("stopped", "Codex 会话目录已变化");
+    const validate = (current: HcTerminal) => {
+      const known = this.terminals.get(address);
+      const native = current.labels["nexbot.native"];
+      if (!link || this.link_ !== link || this.detached || this.hc !== hc || current.state !== "live" || current.pid !== terminal.pid ||
+        current.labels.nexbot !== "1" || current.labels["nexbot.engine"] !== "codex" || known?.nativeId !== row.nativeId ||
+        (native !== row.nativeId && native !== PENDING_NATIVE_ID) || current.argv[0] !== terminal.argv[0] || this.discovery.get(args.ref)?.configDir !== row.configDir) throw new OpFailure("stopped");
+      if (Date.now() >= deadline - 200) throw new OpFailure("busy");
+    };
+    validate(terminal);
+    const queued = await (this.options.managedCodexQueue ?? tryManagedCodexQueue)({
+      file, version, home: row.configDir, threadId: row.nativeId, cwd: terminal.cwd, platform: this.platform, env: this.options.env, text: args.text,
+    }, async () => {
+      validate(await hc.get(address));
+      return Math.max(1, Math.min(8_000, deadline - 150 - Date.now()));
+    });
+    if (!queued) validate(await hc.get(address));
+    return queued;
+  }
+
+  private async opSend(args: CliOpArgs["send"], deadline: number, steer = false): Promise<CliOpResult["send"]> {
     if (args.text.length === 0) throw new OpFailure("invalid");
     if (utf8ByteLength(args.text) > MAX_SEND_TEXT) throw new OpFailure("too_large");
     if (!this.addressFor(args.ref)) {
@@ -1790,6 +1831,10 @@ export class CliAgentBridge {
       }
     }
     const address = this.terminalOf(args.ref);
+    // Slash commands belong to the TUI; queueing one would send the literal command to the model.
+    if (!steer && args.ref.startsWith("codex:") && !/^\/[\w-]+(?:\s|$)/.test(args.text.trimStart()) && await this.enqueueManagedCodex(args, address, deadline)) {
+      return { turn: 0, started: false, delivery: "unconfirmed", nativeQueued: true };
+    }
     const gate = this.terminals.get(address)?.firstCodexInput;
     if (gate && !gate.confirmed) return this.firstCodexSend(args, address, gate, deadline);
     const hc = await this.requireHc();
@@ -1816,7 +1861,7 @@ export class CliAgentBridge {
       if (steered) return steered;
     }
     if (managedAddress) {
-      const result = await this.opSend(args, deadline);
+      const result = await this.opSend(args, deadline, true);
       return { accepted: true, started: result.started, ...(result.delivery ? { delivery: result.delivery } : {}) };
     }
     throw new OpFailure(row?.state === "running" || row?.state === "waiting" ? "invalid" : "turn_changed");

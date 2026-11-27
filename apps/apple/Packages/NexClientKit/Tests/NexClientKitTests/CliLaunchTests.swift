@@ -96,7 +96,8 @@ final class CliLaunchModelTests: XCTestCase {
         XCTAssertEqual(model.displaySessions.first?.key, key)
         await eventually { model.launches.isEmpty }
         XCTAssertEqual(model.selectedKey, "d1:claude:new1")
-        XCTAssertEqual(model.echoes["d1:claude:new1"], "修一下登录页")
+        XCTAssertEqual(model.echoes["d1:claude:new1"]?.text, "修一下登录页")
+        XCTAssertEqual(model.echoes["d1:claude:new1"]?.nativeQueued, false)
         XCTAssertEqual(core.lock.withLock { core.sends }, 3, "a not-yet-listed session is tried again")
         let body = stub.recorded("/api/cli-agents/start").first?.json
         XCTAssertEqual(body?["worktreeBranch"] as? String, "nexagent/abc123")

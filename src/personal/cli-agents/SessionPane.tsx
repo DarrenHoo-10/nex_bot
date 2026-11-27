@@ -11,7 +11,8 @@ import { CliApiError, continueSession, editQueued, interruptSession, resumeQueue
 import { useReview } from "./WorkbenchReview";
 import { useNotes } from "./use-notes";
 import {getApplied,getLaunch,getPermission,saveApplied,saveLaunch,savePermission,transferGoal,type PermissionChoice} from "./composer-additions";
-import { Composer, type LaunchChoice } from "./Composer";
+import { Composer, NATIVE_QUEUED_NOTE, type LaunchChoice } from "./Composer";
+import type { LaunchEcho } from "./use-launches";
 import { cardState, shownCards, type RequestRecord } from "./requests";
 import { RequestCard } from "./RequestCard";
 import { askedSession, sessionStatusLabel, sessionTitle, sessionTone } from "./session-model";
@@ -47,13 +48,13 @@ export interface SessionPaneProps {
   /** what the session's computer supports */
   features?: readonly string[];
   /** the first message of a session just started from NexAgent, until its records hold it */
-  echo?: { text: string; at: number };
+  echo?: LaunchEcho;
 }
 
 const NO_REQUESTS: readonly RequestRecord[] = [];
 
 /** A message sent from this page that the session's records do not hold yet. */
-export interface PendingSend { id: string; text: string; at: number; known: ReadonlySet<string>; queueId?: string }
+export interface PendingSend { id: string; text: string; at: number; known: ReadonlySet<string>; queueId?: string; nativeQueued?: boolean }
 
 const plain = (text: string) => privateCliImageLinks(unwrapPastedContent(text)).replace(/\s+/g, " ").trim();
 const isNewAgentItem = (item: CliItem, known: ReadonlySet<string>) =>
@@ -206,7 +207,8 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
   const dropPending = (id: string) => setEchoes((list) => list.filter((entry) => entry.id !== id));
   const codexReceiptPending = session.engine === "codex" && session.online && session.state !== "running" && session.state !== "waiting" && !!awaiting &&
     (awaiting.fresh ? !items.some(item => item.kind === "user") : visibleEchoes.length > 0);
-  const receiptId = codexReceiptPending ? visibleEchoes.at(-1)?.id ?? session.key : null;
+  const nativeQueued = awaiting?.fresh ? echo?.nativeQueued : visibleEchoes.at(-1)?.nativeQueued;
+  const receiptId = codexReceiptPending && !nativeQueued ? visibleEchoes.at(-1)?.id ?? session.key : null;
   const [lateReceipt, setLateReceipt] = useState<string | null>(null);
   useEffect(() => {
     setLateReceipt(null);
@@ -214,7 +216,7 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
     const timer = setTimeout(() => setLateReceipt(receiptId), 15_000);
     return () => clearTimeout(timer);
   }, [receiptId]);
-  const deliveryLabel = uploadPreview ? "正在上传附件" : codexReceiptPending ? (lateReceipt === receiptId ? "Codex 尚未确认收件，请查看终端" : awaiting?.resuming ? "正在恢复会话" : "等待 Codex 确认收件") : "";
+  const deliveryLabel = uploadPreview ? "正在上传附件" : codexReceiptPending ? (nativeQueued ? NATIVE_QUEUED_NOTE : lateReceipt === receiptId ? "Codex 尚未确认收件，请查看终端" : awaiting?.resuming ? "正在恢复会话" : "等待 Codex 确认收件") : "";
   const progress = deliveryLabel ? "" : session.online && session.state === "running" ? "执行中" : awaiting ? (awaiting.resuming ? "正在恢复会话" : "等待回复") : "";
   const working = useMemo(() => progress && !compact ? { label: progress } : undefined, [progress, compact]);
 
@@ -271,14 +273,17 @@ export function SessionPane({ session, stream, onKeyChange, onBack, back, reques
         ...(revision ? { revisesMessageId: revision.messageId } : {}),
       });
       // a queued entry is not delivered yet: the queue strip shows it instead
-      const outcome = result as { queued?: boolean; status?: string; delivery?: string };
+      const outcome = result as Awaited<ReturnType<typeof sendMessage>>;
       if (outcome.queued) {
         const messageId = (result as { messageId?: string }).messageId;
         if (messageId) setEchoes((list) => list.map((echo) => echo.id === echoId ? { ...echo, queueId: messageId } : echo));
         void refreshQueue();
         setAwaiting(null);
       }
-      else setAwaiting({ known, resuming: false, unconfirmed: outcome.delivery === "unconfirmed" });
+      else {
+        if (outcome.nativeQueued) setEchoes(list => list.map(entry => entry.id === echoId ? { ...entry, nativeQueued: true } : entry));
+        setAwaiting({ known, resuming: false, unconfirmed: outcome.delivery === "unconfirmed" });
+      }
     }
     if(revision)setRevision(null);
     if(key!==session.key){transferGoal(session.key,key);onKeyChange(key)}

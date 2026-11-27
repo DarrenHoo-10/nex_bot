@@ -52,7 +52,8 @@ export interface WorkbenchSubmitResult {
   version: number;
   /** true when the entry waits in the outbox instead of having been dispatched */
   queued: boolean;
-  /** a session outside nex_bot's terminals: whether its transcript showed the message arrive */
+  /** The native CLI accepted the message into its queue; this is not a transcript or turn-start receipt. */
+  nativeQueued?: boolean;
   delivery?: CliDelivery;
   /** a session outside nex_bot's terminals that was waiting on a question when the message went */
   waiting?: boolean;
@@ -103,7 +104,7 @@ class DispatchFailure extends Error {
 }
 
 /** What a successful send to a session outside nex_bot's terminals reported back. */
-interface DispatchOutcome { started?: boolean; turn?: number; delivery?: CliDelivery; waiting?: boolean }
+interface DispatchOutcome { started?: boolean; turn?: number; delivery?: CliDelivery; waiting?: boolean; nativeQueued?: boolean }
 
 /** Outbox statuses a browser is shown, oldest queue position first. */
 const LIVE_STATUSES: readonly CliQueueStatus[] = ["pending", "claimed", "sent", "uncertain", "failed"];
@@ -513,6 +514,7 @@ export class CliAgentWorkbench {
       status: String(entry.status) as CliQueueStatus,
       version: Number(entry.version),
       queued: !["sent", "confirmed"].includes(String(entry.status)),
+      ...(entry.status === "sent" && this.entryBody(entry).nativeQueued === true ? { nativeQueued: true, delivery: "unconfirmed" as const } : {}),
     };
   }
 
@@ -525,7 +527,8 @@ export class CliAgentWorkbench {
     if (interruptWaiting) this.interruptingForSteer.add(key);
     try {
       const entry = this.entryRow(entryId);
-      const message = this.entryText(entry);
+      const body = this.entryBody(entry);
+      const message = typeof body.text === "string" ? body.text : "";
       if (questionId !== undefined) {
         // Claude receives the deny reason as tool feedback within the current turn.
         await this.hub.answer(actor, questionId, "deny", undefined, questionGuidance(message));
@@ -547,12 +550,14 @@ export class CliAgentWorkbench {
         outcome.turn = turn;
       }
       if (interruptWaiting && started) this.awaitingTurnEnd.set(String(entry.workbench_id), null);
-      const { delivery, waiting } = result as { delivery?: unknown; waiting?: unknown };
+      const { delivery, waiting, nativeQueued } = result as DispatchOutcome;
+      // A repeated HTTP request returns the same native receipt without dispatching the entry again.
+      const acknowledgedBody = op === "send" && nativeQueued === true ? this.store.encrypt(JSON.stringify({ ...body, nativeQueued: true })) : null;
       if (outcome && (delivery === "confirmed" || delivery === "unconfirmed")) outcome.delivery = delivery;
       if (outcome && waiting === true) outcome.waiting = true;
       this.store.run(
-        "UPDATE cli_agent_outbox SET status=?,op_id=?,version=version+1,updated_at=? WHERE id=?",
-        (result as { delivery?: string }).delivery === "confirmed" ? "confirmed" : "sent", opId, now(), entryId,
+        "UPDATE cli_agent_outbox SET status=?,op_id=?,body=coalesce(?,body),version=version+1,updated_at=? WHERE id=?",
+        delivery === "confirmed" ? "confirmed" : "sent", opId, acknowledgedBody, now(), entryId,
       );
       return null;
     } catch (error) {
@@ -765,13 +770,14 @@ export class CliAgentWorkbench {
     return this.store.get("SELECT * FROM cli_agent_outbox WHERE workbench_id=? AND status='pending' ORDER BY seq LIMIT 1", workbenchId);
   }
 
+  private entryBody(row: Row): Record<string, unknown> {
+    try { return JSON.parse(this.store.decrypt(String(row.body))) ?? {}; }
+    catch { return {}; }
+  }
+
   private entryText(row: Row): string {
-    try {
-      const body = JSON.parse(this.store.decrypt(String(row.body))) as { text?: string };
-      return typeof body.text === "string" ? body.text : "";
-    } catch {
-      return "";
-    }
+    const { text } = this.entryBody(row);
+    return typeof text === "string" ? text : "";
   }
 
   private entryView(row: Row): CliQueueEntryView {

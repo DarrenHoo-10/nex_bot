@@ -531,6 +531,18 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertEqual(put?.headers["Authorization"], "Bearer secret")
     }
 
+    func testNativeQueueReceiptIsNotTurnConfirmation() async throws {
+        let core = StubCore()
+        core.handle { _ in .json(["turn": 0, "started": false, "delivery": "unconfirmed", "status": "sent", "nativeQueued": true]) }
+        let client = core.client()
+        let receipt = try await client.cliSend(key: "d:codex:s", text: "next")
+        XCTAssertEqual(receipt.nativeQueued, true)
+        XCTAssertEqual(receipt.started, false)
+        let first = try await client.cliSendFirst(key: "d:codex:s", text: "first", launchID: "stable-id")
+        XCTAssertTrue(first.dispatched)
+        XCTAssertEqual(first.nativeQueued, true)
+    }
+
     func testClientErrorsCarryCoreCode() async {
         let core = StubCore()
         core.handle { _ in .json(["error": "这个会话正在电脑上运行", "code": "open_elsewhere"], status: 409) }

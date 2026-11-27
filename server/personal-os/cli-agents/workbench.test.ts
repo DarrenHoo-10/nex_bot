@@ -245,6 +245,21 @@ describe("queue delivery", () => {
     expect(seen.data).toMatchObject({ status: "confirmed", delivery: "confirmed" });
   });
 
+  it("returns a native queue receipt on both send routes without confirming a turn or replaying the entry", async () => {
+    const f = await fixture();
+    const device = await connectDevice(f, "native-queue");
+    const key = `${device.id}:codex:queued`;
+    device.sessions([runningWire("queued", { engine: "codex", state: "idle" })], { full: true });
+    await until(() => f.app.cliHub.list().sessions.find(s => s.key === key), "Codex session listed");
+    const result = { turn: 0, started: false, delivery: "unconfirmed", nativeQueued: true };
+    device.onOp = () => ({ ok: true, result });
+    expect((await f.call("cli-agents/send", { key, text: "hello" })).data).toEqual(result);
+    const submit = { key, text: "next", delivery: "send", clientMessageId: ids.client(), requestId: ids.request() };
+    expect((await f.call("cli-agents/send", submit)).data).toMatchObject({ ...result, status: "sent", queued: false });
+    expect((await f.call("cli-agents/send", submit)).data).toMatchObject({ status: "sent", nativeQueued: true, queued: false, delivery: "unconfirmed" });
+    expect(device.ops("send")).toHaveLength(2);
+  });
+
   it("steers a running turn and sends normally after that turn ends", async () => {
     const f = await fixture();
     const device = await connectDevice(f, "steer");

@@ -196,7 +196,7 @@ export async function uploadAttachment(key: CliSessionKey, file: File): Promise<
 }
 /** `delivery` and `waiting` come only from a session outside nex_bot's terminals; the
  * workbench contract answers with the outbox entry instead. */
-export interface SendResult { turn: number; started?: boolean; delivery?: CliDelivery; waiting?: boolean }
+export interface SendResult { turn: number; started?: boolean; delivery?: CliDelivery; waiting?: boolean; nativeQueued?: boolean }
 export interface WorkbenchSendResult { messageId: string; operationId?: string; status: string; version: number; queued: boolean }
 export type SendOutcome = SendResult & Partial<WorkbenchSendResult>;
 
@@ -224,6 +224,7 @@ export async function sendMessage(key: CliSessionKey, text: string, options: Sen
     ...(typeof data.started === "boolean" ? { started: data.started } : {}),
     ...(data.delivery === "confirmed" || data.delivery === "unconfirmed" ? { delivery: data.delivery } : {}),
     ...(data.waiting === true ? { waiting: true } : {}),
+    ...(data.nativeQueued === true ? { nativeQueued: true } : {}),
     ...(typeof data.messageId === "string" ? { messageId: data.messageId } : {}),
     ...(typeof data.status === "string" ? { status: data.status } : {}),
     ...(typeof data.version === "number" ? { version: data.version } : {}),

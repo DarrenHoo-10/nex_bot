@@ -734,7 +734,7 @@ export interface CliOpResult {
   unwatch: Record<string, never>;
   start: { ref: CliSessionRef; terminal?: string; cwd?: string };
   continue: { ref: CliSessionRef; terminal?: string };
-  send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean };
+  send: { turn: number; started: boolean; delivery?: CliDelivery; waiting?: boolean; nativeQueued?: boolean };
   steer: { accepted: boolean; started?: boolean; delivery?: CliDelivery };
   interrupt: { outcome: string };
   open_local: Record<string, never>;
@@ -1526,6 +1526,7 @@ const RESULT_PARSERS: { [K in CliOp]: (o: Rec) => CliOpResult[K] } = {
       started: bool(o.started),
       delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined,
       waiting: optBool(o, "waiting"),
+      nativeQueued: optBool(o, "nativeQueued"),
     }),
   steer: (o) => pick({ accepted: bool(o.accepted), started: optBool(o, "started"), delivery: present(o, "delivery") ? oneOf(o.delivery, CLI_DELIVERY) : undefined }),
   interrupt: (o) => ({ outcome: str(o.outcome, CLI_LIMITS.reason) }),

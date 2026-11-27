@@ -26,6 +26,7 @@ struct AgentPendingSend: Identifiable, Equatable {
     let id = UUID()
     var text: String
     var uploading = false
+    var nativeQueued = false
     /// the items the transcript held when it was sent
     let known: Set<String>
 
@@ -347,8 +348,9 @@ private struct AgentTranscript: View {
         let echo = t.items.contains { $0.kind == .user } ? nil : model.echoes[key]
         let receipt = model.sessions.first { $0.key == key }
         let codexPending = engine == .codex && receipt?.online == true && (receipt?.state == .idle || receipt?.state == .stopped) && (echo != nil || !sent.isEmpty)
-        let receiptID = codexPending ? (sent.last?.id.uuidString ?? key) : nil
-        let delivery = sent.contains(where: \.uploading) ? "正在上传附件" : codexPending ? (lateReceipt == receiptID ? "Codex 尚未确认收件，请查看终端" : "等待 Codex 确认收件") : nil
+        let nativeQueued = sent.last?.nativeQueued ?? echo?.nativeQueued ?? false
+        let receiptID = codexPending && !nativeQueued ? (sent.last?.id.uuidString ?? key) : nil
+        let delivery = sent.contains(where: \.uploading) ? "正在上传附件" : codexPending ? (nativeQueued ? "Codex 已接收，等待开始" : lateReceipt == receiptID ? "Codex 尚未确认收件，请查看终端" : "等待 Codex 确认收件") : nil
         let working = delivery == nil ? (self.working ?? (sent.isEmpty && echo == nil ? nil : "等待回复")) : nil
         let timeline = AgentGuide.timeline(t.items, guides)
         let blocks = CliTranscript.group(timeline)
@@ -360,7 +362,7 @@ private struct AgentTranscript: View {
             if blocks.isEmpty && (echo != nil || !sent.isEmpty) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
+                        if let echo { AgentEchoBubble(text: echo.text, loadImage: model.downloadImage) }
                         ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
                         if let delivery { Text(delivery).font(.caption).foregroundStyle(Theme.muted) }
                         if let working { AgentWorkingRow(engine: engine, label: working, byline: true) }
@@ -409,7 +411,7 @@ private struct AgentTranscript: View {
                                     rendered(block, conclusions: conclusions, completed: completed, translate: t.translationEnabled)
                                 }
                             }
-                            if let echo { AgentEchoBubble(text: echo, loadImage: model.downloadImage) }
+                            if let echo { AgentEchoBubble(text: echo.text, loadImage: model.downloadImage) }
                             ForEach(sent) { AgentEchoBubble(text: $0.text, loadImage: model.downloadImage) }
                             if let delivery { Text(delivery).font(.caption).foregroundStyle(Theme.muted) }
                             // the agent's name heads the dots only when nothing of this reply is shown yet
@@ -1348,9 +1350,13 @@ private struct AgentComposer: View {
                 pending[index].text = message
                 pending[index].uploading = false
             }
-            if queued { try await model.enqueue(session.key, text: message) }
-            else { try await model.send(session.key, text: message) }
-            if queued { pending.removeAll { $0.id == entry.id } }
+            if queued {
+                try await model.enqueue(session.key, text: message)
+                pending.removeAll { $0.id == entry.id }
+            } else if try await model.send(session.key, text: message)?.nativeQueued == true,
+                      let index = pending.firstIndex(where: { $0.id == entry.id }) {
+                pending[index].nativeQueued = true
+            }
         } catch {
             pending.removeAll { $0.id == entry.id }
             if draft.isEmpty && images.isEmpty { draft = text; images = submittedImages }
