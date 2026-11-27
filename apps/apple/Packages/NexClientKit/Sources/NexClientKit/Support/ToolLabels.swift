@@ -50,6 +50,7 @@ public enum ToolLabels {
         "device.computer": "操作电脑窗口",
         "skill.list": "查看技能目录",
         "skill.read": "阅读技能说明",
+        "web.fetch": "读取网页",
     ]
     static let phrases: [String: String] = [
         "connector.list": "正在查看连接器",
@@ -83,6 +84,7 @@ public enum ToolLabels {
         "device.computer": "正在操作电脑窗口",
         "skill.list": "正在查看技能目录",
         "skill.read": "正在阅读技能说明",
+        "web.fetch": "正在读取网页",
     ]
     static let approvalTitles: [String: String] = [
         "agent.delegate": "联系其他 Agent", "agent.create": "创建新的 Agent", "agent.update": "修改 Agent 的名字和身份说明",

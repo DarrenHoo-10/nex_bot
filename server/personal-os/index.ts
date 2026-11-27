@@ -263,7 +263,7 @@ export async function createPersonalApp(options: AppOptions) {
       hostDeviceId: gateway.hostDeviceId,
       memoryEngine: { ...runtime.memory.ledger.status(), service: memoryPlugin.status().status },
       memoryPlugin: memoryPlugin.status(),
-      bots: agents.contacts(scoped).map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "standard", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
+      bots: agents.contacts(scoped).map((bot) => ({ ...bot, ...store.botModelSelection(String(bot.id)), approval_setting: store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", bot.id)?.mode ?? "full", approval_setting_version: store.get("SELECT version FROM agent_approval_settings WHERE bot_id=?", bot.id)?.version ?? 0, ...agents.policyView(String(bot.id)), ...store.get("SELECT expertise_json FROM bot_public_profiles WHERE bot_id=?", bot.id) })),
       approvalRules: approvalRules(store),
       approvals: (taskStatus ? base.approvals : []).map((approval) => ({ ...approval, remember_label: approvalRuleLabel(store, approvalRuleScope(JSON.parse(String(approval.arguments_json)))) })),
       ...(settings ? { directory: directory(store) } : {}),
@@ -934,7 +934,7 @@ export async function createPersonalApp(options: AppOptions) {
     const pair = hostPair && store.get("SELECT id FROM devices WHERE id=? AND status='bound'", hostPair.deviceId) ? hostPair : gateway.pair(os.hostname());
     gateway.hostDeviceId = pair.deviceId;
     store.run("INSERT INTO secrets VALUES('host-node-pair',?) ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext", store.encrypt(JSON.stringify(pair)));
-    node.configure({ origin, token: pair.token, root: node.config?.root ?? "", exec: true, computer: node.computer.available() });
+    node.configure({ origin, token: pair.token, root: node.config?.root || os.homedir(), exec: true, computer: node.computer.available() });
   }
   if (options.hindsight) runtime.memory.ledger.client = new HindsightClient(options.hindsight.endpoint, options.hindsight.token);
   if (!options.hindsight) memoryPlugin.start();

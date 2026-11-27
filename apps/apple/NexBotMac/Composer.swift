@@ -162,7 +162,7 @@ struct Composer: View {
 
     // MARK: Menus
 
-    private var mode: ApprovalMode { bot?.approvalMode ?? .standard }
+    private var mode: ApprovalMode { bot?.approvalMode ?? .full }
     private var full: Bool { mode == .full }
     private var menu: ComposerMenuKind? { ui.composerMenu }
     private var controlsDisabled: Bool { conversation.isSending || workspace.connection != .connected || bot == nil }

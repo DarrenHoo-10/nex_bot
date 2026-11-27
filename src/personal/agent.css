@@ -1804,4 +1804,11 @@ code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; over
 .job-chat-brief { margin: 4px 0 14px; padding: 8px 12px; border-radius: 12px; background: var(--wash, rgba(110, 128, 152, .1)); font-size: 12.5px; color: var(--muted-foreground, #647287); }
 .job-chat-brief summary { cursor: pointer; font-weight: 600; }
 .job-chat-brief p { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
-.job-chat-steps { margin: 2px 0 8px 36px; font-size: 11.5px; color: var(--muted-foreground, #647287); }
+.job-chat-steps-wrap { margin: 2px 0 8px 36px; }
+.job-chat-steps { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted-foreground, #647287); user-select: none; }
+.job-chat-steps::-webkit-details-marker { display: none; }
+.job-chat-steps:hover { color: var(--foreground, #202b3c); }
+.job-chat-step-list { list-style: none; margin: 6px 0 0; padding: 6px 10px; border-radius: 10px; background: var(--wash, rgba(110, 128, 152, .08)); font-size: 11.5px; color: var(--muted-foreground, #647287); display: flex; flex-direction: column; gap: 4px; max-width: 360px; }
+.job-chat-step-list li { display: flex; justify-content: space-between; gap: 12px; }
+.job-chat-step-status.failed { color: var(--danger, #c43c3c); }
+.job-chat-notice { margin: 6px auto 10px; padding: 4px 10px; border-radius: 999px; background: var(--wash, rgba(110, 128, 152, .09)); font-size: 11.5px; color: var(--muted-foreground, #647287); text-align: center; width: fit-content; max-width: 85%; }

@@ -160,8 +160,8 @@ public enum ApprovalMode: String, Sendable, CaseIterable, Hashable, Identifiable
 }
 
 extension Bot {
-    /// The agent's permission mode (`approval_setting`); `.standard` when absent or unknown.
-    public var approvalMode: ApprovalMode { ApprovalMode(rawValue: row.string("approval_setting") ?? "") ?? .standard }
+    /// The agent's permission mode (`approval_setting`); `.full` when absent or unknown.
+    public var approvalMode: ApprovalMode { ApprovalMode(rawValue: row.string("approval_setting") ?? "") ?? .full }
     /// Echoed as `version` by ``WorkspaceStore/setApprovalMode(botID:mode:)`` (`approval_setting_version`, 0 until first change).
     public var approvalModeVersion: Int { row.int("approval_setting_version") ?? 0 }
 }

@@ -279,8 +279,8 @@ describe("durable unified todos", () => {
     expect(() => f.module().tool({ id: "cross-owner", tool_name: "todo.save" }, { todoId: item.id, expectedVersion: item.version, title: "不应修改" })).toThrow("不存在");
     expect(() => f.module().tool({ id: "cross-owner-delete", tool_name: "todo.delete" }, { todoId: item.id, expectedVersion: item.version })).toThrow("不存在");
     f.app.store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: ["memory.search"] }), f.bot);
-    expect(() => evaluateTool(f.app.store, f.bot, { action: "todo.save", title: "不应创建" })).toThrow("无权");
-    expect(() => evaluateTool(f.app.store, f.bot, { action: "todo.delete", todoId: item.id, expectedVersion: item.version })).toThrow("无权");
+    expect(evaluateTool(f.app.store, f.bot, { action: "todo.save", title: "仍可创建" }).approvalRequired).toBe(false);
+    expect(evaluateTool(f.app.store, f.bot, { action: "todo.delete", todoId: item.id, expectedVersion: item.version }).approvalRequired).toBe(false);
   });
   it("persists changes, steps and completion across Core restart and detects stale writes", async () => {
     const f = await fixture();

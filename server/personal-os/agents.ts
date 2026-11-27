@@ -214,7 +214,7 @@ export class AgentModule {
       if (bound) { this.ensure(String(bound.bot_id)); return {botId: String(bound.bot_id)}; }
       const botId = this.store.createBot('金融助手', '研究金融市场、证券与策略，基于证据回答。来源对象只是研究起点，可以跨标的查证。');
       this.store.insert('agent_roles', {...this.store.scope(), role:'finance_assistant',bot_id:botId});
-      this.store.run("INSERT INTO agent_approval_settings(bot_id,mode,version) VALUES(?,'full',1)",botId);
+      this.store.run("INSERT OR IGNORE INTO agent_approval_settings(bot_id,mode,version) VALUES(?,'full',1)",botId);
       return {botId};
     });
   }

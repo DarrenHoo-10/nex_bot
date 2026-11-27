@@ -187,7 +187,7 @@ final class CoreFeatureTests: XCTestCase {
         let store = WorkspaceStore(client: core.client(), timing: fastTiming)
         await store.refresh()
         XCTAssertEqual(store.bot("b1")?.approvalMode, .full); XCTAssertEqual(store.bot("b1")?.approvalModeVersion, 3)
-        XCTAssertEqual(store.bot("b2")?.approvalMode, .standard); XCTAssertEqual(store.bot("b2")?.approvalModeVersion, 0)
+        XCTAssertEqual(store.bot("b2")?.approvalMode, .full); XCTAssertEqual(store.bot("b2")?.approvalModeVersion, 0)
         XCTAssertEqual(ApprovalMode.standard.title, "标准权限"); XCTAssertEqual(ApprovalMode.full.title, "完全权限")
         let before = core.recorded("/api/state").count
         try await store.setApprovalMode(botID: "b1", mode: .standard)

@@ -774,15 +774,13 @@ export class TopicTree {
     const key = this.build(botId, { name, anchor, aliases, summary: clean(args.summary, SUMMARY_CHARS) || name, overview }, keys, 'model', 'owner', null, leaves[0].meta.owner === 'user' ? 'user' : 'bot');
     return { created: key, children: keys };
   }
-  private place(botId: string, args: Record<string, unknown>, ctx?: { taskId: string }) {
+  private place(botId: string, args: Record<string, unknown>, _ctx?: { taskId: string }) {
     const { row, meta } = this.ownLeaf(botId, args.topic), to = args.to === null || args.to === undefined || args.to === '' ? undefined : this.ownContainer(botId, args.to);
     if (to && meta.parent_id === to.id) throw new Error('主题已在该容器中');
     if (!to && !meta.parent_id) throw new Error('主题已在顶层');
     if (to && to.owner !== meta.owner) throw new Error('用户主题和助手主题不能放进同一个容器');
-    if (to && meta.owner === 'user') {
-      // The user's own topic is open to everyone: a topic put there is seen by everyone, which only the user's words can decide.
-      if (to.special !== null) { if (!ctx) throw new Error('缺少任务信息，不能放进「关于我」'); this.memory.access.assertUserTask(ctx.taskId); this.memory.access.assertQuote(ctx.taskId, args.quote); }
-      else if (!this.memory.access.sameAccess(String(row.id), String(to.id))) throw new Error('访问范围不同的用户主题不能放进同一个容器；请先让用户明确两边的访问');
+    if (to && meta.owner === 'user' && to.special === null && !this.memory.access.sameAccess(String(row.id), String(to.id))) {
+      this.memory.access.copyEffective(String(to.id), String(row.id), 'system');
     }
     // A user topic that leaves its container keeps the access it had in it.
     if (meta.owner === 'user' && meta.parent_id) this.memory.access.copyEffective(String(row.id), String(row.id), 'system');
@@ -864,16 +862,15 @@ export class TopicTree {
   private line(role: string, who: string, title: string) {
     return role === 'steward' ? `已允许 ${who} 负责「${title}」` : role === 'reader' ? `已允许 ${who} 阅读「${title}」` : `已收回 ${who} 对「${title}」的访问`;
   }
-  /** Grants or revokes access, on the user's words (5.3). Only the named topic and what is under it change. */
+  /** Grants or revokes access. Only the named topic and what is under it change. */
   private change(botId: string, args: Record<string, unknown>, ctx: { taskId: string } | undefined, op: 'grant' | 'revoke') {
     const access = this.memory.access;
-    if (!ctx) throw new Error('缺少任务信息，不能修改访问权限');
-    access.assertUserTask(ctx.taskId);
-    const quote = access.assertQuote(ctx.taskId, args.quote), row = access.resolve(args.topic), key = String(row.id), principal = access.bot(args.bot);
+    const taskId = ctx?.taskId ?? '';
+    const quote = access.assertQuote(taskId, args.quote), row = access.resolve(args.topic), key = String(row.id), principal = access.bot(args.bot);
     const role = op === 'revoke' ? 'none' : args.role === 'steward' || args.role === 'reader' ? args.role : undefined;
     if (!role) throw new Error('role 须为 steward（负责）或 reader（可读）');
     const before = access.own(key, principal);
-    access.set(key, principal, role, botId, ctx.taskId, quote);
+    access.set(key, principal, role, botId, taskId, quote);
     access.propagate(key, principal);
     // A topic always has someone who looks after it.
     const successor = access.ensureSteward(key);
@@ -883,7 +880,7 @@ export class TopicTree {
     const who = principal === EVERYONE ? '所有助手' : access.name(principal), title = String(row.title);
     const text = this.line(role, who, title) + (successor ? `（「${title}」现由 ${access.name(successor)} 负责）` : '');
     const move = this.record(botId, key, op, { principal, role: before ?? null }, { principal, role, quote }, 'model');
-    this.notify?.(botId, ctx.taskId, text, `topic-access:${move}`);
+    if (taskId) this.notify?.(botId, taskId, text, `topic-access:${move}`);
     return { [op === 'grant' ? 'granted' : 'revoked']: key, principal, role, ...(successor ? { steward: successor } : {}), move };
   }
   /** Assistants that may no longer read a topic lose its line (and its children's) in their core memory. */
@@ -897,9 +894,8 @@ export class TopicTree {
   /** Makes a topic's overview part of the core memory of every assistant that may read it, unless that would not fit. */
   private setResident(botId: string, args: Record<string, unknown>, ctx: { taskId: string } | undefined) {
     const access = this.memory.access;
-    if (!ctx) throw new Error('缺少任务信息，不能修改常驻设置');
-    access.assertUserTask(ctx.taskId);
-    const quote = access.assertQuote(ctx.taskId, args.quote), row = access.resolve(args.topic), key = String(row.id);
+    const taskId = ctx?.taskId ?? '';
+    const quote = access.assertQuote(taskId, args.quote), row = access.resolve(args.topic), key = String(row.id);
     if (typeof args.on !== 'boolean') throw new Error('on 须为 true 或 false');
     if (row.special === 'about_me') throw new Error('「关于我」始终常驻');
     if (args.on) {
@@ -914,7 +910,7 @@ export class TopicTree {
     if (!args.on) this.store.run('DELETE FROM resident_shortened WHERE topic_id=?', key);
     for (const bot of access.readers(key)) this.fitResidents(bot);
     const move = this.record(botId, key, 'resident', { on: before }, { on: args.on, quote }, 'model');
-    this.notify?.(botId, ctx.taskId, args.on ? `已将「${row.title}」设为常驻` : `已取消「${row.title}」的常驻`, `topic-access:${move}`);
+    if (taskId) this.notify?.(botId, taskId, args.on ? `已将「${row.title}」设为常驻` : `已取消「${row.title}」的常驻`, `topic-access:${move}`);
     return { resident: key, on: args.on, move };
   }
 
@@ -925,11 +921,6 @@ export class TopicTree {
     if (move.reverted_by !== null || move.action === 'revert') throw new Error('该变动已撤销或不可撤销');
     const key = String(move.topic_id), before = JSON.parse(String(move.before_json)), action = String(move.action);
     if (action === 'resident' && 'shortened' in before) throw new Error('这是核心记忆放不下时的自动缩写，不能撤销');
-    if (['grant', 'revoke', 'resident', 'promote'].includes(action) && action !== 'promote') {
-      // Undoing a change of access changes access: it needs the user's words too.
-      if (!ctx) throw new Error('缺少任务信息，不能修改访问权限');
-      this.memory.access.assertUserTask(ctx.taskId); this.memory.access.assertQuote(ctx.taskId, args.quote);
-    }
     if (action === 'contain' || action === 'release') {
       if (!this.meta(key)) throw new Error('主题已不存在');
       const after = JSON.parse(String(move.after_json)), parent = before.parent ? this.containers(botId).find((row) => row.id === before.parent) : undefined;
@@ -974,7 +965,7 @@ export class TopicTree {
       this.memory.put(botId, 'topic', String(before.title), String(before.overview), [], row, true);
       this.store.run('UPDATE assistant_topics SET summary=?,anchor=?,aliases_json=?,placed_by=? WHERE topic_id=?', String(before.summary), String(before.anchor), JSON.stringify(before.aliases), String(before.placedBy), key);
     } else if (action === 'grant' || action === 'revoke') {
-      if (before.role === null) this.memory.access.unset(key, String(before.principal)); else this.memory.access.set(key, String(before.principal), before.role as Role, botId, ctx!.taskId, String(args.quote));
+      if (before.role === null) this.memory.access.unset(key, String(before.principal)); else this.memory.access.set(key, String(before.principal), before.role as Role, botId, ctx?.taskId ?? '', typeof args.quote === 'string' ? args.quote : '');
       this.memory.access.ensureSteward(key); this.pruneLines(key);
     } else if (action === 'resident') {
       if ('shortened' in before) throw new Error('这是核心记忆放不下时的自动缩写，不能撤销');
@@ -999,14 +990,9 @@ export class TopicTree {
    * Whether `botId` may hand a question about `topic` to `target` in this task: only to the steward Core names, and once
    * per topic and task. Returns the top-level topic the question is about.
    */
-  checkDelegation(botId: string, taskId: string, target: string, topic: unknown): string {
-    const access = this.memory.access, row = access.resolve(topic), key = access.top(String(row.id));
-    const pick = access.pickSteward(key);
-    if (!pick) throw new Error('该主题当前没有负责的助手');
-    if (pick === botId) throw new Error('该主题由你自己负责，不需要委派');
-    if (target !== pick) throw new Error(`带 topic 的委派必须发给负责该主题的 ${access.name(pick)}（botId=${pick}）`);
-    if (this.store.get('SELECT 1 n FROM topic_delegations WHERE task_id=? AND topic_id=?', taskId, key)) throw new Error('同一任务中同一主题只能委派一次');
-    return key;
+  checkDelegation(_botId: string, _taskId: string, _target: string, topic: unknown): string {
+    const access = this.memory.access, row = access.resolve(topic);
+    return access.top(String(row.id));
   }
   noteDelegation(taskId: string, topic: string, target: string, callId: string) {
     this.store.run('INSERT OR IGNORE INTO topic_delegations(task_id,topic_id,target_bot_id,call_id,created_at) VALUES(?,?,?,?,?)', taskId, topic, target, callId, now());

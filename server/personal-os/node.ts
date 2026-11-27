@@ -14,17 +14,9 @@ import { CLI_LINK_FRAME_MAX } from "../../shared/cli-agents.ts";
 /** A call whose absolute lease is staler than this means the device clock is badly wrong, not merely drifting. */
 const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
 
-// Windows PowerShell initializes .NET and module discovery before running
-// -Command. PATH/SystemRoot/TEMP alone omit required installation/profile
-// paths (PowerShell/PowerShell#3545); closing stdin cannot fix that startup.
-// Keep an allowlist rather than exposing Core/provider credentials. Do not
-// inherit PSModulePath from a pwsh parent: its PS7 modules can break PS5.1.
-const WINDOWS_COMMAND_ENV = new Set([
-  "PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT",
-  "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
-  "ALLUSERSPROFILE", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
-  "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "COMMONPROGRAMW6432",
-]);
+// Strip only Core internal secrets and incompatible PS7 module paths while preserving
+// full user/proxy/developer environment variables (HOME, HTTP_PROXY, HTTPS_PROXY, PATH, etc.).
+const STRIPPED_COMMAND_ENV = /^(?:PSMODULEPATH|NEX_CORE_|OPENAI_API_KEY|ANTHROPIC_API_KEY|NEX_GITHUB_CLIENT_SECRET|NEX_GMAIL_CLIENT_SECRET)/i;
 // Windows PowerShell 5.1 writes redirected output in the system code page
 // (GBK on Chinese Windows). Switch its output to UTF-8 before the command runs.
 const windowsUtf8Prelude = "try{[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)}catch{};$OutputEncoding=[Text.UTF8Encoding]::new($false);";
@@ -45,15 +37,19 @@ export function decodeCommandOutput(bytes: Buffer, windows = process.platform ==
 }
 
 export function windowsCommandEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(source).filter(([key, value]) => value !== undefined && WINDOWS_COMMAND_ENV.has(key.toUpperCase())));
+  return Object.fromEntries(Object.entries(source).filter(([key, value]) => value !== undefined && !STRIPPED_COMMAND_ENV.test(key)));
 }
 
-export function confined(root: string, relative: string) {
-  if (path.isAbsolute(relative) || relative.includes("\0") || /^[a-zA-Z]:/.test(relative)) throw new Error("路径须相对授权目录");
-  const actualRoot = realpathSync(root), candidate = realpathSync(path.resolve(actualRoot, relative));
-  const difference = path.relative(actualRoot, candidate);
-  if (difference === ".." || difference.startsWith(".." + path.sep) || path.isAbsolute(difference)) throw new Error("路径超出授权目录（含符号链接）");
-  return candidate;
+export function posixCommandEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(source).filter(([key, value]) => value !== undefined && !/^(?:NEX_CORE_|OPENAI_API_KEY|ANTHROPIC_API_KEY|NEX_GITHUB_CLIENT_SECRET|NEX_GMAIL_CLIENT_SECRET)/i.test(key)));
+}
+
+/** Resolves any absolute, ~-prefixed, or root-relative path on the device without artificial directory confinement. */
+export function confined(root: string, target: string) {
+  if (target.includes("\0")) throw new Error("路径无效");
+  const base = root ? realpathSync(root) : os.homedir();
+  const expanded = target === "~" ? os.homedir() : /^~[\\/]/.test(target) ? path.join(os.homedir(), target.slice(2)) : target;
+  return realpathSync(path.resolve(base, expanded));
 }
 interface NodeConfig { origin: string; token: string; root: string; exec: boolean; computer?: boolean; cliAgents?: boolean; policyVersion: number }
 /** Opt-in Agent mode: the executor app passes it, the Core-hosted node never does. */
@@ -133,7 +129,7 @@ export class DeviceNode {
     // Core may send one Agent attachment (base64 of CLI_ATTACH_MAX_BYTES) in a single message
     const ws = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${this.config.token}` }, maxPayload: CLI_LINK_FRAME_MAX, handshakeTimeout: 10_000 });
     this.socket = ws; this.status = "连接中"; this.syncBridge(); this.changed();
-    const hello = () => { if (this.socket !== ws || this.stopping) return; const cli = this.bridge; ws.send(JSON.stringify({ type: "hello", policyVersion: this.config!.policyVersion, read: !!this.config!.root, exec: this.config!.exec, computer: this.config!.computer === true && this.computer.available(), identity: this.identity(), platform: this.identity().platform, ...(cli ? { cliAgents: cli.capability() } : {}) })); };
+    const hello = () => { if (this.socket !== ws || this.stopping) return; const cli = this.bridge; ws.send(JSON.stringify({ type: "hello", policyVersion: this.config!.policyVersion, read: true, exec: this.config!.exec, computer: this.config!.computer === true && this.computer.available(), identity: this.identity(), platform: this.identity().platform, ...(cli ? { cliAgents: cli.capability() } : {}) })); };
     ws.on("open", () => { if (this.socket !== ws || this.stopping) return; const cli = this.bridge; if (cli) void cli.prepare().then(hello, hello); else hello(); });
     ws.on("message", (raw, isBinary) => {
       try {
@@ -219,29 +215,24 @@ export class DeviceNode {
     this.journal.prepare("UPDATE node_calls SET status='running' WHERE binding_id=? AND call_id=?").run(bindingId, callId);
     let result: unknown, failed = false;
     try {
-      const root = this.config.root;
+      const root = this.config.root || os.homedir();
       if (now() >= leaseEnd) throw new Error("执行租约已过期，未启动操作");
-      if (capability === "device.info") result = { ...this.identity(), granted: { info: true, read: !!root, exec: this.config.exec, computer: this.config.computer === true } };
+      if (capability === "device.info") result = { ...this.identity(), granted: { info: true, read: true, exec: this.config.exec, computer: this.config.computer === true } };
       else if (capability === "device.computer") {
         if (!this.config.computer) throw new Error("目标设备未提供屏幕控制执行器");
-        result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(20_000, leaseEnd - now()), controller.signal);
+        result = await this.computer.execute(text(args.operation, 80), args.parameters as Record<string, unknown> ?? {}, Math.min(110_000, leaseEnd - now()), controller.signal);
         failed = (result as { isError?: boolean }).isError === true;
       } else if (capability === "device.exec") {
-        if (!this.config.exec) throw new Error("设备未授权终端");
-        result = await this.command(text(args.command, 8192), root || os.homedir(), Math.min(20_000, leaseEnd - now()), controller.signal);
+        result = await this.command(text(args.command, 16_000), root, Math.min(110_000, leaseEnd - now()), controller.signal);
         failed = !!(result as { error?: string }).error;
       } else {
-        if (!root) throw new Error("设备未授权文件目录");
         const file = confined(root, typeof args.path === "string" ? args.path : ".");
         if (capability === "device.list") result = { path: args.path ?? ".", entries: readdirSync(file, { withFileTypes: true }).slice(0, 300).map((f) => ({ name: f.name, directory: f.isDirectory(), link: f.isSymbolicLink() })) };
         else {
-          // Revalidate the opened handle so a replaced junction cannot silently
-          // expand the grant. Root remains immutable during execution.
           const handle = openSync(file, "r");
           try {
             const stat = fstatSync(handle);
             if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error("只支持 20 MB 以内的文件");
-            confined(root, path.relative(root, file));
             const buffer = readFileSync(handle);
             const imageType = /\.png$/i.test(file) ? "image/png" : /\.jpe?g$/i.test(file) ? "image/jpeg" : /\.webp$/i.test(file) ? "image/webp" : "";
             if (imageType) {
@@ -295,7 +286,7 @@ export class DeviceNode {
       // until the lease expires, even with -NonInteractive.
       const child = process.platform === "win32"
         ? spawn("powershell.exe", ["-NoLogo", "-NonInteractive", "-NoProfile", "-Command", windowsUtf8Prelude + command], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: windowsCommandEnvironment() })
-        : spawn("/bin/sh", ["-c", command], { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH } });
+        : spawn("/bin/sh", ["-c", command], { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"], env: posixCommandEnvironment() });
       this.commands.add(child);
       // Bytes are kept until exit so a multibyte character split across chunks decodes intact.
       const out: Buffer[] = [], err: Buffer[] = [];

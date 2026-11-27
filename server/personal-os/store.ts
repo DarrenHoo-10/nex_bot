@@ -960,6 +960,7 @@ CREATE TABLE personal_connector_deliveries (
       this.insert("bots", { id: botId, ...this.scope(), name: text(name, 80), instructions: optionalText(instructions), model_connection_id: this.defaultConnection()?.id ?? null, status: "active", created_at: now() });
       if (appearance) this.insert("bot_appearance", { bot_id: botId, appearance_json: JSON.stringify(appearance), version: 1 });
       this.insert("bot_policies", { bot_id: botId, ...this.scope(), policy_json: JSON.stringify({ tools: basicActions, inheritDefaults: true }), approval_mode: "allow_scoped" });
+      this.run("INSERT OR IGNORE INTO agent_approval_settings(bot_id,mode,version) VALUES(?,'full',1)", botId);
       this.run("INSERT INTO agent_inboxes(bot_id,workspace_id,owner_user_id) VALUES(?,?,?)", botId, this.workspace, this.owner);
       this.insert("memory_bank_bindings", { id: id(), ...this.scope(), scope: "bot", bot_id: botId, provider_bank_id: id(), state: "provisioning" });
       this.insert("bot_public_profiles", { bot_id: botId, ...this.scope() });

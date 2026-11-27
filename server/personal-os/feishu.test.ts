@@ -179,7 +179,7 @@ describe("feishu connector in disposable Core", () => {
     await until(() => f.fake.sent.some((entry) => ["reply","patch"].includes(entry.path) && JSON.stringify(entry.body).includes("群里回复")));
   }, 60_000);
 
-  it("sends approval cards for Feishu tasks and only the owner's click decides", async () => {
+  it("executes agent updates directly from Feishu tasks without blocking approvals", async () => {
     const f = await fixture();
     await f.connectFake();
     f.model.scripts.push(
@@ -187,28 +187,18 @@ describe("feishu connector in disposable Core", () => {
       { kind: "openai-text", text: "改名完成" },
     );
     f.fake.deliver("cli_fake", messageEvent({ messageId: "om_a", chatId: "oc_a", senderOpenId: "ou_owner", content: JSON.stringify({ text: "把你的名字改成新名字" }) }));
-    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
-    await until(() => f.fake.sent.some((entry) => String(entry.body.content ?? "").includes("请求批准")));
-    const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
-    const strangerToast = await f.fake.card("cli_fake", cardActionEvent({ openId: "ou_other", value: { kind: "approval", id: approval.id, hash: approval.argument_hash, decision: "allow" } }));
-    expect(strangerToast).toMatchObject({ toast: { type: "error" } });
-    expect(f.app.store.get("SELECT status FROM approvals WHERE id=?", String(approval.id))?.status).toBe("pending");
-    const ownerToast = await f.fake.card("cli_fake", cardActionEvent({ openId: "ou_owner", value: { kind: "approval", id: approval.id, hash: approval.argument_hash, decision: "allow" } }));
-    expect(ownerToast).toMatchObject({ toast: { type: "success", content: "已同意" } });
     await until(() => f.app.store.get("SELECT name FROM bots WHERE id=?", String(f.bot.id))?.name === "新名字");
     const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_a'")?.task_id);
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
   }, 60_000);
 
   it("stop button cancels the Feishu task", async () => {
     const f = await fixture();
     await f.connectFake();
-    f.model.scripts.push(
-      { kind: "openai-tool", calls: [{ id: "rename", name: "broker", args: JSON.stringify({ action: "agent.update", botId: f.bot.id, name: "另一个名字" }) }] },
-      { kind: "openai-text", text: "完成" },
-    );
+    f.model.scripts.push({ kind: "hang" });
     f.fake.deliver("cli_fake", messageEvent({ messageId: "om_b", chatId: "oc_b", senderOpenId: "ou_owner", content: JSON.stringify({ text: "再改一次名字" }) }));
-    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
+    await until(() => !!f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_b'")?.task_id && f.model.requests.length >= 1);
     const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_b'")?.task_id);
     const toast = await f.fake.card("cli_fake", cardActionEvent({ openId: "ou_owner", value: { kind: "stop", taskId } }));
     expect(toast).toMatchObject({ toast: { type: "success", content: "已停止" } });
@@ -372,7 +362,7 @@ describe("feishu connector in disposable Core", () => {
     expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.call'")?.result_json)).toContain("doc1");
   }, 60_000);
 
-  it("holds feishu_write for approval, posts after the owner allows, and validates parameters", async () => {
+  it("executes feishu_write directly and validates parameters", async () => {
     const f = await fixture();
     await f.connectFake();
     const connector = (await f.state()).apps[0];
@@ -382,23 +372,15 @@ describe("feishu connector in disposable Core", () => {
       { kind: "openai-text", text: "已创建" },
     );
     f.fake.deliver("cli_fake", messageEvent({ messageId: "om_write", chatId: "oc_write", senderOpenId: "ou_owner", content: JSON.stringify({ text: "建一篇会议纪要文档" }) }));
-    await until(() => !!f.app.store.get("SELECT id FROM tool_calls WHERE status IN ('failed','succeeded') AND result_json LIKE '%参数无效%'"));
+    await until(() => f.fake.apiCalls.length >= 1);
     const bad = JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE result_json LIKE '%参数无效%' LIMIT 1")?.result_json)) as { isError?: boolean; text?: string };
     expect(bad.isError).toBe(true);
     expect(bad.text).toContain("参数无效");
-    expect(f.fake.apiCalls).toHaveLength(0);
-    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
-    await until(() => f.fake.sent.some((entry) => String(entry.body.content ?? "").includes("请求批准")));
-    const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
-    expect(f.app.store.get("SELECT status FROM tool_calls WHERE status='awaiting_approval'")?.status).toBe("awaiting_approval");
-    expect(f.fake.apiCalls).toHaveLength(0);
-    const toast = await f.fake.card("cli_fake", cardActionEvent({ openId: "ou_owner", value: { kind: "approval", id: approval.id, hash: approval.argument_hash, decision: "allow" } }));
-    expect(toast).toMatchObject({ toast: { type: "success" } });
-    await until(() => f.fake.apiCalls.length >= 1);
     expect(f.fake.apiCalls[0]).toMatchObject({ method: "POST", path: "/open-apis/docx/v1/documents" });
     expect(f.fake.apiCalls[0].body).toMatchObject({ title: "会议纪要" });
     const taskId = String(f.app.store.get("SELECT task_id FROM personal_feishu_messages WHERE message_id='om_write'")?.task_id);
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
   }, 60_000);
 
   it("authorizes the owner via device flow and serves user-identity reads", async () => {

@@ -39,7 +39,7 @@ public struct PolicyAction: Sendable, Hashable, Identifiable {
 
 /// Tool actions offered by the shared permission editor.
 public enum PolicyCatalog {
-    public static let universalActions: Set<String> = ["image.models", "image.generate", "html.render", "tool.search"]
+    public static let universalActions: Set<String> = ["image.models", "image.generate", "html.render", "web.fetch", "tool.search"]
     /// Order of the server's `actions` list (`policy.ts`).
     public static let serverOrder: [String] = [
         "memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget",
@@ -48,7 +48,7 @@ public enum PolicyCatalog {
         "routine.list", "routine.save", "routine.toggle", "routine.run", "routine.delete",
         "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer",
         "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call",
-        "attachment.read", "image.models", "image.generate", "html.render", "tool.search",
+        "attachment.read", "image.models", "image.generate", "html.render", "web.fetch", "tool.search",
     ]
     /// Order of the web checkbox grid, with Chinese labels.
     public static let uiOrder: [PolicyAction] = [
@@ -84,6 +84,7 @@ public enum PolicyCatalog {
         .init(id: "image.models", label: "查看生图模型"),
         .init(id: "image.generate", label: "按需生成图片"),
         .init(id: "html.render", label: "展示交互内容"),
+        .init(id: "web.fetch", label: "直接读取网页与接口"),
     ]
     public static func label(for action: String) -> String { uiOrder.first { $0.id == action }?.label ?? action }
     /// Footer note of the editor.

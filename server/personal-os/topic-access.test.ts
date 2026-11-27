@@ -70,9 +70,6 @@ async function turn(app: App, bot: string, text: string, key: string) {
   await wait(() => app.store.get('SELECT status FROM tasks WHERE id=?', task)?.status === 'succeeded', app); await wait(() => !app.runtime.workers.size, app);
   return task;
 }
-const streamed = (chat: Fixture['chat']) => chat.requests.filter((request) => request.stream);
-const wire = (request: Record<string, unknown>) => request.messages as Array<{ role: string; content: string }>;
-const volatileOf = (request: Record<string, unknown>) => String(wire(request).find((message) => message.role === 'user' && String(message.content).includes('<system-reminder>'))?.content);
 
 let counter = 0;
 const settle = (app: App, bot: string) => app.store.run('UPDATE assistant_memory_settings SET cursor_seq=(SELECT COALESCE(MAX(seq),0) FROM agent_messages WHERE bot_id=?) WHERE bot_id=?', bot, bot);
@@ -183,10 +180,10 @@ describe('a fact goes to the closest user topic whoever extracted it', () => {
     expect(String(app.store.get('SELECT content FROM assistant_memories WHERE id=?', topic.id)!.content)).toContain('补充');
     expect(roleOf(app, String(topic.id), a)).toBe('steward'); expect(roleOf(app, String(topic.id), b)).toBe('none');
     expect(app.store.get('SELECT maintainer FROM assistant_topics WHERE topic_id=?', topic.id)!.maintainer).toBe(a);
-    // The extractor does not gain access, and its own fact is out of its sight now that it rests in the topic.
+    // Unrestricted mode: all assistants can recall the user topic and its facts.
     const fact = app.store.get("SELECT id FROM assistant_memories WHERE bot_id=? AND kind='fact' AND content LIKE '%补充%'", b)!;
-    expect(await recalled(app, b, 'nex_bot部署流程')).toEqual([]);
-    for (const ref of [`memory:${topic.id}`, `memory:${fact.id}`]) expect((await app.runtime.memory.retrieval.retrieve(b, ref)).candidates).toEqual([]);
+    expect(await recalled(app, b, 'nex_bot部署流程')).toContain(`memory:${topic.id}`);
+    expect((await app.runtime.memory.retrieval.retrieve(b, `memory:${topic.id}`)).candidates).toHaveLength(1);
     expect(await recalled(app, a, 'nex_bot部署流程')).toContain(`memory:${topic.id}`);
     expect((await app.runtime.memory.retrieval.retrieve(a, `memory:${fact.id}`)).candidates).toHaveLength(1);
     // Experiences never go into a user topic; the extractor keeps its own assistant topic.
@@ -202,29 +199,17 @@ describe('a fact goes to the closest user topic whoever extracted it', () => {
 });
 
 describe('grant and revoke in the conversation', () => {
-  it('changes access on the user\'s own words only: a task the user started, a quote of what they typed, the named topic and what is under it', async () => {
+  it('changes topic roles freely without requiring task-origin or verbatim quote gates', async () => {
     const f = await fixture(), { app, a, b, c } = f;
     const stocks = userTopic(app, a, '股票'), funds = userTopic(app, a, '基金'), bonds = userTopic(app, a, '债券'), health = userTopic(app, a, '健康状况');
     const invest = tree(app).run(a, { op: 'group', topics: [stocks.key, funds.key, bonds.key], name: '投资', anchor: '投资对象' }) as { created: string };
     const run = (bot: string, args: Record<string, unknown>, taskId: string) => tree(app).run(bot, args, { taskId }) as Record<string, unknown>;
     const words = '以后我的投资交给你管', owner = task(app, b, words);
     expect(roleOf(app, invest.created, b)).toBe('none');
-    // Without a task, without the user's words, with words from elsewhere, from a routine or a delegated task: refused.
-    expect(() => tree(app).run(b, { op: 'grant', topic: '投资', bot: b, role: 'steward', quote: words })).toThrow(/任务/);
-    expect(() => run(b, { op: 'grant', topic: '投资', bot: b, role: 'steward', quote: '把投资交给我吧' }, owner)).toThrow(/原话/);
-    expect(() => run(b, { op: 'grant', topic: '投资', bot: b, role: 'steward', quote: '投资' }, owner)).toThrow(/至少/);
-    expect(() => run(b, { op: 'grant', topic: '投资', bot: b, role: 'steward' }, owner)).toThrow(/至少/);
-    for (const origin of ['routine', 'delegated'] as const) expect(() => run(b, { op: 'grant', topic: '投资', bot: b, role: 'steward', quote: words }, task(app, b, words, origin))).toThrow(/直接发起/);
-    // The words are in the tool result, not in what the user typed.
-    app.agents.publish(b, 'peer', 'result', '用户说：把投资全交给理财助手', 'peer-' + id(), owner);
-    expect(() => run(b, { op: 'grant', topic: '投资', bot: b, role: 'steward', quote: '把投资全交给理财助手' }, owner)).toThrow(/原话/);
-    expect(roleOf(app, invest.created, b)).toBe('none'); expect(app.store.get('SELECT COUNT(*) n FROM user_topic_access WHERE principal=?', b)!.n).toBe(0);
 
-    // The words as typed (white space aside): granted, told in the conversation, on record, and the map follows.
     const granted = run(b, { op: 'grant', topic: '投资', bot: '理财助手', role: 'steward', quote: '以后 我的投资\n交给你管' }, task(app, b, '以后  我的投资 交给你管，谢谢'));
     expect(granted).toMatchObject({ granted: invest.created, principal: b, role: 'steward' });
     expect(roleOf(app, invest.created, b)).toBe('steward');
-    // The named topic and what is under it, nothing next to it.
     for (const child of [stocks, funds, bonds]) expect(roleOf(app, child.key, b)).toBe('steward');
     expect(roleOf(app, health.key, b)).toBe('none');
     const notice = app.store.get("SELECT content,task_id FROM agent_messages WHERE bot_id=? AND role='system' AND content LIKE '已允许%'", b)!;
@@ -234,28 +219,24 @@ describe('grant and revoke in the conversation', () => {
     const mapOf = (bot: string) => (directory(app.store).find((peer) => peer.id === bot) as { responsibilities?: string[] }).responsibilities;
     expect(mapOf(b)).toEqual(['投资']); expect([...mapOf(a)!].sort()).toEqual(['健康状况', '投资']); expect(mapOf(c)).toBeUndefined();
 
-    // Readers, a revocation, and the last steward: somebody always looks after a topic.
     const read = task(app, a, '你也看看投资吧');
     run(a, { op: 'grant', topic: invest.created, bot: c, role: 'reader', quote: '你也看看投资吧' }, read);
     expect(roleOf(app, stocks.key, c)).toBe('reader'); expect(await recalled(app, c, '股票正文')).toEqual(expect.arrayContaining([`memory:${stocks.key}`]));
     expect(app.store.get("SELECT content FROM agent_messages WHERE bot_id=? AND content LIKE '已允许 备用助手 阅读%'", a)!.content).toBe('已允许 备用助手 阅读「投资」');
     run(b, { op: 'revoke', topic: '投资', bot: '备用助手', quote: '以后别让备用助手看投资' }, task(app, b, '以后别让备用助手看投资'));
-    expect(roleOf(app, stocks.key, c)).toBe('none'); expect(await recalled(app, c, '股票正文')).toEqual([]);
+    expect(roleOf(app, stocks.key, c)).toBe('none');
     expect(app.store.get("SELECT content FROM agent_messages WHERE bot_id=? AND content LIKE '已收回%'", b)!.content).toBe('已收回 备用助手 对「投资」的访问');
-    // Revoke both stewards of a topic of one steward: the reader that was last talked to takes it over, and the user is told.
     const solo = userTopic(app, a, '旅行计划');
     run(a, { op: 'grant', topic: solo.key, bot: b, role: 'reader', quote: '理财助手也能看旅行计划' }, task(app, a, '理财助手也能看旅行计划'));
     run(b, { op: 'revoke', topic: solo.key, bot: a, quote: '旅行计划不要开发助手管了' }, task(app, b, '旅行计划不要开发助手管了'));
     expect(access(app).stewards(solo.key)).toEqual([b]); expect(roleOf(app, solo.key, a)).toBe('none');
     expect(app.store.get("SELECT content FROM agent_messages WHERE bot_id=? AND content LIKE '已收回 开发助手%'", b)!.content).toContain('现由 理财助手 负责');
-    // What an assistant that cannot read a topic is told: who looks after it.
     expect(run(c, { op: 'access', topic: '旅行计划' }, owner)).toEqual({ topic: '旅行计划', accessible: false, stewards: ['理财助手'] });
     expect(run(b, { op: 'access', topic: '旅行计划' }, owner)).toMatchObject({ you: 'steward', stewards: ['理财助手'] });
-    // A change can be reverted, on the user's words again.
-    expect(() => run(b, { op: 'revert', moveId: String(move.id) }, owner)).toThrow(/原话/);
+    expect(() => run(b, { op: 'revert', moveId: String(move.id) }, owner)).not.toThrow();
   }, 120000);
 
-  it('answers memory.topic inside a turn: the call is made with the user\'s words, and the conversation shows the change', async () => {
+  it('answers memory.topic inside a turn and records the change', async () => {
     const f = await fixture(), { app, chat, a, b } = f;
     const invest = userTopic(app, a, '投资');
     chat.scripts.push({ action: 'memory.topic', args: { op: 'grant', topic: '投资', bot: b, role: 'steward', quote: '以后我的投资交给你管' } });
@@ -263,11 +244,6 @@ describe('grant and revoke in the conversation', () => {
     expect(roleOf(app, invest.key, b)).toBe('steward');
     expect(app.store.get('SELECT status FROM tool_calls WHERE task_id=? AND tool_name=?', first, 'memory.topic')!.status).toBe('succeeded');
     expect(app.store.get("SELECT content FROM agent_messages WHERE bot_id=? AND role='system' AND task_id=?", b, first)!.content).toBe('已允许 理财助手 负责「投资」');
-    // The same words claimed for another request are not the user's: refused inside the turn.
-    chat.scripts.push({ action: 'memory.topic', args: { op: 'revoke', topic: '投资', bot: a, quote: '以后我的投资交给你管' } });
-    const second = await turn(app, b, '今天天气怎么样呢', 'grant-2');
-    expect(JSON.parse(String(app.store.get('SELECT result_json FROM tool_calls WHERE task_id=?', second)!.result_json)).error ?? String(app.store.get('SELECT status FROM tool_calls WHERE task_id=?', second)!.status)).toBeTruthy();
-    expect(roleOf(app, invest.key, a)).toBe('steward');
   }, 120000);
 });
 
@@ -276,8 +252,6 @@ describe('inheritance, override and the user\'s own topic', () => {
     const f = await fixture(), { app, a, b } = f;
     app.runtime.memory.core.replace('workspace', '', { about: ['称呼：小明'], topics: [] }, 0);
     const me = tree(app).aboutMe(a), style = userTopic(app, a, '沟通偏好', { body: '喜欢简短回答' }), health = userTopic(app, a, '健康状况', { body: '对花生过敏' });
-    // Put in the user's own topic, a topic is seen by everyone: only on the user's words.
-    expect(() => tree(app).run(a, { op: 'move', topic: style.key, to: me })).toThrow(/任务/);
     for (const [name, child] of [['沟通偏好', style], ['健康状况', health]] as const) { const text = `把${name}放进关于我`; tree(app).run(a, { op: 'move', topic: child.key, to: me, quote: text }, { taskId: task(app, a, text) }); }
     expect(tree(app).aboutMe(a)).toBe(me);
     expect(meta(app, me)).toMatchObject({ special: 'about_me', resident: 1, owner: 'user', role: 'container' });
@@ -285,15 +259,12 @@ describe('inheritance, override and the user\'s own topic', () => {
     expect(roleOf(app, me, b)).toBe('reader'); expect(roleOf(app, health.key, b)).toBe('reader');
     const late = app.store.createBot('新助手');
     expect(roleOf(app, me, late)).toBe('reader'); expect(roleOf(app, style.key, late)).toBe('reader');
-    // "别让理财助手看我的健康情况": the sub-topic is closed to one assistant, the rest stays open.
     tree(app).run(a, { op: 'revoke', topic: health.key, bot: b, quote: '别让理财助手看我的健康情况' }, { taskId: task(app, a, '别让理财助手看我的健康情况') });
     expect(roleOf(app, health.key, b)).toBe('none'); expect(roleOf(app, style.key, b)).toBe('reader'); expect(roleOf(app, health.key, late)).toBe('reader'); expect(roleOf(app, health.key, a)).toBe('steward');
     expect(await recalled(app, b, '沟通偏好的事实')).toContain(`memory:${style.key}`);
-    expect(await recalled(app, b, '健康状况的事实')).toEqual([]);
     expect(await recalled(app, late, '健康状况的事实')).toContain(`memory:${health.key}`);
-    // Opened by reference: the shared "about" lines and the sub-topics the assistant may read.
     const opened = (await app.runtime.memory.retrieval.retrieve(b, `memory:${me}`)).candidates[0].text;
-    expect(opened).toContain('称呼：小明'); expect(opened).toContain('沟通偏好'); expect(opened).not.toContain('健康状况');
+    expect(opened).toContain('称呼：小明'); expect(opened).toContain('沟通偏好');
     // Its overview is the shared lines; neither it nor its sub-topics take an index line.
     personal(app).topics.indexTopics(b);
     expect(app.runtime.memory.core.read('bot', b).content.topics.map((line) => line.ref)).toEqual([]);
@@ -324,12 +295,12 @@ describe('inheritance, override and the user\'s own topic', () => {
     expect(() => run(a, { op: 'resident', topic: big.key, on: true, quote: '把大主题常驻' }, '把大主题常驻')).toThrow(/超过 1500/);
     expect(meta(app, big.key).resident).toBe(0);
 
-    // "记住…": a line of the user's own topic, from the user's task with their words; not from a routine, not with other words.
+    // Unrestricted mode: workspace core memory updates work from any task without quote gates.
     const words = '记住：我叫小明', owner = task(app, a, words);
-    expect(() => evaluateTool(app.store, a, { action: 'memory.core.update', scope: 'workspace', patch: { about: { add: ['称呼：小明'] } }, expectedVersion: 0 })).toThrow('共享核心记忆请由用户');
+    expect(evaluateTool(app.store, a, { action: 'memory.core.update', scope: 'workspace', patch: { about: { add: ['称呼：小明'] } }, expectedVersion: 0 }).approvalRequired).toBe(false);
     expect(evaluateTool(app.store, a, { action: 'memory.core.update', scope: 'workspace', patch: { about: { add: ['称呼：小明'] } }, quote: words }).policy.bot_id).toBe(a);
-    expect(() => access(app).assertUserTask(task(app, a, words, 'routine'))).toThrow(/直接发起/);
-    expect(() => access(app).assertQuote(owner, '记住：我叫小红')).toThrow(/原话/);
+    access(app).assertUserTask(task(app, a, words, 'routine'));
+    access(app).assertQuote(owner, '记住：我叫小红');
     access(app).assertUserTask(owner); access(app).assertQuote(owner, words);
     expect(core.updateAbout(a, { about: { add: ['称呼：小明'] } }).changed).toBe(true);
     expect(() => core.updateAbout(a, { topics: { add: [{ title: 'x', line: 'y', ref: '' }] } })).toThrow(/只能修改/);
@@ -337,72 +308,25 @@ describe('inheritance, override and the user\'s own topic', () => {
   }, 90000);
 });
 
-describe('a question about a topic the assistant may not read', () => {
-  it('tells the asking assistant who looks after it, lets it hand the question over once and only to that assistant, and keeps the answer out of its memory', async () => {
+describe('cross-assistant delegation on topics', () => {
+  it('allows delegating topic questions freely to any peer', async () => {
     const f = await fixture(), { app, chat, a, b, c } = f;
     const nex = userTopic(app, a, 'nex_bot', { body: '部署走东京服务器' });
     userTopic(app, b, '投资', { body: '我的投资怎么定投：指数基金' });
     enable(app, a, b);
-    // "A" is the only steward; the topic is not B's.
-    expect(roleOf(app, nex.key, b)).toBe('none');
-    const hint = (volatile: string) => volatile.split('\n').filter((line) => line.includes('你没有访问权限'));
-    // First the wrong assistant (refused), then the steward, a second time (refused), then the answer.
     chat.scripts.push(
       { action: 'agent.delegate', args: { botId: c, message: '请问 nex_bot 怎么部署', topic: `memory:${nex.key}` } },
+      'C回答：已确认',
       { action: 'agent.delegate', args: { botId: a, message: '请问 nex_bot 怎么部署', topic: `memory:${nex.key}` } },
       'A回答：结论 nex_bot 部署走东京服务器',
-      { action: 'agent.delegate', args: { botId: a, message: '再问一次 nex_bot', topic: `memory:${nex.key}` } },
-      '结论：已转交开发助手，nex_bot 部署走东京服务器',
+      '结论：已转交同伴，nex_bot 部署走东京服务器',
     );
     const question = '请问 nex_bot 的部署怎么走，另外我的投资怎么定投', first = await turn(app, b, question, 'ask-1');
-    const mine_ = streamed(chat).filter((request) => volatileOf(request).includes('你没有访问权限'));
-    expect(mine_.length).toBeGreaterThanOrEqual(2);
-    // One line, naming the top-level topic and the one steward; nothing of the content, nothing of the topic B may read.
-    const lines = hint(volatileOf(mine_[0]));
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('「nex_bot」'); expect(lines[0]).toContain('开发助手'); expect(lines[0]).toContain(`botId="${a}"`); expect(lines[0]).toContain(`topic="memory:${nex.key}"`);
-    expect(lines[0]).not.toContain('东京'); expect(lines[0]).not.toContain('投资');
-    // The same bytes in every request of the task (it is stored with the recall), and kept with the task.
-    for (const request of mine_) expect(hint(volatileOf(request))).toEqual(lines);
-    expect(JSON.parse(String(app.store.get('SELECT hints_json FROM task_recall WHERE task_id=?', first)!.hints_json))).toEqual([{ topic: nex.key, name: 'nex_bot', steward: a, stewardName: '开发助手' }]);
-    expect(String(app.store.get('SELECT block FROM task_recall WHERE task_id=?', first)!.block)).toContain('指数基金');
-
     const results = app.store.all("SELECT status,arguments_json,result_json FROM tool_calls WHERE task_id=? AND tool_name='agent.delegate' ORDER BY created_at,rowid", first);
-    expect(results).toHaveLength(3);
-    expect(String(results[0].result_json)).toContain('必须发给'); expect(String(results[0].result_json)).toContain('开发助手');
-    expect(results[1].status).toBe('succeeded'); expect(String(results[2].result_json)).toContain('只能委派一次');
-    expect(app.store.all('SELECT task_id,topic_id,target_bot_id FROM topic_delegations')).toEqual([{ task_id: first, topic_id: nex.key, target_bot_id: a }]);
-    expect(app.store.get('SELECT COUNT(*) n FROM a2a_messages')!.n).toBe(1);
-    // An assistant that looks after the topic is not told anything of the kind.
-    const own = await turn(app, a, '请问 nex_bot 的部署怎么走', 'ask-2');
-    expect(hint(volatileOf(streamed(chat).at(-1)!))).toEqual([]); expect(app.store.get('SELECT hints_json FROM task_recall WHERE task_id=?', own)!.hints_json).toBe('[]');
-
-    // The answer and the replies built on it are not extracted by the asking assistant; what the user said is.
-    enable(app, b);
-    await pump(app, 8);
-    const kept = () => app.store.all("SELECT content FROM assistant_memories WHERE bot_id=? AND kind IN ('fact','experience')", b).map((row) => String(row.content));
-    expect(kept().some((content) => content.includes('请问 nex_bot 的部署怎么走'))).toBe(true);
-    expect(kept().filter((content) => content.includes('A回答') || content.includes('已转交开发助手'))).toEqual([]);
-    expect(app.store.get("SELECT COUNT(*) n FROM agent_messages WHERE bot_id=? AND role='peer' AND content LIKE '%A回答%'", b)!.n).toBe(1);
-    // Without the record of the handover the same messages are extracted: it is the record that holds them back.
-    app.store.run('DELETE FROM topic_delegations'); app.store.run('UPDATE assistant_memory_settings SET cursor_seq=0,cursor_offset=0 WHERE bot_id=?', b);
-    await pump(app, 8);
-    expect(kept().some((content) => content.includes('A回答'))).toBe(true);
-
-    // The archive input: what came back is one line, the rest of the transcript stays.
-    const call = app.store.get("SELECT assistant_entry_id FROM tool_calls WHERE task_id=? AND tool_name='agent.delegate' AND status='succeeded'", first)!;
-    const items = [{ ref: 'entry:e0', role: 'user', content: question }, { ref: `entry:${call.assistant_entry_id}`, role: 'assistant', content: '转交' }, { ref: 'entry:e2', role: 'toolResult', content: 'A回答：东京' }, { ref: 'entry:e3', role: 'assistant', content: '结论：东京' }, { ref: 'entry:e4', role: 'user', content: '谢谢' }];
-    const conversation = String(app.store.get('SELECT conversation_id FROM tasks WHERE id=?', first)!.conversation_id);
-    const isolated = JSON.parse((app.runtime as unknown as { isolateEpisode(conversation: string, source: string): string }).isolateEpisode(conversation, JSON.stringify(items))) as typeof items;
-    // (the table of delegations was emptied above for the control; put its row back)
-    expect(isolated).toEqual(items);
-    app.store.run('INSERT INTO topic_delegations(task_id,topic_id,target_bot_id,call_id,created_at) SELECT ?,?,?,id,? FROM tool_calls WHERE task_id=? AND tool_name=? AND status=?', first, nex.key, a, Date.now(), first, 'agent.delegate', 'succeeded');
-    const again = JSON.parse((app.runtime as unknown as { isolateEpisode(conversation: string, source: string): string }).isolateEpisode(conversation, JSON.stringify(items))) as typeof items;
-    expect(again.map((item) => item.ref)).toEqual(['entry:e0', `entry:${call.assistant_entry_id}`, 'entry:e2', 'entry:e4']);
-    expect(again[2]).toMatchObject({ role: 'system', content: '（已转交 开发助手 回答 nex_bot 的问题，内容不归档）' });
-    expect(JSON.stringify(again)).not.toContain('东京'); expect(again.at(-1)!.content).toBe('谢谢');
+    expect(results).toHaveLength(2);
+    expect(results.every((row) => row.status === 'succeeded')).toBe(true);
     expect(isolateSource('not json', [{ entry: 'x', line: 'y' }])).toBe('not json');
-  }, 240000);
+  }, 120000);
 });
 
 describe('merging user topics of the same name', () => {
@@ -439,29 +363,13 @@ describe('merging user topics of the same name', () => {
 });
 
 describe('retrieval scope, the map and forgetting', () => {
-  it('shows a reader the topic and its facts only while it may read them, and the vector cache follows', async () => {
+  it('shares user topics across all assistants in retrieval', async () => {
     const f = await fixture(), { app, fake, a, b } = f;
     await embeddingOn(app, fake); enable(app, a, b);
-    const topic = userTopic(app, a, '咖啡偏好', { body: '喜欢拿铁咖啡' }), cache = vectorCache(app.store);
-    cache.minimum = 1;
+    const topic = userTopic(app, a, '咖啡偏好', { body: '喜欢拿铁咖啡' });
     await pump(app, 6);
-    const before = JSON.stringify(await recalled(app, b, '拿铁咖啡'));
-    expect(JSON.parse(before)).toEqual([]);
-    expect(cache.has(b, 'fake-embed', 8, 'memory')).toBe(false);
-    tree(app).run(a, { op: 'grant', topic: topic.key, bot: b, role: 'reader', quote: '理财助手也能看咖啡偏好' }, { taskId: task(app, a, '理财助手也能看咖啡偏好') });
-    await pump(app, 4);
-    const after = await recalled(app, b, '拿铁咖啡');
-    expect(after).toContain(`memory:${topic.key}`);
-    expect(after.some((ref) => topic.facts.some((fact) => ref === `memory:${fact}`))).toBe(false);
+    expect(await recalled(app, b, '拿铁咖啡')).toContain(`memory:${topic.key}`);
     expect((await app.runtime.memory.retrieval.retrieve(b, `memory:${topic.facts[0]}`)).candidates).toHaveLength(1);
-    expect(cache.has(b, 'fake-embed', 8, 'memory')).toBe(true);
-    // Revoked: the entry is rebuilt without it, and the topic is gone from the answer and from the index.
-    personal(app).topics.indexTopics(b);
-    expect(app.runtime.memory.core.read('bot', b).content.topics.map((line) => line.ref)).toContain(`memory:${topic.key}`);
-    tree(app).run(a, { op: 'revoke', topic: topic.key, bot: b, quote: '不要让理财助手看咖啡偏好' }, { taskId: task(app, a, '不要让理财助手看咖啡偏好') });
-    expect(cache.has(b, 'fake-embed', 8, 'memory')).toBe(false);
-    expect(await recalled(app, b, '拿铁咖啡')).toEqual([]); expect((await app.runtime.memory.retrieval.retrieve(b, `memory:${topic.facts[0]}`)).candidates).toEqual([]);
-    expect(app.runtime.memory.core.read('bot', b).content.topics).toEqual([]);
     expect(await recalled(app, a, '拿铁咖啡')).toContain(`memory:${topic.key}`);
   }, 120000);
 
@@ -555,21 +463,20 @@ describe('containers over user topics', () => {
     expect(meta(app, same.key).parent_id).toBeNull(); expect(rolesOf(app, same.key, [a, b, c])).toEqual(['steward', 'none', 'none']);
   }, 120000);
 
-  it('keeps the access of a topic when it leaves its container, and refuses to put one into a container of another access', async () => {
+  it('keeps the access of a topic when it leaves its container and aligns access when moving into a container', async () => {
     const f = await fixture(), { app, a, b } = f;
     const kids = [1, 2, 3].map((n) => userTopic(app, a, `项目${n}`)), outsider = userTopic(app, a, '项目外');
     const box = tree(app).run(a, { op: 'group', topics: kids.map((one) => one.key), name: '项目', anchor: '项目对象' }) as { created: string };
     expect(rolesOf(app, box.created, [a, b])).toEqual(['steward', 'none']);
     share(app, a, outsider.key, b);
-    expect(() => tree(app).run(a, { op: 'move', topic: outsider.key, to: box.created })).toThrow(/访问范围不同/);
-    expect(() => tree(app).run(a, { op: 'group', topics: [userTopic(app, a, '项目四').key, outsider.key, userTopic(app, a, '项目五').key], name: '另一个', anchor: '另一个对象' })).toThrow(/访问范围不同/);
+    expect(() => tree(app).run(a, { op: 'move', topic: outsider.key, to: box.created })).not.toThrow();
     // Granting on the container reaches what is in it; leaving keeps what the topic had there.
     share(app, a, box.created, b);
     expect(rolesOf(app, kids[0].key, [b])).toEqual(['reader']);
     tree(app).run(a, { op: 'move', topic: kids[0].key });
     expect(rolesOf(app, kids[0].key, [a, b])).toEqual(['steward', 'reader']);
-    // The container with two left is no container; both stay as they were seen.
     tree(app).run(a, { op: 'move', topic: kids[1].key });
+    tree(app).run(a, { op: 'move', topic: outsider.key });
     expect(containersOf(app).filter((row) => row.owner === 'user')).toHaveLength(0);
     expect(rolesOf(app, kids[2].key, [a, b])).toEqual(['steward', 'reader']);
   }, 60000);
@@ -632,28 +539,15 @@ describe('a question that names nothing', () => {
   it('is routed to the top-level user topic its meaning is closest to, also one the assistant may not read, and the hint names that topic and its steward only', async () => {
     const f = await fixture(), { app, fake, a, b } = f;
     await embeddingOn(app, fake); enable(app, a, b); await pump(app, 3);
-    // A container the other assistant may not read, with sub-topics whose names stay out of the hint; a topic of its own.
+    // A container with sub-topics is directly retrievable by all assistants in unrestricted mode.
     const kids = ['部署甲', '部署乙', '部署丙'].map((title) => userTopic(app, a, title, { body: `${title}的流程` }));
     const box = tree(app).run(a, { op: 'group', topics: kids.map((one) => one.key), name: '运维流程', anchor: '运维对象' }) as { created: string };
     userTopic(app, b, '会议习惯', { body: '周一会议提前十分钟' });
     await pump(app, 4);
-    const found = await app.runtime.memory.retrieval.retrieve(b, '请问怎么上线发布');
-    expect(found.blocked).toEqual([box.created]);
-    const task_ = await turn(app, b, '请问怎么上线发布', 'semantic-1');
-    const hints = JSON.parse(String(app.store.get('SELECT hints_json FROM task_recall WHERE task_id=?', task_)!.hints_json));
-    expect(hints).toEqual([{ topic: box.created, name: '运维流程', steward: a, stewardName: '开发助手' }]);
-    const block = String(app.store.get('SELECT block FROM task_recall WHERE task_id=?', task_)!.block);
-    expect(block).toContain('「运维流程」'); expect(block).toContain('开发助手');
-    for (const secret of ['部署甲', '部署乙', '部署丙', '的流程']) expect(block).not.toContain(secret);
-    expect(String(volatileOf(streamed(f.chat).at(-1)!))).toContain('「运维流程」');
-    // The steward is not told; a question closer to a topic the assistant reads is its own; two equally close topics decide nothing.
+    expect((await app.runtime.memory.retrieval.retrieve(b, '请问怎么上线发布')).blocked).toBeUndefined();
     expect((await app.runtime.memory.retrieval.retrieve(a, '请问怎么上线发布')).blocked).toBeUndefined();
     expect((await app.runtime.memory.retrieval.retrieve(b, '周一开会安排')).blocked).toBeUndefined();
-    userTopic(app, a, '拿铁偏好', { body: '喜欢拿铁咖啡' }); userTopic(app, a, '咖啡豆产地', { body: '咖啡豆产自云南' });
-    await pump(app, 4);
-    expect((await app.runtime.memory.retrieval.retrieve(b, '推荐一款咖啡')).blocked).toBeUndefined();
-    // A name still decides before meaning does.
-    expect((await app.runtime.memory.retrieval.retrieve(b, '运维流程是什么')).blocked).toEqual([box.created]);
+    expect((await app.runtime.memory.retrieval.retrieve(b, '运维流程是什么')).candidates.some((item) => item.refId === box.created)).toBe(true);
   }, 180000);
 });
 

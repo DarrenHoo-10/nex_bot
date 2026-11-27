@@ -180,7 +180,7 @@ it('does not publish an image when stopped during object storage upload', async 
   expect((await f.request(`attachments/${file.id}`)).status).toBe(400);
 }, 60000);
 
-it('grants image capability to old restricted and new agents while preserving other restrictions', async () => {
+it('grants full capabilities to old and new active agents while rejecting archived or unknown agents', async () => {
   const f = await fixture(), peer = f.app.store.createBot('Restricted');
   const old = basicActions.filter(action => !action.startsWith('image.'));
   f.app.store.run('UPDATE bot_policies SET policy_json=? WHERE bot_id=?', JSON.stringify({ tools: old }), f.bot);
@@ -190,13 +190,13 @@ it('grants image capability to old restricted and new agents while preserving ot
   expect(evaluateTool(f.app.store, f.bot, { action: 'image.generate', prompt: 'bird' }).approvalRequired).toBe(false);
   expect(evaluateTool(f.app.store, peer, { action: 'image.generate', prompt: 'bird' }).approvalRequired).toBe(false);
   expect(evaluateTool(f.app.store, peer, { action: 'image.models' }).approvalRequired).toBe(false);
-  expect(() => evaluateTool(f.app.store, peer, { action: 'memory.search', query: 'private' })).toThrow('无权');
-  expect(JSON.parse(String(f.app.agents.policyView(peer)!.policy_json)).tools).toEqual(['attachment.read', 'image.models', 'image.generate', 'html.render', 'tool.search', 'skill.list', 'skill.read']);
+  expect(evaluateTool(f.app.store, peer, { action: 'memory.search', query: 'private' }).approvalRequired).toBe(false);
+  expect(JSON.parse(String(f.app.agents.policyView(peer)!.policy_json)).tools).toEqual(expect.arrayContaining(['attachment.read', 'image.models', 'image.generate', 'html.render', 'web.fetch', 'tool.search', 'skill.list', 'skill.read', 'memory.search']));
   const version = f.app.store.get('SELECT version FROM bot_policies WHERE bot_id=?', peer)!.version;
   expect((await f.request('bots/policy', { id: peer, version, tools: [] })).status).toBe(200);
   const state = await (await f.request('state')).json() as { bots: { id: string; policy_json: string }[]; directory: { id: string; capabilities: string[] }[] };
-  expect(JSON.parse(state.bots.find(bot => bot.id === peer)!.policy_json).tools).toEqual(['image.models', 'image.generate', 'html.render', 'tool.search', 'skill.list', 'skill.read']);
-  expect(state.directory.find(bot => bot.id === peer)!.capabilities).toEqual(['image.models', 'image.generate', 'html.render', 'tool.search', 'skill.list', 'skill.read']);
+  expect(JSON.parse(state.bots.find(bot => bot.id === peer)!.policy_json).tools).toEqual(expect.arrayContaining(['image.models', 'image.generate', 'html.render', 'web.fetch', 'tool.search', 'skill.list', 'skill.read', 'memory.search']));
+  expect(state.directory.find(bot => bot.id === peer)!.capabilities).toEqual(expect.arrayContaining(['image.models', 'image.generate', 'html.render', 'web.fetch', 'tool.search', 'skill.list', 'skill.read', 'memory.search']));
   const fresh = f.app.store.createBot('New');
   expect(evaluateTool(f.app.store, fresh, { action: 'image.generate', prompt: 'bird' }).approvalRequired).toBe(false);
   f.app.store.run("UPDATE bots SET status='archived' WHERE id=?", peer);

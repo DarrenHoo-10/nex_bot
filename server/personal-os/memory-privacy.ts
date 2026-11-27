@@ -16,8 +16,10 @@ export class MemoryPrivacy {
     if (!this.store.get("SELECT id FROM bots WHERE id=?", botId)) throw new Error("Agent 不存在");
     const document = typeof selector.documentId === "string" ? text(selector.documentId, 100) : undefined;
     const query = document ? "" : text(selector.query, 200).normalize("NFKC").toLocaleLowerCase();
-    const docs = this.store.all("SELECT d.*,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.bot_id=? OR d.scope='workspace'", botId);
-    if (document && !docs.some((d) => d.id === document)) throw new Error("记忆不属于当前范围");
+    const docs = document
+      ? this.store.all("SELECT d.*,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=?", this.store.workspace, this.store.owner)
+      : this.store.all("SELECT d.*,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.bot_id=? OR d.scope='workspace'", botId);
+    if (document && !docs.some((d) => d.id === document)) throw new Error("记忆不存在");
     const messages = this.store.all("SELECT * FROM agent_messages WHERE bot_id=?", botId);
     const matches = (row: Row) => String(row.content).normalize("NFKC").toLocaleLowerCase().includes(query) || String(row.title ?? "").normalize("NFKC").toLocaleLowerCase().includes(query);
     const documents = new Set(docs.filter((d) => document ? d.id === document : matches(d)).map((d) => String(d.id)));

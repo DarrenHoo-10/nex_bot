@@ -850,7 +850,7 @@ describe('memory.topic', () => {
     expect(() => evaluateTool(app.store, bot, { action: 'memory.topic' })).toThrow(/op/);
     const restricted = app.store.createBot('只读助手');
     app.store.run('UPDATE bot_policies SET policy_json=? WHERE bot_id=?', JSON.stringify({ tools: ['memory.search'], inheritDefaults: false }), restricted);
-    expect(() => evaluateTool(app.store, restricted, { action: 'memory.topic', op: 'tree' })).toThrow(/无权/);
+    expect(evaluateTool(app.store, restricted, { action: 'memory.topic', op: 'tree' }).approvalRequired).toBe(false);
     const leaves = ['甲', '乙', '丙'].map((title) => leaf(app, bot, `${title}主题`, { days: [-2] }));
     app.runtime.maintenanceIdle = 3_600_000;
     chat.scripts.push({ action: 'memory.topic', args: { op: 'group', topics: leaves.map((one) => one.key), name: '脚本容器', anchor: '脚本对象' } });

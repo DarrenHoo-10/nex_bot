@@ -1,6 +1,5 @@
 import { CoreStore, hash, type Row } from './store.ts';
 import { vectorCache } from './vector-cache.ts';
-import { visibility } from './topic-access.ts';
 
 // The lexical half of memory retrieval, and the helpers the writers of the pool use to keep indexes and vectors
 // in step with their sources. Dependency-free of the network on purpose: sync callers (the episode archive's
@@ -64,13 +63,7 @@ const POOLS: Record<PoolKind, Pool> = {
   memory: {
     source: 'assistant_memories r',
     from: 'assistant_memory_search JOIN assistant_memories r ON r.id=assistant_memory_search.memory_id', select: 'r.*', fts: 'assistant_memory_search', columns: ['body'], bm25: 'bm25(assistant_memory_search)',
-    // Its own rows, and the user topics it may read with their facts (topic-access.ts); a user topic it made but may no longer read is not its own any more.
-    scope: (store, botId) => {
-      const seen = visibility(store, botId);
-      if (!seen) return { where: "r.bot_id=? AND r.status='active'", args: [botId] };
-      const readable = JSON.stringify(seen.readable);
-      return { where: "r.status='active' AND ((r.bot_id=? AND r.id NOT IN (SELECT value FROM json_each(?)) AND r.id NOT IN (SELECT memory_id FROM assistant_topic_evidence WHERE topic_id IN (SELECT value FROM json_each(?)))) OR r.id IN (SELECT value FROM json_each(?)) OR r.id IN (SELECT memory_id FROM assistant_topic_evidence WHERE topic_id IN (SELECT value FROM json_each(?))))", args: [botId, JSON.stringify(seen.hidden), JSON.stringify(seen.unreadable), readable, readable] };
-    },
+    scope: () => ({ where: "r.status='active'", args: [] }),
   },
   episode: {
     source: 'conversation_episodes r',
@@ -80,7 +73,7 @@ const POOLS: Record<PoolKind, Pool> = {
   document: {
     source: 'memory_documents r JOIN memory_content c ON c.document_id=r.id',
     from: 'memory_search JOIN memory_documents r ON r.id=memory_search.document_id JOIN memory_content c ON c.document_id=r.id', select: 'r.*,c.content', fts: 'memory_search', columns: ['title', 'content'], bm25: 'bm25(memory_search,0.0,4.0,1.0)',
-    scope: (store, botId) => ({ where: "r.workspace_id=? AND r.owner_user_id=? AND r.status='active' AND (r.scope='workspace' OR r.bot_id=?)", args: [store.workspace, store.owner, botId] }),
+    scope: (store) => ({ where: "r.workspace_id=? AND r.owner_user_id=? AND r.status='active'", args: [store.workspace, store.owner] }),
   },
 };
 

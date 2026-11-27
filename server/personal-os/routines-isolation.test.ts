@@ -106,8 +106,8 @@ describe("routine scheduling with isolated child execution", () => {
     expect(() => f.routines.toggle(id, 2, false)).toThrow("已删除");
     expect(() => f.routines.runNow(id, "active")).toThrow("已删除");
     expect(() => f.routines.runNow(id, "new-request")).toThrow("已删除");
-    expect(() => f.routines.tool({ id: "cross-bot", tool_name: "routine.save", bot_id: f.other }, { ...draft, routineId: id, expectedVersion: 2 })).toThrow("已修改");
-    expect(() => f.routines.tool({ id: "cross-bot-run", tool_name: "routine.run", bot_id: f.other }, { routineId: id })).toThrow("不属于");
+    expect(() => f.routines.tool({ id: "cross-bot", tool_name: "routine.save", bot_id: f.other }, { ...draft, routineId: id, expectedVersion: 2 })).toThrow("已删除");
+    expect(() => f.routines.tool({ id: "cross-bot-run", tool_name: "routine.run", bot_id: f.other }, { routineId: id })).toThrow("已删除");
     expect(f.store.get("SELECT * FROM agent_routines WHERE id=?", id)).toEqual(deleted);
     f.routines.tick(due + 300_000);
     expect(f.store.all("SELECT * FROM routine_occurrences WHERE routine_id=?", id)).toHaveLength(4);

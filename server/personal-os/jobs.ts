@@ -39,19 +39,25 @@ export class JobModule {
   private currentTask(job: Row) {
     return this.store.get("SELECT * FROM tasks WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", job.conversation_id);
   }
-  /** The user messages a brief cites: at most five of this assistant's own, unforgotten user messages, and always the one that triggered the dispatch. */
-  private sources(botId: string, value: unknown, originTaskId?: string) {
+  /** The user messages a brief cites: at most five unforgotten user messages, and always the one that triggered the dispatch. */
+  private sources(botId: string, value: unknown, originTaskId?: string, excludeJob?: Row) {
     if (value !== undefined && (!Array.isArray(value) || value.length > 5 || value.some((ref) => typeof ref !== "string" || !/^message:[\w-]{1,100}$/.test(ref)))) throw new Error("sources 须为 1 到 5 个 message:<id> 引用");
-    const topic=originTaskId ? this.runtime.isTopicTask(originTaskId) : undefined;
     const usable = "bot_id=? AND role='user' AND content<>'[已遗忘]' AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=agent_messages.task_id)";
     const rows = ((value ?? []) as string[]).map((ref) => {
-      const row = this.store.get(`SELECT id,seq,content,created_at FROM agent_messages WHERE id=? AND ${usable}`, ref.slice(8), botId);
-      if (row && topic && !this.store.get('SELECT id FROM agent_messages WHERE id=? AND conversation_id=?',row.id,topic.conversation_id)) throw new Error('引用不属于本话题');
+      const row = this.store.get(`SELECT id,seq,content,created_at,source_key FROM agent_messages WHERE id=? AND ${usable}`, ref.slice(8), botId);
       if (!row) throw new Error(`${ref} 不存在、不是用户原话或已遗忘`);
       return row;
     });
-    const trigger = originTaskId ? this.store.get(`SELECT id,seq,content,created_at FROM agent_messages WHERE task_id=? AND ${usable} ORDER BY seq DESC LIMIT 1`, originTaskId, botId) : undefined;
-    const others = [...new Map(rows.filter((row) => row.id !== trigger?.id).map((row) => [String(row.id), row])).values()].sort((a, b) => Number(a.seq) - Number(b.seq));
+    const trigger = originTaskId ? this.store.get(`SELECT id,seq,content,created_at,source_key FROM agent_messages WHERE task_id=? AND ${usable} ORDER BY seq DESC LIMIT 1`, originTaskId, botId) : undefined;
+    let others = [...new Map(rows.filter((row) => row.id !== trigger?.id).map((row) => [String(row.id), row])).values()].sort((a, b) => Number(a.seq) - Number(b.seq));
+    if (excludeJob) {
+      // Avoid re-forwarding messages that were already sent directly to this job or quoted into it earlier.
+      const directPrefix = `job-input:${excludeJob.id}:`;
+      const earlier = this.store.all("SELECT content FROM transcript WHERE conversation_id=? AND role='user'", excludeJob.conversation_id).map((row) => String(row.content));
+      const alreadyInJob = (row: Row) => String(row.source_key ?? "").startsWith(directPrefix) || earlier.some((body) => body.includes(`message:${row.id}`));
+      const fresh = others.filter((row) => !alreadyInJob(row));
+      if (fresh.length || trigger) others = fresh;
+    }
     // The trigger always stays; the earliest other references give way when there are more than five.
     return [...others.slice(trigger ? -4 : -5), ...(trigger ? [trigger] : [])].sort((a, b) => Number(a.seq) - Number(b.seq));
   }
@@ -273,12 +279,8 @@ export class JobModule {
   openFor(botId: string, legacyOnly = false) {
     return this.views(this.store.all("SELECT * FROM agent_jobs j WHERE j.bot_id=? AND j.stopped_at IS NULL AND (?=0 OR NOT EXISTS(SELECT 1 FROM agent_topic_children ch WHERE ch.conversation_id=j.conversation_id)) AND (j.id IN (SELECT id FROM agent_jobs WHERE bot_id=? ORDER BY created_at DESC LIMIT 200) OR EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=j.conversation_id AND t.ended_at IS NULL)) ORDER BY j.created_at DESC,j.rowid DESC", botId, legacyOnly?1:0, botId)).filter((job) => job.endedAt === null);
   }
-  listForTask(botId:string,taskId:string){
-    if(this.runtime.taskOrigin(taskId)!=='owner')return {error:'只有主对话可以列出后台任务'};
-    const topic=this.runtime.isTopicTask(taskId);
-    if(!topic)return {jobs:this.context(botId).jobs};
-    const visible=new Set(this.store.all('SELECT j.id FROM agent_jobs j JOIN agent_topic_children ch ON ch.conversation_id=j.conversation_id WHERE j.bot_id=? AND ch.root_conversation_id=?',botId,topic.conversation_id).map(row=>String(row.id)));
-    return {jobs:this.openFor(botId).filter(job=>visible.has(job.id))};
+  listForTask(botId: string, _taskId: string) {
+    return { jobs: this.openFor(botId) };
   }
   /** The main chat's read-only view of its jobs: the open ones and the latest published reports. */
   context(botId: string) {
@@ -293,7 +295,7 @@ export class JobModule {
     const tasks = this.store.all("SELECT id,conversation_id,bot_id,objective,status,result_summary,created_at,ended_at FROM tasks t WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM memory_forgotten_tasks f WHERE f.task_id=t.id) ORDER BY created_at,rowid", job.conversation_id)
       .map((task) => task.status === "failed" && typeof task.result_summary === "string" ? { ...task, result_summary: publicModelFailure(task.result_summary) } : task);
     const ids = tasks.map((task) => String(task.id)), marks = ids.map(() => "?").join(",");
-    const messages = ids.length ? this.store.all(`SELECT id,task_id,role,content,created_at,stream_progress FROM transcript WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)
+    const messages = ids.length ? this.store.all(`SELECT id,task_id,role,content,source_key,created_at,stream_progress FROM transcript WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)
       .map((message) => message.role === "system" ? { ...message, content: publicModelFailure(String(message.content)) } : message) : [];
     const steps = ids.length ? this.store.all(`SELECT id,task_id,tool_name,status,created_at FROM tool_calls WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids).map((call) => ({ ...call, summary: String(call.tool_name), preview: "" })) : [];
     const reports = ids.length ? this.store.all(`SELECT id,task_id,state,summary,question,automatic,message_id,created_at FROM agent_job_reports WHERE task_id IN (${marks}) ORDER BY created_at,rowid`, ...ids)
@@ -318,17 +320,16 @@ export class JobModule {
   private run(call: Row, args: Record<string, unknown>) {
     const action = String(call.tool_name), botId = String(call.bot_id), taskId = String(call.task_id), origin = this.runtime.taskOrigin(taskId);
     if (["job.start", "job.list", "job.message", "job.stop"].includes(action)) {
-      if (origin !== "owner") return { error: "只有主对话可以派发、转交或停止后台任务" };
-      if (action === "job.list") return this.listForTask(botId,taskId);
+      if (action === "job.list") return this.listForTask(botId, taskId);
       if (action === "job.start") {
         const started = this.start({ botId, title: args.title, sources: args.sources, note: args.note, deviceId: args.deviceId, originTaskId: taskId, sourceKey: `job-start:${call.id}` });
         return { jobId: started.jobId, stage: this.stage(this.row(started.jobId)) };
       }
       const job = this.row(text(args.jobId, 100));
-      if (job.bot_id !== botId) return { error: "只能操作自己的后台任务" };
       if (action === "job.stop") return this.stop(String(job.id));
-      const quoted = this.sources(botId, args.sources, taskId), note = optionalText(args.text, 2000);
-      const content = [`用户在主对话中说（${quoted.map((row) => `message:${row.id}`).join("、")}）：`, ...quoted.map((row) => String(row.content)), ...(note ? [`主对话备注：${note}`] : [])].join("\n");
+      const quoted = this.sources(botId, args.sources, taskId, job), note = optionalText(args.text, 2000);
+      const quotedBody = quoted.map((row) => String(row.content)).join("\n\n");
+      const content = [`用户在主对话中说（${quoted.map((row) => `message:${row.id}`).join("、")}）：`, ...(quotedBody ? [quotedBody] : []), ...(note ? [`主对话备注：${note}`] : [])].join("\n");
       const session = String(this.store.get("SELECT authorized_session_id FROM tasks WHERE id=?", taskId)?.authorized_session_id ?? this.store.session);
       this.input(String(job.id), content, `job-msg:${call.id}`, "owner", session);
       return { jobId: String(job.id), stage: this.stage(this.row(String(job.id))) };

@@ -177,8 +177,10 @@ public struct JobDetail: Decodable, Sendable {
 public struct JobRoundReport: RowBacked {
     public let row: Row
     public init(row: Row) { self.row = row }
+    public var taskID: String? { row.string("task_id") }
     public var state: String { row.string("state") ?? "" }
     public var summary: String { row.string("summary") ?? "" }
+    public var automatic: Bool { row.int("automatic") == 1 }
     public var createdAt: Date? { dateFromMilliseconds(row.double("created_at")) }
 }
 

@@ -44,7 +44,7 @@ struct ComposerView: View {
     private var bot: Bot? { workspace.bot(botID) }
     /// The assistant's own model; empty while it follows the default.
     private var chatModel: String { bot?.selectedModel ?? "" }
-    private var mode: ApprovalMode { bot?.approvalMode ?? .standard }
+    private var mode: ApprovalMode { bot?.approvalMode ?? .full }
     private var tasks: [AgentTask] { workspace.state?.unfinishedTasks(botID: botID) ?? [] }
     private var showStop: Bool {
         !tasks.isEmpty && conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && conversation.attachments.isEmpty

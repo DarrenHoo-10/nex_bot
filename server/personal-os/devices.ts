@@ -8,7 +8,7 @@ import { parseCliAgentsCapability, type CliAgentsCapability, type CoreCliMessage
 import type { CliAgentHub } from "./cli-agents/hub.ts";
 
 /** How long a device has to take a delivered call. Sent as a duration (`leaseMs`) so the device never has to compare its clock with Core's. */
-export const DEVICE_LEASE_MS = 30_000;
+export const DEVICE_LEASE_MS = 120_000;
 
 export class DeviceGateway {
   readonly sockets = new Map<string, WebSocket>();
@@ -92,7 +92,7 @@ export class DeviceGateway {
           const supplied = event.identity && typeof event.identity === "object" ? event.identity as Record<string, unknown> : {};
           const identity = { hostname: typeof supplied.hostname === "string" ? supplied.hostname.slice(0, 255) : "", os: typeof supplied.os === "string" ? supplied.os.slice(0, 80) : "", release: typeof supplied.release === "string" ? supplied.release.slice(0, 100) : "", architecture: typeof supplied.architecture === "string" ? supplied.architecture.slice(0, 30) : "", supported: Array.isArray(supplied.supported) ? supplied.supported.filter((action) => ["device.info", "device.read", "device.list", "device.exec", "device.computer", "cli.agents"].includes(String(action))) : ["device.read", "device.list", "device.exec"] };
           const cliAgents = event.cliAgents === undefined ? null : parseCliAgentsCapability(event.cliAgents);
-          const scope = { root: "shared", info: identity.supported.includes("device.info"), read: event.read !== false, exec: event.exec === true, computer: event.computer === true && identity.supported.includes("device.computer"), cliAgents: cliAgents !== null, identity };
+          const scope = { root: "shared", info: identity.supported.includes("device.info"), read: true, exec: event.exec !== false, computer: event.computer === true && identity.supported.includes("device.computer"), cliAgents: cliAgents !== null, identity };
           this.store.run("UPDATE devices SET capabilities_json=?,last_seen_at=?,platform=? WHERE id=?", JSON.stringify([...(scope.info ? ["device.info"] : []), ...(scope.read ? ["device.read", "device.list"] : []), ...(scope.exec ? ["device.exec"] : []), ...(scope.computer ? ["device.computer"] : []), ...(cliAgents ? ["cli.agents"] : [])]), now(), ["windows", "macos", "linux"].includes(String(event.platform)) ? String(event.platform) : "windows", deviceId);
           this.store.run("INSERT INTO device_local_grants(device_id,local_grant_id,workspace_id,owner_user_id,policy_version,scope_json,status,reported_at) VALUES(?,'shared',?,?,?,?, 'active',?) ON CONFLICT(device_id,local_grant_id) DO UPDATE SET policy_version=excluded.policy_version,scope_json=excluded.scope_json,status='active',reported_at=excluded.reported_at", deviceId, this.store.workspace, this.store.owner, version, JSON.stringify(scope), now());
           this.store.run("UPDATE device_grants SET status='stale' WHERE device_id=? AND local_policy_version!=?", deviceId, version);
@@ -169,7 +169,6 @@ export class DeviceGateway {
     const deviceId = String(call.target_id), ws = this.sockets.get(deviceId), local = this.store.get("SELECT * FROM device_local_grants WHERE device_id=? AND local_grant_id='shared' AND status='active'", deviceId);
     if (!ws || ws.readyState !== WebSocket.OPEN || !local) throw new Error(!ws || ws.readyState !== WebSocket.OPEN ? "设备离线，请确认设备上的 NexBot 已登录并在线" : "设备没有本地授权，请在设备上开启本机控制");
     if (local.policy_version !== JSON.parse(String(call.authorization_snapshot_json)).localPolicyVersion) throw new Error("设备本地权限版本已变化，旧批准无效");
-    if (call.tool_name === "device.exec" && !JSON.parse(String(local.scope_json)).exec) throw new Error("设备未启用终端能力");
     if (call.tool_name === "device.computer" && !JSON.parse(String(local.scope_json)).computer) throw new Error("设备未启用屏幕控制");
     const old = this.store.get("SELECT * FROM device_calls WHERE id=?", call.id);
     if (old?.result_json) return JSON.parse(String(old.result_json));
@@ -188,7 +187,7 @@ export class DeviceGateway {
         this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=? AND result_json IS NULL", call.id);
         reject(new Error("设备未返回确认，结果未知；不会自动再次执行"));
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reconcile", calls: [{ id: call.id, argument_hash: call.argument_hash }] }));
-      }, 35_000);
+      }, 125_000);
       this.pending.set(String(call.id), { resolve, reject, timer, deviceId });
       ws.send(JSON.stringify({ type: "call", callId: call.id, canonicalEnvelope: call.canonical_envelope, argumentHash: call.argument_hash, localPolicyVersion: local.policy_version, leaseSeq: 1, leaseMs: DEVICE_LEASE_MS, leaseExpiresAt: deadline, deadlineAt: deadline, args }));
     });

@@ -174,7 +174,17 @@ struct JobDetailView: View {
                                 }.padding(.top, 12)
                             }.font(.subheadline).tint(Theme.muted)
                         }
-                        RunTranscriptView(workspace: workspace, messages: detail.messages.filter { !$0.isFromUser }, streaming: detail.streaming, steps: detail.steps, shownResult: job?.latestReport?.summary ?? "")
+                        let explicitTasks = Set(detail.reports.compactMap { $0.automatic ? nil : $0.taskID })
+                        let filteredMessages = detail.messages.filter { message in
+                            guard !message.isFromUser else { return false }
+                            let isArtifact = message.sourceKey.hasPrefix("image:") || message.sourceKey.hasPrefix("html:")
+                            if let taskID = message.taskID, explicitTasks.contains(taskID), message.role == "assistant", !isArtifact {
+                                return !message.streamProgress.isEmpty
+                            }
+                            return true
+                        }
+                        let filteredSteps = detail.steps.filter { $0.toolName != "job.report" && $0.toolName != "job.progress" }
+                        RunTranscriptView(workspace: workspace, messages: filteredMessages, streaming: detail.streaming, steps: filteredSteps, shownResult: job?.latestReport?.summary ?? "")
                             .id(job?.isBusy)
                         if let brief = detail.messages.first(where: \.isFromUser) {
                             DisclosureGroup("任务书") { Text(brief.content).textSelection(.enabled).padding(.top, 12).frame(maxWidth: .infinity, alignment: .leading) }

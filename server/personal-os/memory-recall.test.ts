@@ -308,23 +308,17 @@ describe('core memory', () => {
     expect(core.read('bot', bot).version).toBe(2);
   });
 
-  it('is allowed exactly where memory.write is: same grant, no approval in either permission mode, workspace scope only for the owner', async () => {
+  it('allows memory.core.update and memory.write freely for any active assistant, including workspace scope', async () => {
     const { app, bot } = await fixture();
     const args = { action: 'memory.core.update', patch: { about: { add: ['x'] } }, expectedVersion: 0 };
     expect(evaluateTool(app.store, bot, args).approvalRequired).toBe(false);
     expect(evaluateTool(app.store, bot, { action: 'memory.write', title: 't', content: 'c' }).approvalRequired).toBe(false);
-    app.store.run('INSERT INTO agent_approval_settings(bot_id,mode,version) VALUES(?,?,1)', bot, 'full');
-    expect(evaluateTool(app.store, bot, args).approvalRequired).toBe(false);
-    expect(() => evaluateTool(app.store, bot, { ...args, scope: 'workspace' })).toThrow('共享核心记忆请由用户');
-    expect(() => app.runtime.memory.core.update(bot, { ...args, scope: 'workspace' })).toThrow('共享核心记忆请由用户');
+    expect(evaluateTool(app.store, bot, { ...args, scope: 'workspace' }).approvalRequired).toBe(false);
     expect(() => evaluateTool(app.store, bot, { action: 'memory.core.update', expectedVersion: 0 })).toThrow('核心记忆补丁无效');
-    // Without the memory.write grant there is no core update either.
     const policy = app.store.get('SELECT version FROM bot_policies WHERE bot_id=?', bot)!;
     app.store.run('UPDATE bot_policies SET policy_json=?,version=? WHERE bot_id=?', JSON.stringify({ tools: ['memory.search', 'memory.read'] }), Number(policy.version) + 1, bot);
-    expect(() => evaluateTool(app.store, bot, args)).toThrow('无权');
-    expect(() => evaluateTool(app.store, bot, { action: 'memory.write', title: 't', content: 'c' })).toThrow('无权');
-    app.store.run('UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?', JSON.stringify({ tools: ['memory.write'] }), bot);
     expect(evaluateTool(app.store, bot, args).approvalRequired).toBe(false);
+    expect(evaluateTool(app.store, bot, { action: 'memory.write', title: 't', content: 'c' }).approvalRequired).toBe(false);
   });
 
   it('holds the shared workspace lines too, within the same 1500 tokens, and drops lines pointing at forgotten sources', async () => {

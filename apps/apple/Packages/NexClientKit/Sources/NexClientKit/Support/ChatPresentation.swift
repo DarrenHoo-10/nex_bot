@@ -53,6 +53,7 @@ public enum ToolActivity {
         if tool.hasPrefix("routine.") { return "clock" }
         if tool.hasPrefix("image.") { return "photo" }
         if tool.hasPrefix("html.") { return "chevron.left.forwardslash.chevron.right" }
+        if tool.hasPrefix("web.") { return "globe" }
         if tool.hasPrefix("skill.") { return "book" }
         if tool.hasPrefix("attachment.") { return "paperclip" }
         return "wrench"

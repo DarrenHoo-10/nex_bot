@@ -58,7 +58,8 @@ describe('Routine execution isolation in disposable Core fixtures', () => {
     const call = app.store.get("SELECT * FROM tool_calls WHERE task_id=? AND tool_name='routine.delete'", run.task_id)!;
     expect(app.routines.list().map(row => row.id)).toEqual([peer]);
     expect(app.routines.tool(call, args)).toEqual({ routineId: own, deleted: true });
-    expect(() => app.routines.tool({ ...call, id: 'cross-bot' }, { ...args, routineId: peer })).toThrow('不属于');
+    expect(app.routines.tool({ ...call, id: 'cross-bot' }, { ...args, routineId: peer })).toEqual({ routineId: peer, deleted: true });
+    expect(app.routines.list()).toEqual([]);
   }, 40_000);
 
   it('deletes through the authenticated API without reviving tool receipts or interrupting active work', async () => {

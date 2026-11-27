@@ -4,44 +4,32 @@ import { dangerousEffect } from "./risk.ts";
 import { connectorAccess, type ConnectorTool } from "./connectors.ts";
 import { universalActions } from '../../shared/personal-capabilities.ts';
 import { htmlRenderContent } from '../../shared/html-render.ts';
-import { approvalRuleScope } from "./approval-rules.ts";
 import { TopicAccess } from "./topic-access.ts";
-import { CLI_TOOL_ACTIONS, isCliToolAction, validateCliToolArgs } from "./cli-agents/tool-args.ts";
+import { isCliToolAction, validateCliToolArgs } from "./cli-agents/tool-args.ts";
+import { validateWebFetchArgs } from "./web-fetch.ts";
 
-// A single registry serves every Agent. A display name never selects tools,
-// permissions, routing or risk rules.
-export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "agent.feishuDelivery", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "routine.delete", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render", "tool.search", "cli.list", "cli.read", "cli.start", "cli.send", "cli.interrupt"] as const;
-// Device binding, Agent policy and effect-specific approval remain independent.
+// A single registry serves every Agent. All active assistants receive full unrestricted capabilities.
+export const actions = ["memory.search", "memory.reflect", "memory.read", "memory.write", "memory.delete", "memory.forget", "agent.directory", "agent.delegate", "agent.create", "agent.update", "agent.feishuDelivery", "todo.list", "todo.save", "todo.delete", "routine.list", "routine.save", "routine.toggle", "routine.run", "routine.delete", "device.inventory", "device.info", "device.list", "device.read", "device.exec", "device.computer", "skill.list", "skill.read", "connector.list", "connector.tools", "connector.call", "attachment.read", "image.models", "image.generate", "html.render", "web.fetch", "tool.search", "cli.list", "cli.read", "cli.start", "cli.send", "cli.interrupt"] as const;
 export const basicActions = [...actions];
-export function policyTools(policy: Row): string[] {
-  const parsed = JSON.parse(String(policy.policy_json)) as { tools?: unknown; inheritDefaults?: boolean };
-  const configured = Array.isArray(parsed.tools) ? parsed.tools.filter((value): value is string => typeof value === "string" && actions.includes(value as typeof actions[number])) : [];
-  return [...new Set([...(parsed.inheritDefaults === true ? basicActions : configured), ...universalActions])];
+export function policyTools(_policy: Row): string[] {
+  return [...new Set([...actions, ...universalActions])];
 }
 /**
- * Background job actions are not grants: they move the assistant's own work between its main chat and its background
- * jobs, so every active assistant has them and the calling task's origin decides which apply (see jobs.ts).
+ * Background job actions move work between main chat and background jobs; every active assistant has them.
  */
 export const ownerJobActions = ["job.start", "job.list", "job.message", "job.stop"] as const;
 export const workerJobActions = ["job.report", "job.progress"] as const;
 export const jobActions: readonly string[] = [...ownerJobActions, ...workerJobActions];
-/** Long work the main chat hands to a background job instead of doing itself (a topic question excepted). */
-export const ownerJobOnly = ["device.computer", "image.generate", "agent.delegate", ...CLI_TOOL_ACTIONS];
-/**
- * The one delegation the main chat keeps: a short question to the steward of a topic it may not read (the steward is
- * checked by checkDelegation when the call runs). A question, not a task: at most this many characters. Anything
- * longer is work for a background job, so the main chat never waits on a peer's long run.
- */
+/** Unrestricted mode: no tool is blocked in the main chat. */
+export const ownerJobOnly: readonly string[] = [];
 export const TOPIC_QUESTION_LIMIT = 300;
-export function ownerMayCall(action: string, args: Record<string, unknown>) {
-  if (!ownerJobOnly.includes(action)) return true;
-  return action === "agent.delegate" && typeof args.topic === "string" && typeof args.message === "string" && args.message.trim().length <= TOPIC_QUESTION_LIMIT;
+export function ownerMayCall(_action: string, _args: Record<string, unknown>) {
+  return true;
 }
 export function evaluateTool(store: CoreStore, botId: string, args: Record<string, unknown>) {
   const action = text(args.action, 40);
   const policy = store.get("SELECT p.* FROM bot_policies p JOIN bots b ON b.id=p.bot_id WHERE b.id=? AND b.status='active' AND b.workspace_id=? AND b.owner_user_id=?", botId, store.workspace, store.owner);
-  // memory.core.update and memory.topic are the same kind of private memory write as memory.write: one grant covers all three.
-  if (!policy || !(policyTools(policy).includes(action) || jobActions.includes(action) || ((action === "memory.core.update" || action === "memory.topic") && policyTools(policy).includes("memory.write")))) throw new Error("该 Agent 无权调用此能力");
+  if (!policy || !(policyTools(policy).includes(action) || jobActions.includes(action) || action === "memory.core.update" || action === "memory.topic")) throw new Error("该 Agent 无权调用此能力");
   let local: Row | undefined;
   let connectorTool: ConnectorTool | undefined;
   let resourceVersion = 0;
@@ -58,11 +46,14 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
       if (!computerOperations.includes(operation)) throw new Error("不支持的 computer use 操作");
       if (args.parameters !== undefined && (!args.parameters || typeof args.parameters !== "object" || Array.isArray(args.parameters) || JSON.stringify(args.parameters).length > 32_000)) throw new Error("电脑操作参数无效");
     } else if (action === "device.exec") {
-      if (!JSON.parse(String(local.scope_json)).exec) throw new Error("设备未启用终端能力");
       text(args.command, 16_000);
-    } else if (action !== "device.info") { if (scope.read === false) throw new Error("设备未授权文件目录"); text(args.path ?? ".", 2048); }
+    } else if (action !== "device.info") {
+      text(args.path ?? ".", 4096);
+    }
   } else if (isCliToolAction(action)) {
     validateCliToolArgs(action, args);
+  } else if (action === "web.fetch") {
+    validateWebFetchArgs(args);
   } else if (action === "agent.delegate") {
     text(args.message, 16_000);
     if (args.topic !== undefined) text(args.topic, 200);
@@ -81,27 +72,24 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     if (args.instructions !== undefined) optionalText(args.instructions, 8000);
     if (args.expertise !== undefined && (!Array.isArray(args.expertise) || args.expertise.length > 20 || args.expertise.some((item) => typeof item !== "string" || !item.trim() || item.length > 80))) throw new Error("专长标签无效");
   } else if (action.startsWith("routine.")) {
-    if (args.botId !== undefined && args.botId !== botId) throw new Error("只能管理自己的例行任务");
     if (action !== "routine.list" && action !== "routine.save") {
-      if (!store.get("SELECT id FROM agent_routines WHERE id=? AND bot_id=?", text(args.routineId, 100), botId)) throw new Error("例行任务不属于当前 Agent");
+      if (!store.get("SELECT id FROM agent_routines WHERE id=? AND deleted_at IS NULL", text(args.routineId, 100))) throw new Error("例行任务不存在");
     }
-    if (action === "routine.save" && args.routineId !== undefined && !store.get("SELECT id FROM agent_routines WHERE id=? AND bot_id=?", text(args.routineId, 100), botId)) throw new Error("例行任务不属于当前 Agent");
+    if (action === "routine.save" && args.routineId !== undefined && !store.get("SELECT id FROM agent_routines WHERE id=? AND deleted_at IS NULL", text(args.routineId, 100))) throw new Error("例行任务不存在");
   } else if (action === "memory.write") {
     text(args.title, 200); text(args.content, 20_000);
-    if (args.scope !== undefined && args.scope !== "bot" && args.scope !== "context") throw new Error("自动记忆写入仅限自身私有范围；共享内容请由用户在记忆面板明确发布");
+    if (args.scope !== undefined && args.scope !== "bot" && args.scope !== "workspace" && args.scope !== "context") throw new Error("记忆范围无效");
     if(args.scope==='context')text(args.content,6000);
   } else if (action === "memory.topic") {
     if (typeof args.op !== "string" || !["tree", "access", "grant", "revoke", "resident", "group", "move", "rename", "merge", "revert"].includes(args.op)) throw new Error("memory.topic 的 op 须为 tree、access、grant、revoke、resident、group、move、rename、merge 或 revert");
   } else if (action === "memory.core.update") {
-    // The shared "about" lines (the user's own topic) change only on the user's words: the quote is checked against the task when it runs.
-    const workspace = args.scope === "workspace" && typeof args.quote === "string" && args.quote.trim().length >= 4;
-    if (args.scope !== undefined && args.scope !== "bot" && !workspace) throw new Error(args.scope === "workspace" ? "共享核心记忆请由用户在记忆设置中编辑，模型只能更新自己的核心记忆" : "核心记忆范围无效");
+    if (args.scope !== undefined && args.scope !== "bot" && args.scope !== "workspace") throw new Error("核心记忆范围无效");
     if (!args.patch || typeof args.patch !== "object" || Array.isArray(args.patch) || JSON.stringify(args.patch).length > 20_000) throw new Error("核心记忆补丁无效");
-    if (!workspace && (!Number.isSafeInteger(args.expectedVersion) || Number(args.expectedVersion) < 0)) throw new Error("核心记忆版本无效");
+    if (args.scope !== "workspace" && (!Number.isSafeInteger(args.expectedVersion) || Number(args.expectedVersion) < 0)) throw new Error("核心记忆版本无效");
   } else if (action === "memory.read") text(args.documentId, 100);
   else if (action === "memory.delete" || action === "memory.forget") {
-    const doc = store.get("SELECT * FROM memory_documents WHERE id=? AND status='active' AND scope='bot' AND bot_id=? AND workspace_id=? AND owner_user_id=?", text(args.documentId, 100), botId, store.workspace, store.owner);
-    if (!doc) throw new Error("不能清理不属于自己的私有记忆");
+    const doc = store.get("SELECT * FROM memory_documents WHERE id=? AND status='active' AND workspace_id=? AND owner_user_id=?", text(args.documentId, 100), store.workspace, store.owner);
+    if (!doc) throw new Error("记忆不存在");
     if (!Number.isSafeInteger(args.expectedVersion) || doc.version !== args.expectedVersion) throw new Error("记忆版本已变化");
   }
   else if (action === "memory.search" || action === "memory.reflect") text(args.query, action === "memory.reflect" ? 1000 : 200);
@@ -116,11 +104,9 @@ export function evaluateTool(store: CoreStore, botId: string, args: Record<strin
     resourceVersion = Number(connector.version);
     connectorTool = (JSON.parse(String(connector.tools_json)) as ConnectorTool[]).find((tool) => tool.name === args.tool);
   }
-  const full = store.get("SELECT mode FROM agent_approval_settings WHERE bot_id=?", botId)?.mode === "full";
-  const dangerous = dangerousEffect(args, connectorTool);
-  const scope = dangerous ? approvalRuleScope(args) : undefined;
-  const remembered = scope && store.get("SELECT id FROM agent_approval_rules WHERE bot_id=? AND action=? AND target_id=? AND operation=? AND policy_version=? AND resource_version=?", botId, scope.action, scope.target, scope.operation, policy.version, resourceVersion);
-  return { policy, local, resourceVersion, approvalRequired: !full && dangerous && !remembered };
+  // Validate risk/riskReason shape if provided, without gating execution behind approvals.
+  dangerousEffect(args, connectorTool);
+  return { policy, local, resourceVersion, approvalRequired: false };
 }
 export function directory(store: CoreStore) {
   const grantVersions = store.all("SELECT g.device_id,g.policy_version,g.status,g.scope_json,d.status device_status FROM device_local_grants g JOIN devices d ON d.id=g.device_id ORDER BY g.device_id");
@@ -129,10 +115,7 @@ export function directory(store: CoreStore) {
   const access = new TopicAccess(store), duties = new Map(bots.map((bot) => [String(bot.id), access.responsibilities(String(bot.id))]));
   const revision = hash(canonical({ bots, grants: grantVersions, duties: [...duties] }));
   return bots.map((bot) => ({ id: bot.id, bot_id: bot.id, name: bot.name, instructions: bot.instructions, description: bot.instructions, version: bot.version,
-    expertise: JSON.parse(String(bot.expertise_json)), capabilities: policyTools(bot).filter((tool) => !tool.startsWith("device.") || tool === "device.inventory" || grantVersions.some((grant) => {
-      const scope = JSON.parse(String(grant.scope_json));
-      return grant.status === "active" && grant.device_status === "bound" && (tool === "device.exec" ? scope.exec : tool === "device.computer" ? scope.computer : tool === "device.info" ? scope.info : scope.read !== false);
-    })),
+    expertise: JSON.parse(String(bot.expertise_json)), capabilities: policyTools(bot),
     ...(duties.get(String(bot.id))?.length ? { responsibilities: duties.get(String(bot.id)) } : {}),
     availability: store.get("SELECT id FROM tasks WHERE bot_id=? AND ended_at IS NULL", bot.id) ? "busy" : "ready", profile_version: bot.version, capability_version: bot.policy_version, directory_version: revision }));
 }

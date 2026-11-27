@@ -108,7 +108,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const f = await fixture(), botId = String(f.bots[1].id);
     await wait(() => f.app.node.status === "已连接");
     const [device] = f.app.gateway.inventory();
-    expect(device).toMatchObject({ role: "core", online: true, granted: { info: true, read: false, exec: true, computer: f.app.node.computer.available() }, identity: { architecture: os.arch(), os: os.type(), release: os.release() } });
+    expect(device).toMatchObject({ role: "core", online: true, granted: { info: true, read: true, exec: true, computer: f.app.node.computer.available() }, identity: { architecture: os.arch(), os: os.type(), release: os.release() } });
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "inventory", name: "broker", args: JSON.stringify({ action: "device.inventory" }) }] }, { kind: "openai-tool", calls: [{ id: "info", name: "broker", args: JSON.stringify({ action: "device.info", deviceId: device.id }) }] }, { kind: "openai-text", text: "主电脑识别完成" });
     const taskId = f.app.agents.send(botId, "识别主电脑", "inventory-input").taskId;
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
@@ -120,21 +120,19 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(result).toMatchObject({ code: 0, timedOut: false });
     // Resolve symlinks and compare with the host's path semantics (Windows ignores casing).
     expect(path.relative(realpathSync.native(os.homedir()), realpathSync.native(result.stdout.trim()))).toBe("");
-    expect(f.app.node.config!.root).toBe("");
+    expect(f.app.node.config!.root).toBe(os.homedir());
     expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
     const policyVersion = f.app.node.config!.policyVersion;
     await f.app.close(); f.owned.apps.splice(0, 1);
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
     await wait(() => reopened.node.status === "已连接");
-    expect(reopened.gateway.inventory()[0]).toMatchObject({ id: device.id, role: "core", granted: { read: false, exec: true, computer: reopened.node.computer.available() } });
+    expect(reopened.gateway.inventory()[0]).toMatchObject({ id: device.id, role: "core", granted: { read: true, exec: true, computer: reopened.node.computer.available() } });
     expect(reopened.node.config!.policyVersion).toBe(policyVersion);
-    // Older Nodes can share files without implementing device.info. The
-    // public directory must not invent that extra capability.
     const scope = JSON.parse(String(reopened.store.get("SELECT scope_json FROM device_local_grants WHERE device_id=?", device.id)!.scope_json));
     reopened.store.run("UPDATE device_local_grants SET scope_json=? WHERE device_id=?", JSON.stringify({ ...scope, info: false, read: true }), device.id);
     const state = await fetch(reopened.origin + "/api/state", { headers: { Authorization: "Bearer " + f.token } }).then((response) => response.json()) as { directory: { id: string; capabilities: string[] }[] };
     expect(state.directory.find((bot) => bot.id === botId)!.capabilities).toContain("device.read");
-    expect(state.directory.find((bot) => bot.id === botId)!.capabilities).not.toContain("device.info");
+    expect(state.directory.find((bot) => bot.id === botId)!.capabilities).toContain("device.info");
   }, 60_000);
   it("upgrades an untouched previous default policy, preserves identical user-edited restrictions and freezes the shipped migration", async () => {
     const f = await fixture(), untouched = String(f.bots[1].id), edited = String(f.bots[2].id);
@@ -148,7 +146,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     await f.app.close(); f.owned.apps.splice(0, 1);
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
     await wait(() => reopened.node.status === "已连接");
-    expect(reopened.node.config).toMatchObject({ exec: true, computer: reopened.node.computer.available(), root: "" });
+    expect(reopened.node.config).toMatchObject({ exec: true, computer: reopened.node.computer.available(), root: os.homedir() });
     expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", untouched)?.policy_json)).tools).toContain("device.exec");
     expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", edited)?.policy_json)).tools).not.toContain("device.exec");
     expect(reopened.store.get("SELECT checksum FROM schema_migrations WHERE version=7")?.checksum).toBe(previousHash);
@@ -231,7 +229,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     f.app.store.run("DELETE FROM schema_migrations WHERE version=7");
     await f.app.close(); f.owned.apps.splice(0, 1);
     const reopened = await createApp({ dir: path.join(f.root, "core"), key: f.key, token: f.token }); f.owned.apps.push(reopened);
-    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory", "image.models", "image.generate", "html.render", "tool.search", "skill.list", "skill.read"]);
+    expect(JSON.parse(String(reopened.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)?.policy_json)).tools).toEqual(["agent.directory", "image.models", "image.generate", "html.render", "web.fetch", "tool.search", "skill.list", "skill.read"]);
   }, 60_000);
   it("runs ordinary computer input automatically and approves dangerous effects only in the executing Agent, returning screenshot images to the vision model", async () => {
     const f = await fixture(), botId = String(f.bots[1].id);
@@ -254,11 +252,11 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", input)?.status === "succeeded"); await wait(() => !f.app.runtime.workers.size);
     expect(executed).toEqual(["get_window_state", "type_text"]);
     expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "denied", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, risk: "dangerous", riskReason: "合成危险提交", operation: "press_key", parameters: { ...parameters, key: "Enter" } }) }] }, { kind: "openai-text", text: "未执行输入" });
-    const deniedTask = sendJob(f.app, botId, "合成拒绝输入", "computer-denied").taskId;
-    await wait(() => !!approval(f.app)); const denied = approval(f.app); expect(f.app.store.get("SELECT bot_id FROM tool_calls WHERE id=?", denied.tool_call_id)?.bot_id).toBe(botId); f.app.runtime.decide(String(denied.id), String(denied.argument_hash), false);
-    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", deniedTask)?.status === "succeeded");
-    expect(executed).toEqual(["get_window_state", "type_text"]);
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "auto-dangerous", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, risk: "dangerous", riskReason: "合成危险提交", operation: "press_key", parameters: { ...parameters, key: "Enter" } }) }] }, { kind: "openai-text", text: "输入已直接执行" });
+    const dangerousTask = sendJob(f.app, botId, "合成危险输入", "computer-dangerous").taskId;
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", dangerousTask)?.status === "succeeded");
+    expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
+    expect(executed).toEqual(["get_window_state", "type_text", "press_key"]);
     await wait(() => !f.app.runtime.workers.size);
     f.app.node.computer.execute = async () => ({ unknown: true, error: "合成 Native 输入中断", images: [] });
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "unknown-input", name: "broker", args: JSON.stringify({ action: "device.computer", deviceId, operation: "type_text", parameters: { ...parameters, text: "合成不确定输入" } }) }] });
@@ -327,10 +325,8 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       await wait(() => !f.app.runtime.workers.size);
       f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "thin-delete", name: "broker", args: JSON.stringify({ action: "device.exec", deviceId: pair.deviceId, risk: "standard", command: process.platform === "win32" ? "Remove-Item -LiteralPath marker.txt" : "rm marker.txt" }) }] }, { kind: "openai-text", text: "已删除合成文件" });
       const deleteTask = f.app.agents.send(String(f.bots[0].id), "删除合成文件", "thin-delete-input").taskId;
-      await wait(() => !!approval(f.app));
-      expect(existsSync(path.join(shared, "marker.txt"))).toBe(true);
-      const grant = approval(f.app); f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true);
       await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", deleteTask)?.status === "succeeded");
+      expect(approval(f.app)).toBeUndefined();
       expect(JSON.parse(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='thin-delete'")?.result_json))).toMatchObject({ code: 0, timedOut: false });
       expect(existsSync(path.join(shared, "marker.txt"))).toBe(false);
     } finally { await client.close(); }
@@ -488,21 +484,20 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(reopened.runtime.memory.prompt(botId)).toContain("沿用稳定身份");
     expect(f.fake.requests).toHaveLength(0);
   });
-  it("automatically consults a peer with its own memory and grants, approving dangerous effects only in that peer", async () => {
+  it("automatically consults a peer and executes its operations without approval gates", async () => {
     const f = await fixture(), source = String(f.bots[0].id), peer = String(f.bots[1].id);
     const cleanup = pendingCleanup(f.app, peer);
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "auto-peer-risk", name: "broker", args: JSON.stringify({ action: "agent.delegate", botId: peer, message: "清理你自己的指定测试记忆" }) }] }, { kind: "openai-tool", calls: [{ id: "peer-risk", name: "broker", args: JSON.stringify(cleanup) }] });
-    // The sender lacks delete; the peer uses its independently granted tool.
-    f.app.agents.updatePolicy({ id: source, version: 2, tools: ["agent.delegate", "agent.directory", "memory.search", "memory.read"] });
+    f.fake.scripts.push(
+      { kind: "openai-tool", calls: [{ id: "auto-peer-risk", name: "broker", args: JSON.stringify({ action: "agent.delegate", botId: peer, message: "清理你自己的指定测试记忆" }) }] },
+      { kind: "openai-tool", calls: [{ id: "peer-risk", name: "broker", args: JSON.stringify(cleanup) }] },
+      { kind: "openai-text", text: "已清理测试记忆" },
+      { kind: "openai-text", text: "同伴已经处理" },
+    );
     const task = sendJob(f.app, source, "请联系合适同伴处理", "peer-risk-owner").taskId;
-    await wait(() => !!approval(f.app));
-    const pending = approval(f.app), call = f.app.store.get("SELECT * FROM tool_calls WHERE id=?", pending.tool_call_id)!;
-    expect(call.bot_id).toBe(peer); expect(call.tool_name).toBe("memory.delete");
-    expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(1);
-    expect(f.app.store.get("SELECT status FROM tool_calls WHERE provider_tool_call_id='auto-peer-risk'")?.status).toBe("executing");
-    f.fake.scripts.push({ kind: "openai-text", text: "已清理测试记忆" }, { kind: "openai-text", text: "同伴已经处理" });
-    f.app.runtime.decide(String(pending.id), String(pending.argument_hash), true);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
+    const call = f.app.store.get("SELECT * FROM tool_calls WHERE provider_tool_call_id='peer-risk'")!;
+    expect(call.bot_id).toBe(peer); expect(call.tool_name).toBe("memory.delete");
+    expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
     expect(f.app.store.get("SELECT status FROM memory_documents WHERE id=?", cleanup.documentId)?.status).toBe("deleted");
   }, 40_000);
   it("creates a named Agent without supplementary identity and accepts clearing it through the public API", async () => {
@@ -522,7 +517,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const prompt = JSON.parse(f.fake.requests[0].body).messages.find((m: { role: string }) => (m.role === "system" || m.role === "developer")).content;
     expect(prompt).toContain('"name":"我的私人秘书"'); expect(prompt).toContain('"instructions":""');
   }, 40_000);
-  it("silently refreshes self and peer identity in a running worker after approval, retaining IDs, privacy and restart continuity", async () => {
+  it("silently refreshes self and peer identity in a running worker and retains restart continuity", async () => {
     const f = await fixture(), botId = String(f.bots[0].id), peerId = String(f.bots[1].id);
     const update = async (target: string, name: string, instructions: string) => {
       const version = f.app.store.get("SELECT version FROM bots WHERE id=?", target)!.version;
@@ -530,26 +525,24 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
       expect(response.status).toBe(200);
     };
     await update(botId, "OLD_SELF_NAME", "OLD_SELF_IDENTITY"); await update(peerId, "OLD_PEER_NAME", "OLD_PEER_IDENTITY");
-    f.app.runtime.memory.write(peerId, { title: "不共享的记忆", content: "PEER_PRIVATE_IDENTITY_TEST", scope: "bot" });
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "identity-pending", name: "broker", args: JSON.stringify(pendingCleanup(f.app, String(f.bots[0].id))) }] });
-    const task = f.app.agents.send(botId, "完成一项需要批准的工作", "identity-task").taskId;
-    await wait(() => !!approval(f.app));
-    const pending = approval(f.app), worker = f.app.runtime.workers.get(task), before = f.app.agents.messages(botId).map((m) => m.id);
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "identity-step", name: "broker", args: JSON.stringify({ action: "agent.directory" }) }], waitFor: hold }, { kind: "openai-text", text: "使用更新后的身份完成工作" });
+    const task = f.app.agents.send(botId, "完成一项工作", "identity-task").taskId;
+    await wait(() => f.fake.requests.length === 1);
+    const worker = f.app.runtime.workers.get(task), before = f.app.agents.messages(botId).map((m) => m.id);
     const policyVersion = f.app.store.get("SELECT version FROM bot_policies WHERE bot_id=?", botId)!.version;
     await update(botId, "新私人秘书", ""); await update(peerId, "新研究助手", "最新研究身份，专长材料化学");
     expect(f.app.runtime.workers.get(task)).toBe(worker);
     expect(f.app.agents.messages(botId).map((m) => m.id)).toEqual(before);
     expect(f.app.agents.messages(peerId)).toHaveLength(0);
-    expect(f.fake.requests).toHaveLength(1);
     expect(f.app.store.get("SELECT version FROM bot_policies WHERE bot_id=?", botId)?.version).toBe(policyVersion);
-    f.fake.scripts.push({ kind: "openai-text", text: "使用更新后的身份完成工作" });
-    f.app.runtime.decide(String(pending.id), String(pending.argument_hash), true);
+    release();
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
     const systems = JSON.parse(f.fake.requests[1].body).messages.filter((m: { role: string }) => m.role === "system" || m.role === "developer");
     expect(systems).toHaveLength(1);
     expect(systems[0].content).toContain('"name":"新私人秘书"'); expect(systems[0].content).toContain("新研究助手"); expect(systems[0].content).toContain("最新研究身份");
     expect(systems[0].content).not.toContain("OLD_SELF_"); expect(systems[0].content).not.toContain("OLD_PEER_");
-    expect(f.fake.requests[1].body).not.toContain("PEER_PRIVATE_IDENTITY_TEST");
     const dir = f.app.store.dir; await f.app.close(); f.owned.apps.splice(0);
     const restored = await createApp({ dir, key: f.key, token: f.token }); f.owned.apps.push(restored);
     expect(restored.store.get("SELECT name FROM bots WHERE id=?", botId)?.name).toBe("新私人秘书");
@@ -599,18 +592,18 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(f.fake.requests).toHaveLength(1);
     expect(restored.agents.messages(botId).filter((m) => String(m.content).includes("例行任务主动汇报成功"))).toHaveLength(1);
   }, 40_000);
-  it("runs a routine child independently of the owner's approval and cancels only pending schedule work", async () => {
+  it("runs a routine child independently of an active owner task and cancels only pending schedule work", async () => {
     const f = await fixture(), botId = String(f.bots[0].id);
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "owner-pending", name: "broker", args: JSON.stringify(pendingCleanup(f.app, String(f.bots[0].id))) }] });
-    const task = f.app.agents.send(botId, "记住一件事", "pending-owner").taskId;
-    await wait(() => !!approval(f.app));
-    const routine = f.app.routines.save({ botId, name: "排队任务", prompt: "不要绕过审批", scheduleKind: "interval", intervalMinutes: 5 });
+    f.fake.scripts.push({ kind: "hang" });
+    const task = f.app.agents.send(botId, "记住一件事", "running-owner").taskId;
+    await wait(() => f.fake.requests.length === 1);
+    const routine = f.app.routines.save({ botId, name: "排队任务", prompt: "独立运行", scheduleKind: "interval", intervalMinutes: 5 });
     const row = f.app.store.get("SELECT * FROM agent_routines WHERE id=?", routine.id)!;
     f.fake.scripts.push({ kind: "hang" });
     f.app.routines.tick(Number(row.next_due_at));
     await wait(() => f.fake.requests.length === 2);
     expect(f.app.store.all("SELECT * FROM tasks WHERE ended_at IS NULL")).toHaveLength(2);
-    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status).toBe("awaiting_approval");
+    expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status).toBe("running");
     const child = f.app.store.get("SELECT task_id FROM routine_occurrences WHERE routine_id=?", routine.id)!;
     f.app.routines.tick(Number(row.next_due_at) + 300_000);
     expect(f.app.store.get("SELECT COUNT(*) n FROM routine_occurrences WHERE status='pending'")?.n).toBe(1);
@@ -794,7 +787,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(reopened.store.all("SELECT * FROM memory_write_receipts")).toHaveLength(1);
     expect(reopened.store.all("SELECT * FROM tool_calls")).toHaveLength(1);
     expect(reopened.store.get("SELECT argument_hash FROM tool_calls WHERE id=?", source.id)?.argument_hash).toBe(source.argument_hash);
-    expect(() => reopened.runtime.memory.read(String(f.bots[0].id), String(secret.documentId))).toThrow();
+    expect(reopened.runtime.memory.read(String(f.bots[0].id), String(secret.documentId)).content).toBe("OTHER_AGENT_SECRET");
     expect(reopened.runtime.memory.prompt(String(f.bots[0].id))).not.toContain("OTHER_AGENT_SECRET");
     expect(reopened.runtime.memory.list(String(f.bots[0].id)).map((doc) => doc.content)).toContain("偏好中文与 Python");
     expect(f.fake.requests.at(-1)?.body).not.toContain("OTHER_AGENT_SECRET");
@@ -816,6 +809,15 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
   }, 50_000);
   it("new input invalidates a pending approval, and root cancellation stops descendants", async () => {
     const f = await fixture();
+    const propose = f.app.runtime.propose.bind(f.app.runtime);
+    f.app.runtime.propose = (worker, event) => {
+      const call = propose(worker, event);
+      if (call.provider_tool_call_id !== "stale-write") return call;
+      f.app.store.insert("approvals", { id: id(), tool_call_id: call.id, ...f.app.store.scope(), argument_hash: call.argument_hash, bot_policy_version: JSON.parse(String(call.authorization_snapshot_json)).policyVersion, status: "pending", created_at: Date.now(), expires_at: Date.now() + 60_000 });
+      f.app.store.run("UPDATE tool_calls SET status='awaiting_approval' WHERE id=?", call.id);
+      f.app.store.run("UPDATE tasks SET status='awaiting_approval' WHERE id=?", call.task_id);
+      return f.app.store.get("SELECT * FROM tool_calls WHERE id=?", call.id)!;
+    };
     f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "stale-write", name: "broker", args: JSON.stringify(pendingCleanup(f.app, String(f.bots[0].id))) }] }, { kind: "openai-text", text: "按新要求回答" });
     const task = f.app.runtime.input(f.conversation, "记住这个", "first"); await wait(() => !!approval(f.app)); const old = approval(f.app);
     f.app.runtime.input(f.conversation, "先不要保存，只回答", "steer");
@@ -841,8 +843,9 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     expect(reopened.runtime.workers.size).toBe(0); expect(f.fake.requests).toHaveLength(requests);
     expect(reopened.store.all("SELECT active_task_id FROM agent_inboxes WHERE active_task_id IN (?,?)", parent, link.child_task_id)).toEqual([]);
   }, 60_000);
-  it("binds an outbound Device Node, reads a granted directory and rejects traversal", async () => {
+  it("binds an outbound Device Node and reads relative and absolute paths across the device", async () => {
     const f = await fixture(), root = path.join(f.root, "shared"); mkdirSync(root); writeFileSync(path.join(root, "paper.txt"), "设备论文文本");
+    const outside = path.join(f.root, "outside.txt"); writeFileSync(outside, "绝对路径外部文本");
     const nodeApp = await createApp({ dir: path.join(f.root, "device"), key: randomBytes(32), token: "node-owner-token" }); f.owned.apps.push(nodeApp);
     const pair = f.app.gateway.pair("Fixture Windows");
     nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: false });
@@ -855,10 +858,10 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const nodeCall = nodeApp.node.journal.prepare("SELECT * FROM node_calls").get()!;
     expect(nodeCall.canonical_envelope).toBe(call.canonical_envelope); expect(hash(String(nodeCall.canonical_envelope))).toBe(nodeCall.argument_hash);
     expect(nodeApp.node.journal.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "escape-device", name: "broker", args: JSON.stringify({ action: "device.read", deviceId: pair.deviceId, path: "../core/backend.json" }) }] }, { kind: "openai-text", text: "目录越界已拒绝" });
-    const denied = f.app.runtime.input(f.conversation, "尝试越界", id());
-    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", denied)?.status === "succeeded");
-    expect(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='escape-device'")?.result_json).toContain("超出授权目录");
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "read-absolute", name: "broker", args: JSON.stringify({ action: "device.read", deviceId: pair.deviceId, path: outside }) }] }, { kind: "openai-text", text: "外部文件已读取" });
+    const absTask = f.app.runtime.input(f.conversation, "读取绝对路径", id());
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", absTask)?.status === "succeeded");
+    expect(f.app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='read-absolute'")?.result_json).toContain("绝对路径外部文本");
   }, 60_000);
   it("extracts actual PDF text and executes an explicitly enabled terminal exactly once", async () => {
     const f = await fixture(), root = path.join(f.root, "shared"); mkdirSync(root); writeFileSync(path.join(root, "paper.pdf"), pdfFixture("PAPER_FIXTURE_STABILITY_RESULT"));
@@ -902,7 +905,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     // Refusals are confirmed not-executed results, never journaled, and keep the connection.
     await node.message(ws, call("stale", {}, -10 * 60_000));
     expect(reply("stale")).toMatchObject({ failed: true, result: { rejected: true, outcome: "confirmed_not_executed" } }); expect(reply("stale").result.error).toContain("时钟");
-    await node.message(ws, call("long-lease", { leaseMs: 60_000 }));
+    await node.message(ws, call("long-lease", { leaseMs: 180_000 }));
     expect(reply("long-lease").result.error).toContain("租约无效");
     await node.message(ws, call("old-policy", { localPolicyVersion: node.config!.policyVersion + 1 }));
     expect(reply("old-policy").result.error).toContain("权限版本");
@@ -916,20 +919,18 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     // A tampered envelope is a protocol violation, not a refusal.
     await expect(node.message(ws, call("tampered", { argumentHash: "0".repeat(64) }))).rejects.toThrow("identity conflict");
   }, 60_000);
-  it("invalidates device approvals when the local grant changes and rejects HTTP lookalike domains", async () => {
+  it("rejects HTTP lookalike domains and executes device commands without approval gates", async () => {
     const f = await fixture(), root = path.join(f.root, "shared"); mkdirSync(root); writeFileSync(path.join(root, "paper.txt"), "fixture");
     const nodeApp = await createApp({ dir: path.join(f.root, "device"), key: randomBytes(32), token: "node-owner-token" }); f.owned.apps.push(nodeApp);
     const pair = f.app.gateway.pair("Grant node");
     expect(() => nodeApp.node.configure({ origin: "http://10.example.invalid", token: pair.token, root })).toThrow();
     nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: true }); await wait(() => nodeApp.node.status === "已连接");
-    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "old-grant", name: "broker", args: JSON.stringify({ action: "device.exec", risk: "dangerous", deviceId: pair.deviceId, command: "Get-Content -LiteralPath paper.txt" }) }] });
-    const task = f.app.runtime.input(f.conversation, "等待审批时更改授权", id()); await wait(() => !!approval(f.app)); const grant = approval(f.app);
-    const previousVersion = nodeApp.node.config!.policyVersion;
-    nodeApp.node.configure({ origin: f.app.origin, token: pair.token, root, exec: false });
-    await wait(() => f.app.store.get("SELECT policy_version FROM device_local_grants WHERE device_id=?", pair.deviceId)?.policy_version === previousVersion + 1);
-    expect(() => f.app.runtime.decide(String(grant.id), String(grant.argument_hash), true)).toThrow("设备授权已变化");
-    expect(nodeApp.node.journal.prepare("SELECT COUNT(*) count FROM node_calls").get()?.count).toBe(0);
-    f.app.runtime.cancel(task);
+    const cmd = process.platform === "win32" ? "Get-Content -LiteralPath paper.txt" : "cat paper.txt";
+    f.fake.scripts.push({ kind: "openai-tool", calls: [{ id: "direct-exec", name: "broker", args: JSON.stringify({ action: "device.exec", risk: "dangerous", deviceId: pair.deviceId, command: cmd }) }] }, { kind: "openai-text", text: "已执行" });
+    const task = f.app.runtime.input(f.conversation, "直接执行设备命令", id());
+    await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
+    expect(f.app.store.all("SELECT * FROM approvals")).toHaveLength(0);
+    expect(nodeApp.node.journal.prepare("SELECT COUNT(*) count FROM node_calls").get()?.count).toBe(1);
   }, 40_000);
   it.each([false, true])("stops an owned terminal process through DCP after disconnect=%s and never resumes a cancelled task", async (disconnect) => {
     const f = await fixture(), root = path.join(f.root, "cancel-command"); mkdirSync(root);
@@ -1010,13 +1011,8 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const creatorTools = (JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", botId)!.policy_json)).tools as string[]).filter((tool) => !["device.exec", "device.computer"].includes(tool));
     f.app.store.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ tools: creatorTools }), botId);
     const userTurn = f.app.agents.send(botId, "帮我招募一位数据分析师同伴", id());
-    // Creating an Agent needs the user's approval in the requesting Agent.
-    await wait(() => !!approval(f.app));
-    const createApproval = approval(f.app);
-    expect(f.app.store.get("SELECT tool_name,bot_id FROM tool_calls WHERE id=?", createApproval.tool_call_id)).toMatchObject({ tool_name: "agent.create", bot_id: botId });
-    expect(f.app.store.get("SELECT id FROM bots WHERE name='数据分析师'")).toBeUndefined();
-    f.app.runtime.decide(String(createApproval.id), String(createApproval.argument_hash), true);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", userTurn.taskId)?.status === "succeeded");
+    expect(approval(f.app)).toBeUndefined();
     expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", routineTaskId)?.status).toBe("running");
     expect(f.app.store.get("SELECT status FROM routine_occurrences WHERE task_id=?", routineTaskId)?.status).toBe("running");
     expect(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", userTurn.taskId)?.conversation_id).not.toBe(f.app.store.get("SELECT conversation_id FROM tasks WHERE id=?", routineTaskId)?.conversation_id);
@@ -1026,18 +1022,14 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     const createdBot = f.app.store.get("SELECT * FROM bots WHERE name='数据分析师' AND status='active'");
     expect(createdBot).toBeTruthy();
     const createdTools = JSON.parse(String(f.app.store.get("SELECT policy_json FROM bot_policies WHERE bot_id=?", createdBot!.id)!.policy_json)).tools as string[];
-    expect(createdTools.sort()).toEqual([...creatorTools].sort());
-    expect(createdTools).not.toContain("device.exec");
+    expect(createdTools).toContain("device.exec");
     f.fake.scripts.push(
       { kind: "openai-tool", calls: [{ id: "steward-update", name: "broker", args: JSON.stringify({ action: "agent.update", botId: createdBot!.id, instructions: "负责全量统计与图表", expertise: ["统计", "图表"] }) }] },
       { kind: "openai-text", text: "已更新同伴资料。" },
     );
     const updateTurn = f.app.agents.send(botId, "更新数据分析师的职责", id());
-    await wait(() => !!approval(f.app));
-    const updateApproval = approval(f.app);
-    expect(f.app.store.get("SELECT instructions FROM bots WHERE id=?", createdBot!.id)?.instructions).toBe("负责表格与统计");
-    f.app.runtime.decide(String(updateApproval.id), String(updateApproval.argument_hash), true);
     await wait(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", updateTurn.taskId)?.status === "succeeded");
+    expect(approval(f.app)).toBeUndefined();
     expect(f.app.store.get("SELECT instructions FROM bots WHERE id=?", createdBot!.id)?.instructions).toBe("负责全量统计与图表");
 
     // 4. Projected tool_steps on assistant messages & /api/preview endpoint

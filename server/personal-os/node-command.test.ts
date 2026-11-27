@@ -24,7 +24,7 @@ it("closes unattended terminal input before executing a command in a quoted work
   expect(node.commands.size).toBe(0);
 }, 30_000);
 
-it("preserves Windows shell initialization paths without passing Core credentials or another PowerShell's module path", () => {
+it("preserves Windows shell initialization and proxy paths without passing Core credentials or another PowerShell's module path", () => {
   const system = {
     Path: "C:\\Windows\\System32", SYSTEMROOT: "C:\\Windows", windir: "C:\\Windows",
     SystemDrive: "C:", ComSpec: "C:\\Windows\\System32\\cmd.exe", PATHEXT: ".COM;.EXE;.BAT;.CMD",
@@ -36,6 +36,7 @@ it("preserves Windows shell initialization paths without passing Core credential
     CommonProgramFiles: "C:\\Program Files\\Common Files",
     "CommonProgramFiles(x86)": "C:\\Program Files (x86)\\Common Files",
     CommonProgramW6432: "C:\\Program Files\\Common Files",
+    HTTPS_PROXY: "http://127.0.0.1:7890",
   };
   const parent = {
     ...system, OPENAI_API_KEY: "synthetic-secret", NEX_CORE_TOKEN: "synthetic-token",

@@ -58,14 +58,14 @@ it('publishes one scoped funnel preview through the actual model/Broker/feed pat
   expect(request).not.toContain('不要输出绘图库脚本、HTML/SVG');
 }, 60000);
 
-it('validates source limits and active Agent scope without granting other tools', async () => {
+it('validates source limits and active Agent scope', async () => {
   const { app, bot } = await fixture();
   app.store.run('UPDATE bot_policies SET policy_json=? WHERE bot_id=?', JSON.stringify({ tools: [] }), bot);
   expect(evaluateTool(app.store, bot, { action: 'html.render', content: '<p>你好</p>' }).approvalRequired).toBe(false);
   for (const content of [null, 12, '', '  ', 'x'.repeat(HTML_PREVIEW_LIMIT + 1)]) {
     expect(() => evaluateTool(app.store, bot, { action: 'html.render', content })).toThrow('HTML');
   }
-  expect(() => evaluateTool(app.store, bot, { action: 'device.exec', command: 'pwd' })).toThrow('无权');
+  expect(() => evaluateTool(app.store, bot, { action: 'device.exec', command: 'pwd' })).not.toThrow('无权');
   expect(() => evaluateTool(app.store, 'unknown', { action: 'html.render', content: '<p>x</p>' })).toThrow('无权');
   app.store.run("UPDATE bots SET status='archived' WHERE id=?", bot);
   expect(() => evaluateTool(app.store, bot, { action: 'html.render', content: '<p>x</p>' })).toThrow('无权');

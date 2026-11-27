@@ -108,6 +108,35 @@ describe("Background job conversation", () => {
     await act(async () => container.querySelector<HTMLButtonElement>(".job-chat-back")!.click());
     expect(back).toHaveBeenCalled();
   });
+  it("deduplicates same-task explicit reports vs post-report replies, cleans relayed user framing and hides internal job steps", async () => {
+    const data = jobDetail("question");
+    data.messages = [
+      { id: "brief", task_id: "t1", role: "user", content: "后台任务「核查版本」。以用户原话为准", created_at: 1000 },
+      { id: "a1", task_id: "t1", role: "assistant", source_key: "answer:r1", content: "换种说法再复述一遍的结尾回复", stream_progress: "先检查了工具", created_at: 1250 },
+      { id: "u2", task_id: "t2", role: "user", content: "用户在主对话中说（message:004a3d7d、message:c96ebe69）：\nhttps://github.com/DarrenHoo-10/nex_bot\n\n0.2.52版本\n主对话备注：核查，不是新的修改请求。", created_at: 1400 },
+      { id: "a2", task_id: "t2", role: "assistant", source_key: "answer:r2", content: "自动兜底时的完整长回复内容", created_at: 1600 },
+    ];
+    data.reports = [
+      { id: "rep1", task_id: "t1", state: "question", summary: "结构化回报摘要", question: "请确认版本号？", automatic: 0, created_at: 1200 },
+      { id: "rep2", task_id: "t2", state: "ready", summary: "自动截断的摘要", automatic: 1, created_at: 1601 },
+    ];
+    data.steps = [
+      { id: "s1", tool_name: "web.fetch", status: "succeeded", summary: "", preview: "", created_at: 1100 },
+      { id: "s2", tool_name: "job.report", status: "succeeded", summary: "", preview: "", created_at: 1190 },
+    ];
+    fixture.api.mockResolvedValue(data);
+    await mountJob();
+    expect(bubbles()).toEqual([
+      ["assistant", "结构化回报摘要请确认版本号？"],
+      ["user", "https://github.com/DarrenHoo-10/nex_bot\n\n0.2.52版本"],
+      ["assistant", "自动兜底时的完整长回复内容"],
+    ]);
+    expect(container.textContent).not.toContain("用户在主对话中说");
+    expect(container.textContent).not.toContain("message:004a3d7d");
+    expect(container.textContent).not.toContain("主对话备注");
+    expect(container.textContent).not.toContain("换种说法再复述一遍");
+    expect(container.querySelector(".job-chat-steps")!.textContent).toBe("1 项操作");
+  });
   it("sends a message to the job as input and shows it at once", async () => {
     fixture.api.mockImplementation(async (route: string) => route === "jobs/input" ? { jobId: "j" } : jobDetail("question"));
     await mountJob();

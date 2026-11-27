@@ -111,7 +111,7 @@ it("purges private originals, explicit shared copies, derived sources and versio
   await drain(f.memory);
   const result = await f.memory.reflect(f.bot, "会议");
   expect(result.answers.length).toBeGreaterThan(0);
-  expect(() => f.memory.expand(f.peer, String(source.id))).toThrow();
+  expect(f.memory.expand(f.peer, String(source.id)).content).toBe("忘记测试代号雪鹭，周二开会");
   const plan = f.memory.privacy.preview(f.bot, { documentId: note.documentId });
   expect(plan.documents).toContain(shared.documentId);
   expect(() => f.memory.forget(f.bot, { documentId: note.documentId }, "stale")).toThrow("范围已变化");

@@ -34,42 +34,31 @@ async function fixture() {
   return { app, root, key, token, mcp, model, bots, api, current, setup, restart };
 }
 describe("generic MCP connectors in disposable Core", () => {
-  it.each(["http", "sse"])("discovers %s, encrypts credentials and makes one approved real worker call", async (transport) => {
+  it.each(["http", "sse"])("discovers %s, encrypts credentials and makes one real worker call without approval", async (transport) => {
     const f = await fixture(), connector = await f.setup(transport);
     expect(JSON.stringify((await f.api("state")).body)).not.toContain("synthetic-mcp-secret");
     expect(f.app.store.get("SELECT credential FROM personal_connectors")?.credential).not.toContain("synthetic-mcp-secret");
     expect((await f.api("connectors/toggle", { ...connector, enabled: false }, "invalid")).status).toBe(401);
     f.model.scripts.push({ kind: "openai-tool", calls: [{ id: "directory", name: "broker", args: JSON.stringify({ action: "connector.tools", connectorId: connector.id }) }] }, { kind: "openai-tool", calls: [{ id: "echo", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "echo", parameters: { text: "合成测试" } }) }] }, { kind: "openai-text", text: "连接器调用完成" });
     const taskId = f.app.agents.send(String(f.bots[0].id), "使用回显工具", "connector-call").taskId;
-    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
-    expect(f.mcp.calls).toHaveLength(0);
-    const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
-    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
     await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)?.status === "succeeded");
+    expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
     expect(f.mcp.calls).toEqual([{ name: "echo", arguments: { text: "合成测试" } }]);
     expect(f.mcp.credentials.every((value) => value === "Bearer synthetic-mcp-secret")).toBe(true);
     const tools = String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.tools'")?.result_json);
     expect(tools).toContain("回显测试文字"); expect(tools).toContain("private_tool");
     expect(String(f.app.store.get("SELECT result_json FROM tool_calls WHERE tool_name='connector.call'")?.result_json)).toContain("MCP 回显：合成测试");
   }, 60_000);
-  it.each(["http", "sse"])("runs %s read-only queries automatically but holds external sending", async (transport) => {
+  it.each(["http", "sse"])("runs %s read and send queries automatically without approval gates", async (transport) => {
     const f = await fixture(), connector = await f.setup(transport, "synthetic-mcp-secret");
     expect(connector.tools.find((tool) => tool.name === "read_query")?.annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
-    for (const [tool, risk] of [["read_query", undefined], ["echo", "standard"]]) {
-      f.model.scripts.push({ kind: "openai-tool", calls: [{ id: tool!, name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool, risk, parameters: { text: "只读合成数据" } }) }] }, { kind: "openai-text", text: "查询完成" });
-      const task = f.app.agents.send(String(f.bots[0].id), "读取合成数据", "read-" + tool).taskId;
+    for (const [tool, risk] of [["read_query", undefined], ["echo", "standard"], ["send_message", "standard"]]) {
+      f.model.scripts.push({ kind: "openai-tool", calls: [{ id: tool!, name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool, risk, parameters: { text: "合成数据" } }) }] }, { kind: "openai-text", text: "查询完成" });
+      const task = f.app.agents.send(String(f.bots[0].id), "处理合成数据", "call-" + tool).taskId;
       await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
       await until(() => !f.app.runtime.workers.size);
       expect(f.app.store.all("SELECT id FROM approvals")).toHaveLength(0);
     }
-    expect(f.mcp.calls).toHaveLength(2);
-    f.model.scripts.push({ kind: "openai-tool", calls: [{ id: "send", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "send_message", risk: "standard", parameters: { text: "合成发送" } }) }] }, { kind: "openai-text", text: "已发送" });
-    const task = f.app.agents.send(String(f.bots[0].id), "发送合成数据", "send-fixture").taskId;
-    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
-    expect(f.mcp.calls).toHaveLength(2);
-    const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
-    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
-    await until(() => f.app.store.get("SELECT status FROM tasks WHERE id=?", task)?.status === "succeeded");
     expect(f.mcp.calls).toHaveLength(3);
   }, 60_000);
   it("serves every agent without grants, rejects unknown tools and stale versions before dispatch", async () => {
@@ -87,8 +76,6 @@ describe("generic MCP connectors in disposable Core", () => {
     const f = await fixture(), connector = await f.setup(); f.mcp.hold(true);
     f.model.scripts.push({ kind: "openai-tool", calls: [{ id: "held", name: "broker", args: JSON.stringify({ action: "connector.call", connectorId: connector.id, connectorVersion: connector.version, tool: "echo", parameters: { text: "slow" } }) }] });
     const taskId = f.app.agents.send(String(f.bots[0].id), "等待中的连接器调用", "connector-cancel").taskId;
-    await until(() => !!f.app.store.get("SELECT id FROM approvals WHERE status='pending'"));
-    const approval = f.app.store.get("SELECT * FROM approvals WHERE status='pending'")!; f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
     await until(() => f.mcp.calls.length === 1); f.app.runtime.cancel(taskId);
     await until(() => !f.app.runtime.workers.size);
     expect(f.app.store.get("SELECT status FROM tool_calls WHERE task_id=?", taskId)?.status).toBe("unknown");

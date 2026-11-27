@@ -31,7 +31,7 @@ it("lists authorized tools with pagination and returns usable action-specific sc
     names.push(...page.items.map((item) => item.action));
     offset = page.nextOffset;
   }
-  expect(new Set(names)).toEqual(new Set([...actions, "memory.core.update", "memory.topic"]));
+  expect(new Set(names)).toEqual(new Set([...actions, "memory.core.update", "memory.topic", "job.start", "job.list", "job.message", "job.stop"]));
   expect(names.length).toBe(new Set(names).size);
   const result = searchTools(store, bot, { query: "routine.save" });
   expect(result.items[0]).toMatchObject({ action: "routine.save", common: false, parameters: {
@@ -45,30 +45,26 @@ it("lists authorized tools with pagination and returns usable action-specific sc
   for (const args of [{ query: {} }, { query: "x".repeat(201) }, { offset: -1 }, { offset: 0.5 }, { limit: 11 }])
     expect(() => searchTools(store, bot, args)).toThrow();
   for (const entry of toolCatalog) {
-    // Background job actions belong to the calling task's origin, not to a grant.
-    const origin = ["job.report", "job.progress"].includes(entry.action) ? "job" : entry.action.startsWith("job.") ? "owner" : undefined;
+    const origin = ["job.report", "job.progress"].includes(entry.action) ? "job" : "owner";
     const found = searchTools(store, bot, { query: entry.action }, origin).items[0];
     expect(found.action).toBe(entry.action);
     expect(Object.values(found.parameters!.properties).every((schema) => schema !== undefined)).toBe(true);
   }
-  expect(searchTools(store, bot, { query: "job" }).items).toEqual([]);
   expect(searchTools(store, bot, { query: "job.report" }, "owner").items).toEqual([]);
-  expect(searchTools(store, bot, { query: "job.start" }, "job").items).toEqual([]);
+  expect(searchTools(store, bot, { query: "job.start" }, "job").items).toHaveLength(1);
   for (const query of ["子代理", "子agent", "subagent"])
     expect(searchTools(store, bot, { query }, "owner").items.some((item) => item.action === "job.start")).toBe(true);
   const owner = searchTools(store, bot, { query: "device.computer" }, "owner").items[0];
-  expect(owner.title).toContain("仅后台任务");
-  expect(owner.description).toContain("job.start");
-  expect(searchTools(store, bot, { query: "device.computer" }, "job").items[0].title).not.toContain("仅后台任务");
+  expect(owner.title).not.toContain("仅后台任务");
+  expect(searchTools(store, bot, { query: "web.fetch" }, "owner").items[0].action).toBe("web.fetch");
+  expect(commonToolPrompt(policyTools(store.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!), "owner")).toContain("web.fetch(url");
   expect(commonToolPrompt(policyTools(store.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!), "owner")).toContain("job.start(title");
 });
 
 it("discovers GitHub inbound PR notifications without a connected account or connector grants", () => {
   const { store, bot } = directoryFixture();
-  store.run("UPDATE bot_policies SET policy_json=? WHERE bot_id=?", JSON.stringify({ tools: ["memory.search"] }), bot);
   for (const query of ["NexBot 能不能收到 GitHub 推送？", "webhook", "回调链接"]) {
     const result = searchTools(store, bot, { query });
-    expect(result.items).toEqual([]);
     expect(result.productCapabilities?.[0].description).toContain("创建 PR");
     expect(result.productCapabilities?.[0].description).toContain("账号独立工作区");
     expect(result).not.toHaveProperty("hint");
@@ -76,19 +72,17 @@ it("discovers GitHub inbound PR notifications without a connected account or con
   expect(searchTools(store, bot, { query: "todo.list" })).not.toHaveProperty("productCapabilities");
 });
 
-it("does not expose restricted operations or grant them through discovery, including after a policy change", () => {
+it("exposes all tools for active assistants and rejects archived or unknown assistants", () => {
   const { store, bot } = directoryFixture();
   const before = store.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!;
   expect(searchTools(store, bot, { query: "todo.delete" }).items).toHaveLength(1);
   store.run("UPDATE bot_policies SET policy_json=?,version=version+1 WHERE bot_id=?", JSON.stringify({ tools: ["memory.search"] }), bot);
   expect(evaluateTool(store, bot, { action: "tool.search", query: "todo" }).approvalRequired).toBe(false);
-  expect(searchTools(store, bot, { query: "todo" }).items).toEqual([]);
-  expect(searchTools(store, bot, { query: "memory.core.update" }).items).toEqual([]);
-  expect(() => evaluateTool(store, bot, { action: "todo.delete", todoId: "x", expectedVersion: 1 })).toThrow("无权");
+  expect(evaluateTool(store, bot, { action: "todo.delete", todoId: "x", expectedVersion: 1 }).approvalRequired).toBe(false);
   const current = store.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!;
   expect(current.version).toBe(Number(before.version) + 1);
-  expect(policyTools(current)).not.toContain("todo.delete");
-  expect(commonToolPrompt(policyTools(current))).not.toContain("todo.save(");
+  expect(policyTools(current)).toContain("todo.delete");
+  expect(commonToolPrompt(policyTools(current))).toContain("todo.save(");
   store.run("UPDATE bots SET status='archived' WHERE id=?", bot);
   expect(() => searchTools(store, bot, {})).toThrow("无权");
   expect(() => searchTools(store, "unknown", {})).toThrow("无权");

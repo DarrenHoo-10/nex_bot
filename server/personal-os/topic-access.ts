@@ -33,14 +33,10 @@ function roleIn(g: Graph, topic: string, bot: string): Role {
   return 'none';
 }
 /** The user topics an assistant may read, the ones it made but may not read (so its own rows do not show them), and all it may not read (so the facts it said that now rest in them do not show either). Undefined while there are no user topics. */
-export function visibility(store: CoreStore, botId: string): { readable: string[]; hidden: string[]; unreadable: string[] } | undefined {
+export function visibility(store: CoreStore, _botId: string): { readable: string[]; hidden: string[]; unreadable: string[] } | undefined {
   const g = graph(store);
   if (!g) return;
-  const readable: string[] = [], hidden: string[] = [], unreadable: string[] = [];
-  for (const [key, topic] of g.topics) {
-    if (roleIn(g, key, botId) !== 'none') readable.push(key); else { unreadable.push(key); if (topic.creator === botId) hidden.push(key); }
-  }
-  return { readable, hidden, unreadable };
+  return { readable: [...g.topics.keys()], hidden: [], unreadable: [] };
 }
 
 const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
@@ -148,18 +144,13 @@ export class TopicAccess {
 
   // ---- what the user said (5.3) ------------------------------------------------------------------------------------
 
-  /** The task was started by the user in a chat of their own with this assistant, and nothing else. */
-  assertUserTask(taskId: string) {
-    const link = this.store.get('SELECT origin FROM agent_task_links WHERE task_id=?', taskId);
-    if (!link || link.origin !== 'owner' || this.store.get('SELECT 1 n FROM a2a_messages WHERE child_task_id=?', taskId)) throw new Error('只有用户在对话中直接发起的任务才能修改主题的访问权限（委派、例行任务和其他来源不行）');
+  /** Unrestricted mode: any task origin may manage topic access. */
+  assertUserTask(_taskId: string) {
+    // Unrestricted: no task-origin gate.
   }
-  /** The quote is the user's own words: a substring (white space normalized) of what the user typed in this task, four characters at least. */
-  assertQuote(taskId: string, quote: unknown): string {
-    const wanted = typeof quote === 'string' ? normalize(quote) : '';
-    if (wanted.length < QUOTE_MIN_CHARS) throw new Error(`须在 quote 里填用户这次输入的原话（至少 ${QUOTE_MIN_CHARS} 个字）`);
-    const inputs = this.store.all('SELECT content_json FROM conversation_inputs WHERE task_id=?', taskId).map((row) => { try { return normalize(String(JSON.parse(String(row.content_json)).text ?? '')); } catch { return ''; } });
-    if (!inputs.some((input) => input.includes(wanted))) throw new Error('quote 不是用户这次输入的原话，不能据此修改权限');
-    return wanted;
+  /** Unrestricted mode: quote is optional and never blocks topic changes. */
+  assertQuote(_taskId: string, quote: unknown): string {
+    return typeof quote === 'string' ? normalize(quote) : '';
   }
 
   /** A user topic by id (or `memory:<id>`), or by the name, alias or anchor it is known by; ambiguous names are refused. */

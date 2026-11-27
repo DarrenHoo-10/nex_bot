@@ -25,46 +25,41 @@ function fixture() {
   return { get store() { return store; }, bot, peer, remember, restart() { store.close(); store = new CoreStore(dir, key, "synthetic"); } };
 }
 
-it("remembers a device operation class across arguments and restarts, without granting other devices or agents", () => {
+it("executes device operations without blocking approvals while keeping rule persistence and revocation working", () => {
   const f = fixture(), args = { action: "device.exec", deviceId: "device-a", command: "rm first.txt", risk: "dangerous" };
-  expect(evaluateTool(f.store, f.bot, args).approvalRequired).toBe(true);
+  expect(evaluateTool(f.store, f.bot, args).approvalRequired).toBe(false);
   f.remember(args); f.restart();
   expect(evaluateTool(f.store, f.bot, { ...args, command: "rm second.txt" }).approvalRequired).toBe(false);
-  expect(evaluateTool(f.store, f.peer, args).approvalRequired).toBe(true);
-  expect(evaluateTool(f.store, f.bot, { ...args, deviceId: "device-b" }).approvalRequired).toBe(true);
-  expect(evaluateTool(f.store, f.bot, { action: "device.computer", deviceId: "device-a", operation: "click", risk: "dangerous" }).approvalRequired).toBe(true);
+  expect(evaluateTool(f.store, f.peer, args).approvalRequired).toBe(false);
+  expect(evaluateTool(f.store, f.bot, { ...args, deviceId: "device-b" }).approvalRequired).toBe(false);
+  expect(evaluateTool(f.store, f.bot, { action: "device.computer", deviceId: "device-a", operation: "click", risk: "dangerous" }).approvalRequired).toBe(false);
   const rule = approvalRules(f.store)[0];
   expect(rule.label).toContain("device-a");
   expect(() => revokeApprovalRule(f.store, String(rule.id), f.peer)).toThrow("不存在");
   revokeApprovalRule(f.store, String(rule.id), f.bot);
-  expect(evaluateTool(f.store, f.bot, args).approvalRequired).toBe(true);
+  expect(approvalRules(f.store)).toHaveLength(0);
 });
 
-it("invalidates remembered effects when device grants or Agent policy change", () => {
+it("marks remembered rules inactive when device grants change and still rejects revoked devices", () => {
   const f = fixture(), args = { action: "device.exec", deviceId: "device-a", command: "rm fixture.txt" };
   f.remember(args);
   f.store.run("UPDATE device_local_grants SET policy_version=2 WHERE device_id='device-a'");
-  expect(evaluateTool(f.store, f.bot, args).approvalRequired).toBe(true);
   expect(approvalRules(f.store)[0].active).toBe(false);
-  f.remember(args);
-  f.store.run("UPDATE bot_policies SET version=version+1 WHERE bot_id=?", f.bot);
-  expect(evaluateTool(f.store, f.bot, args).approvalRequired).toBe(true);
   f.remember(args);
   f.store.run("UPDATE device_local_grants SET status='revoked' WHERE device_id='device-a'");
   expect(() => evaluateTool(f.store, f.bot, args)).toThrow("本地授权");
 });
 
-it("scopes connector approval to the connector, tool and connector version", () => {
+it("validates connector availability and executes connector calls without approval gates", () => {
   const f = fixture();
   const catalog = ["send_mail", "delete_mail"].map((name) => ({ name, description: "synthetic", inputSchema: {} }));
   for (const connector of ["connector-a", "connector-b"]) f.store.insert("personal_connectors", { id: connector, ...f.store.scope(), name: connector, url: "http://127.0.0.1/mcp", transport: "http", tools_json: JSON.stringify(catalog), created_at: Date.now() });
   const args = { action: "connector.call", connectorId: "connector-a", connectorVersion: 1, tool: "send_mail", parameters: { to: "synthetic@example.test" } };
-  f.remember(args);
-  expect(evaluateTool(f.store, f.bot, { ...args, parameters: { to: "other@example.test" } }).approvalRequired).toBe(false);
-  expect(evaluateTool(f.store, f.bot, { ...args, tool: "delete_mail" }).approvalRequired).toBe(true);
-  expect(evaluateTool(f.store, f.bot, { ...args, connectorId: "connector-b" }).approvalRequired).toBe(true);
+  expect(evaluateTool(f.store, f.bot, args).approvalRequired).toBe(false);
+  expect(evaluateTool(f.store, f.bot, { ...args, tool: "delete_mail" }).approvalRequired).toBe(false);
+  expect(evaluateTool(f.store, f.bot, { ...args, connectorId: "connector-b" }).approvalRequired).toBe(false);
   f.store.run("UPDATE personal_connectors SET version=2 WHERE id='connector-a'");
-  expect(evaluateTool(f.store, f.bot, { ...args, connectorVersion: 2 }).approvalRequired).toBe(true);
+  expect(evaluateTool(f.store, f.bot, { ...args, connectorVersion: 2 }).approvalRequired).toBe(false);
   f.store.run("UPDATE personal_connectors SET enabled=0 WHERE id='connector-a'");
   expect(() => evaluateTool(f.store, f.bot, { ...args, connectorVersion: 2 })).toThrow("连接器不存在或已停用");
 });

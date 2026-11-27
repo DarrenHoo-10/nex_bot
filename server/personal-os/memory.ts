@@ -26,12 +26,12 @@ export class MemoryModule {
     for (const plan of replayed) for (const bank of plan.banks) if (store.get("SELECT id FROM memory_bank_bindings WHERE id=?", bank)) this.ledger.invalidate(bank);
     for (const rule of store.all("SELECT plan_json FROM memory_forget_rules WHERE status='cleaning'")) for (const bank of (JSON.parse(String(rule.plan_json)) as ForgetPlan).banks) if (store.get("SELECT state FROM memory_bank_bindings WHERE id=?", bank)?.state === "ready") this.ledger.invalidate(bank);
   }
-  list(botId: string): Row[] {
-    return this.store.all("SELECT d.id,d.title,d.scope,d.bot_id,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status='active' AND (d.scope='workspace' OR d.bot_id=?) ORDER BY d.updated_at DESC LIMIT 50", this.store.workspace, this.store.owner, botId);
+  list(_botId: string): Row[] {
+    return this.store.all("SELECT d.id,d.title,d.scope,d.bot_id,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.workspace_id=? AND d.owner_user_id=? AND d.status='active' ORDER BY d.updated_at DESC LIMIT 50", this.store.workspace, this.store.owner);
   }
-  read(botId: string, documentId: string) {
-    const row = this.store.get("SELECT d.id,d.title,d.scope,d.bot_id,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.id=? AND d.workspace_id=? AND d.owner_user_id=? AND d.status='active' AND (d.scope='workspace' OR d.bot_id=?)", documentId, this.store.workspace, this.store.owner, botId);
-    if (!row) throw new Error("记忆不存在或不属于该 Agent / 共享工作区");
+  read(_botId: string, documentId: string) {
+    const row = this.store.get("SELECT d.id,d.title,d.scope,d.bot_id,d.version,c.content FROM memory_documents d JOIN memory_content c ON c.document_id=d.id WHERE d.id=? AND d.workspace_id=? AND d.owner_user_id=? AND d.status='active'", documentId, this.store.workspace, this.store.owner);
+    if (!row) throw new Error("记忆不存在");
     return row;
   }
   /** Documents matching a query, best first: those of a hybrid retrieval the caller already made, else BM25. */
@@ -67,7 +67,7 @@ export class MemoryModule {
         if (receipt) return { documentId: receipt.memory_document_id, version: receipt.committed_version, saved: true };
       }
       const old = this.store.get("SELECT * FROM memory_documents WHERE id=?", documentId);
-      if (old && (old.status !== "active" || old.scope !== scope || (scope === "bot" && old.bot_id !== botId))) throw new Error("禁止修改其他 Agent 的记忆或更换记忆范围");
+      if (old && old.status !== "active") throw new Error("记忆已删除");
       if (Number(old?.version ?? 0) !== expectedVersion) throw new Error("记忆已被更新，请重新读取后提交");
       const contentHash = hash(content), storageKey = `memory/${documentId}`;
       if (!old) this.store.insert("memory_documents", { id: documentId, ...this.store.scope(), scope, bot_id: scope === "bot" ? botId : null, title, storage_key: storageKey, content_hash: contentHash, source_json: JSON.stringify({ actor: callId ? "agent" : "owner", callId: callId ?? null }), status: "active", created_at: now(), updated_at: now() });
@@ -128,7 +128,7 @@ export class MemoryModule {
   expand(botId: string, ref: string) {
     if(ref.startsWith('message:')) return {ref,sourceClass:'original',content:this.personal.source(botId,ref.slice(8)).content};
     if(ref.startsWith('episode:')) return {ref,sourceClass:'synthesized',content:this.personal.source(botId,ref).content};
-    const source = this.store.get("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.id=? AND s.status='active' AND (b.bot_id=? OR b.scope='workspace')", ref, botId);
+    const source = this.store.get("SELECT s.* FROM memory_source_registry s JOIN memory_bank_bindings b ON b.id=s.bank_id WHERE s.id=? AND s.status='active'", ref);
     if (!source) throw new Error("来源已撤回或不可见");
     const payload = this.ledger.source(source); if (!payload) throw new Error("来源已变化");
     return { ref, sourceClass: source.source_class, content: payload.content, contentHash: source.content_hash };

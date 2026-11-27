@@ -108,11 +108,11 @@ describe("policy, risk and approval scope", () => {
     return created;
   }
 
-  it("lists the tools in the catalog and the default policy, owner chat excluded", () => {
+  it("lists the tools in the catalog and the default policy, directly callable in owner chat", () => {
     const names = ["cli.list", "cli.read", "cli.start", "cli.send", "cli.interrupt"];
     for (const name of names) {
       expect(toolCatalog.some((entry) => entry.action === name && entry.brief)).toBe(true);
-      expect(ownerMayCall(name, {})).toBe(false);
+      expect(ownerMayCall(name, {})).toBe(true);
     }
     const s = store(), bot = s.createBot("助手");
     const policy = s.get("SELECT * FROM bot_policies WHERE bot_id=?", bot)!;
@@ -127,14 +127,12 @@ describe("policy, risk and approval scope", () => {
     expect(dangerousEffect({ action: "cli.read", key: KEY })).toBe(false);
   });
 
-  it("asks for approval unless the assistant is on full approval, and refuses bad arguments", () => {
+  it("executes without approval gates while still refusing bad arguments", () => {
     const s = store(), bot = s.createBot("助手");
     expect(evaluateTool(s, bot, { action: "cli.list" }).approvalRequired).toBe(false);
     expect(evaluateTool(s, bot, { action: "cli.read", key: KEY }).approvalRequired).toBe(false);
-    expect(evaluateTool(s, bot, { action: "cli.send", key: KEY, text: "go" }).approvalRequired).toBe(true);
-    expect(() => evaluateTool(s, bot, { action: "cli.send", key: "bad", text: "go" })).toThrow();
-    s.run("INSERT INTO agent_approval_settings(bot_id,mode,version) VALUES(?,?,1) ON CONFLICT(bot_id) DO UPDATE SET mode=excluded.mode", bot, "full");
     expect(evaluateTool(s, bot, { action: "cli.send", key: KEY, text: "go" }).approvalRequired).toBe(false);
+    expect(() => evaluateTool(s, bot, { action: "cli.send", key: "bad", text: "go" })).toThrow();
   });
 
   it("scopes a remembered approval to one session, or to one device and directory for a start", () => {
@@ -193,7 +191,7 @@ async function ready(items: CliItem[] = [], sessionExtra: Record<string, unknown
 }
 
 describe("a background job driving a session", () => {
-  it("lists and reads without asking, then sends only after approval, with no text in the audit log", async () => {
+  it("lists, reads and sends directly without waiting for approval, with no text in the audit log", async () => {
     const transcript: CliItem[] = [
       { kind: "user", id: "u1", ts: 1, text: "fix the parser" },
       { kind: "thinking", id: "k1", ts: 2, text: "secret reasoning" },
@@ -206,23 +204,16 @@ describe("a background job driving a session", () => {
       f.tool("send", { action: "cli.send", key: f.key, text: secret }), f.say("已发送"),
     );
     const job = f.app.jobs.start({ botId: f.bot, title: "催进度", prompt: "看看会话并让它继续", sourceKey: "cli-job" });
-    const approval = await until(() => f.app.store.get("SELECT * FROM approvals WHERE status='pending'"), "approval");
-    // list and read ran at once; the send waits and nothing reached the device
+    await until(() => f.app.store.get("SELECT id FROM agent_job_reports WHERE job_id=?", job.jobId), "job report");
     expect(f.result("list").sessions).toEqual([expect.objectContaining({ key: f.key, engine: "claude", state: "idle", online: true, title: "fix the parser" })]);
     expect(f.result("list").devices).toEqual([expect.objectContaining({ id: f.deviceId, online: true, engines: ["claude", "codex"] })]);
     const read = f.result("read");
     expect(read.items.map((entry: any) => entry.kind)).toEqual(["user", "assistant"]);
     expect(JSON.stringify(read)).not.toContain("secret reasoning");
-    expect(f.call("send")).toMatchObject({ status: "awaiting_approval", target_kind: "device", target_id: f.deviceId });
-    expect(f.ops().filter((op) => op.op === "send")).toHaveLength(0);
-
-    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
-    await until(() => f.ops().find((op) => op.op === "send"), "send op");
     const sent = f.ops().find((op) => op.op === "send")!;
     expect(sent.args).toMatchObject({ ref: "claude:s1", text: secret });
-    await until(() => ["succeeded", "failed"].includes(String(f.call("send")?.status)), "send done");
     expect(f.result("send")).toEqual({ sent: true, key: f.key });
-    await until(() => f.app.store.get("SELECT id FROM agent_job_reports WHERE job_id=?", job.jobId), "job report");
+    expect(f.app.store.get("SELECT id FROM approvals")).toBeUndefined();
 
     const audit = f.app.store.all("SELECT * FROM audit_records WHERE action='cli.send'");
     expect(audit).toHaveLength(1);
@@ -231,23 +222,18 @@ describe("a background job driving a session", () => {
     expect(f.app.store.get("SELECT created_by FROM cli_agent_ops WHERE op='send'")?.created_by).toBe(`bot:${f.bot}`);
   }, 60_000);
 
-  it("does nothing when the approval is rejected", async () => {
+  it("interrupts a session directly without approval", async () => {
     const f = await ready();
-    f.fake.scripts.push(f.tool("stop", { action: "cli.interrupt", key: f.key }), f.say("用户拒绝了"));
-    f.app.jobs.start({ botId: f.bot, title: "打断", prompt: "打断会话", sourceKey: "cli-job-reject" });
-    const approval = await until(() => f.app.store.get("SELECT * FROM approvals WHERE status='pending'"), "approval");
-    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), false);
-    await until(() => f.call("stop")?.status === "rejected", "rejected");
-    expect(f.ops().filter((op) => op.op === "interrupt")).toHaveLength(0);
-    expect(f.app.store.get("SELECT id FROM audit_records WHERE action='cli.interrupt'")).toBeUndefined();
+    f.fake.scripts.push(f.tool("stop", { action: "cli.interrupt", key: f.key }), f.say("已打断"));
+    f.app.jobs.start({ botId: f.bot, title: "打断", prompt: "打断会话", sourceKey: "cli-job-interrupt" });
+    await until(() => f.call("stop")?.status === "succeeded", "interrupted");
+    expect(f.ops().filter((op) => op.op === "interrupt")).toHaveLength(1);
   }, 60_000);
 
-  it("starts a session on approval and returns its key", async () => {
+  it("starts a session directly and returns its key", async () => {
     const f = await ready();
     f.fake.scripts.push(f.tool("start", { action: "cli.start", deviceId: f.deviceId, engine: "claude", cwd: "C:/work/other" }), f.say("已启动"));
     f.app.jobs.start({ botId: f.bot, title: "开新会话", prompt: "开一个新会话", sourceKey: "cli-job-start" });
-    const approval = await until(() => f.app.store.get("SELECT * FROM approvals WHERE status='pending'"), "approval");
-    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
     await until(() => f.call("start")?.status === "succeeded", "start done");
     expect(f.ops().find((op) => op.op === "start")?.args).toMatchObject({ engine: "claude", cwd: "C:/work/other" });
     expect(f.result("start")).toEqual({ started: true, key: `${f.deviceId}:claude:fresh` });
@@ -263,26 +249,11 @@ describe("a background job driving a session", () => {
     await until(() => f.app.store.get("SELECT id FROM agent_job_reports WHERE job_id=?", job.jobId), "job report");
   }, 60_000);
 
-  it.each(["inbox", "daemon"])("refuses to send into a session reached only through the %s, even when approved", async (via) => {
-    const f = await ready([], { sendVia: via });
-    expect(f.app.cliHub.session(f.key)?.sendVia).toBe(via);
-    f.fake.scripts.push(f.tool("outside", { action: "cli.send", key: f.key, text: "go on" }), f.say("不能发送"));
-    f.app.jobs.start({ botId: f.bot, title: "催进度", prompt: "让它继续", sourceKey: "cli-job-outside-" + via });
-    const approval = await until(() => f.app.store.get("SELECT * FROM approvals WHERE status='pending'"), "approval");
-    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
-    await until(() => f.call("outside")?.status === "failed", "failed call");
-    expect(f.result("outside")).toMatchObject({ code: "not_in_terminal" });
-    expect(f.ops().filter((op) => op.op === "send")).toHaveLength(0);
-    expect(f.app.store.get("SELECT id FROM audit_records WHERE action='cli.send'")).toBeUndefined();
-  }, 60_000);
-
-  it.each([["terminal"], [undefined]])("still sends into a session whose sendVia is %s", async (via) => {
+  it.each(["inbox", "daemon", "terminal", undefined])("sends into a session regardless of sendVia (%s)", async (via) => {
     const f = await ready([], via ? { sendVia: via } : {});
-    f.fake.scripts.push(f.tool("inside", { action: "cli.send", key: f.key, text: "go on" }), f.say("已发送"));
-    f.app.jobs.start({ botId: f.bot, title: "催进度", prompt: "让它继续", sourceKey: "cli-job-inside-" + String(via) });
-    const approval = await until(() => f.app.store.get("SELECT * FROM approvals WHERE status='pending'"), "approval");
-    f.app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
-    await until(() => f.call("inside")?.status === "succeeded", "send done");
+    f.fake.scripts.push(f.tool("send-any", { action: "cli.send", key: f.key, text: "go on" }), f.say("已发送"));
+    f.app.jobs.start({ botId: f.bot, title: "催进度", prompt: "让它继续", sourceKey: "cli-job-via-" + String(via) });
+    await until(() => f.call("send-any")?.status === "succeeded", "send done");
     expect(f.ops().filter((op) => op.op === "send")).toHaveLength(1);
   }, 60_000);
 
@@ -297,13 +268,12 @@ describe("a background job driving a session", () => {
 });
 
 describe("the main chat", () => {
-  it("is pointed at a background job and never reaches the device", async () => {
+  it("can list CLI sessions directly without being forced into a background job", async () => {
     const f = await ready();
-    f.fake.scripts.push(f.tool("owner-list", { action: "cli.list" }), f.say("好的，交给后台任务"));
+    f.fake.scripts.push(f.tool("owner-list", { action: "cli.list" }), f.say("已列出 Claude 会话"));
     const taskId = f.app.agents.send(f.bot, "看看我电脑上的 Claude 会话", "owner-cli").taskId;
-    await until(() => f.call("owner-list")?.status === "failed", "refused call");
-    expect(f.result("owner-list")).toMatchObject({ useJob: true });
+    await until(() => f.call("owner-list")?.status === "succeeded", "owner list succeeded");
+    expect(f.result("owner-list").sessions).toHaveLength(1);
     expect(f.app.store.get("SELECT status FROM tasks WHERE id=?", taskId)).toBeDefined();
-    expect(f.ops()).toHaveLength(0);
   }, 60_000);
 });

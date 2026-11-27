@@ -220,35 +220,23 @@ describe('Background jobs in disposable Core fixtures', () => {
     for (const [index, lane] of lanes.entries()) for (const other of [0, 1, 2, 3].filter(n => n !== index)) expect(lane.requests[0].body).not.toContain('第 ' + other + ' 项');
   }, 60_000);
 
-  it('refuses long tools in the main chat with useJob, keeps topic questions there and runs them inside a job', async () => {
+  it('allows direct execution of tools in the main chat and inside a job without owner refusal', async () => {
     const f = await fixture(), { app, bot, model } = f, peer = app.store.createBot('合成同伴');
-    const device = app.gateway.pair('合成电脑').deviceId;
-    app.store.run("INSERT INTO device_local_grants(device_id,local_grant_id,workspace_id,owner_user_id,policy_version,scope_json,status,reported_at) VALUES(?,'shared',?,?,1,?,'active',?)", device, app.store.workspace, app.store.owner, JSON.stringify({ root: 'shared', info: true, read: true, exec: true, computer: true, identity: { supported: ['device.computer'] } }), Date.now());
     model.main.scripts.push({ kind: 'openai-tool', calls: [
-      { id: 'owner-computer', name: 'broker', args: JSON.stringify({ action: 'device.computer', deviceId: device, operation: 'click', parameters: { x: 1, y: 1 } }) },
-      { id: 'owner-image', name: 'broker', args: JSON.stringify({ action: 'image.generate', prompt: '一只鸟' }) },
       { id: 'owner-delegate', name: 'broker', args: JSON.stringify({ action: 'agent.delegate', botId: peer, message: '帮我查资料' }) },
-      { id: 'owner-topic', name: 'broker', args: JSON.stringify({ action: 'agent.delegate', botId: peer, message: '那个项目怎么部署', topic: 'memory:missing-topic' }) },
-    ] }, say('我会交给后台任务'));
-    const owner = app.agents.send(bot, '点一下、画张图、问问同伴', 'owner-refused').taskId;
+    ] }, say('同伴直接回复的结果'), say('已完成主对话委派'));
+    const owner = app.agents.send(bot, '问问同伴', 'owner-direct').taskId;
     await wait(() => task(app, owner).status === 'succeeded' && idle(app), () => app);
-    const calls = Object.fromEntries(app.store.all('SELECT provider_tool_call_id,status,result_json FROM tool_calls WHERE task_id=?', owner).map(call => [call.provider_tool_call_id, call]));
-    for (const id of ['owner-computer', 'owner-image', 'owner-delegate']) {
-      expect(calls[id].status).toBe('failed');
-      expect(JSON.parse(String(calls[id].result_json))).toEqual({ error: '主对话不直接执行此操作，请用 job.start 交给后台任务', useJob: true });
-    }
-    // The topic question is evaluated as before (here it names no topic the peer looks after).
-    expect(JSON.parse(String(calls['owner-topic'].result_json)).useJob).toBeUndefined();
+    const call = app.store.get("SELECT status,result_json FROM tool_calls WHERE provider_tool_call_id='owner-delegate'")!;
+    expect(call.status).toBe('succeeded');
+    expect(JSON.parse(String(call.result_json)).useJob).toBeUndefined();
     expect(app.store.all('SELECT * FROM approvals')).toHaveLength(0);
-    expect(app.store.all('SELECT * FROM device_calls')).toHaveLength(0);
-    expect(app.store.all('SELECT * FROM a2a_messages')).toHaveLength(0);
-    expect(model.main.requests[0].body).toContain('仅后台任务可用');
     // Inside a job the same delegation runs, and waits for the peer synchronously.
     await model.lane('请同伴协助', tool('job-delegate', { action: 'agent.delegate', botId: peer, message: '请整理合成资料' }), say('已拿到同伴的整理结果'));
     model.main.scripts.push(say('同伴的合成资料'));
     const job = app.jobs.start({ botId: bot, title: '请同伴协助', prompt: '请同伴整理资料', sourceKey: 'job-delegate' });
     await wait(() => reportMessages(app, job.jobId).length === 1 && idle(app), () => app);
-    const link = app.store.get('SELECT * FROM a2a_messages')!;
+    const link = app.store.all('SELECT * FROM a2a_messages ORDER BY created_at DESC')[0]!;
     expect(link).toMatchObject({ parent_task_id: job.taskId, status: 'succeeded' });
     expect(reportMessages(app, job.jobId)[0].content).toContain('已拿到同伴的整理结果');
     expect(app.agents.messages(bot).some(message => String(message.source_key).startsWith('a2a-'))).toBe(false);
@@ -303,13 +291,15 @@ describe('Background jobs in disposable Core fixtures', () => {
     await wait(() => lane.requests.length === 1, () => app);
     expect((await f.request('jobs/input', { jobId: job.jobId, text: '顺便整理图片', clientId: 'steer-1' })).status).toBe(202);
     expect(app.store.all('SELECT * FROM conversation_inputs WHERE task_id=?', job.taskId)).toHaveLength(2);
-    model.main.scripts.push(tool('hand-over', { action: 'job.message', jobId: job.jobId, text: '用户要求改成 PDF' }), say('已转交给后台'));
+    const direct = app.agents.messages(bot).find(message => message.source_key === `job-input:${job.jobId}:steer-1`)!;
+    model.main.scripts.push(tool('hand-over', { action: 'job.message', jobId: job.jobId, sources: [`message:${direct.id}`], text: '用户要求改成 PDF' }), say('已转交给后台'));
     const owner = app.agents.send(bot, '刚才那个改成 PDF', 'hand-over-input').taskId;
     await wait(() => task(app, owner).status === 'succeeded', () => app);
     const inputs = app.store.all('SELECT content_json FROM conversation_inputs WHERE task_id=? ORDER BY input_seq', job.taskId).map(row => JSON.parse(String(row.content_json)).text as string);
     expect(inputs).toHaveLength(3);
     const source = app.store.get("SELECT id FROM agent_messages WHERE task_id=? AND role='user'", owner)!;
     expect(inputs[2]).toContain(`用户在主对话中说（message:${source.id}）：`);
+    expect(inputs[2]).not.toContain(`message:${direct.id}`);
     expect(inputs[2]).toContain('刚才那个改成 PDF'); expect(inputs[2]).toContain('主对话备注：用户要求改成 PDF');
     expect(app.agents.messages(bot).filter(message => message.role === 'user').map(message => message.content)).toEqual(['顺便整理图片', '刚才那个改成 PDF']);
     expect((await f.request('jobs/stop', { jobId: job.jobId }, false)).status).toBe(401);
@@ -336,20 +326,13 @@ describe('Background jobs in disposable Core fixtures', () => {
     expect([view(app, question.jobId).stage, view(app, busy.jobId).stage, view(app, finished.jobId).stage]).toEqual(['stopped', 'stopped', 'done']);
   }, 60_000);
 
-  it('asks for approval inside a job, keeps it through main-chat input and continues once approved', async () => {
+  it('executes memory deletion inside a job directly without blocking on approvals', async () => {
     const f = await fixture(), { app, bot, model } = f;
-    const doc = app.runtime.memory.write(bot, { title: '合成待清理记忆', content: '用于验证后台审批' });
-    const lane = await model.lane('清理记忆', tool('job-delete', { action: 'memory.delete', documentId: doc.documentId, expectedVersion: doc.version }));
+    const doc = app.runtime.memory.write(bot, { title: '合成待清理记忆', content: '用于验证后台免审批执行' });
+    await model.lane('清理记忆', tool('job-delete', { action: 'memory.delete', documentId: doc.documentId, expectedVersion: doc.version }), say('已清理'));
     const job = app.jobs.start({ botId: bot, title: '清理记忆', prompt: '清理指定记忆', sourceKey: 'approval-job' });
-    await wait(() => !!app.store.get("SELECT id FROM approvals WHERE status='pending'"), () => app);
-    expect(view(app, job.jobId).stage).toBe('approval');
-    model.main.scripts.push(say('主对话照常回答'));
-    const owner = app.agents.send(bot, '今天天气怎么样', 'during-approval').taskId;
-    await wait(() => task(app, owner).status === 'succeeded', () => app);
-    const approval = app.store.get("SELECT * FROM approvals WHERE status='pending'")!;
-    lane.scripts.push(say('已清理'));
-    app.runtime.decide(String(approval.id), String(approval.argument_hash), true);
     await wait(() => reportMessages(app, job.jobId).length === 1 && idle(app), () => app);
+    expect(app.store.all("SELECT id FROM approvals")).toHaveLength(0);
     expect(app.store.get('SELECT status FROM memory_documents WHERE id=?', doc.documentId)?.status).toBe('deleted');
   }, 60_000);
 
@@ -583,18 +566,11 @@ describe('Background jobs: review fixes', () => {
     expect(app.todos.get(other.id).log).toContain('继续执行');
   }, 60_000);
 
-  it('keeps only a short topic question in the main chat', async () => {
+  it('allows any delegation directly in the main chat', async () => {
     expect(ownerMayCall('agent.delegate', { botId: 'b', message: '那个项目怎么部署？', topic: 'memory:x' })).toBe(true);
-    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '整'.repeat(301), topic: 'memory:x' })).toBe(false);
-    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '帮我查资料' })).toBe(false);
-    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '问题', topic: 42 })).toBe(false);
+    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '整'.repeat(301), topic: 'memory:x' })).toBe(true);
+    expect(ownerMayCall('agent.delegate', { botId: 'b', message: '帮我查资料' })).toBe(true);
     expect(ownerMayCall('memory.search', { query: 'x' })).toBe(true);
-    const f = await fixture(), { app, bot, model } = f, peer = app.store.createBot('主题负责人');
-    model.main.scripts.push(tool('long-topic', { action: 'agent.delegate', botId: peer, message: '请完整整理这个项目：' + '步骤'.repeat(200), topic: 'memory:missing-topic' }), say('交给后台'));
-    const owner = app.agents.send(bot, '把项目整理一遍', 'long-topic').taskId;
-    await wait(() => task(app, owner).status === 'succeeded' && idle(app), () => app);
-    expect(JSON.parse(String(app.store.get("SELECT result_json FROM tool_calls WHERE provider_tool_call_id='long-topic'")!.result_json))).toMatchObject({ useJob: true });
-    expect(app.store.all('SELECT * FROM a2a_messages')).toHaveLength(0);
   }, 60_000);
 
   it('lists jobs and builds the main chat\'s job context with a fixed number of queries', async () => {

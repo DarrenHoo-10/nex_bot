@@ -40,24 +40,26 @@ export class RoutineModule {
       const receipt = this.store.get("SELECT * FROM routine_tool_receipts WHERE call_id=?", call.id);
       if (receipt) {
         if (receipt.argument_hash !== call.argument_hash) throw new Error("例行任务调用身份冲突");
-        if (call.tool_name === "routine.list") return { routines: this.list().filter((r) => r.bot_id === botId) };
+        if (call.tool_name === "routine.list") return { routines: this.list() };
         const saved = JSON.parse(String(receipt.result_json));
         if (saved.routine && this.store.get("SELECT id FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=? AND deleted_at IS NOT NULL", saved.routine.id)) throw new Error("例行任务已删除");
         return saved;
       }
       let value: unknown;
-      if (call.tool_name === "routine.list") value = { routines: this.list().filter((r) => r.bot_id === botId) };
+      if (call.tool_name === "routine.list") value = { routines: this.list() };
       else if (call.tool_name === "routine.save") {
         let runAt = args.runAt;
         if (args.delaySeconds !== undefined) {
           if (!Number.isSafeInteger(args.delaySeconds) || Number(args.delaySeconds) < 1 || Number(args.delaySeconds) > 365 * 86400 || args.runAt !== undefined) throw new Error("延迟须为 1 秒至 365 天，并且不能同时指定绝对时间");
           runAt = now() + Number(args.delaySeconds) * 1000;
         }
-        const configured = this.save({ ...args, botId, id: args.routineId ?? `tool:${call.id}`, version: args.expectedVersion, runAt });
+        const existing = typeof args.routineId === "string" ? this.store.get("SELECT bot_id FROM agent_routines WHERE id=?", text(args.routineId, 100)) : undefined;
+        const targetBotId = typeof args.botId === "string" && args.botId.trim() ? text(args.botId, 100) : existing ? String(existing.bot_id) : botId;
+        const configured = this.save({ ...args, botId: targetBotId, id: args.routineId ?? `tool:${call.id}`, version: args.expectedVersion, runAt });
         value = { routine: this.store.get("SELECT * FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", configured.id), scheduled: true };
       } else {
         const routineId = text(args.routineId, 100);
-        if (!this.store.get("SELECT id FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=? AND bot_id=?", routineId, botId)) throw new Error("例行任务不属于当前 Agent");
+        if (!this.store.get("SELECT id FROM agent_routines WHERE bot_id NOT IN (SELECT id FROM bots WHERE status='deleted') AND id=?", routineId)) throw new Error("例行任务不存在");
         if (call.tool_name === "routine.delete") {
           if (!Number.isSafeInteger(args.expectedVersion)) throw new Error("请提供定时任务的当前版本");
           this.remove(routineId, Number(args.expectedVersion));
