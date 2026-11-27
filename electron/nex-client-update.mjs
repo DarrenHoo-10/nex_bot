@@ -69,9 +69,17 @@ export class ClientUpdater {
   }
 }
 
-/** Wait for the client to exit before NSIS replaces files in its registered directory. */
-export async function runInstallerAfterExit({ downloaded, currentExe, pid, args }) {
+/**
+ * Wait for the client to exit before NSIS replaces files in its registered directory.
+ * Windows PowerShell 5.1 (ConsoleHost) exits immediately with code 0 without running
+ * scripts when spawned with `detached: true` (DETACHED_PROCESS), while a direct
+ * non-detached child is terminated when Electron quits. Run a short-lived hidden
+ * launcher (`detached: false`) that hands off to an independent hidden PowerShell
+ * via `Start-Process`, and wait for the launcher to exit cleanly before quitting.
+ */
+export async function runInstallerAfterExit({ downloaded, currentExe, pid, args, launch = spawn, timeoutMs = 15_000 }) {
   if (!existsSync(downloaded)) throw new Error("更新文件已丢失，请重新下载");
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error("无效的进程 ID");
   const quote = (value) => `'${String(value).replace(/'/g, "''")}'`;
   const launchArgs = args.map((arg) => {
     const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/\\+$/, "$&$&");
@@ -84,7 +92,30 @@ export async function runInstallerAfterExit({ downloaded, currentExe, pid, args 
     `try { Start-Process -FilePath ${quote(downloaded)} -ArgumentList '/S --updated' -Wait -ErrorAction Stop }`,
     `finally { if (Test-Path -LiteralPath ${quote(currentExe)}) { Start-Process -FilePath ${quote(currentExe)}${argumentList} } }`,
   ].join("\n");
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { detached: true, stdio: "ignore", windowsHide: true });
-  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-  child.unref();
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const launcher = `Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand','${encoded}') -ErrorAction Stop`;
+  const child = launch(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", launcher],
+    { detached: false, stdio: "ignore", windowsHide: true },
+  );
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* ignore */ }
+      finish(new Error("启动更新程序超时"));
+    }, timeoutMs);
+    child.once("error", (error) => finish(error));
+    child.once("exit", (code, signal) => {
+      if (code === 0) finish();
+      else finish(new Error(signal ? `更新启动器异常终止 (${signal})` : `无法启动更新程序 (退出码 ${code ?? "未知"})`));
+    });
+  });
 }

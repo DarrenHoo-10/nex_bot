@@ -1,8 +1,10 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runInstallerAfterExit } from "../../electron/nex-client-update.mjs";
 import { ClientUpdateSource, manifestKey, newerVersion, OssReleaseMirror, parseManifest } from "./client-updates.ts";
 import { createPersonalApp } from "./index.ts";
 
@@ -138,5 +140,97 @@ describe("client update routes", () => {
     expect((await fetch(`${app.origin}/api/client/installer/windows/NexBot-0.9.9-x64-Client-Portable.exe`)).status).not.toBe(200);
     const downloads = await (await fetch(`${app.origin}/api/client/downloads`)).json() as { windows?: unknown };
     expect(downloads.windows).toMatchObject({ version: "0.9.9", url: `https://mirror.test/${manifest.platforms.windows.key}?signed` });
+  });
+});
+
+describe("windows client installer handoff", () => {
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+  function makeInstallerFile() {
+    const root = mkdtempSync(path.join(os.tmpdir(), "nex-client-handoff-"));
+    roots.push(root);
+    const file = path.join(root, "NexBot-0.9.62-x64-Client-Setup.exe");
+    writeFileSync(file, "stub");
+    return file;
+  }
+
+  function makeFakeChild() {
+    const emitter = new EventEmitter();
+    return Object.assign(emitter, { kill: vi.fn() });
+  }
+
+  it("hands off to an independent hidden PowerShell via Start-Process without DETACHED_PROCESS", async () => {
+    const downloaded = makeInstallerFile();
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    const launch = vi.fn((command: string, args: string[], options: Record<string, unknown>) => {
+      calls.push({ command, args, options });
+      const child = makeFakeChild();
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    });
+
+    await runInstallerAfterExit({
+      downloaded,
+      currentExe: "D:\\harness\\nexbot\\NexBot Client.exe",
+      pid: 4242,
+      args: ["--profile=C:\\Users\\demo's\\profile", "--origin=https://bot.nexorai.com.cn"],
+      launch,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("powershell.exe");
+    expect(calls[0].options).toEqual({ detached: false, stdio: "ignore", windowsHide: true });
+    expect(calls[0].args.slice(0, 5)).toEqual(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command"]);
+
+    const launcherCommand = calls[0].args[5];
+    expect(launcherCommand).toContain("Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden");
+    expect(launcherCommand).toContain("-ErrorAction Stop");
+    const encodedMatch = /'-EncodedCommand','([A-Za-z0-9+/=]+)'/.exec(launcherCommand);
+    expect(encodedMatch).not.toBeNull();
+
+    const decoded = Buffer.from(encodedMatch![1], "base64").toString("utf16le");
+    expect(decoded).toContain("Wait-Process -Id 4242 -Timeout 60 -ErrorAction SilentlyContinue");
+    expect(decoded).toContain("if (Get-Process -Id 4242 -ErrorAction SilentlyContinue) { exit 1 }");
+    expect(decoded).toContain(`Start-Process -FilePath '${downloaded.replace(/'/g, "''")}' -ArgumentList '/S --updated' -Wait -ErrorAction Stop`);
+    expect(decoded).toContain("Start-Process -FilePath 'D:\\harness\\nexbot\\NexBot Client.exe'");
+    expect(decoded).toContain("--profile=C:\\Users\\demo''s\\profile");
+    expect(decoded).toContain("--origin=https://bot.nexorai.com.cn");
+  });
+
+  it("rejects when the installer file is missing or the launcher fails or times out", async () => {
+    const launch = vi.fn();
+    await expect(runInstallerAfterExit({
+      downloaded: path.join(os.tmpdir(), "nonexistent-nexbot-setup.exe"),
+      currentExe: "D:\\harness\\nexbot\\NexBot Client.exe",
+      pid: 4242,
+      args: [],
+      launch,
+    })).rejects.toThrow("更新文件已丢失");
+    expect(launch).not.toHaveBeenCalled();
+
+    const downloaded = makeInstallerFile();
+    await expect(runInstallerAfterExit({
+      downloaded,
+      currentExe: "D:\\harness\\nexbot\\NexBot Client.exe",
+      pid: 4242,
+      args: [],
+      launch: () => {
+        const child = makeFakeChild();
+        queueMicrotask(() => child.emit("exit", 1, null));
+        return child;
+      },
+    })).rejects.toThrow("无法启动更新程序 (退出码 1)");
+
+    const hangingChild = makeFakeChild();
+    await expect(runInstallerAfterExit({
+      downloaded,
+      currentExe: "D:\\harness\\nexbot\\NexBot Client.exe",
+      pid: 4242,
+      args: [],
+      timeoutMs: 25,
+      launch: () => hangingChild,
+    })).rejects.toThrow("启动更新程序超时");
+    expect(hangingChild.kill).toHaveBeenCalledTimes(1);
   });
 });
