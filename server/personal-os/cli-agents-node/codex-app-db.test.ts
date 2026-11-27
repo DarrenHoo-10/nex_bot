@@ -92,6 +92,17 @@ describe("latestDb", () => {
 });
 
 describe("CodexAppDb.scan", () => {
+  it("recovers a database-only NexAgent placeholder while preserving a custom name", async () => {
+    makeState(5, [
+      { id: ID, originator: "nexbot", name: "NexAgent 新会话", title: "修复会话排序" },
+      { id: ID2, originator: "nexbot", name: "手动命名", title: "另一条首发消息" },
+    ]);
+    const writes = new Map<string, string>();
+    const scanner = new CodexScanner(home, { updateNames: async (_, names) => { for (const [id, title] of names) writes.set(id, title); } });
+    const rows = await scanner.scan({ now: NOW });
+    expect(Object.fromEntries(rows.map(row => [row.nativeId, row.title]))).toEqual({ [ID]: "修复会话排序", [ID2]: "手动命名" });
+    expect(Object.fromEntries(writes)).toEqual({ [ID]: "修复会话排序" });
+  });
   it("reports an App-only turn as running and clears it when the history ends it", async () => {
     makeState(5, [{ id: ID }]);
     const startedAt = NOW - 1000;

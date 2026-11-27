@@ -13,6 +13,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
+import { emptyCodexTitle, isNexAgentCodexTitle } from "./codex-title.ts";
 import path from "node:path";
 import { CLI_LIMITS, SKILL_LIMIT, skillCommandName, type SkillOption, cliRef, isCliNativeId, type CliErrorCode, type CliOpArgs, type DeviceCliMessage } from "../../../shared/cli-agents.ts";
 import { clipUnits } from "./items.ts";
@@ -278,7 +279,7 @@ export async function prepareCodexThread(
     const id = rec(result.thread)?.id;
     if (!isCliNativeId(id)) throw new DaemonError("unknown", "Codex 没有返回会话 ID");
     // Codex lazily creates the rollout. Naming the blank thread persists it without submitting a turn.
-    await rpc.request("thread/name/set", { threadId: id, name: CODEX_NEW_THREAD_NAME }, timeout);
+    await rpc.request("thread/name/set", { threadId: id, name: emptyCodexTitle(id) }, timeout);
     return id;
   } finally {
     rpc.close();
@@ -307,7 +308,25 @@ export async function codexSkills(options: ProxyConnectorOptions, home: string, 
   } finally { rpc.close(); }
 }
 
-export const CODEX_NEW_THREAD_NAME = "NexAgent 新会话";
+/** Rename only our own placeholder using the native API, without loading a turn. */
+export async function updateCodexThreadNames(options: ProxyConnectorOptions, home: string, names: ReadonlyMap<string, string>, active: () => boolean): Promise<void> {
+  if (!active()) return;
+  const peer = await connectCodexProcess(options, home, "stdio");
+  const rpc = new Rpc(peer, { notification() {}, request() {}, closed() {} });
+  try {
+    await rpc.request("initialize", { clientInfo: { name: "nexbot", version: "1" }, capabilities: null }, 4000);
+    rpc.notify("initialized");
+    await Promise.allSettled([...names].map(async ([threadId, name]) => {
+      const reply = await rpc.request("thread/read", { threadId, includeTurns: false }, 4000);
+      const thread = rec(reply.thread);
+      if (active() && thread?.id === threadId && thread.originator === "nexbot" && isNexAgentCodexTitle(threadId, thread.name) && thread.name !== name) {
+        await rpc.request("thread/name/set", { threadId, name }, 4000);
+      }
+    }));
+  } finally {
+    rpc.close();
+  }
+}
 
 /** True when `<home>/app-server-control/` holds anything: a control socket a TUI may be using. */
 export async function controlSocketExists(home: string): Promise<boolean> {

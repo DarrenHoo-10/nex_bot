@@ -8,7 +8,7 @@ import path from "node:path";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, isCliNativeId, type CliContextUsage, type CliLiveIn } from "../../../shared/cli-agents.ts";
 import { codexContext } from "./context-usage.ts";
 import { CodexAppDb } from "./codex-app-db.ts";
-import { CODEX_NEW_THREAD_NAME } from "./codex-daemon.ts";
+import { codexPromptTitle, emptyCodexTitle, isNexAgentCodexTitle } from "./codex-title.ts";
 import { clipUnits, type LocalSession } from "./items.ts";
 import { codexWriter, type CodexWriter } from "./liveness.ts";
 
@@ -17,7 +17,6 @@ const HEAD_BYTES = 256 * 1024;
 const FIRST_LINE_MAX = 4 * 1024 * 1024;
 const TAIL_BYTES = 64 * 1024;
 const RUNNING_WINDOW_MS = 60_000;
-const TITLE_CHARS = 60;
 
 /** `~/.codex` plus `CODEX_HOME`, without duplicates. */
 export function codexHomes(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string[] {
@@ -128,9 +127,6 @@ function jsonLines(lines: string[]): Rec[] {
   return out;
 }
 
-// context the CLI injects as user messages; never a title
-const INJECTED = /^\s*(<environment_context>|<user_instructions>|<user_shell_command>|<turn_aborted>|<permissions instructions>|# AGENTS\.md|<INSTRUCTIONS>)/;
-
 function contentText(content: unknown): string | undefined {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return undefined;
@@ -153,10 +149,8 @@ function firstUserText(records: Rec[]): string | undefined {
       const item = asRec(payload.item);
       if (item?.type === "UserMessage") value = contentText(item.content);
     }
-    if (value && value.trim() !== "" && !INJECTED.test(value)) {
-      const collapsed = value.replace(/\s+/g, " ").trim();
-      return Array.from(collapsed).slice(0, TITLE_CHARS).join("");
-    }
+    const title = codexPromptTitle(value);
+    if (title) return title;
   }
   return undefined;
 }
@@ -259,6 +253,7 @@ export interface CodexScannerOptions {
   writer?: (home: string, threadId: string, now: number) => CodexWriter;
   /** tests: decides whether a rollout path from the App database exists */
   appDbFileExists?: (file: string) => boolean;
+  updateNames?: (home: string, names: ReadonlyMap<string, string>) => Promise<void>;
 }
 
 interface RolloutFile {
@@ -274,6 +269,8 @@ export class CodexScanner {
   private indexOffset = 0;
   private indexPartial = Buffer.alloc(0);
   private readonly names = new Map<string, string>();
+  private readonly renameAttempts = new Map<string, { title: string; retryAt: number }>();
+  private renaming = false;
 
   private readonly heads = new Map<string, HeadInfo>();
   private readonly tails = new Map<string, TailInfo>();
@@ -328,7 +325,29 @@ export class CodexScanner {
       const running = activeTurns.has(chat.nativeId) && (recent || writer(this.home, chat.nativeId, now) === "yes");
       rows.push(running ? { ...chat, state: "running", lastActivityAt: Math.max(chat.lastActivityAt, startedAt ?? 0) } : chat);
     }
+    this.syncNames(rows, byId, now);
     return rows;
+  }
+
+  private syncNames(rows: LocalSession[], sources: ReadonlyMap<string, { meta: CodexMeta }>, now: number): void {
+    const update = this.options.updateNames;
+    if (!update || this.renaming) return;
+    const batch = new Map<string, string>();
+    for (const [id, attempt] of this.renameAttempts) if (attempt.retryAt <= now) this.renameAttempts.delete(id);
+    for (const row of rows) {
+      const id = row.nativeId;
+      const stored = this.appDb.nexagentNames.get(id);
+      if (!stored && sources.get(id)?.meta.originator !== "nexbot") continue;
+      const name = this.names.get(id) ?? stored?.name;
+      if (!isNexAgentCodexTitle(id, name) || name === row.title || !row.title || this.renameAttempts.get(id)?.title === row.title) continue;
+      batch.set(id, row.title);
+      this.renameAttempts.set(id, { title: row.title, retryAt: now + 60_000 });
+      if (batch.size === 8) break;
+    }
+    if (!batch.size) return;
+    // A slow or unavailable CLI must not delay discovery, history or message delivery.
+    this.renaming = true;
+    void update(this.home, batch).catch(() => {}).finally(() => { this.renaming = false; });
   }
 
   /** The App-database reader of this home, for the bridge to read a chat's items. */
@@ -355,8 +374,10 @@ export class CodexScanner {
         writerUnknown = who === "unknown";
       }
     }
-    const name = this.names.get(meta.id);
-    const title = name === CODEX_NEW_THREAD_NAME ? head.firstUser ?? name : name ?? head.firstUser ?? "";
+    const stored = this.appDb.nexagentNames.get(meta.id);
+    const name = this.names.get(meta.id) ?? stored?.name;
+    const title = isNexAgentCodexTitle(meta.id, name) && (stored || meta.originator === "nexbot")
+      ? head.firstUser ?? stored?.title ?? emptyCodexTitle(meta.id) : name ?? head.firstUser ?? "";
     const row: LocalSession = {
       engine: "codex",
       nativeId: meta.id,

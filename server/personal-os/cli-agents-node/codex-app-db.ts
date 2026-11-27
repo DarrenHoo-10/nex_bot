@@ -10,6 +10,7 @@ import { readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { codexPromptTitle, emptyCodexTitle, isNexAgentCodexTitle } from "./codex-title.ts";
 import { CLI_LIMITS, HISTORY_DAYS, MAX_SESSIONS, PAGE_SIZE, isCliNativeId, type CliItem } from "../../../shared/cli-agents.ts";
 import { clipUnits, codexThreadItemToItems, imageLocator, itemHasImage, type TranscriptImage, type LocalSession } from "./items.ts";
 
@@ -113,6 +114,8 @@ export interface CodexAppDbOptions {
 }
 
 export class CodexAppDb {
+  /** Includes threads with rollouts whose first input may fall beyond the scanned header. */
+  readonly nexagentNames = new Map<string, { name: string; title: string }>();
   private cache: { key: string; at: number; rows: LocalSession[] } | null = null;
 
   constructor(
@@ -125,16 +128,19 @@ export class CodexAppDb {
     const file = await latestDb(this.home, "state");
     if (!file) {
       this.cache = null;
+      this.nexagentNames.clear();
       return [];
     }
     const key = await this.signature(file);
     if (this.cache && this.cache.key === key && now - this.cache.at < CACHE_MS) return this.cache.rows;
     let rows: LocalSession[] = [];
+    this.nexagentNames.clear();
     try {
       rows = this.read(file, now);
     } catch {
       // a locked or unknown database is left alone
       rows = [];
+      this.nexagentNames.clear();
     }
     this.cache = { key, at: now, rows };
     return rows;
@@ -171,11 +177,17 @@ export class CodexAppDb {
         if (text(row.agent_role) || text(row.attached_thread_parent_id)) continue;
         const meta = { id, originator: text(row.originator), source: sourceOf(row.source), threadSource: text(row.thread_source) };
         if (this.options.exclude?.(meta)) continue;
-        const rollout = text(row.rollout_path);
-        if (rollout && exists(rollout)) continue; // the rollout scan has it
         const at = epochMs(row.recency_at_ms) ?? epochMs(row.updated_at_ms) ?? epochMs(row.updated_at) ?? 0;
         if (at < cutoff) continue;
-        const title = text(row.name) ?? text(row.title) ?? text(row.preview) ?? text(row.first_user_message) ?? "";
+        const name = text(row.name);
+        let title = name ?? text(row.title) ?? text(row.preview) ?? text(row.first_user_message) ?? "";
+        if (meta.originator === "nexbot" && name && isNexAgentCodexTitle(id, name)) {
+          const nativeTitle = isNexAgentCodexTitle(id, row.title) ? undefined : text(row.title);
+          title = codexPromptTitle(text(row.first_user_message)) ?? codexPromptTitle(text(row.preview)) ?? codexPromptTitle(nativeTitle) ?? emptyCodexTitle(id);
+          this.nexagentNames.set(id, { name, title });
+        }
+        const rollout = text(row.rollout_path);
+        if (rollout && exists(rollout)) continue; // the rollout scan has it
         const session: LocalSession = {
           engine: "codex",
           nativeId: id,

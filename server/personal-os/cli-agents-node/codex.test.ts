@@ -98,6 +98,27 @@ describe("CodexScanner fork parent", () => {
 });
 
 describe("CodexScanner rows", () => {
+  it("syncs first prompts and distinct empty names only for NexAgent placeholders", async () => {
+    const legacy = "NexAgent 新会话";
+    const entries = [
+      { id: ID(1), name: legacy, message: "修复侧栏排序" },
+      { id: ID(2), name: "NexAgent 新会话 · 00000002", message: "核对下载链接" },
+      { id: ID(3), name: "我取的名字", message: "第三条消息" },
+      { id: ID(4), name: legacy, message: "" },
+      { id: ID(5), name: legacy, message: "" },
+    ];
+    for (const { id, message } of entries) {
+      rollout(id, [meta(id, { originator: "nexbot" }), userMsg("<environment_context>"), ...(message ? [userMsg(message)] : [])]);
+    }
+    writeFileSync(path.join(home, "session_index.jsonl"), entries.map(e => JSON.stringify({ id: e.id, thread_name: e.name })).join("\n") + "\n");
+    const writes: Record<string, string>[] = [];
+    const scanner = new CodexScanner(home, { ...writerOf("no"), updateNames: async (_, names) => { writes.push(Object.fromEntries(names)); } });
+    const rows = await scan(scanner);
+    expect(rows.find(row => row.nativeId === ID(3))?.title).toBe("我取的名字");
+    expect(writes).toEqual([{ [ID(1)]: "修复侧栏排序", [ID(2)]: "核对下载链接", [ID(4)]: "NexAgent 新会话 · 00000004", [ID(5)]: "NexAgent 新会话 · 00000005" }]);
+    await scan(scanner);
+    expect(writes).toHaveLength(1);
+  });
   it("builds a row from session_meta, turn_context and the first user message", async () => {
     rollout(ID(1), [
       meta(ID(1)),

@@ -49,7 +49,7 @@ import {
 import { decodeTermFrame } from "../../../shared/cli-agent-frames.ts";
 import { AgyError, AgyRuntime } from "./agy.ts";
 import { agyConfigDir, type agyWriters } from "./agy-native.ts";
-import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, type CodexDaemonOptions } from "./codex-daemon.ts";
+import { CodexDaemons, DaemonError, prepareCodexThread, proxyConnector, updateCodexThreadNames, type CodexDaemonOptions } from "./codex-daemon.ts";
 import { CodexDesktopQueue } from "./codex-desktop-queue.ts";
 import { canConsumeCodexQueue, tryManagedCodexQueue } from "./codex-native-queue.ts";
 import { codexEmptyComposer, codexReceipt } from "./codex-first-input.ts";
@@ -331,6 +331,10 @@ export class CliAgentBridge {
     this.discovery = new SessionDiscovery({
       ...(options.claudeDirs ? { claudeDirs: options.claudeDirs } : {}),
       ...(options.codexHomes ? { codexHomes: options.codexHomes } : {}),
+      codex: { updateNames: (home, names) => updateCodexThreadNames(
+        { codexPath: () => this.findCli("codex"), platform: this.platform, env: this.options.env },
+        home, names, () => this.link_ !== null && !this.detached,
+      ) },
       ...(options.zcodeHomes ? { zcodeHomes: options.zcodeHomes } : {}),
       ...(options.zcodeHost ? { zcode: { host: options.zcodeHost } } : {}),
       agy: this.agy,
