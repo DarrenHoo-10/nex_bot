@@ -54,11 +54,13 @@ describe("claude: user records", () => {
     expect(claude({ type: "user", uuid: "p2", timestamp: TS, message: { content: "what is pasted_content?" } }).items[0]).toMatchObject({ text: "what is pasted_content?" });
   });
 
-  it("shows a message NexBot sent through the inbox as the user's, and its Stop as a notice", () => {
+  it("shows a message NexBot sent through the inbox as the user's, Stop as a notice, and peer messages as activity", () => {
     const peer = (body: string) => ({ type: "user", uuid: "p1", timestamp: TS, isMeta: true, origin: { kind: "peer", body }, message: { content: "Another Claude session sent a message:\n<cross-session-message>" + body + "</cross-session-message>" } });
     expect(claude(peer(inboxMessageText("所以对吗"))).items).toEqual([{ kind: "user", id: "p1", ts: MS, text: "所以对吗" }]);
     expect(claude(peer(INBOX_STOP)).items).toEqual([{ kind: "notice", id: "p1", ts: MS, level: "info", text: REMOTE_STOP_TEXT }]);
-    expect(claude(peer("a teammate's own message")).items).toEqual([]);
+    expect(claude(peer("a teammate's own message")).items).toEqual([
+      { kind: "tool", id: "p1", ts: MS, name: "AgentMessage", input: "其他会话", status: "ok", output: "a teammate's own message" },
+    ]);
   });
 
   it("leaves out the desktop app's reminder blocks and keeps the user's words", () => {
@@ -187,10 +189,58 @@ describe("claude: system, attachment, sidechain, metadata, ignored", () => {
     expect(claude({ type: "system", subtype: "stop_hook_summary", uuid: "s4" }).items).toEqual([]);
   });
 
-  it("maps an attachment queued_command to a queued user item", () => {
+  it("maps an attachment queued_command to a queued user item, and peer messages to AgentMessage activity", () => {
     const { items } = claude({ type: "attachment", uuid: "t1", timestamp: TS, attachment: { type: "queued_command", prompt: "do it next", commandMode: "prompt" } });
     expect(items).toEqual([{ kind: "user", id: "t1", ts: MS, text: "do it next", queued: true, queuedByUser: true }]);
     expect(claude({ type: "attachment", uuid: "t2", attachment: { type: "hook_success" } }).items).toEqual([]);
+
+    const subagent = claude({
+      type: "attachment",
+      uuid: "p-sub",
+      timestamp: TS,
+      attachment: {
+        type: "queued_command",
+        commandMode: "prompt",
+        isMeta: true,
+        prompt: '<agent-message from="a857eeb3b739a78b5">\nRELEASE GATE PASSED.\n</agent-message>',
+        origin: { kind: "peer", from: "a857eeb3b739a78b5", senderTaskId: "a857eeb3b739a78b5", name: "general-purpose", body: "RELEASE GATE PASSED." },
+      },
+    });
+    expect(subagent.items).toEqual([
+      { kind: "tool", id: "p-sub", ts: MS, name: "AgentMessage", input: "子 Agent a857eeb3", status: "ok", output: "RELEASE GATE PASSED." },
+    ]);
+
+    const crossSession = claude({
+      type: "attachment",
+      uuid: "p-cross",
+      timestamp: TS,
+      attachment: {
+        type: "queued_command",
+        commandMode: "prompt",
+        isMeta: true,
+        prompt: '<cross-session-message from="uds:\\\\.\\pipe\\LOCAL\\cc-msg-123" from-name="nex-bot-fa" from-mode="bypass">\nRelease coordination\n</cross-session-message>',
+        origin: { kind: "peer", from: "uds:\\\\.\\pipe\\LOCAL\\cc-msg-123", name: "nex-bot-fa", body: "Release coordination" },
+      },
+    });
+    expect(crossSession.items).toEqual([
+      { kind: "tool", id: "p-cross", ts: MS, name: "AgentMessage", input: "会话 nex-bot-fa", status: "ok", output: "Release coordination" },
+    ]);
+
+    const remoteInbox = claude({
+      type: "attachment",
+      uuid: "p-inbox",
+      timestamp: TS,
+      attachment: {
+        type: "queued_command",
+        commandMode: "prompt",
+        isMeta: true,
+        prompt: `<cross-session-message from-mode="bypass">\n${inboxMessageText("继续处理")}\n</cross-session-message>`,
+        origin: { kind: "peer", body: inboxMessageText("继续处理") },
+      },
+    });
+    expect(remoteInbox.items).toEqual([{ kind: "user", id: "p-inbox", ts: MS, text: "继续处理" }]);
+
+    expect(claude({ type: "attachment", uuid: "p-meta", timestamp: TS, attachment: { type: "queued_command", commandMode: "prompt", isMeta: true, prompt: "internal hook note" } }).items).toEqual([]);
   });
 
   it("maps all task notification sources to a text-free completion event", () => {

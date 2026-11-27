@@ -2756,6 +2756,15 @@
   .na-stage .cli-app .cli-step.na-step .na-step-output {
     color: var(--na-muted);
   }
+  .na-stage .cli-app .cli-step.na-step.is-peer-message .na-step-line {
+    font-family: inherit;
+    font-size: 12.5px;
+  }
+  .na-stage .cli-app .cli-step.na-step .na-step-card pre.na-step-message {
+    font-family: inherit;
+    font-size: 12.5px;
+    color: var(--na-ink);
+  }
   .na-stage .cli-app .na-step-card-foot {
     display: flex;
     align-items: center;

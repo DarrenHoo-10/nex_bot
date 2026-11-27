@@ -282,17 +282,108 @@ export function cliTaskNotice(id: string, ts: number, taskEnd?: CliTaskEnd): Ext
   return { kind: "notice", id, ts, level: "info", text: "", ...(taskEnd ? { taskEnd } : {}) };
 }
 
+export const CLI_AGENT_MESSAGE_TOOL = "AgentMessage";
+
+export interface CliAgentMessage {
+  source: "agent" | "session";
+  sender: string;
+  body: string;
+}
+
+function shortPeerId(value: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/^uds:[/\\]+(?:\.[\\/]+pipe[\\/]+)?(?:LOCAL[\\/]+)?(?:cc-msg-)?/i, "")
+    .replace(/^local_/i, "");
+  if (/^[A-Za-z0-9_-]{12,}$/.test(cleaned)) return cleaned.slice(0, 8);
+  return cleaned;
+}
+
+export function formatCliAgentSender(
+  source: "agent" | "session",
+  from?: string,
+  name?: string,
+): string | undefined {
+  const cleanName = name?.trim();
+  const cleanFrom = from?.trim();
+  const shortFrom = cleanFrom ? shortPeerId(cleanFrom) : "";
+  if (source === "session") {
+    if (cleanName) return `会话 ${cleanName}`;
+    if (shortFrom) return `会话 ${shortFrom}`;
+    return "其他会话";
+  }
+  if (cleanName && cleanName.toLowerCase() !== "general-purpose" && cleanName !== cleanFrom) {
+    return shortFrom && !cleanName.includes(shortFrom) ? `子 Agent ${cleanName} (${shortFrom})` : `子 Agent ${cleanName}`;
+  }
+  if (shortFrom) return `子 Agent ${shortFrom}`;
+  return "子 Agent";
+}
+
+function xmlAttr(attrs: string, name: string): string | undefined {
+  const match = new RegExp(`(?:^|\\s)${name}="([^"<>\\n]+)"`).exec(attrs);
+  return match?.[1]?.trim() || undefined;
+}
+
+export function parseCliAgentMessage(text: string): CliAgentMessage | undefined {
+  const agent = /^\s*<agent-message\b([^>\n]*)>([\s\S]*?)<\/agent-message>\s*$/.exec(text);
+  if (agent) {
+    const from = xmlAttr(agent[1] ?? "", "from");
+    const name = xmlAttr(agent[1] ?? "", "name") ?? xmlAttr(agent[1] ?? "", "from-name");
+    const body = (agent[2] ?? "").trim();
+    if (!from || !body) return undefined;
+    return { source: "agent", sender: formatCliAgentSender("agent", from, name) ?? "子 Agent", body };
+  }
+  const teammate = /^\s*<teammate-message\b([^>\n]*)>([\s\S]*?)<\/teammate-message>\s*$/.exec(text);
+  if (teammate) {
+    const id = xmlAttr(teammate[1] ?? "", "teammate_id");
+    const body = (teammate[2] ?? "").trim();
+    if (!id || !body) return undefined;
+    return { source: "agent", sender: formatCliAgentSender("agent", id) ?? "子 Agent", body };
+  }
+  const session = /^\s*(?:Another Claude session sent a message(?:\s+while you were working)?:\s*\n)?<cross-session-message\b([^>\n]*)>([\s\S]*?)<\/cross-session-message>\s*$/.exec(text);
+  if (session) {
+    const attrs = session[1] ?? "";
+    const from = xmlAttr(attrs, "from");
+    const fromName = xmlAttr(attrs, "from-name") ?? xmlAttr(attrs, "name");
+    const body = (session[2] ?? "").trim();
+    if ((!from && !fromName) || !body) return undefined;
+    // NexBot's own remote inbox messages use `[NexBot]` preambles and belong to the user, not peer traffic.
+    if (body.startsWith("[NexBot]") || body.startsWith("[NexBot 远程")) return undefined;
+    return { source: "session", sender: formatCliAgentSender("session", from, fromName) ?? "其他会话", body };
+  }
+  return undefined;
+}
+
+export function cliAgentMessageItem(id: string, ts: number, message: CliAgentMessage): Extract<CliItem, { kind: "tool" }> {
+  return {
+    kind: "tool",
+    id,
+    ts,
+    name: CLI_AGENT_MESSAGE_TOOL,
+    input: truncateUtf8(message.sender, SUMMARY_MAX),
+    status: "ok",
+    output: truncateUtf8(message.body, TOOL_OUTPUT_MAX),
+  };
+}
+
 export function normalizeCliTaskItem(item: CliItem): CliItem {
   if (item.kind === "notice" && item.taskEnd) return item.text ? cliTaskNotice(item.id, item.ts, item.taskEnd) : item;
   if (item.kind !== "user" && item.kind !== "notice") return item;
-  if (!item.text.trimStart().startsWith("<task-notification>")) return item;
-  if (item.kind === "notice" && item.level === "info") return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(item.text));
-  if (item.kind === "user" && item.queued && !item.queuedByUser && !item.images?.length) {
-    const head = cliTaskHeader(item.text);
-    // Cached V1 queue items lack provenance. Require a runtime field as well as the task envelope.
-    if (taskIdInHeader(head) && /<(tool-use-id|output-file)>[^<]+<\/\1>/.test(head)) {
-      return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(head));
+  const trimmed = item.text.trimStart();
+  if (trimmed.startsWith("<task-notification>")) {
+    if (item.kind === "notice" && item.level === "info") return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(item.text));
+    if (item.kind === "user" && item.queued && !item.queuedByUser && !item.images?.length) {
+      const head = cliTaskHeader(item.text);
+      // Cached V1 queue items lack provenance. Require a runtime field as well as the task envelope.
+      if (taskIdInHeader(head) && /<(tool-use-id|output-file)>[^<]+<\/\1>/.test(head)) {
+        return cliTaskNotice(item.id, item.ts, parseCliTaskNotification(head));
+      }
     }
+    return item;
+  }
+  if (item.kind === "user" && item.queued && !item.images?.length) {
+    const peer = parseCliAgentMessage(item.text);
+    if (peer) return cliAgentMessageItem(item.id, item.ts, peer);
   }
   return item;
 }
@@ -306,7 +397,7 @@ export function completedCliReplies(items: readonly CliItem[], active: boolean):
   const complete = new Set<string>();
   let closed = !active;
   for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i]!;
+    const item = normalizeCliTaskItem(items[i]!);
     if (item.kind === "assistant" && closed) complete.add(item.id);
     if (item.kind === "user") closed = true;
     if (item.kind === "turn") closed = item.phase !== "aborted";

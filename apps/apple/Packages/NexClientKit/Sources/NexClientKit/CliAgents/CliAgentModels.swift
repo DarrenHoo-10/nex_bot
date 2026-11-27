@@ -206,6 +206,9 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
             queuedByUser = try c.decodeIfPresent(Bool.self, forKey: .queuedByUser)
             if queued, queuedByUser != true, images.isEmpty, Self.isLegacyTaskNotification(text) {
                 kind = .notice; text = ""; queued = false
+            } else if queued, images.isEmpty, let peer = Self.parseLegacyAgentMessage(text) {
+                kind = .tool; name = "AgentMessage"; input = peer.sender; status = .ok; output = peer.body
+                text = ""; queued = false; queuedByUser = nil
             }
         case .assistant, .thinking:
             text = try c.decode(String.self, forKey: .text)
@@ -230,6 +233,66 @@ public struct CliItem: Sendable, Hashable, Identifiable, Codable {
         let fields = String(header[..<payload])
         return fields.range(of: #"^\s*<task-notification>\s*<task-id>\s*[A-Za-z0-9_./:-]{1,128}\s*</task-id>"#, options: .regularExpression) != nil
             && fields.range(of: #"<(tool-use-id|output-file)>[^<]+</\1>"#, options: .regularExpression) != nil
+    }
+
+    private static func xmlAttr(_ attrs: String, _ name: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"(?:^|\s)"# + name + #"="([^"<>\n]+)""#),
+              let match = regex.firstMatch(in: attrs, range: NSRange(attrs.startIndex..., in: attrs)),
+              let range = Range(match.range(at: 1), in: attrs) else { return nil }
+        let value = attrs[range].trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func shortPeerId(_ value: String) -> String {
+        let stripped = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"^uds:[/\\]+(?:\.[\\/]+pipe[\\/]+)?(?:LOCAL[\\/]+)?(?:cc-msg-)?"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"^local_"#, with: "", options: [.regularExpression, .caseInsensitive])
+        if stripped.range(of: #"^[A-Za-z0-9_-]{12,}$"#, options: .regularExpression) != nil {
+            return String(stripped.prefix(8))
+        }
+        return stripped
+    }
+
+    private static func formatAgentSender(session: Bool, from: String?, name: String?) -> String {
+        let cleanName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanFrom = from?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let shortFrom = cleanFrom.isEmpty ? "" : shortPeerId(cleanFrom)
+        if session {
+            if !cleanName.isEmpty { return "会话 \(cleanName)" }
+            if !shortFrom.isEmpty { return "会话 \(shortFrom)" }
+            return "其他会话"
+        }
+        if !cleanName.isEmpty, cleanName.lowercased() != "general-purpose", cleanName != cleanFrom {
+            return !shortFrom.isEmpty && !cleanName.contains(shortFrom) ? "子 Agent \(cleanName) (\(shortFrom))" : "子 Agent \(cleanName)"
+        }
+        return shortFrom.isEmpty ? "子 Agent" : "子 Agent \(shortFrom)"
+    }
+
+    private static func parseLegacyAgentMessage(_ text: String) -> (sender: String, body: String)? {
+        func match(_ pattern: String) -> (attrs: String, body: String)? {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+                  let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let r1 = Range(m.range(at: 1), in: text),
+                  let r2 = Range(m.range(at: 2), in: text) else { return nil }
+            return (String(text[r1]), text[r2].trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if let m = match(#"^\s*<agent-message\b([^>\n]*)>(.*?)</agent-message>\s*$"#) {
+            guard let from = xmlAttr(m.attrs, "from"), !m.body.isEmpty else { return nil }
+            let name = xmlAttr(m.attrs, "name") ?? xmlAttr(m.attrs, "from-name")
+            return (formatAgentSender(session: false, from: from, name: name), m.body)
+        }
+        if let m = match(#"^\s*<teammate-message\b([^>\n]*)>(.*?)</teammate-message>\s*$"#) {
+            guard let id = xmlAttr(m.attrs, "teammate_id"), !m.body.isEmpty else { return nil }
+            return (formatAgentSender(session: false, from: id, name: nil), m.body)
+        }
+        if let m = match(#"^\s*(?:Another Claude session sent a message(?:\s+while you were working)?:\s*\n)?<cross-session-message\b([^>\n]*)>(.*?)</cross-session-message>\s*$"#) {
+            let from = xmlAttr(m.attrs, "from")
+            let fromName = xmlAttr(m.attrs, "from-name") ?? xmlAttr(m.attrs, "name")
+            guard (from != nil || fromName != nil), !m.body.isEmpty,
+                  !m.body.hasPrefix("[NexBot]"), !m.body.hasPrefix("[NexBot 远程") else { return nil }
+            return (formatAgentSender(session: true, from: from, name: fromName), m.body)
+        }
+        return nil
     }
 }
 

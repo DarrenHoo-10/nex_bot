@@ -369,7 +369,7 @@ export async function scanHistory(configDir: string, options: ScanHistoryOptions
   return out;
 }
 
-const NOISE = /^\s*<(command-name|command-message|command-args|local-command-|system-reminder|ide_|user-prompt-submit-hook)/;
+const NOISE = /^\s*<(command-name|command-message|command-args|local-command-|system-reminder|ide_|user-prompt-submit-hook|agent-message|cross-session-message|teammate-message)/;
 
 function userText(record: Rec): string | undefined {
   const message = asRec(record.message);

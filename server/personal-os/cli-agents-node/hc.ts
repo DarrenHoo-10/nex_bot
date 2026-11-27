@@ -11,8 +11,9 @@
 // doc.set. Agent mode never needs another machine, a file API or the core's
 // lifecycle, and `call()` refuses them by name.
 import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -126,6 +127,80 @@ export function locateHerdrCore(options: LocateOptions = {}): string | null {
     directory = parent;
   }
   return null;
+}
+
+export interface StageHerdrCoreOptions {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  /** Override the runtime cache directory (tests). */
+  targetRoot?: string;
+}
+
+/** On Windows, herdr-core (and its conpty OpenConsole.exe) outlives the desktop
+ * client so Agent terminals survive updates. Running it directly from the app's
+ * install folder locks those binaries during NSIS upgrades (and causes NSIS to
+ * kill live Agent terminals). Copy the packaged herdr-core directory into a
+ * version+hash-keyed folder under `%LOCALAPPDATA%\NexBotClient\runtime\herdr-core`
+ * so updates never collide with running terminals. */
+export function stageHerdrCoreForRuntime(binary: string, options: StageHerdrCoreOptions = {}): string {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") return binary;
+  const env = options.env ?? process.env;
+  if (env.NEX_HERDR_CORE_PATH?.trim()) return binary;
+  const resolved = path.resolve(binary);
+  if (!existsSync(resolved)) return binary;
+
+  const baseRoot = options.targetRoot ?? path.join(env.LOCALAPPDATA?.trim() || os.tmpdir(), "NexBotClient", "runtime", "herdr-core");
+  const normalizedRoot = path.resolve(baseRoot);
+  const rootPrefix = normalizedRoot.endsWith(path.sep) ? normalizedRoot : normalizedRoot + path.sep;
+  if (resolved.toLowerCase().startsWith(rootPrefix.toLowerCase())) return resolved;
+
+  const sourceDir = path.dirname(resolved);
+  const exeName = path.basename(resolved);
+  let hash: string;
+  let sourceSize: number;
+  try {
+    const exeBytes = readFileSync(resolved);
+    sourceSize = exeBytes.byteLength;
+    const digest = createHash("sha256").update(exeBytes);
+    const manifest = path.join(sourceDir, "manifest.json");
+    if (existsSync(manifest)) digest.update(readFileSync(manifest));
+    hash = digest.digest("hex").slice(0, 12);
+  } catch {
+    return resolved;
+  }
+
+  const destDir = path.join(normalizedRoot, `${HC_VERSION}-${hash}`);
+  const destExe = path.join(destDir, exeName);
+  const marker = path.join(destDir, ".staged-ok");
+  try {
+    if (existsSync(marker) && existsSync(destExe) && statSync(destExe).size === sourceSize) {
+      return destExe;
+    }
+    mkdirSync(normalizedRoot, { recursive: true });
+    const tmpDir = path.join(normalizedRoot, `.stage-${process.pid}-${randomBytes(4).toString("hex")}`);
+    try {
+      cpSync(sourceDir, tmpDir, { recursive: true, force: true });
+      writeFileSync(path.join(tmpDir, ".staged-ok"), `${HC_VERSION}-${hash}\n`);
+      try {
+        renameSync(tmpDir, destDir);
+      } catch {
+        // Another process may have finished staging the same version concurrently.
+        if (existsSync(marker) && existsSync(destExe) && statSync(destExe).size === sourceSize) {
+          rmSync(tmpDir, { recursive: true, force: true });
+          return destExe;
+        }
+        rmSync(destDir, { recursive: true, force: true });
+        renameSync(tmpDir, destDir);
+      }
+      return destExe;
+    } catch {
+      rmSync(tmpDir, { recursive: true, force: true });
+      return resolved;
+    }
+  } catch {
+    return resolved;
+  }
 }
 
 /** A Unix socket path (`sun_path`) holds 104 bytes on macOS; keep clear of it. */

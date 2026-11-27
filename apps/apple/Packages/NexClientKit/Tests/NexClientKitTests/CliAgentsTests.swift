@@ -86,6 +86,35 @@ final class CliAgentsTests: XCTestCase {
         XCTAssertTrue(items.prefix(3).allSatisfy(\.text.isEmpty))
     }
 
+    func testAgentMessagesFoldIntoActivityInsteadOfUserBubbles() throws {
+        let agentXml = "<agent-message from=\"a857eeb3b739a78b5\">\nRELEASE GATE PASSED.\n</agent-message>"
+        let crossXml = "<cross-session-message from=\"uds:\\\\.\\pipe\\LOCAL\\cc-msg-abc\" from-name=\"nex-bot-fa\" from-mode=\"bypass\">\nCoordination update\n</cross-session-message>"
+        let items = try decode([CliItem].self, [
+            ["kind": "user", "id": "u1", "ts": 1000, "text": "发版验证"],
+            ["kind": "tool", "id": "t1", "ts": 2000, "name": "Bash", "input": "ls", "status": "ok"],
+            ["kind": "user", "id": "q-agent", "ts": 3000, "queued": true, "queuedByUser": true, "text": agentXml],
+            ["kind": "user", "id": "q-cross", "ts": 4000, "queued": true, "queuedByUser": true, "text": crossXml],
+            ["kind": "assistant", "id": "a1", "ts": 8000, "text": "全部通过"],
+            ["kind": "user", "id": "u2", "ts": 9000, "text": "what does <agent-message> mean?"],
+        ])
+        XCTAssertEqual(CliTranscript.userTurns(items), 2)
+        XCTAssertEqual(items[2].kind, .tool)
+        XCTAssertEqual(items[2].name, "AgentMessage")
+        XCTAssertEqual(items[2].input, "子 Agent a857eeb3")
+        XCTAssertEqual(items[2].output, "RELEASE GATE PASSED.")
+        XCTAssertEqual(items[3].kind, .tool)
+        XCTAssertEqual(items[3].name, "AgentMessage")
+        XCTAssertEqual(items[3].input, "会话 nex-bot-fa")
+        XCTAssertEqual(items[3].output, "Coordination update")
+        let rows = CliTranscript.rows(items, active: false)
+        XCTAssertEqual(rows.count, 4)
+        guard case .progress(_, let progressBlocks, _) = rows[1],
+              case .activity(_, let activityItems) = progressBlocks.first else {
+            return XCTFail("expected peer messages to fold into progress activity")
+        }
+        XCTAssertEqual(activityItems.map(\.id), ["t1", "q-agent", "q-cross"])
+    }
+
     func testHTTPStatusWordingWithoutServerText() {
         XCTAssertEqual(CoreClient.httpError(status: 502, data: Data("<html><h1>502 Bad Gateway</h1></html>".utf8)).message, "服务暂时不可用，可能正在更新，请稍后重试")
         XCTAssertEqual(CoreClient.httpError(status: 400, data: Data(#"{"error":"名称不能为空"}"#.utf8)).message, "名称不能为空")

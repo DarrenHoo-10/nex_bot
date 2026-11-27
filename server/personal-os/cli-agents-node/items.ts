@@ -7,9 +7,12 @@ import {
   ITEM_TEXT_MAX,
   SUMMARY_MAX,
   TOOL_OUTPUT_MAX,
+  cliAgentMessageItem,
   cliTaskEnd,
   cliTaskNotice,
+  formatCliAgentSender,
   isCliCommandRecord,
+  parseCliAgentMessage,
   parseCliTaskNotification,
   truncateUtf8,
   unwrapPastedContent,
@@ -390,6 +393,29 @@ function extractImagePaths(text: string): { text: string; images: string[] } {
 // ---------------------------------------------------------------------------
 // Claude
 
+function claudePeerItem(origin: Rec, fallbackText: string, baseId: string, ts: number): CliItem | null {
+  if (origin.kind !== "peer") return null;
+  const body = typeof origin.body === "string" ? origin.body : undefined;
+  const remote = body ? inboxWords(body) : null;
+  if (remote) {
+    return "stop" in remote
+      ? notice(baseId, ts, "info", REMOTE_STOP_TEXT)
+      : { kind: "user", id: baseId, ts, text: itemText(remote.text) };
+  }
+  const parsed = parseCliAgentMessage(fallbackText);
+  const cleanBody = (body ?? parsed?.body ?? "").trim();
+  if (!cleanBody) return null;
+  const rawFrom = nonEmpty(origin.from) ?? nonEmpty(origin.senderTaskId);
+  const rawName = nonEmpty(origin.name);
+  const isAgent =
+    parsed?.source === "agent" ||
+    nonEmpty(origin.senderTaskId) !== undefined ||
+    (rawFrom !== undefined && !rawFrom.startsWith("uds:") && !rawFrom.startsWith("local_"));
+  const source: "agent" | "session" = isAgent ? "agent" : "session";
+  const sender = formatCliAgentSender(source, rawFrom, rawName) ?? parsed?.sender ?? (isAgent ? "子 Agent" : "其他会话");
+  return cliAgentMessageItem(baseId, ts, { source, sender, body: cleanBody });
+}
+
 export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRecord {
   const none: MappedRecord = { items: [] };
   if (!isRec(record)) return none;
@@ -432,11 +458,12 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
     if (record.isCompactSummary === true) return { items: [notice(baseId, ts, "info", COMPACT_TEXT)] };
     if (record.isMeta === true) {
       const text = blocksText(message?.content);
-      // A message NexBot sent through the inbox: Claude Code keeps it as a meta record
-      // with the peer's words in `origin.body`; it is the user's own message.
+      // A peer delivery: NexBot's own inbox messages belong to the user; teammate/cross-session messages fold into work progress.
       const origin = isRec(record.origin) ? record.origin : undefined;
-      const remote = origin?.kind === "peer" && typeof origin.body === "string" ? inboxWords(origin.body) : null;
-      if (remote) return { items: ["stop" in remote ? notice(baseId, ts, "info", REMOTE_STOP_TEXT) : { kind: "user", id: baseId, ts, text: itemText(remote.text) }] };
+      if (origin?.kind === "peer") {
+        const peer = claudePeerItem(origin, text, baseId, ts);
+        return peer ? { items: [peer] } : none;
+      }
       const task = parseCliTaskNotification(text);
       return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
     }
@@ -458,6 +485,14 @@ export function claudeRecordToItems(record: unknown, ctx: ItemContext): MappedRe
       const task = parseCliTaskNotification(text);
       return task ? { items: [cliTaskNotice(baseId, ts, task)] } : none;
     }
+    const origin = isRec(attachment.origin) ? attachment.origin : undefined;
+    if (origin?.kind === "peer") {
+      const peer = claudePeerItem(origin, text, baseId, ts);
+      return peer ? { items: [peer] } : none;
+    }
+    const peer = parseCliAgentMessage(text);
+    if (peer) return { items: [cliAgentMessageItem(baseId, ts, peer)] };
+    if (attachment.isMeta === true) return none;
     if (!text.trim()) return none;
     return { items: [{ kind: "user", id: baseId, ts, text: itemText(text), queued: true, ...(attachment.commandMode === "prompt" ? { queuedByUser: true } : {}) }] };
   }

@@ -130,6 +130,37 @@ describe("groupItems", () => {
     expect(blocks[0]).toMatchObject({ kind: "activity", items: [{ id: "t1" }, { id: "t2" }] });
   });
 
+  it("folds cached queued agent and cross-session peer messages into progress activity without splitting turns", () => {
+    const agentXml = '<agent-message from="a857eeb3b739a78b5">\nRELEASE GATE PASSED.\n</agent-message>';
+    const crossXml = '<cross-session-message from="uds:\\\\.\\pipe\\LOCAL\\cc-msg-abc" from-name="nex-bot-fa" from-mode="bypass">\nCoordination update\n</cross-session-message>';
+    const items: CliItem[] = [
+      userItem("u1", 1000, "发版验证"),
+      toolItem("t1", 2000),
+      { kind: "user", id: "q-agent", ts: 3000, text: agentXml, queued: true, queuedByUser: true },
+      toolItem("t2", 4000),
+      { kind: "user", id: "q-cross", ts: 5000, text: crossXml, queued: true, queuedByUser: true },
+      assistantItem("a1", 8000, "全部通过"),
+      userItem("u2", 9000, "what is <agent-message> used for?"),
+    ];
+    expect(userTurns(items)).toBe(2);
+    const rows = transcriptRows(items, false);
+    expect(rows.map((row) => row.kind)).toEqual(["user", "progress", "assistant", "user"]);
+    const progress = rows[1];
+    expect(progress?.kind).toBe("progress");
+    if (progress?.kind === "progress") {
+      expect(progress.blocks).toHaveLength(1);
+      expect(progress.blocks[0]).toMatchObject({
+        kind: "activity",
+        items: [
+          { id: "t1" },
+          { id: "q-agent", kind: "tool", name: "AgentMessage", input: "子 Agent a857eeb3", status: "ok", output: "RELEASE GATE PASSED." },
+          { id: "t2" },
+          { id: "q-cross", kind: "tool", name: "AgentMessage", input: "会话 nex-bot-fa", status: "ok", output: "Coordination update" },
+        ],
+      });
+    }
+  });
+
   it("merges adjacent tool and thinking items into one activity block", () => {
     const blocks = groupItems([userItem("u1", 1), thinking("k1", 2), toolItem("t1", 3), assistantItem("a1", 4), toolItem("t2", 5)]);
     expect(blocks.map((block) => block.kind)).toEqual(["user", "activity", "assistant", "activity"]);

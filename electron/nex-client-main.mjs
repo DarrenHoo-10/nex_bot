@@ -122,7 +122,21 @@ else {
     tray = undefined;
     if (shuttingDown || !device) return;
     event.preventDefault(); shuttingDown = true;
-    void device.stop().finally(() => app.quit());
+    let finished = false;
+    const quitNow = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      app.quit();
+    };
+    // Bound shutdown so a stalled network call in device.stop() never blocks updates or manual quit.
+    const timer = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      app.exit(0);
+    }, 2500);
+    timer.unref?.();
+    void device.stop().finally(quitNow);
   });
   app.whenReady().then(async () => {
     mkdirSync(app.getPath("userData"), { recursive: true });

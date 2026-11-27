@@ -25,6 +25,7 @@ import {
   hcSocketPath,
   herdrCoreExecutableName,
   locateHerdrCore,
+  stageHerdrCoreForRuntime,
   type HcAttachStream,
   type HcEvent,
   type HcSnapshot,
@@ -342,6 +343,29 @@ describe("locating herdr-core", () => {
     const moduleUrl = pathToFileURL(path.join(root, "a", "hc.js")).href;
     const mac = touch(path.join(root, "dist-native", "herdr-core", "darwin-arm64", "herdr-core"));
     expect(locateHerdrCore({ env: {}, moduleUrl, platform: "darwin", arch: "arm64" })).toBe(mac);
+  });
+
+  it("stages herdr-core outside the install directory on Windows and reuses identical builds", () => {
+    const installDir = path.join(root, "install", "resources", "client-executor", "herdr-core");
+    const runtimeRoot = path.join(root, "local-app-data", "NexBotClient", "runtime", "herdr-core");
+    const exePath = touch(path.join(installDir, "herdr-core.exe"));
+    writeFileSync(exePath, "herdr-binary-v1");
+    touch(path.join(installDir, "conpty", "x64", "OpenConsole.exe"));
+    writeFileSync(path.join(installDir, "manifest.json"), '{"version":"0.1.21"}');
+
+    const staged = stageHerdrCoreForRuntime(exePath, { platform: "win32", env: {}, targetRoot: runtimeRoot });
+    expect(staged.startsWith(runtimeRoot)).toBe(true);
+    expect(staged).not.toBe(exePath);
+    expect(existsSync(staged)).toBe(true);
+    expect(existsSync(path.join(path.dirname(staged), "conpty", "x64", "OpenConsole.exe"))).toBe(true);
+
+    // Identical source binary reuses the same staged path, and staging is idempotent.
+    expect(stageHerdrCoreForRuntime(exePath, { platform: "win32", env: {}, targetRoot: runtimeRoot })).toBe(staged);
+    expect(stageHerdrCoreForRuntime(staged, { platform: "win32", env: {}, targetRoot: runtimeRoot })).toBe(staged);
+
+    // Explicit override and non-Windows platforms leave the binary path untouched.
+    expect(stageHerdrCoreForRuntime(exePath, { platform: "win32", env: { NEX_HERDR_CORE_PATH: exePath }, targetRoot: runtimeRoot })).toBe(exePath);
+    expect(stageHerdrCoreForRuntime(exePath, { platform: "darwin", env: {}, targetRoot: runtimeRoot })).toBe(exePath);
   });
 });
 

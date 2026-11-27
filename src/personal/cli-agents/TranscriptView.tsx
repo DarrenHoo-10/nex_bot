@@ -3,13 +3,13 @@ import { transcriptRows } from "./transcript";
 // The chat-style record of a session: the newest page over HTTP, then pushes
 // from the stream. Older pages load on request and keep the reader's place.
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { completedCliReplies, isInterruptRecord, unwrapPastedContent, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
+import { CLI_AGENT_MESSAGE_TOOL, completedCliReplies, isInterruptRecord, normalizeCliTaskItem, unwrapPastedContent, type CliEngine, type CliItem, type CliSessionKey } from "../../../shared/cli-agents";
 import { MessageImages } from "../components/MessageImages";
 import { parseMessageMedia } from "../message-media";
 import { AGENT_LABEL } from "./session-model";
 import { BOTTOM_FOLLOW_THRESHOLD, followBottomGrowth, useBottomFollowResize } from "../../lib/bottom-follow";
 import {HarnessMark} from "./tokendance/HarnessMark";
-import { Blocks, Brain, Check, ChevronDown, ChevronRight, Copy, FilePenLine, FileText, GitBranch, Languages, LoaderCircle, Search, SquareTerminal, Wrench, X, type LucideIcon } from "lucide-react";
+import { Blocks, Brain, Check, ChevronDown, ChevronRight, Copy, FilePenLine, FileText, GitBranch, Languages, LoaderCircle, MessageSquare, Search, SquareTerminal, Wrench, X, type LucideIcon } from "lucide-react";
 import { useCopyFeedback } from "../../lib/copy-text";
 import { useChineseReply } from "./use-chinese-reply";
 import { AnnotatedMessage } from "./AnnotatedMessage";
@@ -67,10 +67,11 @@ const OLDER_SCROLL_PX = 160;
 // AgentDesktop imports this page, so its message renderer is loaded lazily.
 const RichText = lazy(() => import("../AgentDesktop").then((module) => ({ default: module.RichText })));
 
-type ToolCategory = "shell" | "read" | "edit" | "search" | "mcp" | "thinking" | "other";
+type ToolCategory = "shell" | "read" | "edit" | "search" | "mcp" | "message" | "thinking" | "other";
 
 function toolCategory(item: ActivityItem): ToolCategory {
   if (item.kind === "thinking") return "thinking";
+  if (item.name === CLI_AGENT_MESSAGE_TOOL) return "message";
   const name = item.name.toLowerCase();
   if (/^(bash|shell|exec|terminal|command|run_command|device\.exec)/.test(name)) return "shell";
   if (/^(read|view|cat|ls|list|glob|file_read|read_file)/.test(name)) return "read";
@@ -86,6 +87,7 @@ const CATEGORY_ICON: Record<ToolCategory, LucideIcon> = {
   edit: FilePenLine,
   search: Search,
   mcp: Blocks,
+  message: MessageSquare,
   thinking: Brain,
   other: Wrench,
 };
@@ -96,6 +98,7 @@ const CATEGORY_DONE_LABEL: Record<ToolCategory, string> = {
   edit: "编辑了文件",
   search: "搜索了内容",
   mcp: "调用了工具集成",
+  message: "收到协作者消息",
   thinking: "思考过程",
   other: "执行了操作",
 };
@@ -106,6 +109,7 @@ const CATEGORY_LIVE_LABEL: Record<ToolCategory, string> = {
   edit: "正在执行编辑",
   search: "正在执行搜索",
   mcp: "正在执行工具集成",
+  message: "正在接收协作者消息",
   thinking: "正在执行思考",
   other: "正在执行操作",
 };
@@ -155,6 +159,28 @@ function Activity({ items }: { items: ActivityItem[] }) {
                   <div className="na-step-card-body">
                     <pre className="na-step-output">{item.text}</pre>
                   </div>
+                </div>
+              </details>
+            );
+          }
+          if (category === "message") {
+            const sender = item.input.trim() || "协作者";
+            const body = item.output?.trim() ?? "";
+            const preview = toolSummary(body);
+            return (
+              <details key={item.id} className="cli-step na-step is-peer-message">
+                <summary>
+                  <StepIcon size={13.5} strokeWidth={1.75} className="na-step-icon" aria-hidden="true" />
+                  <span className="na-step-line">{preview ? `${sender} · ${preview}` : sender}</span>
+                  <ChevronRight size={13} className="na-step-chevron" aria-hidden="true" />
+                </summary>
+                <div className="na-step-card">
+                  <div className="na-step-card-head">来自 {sender}</div>
+                  {body ? (
+                    <div className="na-step-card-body">
+                      <pre className="na-step-output na-step-message">{body}</pre>
+                    </div>
+                  ) : null}
                 </div>
               </details>
             );
@@ -452,7 +478,10 @@ export const TranscriptView = memo(function TranscriptView({ stream, sessionKey,
         const previous = localTail.current;
         const byMark = new Map(previous?.marks.map((mark, index) => [mark, previous.items[index]]));
         const changed = new Map(message.items.map(item => [item.id, item]));
-        const rebuilt = message.snapshot.map(mark => changed.get(mark.slice(65)) ?? byMark.get(mark));
+        const rebuilt = message.snapshot.map(mark => {
+          const entry = changed.get(mark.slice(65)) ?? byMark.get(mark);
+          return entry ? normalizeCliTaskItem(entry) : undefined;
+        });
         if (!rebuilt.every((item): item is CliItem => item !== undefined)) {
           void loadFirst();
           return;

@@ -591,10 +591,11 @@ private struct AgentReplyText: View {
 }
 
 private enum AgentToolKind {
-    case shell, read, edit, search, think, other
+    case shell, read, edit, search, message, think, other
 
     static func classify(_ name: String) -> Self {
         let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower == "agentmessage" || lower == "agent_message" { return .message }
         if lower.contains("bash") || lower.contains("shell") || lower.contains("exec") || lower.contains("terminal") || lower.contains("command") { return .shell }
         if lower.contains("edit") || lower.contains("write") || lower.contains("patch") || lower.contains("replace") || lower.contains("create") { return .edit }
         if lower.contains("read") || lower.contains("view") || lower.contains("cat") || lower == "ls" || lower.contains("list") { return .read }
@@ -608,6 +609,7 @@ private enum AgentToolKind {
         case .read: "doc.text"
         case .edit: "pencil.line"
         case .search: "magnifyingglass"
+        case .message: "bubble.left"
         case .think: "brain"
         case .other: "wrench"
         }
@@ -619,6 +621,7 @@ private enum AgentToolKind {
         case .read: "读取了文件"
         case .edit: "修改了文件"
         case .search: "搜索了内容"
+        case .message: "收到协作者消息"
         case .think: "思考了片刻"
         case .other: "执行了工具"
         }
@@ -639,6 +642,7 @@ private enum AgentToolKind {
         case .read: "Read"
         case .edit: "Edit"
         case .search: "Search"
+        case .message: "协作者消息"
         case .think: "Thinking"
         case .other: "Tool"
         }
@@ -708,8 +712,15 @@ private struct AgentToolRow: View {
     private var kind: AgentToolKind { AgentToolKind.classify(item.name) }
 
     var body: some View {
-        let backgroundTitle = CliTranscript.backgroundTaskTitle(item)
-        let lineText = backgroundTitle ?? {
+        let isMessage = kind == .message
+        let sender = item.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "协作者" : item.input
+        let backgroundTitle = isMessage ? nil : CliTranscript.backgroundTaskTitle(item)
+        let lineText: String = {
+            if isMessage {
+                let preview = CliTranscript.toolSummary(item.output ?? "")
+                return preview.isEmpty ? sender : "\(sender) · \(preview)"
+            }
+            if let backgroundTitle { return backgroundTitle }
             let s = CliTranscript.toolSummary(item.input)
             return s.isEmpty ? item.name : s
         }()
@@ -718,7 +729,7 @@ private struct AgentToolRow: View {
                 HStack(spacing: 6) {
                     Image(systemName: kind.symbol).font(.system(size: 11))
                         .foregroundStyle(item.status == .error ? Theme.danger : Theme.muted)
-                    Text(lineText).font(.system(size: 12, design: .monospaced))
+                    Text(lineText).font(isMessage ? .system(size: 12) : .system(size: 12, design: .monospaced))
                         .foregroundStyle(open ? Theme.foreground : Theme.muted)
                         .lineLimit(1)
                     Spacer(minLength: 4)
@@ -733,29 +744,38 @@ private struct AgentToolRow: View {
 
             if open {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(kind.cardHeader).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                    Text(isMessage ? "来自 \(sender)" : kind.cardHeader).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                     Divider().opacity(0.5)
-                    VStack(alignment: .leading, spacing: 6) {
-                        if !item.input.isEmpty {
-                            ToolCodeBlock(text: kind == .shell ? "$ " + item.input : item.input)
-                                .foregroundStyle(Theme.foreground)
-                        }
+                    if isMessage {
                         if let output = item.output, !output.isEmpty {
-                            ToolCodeBlock(text: output)
-                                .foregroundStyle(Theme.muted)
+                            Text(output).font(.system(size: 12.5)).foregroundStyle(Theme.foreground)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 8)
                         }
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            if !item.input.isEmpty {
+                                ToolCodeBlock(text: kind == .shell ? "$ " + item.input : item.input)
+                                    .foregroundStyle(Theme.foreground)
+                            }
+                            if let output = item.output, !output.isEmpty {
+                                ToolCodeBlock(text: output)
+                                    .foregroundStyle(Theme.muted)
+                            }
+                        }
+                        Divider().opacity(0.5)
+                        HStack(spacing: 4) {
+                            Spacer()
+                            Image(systemName: item.status == .error ? "xmark" : item.status == .running ? "clock" : "checkmark")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(item.status == .error ? "失败" : item.status == .running ? "运行中" : "成功")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundStyle(item.status == .error ? Theme.danger : item.status == .running ? Theme.nexAgentAccent : Theme.muted)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
                     }
-                    Divider().opacity(0.5)
-                    HStack(spacing: 4) {
-                        Spacer()
-                        Image(systemName: item.status == .error ? "xmark" : item.status == .running ? "clock" : "checkmark")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text(item.status == .error ? "失败" : item.status == .running ? "运行中" : "成功")
-                            .font(.system(size: 11))
-                    }
-                    .foregroundStyle(item.status == .error ? Theme.danger : item.status == .running ? Theme.nexAgentAccent : Theme.muted)
-                    .padding(.horizontal, 10).padding(.vertical, 5)
                 }
                 .background(Theme.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.border))

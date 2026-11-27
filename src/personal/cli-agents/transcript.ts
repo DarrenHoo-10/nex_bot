@@ -45,7 +45,7 @@ export function resetItems(existing: readonly CliItem[], incoming: readonly CliI
 
 /** User messages in the list, to tell whether earlier turns are in view. */
 export function userTurns(items: readonly CliItem[]): number {
-  return items.reduce((count, item) => count + (item.kind === "user" ? 1 : 0), 0);
+  return items.reduce((count, item) => count + (normalizeCliTaskItem(item).kind === "user" ? 1 : 0), 0);
 }
 
 /** Puts an older page in front. Items already shown win over the page's copy. */

@@ -65,6 +65,7 @@ import {
   HerdrCore,
   hcSocketPath,
   locateHerdrCore,
+  stageHerdrCoreForRuntime,
   type HcAttachParams,
   type HcEvent,
   type HcListResult,
@@ -837,7 +838,9 @@ export class CliAgentBridge {
 
   private binaryPath(): string | null {
     if (this.options.binary !== undefined) return this.options.binary;
-    return locateHerdrCore(this.options.env ? { env: this.options.env } : {});
+    const found = locateHerdrCore(this.options.env ? { env: this.options.env } : {});
+    if (!found) return null;
+    return stageHerdrCoreForRuntime(found, { platform: this.platform, env: this.options.env });
   }
 
   private scopeFor(): HcScope {
