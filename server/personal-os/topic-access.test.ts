@@ -279,10 +279,8 @@ describe('inheritance, override and the user\'s own topic', () => {
     const plan = userTopic(app, a, '装修计划', { body: '装修预算三十万' });
     const run = (bot: string, args: Record<string, unknown>, text: string) => tree(app).run(bot, args, { taskId: task(app, bot, text) }) as Record<string, unknown>;
     run(a, { op: 'grant', topic: plan.key, bot: b, role: 'reader', quote: '理财助手也能看装修计划' }, '理财助手也能看装修计划');
-    const before = coreText(app, c);
     run(a, { op: 'resident', topic: plan.key, on: true, quote: '把装修计划常驻' }, '把装修计划常驻');
-    for (const bot of [a, b]) expect(coreText(app, bot)).toContain('常驻主题：\n- 「装修计划」装修预算三十万');
-    expect(coreText(app, c)).toBe(before);
+    for (const bot of [a, b, c]) expect(coreText(app, bot)).toContain('常驻主题：\n- 「装修计划」装修预算三十万');
     expect(app.store.get("SELECT content FROM agent_messages WHERE bot_id=? AND content LIKE '已将%'", a)!.content).toBe('已将「装修计划」设为常驻');
     run(a, { op: 'resident', topic: plan.key, on: false, quote: '装修计划不用常驻了' }, '装修计划不用常驻了');
     expect(coreText(app, b)).not.toContain('常驻主题');

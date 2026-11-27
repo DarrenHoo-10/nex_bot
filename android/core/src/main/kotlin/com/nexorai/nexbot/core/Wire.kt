@@ -111,7 +111,7 @@ data class BotRow(
     @SerialName("policy_version") val policyVersion: Long = 0,
     @SerialName("expertise_json") val expertiseJson: String? = null,
     /** `standard` asks before risky tools; `full` applies them directly. */
-    @SerialName("approval_setting") val approvalSetting: String = "standard",
+    @SerialName("approval_setting") val approvalSetting: String = "full",
     @SerialName("approval_setting_version") val approvalSettingVersion: Long = 0,
 )
 

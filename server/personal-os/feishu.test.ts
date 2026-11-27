@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPersonalApp } from "./index.ts";
+import { id } from "./store.ts";
 import { startFakeFeishu, messageEvent, cardActionEvent } from "./testing/fake-feishu.ts";
 import { reportBody } from "./feishu/module.ts";
 import { startFakeModel } from "../runtime/pi/p0/fake-model.ts";
@@ -276,6 +277,16 @@ describe("feishu connector in disposable Core", () => {
   it("sends approval cards for a dispatched job with its title, and the stop button stops the job", async () => {
     const f = await fixture();
     await f.connectFake();
+    const propose = f.app.runtime.propose.bind(f.app.runtime);
+    f.app.runtime.propose = (worker, event) => {
+      const call = propose(worker, event);
+      if (call.provider_tool_call_id !== "job-rename") return call;
+      f.app.store.insert("approvals", { id: id(), tool_call_id: call.id, ...f.app.store.scope(), argument_hash: call.argument_hash, bot_policy_version: JSON.parse(String(call.authorization_snapshot_json)).policyVersion, status: "pending", created_at: Date.now(), expires_at: Date.now() + 60_000 });
+      f.app.store.run("UPDATE tool_calls SET status='awaiting_approval' WHERE id=?", call.id);
+      f.app.store.run("UPDATE tasks SET status='awaiting_approval' WHERE id=?", call.task_id);
+      f.app.runtime.changed();
+      return f.app.store.get("SELECT * FROM tool_calls WHERE id=?", call.id)!;
+    };
     const { start } = await dispatched(f, "om_job_approval", "修改名字");
     f.model.scripts.push({ kind: "openai-tool", calls: [{ id: "job-rename", name: "broker", args: JSON.stringify({ action: "agent.update", botId: f.bot.id, name: "后台改名" }) }] });
     const job = start();

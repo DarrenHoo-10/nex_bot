@@ -573,7 +573,7 @@ ${commonToolPrompt(granted, origin)}${role ? "\n" + role : ""}
 可用连接器：${JSON.stringify(this.connectorDirectory?.(String(bot.id)) ?? [])}。需要时查询 connector 工具用法。
 内置通用技能目录：${JSON.stringify(skillList())}。与任务相关时调用 skill.read(skillId) 阅读操作说明。
 可求助的 Agent 最新公开目录（传稳定 id 作为 botId）：\n${JSON.stringify(peers)}
-长期记忆（包含所有可用记忆；用户要求记住或整理时可用 memory.write / memory.core.update / memory.topic，不要主动归组，需要过去的细节时先用 memory.search 查）：\n${this.memory.prompt(String(bot.id))}`;
+长期记忆（只包含核心记忆摘要，全部可用记忆和历史按需检索；用户要求记住或整理时可用 memory.write / memory.core.update / memory.topic，不要主动归组，需要过去的细节时先用 memory.search 查，不要猜）：\n${this.memory.prompt(String(bot.id))}`;
     // The memories recalled for this task's input: fixed when the task's first request is made, never recomputed here.
     const recalled = this.recalls.block(taskId);
     const topicVolatile = topic ? `\n当前话题上下文：${JSON.stringify({

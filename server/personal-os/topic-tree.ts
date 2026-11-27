@@ -271,8 +271,7 @@ export class TopicTree {
     return this.store.all("SELECT m.*,t.anchor,t.aliases_json,t.overview_stale FROM assistant_topics t JOIN assistant_memories m ON m.id=t.topic_id WHERE t.owner='user' AND t.parent_id IS NULL AND t.special IS NULL AND m.status='active' ORDER BY m.rowid").flatMap((row): Array<{ row: Row; kind: 'blocked' | 'rival' }> => {
       const role = roles.get(String(row.id));
       if (role === undefined) return [];
-      if (role !== 'none') return [{ row, kind: 'rival' as const }];
-      return this.memory.access.pickSteward(String(row.id)) !== undefined ? [{ row, kind: 'blocked' as const }] : [];
+      return [{ row, kind: 'rival' as const }];
     });
   }
   /**

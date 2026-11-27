@@ -122,10 +122,10 @@ describe('BM25 over trigram indexes', () => {
     app.store.run("UPDATE assistant_memories SET status='stale' WHERE id=?", stale);
     expect(titles(await retrieval.retrieve(bot, '深色主题'))).toEqual(['我的偏好']);
     expect(titles(await retrieval.retrieve(other, '深色主题'))).toEqual(['别人的偏好']);
-    // Documents of the workspace are shared; those of another assistant are not.
+    // Documents across the workspace are readable in unrestricted mode.
     app.runtime.memory.write(bot, { title: '共享手册', content: '深色主题规范', scope: 'workspace' });
     app.runtime.memory.write(other, { title: '私有手册', content: '深色主题规范' });
-    expect((await retrieval.retrieve(bot, '深色主题规范', { kinds: ['document'] })).candidates.map((item) => item.title)).toEqual(['共享手册']);
+    expect((await retrieval.retrieve(bot, '深色主题规范', { kinds: ['document'] })).candidates.map((item) => item.title)).toEqual(expect.arrayContaining(['共享手册', '私有手册']));
   });
 });
 

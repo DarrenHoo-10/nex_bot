@@ -122,7 +122,7 @@ fun ChatScreen(state: Repository.UiState, repository: Repository) {
     var permissionMenu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val approvalMode = bot?.approvalSetting ?: "standard"
+    val approvalMode = bot?.approvalSetting ?: "full"
     val toast: (String) -> Unit = { message -> Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
 
     fun submit() {

@@ -91,7 +91,7 @@ describe("Personal AI OS production workflows in isolated fixtures", () => {
     await wait(() => f.app.node.status === "已连接");
     const [device] = f.app.gateway.inventory();
     // The delay is what makes the calls overlap; full access keeps it from waiting on approval.
-    f.app.agents.updateApprovalMode({ id: botId, mode: "full", version: 0 });
+    f.app.agents.updateApprovalMode({ id: botId, mode: "full", version: 1 });
     const slow = process.platform === "win32" ? "Start-Sleep -Milliseconds 700; 'first'" : "sleep 0.7; echo first";
     const fast = process.platform === "win32" ? "'second'" : "echo second";
     f.fake.scripts.push({ kind: "openai-tool", calls: [

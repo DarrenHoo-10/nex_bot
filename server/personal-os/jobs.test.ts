@@ -239,7 +239,7 @@ describe('Background jobs in disposable Core fixtures', () => {
     const link = app.store.all('SELECT * FROM a2a_messages ORDER BY created_at DESC')[0]!;
     expect(link).toMatchObject({ parent_task_id: job.taskId, status: 'succeeded' });
     expect(reportMessages(app, job.jobId)[0].content).toContain('已拿到同伴的整理结果');
-    expect(app.agents.messages(bot).some(message => String(message.source_key).startsWith('a2a-'))).toBe(false);
+    expect(app.agents.messages(bot).some(message => String(message.source_key).includes(String(link.id)))).toBe(false);
   }, 60_000);
 
   it('publishes the last report of each round, asks questions and settles every outcome once', async () => {

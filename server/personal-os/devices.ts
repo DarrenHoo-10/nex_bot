@@ -8,7 +8,9 @@ import { parseCliAgentsCapability, type CliAgentsCapability, type CoreCliMessage
 import type { CliAgentHub } from "./cli-agents/hub.ts";
 
 /** How long a device has to take a delivered call. Sent as a duration (`leaseMs`) so the device never has to compare its clock with Core's. */
-export const DEVICE_LEASE_MS = 120_000;
+export const DEVICE_LEASE_MS = 30_000;
+/** Overall device call execution deadline (allows long-running commands up to 110 s without violating the 30 s take-lease CHECK constraint). */
+export const DEVICE_DEADLINE_MS = 120_000;
 
 export class DeviceGateway {
   readonly sockets = new Map<string, WebSocket>();
@@ -175,10 +177,10 @@ export class DeviceGateway {
     if (old?.status === "unknown") { this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=?", call.id); throw new Error("设备执行结果未知，禁止重放"); }
     if (this.store.get("SELECT id FROM device_calls WHERE device_id=? AND status='unknown' AND id!=?", deviceId, call.id)) throw new Error("设备上有一次结果未知的调用，需在设备上核实后才能继续执行");
     if (this.store.get("SELECT id FROM device_calls WHERE device_id=? AND status IN ('delivered','running') AND id!=?", deviceId, call.id)) throw new Error("设备仍在执行上一项调用，请稍后重试");
-    const deadline = now() + DEVICE_LEASE_MS, grantId = id();
+    const issued = now(), leaseExpires = issued + DEVICE_LEASE_MS, deadline = issued + DEVICE_DEADLINE_MS, grantId = id();
     if (!old) this.store.transaction(() => {
-      this.store.insert("device_grants", { id: grantId, ...this.store.scope(), bot_id: call.bot_id, device_id: deviceId, local_grant_id: "shared", local_policy_version: local.policy_version, scope_json: local.scope_json, status: "active", created_at: now(), expires_at: deadline });
-      this.store.insert("device_calls", { id: call.id, ...this.store.scope(), bot_id: call.bot_id, device_id: deviceId, grant_id: grantId, local_grant_id: "shared", grant_version: 1, local_policy_version: local.policy_version, status: "delivered", delivery_count: 1, lease_seq: 1, lease_issued_at: now(), lease_expires_at: deadline, deadline_at: deadline, created_at: now() - 1 });
+      this.store.insert("device_grants", { id: grantId, ...this.store.scope(), bot_id: call.bot_id, device_id: deviceId, local_grant_id: "shared", local_policy_version: local.policy_version, scope_json: local.scope_json, status: "active", created_at: issued, expires_at: deadline });
+      this.store.insert("device_calls", { id: call.id, ...this.store.scope(), bot_id: call.bot_id, device_id: deviceId, grant_id: grantId, local_grant_id: "shared", grant_version: 1, local_policy_version: local.policy_version, status: "delivered", delivery_count: 1, lease_seq: 1, lease_issued_at: issued, lease_expires_at: leaseExpires, deadline_at: deadline, created_at: issued - 1 });
     });
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -187,9 +189,9 @@ export class DeviceGateway {
         this.store.run("UPDATE tool_calls SET status='unknown' WHERE id=? AND result_json IS NULL", call.id);
         reject(new Error("设备未返回确认，结果未知；不会自动再次执行"));
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reconcile", calls: [{ id: call.id, argument_hash: call.argument_hash }] }));
-      }, 125_000);
+      }, DEVICE_DEADLINE_MS + 5_000);
       this.pending.set(String(call.id), { resolve, reject, timer, deviceId });
-      ws.send(JSON.stringify({ type: "call", callId: call.id, canonicalEnvelope: call.canonical_envelope, argumentHash: call.argument_hash, localPolicyVersion: local.policy_version, leaseSeq: 1, leaseMs: DEVICE_LEASE_MS, leaseExpiresAt: deadline, deadlineAt: deadline, args }));
+      ws.send(JSON.stringify({ type: "call", callId: call.id, canonicalEnvelope: call.canonical_envelope, argumentHash: call.argument_hash, localPolicyVersion: local.policy_version, leaseSeq: 1, leaseMs: DEVICE_LEASE_MS, leaseExpiresAt: leaseExpires, deadlineAt: deadline, args }));
     });
   }
   cancelTask(taskId: string) {
