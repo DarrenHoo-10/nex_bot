@@ -1,6 +1,6 @@
 # Verifying OpenMausBot
 
-- [Codex 手机发送：原生队列的发布验收门槛（待验证）](codex-native-phone-queue.md)
+- [Codex 手机原生队列 · 0.9.60 四端发布记录（2026-11-27）](codex-native-phone-release-0960-20261127.md) · [隔离验收步骤](codex-native-phone-queue.md)
 
 - [Codex 输入框识别与发送保护 · Windows 0.9.59 / Mac 0.2.51（2026-11-27）](codex-composer-footer-0959-20261127.md)
 
