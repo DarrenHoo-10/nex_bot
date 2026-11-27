@@ -132,16 +132,25 @@ describe('migration 40 and promotion', () => {
     expect(meta(app, facts.key).owner).toBe('bot');
     expect(tree(app).promote(a)).toBe(1); expect(tree(app).promote(b)).toBe(1);
     expect(meta(app, facts.key)).toMatchObject({ owner: 'user', maintainer: a }); expect(meta(app, mixed.key).owner).toBe('bot'); expect(meta(app, mine.key).owner).toBe('user');
-    // Only the assistant they came from may see them, exactly as before.
+    // Promoted user topics keep core/lines unchanged and become readable across assistants in unrestricted mode.
     expect(roleOf(app, facts.key, a)).toBe('steward'); expect(roleOf(app, facts.key, b)).toBe('none'); expect(roleOf(app, mine.key, a)).toBe('none');
-    expect(await snapshot()).toBe(before);
+    const afterPromote = JSON.parse(await snapshot()) as { recall: unknown[][][]; core: string[]; lines: unknown[] };
+    const beforeParsed = JSON.parse(before) as { recall: unknown[][][]; core: string[]; lines: unknown[] };
+    expect(afterPromote.core).toEqual(beforeParsed.core);
+    expect(afterPromote.lines).toEqual(beforeParsed.lines);
+    expect(afterPromote.recall[0][1]).toHaveLength(1);
+    expect(afterPromote.recall[1][0]).toHaveLength(1);
     expect(personal(app).topics.topics(a).map((row) => row.id)).toEqual(expect.arrayContaining([facts.key, mixed.key]));
     // Twice is the same; and the move is on record, revertible while nobody else was let in.
     expect(tree(app).promote(a)).toBe(0);
     const [move] = app.store.all("SELECT * FROM assistant_topic_moves WHERE bot_id=? AND action='promote'", a);
     expect(move).toMatchObject({ topic_id: facts.key, actor: 'auto' });
     tree(app).run(a, { op: 'revert', moveId: move.id });
-    expect(meta(app, facts.key).owner).toBe('bot'); expect(access(app).rows(facts.key)).toHaveLength(0); expect(await snapshot()).toBe(before);
+    expect(meta(app, facts.key).owner).toBe('bot'); expect(access(app).rows(facts.key)).toHaveLength(0);
+    const afterRevert = JSON.parse(await snapshot()) as { recall: unknown[][][]; core: string[]; lines: unknown[] };
+    expect(afterRevert.core).toEqual(beforeParsed.core);
+    expect(afterRevert.lines).toEqual(beforeParsed.lines);
+    expect(afterRevert.recall[1][0]).toEqual([]);
   }, 90000);
 
   it('adds its tables and columns once, changes no row, and runs again without changing anything', async () => {

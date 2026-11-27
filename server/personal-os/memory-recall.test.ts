@@ -415,7 +415,7 @@ describe('working notes per conversation', () => {
     // the second turn folds the first into a turn summary, which carries a working note. The small budget keeps the
     // tail of full turns to the latest one.
     const folding = { contextBudget: 8000 };
-    const bulk = (label: string) => label + ' ' + '合成资料'.repeat(4200);
+    const bulk = (label: string) => label + ' ' + '合成资料'.repeat(4500);
     const long = '长笔记条目：'.repeat(300);
     const summarizer = (chat: Fixture['chat'], compression: () => unknown) => chat.setOverride((body) => {
       if (body.stream) return undefined;
