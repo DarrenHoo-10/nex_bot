@@ -1,5 +1,7 @@
 # Verifying OpenMausBot
 
+- [目录选择器优化、移动端体验修复与 AGY/Codex 桌面会话改进 · 0.9.61 四端发布记录（2026-11-27）](directory-picker-release-0961-20261127.md)
+
 - [Codex 手机原生队列 · 0.9.60 四端发布记录（2026-11-27）](codex-native-phone-release-0960-20261127.md) · [隔离验收步骤](codex-native-phone-queue.md)
 
 - [Codex 输入框识别与发送保护 · Windows 0.9.59 / Mac 0.2.51（2026-11-27）](codex-composer-footer-0959-20261127.md)
