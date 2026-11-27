@@ -464,7 +464,8 @@ describe("Codex session mapping", () => {
     const pending = t.call("send", { ref: result.ref as `codex:${string}`, text: "the first message" });
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(terminal.sent).toHaveLength(0);
-    terminal.screen = "› Explain this codebase\nGPT-6.2-Astra max fast · worktree\n⚠ 1 warning · f2 to view";
+    terminal.status = { state: "done", app: "codex" };
+    terminal.screen = "› Ask Codex to do anything\n\n  GPT-6.2-Astra xhigh fast · D:\\work\\example · Example\n  ← for agents · ? for shortcuts                 ⚠ 2 warnings · f2 to view";
     await until(() => terminal.sent.length === 1);
     expect(terminal.pressed).toEqual([]);
     expect(await pending).toMatchObject({ ok: true, result: { delivery: "unconfirmed", started: false } });
@@ -490,6 +491,11 @@ describe("Codex session mapping", () => {
     for (const screen of ["› 1. Trust this folder\nPress Enter to continue", "› someone else's draft\nGPT-6.2-Astra · worktree"]) {
       terminal.screen = screen;
       expect(await t.call("send", { ref, text: "hello" })).toMatchObject({ ok: false });
+    }
+    terminal.screen = "› Ask Codex to do anything\n  GPT-6.2-Astra · worktree\n  ? for shortcuts";
+    for (const state of ["blocked", "working"]) {
+      terminal.status = { state, app: "codex" };
+      expect(await t.call("send", { ref, text: "hello" })).toMatchObject({ ok: false, error: { code: "read_only" } });
     }
     expect(terminal.sent).toHaveLength(0);
     expect(terminal.pressed).toEqual([]);

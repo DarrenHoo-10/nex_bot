@@ -4,17 +4,42 @@ import { setTimeout as delay } from "node:timers/promises";
 // The focused menu option also starts with ›. Accept an *empty composer*, not a
 // generic chevron, banner, status, or previously painted prompt in scrollback.
 const EMPTY_COMPOSER = /^›(?:\s+(?:Explain this codebase|Summarize recent commits|Implement \{feature\}|Find and fix a bug in @filename|Improve documentation in @filename|Write tests for @filename|Run \/review on my current changes|Use \/skills to list available skills|Ask Codex to do anything|Ask a follow-up question|Message Codex))?$/i;
-const IDLE_FOOTER = /^(?:\? for shortcuts\b|\d{1,3}% (?:context )?left\b|(?:gpt-|o[1-9]\b|codex-)[\w.:-]*(?:\s+[^·]*)?\s+·\s+\S)/i;
+const IDLE_STATUS = /^(?:\d{1,3}% (?:context )?left\b|(?:gpt-|o[1-9]\b|codex-)[\w.:-]*(?:\s+[^·]*)?\s+·\s+\S)/i;
+const SHORTCUTS = /^(?:← for agents\s*·\s*)?\? for shortcuts$/i;
+const WARNING_BADGE = /(?:^|\s+)⚠\s*\d+ warnings?\s*·\s*f2 to view$/i;
 const DIALOG = /(?:^|\n)\s*(?:›\s*)?\d+[.)]\s|press enter to (?:continue|confirm)|enter to confirm|esc to (?:cancel|interrupt)|do you trust|update available/i;
 
-export function codexEmptyComposer(screen: string): string | null {
-  const lines = screen.trimEnd().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  // The warning badge sits on its own line below the model/worktree footer in 0.172.
-  if (/^⚠\s*\d+ warnings?\s*·\s*f2 to view$/i.test(lines.at(-1) ?? "")) lines.pop();
-  const footer = lines.at(-1) ?? "";
-  const prompt = lines.at(-2) ?? "";
-  if (!IDLE_FOOTER.test(footer) || !EMPTY_COMPOSER.test(prompt) || DIALOG.test(lines.slice(-12).join("\n"))) return null;
-  return `${prompt}\n${footer}`;
+function idleStatus(rows: string[], cols: number): boolean {
+  if (!rows.length || rows.length > 4) return false;
+  for (let i = 1; i < rows.length; i++) {
+    const previous = rows[i - 1];
+    const next = rows[i].trimStart();
+    // A wrapped status continues at the right margin or across a field separator.
+    // A second status header can be the real footer below a status-looking draft.
+    if (!rows[i].startsWith("  ") || IDLE_STATUS.test(next)) return false;
+    if (previous.length !== cols && !next.startsWith("· ") && !(previous.endsWith(" ·") && /^(?:~(?:[/\\]|$)|\/|[A-Za-z]:[/\\])/.test(next))) return false;
+  }
+  return IDLE_STATUS.test(rows.map((line) => line.trimStart()).join(" "));
+}
+
+export function codexEmptyComposer(screen: string, cols: number): string | null {
+  const lines = screen.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+  // A chevron inside an indented draft continuation is not a second input box.
+  const box = lines.findLastIndex((line) => line.startsWith("›"));
+  if (box < 0 || !EMPTY_COMPOSER.test(lines[box]) || DIALOG.test(lines.slice(-12).join("\n"))) return null;
+
+  const footer = lines.slice(box + 1);
+  const last = footer.pop();
+  if (!last) return null;
+  const withoutBadge = last.replace(WARNING_BADGE, "");
+  if (withoutBadge) footer.push(withoutBadge);
+  const shortcuts = SHORTCUTS.test(footer.at(-1)?.trimStart() ?? "");
+  if (shortcuts) footer.pop();
+
+  // Only known footer rows may follow an empty box. Never skip intervening text:
+  // a multiline draft can itself start with the placeholder or contain a status line.
+  if (footer.length ? !idleStatus(footer, cols) : !shortcuts) return null;
+  return lines.slice(box).join("\n");
 }
 
 /** A read-only receipt on the exact rollout discovered for the native id. Hold

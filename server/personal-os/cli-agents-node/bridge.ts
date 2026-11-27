@@ -1739,7 +1739,10 @@ export class CliAgentBridge {
           const [terminal, screen] = await Promise.all([hc.get(address), hc.read(address, { lines: 0 })]);
           check();
           if (terminal.state !== "live" || terminal.labels["nexbot.native"] !== parseCliRef(args.ref)?.nativeId) throw new OpFailure("stopped");
-          const frame = terminal.status === "blocked" || this.discovery.get(args.ref)?.state === "waiting" ? null : codexEmptyComposer(screen.text);
+          const { status } = terminal;
+          const state = status && typeof status === "object" && "state" in status ? status.state : status;
+          const busy = state === "blocked" || state === "working" || this.discovery.get(args.ref)?.state === "waiting";
+          const frame = busy ? null : codexEmptyComposer(screen.text, terminal.cols);
           if (frame && frame === previous) break;
           if (frame && !receipt) receipt = await codexReceipt(this.discovery.transcriptFor(args.ref));
           previous = frame;
