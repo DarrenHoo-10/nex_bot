@@ -128,6 +128,15 @@ struct AgentNewSessionPage: View {
                 message = $0.adding(to: message, engine: engine); focused = true
             }
         }
+        #if os(iOS)
+        .sheet(isPresented: presenting(.directory)) {
+            AgentDirectoryBrowser(model: model, deviceId: $deviceId, start: dir) { choice in
+                dir = choice; picker = nil
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        #endif
         .onAppear { setUp(); focused = true }
         .onChange(of: model.devices.map(\.id)) { _, _ in setUp() }
         .onChange(of: deviceId) { previous, _ in if !previous.isEmpty { dir = nil } }
@@ -178,15 +187,13 @@ struct AgentNewSessionPage: View {
             .disabled(deviceId.isEmpty)
             .help(dir.map { ($0.create ? "将新建 " : "") + $0.path } ?? "选择工作目录")
             .accessibilityLabel("工作目录")
+            #if os(macOS)
             .popover(isPresented: presenting(.directory), arrowEdge: .bottom) {
                 AgentDirectoryBrowser(model: model, deviceId: $deviceId, start: dir) { choice in
                     dir = choice; picker = nil
                 }
-                #if os(iOS)
-                .frame(width: 310, height: 400)
-                .presentationCompactAdaptation(.popover)
-                #endif
             }
+            #endif
 
             Menu {
                 ForEach(startable, id: \.self) { e in
@@ -393,59 +400,148 @@ struct AgentDirectoryBrowser: View {
     @State private var known: [String: Bool] = [:]
     @State private var began = false
     @State private var hovered: String?
+    #if os(iOS)
+    @Environment(\.dismiss) private var dismiss
+    #endif
 
     private var recents: [String] { CliSessions.recentCwds(model.sessions, deviceId: deviceId) }
     private var parsed: CliPaths.Query { CliPaths.read(query, current: current) }
     private var missing: Bool { !current.isEmpty && listing?.path == current && listing?.exists == false }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            devices
-            HStack(spacing: 6) {
-                Button { if let up = CliPaths.parent(current) { go(up) } else { go("") } } label: { Image(systemName: "arrow.up").frame(width: 26, height: 26) }
-                    .buttonStyle(.bordered).disabled(current.isEmpty).accessibilityLabel("上一级")
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 2) {
-                            Button("全部") { go("") }.buttonStyle(.plain).font(.caption).foregroundStyle(current.isEmpty ? Theme.foreground : Theme.muted)
-                            ForEach(Array(CliPaths.crumbs(current).enumerated()), id: \.offset) { index, crumb in
-                                Image(systemName: "chevron.right").font(.system(size: 8)).foregroundStyle(Theme.muted)
-                                Button(crumb.label) { go(crumb.path) }.buttonStyle(.plain).font(.caption.weight(index == CliPaths.crumbs(current).count - 1 ? .semibold : .regular))
-                                    .foregroundStyle(index == CliPaths.crumbs(current).count - 1 ? Theme.foreground : Theme.muted).id(index)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                #if os(iOS)
+                HStack(spacing: 8) {
+                    Text("选择目录").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.foreground)
+                    if model.devices.count == 1, let d = model.device(deviceId) {
+                        Label(d.name, systemImage: "desktopcomputer")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Theme.secondary, in: Capsule())
+                    }
+                    Spacer(minLength: 4)
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Theme.muted)
+                            .frame(width: 28, height: 28)
+                            .background(Theme.secondary, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭")
+                }
+                #endif
+                devices
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(Theme.muted)
+                    TextField(current.isEmpty ? "搜索最近目录或输入路径" : "搜索、新建文件夹或输入路径", text: $query)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13.5))
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .onSubmit(submit)
+                    if !query.isEmpty {
+                        Button { query = "" } label: {
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(Theme.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("清空搜索")
+                    }
+                }
+                .padding(.horizontal, 11)
+                #if os(iOS)
+                .frame(height: 40)
+                #else
+                .frame(height: 36)
+                #endif
+                .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                HStack(spacing: 6) {
+                    Button { if let up = CliPaths.parent(current) { go(up) } else { go("") } } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(current.isEmpty ? Theme.muted.opacity(0.45) : Theme.foreground)
+                            .frame(width: 28, height: 28)
+                            .background(Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain).disabled(current.isEmpty).accessibilityLabel("上一级")
+                    ScrollViewReader { proxy in
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 3) {
+                                Button("全部") { go("") }.buttonStyle(.plain)
+                                    .font(.system(size: 12.5, weight: current.isEmpty ? .semibold : .medium))
+                                    .foregroundStyle(current.isEmpty ? Theme.foreground : Theme.muted)
+                                ForEach(Array(CliPaths.crumbs(current).enumerated()), id: \.offset) { index, crumb in
+                                    Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.muted.opacity(0.5))
+                                    Button(crumb.label) { go(crumb.path) }.buttonStyle(.plain)
+                                        .font(.system(size: 12.5, weight: index == CliPaths.crumbs(current).count - 1 ? .semibold : .medium))
+                                        .foregroundStyle(index == CliPaths.crumbs(current).count - 1 ? Theme.foreground : Theme.muted)
+                                        .id(index)
+                                }
                             }
                         }
+                        // a deep folder keeps its own name in view
+                        .onChange(of: current) { _, _ in
+                            let last = CliPaths.crumbs(current).count - 1
+                            if last >= 0 { proxy.scrollTo(last, anchor: .trailing) }
+                        }
                     }
-                    // a deep folder keeps its own name in view
-                    .onChange(of: current) { _, _ in proxy.scrollTo(CliPaths.crumbs(current).count - 1, anchor: .trailing) }
                 }
             }
-            TextField(current.isEmpty ? "搜索最近目录，或输入路径" : "搜索，或输入新文件夹名、路径", text: $query)
-                .textFieldStyle(.roundedBorder).autocorrectionDisabled()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
-                .onSubmit(submit)
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+            Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    if loading && rows.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(.top, 20) }
-                    if missing && query.isEmpty { Text("这个文件夹还不存在，开始会话时会新建").font(.caption).foregroundStyle(Theme.muted).padding(8) }
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if loading && rows.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(.top, 24) }
+                    if missing && query.isEmpty {
+                        Text("这个文件夹还不存在，开始会话时会新建")
+                            .font(.caption).foregroundStyle(Theme.muted)
+                            .frame(maxWidth: .infinity).padding(.vertical, 20)
+                    }
                     ForEach(rows) { row in rowView(row) }
                     if !loading, rows.isEmpty, !current.isEmpty, !missing {
-                        Text(query.isEmpty ? "没有子文件夹" : "没有匹配的文件夹").font(.caption).foregroundStyle(Theme.muted).padding(8)
+                        Text(query.isEmpty ? "没有子文件夹" : "没有匹配的文件夹")
+                            .font(.caption).foregroundStyle(Theme.muted)
+                            .frame(maxWidth: .infinity).padding(.vertical, 24)
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
             }
             .frame(minHeight: 160)
             Divider()
-            HStack(spacing: 10) {
-                Text(current.isEmpty ? "选择一个文件夹" : current).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted)
-                    .lineLimit(1).truncationMode(.head)
-                Spacer()
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if current.isEmpty {
+                        Text("选择一个文件夹").font(.system(size: 12.5)).foregroundStyle(Theme.muted)
+                    } else {
+                        Text(CliPaths.name(current))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.foreground)
+                            .lineLimit(1)
+                        if let parent = CliPaths.parent(current) {
+                            Text(parent)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+                Spacer(minLength: 4)
                 Button(missing ? "新建并使用" : "使用此目录") { choose(AgentDirChoice(path: current, create: missing)) }
                     .buttonStyle(.borderedProminent).tint(Theme.nexAgentSolid).disabled(current.isEmpty)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
         }
-        .padding(14)
         #if os(macOS)
         .frame(width: 440, height: 460)
         #endif
@@ -461,20 +557,25 @@ struct AgentDirectoryBrowser: View {
     @ViewBuilder private var devices: some View {
         if model.devices.count > 1 {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     ForEach(model.devices) { d in
                         Button { deviceId = d.id; go("") } label: {
-                            Label(d.name + (d.online ? "" : "（离线）"), systemImage: "desktopcomputer").font(.caption)
-                                .padding(.horizontal, 9).padding(.vertical, 4)
-                                .background(d.id == deviceId ? Theme.successSoft : .clear, in: Capsule())
-                                .overlay(Capsule().strokeBorder(d.id == deviceId ? Theme.success : Theme.border))
+                            Label(d.name + (d.online ? "" : "（离线）"), systemImage: "desktopcomputer").font(.system(size: 12, weight: d.id == deviceId ? .semibold : .medium))
+                                .foregroundStyle(d.id == deviceId ? Theme.nexAgentAccent : Theme.foreground)
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(d.id == deviceId ? Theme.nexAgentSoft : .clear, in: Capsule())
+                                .overlay(Capsule().strokeBorder(d.id == deviceId ? Theme.nexAgentAccent : Theme.border))
                         }
                         .buttonStyle(.plain).disabled(!d.online)
                     }
                 }
             }
-        } else if let d = model.device(deviceId) {
-            Label(d.name, systemImage: "desktopcomputer").font(.caption).foregroundStyle(Theme.muted)
+        } else {
+            #if os(macOS)
+            if let d = model.device(deviceId) {
+                Label(d.name, systemImage: "desktopcomputer").font(.caption).foregroundStyle(Theme.muted)
+            }
+            #endif
         }
     }
 
@@ -499,7 +600,9 @@ struct AgentDirectoryBrowser: View {
             out += recents.filter { matches(CliPaths.name($0)) }.prefix(current.isEmpty ? 6 : 3).map { Row(kind: .folder(git: false, recent: true), path: $0, name: CliPaths.name($0)) }
         }
         if listing?.path == current {
-            out += (listing?.entries ?? []).filter { matches($0.name) }.map { Row(kind: .folder(git: $0.git, recent: false), path: $0.path, name: $0.name) }
+            out += (listing?.entries ?? [])
+                .filter { (!$0.name.hasPrefix(".") || text.hasPrefix(".")) && matches($0.name) }
+                .map { Row(kind: .folder(git: $0.git, recent: false), path: $0.path, name: $0.name) }
         }
         if !current.isEmpty, !raw.isEmpty, CliPaths.validName(raw), !(listing?.entries ?? []).contains(where: { $0.name.lowercased() == text }) {
             out.append(Row(kind: .create, path: CliPaths.join(current, raw), name: raw))
@@ -507,42 +610,64 @@ struct AgentDirectoryBrowser: View {
         return out
     }
 
-    @ViewBuilder private func rowView(_ row: Row) -> some View {
-        HStack(spacing: 8) {
-            Button { act(row) } label: {
-                HStack(spacing: 8) {
-                    switch row.kind {
-                    case .create:
-                        Image(systemName: "folder.badge.plus").foregroundStyle(Theme.success)
-                        (Text("新建文件夹 ") + Text(row.name).bold()).foregroundStyle(Theme.foreground)
-                    case .go:
-                        Image(systemName: "arrow.right").foregroundStyle(Theme.muted)
-                        (Text("前往 ") + Text(row.path).bold()).lineLimit(1)
-                    case .folder(let git, let recent):
-                        Image(systemName: recent ? "clock" : git ? "folder.fill.badge.gearshape" : "folder").foregroundStyle(Theme.muted)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(row.name).lineLimit(1)
-                            if recent { Text(row.path).font(.caption2).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.head) }
-                        }
-                        if git { Text("Git").font(.system(size: 10)).foregroundStyle(Theme.muted).padding(.horizontal, 5).background(Theme.wash, in: RoundedRectangle(cornerRadius: 4)) }
-                        Spacer(minLength: 4)
-                        Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(Theme.muted.opacity(0.6))
-                    }
-                }
-                .font(.system(size: 13))
-                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if case .folder = row.kind {
-                Button { choose(AgentDirChoice(path: row.path, create: false)) } label: { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.nexAgentAccent).help("使用这个目录").accessibilityLabel("使用 \(row.path)")
-                    #if os(macOS)
-                    .opacity(hovered == row.id ? 1 : 0)
-                    #endif
-            }
+    private func iconSymbol(_ kind: Row.Kind) -> (name: String, accent: Bool) {
+        switch kind {
+        case .create: return ("folder.badge.plus", true)
+        case .go: return ("arrow.right", false)
+        case .folder(let git, let recent): return (recent ? "clock" : git ? "folder.fill.badge.gearshape" : "folder", git)
         }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 8).fill(hovered == row.id ? Theme.wash : Color.clear))
+    }
+
+    @ViewBuilder private func rowView(_ row: Row) -> some View {
+        let icon = iconSymbol(row.kind)
+        Button { act(row) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon.name)
+                    .font(.system(size: 13))
+                    .foregroundStyle(icon.accent ? Theme.nexAgentAccent : Theme.muted)
+                    #if os(iOS)
+                    .frame(width: 32, height: 32)
+                    #else
+                    .frame(width: 28, height: 28)
+                    #endif
+                    .background(icon.accent ? Theme.nexAgentSoft : Theme.secondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                switch row.kind {
+                case .create:
+                    (Text("新建文件夹 ") + Text(row.name).bold().foregroundStyle(Theme.nexAgentAccent))
+                        .foregroundStyle(Theme.foreground).lineLimit(1)
+                    Spacer(minLength: 4)
+                case .go:
+                    (Text("前往 ") + Text(row.path).bold()).foregroundStyle(Theme.foreground).lineLimit(1)
+                    Spacer(minLength: 4)
+                case .folder(let git, let recent):
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(row.name).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Theme.foreground).lineLimit(1)
+                        if recent, let parent = CliPaths.parent(row.path) {
+                            Text(parent).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                    if git {
+                        Text("Git")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(Theme.nexAgentAccent)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Theme.nexAgentSoft, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted.opacity(0.45))
+                }
+            }
+            .font(.system(size: 13.5))
+            #if os(iOS)
+            .padding(.horizontal, 8).padding(.vertical, 7)
+            #else
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            #endif
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hovered == row.id ? Theme.wash : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
         .onHover { inside in hovered = inside ? row.id : (hovered == row.id ? nil : hovered) }
     }
 

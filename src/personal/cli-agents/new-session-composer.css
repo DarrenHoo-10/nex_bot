@@ -25,44 +25,6 @@
 .na-new .na-pick-chip > svg { flex: none; color: var(--nn-muted); }
 .na-new .na-pick-chip em { flex: none; padding: 0 6px; border-radius: 6px; background: var(--nn-soft); color: var(--nn-accent); font-size: 10.5px; font-style: normal; line-height: 17px; }
 
-/* the folder menu */
-.model-menu.na-model-menu.na-dir-menu { padding: 6px 6px 0; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-device { display: flex; align-items: center; gap: 6px; padding: 6px 10px 2px; color: var(--mm-muted); font-size: 11.5px; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-devices { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 4px 2px; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-devices button { display: inline-flex; align-items: center; gap: 5px; height: 26px; min-height: 26px; padding: 0 9px; border: 1px solid var(--mm-line); border-radius: 999px; background: transparent; color: var(--mm-ink); font-size: 12px; transform: none; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-devices button[aria-checked="true"] { border-color: var(--mm-accent); background: color-mix(in srgb, var(--mm-soft) 55%, transparent); }
-.model-menu.na-model-menu.na-dir-menu .na-dir-devices button:disabled { opacity: .5; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-devices small { color: var(--mm-muted); font-size: 10.5px; }
-
-.model-menu.na-model-menu.na-dir-menu .na-dir-path { display: flex; align-items: center; gap: 6px; padding: 6px 4px; }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-up { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 1px solid var(--mm-line); border-radius: 8px; background: var(--mm-paper); color: var(--mm-ink); transform: none; }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-up:hover:enabled { background: var(--mm-hover); }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-up:disabled { opacity: .4; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-crumbs { display: flex; flex: 1; align-items: center; min-width: 0; overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-crumbs > span { display: inline-flex; align-items: center; color: var(--mm-muted); }
-.model-menu.na-model-menu.na-dir-menu .na-dir-crumbs button { min-height: 24px; height: 24px; padding: 0 5px; border: 0; border-radius: 6px; background: transparent; color: var(--mm-muted); font-size: 12px; transform: none; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-crumbs button:hover { background: var(--mm-hover); color: var(--mm-ink); }
-.model-menu.na-model-menu.na-dir-menu .na-dir-crumbs button[aria-current] { color: var(--mm-ink); font-weight: 600; }
-
-.model-menu.na-model-menu.na-dir-menu .na-dir-list { max-height: 300px; min-height: 120px; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-section { display: flex; align-items: center; gap: 5px; padding: 8px 10px 4px; color: var(--mm-muted); font-size: 11px; font-weight: 600; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-row { position: relative; display: flex; align-items: center; border-radius: 9px; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-row[aria-selected="true"] { background: var(--mm-hover); }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-main { display: flex; flex: 1; align-items: center; justify-content: flex-start; gap: 9px; min-width: 0; min-height: 34px; padding: 6px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--mm-ink); font-size: 13px; text-align: left; transform: none; }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-main > svg { flex: none; color: var(--mm-muted); }
-.model-menu.na-model-menu.na-dir-menu .na-dir-row[data-kind="create"] button.na-dir-main > svg,
-.model-menu.na-model-menu.na-dir-menu .na-dir-row[data-kind="create"] b { color: var(--mm-accent); }
-.model-menu.na-model-menu.na-dir-menu .na-dir-name { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-name b { font-weight: 600; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-name small { overflow: hidden; color: var(--mm-muted); font-size: 11px; text-overflow: ellipsis; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-tag { flex: none; padding: 0 6px; border-radius: 6px; background: var(--mm-hover); color: var(--mm-muted); font-size: 10.5px; font-style: normal; line-height: 17px; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-enter { flex: none; color: var(--mm-muted); opacity: .6; }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-use { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; min-height: 28px; margin-right: 4px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--mm-accent); opacity: 0; transform: none; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-row[aria-selected="true"] button.na-dir-use,
-.model-menu.na-model-menu.na-dir-menu button.na-dir-use:focus-visible { opacity: 1; }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-use:hover { background: color-mix(in srgb, var(--mm-soft) 70%, transparent); }
-
-.model-menu.na-model-menu.na-dir-menu .na-dir-foot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; margin: 6px -6px 0; padding: 10px 12px; border-top: 1px solid var(--mm-line); background: var(--mm-paper); border-radius: 0 0 14px 14px; }
-.model-menu.na-model-menu.na-dir-menu .na-dir-current { flex: 1; min-width: 0; overflow: hidden; color: var(--mm-muted); font: 11.5px/1.4 ui-monospace, Consolas, "Microsoft YaHei", monospace; text-overflow: ellipsis; white-space: nowrap; }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-confirm { flex: none; height: 30px; min-height: 30px; padding: 0 14px; border: 0; border-radius: 8px; background: var(--mm-accent); color: #fff; font-size: 12.5px; font-weight: 600; transform: none; }
-.model-menu.na-model-menu.na-dir-menu button.na-dir-confirm:disabled { opacity: .45; }
+/* the folder menu (base fallbacks; full themed layout & bottom-sheet live in theme.css @layer components) */
+.model-menu.na-model-menu.na-dir-menu { padding: 0; overflow: hidden; }
+.model-menu.na-model-menu.na-dir-menu .na-dir-list { flex: 1; min-height: 120px; max-height: 300px; }
